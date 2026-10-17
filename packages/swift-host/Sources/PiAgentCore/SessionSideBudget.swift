@@ -33,6 +33,15 @@ extension AgentSession {
         // The root's list of paused sides follows each side's own durable
         // pause: a crash between the two saves is repaired here.
         if let root = sideBudgetParents.last {
+            // Cold recovery also serves orphaned sides. Once ancestry is
+            // bound, move any recovered descendant membership to the root,
+            // where each descendant's Resume will retire it.
+            let members = costPausedMembers
+            for member in members { await root.notePausedMember(member, repair:true) }
+            if !members.isEmpty {
+                costPausedMembers.removeAll { members.contains($0) }
+                try persistState(durable:true)
+            }
             if costPaused { await root.notePausedMember(id, repair: true) } else { await root.forgetPausedMember(id) }
         }
         for ancestor in sideBudgetParents { await ancestor.acknowledgeSidePause(id) }

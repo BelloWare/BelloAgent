@@ -341,24 +341,30 @@ actor AgentSteeringCoordinator {
             guard jobs.values.contains(where: { $0.owner === parent }) else { break }
             await wake.wait(after:revision)
         }
-        paused.remove(parent.id)
-        let state = await parent.agentState()
-        let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
-        guard !parked.isEmpty else { pump(parent.id); return }
-        let env = try await parent.delegationEnvironment()
-        let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
-        let plans = await parent.subagents.plans.values
-        for original in parked.sorted(by: { (order($0), $0.id) < (order($1), $1.id) }) {
-            guard let plan = plans.first(where: { $0.origin.link.childSessionID == original.childID }) else { throw SubagentRecovery.damaged() }
-            var turn = original; turn.status = .queued; turn.result = nil
-            turn.continuations = (turn.continuations ?? []) + [AgentTurnContinuation(parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID)]
-            try await parent.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
-            var runtimeEnv = env
-            if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
-            var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn); job.resuming = true
-            jobs[turn.id] = job
-            queues[parent.id,default:[]].append(turn.id)
-        }
+        // Stop may seal a parked turn without a job. Snapshot and install
+        // under its gate, after parking (which needs the gate) has drained.
+        let lock = gate(parent.id); try await lock.acquire()
+        do {
+            paused.remove(parent.id)
+            let state = await parent.agentState()
+            let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
+            guard !parked.isEmpty else { await lock.release(); pump(parent.id); return }
+            let env = try await parent.delegationEnvironment()
+            let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
+            let plans = await parent.subagents.plans.values
+            for original in parked.sorted(by: { (order($0), $0.id) < (order($1), $1.id) }) {
+                guard let plan = plans.first(where: { $0.origin.link.childSessionID == original.childID }) else { throw SubagentRecovery.damaged() }
+                var turn = original; turn.status = .queued; turn.result = nil
+                turn.continuations = (turn.continuations ?? []) + [AgentTurnContinuation(parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID)]
+                try await parent.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                var runtimeEnv = env
+                if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
+                var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn); job.resuming = true
+                jobs[turn.id] = job
+                queues[parent.id,default:[]].append(turn.id)
+            }
+            await lock.release()
+        } catch { await lock.release(); throw error }
         pump(parent.id)
         await signal(parent.id).pulse()
     }
