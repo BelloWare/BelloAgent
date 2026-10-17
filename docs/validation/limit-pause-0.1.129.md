@@ -154,6 +154,26 @@ side test, a load race in a native cost test) were fixed as recorded above.
 | P2 sides still paused after a lost root reply | The root's snapshot names its still-paused sides; every family Resume reads them | native `CostPauseFamilyTests.testSidesStillPausedAfterALostRootResumeAreRecovered` (`r2-members-lost`) |
 | P2 a parked child with held input could not unload | Durable held input of a paused child does not pin it | `testAParkedChildWithHeldInputUnloads` (`r2-pinned-input`) |
 
+## Review round 3 (Codex, 2 P1 + 4 P2) and the same kinds of case
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 an automatically cleared pause left the coordinator holding | Every automatic clear (run end, last side resumed) goes through `clearCostPauseWithoutWork`, which releases and fences the hold | `FamilyLimitPauseTests.testAnAutomaticallyClearedPauseReleasesTheCoordinator` (`r3-auto-clear-hold`) |
+| P1 a turn sealed before its child ran broke reopening (mirror missed a continuation) | Recovery catches the mirror up, one continuation at a time, before any terminal record, paused or not | `testReopenRepairsAMirrorThatMissedAContinuationBeforeSealing` (`r3-mirror-before-terminal`) |
+| P2 a call held at its own gate was only in memory | Saved the moment its gate closes; a quit then interrupts only the call that ran | `CostLimitTests.testACallHeldWhileAnotherRunsSurvivesAQuit` (`r3-held-in-memory`) |
+| P2 a redone compaction bypassed parked children | The redo runs inside the Resume's ordinary run, after parked work is released and held calls ran; "nothing to compact" cannot strand the family | `testCompactionRedoneOnResumeStillResumesParkedChildren` (`r3-compact-skips-family`) |
+| P2 the redo ignored Resume overrides | It uses the continuation's validated submission | `CostLimitTests.testThePauseCutsACompactionSummaryAndResumeCompactsAgain` (`r3-overrides`) |
+| P2 side membership lost in a crash between two saves | A side binding again sets or removes its root membership from its own durable pause | `testSideBindingRepairsTheRootsPausedMembers` (`r3-membership`) |
+
+Same-kind audit: automatic clears are only `clearCostPauseWithoutWork` (run end, last member
+forgotten) and Resume's no-run path, all releasing the hold; every Resume branch
+(continuation, family wait, queued follow-ups, compaction redo, no run) now reaches
+`resumeParked`; the two-save windows (side pause/root membership, side resume/root forget,
+owner continuation/child mirror, owner park/child park, held-call gate/batch end,
+held-call release/tool start) each have a durable repair or are ordered save-first.
+Remaining tolerated window: a live Stop seals a never-started resumed turn without its
+child runtime; the stale child mirror is repaired by the next cold reopen (above).
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
