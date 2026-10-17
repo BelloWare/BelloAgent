@@ -202,6 +202,8 @@ extension AgentSession {
          "reportedRequests": JSON(spend.reported), "unreportedRequests": JSON(spend.unreported),
          "reached": JSON(costLimitReached), "accountingRevision":JSON(accounting.revision), "familyUsage":familyUsage]
         if costPaused { value["paused"] = true }
+        // Sides still waiting for the family's Resume, also after the root's own.
+        if !costPausedMembers.isEmpty { value["pausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
         return value
     }
     /// What a chat paused at its family's limit says until Resume. The app
@@ -220,7 +222,7 @@ extension AgentSession {
     }
     /// What a Resume would go on with once a paused run has ended.
     var hasWorkAfterCostPause: Bool {
-        !costPendingCalls.isEmpty || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || hasPendingAgentEvents ||
+        !costPendingCalls.isEmpty || costPendingCompaction || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || hasPendingAgentEvents ||
         subagents.family?.turns.values.contains { !$0.status.terminal } == true ||
         continuationTail.map { Self.continues(from: $0) } ?? false
     }

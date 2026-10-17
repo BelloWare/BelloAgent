@@ -103,6 +103,9 @@ extension CostPausePresentationTests {
             try (lines.joined(separator: "\n") + "\n").write(to: family.path, atomically: true, encoding: .utf8)
             let parent = URL(fileURLWithPath: try XCTUnwrap(model.chats[0].path))
             let handle = try FileHandle(forWritingTo: parent); try handle.seekToEnd()
+            // Past the first three lines, where a real run state lands.
+            var filler = try JSONEncoder().encode(["type": WireValue.string("custom"), "customType": .string("pi-app.unrelated.v1"), "data": .object([:])]); filler.append(10)
+            try handle.write(contentsOf: filler)
             let state: [String: WireValue] = ["type": .string("custom"), "customType": .string(StateRecordTail.customType),
                 "data": .object(["active": .bool(false), "queuePaused": .bool(true), "runStatus": .string("cancelled"), "costPaused": .bool(paused)])]
             var data = try JSONEncoder().encode(state); data.append(10); try handle.write(contentsOf: data); try handle.close()

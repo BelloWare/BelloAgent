@@ -381,6 +381,7 @@ extension AgentSession {
         if errorCode == Self.skillUpdatedCode, let skillUpdatedTurnID { value["skillUpdatedTurnId"]=JSON(skillUpdatedTurnID) }
         // Absent unless paused at the family's cost limit (`pauseAtCostLimit`).
         if costPaused { value["costPaused"] = true }
+        if costPendingCompaction { value["costPendingCompaction"] = true }
         if !costPendingCalls.isEmpty { value["costPendingCalls"] = .array(costPendingCalls.map(JSON.string)) }
         if !costPausedMembers.isEmpty { value["costPausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }

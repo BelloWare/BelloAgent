@@ -539,21 +539,25 @@ extension FamilyLimitPauseTests {
     /// settling is resumed, not stranded without a continuation.
     func testResumeWaitsForTurnsStillParking() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
-        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
-        await coordinator.fixturePause("parent")
+        let tools = LimitHeldTools(), client = ChildToolClient(), coordinator = AgentSteeringCoordinator()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        await owner.setCostLimit(0.5)
         let child = try await startChild(owner, coordinator, "settling")
         let target = AgentTurnTarget(childID:child,turn:1)
-        await owner.beginResumeFixture(); await client.releaseAll()
-        let resume = Task { try await coordinator.resumeParked(owner:owner,generation:1) }
+        try await eventually { await tools.started }
+        let crossing = try await start(owner,"crossing"); try await finish(crossing.0,"crossing",cost:0.6)
+        await owner.setCostLimit(5); try await owner.requireCostResumeRoom()
+        _ = try await owner.continueRun(commandID:"resume")
         try await Task.sleep(for:.milliseconds(100))
         let early = await owner.agentState().turns[target.id]?.continuations
-        XCTAssertNil(early,"Nothing is resumed while the turn is still settling")
-        await coordinator.fixturePark(target.id)   // the pause's runner parks it now
-        try await resume.value
+        XCTAssertNil(early,"Nothing is resumed while the child's tool still runs")
+        await tools.release()   // it finishes; the child's gate holds and it parks
         try await eventually { await owner.agentState().turns[target.id]?.status == .completed }
-        let resumed = await owner.agentState().turns[target.id]
-        XCTAssertEqual(resumed?.continuations?.count,1)
+        let resumed = await owner.agentState().turns[target.id], finished = await tools.finished
+        XCTAssertEqual(resumed?.continuations?.count,1); XCTAssertEqual(finished,1,"The tool ran once, to its end")
+        try await eventually { !(await owner.isRunning) }
         await coordinator.drain(); await owner.close()
     }
 
@@ -562,11 +566,16 @@ extension FamilyLimitPauseTests {
     /// but not delivered is released, never submitted a second time.
     func testResumedTurnStartUsesDurableEvidence() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let client = LimitRunClient(mode:"queued"), opened = OpenedChildren()
+        // Parked children are released by `settled`; keep this one open to inspect.
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan); await opened.add(child); return child
+        }, settled:{ _ in })
         let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
         await coordinator.fixturePause("parent")
-        _ = try await startChild(owner, coordinator, "evidence")
-        let jobs = await coordinator.jobs, job = try XCTUnwrap(jobs.values.first), turn = job.turn, child = try XCTUnwrap(job.child)
+        let id = try await startChild(owner, coordinator, "evidence")
+        try await eventually { await coordinator.jobs.isEmpty }
+        let state = await owner.agentState(), turn = try XCTUnwrap(state.latest(id)), list = await opened.children, child = try XCTUnwrap(list.first)
         let fresh = await child.agentTurnStart(turn); XCTAssertEqual(fresh,.fresh)
         await child.fixtureReceipt(turn.inputID,state:"delivered")
         let delivered = await child.agentTurnStart(turn)
@@ -681,6 +690,132 @@ private actor AnsweringChildClient: ModelClient {
         try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
         await onObservation(observation)
         var reply = answer(requests == 1 ? "Child answer" : "Steered answer"); reply.message.requestAttemptIDs = [attempt]
+        return reply
+    }
+}
+
+/// Review round 2 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A child accepted just before the pause, whose runtime was still
+    /// opening, parks when it is inserted: it never waits in a queue nothing
+    /// pumps, and Resume does not wait for it forever.
+    func testAChildOpenedAcrossThePauseParksOnInsertion() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let gate = OpenGate(), client = LimitRunClient(mode:"queued")
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            await gate.wait()
+            return try AgentSteeringCoordinator.makeChild(env,plan)
+        })
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        let call = ToolCall(id:"late",name:"subagent_start",arguments:["task":"Late","mode":"background"])
+        let key = try await owner.agentFixtureCall(call,newTask:true)
+        let accepting = Task { try await coordinator.prepare(call,key:key,parent:owner) }
+        try await eventually { await gate.waiting }
+        await coordinator.fixturePause("parent")
+        await gate.open()
+        let receipt = try await accepting.value, child = try XCTUnwrap(receipt["child_id"].text)
+        try await eventually(timeout:.seconds(2)) { await coordinator.jobs.isEmpty }
+        let status = await owner.agentState().latest(child)?.status
+        XCTAssertEqual(status,.queued,"Parked at insertion")
+        let dispatched = await client.children.count; XCTAssertEqual(dispatched,0)
+        await owner.beginResumeFixture(); await client.releaseAll()
+        try await coordinator.resumeParked(owner:owner,generation:1)
+        try await eventually { await owner.agentState().latest(child)?.status == .completed }
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// Stop while Resume waits for a child's running tool: the wait ends at
+    /// once, the child's run is halted, and the family stays paused.
+    func testStopWhileResumeWaitsHaltsHeldChildrenAndKeepsThePause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = LimitHeldTools(), client = ChildToolClient(), coordinator = AgentSteeringCoordinator()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        await owner.setCostLimit(0.5)
+        let call = ToolCall(id:"tooling",name:"subagent_start",arguments:["task":"Use the tool","mode":"background","tools":["first"]])
+        let key = try await owner.agentFixtureCall(call,newTask:true)
+        _ = try await coordinator.prepare(call,key:key,parent:owner)
+        try await eventually { await tools.started }
+        let crossing = try await start(owner,"crossing")
+        try await finish(crossing.0,"crossing",cost:0.6)
+        let paused = await owner.costPaused; XCTAssertTrue(paused)
+        await owner.setCostLimit(5); try await owner.requireCostResumeRoom()
+        _ = try await owner.continueRun(commandID:"resume")
+        try await Task.sleep(for:.milliseconds(100))
+        let waiting = await owner.isRunning; XCTAssertTrue(waiting,"Resume waits for the child's running tool")
+        await owner.stop()
+        try await eventually(timeout:.seconds(2)) { !(await owner.isRunning) }
+        let again = await owner.costPaused; XCTAssertTrue(again,"The family stays paused for the next Resume")
+        try await eventually(timeout:.seconds(2)) { await coordinator.jobs.isEmpty }
+        let halted = await tools.cancelled; XCTAssertTrue(halted,"Stop halts the held child's run")
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// A parked child whose task was accepted but not delivered can still be
+    /// unloaded: its input is durable, and Resume reopens it.
+    func testAParkedChildWithHeldInputUnloads() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let opened = OpenedChildren()
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan); await opened.add(child); return child
+        }, settled:{ _ in })
+        let owner = try await steeringOwner(root, client:LimitRunClient(mode:"queued"), coordinator:coordinator)
+        await coordinator.fixturePause("parent")
+        let id = try await startChild(owner, coordinator, "held-input")
+        try await eventually { await coordinator.jobs.isEmpty }
+        let state = await owner.agentState(), turn = try XCTUnwrap(state.latest(id)), list = await opened.children, child = try XCTUnwrap(list.first)
+        await child.fixtureQueue(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task))
+        let unloaded = await child.unloadIfIdle()
+        XCTAssertTrue(unloaded,"Held input does not pin a parked child")
+        await owner.close()
+    }
+
+    /// Pause generations belong to the owner runtime: after a resumed owner
+    /// is replaced by a reopened one (its count starts again), the new
+    /// runtime's first pause still holds its children.
+    func testAReopenedOwnersFirstPauseIsNotMistakenForAnOldOne() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        let first = try familyFixture(root:root)
+        try await coordinator.resumeParked(owner:first,generation:1)
+        let saved = await first.path; await first.close()
+        let reopened = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:saved)
+        await coordinator.pause(owner:reopened,generation:1)
+        let held = await coordinator.paused.contains("parent"); XCTAssertTrue(held)
+        await reopened.close()
+    }
+}
+
+private actor OpenedChildren {
+    var children: [AgentSession] = []
+    func add(_ child: AgentSession) { children.append(child) }
+}
+
+private actor OpenGate {
+    var waiting = false, opened = false
+    func wait() async { waiting = true; while !opened { try? await Task.sleep(for:.milliseconds(2)) } }
+    func open() { opened = true }
+}
+
+/// The child's first request asks for the "first" tool; later requests
+/// answer. The parent is driven by fixtures and sends no requests.
+private actor ChildToolClient: ModelClient {
+    var requests = 0
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        throw AgentError("fixture_unscoped","Expected admission")
+    }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
+        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
+        try await hooks.willDispatch(attempt)
+        requests += 1
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:"turn",fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.01]]]
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+        await onObservation(observation)
+        var reply = requests == 1 ? toolReply(["first"]) : answer("Used the tool"); reply.message.requestAttemptIDs = [attempt]
         return reply
     }
 }

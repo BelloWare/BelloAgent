@@ -101,7 +101,8 @@ extension HistoryReader {
     func subagentRecords(_ path: URL, visit: ([String: WireValue], Int) throws -> Bool) throws {
         let file = try FileHandle(forReadingFrom: path); defer { try? file.close() }
         var pending = Data(), line = 0
-        let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run"].map { Data($0.utf8) }
+        // Run-state records carry a cost-limit pause (`costPaused`).
+        let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run", "pi-app.native.state.v1"].map { Data($0.utf8) }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
             subagentScannedBytes += bytes.count
             try Task.checkCancellation()

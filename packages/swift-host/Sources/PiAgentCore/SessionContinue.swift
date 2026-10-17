@@ -117,6 +117,16 @@ extension AgentSession {
             if committed, paused.paused, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
         if costPaused { members = endCostPause() }
+        if paused.paused, costPendingCompaction, !titleTask {
+            // The pause cut a manual compaction: Resume compacts again first.
+            let intent = Submission(commandID: commandID, turnID: receiptKey, text: "[Compact now]")
+            activeSubmission = intent; currentTurnID = intent.turnID; commandState(intent, "queued")
+            costPendingCompaction = false; queuePaused = false; errorMessage = nil; errorCode = nil
+            do { try persistState() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; activeSubmission = nil; costPendingCompaction = true; throw error }
+            committed = true
+            launch(compactOnly: true)
+            return ["accepted": true, "continued": true, "compacting": true, "resumedFamily": true, "pausedMembers": .array(members.map(JSON.string))]
+        }
         let familyOnly = paused.paused && hasParkedAgentTurns
         // Held tool calls are a run to go on with: they run first.
         let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents || !costPendingCalls.isEmpty

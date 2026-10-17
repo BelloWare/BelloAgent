@@ -60,12 +60,15 @@ extension WorkspaceModel {
         resumeSteps?("accepted")
         Task {
             defer { for view in views { view.resuming = false }; updateHostActivity(workspaceID: item.workspaceID) }
-            var members: [String] = []
-            var rootPaused = root.id == item.id || isCostPaused(root.id)
-            if !rootPaused { rootPaused = await rootReadsCostPaused(root) }
-            if rootPaused {
-                guard let reply = await performResume(root, view: displays[root.id], member: root.id != item.id) else { return }
-                members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? []
+            // Read the root's helper: whether it is paused, and which of its
+            // sides still wait (also after an earlier root Resume whose reply
+            // or side requests were lost: the root keeps naming them).
+            let read = await rootCostPause(root)
+            var members = read.members
+            if read.paused || isCostPaused(root.id) {
+                if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id) {
+                    members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? members
+                } else if read.members.isEmpty && root.id == item.id { return }
             }
             var order = members.filter { $0 != root.id }
             if item.id != root.id, !order.contains(item.id) { order.append(item.id) }
@@ -79,11 +82,12 @@ extension WorkspaceModel {
     /// A side's root after a relaunch need not have a display or a budget
     /// reading yet: ask its helper (as a budget dependency) before deciding
     /// whether the whole family resumes from the root.
-    func rootReadsCostPaused(_ root: ChatRecord) async -> Bool {
+    func rootCostPause(_ root: ChatRecord) async -> (paused: Bool, members: [String]) {
         guard let host = try? await open(root, budgetDependency: true),
-              let status = try? await host.request("session.status", sessionID: root.id, params: ["budgetOnly": .bool(true)]).object else { return false }
+              let status = try? await host.request("session.status", sessionID: root.id, params: ["budgetOnly": .bool(true)]).object else { return (false, []) }
         observeCost(status, sessionID: root.id)
-        return status["cost"]?.object?["paused"]?.bool == true
+        let cost = status["cost"]?.object
+        return (cost?["paused"]?.bool == true, cost?["pausedMembers"]?.array?.compactMap(\.string) ?? [])
     }
 
     /// One `run.continue`, recorded as a pending intent first for a durable

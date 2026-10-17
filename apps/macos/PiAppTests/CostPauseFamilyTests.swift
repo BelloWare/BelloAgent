@@ -66,8 +66,13 @@ final class CostPauseFamilyTests: XCTestCase {
     @MainActor func testAColdSidesResumeResumesItsRootFirst() async throws {
         try await pauseRelaunchAndResume(fromSide: true)
     }
+    /// The root accepted Resume but its reply (and the side requests) were
+    /// lost: a later family Resume still resumes the sides the root names.
+    @MainActor func testSidesStillPausedAfterALostRootResumeAreRecovered() async throws {
+        try await pauseRelaunchAndResume(fromSide: true, rootAlreadyResumed: true)
+    }
 
-    @MainActor private func pauseRelaunchAndResume(fromSide: Bool) async throws {
+    @MainActor private func pauseRelaunchAndResume(fromSide: Bool, rootAlreadyResumed: Bool = false) async throws {
         // Forty words stream for about nine seconds: the crossing lands mid-reply.
         let setup = try await gatewayWorkspace("cost-pause-family", projectID: "cost-pause-project", readme: true, gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "40"])
         let first = await launch(setup)
@@ -127,8 +132,19 @@ final class CostPauseFamilyTests: XCTestCase {
         if fromSide {
             try await second.setCostLimit(.usd(1), for: parent.id)
             XCTAssertNil(second.displays[parent.id], "Nothing has read the root")
-            second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))
-            let host = try await second.open(try XCTUnwrap(second.record(parent.id)), budgetDependency: true)
+            let rootRecord = try XCTUnwrap(second.record(parent.id))
+            let host = try await second.open(rootRecord, budgetDependency: true)
+            if rootAlreadyResumed {
+                // As if the root's Resume was accepted and the app quit before
+                // asking the sides: the side is still paused.
+                _ = try await host.request("run.continue", sessionID: parent.id, params: [:], commandID: UUID().uuidString)
+                try await Task.sleep(for: .milliseconds(300))
+                let sideState = try await host.request("session.status", sessionID: side.id).object
+                XCTAssertEqual(sideState?["costPaused"]?.bool, true)
+                second.resumeCostPausedFamily(from: rootRecord)
+            } else {
+                second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))
+            }
             var done = false
             for _ in 0..<600 where !done {
                 let main = try? await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object

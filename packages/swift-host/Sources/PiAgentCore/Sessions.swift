@@ -124,6 +124,8 @@ public actor AgentSession {
     /// Tool calls of a completed reply the pause held before any started:
     /// they run first on Resume, before another model request. Durable.
     var costPendingCalls: [String] = []
+    /// A manual compaction the pause cut: Resume runs it again.
+    var costPendingCompaction = false
     /// Cancels the model request (or retry back-off) under way, if any.
     var modelRequestAbort: (@Sendable () -> Void)?
     var familyCancelled: (@Sendable (Int) -> Void)?
@@ -184,6 +186,8 @@ public actor AgentSession {
     var compactionFocus: String?
     /// Calls of the running tool batch whose tool has been entered.
     var toolInvocationsBegan: Set<String> = []
+    /// Calls of the running batch a cost-limit pause held at their own gate.
+    var heldBatchCalls: Set<String> = []
     var cumulativeUsage = CumulativeUsage()
     var currentTurnID="", appliedRevision: String?
     /// Where the time went: model requests versus tool execution, for the
@@ -499,6 +503,7 @@ public actor AgentSession {
             costPaused = saved["costPaused"].flag == true
             costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
+            costPendingCompaction = saved["costPendingCompaction"].flag == true
             if costPaused {
                 // Paused at the family's limit, also when the helper ended
                 // mid-pause: the pause, not an interruption, is what waits.
@@ -646,7 +651,9 @@ public actor AgentSession {
         event("state")
     }
     var canUnload: Bool {
-        isIdle && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
+        // A parked child's accepted, undelivered task is durable queued
+        // input; it does not pin the runtime.
+        (isIdle || isSubagent && costPaused && runTask == nil && steering.isEmpty) && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
         (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true || costPaused)
     }
     public func unloadIfIdle() -> Bool {

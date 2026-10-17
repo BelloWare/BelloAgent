@@ -28,7 +28,8 @@ actor AgentSteeringCoordinator {
     var paused: Set<String> = []
     /// The owner Stop generation each Resume covers: a pause scheduled by an
     /// earlier Stop that arrives after the Resume is ignored.
-    var resumedThrough: [String:Int] = [:]
+    /// Keyed by the owner runtime: a reopened chat counts its pauses afresh.
+    var resumedThrough: [ObjectIdentifier:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
@@ -147,7 +148,12 @@ actor AgentSteeringCoordinator {
                 }
             }
             jobs[turn.id] = job
-            queues[parent.id,default:[]].append(turn.id); pump(parent.id)
+            queues[parent.id,default:[]].append(turn.id)
+            // Accepted before a pause landed (its child was still opening):
+            // it parks now rather than waiting in a queue nothing pumps.
+            // (After this command releases the owner's lock, which park takes.)
+            if paused.contains(parent.id) { let parked = job; jobs[turn.id]?.task = Task { await self.park(parked,child:parked.child) } }
+            else { pump(parent.id) }
         }
         if call.name == "subagent_stop" { await stop(owner:parent.id,target:.init(childID:call.arguments["child_id"].text!,turn:call.arguments["turn"].int!),human:false) }
         await signal(parent.id).pulse()
@@ -262,7 +268,9 @@ actor AgentSteeringCoordinator {
     /// the children's runs too. Idempotent; a pause older than a Resume
     /// (`generation`, the owner's pause count) is ignored.
     func pause(owner: AgentSession, generation: Int, halt: Bool = false) async {
-        guard generation > resumedThrough[owner.id, default: -1] else { return }
+        // An explicit Stop or close always halts; a late automatic pause
+        // older than a Resume does nothing.
+        guard halt || generation > resumedThrough[ObjectIdentifier(owner), default: -1] else { return }
         paused.insert(owner.id)
         for job in Array(jobs.values) where job.owner === owner {
             if job.allocated {
@@ -280,14 +288,18 @@ actor AgentSteeringCoordinator {
     func resumeParked(owner parent: AgentSession, generation: Int) async throws {
         // The pause's own hold may not have arrived yet: apply it first, so
         // every running turn parks under the old execution.
-        if !paused.contains(parent.id), jobs.values.contains(where: { $0.owner === parent }), generation > resumedThrough[parent.id, default: -1] {
+        let runtime = ObjectIdentifier(parent)
+        if !paused.contains(parent.id), jobs.values.contains(where: { $0.owner === parent }), generation > resumedThrough[runtime, default: -1] {
             await pause(owner:parent,generation:generation)
         }
-        resumedThrough[parent.id] = max(resumedThrough[parent.id, default: -1], generation)
+        resumedThrough[runtime] = max(resumedThrough[runtime, default: -1], generation)
         // The pause's runners finish parking (or sealing) first: a turn still
         // settling is otherwise neither resumed nor left for the next Resume.
+        // Queued jobs without a runner park here; Stop ends the wait.
         let wake = signal(parent.id)
         while jobs.values.contains(where: { $0.owner === parent }) {
+            try Task.checkCancellation()
+            for job in Array(jobs.values) where job.owner === parent && !job.allocated && job.task == nil { await park(job,child:job.child) }
             let revision = await wake.revision
             guard jobs.values.contains(where: { $0.owner === parent }) else { break }
             await wake.wait(after:revision)

@@ -160,7 +160,7 @@ extension AgentSession {
     func run(compactOnly: Bool) async {
         do {
             try Task.checkCancellation(); state = .running; runStatus = .running; try persistState(active:true); event("state")
-            if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
+            if compactOnly { try await compactContext(); costPendingCompaction=false; if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
                 var startedFollowUp=false
@@ -182,13 +182,24 @@ extension AgentSession {
                 // under this run's execution, before anything is asked again.
                 if resumingCostPause, !isSubagent {
                     resumingCostPause=false
-                    try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount)
+                    do { try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount) }
+                    catch {
+                        // Stopped (or closed) while the pause's children were
+                        // still settling: the family stays paused for the next
+                        // Resume, and their runs are halted, not waited for.
+                        costPaused = true; costPauseCount &+= 1; try? persistState(active:true)
+                        if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
+                        throw error
+                    }
                 }
                 // Tool calls the pause held before they started run first,
                 // from the reply that issued them: it is never asked again.
                 if continued, !costPendingCalls.isEmpty {
                     let (calls, attempts) = heldToolCalls()
-                    costPendingCalls = []
+                    // Durable before any effect: after a crash these calls may
+                    // have begun, so recovery gives them unknown outcomes and
+                    // nothing replays them.
+                    costPendingCalls = []; try persistState(active:true)
                     if !calls.isEmpty {
                         currentAttemptIDs = attempts
                         try await runToolBatch(calls)
@@ -391,6 +402,8 @@ extension AgentSession {
             // Paused, not failed: Resume goes on from here once the limit is
             // raised. A managed child's turn is parked by its coordinator.
             let pausedAtLimit = costPaused || isSubagent && budgetError != nil
+            // A manual compaction the pause cut is done again on Resume.
+            if compactOnly, costPaused { costPendingCompaction = true }
             queuePaused=true; runStatus=pausedAtLimit || familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
             errorMessage=pausedAtLimit ? (isSubagent ? "Paused at the shared cost limit." : costPausedMessage) : (error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=pausedAtLimit ? Self.costLimitCode : runStatus == .failed ? (error as? AgentError)?.code : nil

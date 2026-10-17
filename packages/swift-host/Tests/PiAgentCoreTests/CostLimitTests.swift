@@ -13,6 +13,10 @@ private actor BillingClient: ModelClient {
     private var holds: Set<Int>
     private(set) var holding = false
     private var turnCount = 0, held: Int?
+    /// While set, a summary request waits (until cancelled or released).
+    private(set) var holdingSummary = false, summaryCancelled = 0
+    private var summaryHold = false
+    func holdSummaries(_ on: Bool) { summaryHold = on }
     init(turns: [Step], summaries: [Step] = [], hold: Set<Int> = []) { self.turns = turns; self.summaries = summaries; self.holds = hold }
     var requests: Int { purposes.count }
     var turnRequests: Int { purposes.filter { $0 == "turn" }.count }
@@ -26,6 +30,9 @@ private actor BillingClient: ModelClient {
         purposes.append(purpose)
         let step: Step
         if purpose == "compaction" {
+            do { while summaryHold { holdingSummary = true; try await Task.sleep(nanoseconds: 2_000_000) } }
+            catch { holdingSummary = false; summaryCancelled += 1; throw error }
+            holdingSummary = false
             guard !summaries.isEmpty else { throw AgentError("fixture_exhausted", "Unexpected summary request") }
             step = summaries.removeFirst()
         } else {
@@ -69,6 +76,20 @@ private actor SlowTools: ToolExecuting {
         finished += 1
         return resultText("REAL " + call.name)
     }
+}
+
+/// Definitions can be held once, as a call's own preparation reads them.
+private actor GatedDefinitionsTools: ToolExecuting {
+    private(set) var calls: [String] = [], waiting = false
+    private var gate = false
+    func close() { gate = true }
+    func open() { gate = false }
+    func definitions(readOnly: Bool) async -> [ToolDefinition] {
+        while gate { waiting = true; try? await Task.sleep(nanoseconds: 2_000_000) }
+        waiting = false
+        return [ToolDefinition("first","test",[:])]
+    }
+    func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { calls.append(call.name); return resultText("done " + call.name) }
 }
 
 /// Records each call with how many turn requests its client had made.
@@ -235,6 +256,83 @@ final class CostLimitTests: XCTestCase {
         XCTAssertEqual(ran.map(\.name), ["first"]); XCTAssertEqual(ran.first?.requests, 1, "Ran before any new request")
         XCTAssertEqual(requests, 2); XCTAssertEqual(done["state"].text, "idle", done["preflightError"].encoded())
         await reopened.close()
+    }
+
+    /// Owner, 2026-10-17 (round 2): a compaction summary in flight is a model
+    /// request too. The pause cuts it; it is not recorded as a failure of the
+    /// context; Resume compacts again and completes.
+    func testThePauseCutsACompactionSummaryAndResumeCompactsAgain() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.02), .reply(answer("Done"), cost: 0.01)],
+                                   summaries: [.reply(answer("Summary of the retained history."), cost: 0.005)])
+        let s = try await session(root, client: client, tools: EvidenceTools(), limit: 1, policy: Self.smallTail)
+        try await send(s, "Append once")
+        _ = try await settled(s)
+        await client.holdSummaries(true)
+        try await s.compact()
+        try await eventually { await client.holdingSummary }
+        await s.setCostLimit(0.01)
+        var state = try await settled(s)
+        let cut = await client.summaryCancelled
+        XCTAssertEqual(cut, 1, "The summary request in flight is cut at once")
+        XCTAssertEqual(state["costPaused"].flag, true); XCTAssertEqual(state["state"].text, "paused")
+        XCTAssertNotEqual(state["compaction"]["phase"].text, "completed")
+        await client.holdSummaries(false); await s.setCostLimit(1)
+        let reply = try await s.continueRun(commandID: "resume")
+        XCTAssertEqual(reply["compacting"].flag, true)
+        state = try await settled(s)
+        let summaries = await client.summaryRequests
+        XCTAssertEqual(summaries, 2, "Resume compacted again")
+        XCTAssertEqual(state["compaction"]["phase"].text, "completed"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        await s.close()
+    }
+
+    /// Round 2: Resume records that a held call is no longer held before it
+    /// runs, so a crash during it leaves an unknown outcome, never a replay.
+    func testResumedHeldCallIsDurablyConsumedBeforeItRuns() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06), .reply(answer("Done"), cost: 0.01)])
+        let tools = SlowTools()
+        let s = try await session(root, client: client, tools: tools, limit: 0.05)
+        try await send(s, "Work")
+        _ = try await settled(s)
+        await s.setCostLimit(1)
+        _ = try await s.continueRun(commandID: "resume")
+        try await eventually { await tools.started == 1 }
+        let saved = await s.path, path = try XCTUnwrap(saved)
+        let lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n")
+        let lastState = try XCTUnwrap(lines.last { $0.contains("pi-app.native.state.v1") })
+        XCTAssertFalse(lastState.contains("costPendingCalls"), "Saved before the tool began: no longer held")
+        await tools.release()
+        _ = try await settled(s)
+        await s.close()
+    }
+
+    /// Round 2: the limit is crossed after the batch's gate, while a call is
+    /// still preparing. That call is held at its own gate, not failed.
+    func testACallHeldAtItsOwnGateRunsOnResume() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.02), .reply(answer("Done"), cost: 0.01)], hold: [1])
+        let tools = GatedDefinitionsTools()
+        let s = try await session(root, client: client, tools: tools, limit: 1)
+        try await send(s, "Work")
+        try await eventually { await client.holding }
+        await tools.close()
+        await client.release()
+        try await eventually { await tools.waiting }
+        await s.setCostLimit(0.01)
+        await tools.open()
+        var state = try await settled(s)
+        var ran = await tools.calls
+        XCTAssertTrue(ran.isEmpty); XCTAssertEqual(state["costPaused"].flag, true)
+        let results = await s.history.filter { $0.role == "toolResult" }
+        XCTAssertTrue(results.isEmpty, "Held, not given a failed result")
+        await s.setCostLimit(1)
+        _ = try await s.continueRun(commandID: "resume")
+        state = try await settled(s)
+        ran = await tools.calls
+        XCTAssertEqual(ran, ["first"]); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        await s.close()
     }
 
     /// No limit, or a limit removed, never stops a run however much it spends.
