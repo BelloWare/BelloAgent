@@ -2,10 +2,14 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] Cost-limit pause round 12 (`dev/a130-pause-r12`): durable child Stops survive recovery and live parking; Stop during pending Resume halts child tools; side-pause fan-out survives a helper restart, including an idle root. [Validation](docs/validation/pause-r12-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
-- [ ] Cost-limit pause, known for 0.1.130 (Codex review round 12; owner: ship 0.1.129 after round 11): a child stopped by the reader is requeued by recovery after a crash; Stop racing an accepted Resume leaves child tools running; the side-pause fan-out is lost if the helper exits before its callbacks run. [Details](docs/validation/limit-pause-0.1.129.md#known-for-01130).
+- [x] Cost-limit pause findings deferred from 0.1.129 (Codex round 12): fixed for 0.1.130 on `dev/a130-pause-r12`. [Original findings](docs/validation/limit-pause-0.1.129.md#known-for-01130), [fixes and validation](docs/validation/pause-r12-0.1.130.md).
 - [x] Git review findings (2026-10-16): a stash pushed by another writer during Drop/Pop is never the one lost (Git's reported drop and the reflog are checked; a wrong entry is stored back and the drop refused); Discard works before the first commit, only on a genuinely unborn branch; Git keeps the app's `XDG_CONFIG_HOME` (no `GIT_DIR`-style inheritance); a staged deletion and its untracked recreation each show their own diff. [Validation](docs/validation/bugs-git-0.1.129.md).
 - [x] Intermittent tests: ten failures given causes and fixes:
   - a late reference definition moved the reading line (product);

@@ -1348,3 +1348,185 @@ extension FamilyLimitPauseTests {
 private extension AgentSession {
     func fixtureForgetTask() { taskRootID = nil; activeTaskPresentation = nil; currentTurnID = "" }
 }
+
+/// Review round 12 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    func testAcceptedResumeRetiresPendingSidePausesButRefusalKeepsThem() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let gate = OpenGate(), tools = LimitHeldTools()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:AccountedAgentScript([answer("Resumed"),answer("Follow-up")]),tools:RecordingTools(),traces:TraceStore())
+        let side = try await self.side("side",parent:owner,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+        _ = try await side.keep(whenFinished:false)
+        _ = try await side.submit(Submission(commandID:"work",turnID:"work",text:"Use the tool"),steer:false)
+        try await eventually { await tools.started }
+        await owner.fixtureDelaySidePauses(gate)
+        _ = try await owner.fixtureUserMessage("Go on")
+        await owner.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Held input"))
+        await owner.setCostLimit(0)
+        try await eventually { await gate.waiting }
+        await owner.setCostLimit(5)
+        do { _ = try await owner.continueRun(commandID:"bad",overrides:["input":5]); XCTFail("Invalid override accepted") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"invalid_params") }
+        let retained = await owner.costPendingSidePauses; XCTAssertEqual(retained,["side"],"Refusal retires no callback")
+        _ = try await owner.continueRun(commandID:"resume")
+        let pending = await owner.costPendingSidePauses; XCTAssertTrue(pending.isEmpty,"Accepted Resume retires callbacks that have not paused their side")
+        let path = await owner.path, saved = try SideBudgetRecovery.pauseState(URL(fileURLWithPath:XCTUnwrap(path)),id:"parent").state
+        XCTAssertTrue(saved["costPendingSidePauses"].list.isEmpty,"A restart cannot restore a retired fan-out")
+        await gate.open(); await tools.release()
+        await side.close(); await owner.close()
+    }
+
+    /// A reader command already in flight can reach the coordinator after
+    /// its pause hold. Once accepted, that explicit Stop still wins.
+    func testAnExplicitChildStopAcceptedDuringThePauseNeverResumes() async throws {
+        for phase in ["running","parking","parked"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = LimitRunClient(mode:"queued"), gate = OpenGate()
+            let coordinator = AgentSteeringCoordinator(settled:{ child in
+                if phase == "parking" { await gate.wait() }
+                await child.close()
+            })
+            let owner = try await steeringOwner(root,client:client,coordinator:coordinator)
+            if phase != "running" { await coordinator.fixturePause("parent") }
+            let id = try await startChild(owner,coordinator,"stopped")
+            if phase == "parking" { try await eventually { await gate.waiting } }
+            else if phase == "parked" { try await eventually { await coordinator.jobs.isEmpty } }
+            else { try await eventually { await client.children.count == 1 }; await coordinator.fixturePause("parent") }
+            let target = AgentTurnTarget(childID:id,turn:1)
+            try await coordinator.stop(parent:owner,target:target,human:true)
+            await gate.open()
+            await client.releaseAll()
+            try await eventually { await coordinator.jobs.isEmpty }
+            let stopped = await owner.agentState().latest(id)
+            XCTAssertTrue(stopped?.status.terminal == true,"Accepted Stop must seal: \(phase)")
+            let requests = await client.children.count
+            await owner.beginResumeFixture()
+            try await coordinator.resumeParked(owner:owner,generation:1)
+            try await eventually { await coordinator.jobs.isEmpty }
+            let after = await client.children.count
+            XCTAssertEqual(after,requests,"Resume never restarts the stopped child")
+            await owner.close()
+        }
+    }
+
+    /// Snapshot while every fan-out callback is held: only the root has
+    /// observed the limit. Saved active sides must still join Resume.
+    func testSidePauseFanoutSurvivesACrashBeforeItsCallbacks() async throws {
+        for busyRoot in [true, false] { for trigger in ["limit", "member", "rebind", "renewed"] {
+            let root = try temporaryDirectory(), crash = root.appendingPathComponent("crash")
+            defer { try? FileManager.default.removeItem(at:root) }
+            let owner = try familyFixture(root:root), gate = OpenGate(), tools = LimitHeldTools()
+            let side = try await self.side("side",parent:owner,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+            let nested = try await self.side("nested",parent:side,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+            let idle = try await self.side("idle",parent:owner,root:root)
+            for member in [side,nested,idle] { _ = try await member.keep(whenFinished:false) }
+            for member in [side,nested] {
+                _ = try await member.submit(Submission(commandID:"work",turnID:"work",text:"Use the tool"),steer:false)
+            }
+            try await eventually { await tools.starts == 2 }
+            await owner.fixtureDelaySidePauses(gate); await side.fixtureDelaySidePauses(gate)
+            if busyRoot { await owner.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Held input")) }
+            if trigger != "member" { await owner.setCostLimit(0) }
+            else { await owner.notePausedMember("unkept-side") }
+            try await eventually { await gate.waiting }
+            let sidePaused = await side.costPaused; XCTAssertFalse(sidePaused,"Callbacks have not run")
+            if trigger == "rebind" {
+                try await side.bindSideBudget(to:owner)
+                let boundPause = await side.costPaused; XCTAssertTrue(boundPause,"Binding takes the pending pause before acknowledging it")
+            }
+            if trigger == "renewed" { await owner.fixtureRenewPauseBeforeAnOldAcknowledgement() }
+            try FileManager.default.createDirectory(at:crash,withIntermediateDirectories:true)
+            for file in try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil) where file.pathExtension == "jsonl" {
+                try FileManager.default.copyItem(at:file,to:crash.appendingPathComponent(file.lastPathComponent))
+            }
+            await gate.open(); await tools.release(); await tools.release()
+            for member in [nested,side,idle,owner] { await member.close() }
+            let client = AccountedAgentScript([answer("Resumed"),answer("Resumed"),answer("Resumed")])
+            func reopen(_ id: String) throws -> AgentSession {
+                let file = try XCTUnwrap(SideBudgetRecovery.journalURL(id,directory:crash))
+                return try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:crash,directory:crash,readOnly:true,
+                    resources:Resources(cwd:crash,home:crash),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:file.path)
+            }
+            let restored = try reopen("parent")
+            await restored.setCostLimit(5)
+            let members = await restored.costPausedMembers, paused = await restored.costPaused
+            XCTAssertEqual(Set(members),["side","nested"],"\(trigger), busy root: \(busyRoot)")
+            XCTAssertTrue(paused,"The family pause survives even when only sides were running")
+            // Root Resume can precede opening either side. Its durable list
+            // still gives both sides the pause their callbacks never saved.
+            let reply = try await restored.continueRun(commandID:"resume-root")
+            XCTAssertEqual(Set(reply["pausedMembers"].list.compactMap(\.text)),["side","nested"])
+            let restoredSide = try reopen("side"), restoredNested = try reopen("nested"), restoredIdle = try reopen("idle")
+            try await restoredSide.bindSideBudget(to:restored)
+            try await restoredNested.bindSideBudget(to:restoredSide)
+            try await restoredIdle.bindSideBudget(to:restored)
+            let flags = await [restoredSide.costPaused,restoredNested.costPaused,restoredIdle.costPaused]
+            XCTAssertEqual(flags,[true,true,false],"Idle sides stay unmarked")
+            let retained = await restored.costPausedMembers; XCTAssertEqual(Set(retained),["side","nested"])
+            _ = try await restoredSide.continueRun(commandID:"resume-side")
+            try await eventually { !(await restoredSide.isRunning) }
+            _ = try await restoredNested.continueRun(commandID:"resume-nested")
+            try await eventually { await restored.costPausedMembers.isEmpty }
+            for member in [restoredNested,restoredSide,restored] {
+                try await eventually { !(await member.isRunning) }
+                let state = await member.state, code = await member.errorCode
+                XCTAssertEqual(state,.idle,"\(trigger): Resume completes normally")
+                XCTAssertNil(code)
+            }
+            let requests = await client.requests.count
+            XCTAssertEqual(requests,busyRoot ? 3 : 2,"One continuation per active side, plus the root's queued input")
+            for member in [restoredNested,restoredSide,restoredIdle,restored] { await member.close() }
+        } }
+    }
+
+    func testStopBeforeAnAcceptedResumeRunsHaltsChildTools() async throws {
+        for closing in [false, true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let tools = LimitHeldTools(), coordinator = AgentSteeringCoordinator()
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+                readOnly:true,resources:Resources(cwd:root,home:root),client:ChildToolClient(),tools:tools,traces:TraceStore())
+            await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+            await owner.setCostLimit(0.5)
+            _ = try await startChild(owner,coordinator,"tooling")
+            try await eventually { await tools.started }
+            let crossing = try await start(owner,"crossing"); try await finish(crossing.0,"crossing",cost:0.6)
+            try await eventually { await coordinator.paused.contains("parent") }
+            await owner.setCostLimit(5)
+            // Both calls run in one actor turn: the new run cannot enter
+            // resumeParked before Stop cancels it.
+            let pending = try await owner.fixtureResumeThenStop(closing:closing)
+            XCTAssertTrue(pending)
+            try await eventually { !(await owner.isRunning) }
+            do { try await eventually(timeout:.seconds(2)) { await tools.cancelled } }
+            catch { XCTFail("Stop left the child's tool running before Resume entered resumeParked") }
+            let paused = await owner.costPaused; XCTAssertTrue(paused)
+            await tools.release()
+            try await eventually { await coordinator.jobs.isEmpty }
+            await owner.close()
+        }
+    }
+}
+
+private extension AgentSession {
+    func fixtureRenewPauseBeforeAnOldAcknowledgement() {
+        notePausedMember("unkept-side")
+        let old = costResumeCount
+        _ = endCostPause()
+        notePausedMember("unkept-side")
+        acknowledgeSidePause("side",resumes:old)
+    }
+
+    func fixtureDelaySidePauses(_ gate: OpenGate) {
+        for (side, notify) in sideBudgetStops {
+            sideBudgetStops[side] = { reason, resumes in await gate.wait(); await notify(reason,resumes) }
+        }
+    }
+
+    func fixtureResumeThenStop(closing: Bool) async throws -> Bool {
+        _ = try continueRun(commandID:"resume")
+        let pending = costResumePending && !costPaused
+        if closing { await close() } else { stop() }
+        return pending
+    }
+}

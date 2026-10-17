@@ -73,23 +73,28 @@ extension AgentSteeringCoordinator {
     func seal(job original: Job, child: AgentSession?) async throws {
         var job = original; job.turn.normalizeResult()
         if jobs[job.turn.id]?.sealed == true { return }
-        if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(job.turn) }
-        try await job.owner.appendAgentRecord(JournalRecordKind.agentTerminal,job.turn)
-        let state = await job.owner.agentState()
-        let id = "result:" + job.turn.id
-        if state.messages[id] == nil {
-            let message = AgentFamilyMessage.resultEvent(job.turn,task:job.plan.origin.description,sequence:state.sequence + 1)
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,message)
-        }
-        for var pending in state.pending(author:"parent") where pending.childID == job.turn.childID && pending.turn == job.turn.turn {
-            pending.disposition = "not_delivered_interrupted"
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,pending)
-            let current = await job.owner.agentState()
-            let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,notice)
-        }
+        try await seal(turn:job.turn,parent:job.owner,task:job.plan.origin.description,child:child)
         jobs[job.turn.id]?.turn = job.turn; jobs[job.turn.id]?.sealed = true
-        await signal(job.owner.id).pulse()
+    }
+    /// A parked turn has no job. Its accepted Stop seals and reports through
+    /// the same path; recovery catches up a closed child's mirror.
+    func seal(turn: AgentChildTurn, parent: AgentSession, task: String, child: AgentSession?) async throws {
+        if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(turn) }
+        try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,turn)
+        let state = await parent.agentState()
+        let id = "result:" + turn.id
+        if state.messages[id] == nil {
+            let message = AgentFamilyMessage.resultEvent(turn,task:task,sequence:state.sequence + 1)
+            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,message)
+        }
+        for var pending in state.pending(author:"parent") where pending.childID == turn.childID && pending.turn == turn.turn {
+            pending.disposition = "not_delivered_interrupted"
+            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,pending)
+            let current = await parent.agentState()
+            let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
+            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,notice)
+        }
+        await signal(parent.id).pulse()
     }
     func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?) async throws -> Bool {
         guard !(await recipient.agentDeliveryHeld) else { return false }

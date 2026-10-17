@@ -256,16 +256,24 @@ actor AgentSteeringCoordinator {
         // loop across awaits) never parks a job a Resume installed since,
         // and two parkers of one job do not both remove it.
         guard let current = jobs[job.turn.id], current.instance == job.instance, !current.parking else { return }
+        if current.cancelled {
+            if current.allocated { await finishJob(job,child:child) }
+            return
+        }
         jobs[job.turn.id]?.parking = true
         var turn = job.turn; turn.status = .queued; turn.result = nil
         let lock = gate(job.owner.id)
         do {
             try await lock.acquire()
             do {
-                if let saved = await job.owner.agentState().turns[turn.id], !saved.status.terminal, saved.status != .queued {
-                    try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                if let saved = await job.owner.agentState().turns[turn.id], saved.status.terminal {
+                    if let child { try await child.saveAgentTerminal(saved) }
+                } else {
+                    if let saved = await job.owner.agentState().turns[turn.id], saved.status != .queued {
+                        try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                    }
+                    if let child { try await child.parkAgentTurn(turn) }
                 }
-                if let child { try await child.parkAgentTurn(turn) }
                 await lock.release()
             } catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
@@ -368,7 +376,7 @@ actor AgentSteeringCoordinator {
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
         // A cost-limit pause stops runs itself and keeps the turns for Resume.
-        guard !paused.contains(owner), var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
+        guard human || !paused.contains(owner), var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
         job.cancelled = true; job.task?.cancel(); jobs[target.id] = job
         if let child = job.child { await child.stop() }
         if !job.allocated {

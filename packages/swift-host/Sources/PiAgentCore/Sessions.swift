@@ -119,6 +119,9 @@ public actor AgentSession {
     var costPaused = false
     /// A root's sides that paused with it, handed to the app by Resume.
     var costPausedMembers: [String] = []
+    /// Side callbacks not yet acknowledged. Saved with the issuing pause;
+    /// recovery checks their journals before deciding which sides held work.
+    var costPendingSidePauses: [String] = []
     /// Set by a Resume of a paused family: the run resumes the parked
     /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
     /// own to continue waits for them instead of asking the model.
@@ -519,6 +522,19 @@ public actor AgentSession {
             }
             costPaused = saved["costPaused"].flag == true
             costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
+            costPendingSidePauses = saved["costPendingSidePauses"].list.compactMap(\.text)
+            // A crash can precede every side callback. Only validated saved
+            // descendants with unfinished work join the family's Resume.
+            costPendingSidePauses = try costPendingSidePauses.filter { side in
+                guard sideBudgetMembers[side] != nil, let file = try SideBudgetRecovery.journalURL(side,directory:directory) else { return false }
+                return try SideBudgetRecovery.pauseState(file, id:side).hasWork
+            }
+            for side in costPendingSidePauses where !costPausedMembers.contains(side) { costPausedMembers.append(side) }
+            if !costPendingSidePauses.isEmpty { costPaused = true }
+            if !costPaused, isSideChat, SideBudgetRecovery.hasPauseWork(saved, family:subagents.family),
+               try SideBudgetRecovery.inheritsPendingPause(id:id,parent:parentInfo["parentSessionId"].text,directory:directory) {
+                costPaused = true
+            }
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             costPendingCompaction = saved["costPendingCompaction"].flag == true
             costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
@@ -597,6 +613,9 @@ public actor AgentSession {
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
         dropMissingPausedMembers()
+        // An inherited pause is durable before binding acknowledges its
+        // ancestor's callback intent, also before the next helper restart.
+        if costPaused, stateRecord?["costPaused"].flag != true { try persistState(durable:true) }
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }
@@ -662,7 +681,7 @@ public actor AgentSession {
         // instead of cancelling them. The coordinator stops their runs.
         // A paused family's children are held by their coordinator, not
         // cancelled; Stop (or close) stops their runs (`pause(halt:)`).
-        if costPaused, !isSubagent, let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
+        if costPaused || costResumePending, !isSubagent, let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
         else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its

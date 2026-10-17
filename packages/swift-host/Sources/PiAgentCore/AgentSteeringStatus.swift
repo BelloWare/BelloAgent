@@ -64,13 +64,27 @@ extension AgentSteeringCoordinator {
 
 extension AgentSteeringCoordinator {
     func stop(parent: AgentSession, target: AgentTurnTarget, human: Bool) async throws {
-        let state = await parent.agentState()
-        guard state.turns[target.id] != nil else { throw AgentError("subagent_scope", "Unknown child turn") }
-        if human, state.latest(target.childID)?.turn == target.turn, var run = state.run {
-            if !run.heldChildren.contains(target.childID) { run.heldChildren.append(target.childID) }
-            try await parent.appendAgentRecord(JournalRecordKind.familyRun,run)
-        }
-        await stop(owner:parent.id,target:target,human:human)
+        let lock = gate(parent.id); try await lock.acquire()
+        do {
+            let state = await parent.agentState()
+            guard var turn = state.turns[target.id] else { throw AgentError("subagent_scope", "Unknown child turn") }
+            if human, state.latest(target.childID)?.turn == target.turn, var run = state.run {
+                if !run.heldChildren.contains(target.childID) { run.heldChildren.append(target.childID) }
+                try await parent.appendAgentRecord(JournalRecordKind.familyRun,run)
+            }
+            // Parking and Stop share the gate. A command in flight before
+            // the pause may arrive after the runner went; it still seals.
+            if human, !turn.status.terminal, jobs[target.id] == nil || jobs[target.id]?.parking == true {
+                guard let plan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == target.childID }) else { throw SubagentRecovery.damaged() }
+                let began = await parent.accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == target.childID && $0.admission?["scope"]["childTurn"].int == target.turn && $0.admission?["state"].text == "dispatched" }
+                turn.status = began || turn.status == .running || turn.status == .stopping ? .interrupted : .notExecuted
+                turn.result = SubagentToolResult(plan:plan,status:turn.status,error:AgentError("subagent_stopped", "Stopped by the reader. Accepted work was not restarted."),accountingRevision:await parent.accounting.revision,began:began)
+                turn.normalizeResult()
+                try await seal(turn:turn,parent:parent,task:plan.origin.description,child:nil)
+                jobs[target.id]?.sealed = true
+            } else { await stop(owner:parent.id,target:target,human:human) }
+            await lock.release()
+        } catch { await lock.release(); throw error }
     }
 }
 

@@ -101,10 +101,12 @@ enum AgentFamilyRecovery {
             }
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
-                if costPaused, !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
+                if costPaused, !(state.family!.run?.heldChildren.contains(childID) ?? false),
+                   !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
                     // Paused at the family's cost limit: the turn is held for
                     // Resume, not interrupted. A run cut off mid-pause keeps
-                    // its place in the queue; its child mirror agrees.
+                    // its place in the queue; its child mirror agrees. A
+                    // durable reader Stop instead recovers a terminal outcome.
                     var held = original; held.status = .queued; held.result = nil
                     if held != original { try write(JournalRecordKind.agentTurnState,held) }
                     if let mirror = childState.family?.turns[original.id], mirror != held {

@@ -25,11 +25,17 @@ extension AgentSession {
             for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideRecord(record, side:id, parents:sideBudgetIDs) }
         }
         try await refreshSideCharges()
+        // Binding can beat an already issued callback. Take that durable
+        // intent before repairing membership or acknowledging the fan-out.
+        for ancestor in sideBudgetParents where await ancestor.costPendingSidePauses.contains(id) {
+            stopFamilyAtLimit(Self.costHoldError)
+        }
         // The root's list of paused sides follows each side's own durable
         // pause: a crash between the two saves is repaired here.
         if let root = sideBudgetParents.last {
             if costPaused { await root.notePausedMember(id, repair: true) } else { await root.forgetPausedMember(id) }
         }
+        for ancestor in sideBudgetParents { await ancestor.acknowledgeSidePause(id) }
     }
 
     func refreshSideCharges() async throws {
@@ -79,6 +85,10 @@ extension AgentSession {
             // was issued retires it.
             guard await self.costResumeCount == resumes else { return }
             await runtime.stopFamilyAtLimit(reason)
+            if await runtime.costPaused, let root = await runtime.sideBudgetParents.last {
+                await root.notePausedMember(side, repair:true)
+            }
+            await self.acknowledgeSidePause(side,resumes:resumes)
         }
     }
 

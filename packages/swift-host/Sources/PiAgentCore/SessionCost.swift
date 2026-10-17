@@ -268,11 +268,14 @@ extension AgentSession {
     func pauseAtCostLimit(_ reason: AgentError) {
         guard !isSubagent, !budgetStopIssued else { return }
         budgetStopIssued = true; familyStopReason = reason
+        rememberSidePauses()
         let pauses = !costPaused && hasCostPausableWork
         if pauses {
             costPaused = true; queuePaused = true; costPauseCount &+= 1
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             markCutCompaction()
+        }
+        if pauses || !costPendingSidePauses.isEmpty {
             do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
         }
         // Owner, 2026-10-17: only model requests are cut, as Stop cuts them
@@ -296,6 +299,18 @@ extension AgentSession {
     func notifySidesOfPause(_ reason: AgentError) {
         let resumes = costResumeCount
         for notify in sideBudgetStops.values { Task { await notify(reason, resumes) } }
+    }
+    /// Save the fan-out in the same record as the pause, even when only
+    /// sides have work. A side acknowledges only after its own pause and
+    /// root membership are durable; idle sides never become paused members.
+    func rememberSidePauses() {
+        for side in sideBudgetStops.keys.sorted() where !costPendingSidePauses.contains(side) { costPendingSidePauses.append(side) }
+    }
+    func acknowledgeSidePause(_ side: String, resumes: Int? = nil) {
+        if let resumes, resumes != costResumeCount { return }
+        guard costPendingSidePauses.contains(side) else { return }
+        costPendingSidePauses.removeAll { $0 == side }
+        do { try persistState(durable:true) } catch { failFamilyAccounting(error) }
     }
     /// The manual compaction under way is cut by this pause: it is pending,
     /// with its focus, in the same record as the pause, so no crash between
@@ -324,6 +339,7 @@ extension AgentSession {
             budgetStopIssued = true; familyStopReason = Self.costHoldError
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             markCutCompaction()
+            rememberSidePauses()
             if runTask == nil { state = .paused; runStatus = .cancelled }
         }
         do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
@@ -336,8 +352,8 @@ extension AgentSession {
     }
     /// The side resumed by itself: the root no longer needs to hand it out.
     func forgetPausedMember(_ side: String) {
-        guard let index = costPausedMembers.firstIndex(of: side) else { return }
-        costPausedMembers.remove(at: index)
+        guard costPausedMembers.contains(side) || costPendingSidePauses.contains(side) else { return }
+        costPausedMembers.removeAll { $0 == side }; costPendingSidePauses.removeAll { $0 == side }
         // Paused only for that side, with nothing of its own: no longer paused.
         if costPaused, runTask == nil, !hasWorkAfterCostPause {
             clearCostPauseWithoutWork()
@@ -348,7 +364,7 @@ extension AgentSession {
     /// Sides deleted (with their descendants): none of them waits for a
     /// Resume any more, and a root paused only for them is not paused.
     func forgetDeletedMembers(_ ids: Set<String>) {
-        for side in costPausedMembers where ids.contains(side) { forgetPausedMember(side) }
+        for side in Set(costPausedMembers + costPendingSidePauses) where ids.contains(side) { forgetPausedMember(side) }
     }
     /// Listed sides whose journal is gone (deleted while this root was not
     /// loaded, or an unkept side that ended with its runtime) are dropped

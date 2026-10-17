@@ -38,6 +38,40 @@ final class AgentFamilyRecoveryTests: XCTestCase {
 }
 
 extension AgentFamilyRecoveryTests {
+    /// A reader Stop is durable before the child's terminal result. A crash
+    /// during the family pause must not turn that Stop into resumable work.
+    func testRecoveryKeepsExplicitlyStoppedChildrenOutOfThePausedQueue() throws {
+        for status in [SubagentStatus.queued, .running, .stopping] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let origin = subagentFixtureOrigin(), plan = SubagentPlan(origin:origin,task:"Stopped work",resultMessageID:"receipt")
+            var turn = AgentChildTurn(childID:"child",turn:1,executionID:"child-execution",parentExecutionID:"execution",generation:0,runtimeID:"runtime",epoch:"epoch",inputID:"input",task:plan.task,call:origin.link.call)
+            turn.status = status
+            let profile = try fixtureProfile()
+            let parent = try SessionJournal(url:root.appendingPathComponent("parent.jsonl"),id:"parent",cwd:root,binding:profile.binding,create:true)
+            try parent.promoteToSteering(managedChild:false)
+            var child: SessionJournal? = try SessionJournal(url:root.appendingPathComponent("child.jsonl"),id:"child",cwd:root,binding:profile.binding,create:true,managedChild:true)
+            try child!.promoteToSteering(managedChild:true)
+            try child!.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
+            let op = AgentOperation(key:origin.link.call,digest:"digest",receipt:["accepted":true],plan:plan,turn:turn,epoch:"epoch")
+            var state = SubagentJournalState(), accounting = AttemptAccounting(), spend = SessionSpend()
+            let accepted: JSON = ["type":"custom","customType":JSON(JournalRecordKind.agentOperation),"ownerID":"parent","data":try subagentJSON(op)]
+            try state.consume(accepted,sessionID:"parent"); try parent.append(accepted); try child!.append(accepted)
+            child = nil
+            let stopped: JSON = ["type":"custom","customType":JSON(JournalRecordKind.familyRun),"ownerID":"parent","data":try subagentJSON(AgentFamilyRun(epoch:"epoch",heldChildren:["child"]))]
+            try state.consume(stopped,sessionID:"parent"); try parent.append(stopped,flush:true)
+            try AgentFamilyRecovery.recover(state:&state,parent:parent,owner:"parent",directory:root,accounting:&accounting,spend:&spend,costPaused:true)
+            let recovered = try XCTUnwrap(state.family?.latest("child"))
+            XCTAssertEqual(recovered.status,status == .queued ? .notExecuted : .interrupted,"\(status): Stop survives the pause")
+            XCTAssertNotNil(recovered.result)
+            let reader = try JournalRecordReader(root.appendingPathComponent("child.jsonl"))
+            var mirror = SubagentJournalState()
+            while let row = try reader.next() { try mirror.consume(row,sessionID:"child") }
+            XCTAssertEqual(mirror.family?.latest("child"),recovered)
+            try AgentFamilyRecovery.recover(state:&state,parent:parent,owner:"parent",directory:root,accounting:&accounting,spend:&spend,costPaused:true)
+            XCTAssertEqual(state.family?.messages.values.filter { $0.kind == "result" }.count,1,"One terminal report across repeated recovery")
+        }
+    }
+
     func testRecoveryMirrorsFailedPublicationAndPromotesQueuedChild() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let origin = subagentFixtureOrigin(), plan = SubagentPlan(origin:origin,task:"Never executed",resultMessageID:"receipt")
