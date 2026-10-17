@@ -109,17 +109,17 @@ The new pause tests depend on new API, so mutations demonstrate them:
 
 `FamilyLimitPauseTests` passed 12 consecutive repetitions after the final race fix.
 
-### Full gate (after review round 3)
+### Full gate (after review round 4)
 
 `PI_BUILD_ROOT=…/build-limit-pause scripts/verify-release.sh` under the shared lane lock
-(`verify-4.out`, logs in `verify-logs/`): **all passed in 56 min 43 s** (round 2's
-`verify-3.out` also passed).
+(`verify-5.out`, logs in `verify-logs/`): **all passed in 56 min 53 s** (rounds 2 and 3's
+`verify-3.out` and `verify-4.out` also passed).
 
 | Suite | Result |
 | --- | --- |
 | Native serial lane | 890 tests, 43 skipped, 0 failures |
 | Native parallel lane (8 clones) | 2,632 passed, 0 failed, 38 skipped |
-| Helper | 983 tests, 7 skipped, 0 failures; streaming cost 5/5 |
+| Helper | 989 tests, 7 skipped, 0 failures; streaming cost 5/5 |
 | Wire / concurrent / acceptance / Python | 36 / 4 / 3 / 86, all OK |
 | Gallery | 3 tests, 0 failures (230 screenshots) |
 
