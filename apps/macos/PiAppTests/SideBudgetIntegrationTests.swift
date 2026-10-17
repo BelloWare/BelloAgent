@@ -766,6 +766,7 @@ final class FamilyDeletionTests: XCTestCase {
         try Data("{\"type\":\"session\",\"version\":3,\"id\":\"pending\"}\n".utf8).write(to:path)
         let pending = ChatRecord(id:"pending",workspaceID:"w",title:"Published side",path:path.path,profileID:"p",toolMode:ChatRecord.readOnlyTools,parentSessionID:"side")
         try await store.put(SideKeepIntent(chat:pending),kind:"side-keep",id:pending.id)
+        model.sideKeepIssues = [SideKeepIssue(chat:pending,parentTitle:"side",reason:"The chat could not be registered.")]
         var asked: ChatQuestion?
         model.questions.answer = { asked = $0; return true }
         deleteAll(model)
@@ -777,6 +778,20 @@ final class FamilyDeletionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
         let intent = try await store.get(SideKeepIntent.self,kind:"side-keep",id:"pending")
         XCTAssertNil(intent,"Launch recovery must not register it later")
+        XCTAssertTrue(model.sideKeepIssues.isEmpty,"The deleted side's recovery notice goes with it")
+    }
+
+    @MainActor func testFailedTombstoneReadReleasesEverySideMark() async throws {
+        let model = try await sideBudgetFixture()
+        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+        model.deletionTombstoneRead = { id in if id == "side" { throw StoreError.unavailable }; return nil }
+        deleteAll(model)
+        do { try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main"))); XCTFail("The read failure must stop the deletion") } catch { }
+        XCTAssertTrue(model.deletingFamilies.isEmpty,"No durable intent exists, so no member stays marked: \(model.deletingFamilies)")
+        _ = try await model.open(try XCTUnwrap(model.record("side")))
+        model.deletionTombstoneRead = nil
+        try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main")))
+        try await assertGone(model,["main","side","nested","sibling"],owner:"main","retry")
     }
 
     @MainActor func testOrphanedSideFromAnEarlierVersionStaysUntilItIsDeletedItself() async throws {

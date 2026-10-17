@@ -48,6 +48,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
     var familyDeletionStep: ((String) throws -> Void)?
+    var deletionTombstoneRead: ((String) async throws -> String?)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
     /// Launch's reading of the journals the holds name (tests wait on it).
     var runHoldVerification: Task<Void, Never>?

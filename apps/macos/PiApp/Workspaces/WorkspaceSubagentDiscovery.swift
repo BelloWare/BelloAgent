@@ -41,7 +41,7 @@ extension WorkspaceModel {
               let child = try await store.registerSubagent(found, workspaceID: workspaceID) else { return }
         guard !isShutDown, !deletingFamilies.contains(found.header.link.budgetOwnerSessionID) else { return }
         try Task.checkCancellation()
-        if let connection, hosts[workspaceID]?.connectionID != connection { throw CancellationError() }
+        if let connection, !liveSubagentAuthority(workspaceID, connection: connection) { throw CancellationError() }
         publishSubagentMetadata(child)
         publishSubagentEffort(found.header.model, child: child)
         // No terminal row means only "interrupted if restored", not evidence
@@ -76,6 +76,15 @@ extension WorkspaceModel {
                 display.subagentNumbers[child.id] = number
             }
         }
+    }
+
+    /// A live summary speaks for a runtime only while its connection is
+    /// current and ready. With capture on, a lost helper reports `.failed`
+    /// (which interrupts its children) before `.exited` clears the connection
+    /// after capture finalization; a reply finishing in between is stale.
+    func liveSubagentAuthority(_ workspaceID: String, connection: UUID) -> Bool {
+        guard let host = hosts[workspaceID] else { return false }
+        return host.connectionID == connection && host.isReady
     }
 
     func interruptSubagents(workspaceID: String) {

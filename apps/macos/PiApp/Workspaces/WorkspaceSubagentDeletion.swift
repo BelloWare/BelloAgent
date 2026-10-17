@@ -130,11 +130,10 @@ extension WorkspaceModel {
         var known: Set<String> = [parent.id]
         for side in try await savedSideDescendants(of: parent) where known.insert(side.chat.id).inserted {
             // Fail closed rather than overwrite another deletion's receipt.
-            guard deletingFamilies.insert(side.chat.id).inserted,
-                  try await store.get(String.self, kind: "session-deleted", id: side.chat.id) == nil else {
-                throw HostError.failure("An earlier deletion of “\(side.chat.title)” is still finishing. Try again in a moment.")
-            }
+            // Own the mark before any await, so every failure below releases it.
+            guard deletingFamilies.insert(side.chat.id).inserted else { throw sideStillFinishing(side.chat) }
             blocked.insert(side.chat.id)
+            guard try await sideTombstoneOwner(side.chat.id) == nil else { throw sideStillFinishing(side.chat) }
             members.append(SessionDeletionRecord(id: side.chat.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: side.chat.path, sideDepth: side.depth))
         }
         // Reject unsupported paths before detaching the runtime or committing
@@ -222,6 +221,15 @@ extension WorkspaceModel {
         try await releaseIdleBudgetDependents(of:owner.id,host:host)
         _ = try await host.request("session.forget", sessionID: owner.id, params: descendantsDeleted ? ["descendantsDeleted": .bool(true)] : [:])
         return []
+    }
+
+    private func sideStillFinishing(_ side: ChatRecord) -> Error {
+        HostError.failure("An earlier deletion of “\(side.title)” is still finishing. Try again in a moment.")
+    }
+    /// Test seam for the durable tombstone read during manifest building.
+    func sideTombstoneOwner(_ id: String) async throws -> String? {
+        if let deletionTombstoneRead { return try await deletionTombstoneRead(id) }
+        return try await store?.get(String.self, kind: "session-deleted", id: id)
     }
 
     /// Finishes this project's other interrupted deletions first. One may be
@@ -336,6 +344,12 @@ extension WorkspaceModel {
             if selectedID == member.id { selectedID = nil; selected = nil }
             if focusedSessionID == member.id { focusedSessionID = nil }
             try await removeDeletedCapturePreference(sessionID: member.id)
+            // A side published without a chat row may carry a recovery notice;
+            // its intent and file are gone now, so the notice goes too.
+            if sideKeepIssues.contains(where: { $0.id == member.id }) {
+                sideKeepResolutionRevision &+= 1
+                sideKeepIssues.removeAll { $0.id == member.id }
+            }
             try familyDeletionStep?("metadata:" + member.id)
             try await store.remove(kind: SessionDeletionRecord.kind, id: member.id)
             if member.id != owner { try familyDeletionStep?("intent:" + member.id) }
