@@ -68,11 +68,14 @@ struct CaptureCredentials: Sendable {
         // Hash the complete field rather than replace repeatedly inside a hash.
         return Self.fingerprint(value)
     }
-    func metadata(_ value: JSON) -> JSON {
+    // Fixed schema keys are protocol, even when a configured header happens
+    // to contain one. Only provider-controlled dictionaries opt into key masking.
+    func metadata(_ value: JSON) -> JSON { metadata(value, includingKeys: false) }
+    func metadata(_ value: JSON, includingKeys: Bool) -> JSON {
         switch value {
         case .string(let text): return JSON(metadataText(text))
-        case .array(let array): return .array(array.map(metadata))
-        case .object(let object): return .object(Dictionary(object.map { (metadataText($0.key), metadata($0.value)) }, uniquingKeysWith: { _, last in last }))
+        case .array(let array): return .array(array.map { metadata($0, includingKeys: includingKeys) })
+        case .object(let object): return .object(Dictionary(object.map { (includingKeys ? metadataText($0.key) : $0.key, metadata($0.value, includingKeys: includingKeys)) }, uniquingKeysWith: { _, last in last }))
         default: return value
         }
     }

@@ -217,4 +217,110 @@ git diff --check
 
 Full helper total: **1,031 executed, 1,024 passed, 7 skipped, 0 failed**. The seven skips are the same existing opt-in checks: one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. There were no unrelated failures. `results.json` retains exact runner commands and elapsed times; `git diff --check` passed.
 
-No owner decision is needed and no capture finding from this follow-up remains unresolved. The lead retains review, merge and full native-gate responsibility. This follow-up created no DerivedData, clone folders or xcresult bundles.
+At this handoff no capture finding remained unresolved. The round-2 review below subsequently identified and corrected schema regressions in this implementation. The lead retains review, merge and full native-gate responsibility. This follow-up created no DerivedData, clone folders or xcresult bundles.
+
+## Round 2 — fixed schema preservation
+
+Review base: `5de98929`. Fetched `origin/dev/next` and reviewed the complete branch diff against `5c52621c5db150bf6b1372eb47015c028301983c`, including the preceding capture-metadata commit and this correction. Build root remains `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper`; new evidence is under `logs/metadata-schema/`. Generated credentials, temporary journals and loopback fixtures only.
+
+### Review finding — confirmed and fixed
+
+The recursive key sanitizer changed helper-owned keys whenever a configured header value matched them, including substrings. `X-Region: status` or `X-Region: us` renamed routing `status`; `X-Region: effectiveModel` renamed the effective-model field. The identity saved on the assistant message then failed the unchanged pinned-route replay guard, both immediately and after reopening its journal. Off mode was affected too because identity metadata is independent of body-capture mode.
+
+`RoutingTests.testConfiguredHeaderMatchingSchemaKeysKeepsPinnedReplayAfterReopen` exercises those three header values in Off, memory and persist modes. It obtains identity from the real `TraceStore`, attaches opaque provider reasoning and the real replay binding, verifies replay, writes a generated `SessionJournal`, reopens it and verifies replay again. It also checks the monitoring identity status.
+
+Failing-first excerpt (`failing-first-complete.log`, before any production fix):
+
+```text
+RoutingTests.swift:19: XCTAssertEqual failed: ("nil") is not equal to ("Optional(\"reported\")") - status, off
+RoutingTests.swift:20: XCTAssertEqual failed: threw error "AgentError(code: \"opaque_route_changed\", ...)" - status, off
+RoutingTests.swift:35: XCTAssertEqual failed: threw error "AgentError(code: \"opaque_route_changed\", ...)" - status, off
+```
+
+The ordinary `metadata(_:)` entry point again preserves fixed keys, including keys nested in arrays and objects. Its unary signature is retained for existing context-preview callers. Only `usage.raw` opts into recursive key sanitization via `includingKeys: true`; HTTP header dictionaries continue to sanitize their provider/configuration-controlled names. String credential masking and the original SSE/header/provenance/raw-usage regressions remain covered.
+
+### Adversarial self-review findings — fixed
+
+The whole-branch review found two additional consequences of applying the sanitizer to helper-owned accounting structures:
+
+- **Normalized usage:** besides keys such as `status`, `input`, `output` and `raw`, fixed status values such as `reported`, `unreported` and `invalid` were fingerprinted when a configured header matched them. `testConfiguredHeaderMatchingUsageSchemaPreservesNormalizedAccounting` failed before the fix. It covers eight header values × three capture modes × completed/cancelled/failed outcomes, checks live and settled metadata and emitted packets, and still requires nested raw provider keys/values to be sanitized. Capture now copies normalized accounting unchanged and sanitizes only a present `raw` member.
+- **Gateway accounting:** the broad gateway sanitizer also changed fixed keys and status values such as `reported` and `hit`. `testConfiguredHeaderMatchingGatewaySchemaPreservesReportedAccounting` failed before the fix across seven header values × three capture modes × JSON/SSE observations. Capture now sanitizes only `gateway.cache.source`, the configuration-derived provenance string that needed protection. Fixed cost/cache schema and status values remain intact. Other provider strings in gateway telemetry already pass credential-exclusion checks at ingestion.
+
+For example, before the fix, normalized `status.input` became `[sha256:8e752bb9…]` for `X-Region: reported`, and gateway `cost.status`/`cache.status` lost their literal status values. All three new tests failed in the complete baseline: 321 recorded failures, including 18 thrown `opaque_route_changed` errors that XCTest labels unexpected. Those throws are the reproduced defect, not unrelated test failures. The initial baseline stopped the usage matrix early when its `raw` key vanished; replacing that unwrap with a nonthrowing assertion allowed the complete baseline to exercise every configured value.
+
+### Whole-branch condition audit
+
+Reviewed `git diff origin/dev/next --` after the corrections, not only the final patch. The table enumerates every production condition whose inputs or result changed in this branch; the existing capture/lifecycle conditions around them were also traced.
+
+| Changed operation / condition | States taking the different path; intended result and checks |
+| --- | --- |
+| Request-header name passed to `metadataText` | A normalized name containing a known credential is fingerprinted; other names are identical. Existing ordinary/configured/sensitive-header and value-mask decisions are unchanged. Wire headers are never modified. The header regression covers normal and credential-bearing names. |
+| All three response-header return paths | A matching name is fingerprinted whether its value is allowed, masked, or omitted for size/control limits. The `safe` and size/control predicates themselves are unchanged. The existing header regression checks all three return paths and `Retry-After`. |
+| SSE name sanitized before its 128-byte preview | Matching names become a complete fingerprint even when the credential crosses the preview boundary; nonmatching names retain the original preview. Original SSE parsing, byte offsets, event counts, the 128-event persistence threshold, and mode checks are unchanged. The one-byte-feed regression checks full and tail pages. |
+| Fixed-schema `metadata(_:)` delegates with `includingKeys: false` | Keys always retain their protocol spelling even if a credential equals a key or a substring. This restores `origin/dev/next` behavior for routing identity, monitoring and context-preview body/source schemas. Existing string-value masking is preserved. The pinned-replay regression catches the reviewed failure. |
+| Provider dictionaries opt into `includingKeys: true` | Only `usage.raw` enters this path. Matching keys and string values are fingerprinted recursively through arrays and objects; nonmatches and number/bool/null nodes retain their original behavior. The prior raw-usage regression checks nested keys and values, and the provider-key mutation proves this protection remains active. |
+| `TraceStore.usage` trace lookup and `raw` presence | Missing attempt IDs remain no-ops, equivalent to the old optional assignment. With a trace, normalized fields are copied unchanged. An absent raw member stays absent; explicit null remains null; a supplied raw value is sanitized separately. No fixed accounting keys or status enums pass through credential matching. The new usage matrix covers running and terminal states. |
+| Gateway cache source is a string / contains a credential | Missing/null provenance remains missing/null. A normal source remains identical; a credential-bearing source becomes a fingerprint. The rest of the typed gateway object stays unchanged, including cost/cache statuses and numeric observations. The existing cache-source leak test and new JSON/SSE schema test cover both sides. |
+
+State review:
+
+| State | Evidence / invariant |
+| --- | --- |
+| Streaming and nonstreaming | Gateway regression covers both; original bytes still reach provider parsing. The SSE and body-mask regressions retain their offsets and paging checks. |
+| Idle and paused | Sanitization reads per-attempt metadata and changes no run, queue, resume, tool or budget state. The focused run includes `ContextPreviewTests`, `ContextScopeTests` and all `CostLimitTests`, covering idle/active previews and held/reopened cost pauses. |
+| Off / memory / persist | New regressions cover all three modes. Off retains its existing metadata-only policy; body retention is not enabled. Memory retains helper copies; persist keeps existing acknowledgment, paging and eviction behavior. |
+| Restart | The pinned-replay regression reopens nine generated journals. This correction preserves newly written identity metadata; it does not rewrite existing journals or archives. |
+| Cancellation / failure | The usage matrix checks both outcomes and completed requests. Existing capture-tail/drain tests cover masked-tail flush and rejected/late acknowledgments. |
+| Concurrent sibling work | Credentials remain frozen per trace, the key-sanitization flag is a call-local value, and there is no new shared state or suspension inside a metadata update. Capture concurrency/drain tests and the Release concurrent suite check sibling isolation and ordered delivery. |
+
+No additional unintended state change was found in the branch diff after fixing schema keys and the two accounting cases above. Scope, capture ownership, body modes, tool/permission boundaries and provider dispatch remain unchanged.
+
+### Round-2 mutation and validation evidence
+
+All 25 tests in `CredentialCaptureTests` and `RoutingTests` passed after the fix (`fixed-complete.log`). An earlier fixed-build attempt failed to compile because a defaulted second parameter cannot be passed as the existing unary `sources.map(credentials.metadata)` function reference; retaining the unary overload corrected it, and no test was omitted.
+
+Each mutation rebuilt and ran its targeted test, then restored the fixed source in `finally` (`schema-mutations.py`, `mutations.log`):
+
+| Mutation log | Changed behavior | Expected failure |
+| --- | --- | --- |
+| `mutation-fixed-schema-keys.log` | Make the ordinary sanitizer rewrite keys again | Pinned-replay regression: 1 failed test, 30 recorded failures including 18 `opaque_route_changed` throws |
+| `mutation-normalized-usage-values.log` | Sanitize normalized usage strings while keeping fixed keys | Usage-schema regression: 1 failed test, 70 assertions |
+| `mutation-gateway-status-values.log` | Sanitize all gateway strings while keeping fixed keys | Gateway-schema regression: 1 failed test, 66 assertions |
+| `mutation-provider-keys.log` | Disable raw provider key sanitization | Existing nested raw-usage leak regression: 1 failed test, 6 assertions |
+
+Commands, run serially from this worktree:
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+# Before production changes; initial and complete baseline logs are retained:
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter 'testConfiguredHeaderMatching'
+# Fixed classes before mutation:
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter '^PiAgentCoreTests.(CredentialCaptureTests|RoutingTests)/'
+# Each mutation uses swift test with --filter Class/test from the table above:
+python3 "$BUILD/schema-mutations.py"
+export PI_BUILD_ROOT="$BUILD" SWIFT_BACKTRACE='enable=yes,interactive=no,threads=all'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter '^PiAgentCoreTests.(CredentialCaptureTests|CaptureTraceTests|CaptureConcurrencyTests|CaptureDrainTests|TraceBufferPerformanceTests|GatewayTelemetryTests|RoutingTests|ProviderStreamErrorTests|ProviderStreamingTests|ProviderMediaTypeTests|HTTPIngressTests|ContextPreviewTests|ContextScopeTests|DecodeSpanTests|CostLimitTests)/'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+PI_BUILD_ROOT="$BUILD" python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+git diff --check
+```
+
+| Suite / log | Result | Duration |
+| --- | --- | ---: |
+| Fixed credential and routing classes, `fixed-complete.log` | 25 passed, 0 failed | 2.629 s |
+| Restored capture and adjacent classes, `capture.log` | 101 passed, 0 failed | 20.798 s |
+| Isolated helper measurements, `helper-cost.log` | 5 passed, 0 failed | 3.824 s |
+| Remaining full helper suite, `helper.log` | 1,029 executed: 1,022 passed, 7 skipped, 0 failed | 396.624 s |
+| Release bundle, `bundle.log` | passed | 65.766 s |
+| Release wire, `wire.log` | 36 passed, 0 failed | 33.435 s |
+| Release concurrent, `concurrent.log` | 4 passed, 0 failed | 25.916 s |
+| Release acceptance, `acceptance.log` | 3 passed, 0 failed | 3.497 s |
+
+Full helper total: **1,034 executed, 1,027 passed, 7 skipped, 0 failed**. The seven skips remain the existing opt-in checks: one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. There were no unrelated failures. All four mutations failed as intended before restoration. `results.json` retains exact runner commands and elapsed times; `git diff --check` passed.
+
+No round-2 finding remains unresolved. The lead retains review, merge and full native-gate responsibility. This correction adds no files or UI changes and created no DerivedData, clone folders or xcresult bundles.

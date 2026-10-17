@@ -217,7 +217,8 @@ public actor TraceStore {
     }
     public func usage(_ id:String, _ usage:JSON) {
         guard let t=traces[id] else { return }
-        t.usage=t.credentials.metadata(usage)
+        t.usage=usage
+        if let raw=usage.map["raw"] { t.usage["raw"]=t.credentials.metadata(raw, includingKeys:true) }
     }
     public func operation(_ id:String, _ value:JSON) async {
         guard let trace=traces[id] else { return }
@@ -429,8 +430,10 @@ public actor TraceStore {
     /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
     /// poll) never reads them, while at 1,000 messages they were ~39 KB.
     private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
+        var gateway=t.gateway?.json ?? .null
+        if let source=gateway["cache"]["source"].text { gateway["cache"]["source"]=JSON(t.credentials.metadataText(source)) }
         var value:JSON = ["requestScope":t.scope.flatMap { try? subagentJSON($0) } ?? .null,"attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
-         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.credentials.metadata(t.gateway?.json ?? .null),"operation":t.operation,
+         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":gateway,"operation":t.operation,
          "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEventCount),
