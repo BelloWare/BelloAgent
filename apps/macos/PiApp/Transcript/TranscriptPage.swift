@@ -800,6 +800,12 @@ struct ContentGeometry: Equatable {
         var changed = false
         func open(_ part: TranscriptDisclosure.Part) { if !disclosure.isOpen(part) { disclosure.setOpen(true, part); changed = true } }
         func has(_ text: String?) -> Bool { !needle.isEmpty && text.map { !transcriptRanges(of: needle, in: $0 as NSString, flexible: true).isEmpty } ?? false }
+        func hasProse(_ text: String?) -> Bool {
+            guard let text, !needle.isEmpty else { return false }
+            // Find warmed this parse off the main actor. Its rendered phrase
+            // must open a folded thought even when Markdown splits the source.
+            return has(text) || has(TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(text)))
+        }
         func has(_ tool: ToolView) -> Bool {
             if has(tool.output) || has(tool.input) { return true }
             guard SubagentToolView.isControl(tool.name) else { return false }
@@ -816,7 +822,7 @@ struct ContentGeometry: Equatable {
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.
             for tool in drawn.tools ?? [] where tool.id == call || has(tool) { open(.tool(tool.id)) }
-            if has(drawn.thinking) { open(.reasoning(drawn.id)) }
+            if hasProse(drawn.thinking) { open(.reasoning(drawn.id)) }
         }
         for block in blocks {
             for reply in block.replies {
@@ -825,10 +831,10 @@ struct ContentGeometry: Equatable {
                     open(.tool(block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id))
                     if block.activity.contains(where: { $0.id == reply.id }) || block.presentation == .work { open(.work(block.key)) }
                 }
-                if has(reply.thinking) { open(.reasoning(reply.id)); open(.work(block.key)) }
+                if hasProse(reply.thinking) { open(.reasoning(reply.id)); open(.work(block.key)) }
             }
             // A timeline part keeps its own text (reasoning among it) and folds as work.
-            if has(block.part?.text) { open(.work(block.key)) }
+            if let part = block.part, has(part.text) || (["reasoningText", "reasoningSummary"].contains(part.part.kind) && hasProse(part.text)) { open(.work(block.key)) }
             // A response folded by the reader shows nothing of what it holds.
             if let response = block.responseID {
                 for part in [TranscriptDisclosure.Part.response(response), .responseLine(response)] where disclosure.isOpen(part) {
