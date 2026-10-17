@@ -117,18 +117,17 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertEqual(request.rows.last?.text, "…[truncated, 12 more bytes]\nnew tail")
     }
 
-    @MainActor private func findFixture(saved: Bool, reasoning: Bool = false, source: String = "**alpha** beta", content: WireValue? = nil) async throws -> (WorkspaceModel, NativeTranscriptPane, NSWindow) {
+    @MainActor private func findFixture(saved: Bool, reasoning: Bool = false, source: String = "**alpha** beta", content: WireValue? = nil, entries: [WireValue]? = nil) async throws -> (WorkspaceModel, NativeTranscriptPane, NSWindow) {
         let root = scratchRoot("ordinary-markdown-find")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let answer: WireValue = content ?? (saved && reasoning ? .array([
             .object(["type": .string("thinking"), "thinking": .string("**alpha** beta")]),
             .object(["type": .string("text"), "text": .string("Done.")])]) : .string(saved ? source : "Earlier saved text"))
-        let records: [WireValue] = [
-            .object(["type": .string("session"), "version": .number(3), "id": .string("ordinary-find")]),
+        let records: [WireValue] = [.object(["type": .string("session"), "version": .number(3), "id": .string("ordinary-find")])] + (entries ?? [
             .object(["type": .string("message"), "id": .string("question"), "parentId": .null,
                      "message": .object(["role": .string("user"), "content": .string("Reply")])]),
             .object(["type": .string("message"), "id": .string("reply"), "parentId": .string("question"),
-                     "message": .object(["role": .string("assistant"), "content": answer])])]
+                     "message": .object(["role": .string("assistant"), "content": answer])])])
         var bytes = Data()
         for record in records { bytes.append(try JSONEncoder().encode(record)); bytes.append(10) }
         let path = root.appendingPathComponent("find.jsonl"); try bytes.write(to: path)
@@ -386,6 +385,278 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertEqual(pane.document.highlights.focus?.record, "target")
     }
 
+    private var twoUsers: [WireValue] {
+        ["question", "reply"].enumerated().map { index, id in
+            .object(["type": .string("message"), "id": .string(id), "parentId": index == 0 ? .null : .string("question"),
+                     "message": .object(["role": .string("user"), "content": .string("user \(index + 1)")])])
+        }
+    }
+    @MainActor func testSavedUserFindCountsOnlyDisplayedTextAndKeepsPreviousHighlight() async throws {
+        let (_, pane, window) = try await findFixture(saved: true, entries: twoUsers)
+        pane.showFind(); pane.find.setQuery("user")
+        try await eventually("User search finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.count, 2)
+        pane.find.step(-1)
+        try await eventually("Previous reaches the other user's text") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.document.focusPending && pane.document.focusText?.string == "user 2"
+        }
+        XCTAssertEqual(pane.document.highlights.focus?.record, "reply")
+        XCTAssertEqual(pane.document.highlights.focus?.occurrence, 0)
+    }
+    @MainActor func testReconciliationAdoptsClampedFocusWithoutNewNavigation() async throws {
+        let (_, pane, window) = try await findFixture(saved: true, entries: twoUsers)
+        pane.showFind()
+        // Keep overcounts independent of the projection fix: a newly drawn
+        // row may still reconcile a count obtained before its text changed.
+        pane.find.search = { _, _, _ in
+            ContentSearch(hits: [ContentHit(id: "question", position: 1, preview: "user", count: 2),
+                                ContentHit(id: "reply", position: 2, preview: "user", count: 2)], total: 2, next: nil, revision: "fixture")
+        }
+        pane.document.onFocusResolved = nil
+        pane.find.setQuery("user")
+        try await eventually("Controlled counts arrive") { !pane.find.searching }
+        pane.find.step(-1)
+        let previous = try XCTUnwrap(pane.document.highlights.focus)
+        XCTAssertEqual(previous.occurrence, 1)
+        pane.document.focusPending = false
+        let origin = pane.scrollView.contentView.bounds.origin
+        pane.find.reconcile("reply", needle: "user", rendered: 1)
+        let adopted = pane.document.highlights.focus
+        XCTAssertEqual(adopted?.record, "reply")
+        XCTAssertEqual(adopted?.occurrence, 0)
+        XCTAssertEqual(adopted?.serial, previous.serial, "Count adoption creates no navigation request")
+        XCTAssertFalse(pane.document.focusPending)
+        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertEqual(pane.scrollView.contentView.bounds.origin, origin)
+        XCTAssertEqual(pane.document.focusText?.string, "user 2")
+        XCTAssertEqual(pane.document.focusRange, NSRange(location: 0, length: 4))
+        pane.document.highlights.focus = nil
+        pane.find.reconcile("reply", needle: "user", rendered: 2)
+        XCTAssertNil(pane.document.highlights.focus, "Reconciliation cannot invent focus after the reader cleared it")
+    }
+
+    @MainActor private func rowPayload(_ message: TranscriptMessage) -> String {
+        let item = TranscriptItem.message(message)
+        let row = TranscriptRowRenderer.content(for: item, inputs: .init(item: item, fresh: false, actions: .init(), width: 620,
+            environment: .init(), disclosure: .init(compaction: true)))
+        row.frame = CGRect(x: 0, y: 0, width: 620, height: 500)
+        row.frame.size.height = row.settle().height
+        row.layoutSubtreeIfNeeded()
+        if message.kind == "notice" {
+            return ConversationPaneTests.views(TranscriptLabel.self, in: row).filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        if message.kind == "versionBanner" {
+            return row.subviews.compactMap { ($0 as? TranscriptLabel)?.text }.filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        if let execution = row as? TranscriptNativeExecutionRow {
+            let body = TranscriptNativeDocument.textViews(in: row).filter { $0.accessibilityLabel() != "Button" }.map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+            return [execution.line.accessibilityLabel() ?? "", body].filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        if row is TranscriptNativeAgentRow {
+            var parts: [String] = []
+            func visit(_ view: NSView) {
+                if let prose = view as? TranscriptAgentMarkdown { parts.append(prose.markdown.textView.string); return }
+                if let title = view as? PiKit.WrappedText { parts.append(title.text); return }
+                if let badge = view as? PiKit.Badge { parts.append(badge.text); return }
+                if let note = view as? PiKit.Note { parts.append(note.text); return }
+                for child in view.subviews where !child.isHidden { visit(child) }
+            }
+            visit(row)
+            return parts.filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        return TranscriptNativeDocument.textViews(in: row).filter { message.kind != "failure" || $0.accessibilityLabel() != "Title" }
+            .map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+    @MainActor func testUserStatusAndSummaryProjectionEqualsNativeRowsSavedAndLive() throws {
+        let sources = ["user", "**literal** [site](https://example.test)", "1. first\n2. second", "# Heading\n\nBody 🌍", "", "left\r\nright"]
+        for source in sources {
+            for (role, kind) in [("user", ""), ("system", ""), ("system", "notice"), ("system", "compaction"), ("system", "unrecognized")] {
+                var fields: [String: WireValue] = ["role": .string(role), "content": .string(source)]
+                if !kind.isEmpty { fields["nativeKind"] = .string(kind) }
+                let message = TranscriptMessage.project(id: "row", message: fields), shown = rowPayload(message)
+                XCTAssertEqual(ConversationContent.transcriptText(["id": .string("row"), "message": .object(fields)]), shown, "Saved \(role)/\(kind): \(source)")
+                XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Live \(role)/\(kind): \(source)")
+            }
+        }
+        for content: WireValue in [.array([.object(["type": .string("image")])]),
+                                   .array([.object(["type": .string("image")]), .object(["type": .string("image")])]),
+                                   .array([.object(["type": .string("text"), "text": .string("first ")]), .object(["type": .string("text"), "text": .string("second")])])] {
+            let fields: [String: WireValue] = ["role": .string("user"), "content": content]
+            let message = TranscriptMessage.project(id: "row", message: fields)
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), rowPayload(message))
+            XCTAssertEqual(ConversationContent.transcriptText(message), rowPayload(message))
+        }
+        let fields: [String: WireValue] = ["role": .string("user"), "content": .string("hidden envelope"), "nativeDisplayText": .string("Visible **literal** request")]
+        XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), rowPayload(.project(id: "row", message: fields)))
+    }
+    @MainActor func testSavedCompactionFindUsesTheNativeSummaryAndOpensIt() async throws {
+        let entry: WireValue = .object(["type": .string("compaction"), "id": .string("reply"), "parentId": .null,
+                                      "summary": .string("Keep **alpha** beta."), "tokensBefore": .number(120)])
+        let (model, pane, window) = try await findFixture(saved: true, entries: [entry])
+        let message = try XCTUnwrap(model.selected?.messages.first)
+        XCTAssertEqual(ConversationContent.transcriptText(try XCTUnwrap(entry.object)), rowPayload(message))
+        try await assertFind("alpha beta", in: pane, window: window)
+    }
+    @MainActor func testAgentDeliveryProjectionEqualsNativeCardsSavedAndLive() throws {
+        let source = "1. **alpha** beta\n2. [site](https://example.test)"
+        for (author, kind) in [("parent", "task"), ("parent", "follow_up"), ("parent", "steer"), ("subagent", "result"),
+                               ("subagent", "note"), ("subagent", "question"), ("subagent", "blocker")] {
+            let delivery: WireValue = .object(["author": .string(author), "childId": .string("child"), "turn": .number(1),
+                "events": .array([.object(["kind": .string(kind), "text": .string(source), "task": .string("Fixture task")])])])
+            let fields: [String: WireValue] = ["role": .string("user"), "content": .string("hidden transport envelope"), "nativeAgentDelivery": delivery]
+            let message = TranscriptMessage.project(id: "delivery", message: fields), shown = rowPayload(message)
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), shown, "Saved \(author)/\(kind)")
+            XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Live \(author)/\(kind)")
+        }
+        let child = SessionDisplay(id: "child"); child.isManagedSubagent = true; child.delegatedTask = source
+        let task = try XCTUnwrap(child.presentedMessages.first)
+        XCTAssertEqual(ConversationContent.transcriptText(task), rowPayload(task), "Unsaved delegated task")
+    }
+    @MainActor func testSidePaneProjectionEqualsItsSavedAndLiveUserRows() async throws {
+        let (model, _, window) = try await findFixture(saved: true, entries: twoUsers)
+        let session = try XCTUnwrap(model.selected)
+        let info = SideRecord(id: session.id, parentID: "fixture-parent", workspaceID: "project", profileID: "profile", title: "Side", kept: true)
+        let side = SidePaneView(model: model, session: session, info: info, paneWidth: 620)
+        window.contentView = side
+        defer { side.pane.transcript.closeFind(focusing: false) }
+        for saved in [true, false] {
+            if !saved { session.messages = [.init(id: "live-user", role: "user", text: "**literal** [site](https://example.test)")] }
+            side.pane.transcript.refresh(); side.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            for message in session.presentedMessages {
+                let row = try XCTUnwrap(side.pane.transcript.document.row(drawing: message.id))
+                row.prepareToDraw(); row.layoutForViewport()
+                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+                XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Side \(message.id)")
+                if saved {
+                    let entry = try XCTUnwrap(twoUsers.first { $0.object?["id"]?.string == message.id }?.object)
+                    XCTAssertEqual(ConversationContent.transcriptText(entry), shown, "Saved side \(message.id)")
+                }
+            }
+        }
+    }
+    @MainActor func testSavedManagedRowsKeepTheirDisplayedAgentAndUserText() async throws {
+        let entries: [WireValue] = [
+            .object(["type": .string("message"), "id": .string("question"), "parentId": .null,
+                "message": .object(["role": .string("user"), "content": .string("**alpha** beta")])]),
+            .object(["type": .string("message"), "id": .string("reply"), "parentId": .string("question"),
+                "message": .object(["role": .string("user"), "content": .string("**literal** user")])])]
+        let (model, pane, window) = try await findFixture(saved: true, entries: entries)
+        let session = try XCTUnwrap(model.selected), path = try XCTUnwrap(model.chats.first?.path)
+        session.isManagedSubagent = true; session.subagentNumbers = [session.id: 3]
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let task = try XCTUnwrap(session.presentedMessages.first)
+        XCTAssertEqual(ConversationContent.transcriptText(task), rowPayload(task))
+        for (query, id) in [("Parent → Sub-agent 3", "question"), ("alpha beta", "question"), ("**literal** user", "reply")] {
+            let found = try await model.history.searchContent(path: path, query: query, start: 0, renderedAgentProse: true,
+                                                            managedChild: true, presented: session.presentedMessages)
+            XCTAssertEqual(found.hits.map(\.id), [id], "Presented managed row: \(query)")
+        }
+        for (query, id) in [("alpha beta", "question"), ("**literal** user", "reply")] {
+            let cold = try await model.history.searchContent(path: path, query: query, start: 0, renderedAgentProse: true, managedChild: true)
+            XCTAssertEqual(cold.hits.map(\.id), [id], "Unloaded managed row: \(query)")
+        }
+    }
+    @MainActor func testAgentDeliveryNotesAndUnavailableAttributionMatchTheCard() {
+        for metadata: WireValue? in [nil, .object([:]), .object(["author": .string("subagent"), "childId": .string("child"), "turn": .number(2),
+            "events": .array([.object(["kind": .string("result"), "text": .string("**visible** result"),
+                "result": .object(["text_truncated": .bool(true), "error": .object(["message": .string("Fixture error")])])])])])] {
+            var fields: [String: WireValue] = ["role": .string("user"), "content": .string("hidden delivery transport"), "nativeKind": .string("agent_message")]
+            fields["nativeAgentDelivery"] = metadata
+            let message = TranscriptMessage.project(id: "agent", message: fields), shown = rowPayload(message)
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), shown)
+            XCTAssertEqual(ConversationContent.transcriptText(message), shown)
+        }
+    }
+    @MainActor func testRemainingRowKindsProjectTheirNativeContent() throws {
+        for kind in ["failure", "branch", "versionBanner", "requestInfo", "execution", "toolResult"] {
+            var fields: [String: WireValue] = ["role": .string(kind == "toolResult" ? "toolResult" : "system"),
+                "nativeKind": .string(kind), "content": .string("Literal body"), "nativeDetail": .string("Visible detail")]
+            if kind == "requestInfo" { fields["nativeStopReason"] = .string("length") }
+            if kind == "execution" {
+                var timeline = ResponseTimeline()
+                timeline.consume(.init(attemptID: "fixture", ordinal: 0, itemID: "part", kind: "text", update: "replace", text: "**alpha** beta"))
+                timeline.finish("completed")
+                fields["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+            }
+            let message = TranscriptMessage.project(id: "row", message: fields), shown = rowPayload(message)
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), shown, "Saved \(kind)")
+            XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Live \(kind)")
+        }
+    }
+    @MainActor func testBranchSearchUsesItsDisplayedDetailWithoutAnExportHeading() async throws {
+        let entries: [WireValue] = [twoUsers[0], .object(["type": .string("branch"), "id": .string("reply"),
+            "parentId": .string("question"), "fromMessageId": .string("question"), "keptIds": .array([.string("question")])])]
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        let message = try XCTUnwrap(model.selected?.messages.first { $0.kind == "branch" }), path = try XCTUnwrap(model.chats.first?.path)
+        let shown = rowPayload(message)
+        let rendered = try await model.history.searchContent(path: path, query: "", start: 0, renderedAgentProse: true)
+        XCTAssertEqual(rendered.hits.first { $0.id == message.id }?.preview, shown)
+        let source = try await model.history.searchContent(path: path, query: "## Edit", start: 0)
+        XCTAssertEqual(source.hits.map(\.id), [message.id], "Source export retains its heading")
+    }
+    @MainActor func testExecutionFindUsesAndOpensItsRenderedTimeline() async throws {
+        var timeline = ResponseTimeline()
+        timeline.consume(.init(attemptID: "fixture", ordinal: 0, itemID: "part", kind: "text", update: "replace", text: "**alpha** beta"))
+        timeline.finish("completed")
+        let entry: WireValue = .object(["type": .string("message"), "id": .string("reply"), "parentId": .null,
+            "message": .object(["role": .string("system"), "nativeKind": .string("execution"), "content": .string("Hidden canonical text"),
+                "nativeDetail": .string("Recorded execution"), "nativeResponseTimeline": try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))])])
+        let (_, pane, window) = try await findFixture(saved: true, entries: [entry])
+        try await assertFind("alpha beta", in: pane, window: window)
+    }
+    @MainActor func testExecutionCaptionsStaySearchableWithAndWithoutTimelineBodies() throws {
+        for hasBody in [false, true] { for caption: String? in [nil, "Recorded execution"] {
+            var fields: [String: WireValue] = ["role": .string("system"), "nativeKind": .string("execution"), "content": .string("Fallback caption")]
+            fields["nativeDetail"] = caption.map(WireValue.string)
+            if hasBody {
+                var timeline = ResponseTimeline()
+                timeline.consume(.init(attemptID: "fixture", ordinal: 0, itemID: "part", kind: "text", update: "replace", text: "Body **alpha** beta"))
+                timeline.finish("completed")
+                fields["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+            }
+            let message = TranscriptMessage.project(id: "execution", message: fields), shown = rowPayload(message)
+            XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Live body=\(hasBody), caption=\(caption ?? "fallback")")
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), shown, "Saved body=\(hasBody), caption=\(caption ?? "fallback")")
+        } }
+    }
+    @MainActor func testStandaloneToolResultsMatchTheirNativeRowsSavedAndLive() async throws {
+        for name in ["custom_fixture", "subagent_start"] { for saved in [true, false] {
+            let source = name == "custom_fixture" ? "**alpha** beta" : #"{"text":"**alpha** beta"}"#
+            let fields: [String: WireValue] = ["role": .string("toolResult"), "toolName": .string(name), "toolCallId": .string("call"), "content": .string(source)]
+            let entry: WireValue = .object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])
+            let (model, pane, window) = try await findFixture(saved: true, entries: [entry])
+            let session = try XCTUnwrap(model.selected), shown = rowPayload(try XCTUnwrap(session.messages.first))
+            if saved {
+                let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats.first?.path), query: "", start: 0,
+                    renderedAgentProse: true, presented: session.presentedMessages)
+                XCTAssertEqual(found.hits.first?.preview, shown, "Saved standalone \(name)")
+            } else {
+                model.chats[0].path = nil
+                let found = try await model.history.searchPresented(session.presentedMessages, query: "", start: 0)
+                XCTAssertEqual(found.hits.first?.preview, shown, "Live standalone \(name)")
+            }
+            try await assertFind("alpha beta", in: pane, window: window)
+        } }
+    }
+    @MainActor func testPairedToolResultsKeepTheirLiteralCardText() async throws {
+        let call = toolEntry("custom_fixture", arguments: .object([:]))
+        let entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": call["message"]!]),
+            .object(["type": .string("message"), "id": .string("result"), "parentId": .string("reply"), "message": .object([
+                "role": .string("toolResult"), "toolName": .string("custom_fixture"), "toolCallId": .string("call"), "content": .string("**alpha** beta")])])]
+        let (model, pane, window) = try await findFixture(saved: true, entries: entries)
+        pane.showFind(); pane.find.setQuery("**alpha** beta")
+        try await eventually("Paired result is highlighted literally") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.find.searching && !pane.document.focusPending && pane.document.focusText != nil
+        }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["result"])
+        XCTAssertEqual(pane.document.focusText?.string, "**alpha** beta")
+        let session = try XCTUnwrap(model.selected), path = try XCTUnwrap(model.chats.first?.path)
+        let hidden = try await model.history.searchContent(path: path, query: "alpha beta", start: 0, renderedAgentProse: true, presented: session.presentedMessages)
+        XCTAssertTrue(hidden.hits.isEmpty, "The paired I/O card shows literal Markdown marks")
+    }
+
     @MainActor private func cardPayload(_ tool: ToolView) -> String {
         let value = TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false)
         let card = TranscriptNativeCard.make(value)
@@ -559,6 +830,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             XCTAssertTrue(ConversationContent.text(entry).contains("**alpha** beta"))
         }
         let user: [String: WireValue] = ["message": .object(["role": .string("user"), "content": .string("**alpha** beta")])]
-        XCTAssertEqual(ConversationContent.transcriptText(user), ConversationContent.text(user))
+        XCTAssertEqual(ConversationContent.transcriptText(user), "**alpha** beta")
+        XCTAssertEqual(ConversationContent.text(user), "## user\n\n**alpha** beta\n\n", "Export keeps its source heading")
     }
 }

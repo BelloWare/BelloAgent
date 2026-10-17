@@ -14,36 +14,47 @@ enum ConversationContent {
     /// Find's display projection is separate from retained-source search and
     /// Copy Conversation. Tool receipts keep their own record identity, even
     /// when the transcript draws their prose in the issuing call's card.
-    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false) -> String {
+    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false, standaloneToolResult: Bool = false) -> String {
         let message = entry["message"]?.object ?? [:]
         func prose(_ source: String) -> String { TranscriptMarkdown.renderedText(source) }
-        if message["role"]?.string == "assistant" || message["nativeAgentDelivery"]?.object != nil {
+        if entry["type"]?.string == "compaction" { return TranscriptMarkdown.renderedText(TranscriptMessage.compactionText(entry), style: .summary) }
+        if message["role"]?.string == "assistant" || message["nativeAgentDelivery"]?.object != nil || message["nativeKind"]?.string == "agent_message" {
             return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), rawReply: rawReply)
         }
         if managedChild, message["role"]?.string == "user" {
             return prose(TranscriptMessage.project(id: "", message: message).text)
         }
+        if standaloneToolResult {
+            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), standaloneToolResult: true)
+        }
         if let name = message["toolName"]?.string, SubagentToolView.isControl(name), let result = ToolResultRecord.of(message) {
             let value = SubagentToolView(ToolView(id: result.call, name: name, state: result.record.cardState, input: "", output: result.record.output, durationMs: nil, truncated: false))
             return [prose(value.result), value.error ?? ""].joined(separator: "\n")
         }
-        return text(entry)
+        return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), rawReply: rawReply)
     }
     /// Current streaming text and rows that have not reached the journal yet.
     /// Called by the history actor, never by a layout or paint pass.
-    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false) -> String {
+    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false, standaloneToolResult: Bool = false) -> String {
         func prose(_ source: String, streaming: Bool = false) -> String { TranscriptMarkdown.renderedText(source, streaming: streaming) }
         func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
-        if message.nativeAgentDelivery != nil {
-            return AgentMessagePresentation(message).events.map {
-                [$0.title, $0.label, prose($0.text), $0.note ?? ""].joined(separator: "\n")
+        if message.nativeAgentDelivery != nil || message.kind == "agent_message" {
+            let events = AgentMessagePresentation(message).events
+            guard !events.isEmpty else { return AgentMessagePresentation.unavailable }
+            return events.map {
+                joined([$0.title, $0.label, prose($0.text), $0.note ?? ""])
             }.joined(separator: "\n\n")
         }
+        if standaloneToolResult { return prose(message.text) }
+        if message.kind == "compaction" { return TranscriptMarkdown.renderedText(message.text, style: .summary) }
+        if message.kind == "branch" { return message.detail ?? message.text }
+        if message.kind == "failure" || message.kind == "versionBanner" { return joined([message.text, message.detail ?? ""]) }
+        if message.kind == "requestInfo" { return joined([message.detail ?? "", TranscriptActivity.earlyEnd(message.stopReason) ?? ""]) }
         func replyText(_ source: TranscriptMessage) -> String {
             ReplySource.shows(source, raw: rawReply) ? source.text : prose(source.text, streaming: source.isStreaming)
         }
-        if message.role == "assistant", let timeline = message.responseTimeline, timeline.supported, !timeline.segments.isEmpty {
-            return joined(timeline.segments.map { part in
+        if message.role == "assistant" || message.kind == "execution", let timeline = message.responseTimeline, timeline.supported, !timeline.segments.isEmpty {
+            let parts = timeline.segments.map { part in
                 if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) { return toolText(tool) }
                 let row = TranscriptTimelinePart(part: part, message: message)
                 switch part.part.kind {
@@ -51,8 +62,10 @@ enum ConversationContent {
                 case "toolArguments", "status": return part.text
                 default: return prose(part.text, streaming: row.source.isStreaming)
                 }
-            })
+            }
+            return joined((message.kind == "execution" ? [message.detail ?? message.text] : []) + parts)
         }
+        if message.kind == "execution" { return message.detail ?? message.text }
         let rendered = message.role == "assistant"
         let words = [rendered ? replyText(message) : message.text,
                      rendered ? prose(message.thinking ?? "", streaming: message.isStreaming) : message.thinking ?? ""]

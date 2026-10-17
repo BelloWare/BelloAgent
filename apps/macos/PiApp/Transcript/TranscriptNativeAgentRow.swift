@@ -3,6 +3,7 @@ import AppKit
 /// Provider input roles do not convey human authorship. Each event in a
 /// delivery batch keeps its own author, child and turn, including mixed batches.
 struct AgentMessagePresentation: Equatable {
+    static let unavailable = "Agent message attribution is unavailable. Inspect the saved row for details."
     struct Event: Equatable {
         var childID: String, turn: Int, author: String, kind: String, task: String, text: String
         var eventID: String?, replyTo: String?
@@ -93,7 +94,7 @@ struct AgentMessagePresentation: Equatable {
             let body = ShellStack(.vertical, spacing: 8, content)
             items.append(.view(PiKit.card(body, padding: 12, sunken: true), .fill))
         }
-        if items.isEmpty { items = [.view(PiKit.Note("Agent message attribution is unavailable. Inspect the saved row for details.", tone: .neutral), .fill)] }
+        if items.isEmpty { items = [.view(PiKit.Note(AgentMessagePresentation.unavailable, tone: .neutral), .fill)] }
         column.items = items
         prose = retained
         setAccessibilityLabel(presentation.events.map { $0.title + " · " + $0.label }.joined(separator: "; "))

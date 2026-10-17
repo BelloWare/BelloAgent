@@ -366,7 +366,7 @@ actor HistoryReader {
             return ConversationContent.text(value)
         }
         if field != "thinking", value["type"]?.string == "branch" { return branchText }
-        if field != "thinking", value["type"]?.string == "compaction" { return "Conversation summary:\n" + (value["summary"]?.string ?? "") }
+        if field != "thinking", value["type"]?.string == "compaction" { return TranscriptMessage.compactionText(value) }
         if field == "thinking" { return blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined() }
         return value["message"]?.object?["nativeDisplayText"]?.string ?? content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
     }
@@ -384,11 +384,20 @@ actor HistoryReader {
     }
     /// The most record bytes one run of a search holds at once.
     static let searchRunBytes = 16 * 1_048_576
+    /// The planner draws an unpaired receipt as Markdown; a paired receipt
+    /// keeps the representation of its issuing call's card.
+    private func standaloneToolResults(_ rows: [TranscriptMessage]) -> Set<String> {
+        guard rows.contains(where: { $0.role == "tool" || $0.kind == "toolResult" }) else { return [] }
+        return Set(TaskTranscriptPlan.rows(rows, lifecycle: nil).compactMap {
+            if case .message(let message) = $0, message.role == "tool" || message.kind == "toolResult" { return message.id }
+            return nil
+        })
+    }
     /// The searchable text of each record in `range`, in order: read in
     /// order from the file, decoded concurrently. A record that cannot be
     /// read or decoded carries its error, thrown when the search reaches it.
-    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedChild: Bool,
-                          streaming: [String: TranscriptMessage], rawReplies: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
+    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedTask: String?,
+                          streaming: [String: TranscriptMessage], rawReplies: Set<String>, standaloneResults: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
@@ -403,13 +412,13 @@ actor HistoryReader {
             } catch { records.append(.failure(error)) }
         }
         var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
-        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records, references = refs
+        let edit = renderedAgentProse ? Self.branchText : "## Edit\n\n" + Self.branchText + "\n\n", read = records, references = refs
         texts.withUnsafeMutableBufferPointer { buffer in
             // Each iteration writes its own element only.
             nonisolated(unsafe) let output = buffer
             DispatchQueue.concurrentPerform(iterations: read.count) { index in
                 if let current = streaming[references[index].id] {
-                    output[index] = .success(ConversationContent.transcriptText(current, rawReply: rawReplies.contains(current.id))); return
+                    output[index] = .success(ConversationContent.transcriptText(current, rawReply: rawReplies.contains(current.id), standaloneToolResult: standaloneResults.contains(current.id))); return
                 }
                 switch read[index] {
                 case nil: output[index] = .success(edit)
@@ -417,7 +426,8 @@ actor HistoryReader {
                 case .success(let bytes)?:
                     output[index] = Result {
                         let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
-                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedChild, rawReply: rawReplies.contains(references[index].id)) : ConversationContent.text(record)
+                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedTask == references[index].id, rawReply: rawReplies.contains(references[index].id),
+                            standaloneToolResult: standaloneResults.contains(references[index].id)) : ConversationContent.text(record)
                     }
                 }
             }
@@ -485,15 +495,18 @@ actor HistoryReader {
         }
         try searchReadObserver?(.indexed)
         // A live snapshot can be ahead of the journal. Keep its streaming
-        // revision and append only genuinely unsaved rows, without duplicating
-        // a saved tool result in its issuing assistant's resolved card.
+        // revision and the display-only agent attribution. Append only genuinely
+        // unsaved rows, without duplicating a saved tool result in its call's card.
         var streaming: [String: TranscriptMessage] = [:], unsaved: [TranscriptMessage] = []
         if renderedAgentProse {
             for row in presented {
                 if try branch.ref(row.id) == nil { unsaved.append(row) }
-                else if row.state == "streaming", try branch.index(of: row.id) != nil { streaming[row.id] = row }
+                else if row.state == "streaming" || row.nativeAgentDelivery != nil || row.kind == "agent_message",
+                        try branch.index(of: row.id) != nil { streaming[row.id] = row }
             }
         }
+        let managedTask = managedChild ? try branch.firstUser() : nil
+        let standaloneResults = standaloneToolResults(presented)
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
         // conversation before answering. Stop after a bounded window and let the
@@ -519,7 +532,7 @@ actor HistoryReader {
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedChild: managedChild, streaming: streaming, rawReplies: rawReplies)
+            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, streaming: streaming, rawReplies: rawReplies, standaloneResults: standaloneResults)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -536,7 +549,7 @@ actor HistoryReader {
         }
         while cursor >= branch.count && cursor < limit && hits.count < 100 {
             try Task.checkCancellation()
-            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id))
+            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id), standaloneToolResult: standaloneResults.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1
@@ -555,8 +568,9 @@ actor HistoryReader {
     func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         var hits: [ContentHit] = [], cursor = min(start, rows.count)
+        let standaloneResults = standaloneToolResults(rows)
         while cursor < rows.count && hits.count < 100 {
-            let row = rows[cursor], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id))
+            let row = rows[cursor], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id), standaloneToolResult: standaloneResults.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1
@@ -1011,7 +1025,7 @@ actor HistoryReader {
             var message: TranscriptMessage
             if value["type"]?.string == "branch" { message = .init(id: ref.id, role: "system", text: Self.branchText, kind: "branch") }
             else if value["type"]?.string == "compaction" {
-                message = TranscriptMessage.project(id: ref.id, message: ["role": .string("system"), "content": .string("Conversation summary:\n" + (value["summary"]?.string ?? ""))])
+                message = TranscriptMessage.project(id: ref.id, message: ["role": .string("system"), "content": .string(TranscriptMessage.compactionText(value))])
                 let kept = Set(value["nativeKeptIDs"]?.array?.compactMap(\.string) ?? []).count
                 let tokens = value["tokensBefore"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
                 message.operationID = value["nativeCompaction"]?.object?["operationId"]?.string

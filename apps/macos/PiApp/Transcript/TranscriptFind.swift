@@ -203,12 +203,12 @@ struct TranscriptFindCommand: Equatable {
         matches.replaceSubrange(first..<end, with: (0..<rendered).map { Match(messageID: id, occurrence: $0) })
         if let index = current, index >= end { current = index - (end - first) + rendered }
         if wasCurrent {
-            current = first + min(occurrence, rendered - 1); publish(focus: false)
+            current = first + min(occurrence, rendered - 1); publish(focus: false, adoptingOccurrence: true)
         } else { publish(focus: false) }
     }
     /// Shows the count and marks the matches; `focus` also brings the current
     /// match into view.
-    private func publish(focus: Bool, navigate: Bool = true) {
+    private func publish(focus: Bool, navigate: Bool = true, adoptingOccurrence: Bool = false) {
         guard let pane else { return }
         pane.findBar?.show(current: current, total: matches.count, searching: searching, failed: failed, query: query)
         var highlights = TranscriptHighlights(query: query)
@@ -224,10 +224,11 @@ struct TranscriptFindCommand: Equatable {
             if focus {
                 highlights.focus = .init(messageID: drawing, needle: query, occurrence: match.occurrence,
                                          serial: serial, fromFind: true, scopeCall: scope, record: match.messageID)
-            } else if let previous = pane.document.highlights.focus, previous.fromFind, previous.needle == query,
-                      previous.record == match.messageID, previous.occurrence == match.occurrence {
+            } else if var previous = pane.document.highlights.focus, previous.fromFind, previous.needle == query,
+                      previous.record == match.messageID, previous.occurrence == match.occurrence || adoptingOccurrence {
                 // Results and counts can change without a navigation request.
                 // Never install a focus after nil: the document would reveal it.
+                previous.occurrence = match.occurrence
                 highlights.focus = previous
             }
             if focus, navigate, let session = pane.session {

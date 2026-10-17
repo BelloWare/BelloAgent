@@ -979,3 +979,450 @@ result bundle was requested. The owned lane lock was released. No helper or
 wire behavior changed, so helper/wire suites were not required. `git diff --check`
 passed. No assigned issue or owner decision remains unresolved. The lead retains
 independent review, the merged full gate and merge.
+
+## Round 4: clamped Find focus and remaining row projections (2026-10-18)
+
+Reviewed base: `3d717e40bbae7a70325434b130ac418a305e7c3f`. The reported focus
+loss and saved-user projection mismatch are both confirmed and fixed.
+`round4-failing-first.log` ran against that commit's production code:
+**33 passed, 5 failed**, 64 assertion failures, exit 65. All existing regressions
+passed; the five new tests failed.
+
+### R4-1: reconciliation drops the selected highlight — confirmed and fixed
+
+`testSavedUserFindCountsOnlyDisplayedTextAndKeepsPreviousHighlight` creates two
+saved user messages, each containing `user` once, searches and presses Previous.
+Before either fix, it counted three matches after reconciling the first row
+instead of two and failed to highlight the second user message. The extra
+occurrence came from the invisible export heading.
+
+`testReconciliationAdoptsClampedFocusWithoutNewNavigation` independently supplies
+overcounts, so fixing the projection cannot mask the focus regression. It
+selects occurrence 1, reconciles to one displayed occurrence and requires the
+existing focus to adopt occurrence 0 with the same serial, no pending reveal,
+the same viewport origin and the correct native highlight. Failing-first excerpt:
+
+```text
+XCTAssertEqual failed: ("nil") is not equal to ("Optional(0)")
+XCTAssertEqual failed: ("nil") is not equal to ("Optional(2)") - Count adoption creates no navigation request
+XCTAssertEqual failed: ("nil") is not equal to ("Optional("user 2")")
+```
+
+Only reconciliation of the selected record permits occurrence adoption. The
+publication still requires an existing Find focus with the same query and
+record; it keeps its serial. A control clears that focus before another count
+change and verifies that reconciliation cannot create one. Refresh, Next/Previous
+races and reader-position controls from prior rounds remain in the regression class.
+
+### R4-2: saved user text includes an export heading — confirmed and fixed
+
+Saved user/system/notice rows now use `TranscriptMessage.project`, the same
+display projection used when reopening them, instead of `ConversationContent.text`.
+This retains literal Markdown, native display overrides, joined text blocks and
+image-only labels. The saved-source/export function remains unchanged.
+
+`testUserStatusAndSummaryProjectionEqualsNativeRowsSavedAndLive` compares actual
+native row text for six sources across user, system, notice, summary and unknown
+kind rows, plus image-only, multi-block and native-display cases: **67 comparisons**.
+The first failing run includes the unwanted `## user`/`## system` envelopes.
+`testSidePaneProjectionEqualsItsSavedAndLiveUserRows` mounts an actual `SidePaneView`
+and adds **five comparisons** of its saved/live user rows; it passed once the
+common projection was fixed, requiring no side-specific production change.
+
+The intermediate `round4-fixed.log` records **37 passed, 1 failed**. Its only
+failure was the old test equating user Find text with export text. That assertion
+was updated to require literal user text and separately verify the exact unchanged
+`## user` export. It is not recorded as an unrelated failure or hidden by a skip.
+
+### Nearby row instances confirmed by the expanded corpus
+
+All fixes below affect Find's projection/disclosure; they preserve journal bytes,
+source export and the native row's existing rendering policy.
+
+- **Compactions:** the old projection searched `## Compaction` plus raw Markdown,
+  whereas the actual saved row renders `Conversation summary:` plus the summary.
+  `testSavedCompactionFindUsesTheNativeSummaryAndOpensIt` compares the history
+  reader's row with the projection, searches `alpha beta` across emphasis and
+  requires a visible highlight. Initially there were no hits. A shared
+  `TranscriptMessage.compactionText` keeps the saved display prefix identical;
+  Find renders with the native summary style and opens the matching summary.
+- **Agent deliveries:** `testAgentDeliveryProjectionEqualsNativeCardsSavedAndLive`
+  compares actual headings, badges and Markdown bodies for seven parent/child
+  delivery kinds plus an unsaved delegated task (**15 comparisons**). It exposed
+  a spurious trailing newline for absent notes; empty pieces are now omitted.
+- **Managed tasks versus ordinary user messages:**
+  `testSavedManagedRowsKeepTheirDisplayedAgentAndUserText` found that saved search
+  omitted the visible `Parent → Sub-agent 3` identity and stripped Markdown from
+  a later ordinary user row. `round4-managed-first.log`: **1 passed, 1 failed**,
+  three assertions, exit 65. The history index identifies the first user only;
+  loaded agent rows keep their display-only attribution overlay. The test covers
+  both presented and unloaded later user rows, plus the first task's rendered prose.
+- **Unavailable agent attribution:**
+  `testAgentDeliveryNotesAndUnavailableAttributionMatchTheCard` compares valid
+  result/error notes and two unavailable-attribution cases (**six comparisons**).
+  `round4-agent-fallback-first.log`: **0 passed, 1 failed**, four assertions,
+  exit 65: search returned `hidden delivery transport` or nothing while the row
+  displayed its attribution notice. The native card and projection now share
+  that existing notice string; attribution checks remain intact.
+- **Metadata and execution rows:**
+  `testRemainingRowKindsProjectTheirNativeContent` compares saved/live failure,
+  branch, version, request-info, execution and tool-result bodies (**12 comparisons**).
+  It caught missing visible details, hidden canonical text and unrendered execution
+  parts. `testBranchSearchUsesItsDisplayedDetailWithoutAnExportHeading` separately
+  exercises a real branch record and checks that source export still has `## Edit`.
+  `round4-other-rows-first.log`: **0 passed, 2 failed**, 11 assertions, exit 65.
+  Projection now follows each row's displayed body/detail fields; the branch
+  search no longer adds the export heading.
+- **Execution disclosure:** `testExecutionFindUsesAndOpensItsRenderedTimeline`
+  initially found no `alpha beta` hit in a formatted execution part
+  (`round4-execution-first.log`: **0 passed, 1 failed**, exit 65). Find now uses
+  the existing per-segment projection and opens the execution body for the hit.
+  A further adversarial check caught an omission in that initial fix: the
+  execution's visible caption was missing, including when there was no timeline
+  body. `testExecutionCaptionsStaySearchableWithAndWithoutTimelineBodies` compares
+  explicit/fallback captions, with/without a body, saved/live (**eight comparisons**).
+  `round4-caption-first.log`: **0 passed, 1 failed**, eight assertions, exit 65:
+  `""` differed from `"Fallback caption"`, and `"Body alpha beta"` omitted the
+  native caption above it. The projection now includes the actual caption and
+  preserves it for bodyless executions. This self-review correction was made
+  before the final suites; their runner waited outside the shared lane lock.
+- **Standalone versus paired tool results:**
+  `testStandaloneToolResultsMatchTheirNativeRowsSavedAndLive` compares native
+  generic/agent receipt rows and requires visible formatted-phrase highlights
+  in saved and no-journal readers (**four comparisons**). The native row planner
+  determines which presented receipts stand alone as Markdown; paired receipts
+  retain their card representation and record identity.
+  `testPairedToolResultsKeepTheirLiteralCardText` is a passing control: its generic
+  I/O card matches `**alpha** beta` and rejects the invisible contiguous `alpha beta`.
+  `round4-result-rows-first.log`: **1 passed, 1 failed**, exit 65. The standalone
+  projection and its fold-opening predicate were both corrected.
+
+`round4-fixed-complete.log` passed the first **44 tests**; after adding the result-row
+cases, `round4-fixed-all.log` passed **46 tests**, zero failures. The complete
+corpus initially had 277 exact native/projection comparisons; the execution-caption
+check brings it to **285**: the previous 165 plus 120 for remaining rows and
+containers. It compares message bodies, displayed
+details/notes and existing searchable file/agent identities; action buttons and
+accounting chrome are not message payloads.
+
+### Round-4 adversarial self-review
+
+Re-read the whole branch's production diff from
+`141666ca479184d10a9791754d4c91df456599d8`, including previous copy, truncation,
+raw-mode, Markdown-builder and navigation changes. The expanded probes above
+were added before their corresponding nearby fixes.
+
+Checked focus publication against nil/external focus, stale queries, count growth
+and reduction, an unchanged serial, newer reader steps during refresh, pending
+reveals and changed result indexes. Occurrence adoption is explicitly confined
+to reconciliation, so a refresh cannot adopt an unrelated selection or create
+navigation focus. Checked saved/source separation, native display overrides,
+image-only labels, ordinary-side mounting, delegated-task identity, invalid agent
+metadata, receipt pairing and folded summary/execution/result text. The planner
+runs only over the supplied presented rows and only when they contain receipts;
+search snapshot, byte/window bounds, cancellation and index ownership stay intact.
+
+Rechecked parsed heading/source indexes, nested containers, CR/CRLF/Unicode
+offsets, complete versus explicitly truncated edit arguments, native list markers,
+per-segment raw state, bounded parsing caches and local Markdown builders. No
+helper/wire changes, new network calls, credentials, preferences or vault writes
+were introduced. The compaction prefix and unavailable-attribution note were
+shared without changing their visible strings. Separate lead review and the
+merged full gate remain required.
+
+### Round-4 mutation evidence
+
+Each mutation ran the named regression methods in a fresh native test process,
+exited 65, failed only its expected methods and restored the fixed file in
+`finally`. The two result-row runs also kept their paired-card control passing.
+
+| Log | Deliberately broken fix | Passed | Failed | Assertion failures |
+| --- | --- | ---: | ---: | ---: |
+| `round4-mutation-focus-adoption.log` | Disable selected-occurrence adoption | 0 | 1 | 5 |
+| `round4-mutation-user-projection.log` | Restore exported user/status text | 0 | 3 | 37 |
+| `round4-mutation-summary-projection.log` | Restore raw/exported summaries | 0 | 2 | 10 |
+| `round4-mutation-summary-disclosure.log` | Leave matching summaries folded | 0 | 1 | 3 |
+| `round4-mutation-metadata-rows.log` | Omit native detail fields | 0 | 1 | 8 |
+| `round4-mutation-branch-heading.log` | Restore the branch export heading | 0 | 1 | 1 |
+| `round4-mutation-execution-projection.log` | Ignore execution timeline parts | 0 | 2 | 3 |
+| `round4-mutation-execution-disclosure.log` | Leave matching executions folded | 0 | 1 | 3 |
+| `round4-mutation-agent-separator.log` | Add the absent-note newline | 0 | 1 | 15 |
+| `round4-mutation-agent-fallback.log` | Search hidden/unavailable agent content | 0 | 1 | 4 |
+| `round4-mutation-agent-overlay.log` | Drop completed agent display overlays | 0 | 1 | 1 |
+| `round4-mutation-managed-user-mode.log` | Render every managed user message | 0 | 1 | 2 |
+| `round4-mutation-result-row-context.log` | Ignore standalone-result presentation | 1 | 1 | 7 |
+| `round4-mutation-result-disclosure.log` | Match standalone folds against raw Markdown only | 1 | 1 | 3 |
+| `round4-mutation-execution-caption.log` | Drop the execution caption with/without a timeline body | 1 | 2 | 10 |
+
+The source/display mutation is distinct from the focus mutation: the latter
+uses controlled overcounts and still fails with the saved-user projection fixed.
+Projection and disclosure mutations independently kill the summary, execution
+and standalone-result pane regressions.
+
+All **15 mutations** were detected. After the last caption correction,
+`round4-caption-fixed.log` passed its three selected methods; the caption mutation
+failed two and kept the execution-body Find control passing. The fixed source
+was restored before every final run below.
+
+### Round-4 final validation
+
+All seven final commands exited **0**, with **613 passed, 0 failed and 5 skipped**.
+The skips are existing opt-in measurements/captures, listed below; no unrelated
+failure occurred. Logs and companion command/count JSON records are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation/`.
+
+| Suite | Passed | Failed | Skipped | Text log |
+| --- | ---: | ---: | ---: | --- |
+| Regression class | 47 | 0 | 0 | `round4-regression-final.log` |
+| 46 affected classes | 456 | 0 | 5 | `round4-affected-final.log` |
+| Timeline behavior | 30 | 0 | 0 | `round4-timeline-final.log` |
+| Subagent Markdown | 19 | 0 | 0 | `round4-agent-markdown-final.log` |
+| Subagent reader | 55 | 0 | 0 | `round4-agent-reader-final.log` |
+| App wire/page projection | 4 | 0 | 0 | `round4-wire-page-final.log` |
+| Gallery | 2 | 0 | 0 | `round4-gallery-final.log` |
+
+The five skips in `round4-affected-final.log`:
+
+- `HistoryIndexFilesTests.testTheIndexOfALongChat`: requires `PI_PERF_HISTORY_JOURNAL`.
+- `InlineSkillPillTests.testCaptureSkillPillLooks`: requires `PI_APP_UI_SCREENSHOT_ROOT`.
+- `MarkdownTextSurfaceTests.testMeasureLinePitches` and `testMeasureTokenCostOnOpenLists`: run-on-request measurements.
+- `MarkdownTextSurfaceTests.testRenderSampleForReview`: requires `PI_MARKDOWN_SNAPSHOT_DIR`.
+
+Class counts within the combined affected run (pass/fail/skip):
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `ChatFileLinkTests` | 7 | 0 | 0 |
+| `ContentSearchTests` | 7 | 0 | 0 |
+| `FullDisplayTests` | 4 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoryExtentTests` | 25 | 0 | 0 |
+| `HistoryIndexFilesTests` | 3 | 0 | 1 |
+| `HistoryReaderCheckpointTests` | 7 | 0 | 0 |
+| `HistoryReaderStateTailTests` | 4 | 0 | 0 |
+| `InlineSkillPillTests` | 14 | 0 | 1 |
+| `MarkdownSourceReconciliationTests` | 7 | 0 | 0 |
+| `MarkdownStreamingCorrectnessTests` | 9 | 0 | 0 |
+| `MarkdownStreamingTests` | 2 | 0 | 0 |
+| `MarkdownTextSurfaceTests` | 6 | 0 | 3 |
+| `MessageDetailTests` | 9 | 0 | 0 |
+| `NativeMarkdownSizingTests` | 4 | 0 | 0 |
+| `NativeMarkdownSurfaceStreamingTests` | 4 | 0 | 0 |
+| `NativeMarkdownViewportTests` | 4 | 0 | 0 |
+| `NativeTranscriptDocumentTests` | 10 | 0 | 0 |
+| `NativeTranscriptSafetyTests` | 5 | 0 | 0 |
+| `NativeTranscriptTests` | 5 | 0 | 0 |
+| `ReplySourceTests` | 12 | 0 | 0 |
+| `ResponseChronologyTests` | 14 | 0 | 0 |
+| `ResponseTimelinePresentationTests` | 13 | 0 | 0 |
+| `SendImmediacyTests` | 14 | 0 | 0 |
+| `SideRowPresentationTests` | 1 | 0 | 0 |
+| `StableToolPresentationTests` | 10 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentSteeringPresentationTests` | 10 | 0 | 0 |
+| `SubagentTranscriptTests` | 11 | 0 | 0 |
+| `TimelineStreamingFastPathTests` | 2 | 0 | 0 |
+| `ToolCallSummaryTests` | 4 | 0 | 0 |
+| `TranscriptActivityTests` | 11 | 0 | 0 |
+| `TranscriptDisclosureTests` | 15 | 0 | 0 |
+| `TranscriptFindTests` | 11 | 0 | 0 |
+| `TranscriptMarkdownTests` | 9 | 0 | 0 |
+| `TranscriptNativeMessageKindBehaviourTests` | 18 | 0 | 0 |
+| `TranscriptNativePaneBehaviourTests` | 16 | 0 | 0 |
+| `TranscriptNativeRowBehaviourTests` | 19 | 0 | 0 |
+| `TranscriptNativeWorkBehaviourTests` | 21 | 0 | 0 |
+| `TranscriptPageStressTests` | 24 | 0 | 0 |
+| `TranscriptPagingTests` | 6 | 0 | 0 |
+| `TranscriptRevealTests` | 10 | 0 | 0 |
+| `TranscriptSwitchFirstFrameTests` | 1 | 0 | 0 |
+| `TranscriptWorkRowTests` | 15 | 0 | 0 |
+| `TurnAccountingTests` | 13 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+
+Exact final test commands (run from this worktree):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round4-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round4-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests
+
+# round4-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round4-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round4-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round4-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round4-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round4" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+Each native run acquired the shared `full-lane.lock` with an owner containing
+`a130-transcript`, its PID and timestamp, and released only that owned lock in
+`finally`, including intentional failures. Serial-lane classes ran alone; no
+`LifecycleHelperTests` mixing, extra DerivedData root or named result bundle was
+used. Only generated journals, in-memory fixture vaults and isolated test-host
+windows were used. `scripts/test-macos.sh` regenerated the project on each run;
+no files or project registrations were added.
+
+Exact earlier commands are below, with identical invocations grouped by log
+name. They use the same exported `PI_BUILD_ROOT` and lock wrapper. Each mutation
+was applied only for its named run and restored in `finally`.
+
+```sh
+
+# round4-failing-first.log, round4-fixed.log, round4-fixed-complete.log, round4-fixed-all.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round4-managed-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSavedManagedRowsKeepTheirDisplayedAgentAndUserText \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSidePaneProjectionEqualsItsSavedAndLiveUserRows
+
+# round4-agent-fallback-first.log, round4-mutation-agent-fallback.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testAgentDeliveryNotesAndUnavailableAttributionMatchTheCard
+
+# round4-other-rows-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRemainingRowKindsProjectTheirNativeContent \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testBranchSearchUsesItsDisplayedDetailWithoutAnExportHeading
+
+# round4-execution-first.log, round4-mutation-execution-disclosure.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExecutionFindUsesAndOpensItsRenderedTimeline
+
+# round4-result-rows-first.log, round4-mutation-result-disclosure.log, round4-mutation-result-row-context.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testStandaloneToolResultsMatchTheirNativeRowsSavedAndLive \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPairedToolResultsKeepTheirLiteralCardText
+
+# round4-caption-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExecutionCaptionsStaySearchableWithAndWithoutTimelineBodies
+
+# round4-caption-fixed.log, round4-mutation-execution-caption.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExecutionCaptionsStaySearchableWithAndWithoutTimelineBodies \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRemainingRowKindsProjectTheirNativeContent \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExecutionFindUsesAndOpensItsRenderedTimeline
+
+# round4-mutation-agent-overlay.log, round4-mutation-managed-user-mode.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSavedManagedRowsKeepTheirDisplayedAgentAndUserText
+
+# round4-mutation-agent-separator.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testAgentDeliveryProjectionEqualsNativeCardsSavedAndLive
+
+# round4-mutation-branch-heading.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testBranchSearchUsesItsDisplayedDetailWithoutAnExportHeading
+
+# round4-mutation-execution-projection.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRemainingRowKindsProjectTheirNativeContent \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExecutionFindUsesAndOpensItsRenderedTimeline
+
+# round4-mutation-focus-adoption.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testReconciliationAdoptsClampedFocusWithoutNewNavigation
+
+# round4-mutation-metadata-rows.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRemainingRowKindsProjectTheirNativeContent
+
+# round4-mutation-summary-disclosure.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSavedCompactionFindUsesTheNativeSummaryAndOpensIt
+
+# round4-mutation-summary-projection.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSavedCompactionFindUsesTheNativeSummaryAndOpensIt \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUserStatusAndSummaryProjectionEqualsNativeRowsSavedAndLive
+
+# round4-mutation-user-projection.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSavedUserFindCountsOnlyDisplayedTextAndKeepsPreviousHighlight \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUserStatusAndSummaryProjectionEqualsNativeRowsSavedAndLive \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSidePaneProjectionEqualsItsSavedAndLiveUserRows
+```
+
+`TranscriptBugGalleryTests` regenerated six images under
+`$PI_BUILD_ROOT/validation/gallery-round4`: `transcript-light.png`,
+`transcript-dark.png`, `transcript-narrow.png`, `rows-light.png`, `rows-dark.png`,
+and `rows-narrow.png`. All six were opened and visually inspected. The new scene
+shows the selected second user occurrence, rendered expanded summary, notice and
+agent delivery. Highlights remain visible in both appearances and at 360 points;
+body text and controls fit, with the existing compact metadata ellipsis at narrow
+width. The prior scene still shows both edit tails, list-marker highlight and an
+unclipped heading Copy control.
+
+`git diff --check` passed. No clone directories remain under this build root.
+No helper or wire behavior changed, so the full helper and Python wire/concurrent/
+acceptance lanes were not rerun; `TranscriptWirePageTests` covers the app model
+projection touched here. No assigned issue or owner decision remains unresolved.
+The lead retains independent review, the merged full gate and merge.

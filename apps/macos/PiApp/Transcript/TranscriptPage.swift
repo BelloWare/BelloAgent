@@ -812,7 +812,9 @@ struct ContentGeometry: Equatable {
         }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.
-        if message.kind == "toolResult", drawing == message.id, has(message.text) { open(.compaction(message.id)) }
+        if message.kind == "toolResult", drawing == message.id, hasProse(message.text) { open(.compaction(message.id)) }
+        if message.kind == "compaction", hasProse(message.text) { open(.compaction(message.id)) }
+        if message.kind == "execution", has(ConversationContent.transcriptText(message)) { open(.compaction(message.id)) }
         let call = scoped ?? message.toolCallID
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.

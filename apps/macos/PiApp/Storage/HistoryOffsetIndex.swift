@@ -156,6 +156,10 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         let statement = try query("SELECT id FROM visible WHERE n<\(before) AND role='user' ORDER BY n DESC LIMIT 1"); defer { sqlite3_finalize(statement) }
         return try next(statement) ? sqlite3_column_text(statement, 0).map { String(cString: $0) } : nil
     }
+    func firstUser() throws -> String? {
+        let statement = try query("SELECT id FROM visible WHERE role='user' ORDER BY n LIMIT 1"); defer { sqlite3_finalize(statement) }
+        return try next(statement) ? sqlite3_column_text(statement, 0).map { String(cString: $0) } : nil
+    }
     func userPositions(in range: Range<Int>) throws -> Set<Int> {
         let statement = try query("SELECT n FROM visible WHERE n>=\(range.lowerBound) AND n<\(range.upperBound) AND role='user'"); defer { sqlite3_finalize(statement) }
         var result: Set<Int> = []

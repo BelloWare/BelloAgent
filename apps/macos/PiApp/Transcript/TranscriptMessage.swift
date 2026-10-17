@@ -71,6 +71,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// What a user row with images and no text reads as. Display only: the
     /// message the model received is its images, with no text.
     static func imageOnlyText(_ count: Int) -> String { count == 1 ? "Image" : "\(count) images" }
+    static func compactionText(_ entry: [String: WireValue]) -> String { "Conversation summary:\n" + (entry["summary"]?.string ?? "") }
     /// Assistant rows: what the helper recorded of the request the row came
     /// from. The turn report reads it for a request the request log has no
     /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.

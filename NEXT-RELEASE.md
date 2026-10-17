@@ -16,6 +16,15 @@
 - [x] Tool Find uses the native card model's formatted JSON and decoded command/edit/read content, preserving saved/live input presentation and searchable file/agent labels. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Pending Find navigation keeps its match identity when refreshed results change its index. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find exposes and lays out an expanded tool-card body before counting matches, including quoted edit text beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps the existing highlight when rendered counts clamp its occurrence, without a new navigation request. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved user/status Find searches displayed text, including image-only labels and display overrides, without export headings; source export stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens compaction summaries using the saved row's exact display prefix. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens execution parts while preserving the visible caption, including executions with no timeline body. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches displayed branch, failure, version and request details without adding export headings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Managed-child Find preserves the first task's rendered presentation and later user messages' literal text. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved agent Find retains visible attribution and omits absent-note separators. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Agent cards with unavailable attribution search their displayed notice. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find distinguishes standalone Markdown tool-result rows from literal results paired with their call cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 
