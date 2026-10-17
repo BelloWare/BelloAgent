@@ -27,8 +27,10 @@ enum PiChartTicks {
             for factor in [1, 2, 2.5, 5] as [Double] {
                 if factor == 2.5 && power < 1 { continue }
                 let step = factor * pow(10, Double(power))
-                let intervals = Int(ceil(top / step - 1e-9))
-                guard intervals >= 2, intervals <= 12 else { continue }
+                guard step > 0, step.isFinite else { continue }
+                let count = ceil(top / step - 1e-9)
+                guard count >= 2, count <= 12, (count * step).isFinite else { continue }
+                let intervals = Int(count)
                 let score = top / (Double(intervals) * step) - abs(Double(intervals) - wanted)
                 if let current = best, score < current.score + 1e-12,
                    !(abs(score - current.score) < 1e-12 && step > current.step) { continue }
@@ -49,25 +51,31 @@ enum PiChartTicks {
 
     /// Every multiple of `step` inside `domain`.
     static func multiples(of step: Double, in domain: ClosedRange<Double>) -> [Double] {
-        guard step > 0 else { return [domain.lowerBound] }
+        guard step > 0, step.isFinite else { return [domain.lowerBound] }
         let first = ceil(domain.lowerBound / step - 1e-9), last = floor(domain.upperBound / step + 1e-9)
-        guard last >= first, last - first < 10_000 else { return [] }
-        return stride(from: first, through: last, by: 1).map { clean($0 * step) + 0 }
+        guard first.isFinite, last.isFinite, last >= first, last - first < 10_000 else { return [] }
+        return (0...Int(last - first)).map { clean((first + Double($0)) * step) + 0 }
+            .filter { $0.isFinite && domain.contains($0) }
     }
 
     /// An automatic domain from zero, widened to its ticks, and the step
     /// its ticks are on.
     static func automaticDomain(_ lower: Double, _ upper: Double, desiredCount: Int?, includesZero: Bool = true) -> (domain: ClosedRange<Double>, step: Double) {
+        guard lower.isFinite, upper.isFinite, lower <= upper else { return (0...1, 1) }
         if !includesZero, upper > lower, lower > 0 || upper < 0 {
             // Off zero: the data's own span, widened to the step's multiples.
             let step = numberStep(top: upper - lower, desiredCount: desiredCount).step
-            return (clean(floor(lower / step) * step)...clean(ceil(upper / step) * step), step)
+            let start = clean(floor(lower / step) * step), end = clean(ceil(upper / step) * step)
+            return ((start.isFinite ? min(start, lower) : lower)...(end.isFinite ? max(end, upper) : upper), step)
         }
         let top = max(abs(lower), abs(upper))
         guard top > 0 else { return (0...1, numberStep(top: 1, desiredCount: desiredCount).step) }
         let (step, intervals) = numberStep(top: top, desiredCount: desiredCount)
-        let end = clean(step * Double(intervals))
-        let domain = lower < 0 && upper <= 0 ? -end...0 : lower < 0 ? -clean(ceil(-lower / step) * step)...end : 0...end
+        let rounded = clean(step * Double(intervals))
+        let end = rounded.isFinite ? max(top, rounded) : top
+        let negative = clean(ceil(-lower / step) * step)
+        let start = negative.isFinite ? min(lower, -negative) : lower
+        let domain = lower < 0 && upper <= 0 ? -end...0 : lower < 0 ? start...end : 0...end
         return (domain, step)
     }
 
@@ -80,7 +88,9 @@ enum PiChartTicks {
     static func clean(_ value: Double) -> Double {
         guard value != 0, value.isFinite else { return value == 0 ? 0 : value }
         let magnitude = pow(10, 12 - floor(log10(abs(value))))
-        return (value * magnitude).rounded() / magnitude
+        guard magnitude > 0, magnitude.isFinite, (value * magnitude).isFinite else { return value }
+        let rounded = (value * magnitude).rounded() / magnitude
+        return rounded.isFinite ? rounded : value
     }
 
     // MARK: Dates

@@ -8,6 +8,8 @@ import AppKit
     private var copySource: CapturedBodyCopySource?
     private var notice = "" { didSet { refreshNotice() } }
     private var pageText = "", pageTotal = 0, pageOffset = 0, pageLoading = false
+    private var headersText = ""
+    private var lastCaptureRevision = 0
     private var lastPart: InspectorRequestModel.RawPart?
     private var lastRow: String?
     private var lastFocus = 0
@@ -33,6 +35,13 @@ import AppKit
     private struct PageKey: Equatable { let attempt: String; let part: InspectorRequestModel.RawPart; let offset: Int }
     private var row: InspectorRequestRow? { request.row }
     private var showsBody: Bool { request.raw == .request || request.raw == .response }
+    private var copyText: String {
+        switch request.raw {
+        case .metadata: request.metadataText
+        case .headers: headersText
+        default: pageText
+        }
+    }
 
     init(inspector: SessionInspectorModel, request: InspectorRequestModel, compact: Bool) {
         self.inspector = inspector; self.request = request; self.compact = compact
@@ -47,11 +56,17 @@ import AppKit
         else { refresh() }
     }
     func refresh() {
-        if lastRow != row?.id || lastPart != request.raw {
+        if lastCaptureRevision != request.captureRevision {
+            body?.stop(); body?.removeFromSuperview()
+            if displayed === body { displayed = nil }
+            body = nil; bodyKey = nil; bodyRoute = nil
+        }
+        if lastRow != row?.id || lastPart != request.raw || lastCaptureRevision != request.captureRevision {
             copySource = nil; pageOffset = 0; pageText = ""; pageTotal = 0
             pageTask?.cancel(); pageTask = nil; currentPage = nil
             if lastRow != row?.id { notice = "" }
             lastRow = row?.id; lastPart = request.raw
+            lastCaptureRevision = request.captureRevision
             rebuildToolbar()
         }
         search.text = request.query
@@ -91,7 +106,11 @@ import AppKit
             body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil)
             if let body { show(body) }
         case .headers:
-            let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:]), InspectorSectionTitle("Response headers"), CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])], spacing: 14)
+            let sent = CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:])
+            let received = CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])
+            headersText = [("Request headers", sent.text), ("Response headers", received.text)]
+                .filter { !$0.1.isEmpty }.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
+            let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), sent, InspectorSectionTitle("Response headers"), received], spacing: 14)
             let scroll = PageScrollView(column: column); scroll.setAccessibilityIdentifier("inspector-raw-headers"); show(scroll)
         case .metadata:
             showText(request.metadataText, empty: request.metadataLoaded ? "No metadata record." : "Reading the metadata record…", label: "Request metadata", key: row.id + ":metadata")
@@ -119,7 +138,7 @@ import AppKit
         if text.isEmpty { host.cover(InspectorPlaceholder(symbol: "", title: empty)) }
         show(host)
     }
-    private func refreshCopy() { copy.isEnabled = showsBody ? copySource != nil : !request.metadataText.isEmpty || !pageText.isEmpty }
+    private func refreshCopy() { copy.isEnabled = showsBody ? copySource != nil : !copyText.isEmpty }
     private func refreshNotice() {
         status?.removeFromSuperview(); status = nil
         if !notice.isEmpty { status = PiKit.Note(notice, tone: .warning); addSubview(status!) }
@@ -159,13 +178,19 @@ import AppKit
 
     private func copyView() {
         if showsBody {
-            guard let copySource else { return }
+            guard let copySource, lastCaptureRevision == request.captureRevision else { return }
+            let revision = request.captureRevision
             Task {
-                do { let text = try await copySource.render(); NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); notice = "" }
+                do {
+                    let text = try await copySource.render()
+                    guard request.captureRevision == revision else { return }
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); notice = ""
+                }
                 catch { if !(error is CancellationError) { notice = error.localizedDescription } }
             }
         } else {
-            let text = request.raw == .metadata ? request.metadataText : pageText
+            let text = copyText
+            guard !text.isEmpty else { return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
         }
     }
@@ -199,7 +224,7 @@ import AppKit
     private func clear() async {
         guard let workspace = inspector.workspace else { return }
         guard await PiQuestion.shared.confirm("Clear this chat's capture bodies?", "Remove current memory bodies and this chat's retained payload references. Request metrics, message links, conversation history and exported copies stay.", action: "Clear", destructive: true) else { return }
-        do { try await workspace.clearCaptures(sessionID: request.sessionID); inspector.refresh() } catch { notice = error.localizedDescription }
+        do { try await workspace.clearCaptures(sessionID: request.sessionID); request.capturesCleared(); inspector.refresh() } catch { notice = error.localizedDescription }
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {

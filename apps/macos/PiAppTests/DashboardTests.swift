@@ -35,6 +35,67 @@ final class DashboardTests: XCTestCase {
         DashboardFilter(from: Date(timeIntervalSince1970: 1900), until: Date(timeIntervalSince1970: 2001), status: status, bucketCount: 2)
     }
 
+    func testTinyReportedCostResolvesAChartLayout() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        var value = metadata(id: UUID().uuidString)
+        value["gateway"] = .object(["version": .number(1), "cost": .object(["status": .string("reported"), "usd": .number(1e-300)])])
+        try await save(archive, value)
+        var selected = filter(); selected.sessionID = "session"
+        let report = try await archive.dashboard(selected)
+        XCTAssertEqual(report.gateway.costUSD, 1e-300)
+        let window = selected
+        await MainActor.run {
+            let spec = ReportChartSpec.make(buckets: report.buckets, metric: .cost, latency: .firstToken, domain: window.from...window.until)
+            let layout = PiChartLayout.resolve(spec, size: CGSize(width: 700, height: 300), scale: 2)
+            XCTAssertTrue(layout.y.domain.lowerBound.isFinite)
+            XCTAssertTrue(layout.y.domain.upperBound.isFinite)
+            XCTAssertLessThan(layout.y.domain.lowerBound, layout.y.domain.upperBound)
+            XCTAssertGreaterThanOrEqual(layout.y.domain.upperBound, 1e-300)
+            XCTAssertGreaterThan(layout.yTicks.count, 1)
+            XCTAssertTrue(layout.yTicks.allSatisfy { $0.value.isFinite && $0.position.isFinite })
+            XCTAssertEqual(layout.yTicks.map(\.value), layout.yTicks.map(\.value).sorted())
+        }
+        try await archive.close()
+    }
+
+    func testReportPagesReachEveryRetainedRequestAndSession() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        let writer = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
+        try writer.execute("""
+        WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<100097)
+        INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,outcome,wall,updated,metadata,dispatch)
+        SELECT printf('%08d',i),printf('%08d',i),'workspace','turn','turn','openai-responses','router','completed',1995,1995,x'7b7d',1000 FROM n
+        """)
+        let before = try await archive.requestPage(filter(), offset: 99_968)
+        XCTAssertEqual(before.selectedRequests, 100_097); XCTAssertEqual(before.requests.count, 128); XCTAssertTrue(before.hasNext)
+        do {
+            let last = try await archive.requestPage(filter(), offset: 100_096)
+            XCTAssertEqual(last.requests.map(\.id), ["00000001"]); XCTAssertFalse(last.hasNext)
+        } catch { XCTFail("The advertised final request page failed: \(error)") }
+        do {
+            let refreshed = try await archive.dashboard(filter(), offset: 100_096)
+            XCTAssertEqual(refreshed.requests.map(\.id), ["00000001"]); XCTAssertFalse(refreshed.hasNext)
+        } catch { XCTFail("Refreshing the final request page failed: \(error)") }
+        let chatsBefore = try await archive.sessionSummaries(filter(), offset: 99_968)
+        XCTAssertTrue(chatsBefore.hasNext)
+        do {
+            let chats = try await archive.sessionSummaries(filter(), offset: 100_096)
+            XCTAssertEqual(chats.sessions.count, 1); XCTAssertFalse(chats.hasNext)
+        } catch { XCTFail("The final chat page failed: \(error)") }
+        for offset in [-1, Int.min] {
+            do { _ = try await archive.requestPage(filter(), offset: offset); XCTFail("Reject negative offset") } catch { }
+            do { _ = try await archive.dashboard(filter(), offset: offset); XCTFail("Reject negative offset") } catch { }
+            do { _ = try await archive.sessionSummaries(filter(), offset: offset); XCTFail("Reject negative offset") } catch { }
+        }
+        let beyond = try await archive.requestPage(filter(), offset: Int.max)
+        XCTAssertTrue(beyond.requests.isEmpty); XCTAssertFalse(beyond.hasNext)
+        try await archive.close()
+    }
+
     func testExactNearestRankAndIndependentBucketSamplesNeverAveragePercentiles() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })

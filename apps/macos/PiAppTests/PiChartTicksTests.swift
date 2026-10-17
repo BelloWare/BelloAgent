@@ -36,6 +36,23 @@ final class PiChartTicksTests: XCTestCase {
         XCTAssertEqual(PiChartTicks.automaticDomain(0, 118, desiredCount: nil, includesZero: false).domain.lowerBound, 0)
     }
 
+    func testFiniteExtremesKeepFiniteOrderedDomainsAndTicks() {
+        let values: [Double] = [.leastNonzeroMagnitude, .leastNormalMagnitude, 1e-300, 1e-295, 1e295, 1e308, .greatestFiniteMagnitude]
+        for value in values {
+            for (lower, upper, zero) in [(0.0, value, true), (-value, 0, true), (value / 2, value, false), (-value, -value / 2, false)] {
+                let (domain, step) = PiChartTicks.automaticDomain(lower, upper, desiredCount: nil, includesZero: zero)
+                XCTAssertTrue(domain.lowerBound.isFinite && domain.upperBound.isFinite, "\(lower)...\(upper)")
+                XCTAssertLessThan(domain.lowerBound, domain.upperBound)
+                XCTAssertLessThanOrEqual(domain.lowerBound, lower); XCTAssertGreaterThanOrEqual(domain.upperBound, upper)
+                XCTAssertTrue(step > 0 && step.isFinite)
+                let ticks = PiChartTicks.multiples(of: step, in: domain)
+                XCTAssertFalse(ticks.isEmpty)
+                XCTAssertTrue(ticks.allSatisfy { $0.isFinite && domain.contains($0) })
+                XCTAssertEqual(ticks, ticks.sorted())
+            }
+        }
+    }
+
     /// (from, until, Swift Charts' ticks), all seconds since 1970.
     static let dates: [(Double, Double, [Double])] = [
         (1791271535.5084214, 1791271622.6043866, [1791271550,1791271565,1791271580,1791271595,1791271610]),

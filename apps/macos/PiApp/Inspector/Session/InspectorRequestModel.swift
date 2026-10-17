@@ -37,6 +37,8 @@ enum InspectorLoad<Value> {
     @Published private(set) var growingBytes: Int?
     /// The metadata record as formatted JSON, for Raw; formatted off the main actor.
     @Published private(set) var metadataText = ""
+    /// Unavailable captures retire Raw's retained documents and copy sources too.
+    @Published private(set) var captureRevision = 0
     /// Which part of the capture Raw shows, and what it searches for.
     @Published var raw: RawPart = .request
     @Published var query = ""
@@ -101,6 +103,22 @@ enum InspectorLoad<Value> {
         loadVisibleTab()
     }
 
+    func refresh() {
+        if active { loadMetadata() }
+    }
+
+    func capturesCleared() {
+        cancel()
+        metadata = [:]; metadataText = ""; metadataLoaded = false; metadataFailure = nil
+        invalidateBodies()
+    }
+
+    private func invalidateBodies() {
+        bodyGeneration += 1; bodyTask?.cancel(); bodyTask = nil
+        conversation = .idle; delta = nil; deltaNote = nil; response = .idle; responseBytes = 0; growingBytes = nil
+        captureRevision &+= 1
+    }
+
     func cancel() {
         generation += 1
         bodyGeneration += 1
@@ -137,6 +155,10 @@ enum InspectorLoad<Value> {
                     guard let current = self.row, current.id == id else { return }
                     let value = try await self.readMetadata(current)
                     guard !Task.isCancelled, self.generation == generation, self.row?.id == id else { return }
+                    if ["request", "response"].contains(where: { kind in
+                        guard let state = value[kind]?.object?["state"]?.string else { return false }
+                        return self.metadata[kind] != value[kind] && !MessageBodyReader.canReadRetained(state)
+                    }) { self.invalidateBodies() }
                     if self.metadata["request"] != value["request"] {
                         // The page may have opened before the request capture
                         // arrived. An empty/partial parse is not its final body.

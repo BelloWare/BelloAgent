@@ -141,7 +141,7 @@ extension PayloadArchive {
 extension DashboardQueryEngine {
     func usageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, cached: MenuBarSnapshot? = nil, includeLatency: Bool = false, from override: Date? = nil, includeFamily: Bool = false) throws -> MenuBarSnapshot {
         guard until.timeIntervalSince1970.isFinite, until.timeIntervalSince1970 >= 0,
-              (0...100_000).contains(offset), offset % MenuBarSnapshot.pageSize == 0 else { throw CaptureFailure.unavailable }
+              offset >= 0, offset % MenuBarSnapshot.pageSize == 0 else { throw CaptureFailure.unavailable }
         try Task.checkCancellation()
         if let override { guard override.timeIntervalSince1970.isFinite, override.timeIntervalSince1970 >= 0, override < until else { throw CaptureFailure.unavailable } }
         var timeAndIdentity = "wall<?"

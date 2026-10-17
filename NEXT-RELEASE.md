@@ -2,6 +2,17 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] Tiny reported costs and subnormal values produce finite chart domains and ticks without trapping. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Clearing captures and refreshing an open Inspector retires parsed/Raw bodies and pending copies, then reloads purged metadata. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report request paging reaches retained rows beyond 100,000 with the existing 128-row page size. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Refreshing a report on a request page beyond 100,000 keeps that page available. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report chat paging also removes the obsolete 100,000-offset ceiling, retaining 64-row pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Menu and Inspector usage model pages reach every retained route, keeping 24-row aligned pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw → Headers Copy includes both displayed, masked header sections. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Empty Raw Headers and Links no longer enable Copy just because request metadata exists. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
