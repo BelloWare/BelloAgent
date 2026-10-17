@@ -613,14 +613,15 @@ enum TranscriptCardFaces {
         // written already, so it is never "not applied": its outcome is unknown.
         let label = (request.mode == "edit" ? "Requested edit" : "Requested content")
             + (outcome == .done ? "" : outcome == .running ? " · in progress" : outcome == .unknown ? " · outcome unknown"
+               : outcome == .held ? " · runs on Resume"
                : request.mode == "edit" ? " · not applied" : " · not written")
             + (request.complete ? "" : " · arguments truncated")
-        let tint = outcome == .done ? TranscriptNSPalette.muted : [.running, .unknown].contains(outcome) ? TranscriptNSPalette.warning : TranscriptNSPalette.danger
+        let tint = outcome == .done ? TranscriptNSPalette.muted : [.running, .unknown, .held].contains(outcome) ? TranscriptNSPalette.warning : TranscriptNSPalette.danger
         banner.update(text: label, face: TranscriptCardFaces.banner, environment: environment, swiftUILines: true, color: tint)
         path.update(path: pathText ?? "", color: TranscriptNSPalette.faint, open: link, enabled: environment.isEnabled, in: self)
         path.label.isHidden = pathText == nil
         bannerRule.fill = TranscriptNSPalette.hair
-        body.alphaValue = [.failed, .cancelled, .unknown].contains(outcome) ? 0.72 : 1
+        body.alphaValue = [.failed, .cancelled, .unknown, .held].contains(outcome) ? 0.72 : 1
         tooLarge.update(text: "Diff preview unavailable — \(transcriptNumber(request.lines, environment.locale)) lines. Full content is available below.", face: TranscriptCardFaces.message,
                         environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         // The whole texts are set only where they can be shown: a diff that

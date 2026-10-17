@@ -68,6 +68,24 @@ final class RunHoldTests: XCTestCase {
         XCTAssertEqual(JournalRunHold.read(path: try journal([stopped], padding: 40_000), window: 65_536), .held("paused"))
     }
 
+    /// Round 8: a root whose own Resume was accepted before its sides were
+    /// resumed keeps their ids (`costPausedMembers`) without `costPaused`; a
+    /// journal-only read shows the family's pause, as the helper does.
+    func testAJournalWithSidesStillWaitingReadsAsPaused() throws {
+        var waiting = finished; waiting["costPausedMembers"] = .array([.string("side")])
+        XCTAssertEqual(JournalRunHold.read(path: try journal([running, waiting])), .held("paused"))
+        var none = finished; none["costPausedMembers"] = .array([])
+        XCTAssertEqual(JournalRunHold.read(path: try journal([running, none])), .clear)
+    }
+
+    /// Round 8: a family Resume reaches paused sides ancestors first, so a
+    /// nested side never meets its still-paused parent's pause.
+    @MainActor func testPausedSidesResumeAncestorsFirst() {
+        let parents = ["nested": "side", "side": "root", "other": "root", "deeper": "nested"]
+        let order = WorkspaceModel.ancestorsFirst(["deeper", "nested", "other", "side"]) { parents[$0] }
+        XCTAssertEqual(order, ["other", "side", "nested", "deeper"])
+    }
+
     @MainActor func testADisplaysHoldFollowsItsRun() {
         let view = SessionDisplay(id: "c")
         XCTAssertNil(view.runHold)

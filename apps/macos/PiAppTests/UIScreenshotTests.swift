@@ -1780,9 +1780,11 @@ final class UIScreenshotTests: XCTestCase {
         session.draft = "Please read fixture README.md, then summarise the retry budget it describes."
         model.send(sessionID: chat.id)
         let stopped = Date().addingTimeInterval(90)
-        while Date() < stopped, !(session.failureCode == SessionDisplay.costLimitCode && !session.hasWork) { try await settle(0.25) }
-        XCTAssertEqual(session.failureCode, SessionDisplay.costLimitCode, "The run stopped at the chat's cost limit: \(session.failureMessage ?? session.notice)")
-        XCTAssertEqual(session.failureMessage, "This chat reached its $0.001 cost limit ($0.00125 spent). Raise the limit to continue.")
+        // 0.1.129: the read reply crosses the limit; the chat pauses with
+        // that call held, and Resume runs it after a raise.
+        while Date() < stopped, !(session.costPaused && !session.busy) { try await settle(0.25) }
+        XCTAssertTrue(session.costPaused, "The run paused at the chat's cost limit: \(session.notice)")
+        XCTAssertEqual(session.presentedMessages.last?.failureCode, SessionDisplay.costPausedCode)
         try await settle(1.0)
         try await pair("18-cost-limit-notice")
         // 18a · The chat's Session Inspector, which the usage pill opens: its
@@ -1810,10 +1812,10 @@ final class UIScreenshotTests: XCTestCase {
         CostLimitPopover.shared.close(); try await settle(0.4)
         try await model.setCostLimit(.usd(10), for: chat.id)
         try await pair("18c-cost-limit-raised", hold: 1.0)
-        model.costLimitNotice(.continueRun, sessionID: chat.id, anchor: nil)
+        model.resumeRun(sessionID: chat.id)
         let resumed = Date().addingTimeInterval(90)
-        while Date() < resumed, session.failureMessage != nil || session.hasWork || session.loading { try await settle(0.25) }
-        XCTAssertNil(session.failureMessage, "Continue took the stopped turn on")
+        while Date() < resumed, session.costPaused || session.hasWork || session.loading || session.resuming { try await settle(0.25) }
+        XCTAssertFalse(session.costPaused, "Resume took the paused turn on")
         // 18d · Settings → Usage & capture: the default every chat without its
         // own limit runs under. The Spending group is the section's last, so
         // the page is scrolled to its end first.

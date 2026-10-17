@@ -25,7 +25,7 @@ extension AgentSession {
         subagentCoordinator = coordinator
         let ownerID = id, runtimeID = displayEpoch
         familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, runtimeID: runtimeID, through: generation) } }
-        if steering, !isSubagent { enableAgentSteering(await coordinator.steering) }
+        if steering, !isSubagent { await enableAgentSteering(await coordinator.steering) }
     }
     func installManagedCancellation(_ coordinator: SubagentCoordinator, key: SubagentCallKey) {
         managedCancellation = { Task { await coordinator.cancel(key) } }

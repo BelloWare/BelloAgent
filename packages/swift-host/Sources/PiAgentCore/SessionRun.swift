@@ -8,7 +8,11 @@ extension AgentSession {
         turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
         if !costLimitReached, accountingFailure == nil { familyStopReason = nil; budgetStopIssued = false }
         presentationUtility = compactOnly || titleTask
-        if retrying || continuing, let root = taskRootID {
+        // A continuation of a context whose user rows a compaction summarized
+        // has no task root left: it takes its continued turn's (or its own),
+        // so its execution, and the family it resumes, have one.
+        if retrying || continuing, let root = taskRootID ?? (continuing ? continuedTurn ?? activeSubmission?.turnID : nil) {
+            if taskRootID == nil { taskRootID = root }
             beginPresentedTask(root)
             activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
             activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
@@ -61,6 +65,7 @@ extension AgentSession {
             attempt += 1
             // Every attempt, the first and each retry, is a model request:
             // none goes once the chat's reported spend reaches its limit.
+            if costPaused { throw Self.costHoldError }
             try enforceCostLimit()
             let generation=beginObservationGeneration(profile:profile)
             // Each attempt's own duration; the back-off below is not model time.
@@ -68,7 +73,12 @@ extension AgentSession {
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
                 modelActive = true
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let lifecycle = try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages)
+                let client = self.client, apiKey = self.apiKey, sessionID = id, cacheSessionID = promptCacheSessionID
+                // A cost-limit pause cuts this request (`abortModelRequests`).
+                let reply = try await abortable { [weak self] in
+                    try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:purpose,lifecycle:lifecycle,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                }
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch is UnexplainedIncompleteCancellation {
@@ -90,11 +100,34 @@ extension AgentSession {
                 try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(attempts), "reason": JSON(error.message)]
                 runStatus = .retrying; event("retry", retryInfo)
-                try await Task.sleep(nanoseconds: UInt64(retry.delayMs(attempt: attempt) * 1_000_000))
+                let delay = UInt64(retry.delayMs(attempt: attempt) * 1_000_000)
+                try await abortable { try await Task.sleep(nanoseconds: delay) }
                 runStatus = .running; event("state")
                 if let next = try await refresh() { (profile, messages, instructions, tools) = next }
             }
         }
+    }
+    /// Runs a model request (or its retry back-off) so a cost-limit pause can
+    /// cut it alone, leaving the run and its tools in place. Stop still
+    /// cancels it through the run task.
+    func abortable<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        let task = Task { try await body() }
+        modelRequestAbort = { task.cancel() }
+        defer { modelRequestAbort = nil }
+        if costPaused { task.cancel() }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+    /// The held calls of the newest reply, in its order, still without results.
+    func heldToolCalls() -> ([ToolCall], [String]) {
+        let held = Set(costPendingCalls)
+        guard let index = context.lastIndex(where: { $0.role == "assistant" }) else { return ([], []) }
+        // Providers may reuse call IDs across replies: only this reply's results count.
+        let reply = context[index], answered = Set(context[context.index(after:index)...].compactMap { $0.role == "toolResult" ? $0.toolCallId : nil })
+        let calls = reply.content.compactMap { block -> ToolCall? in
+            guard block["type"].text == "toolCall", let id = block["id"].text, let name = block["name"].text, held.contains(id), !answered.contains(id) else { return nil }
+            return ToolCall(id:id,name:name,arguments:block["arguments"])
+        }
+        return (calls, reply.requestAttemptIDs ?? [])
     }
     func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
         countAttempt(observation)
@@ -131,7 +164,12 @@ extension AgentSession {
     func run(compactOnly: Bool) async {
         do {
             try Task.checkCancellation(); state = .running; runStatus = .running; try persistState(active:true); event("state")
-            if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
+            if compactOnly {
+                manualCompactionInFlight = true; manualCompactionInFlightFocus = compactionFocus
+                try await compactContext()
+                manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
+                costPendingCompaction=false; costPendingCompactionFocus=nil
+                if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
                 var startedFollowUp=false
@@ -149,11 +187,71 @@ extension AgentSession {
                 let continued=continuing
                 continuing=false
                 if continued { try startAgentEpoch() }
+                // Resume after a cost-limit pause: parked sub-agent turns go on
+                // under this run's execution, before anything is asked again.
+                if resumingCostPause, !isSubagent {
+                    resumingCostPause=false
+                    do { try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount) }
+                    catch {
+                        // Stopped (or closed) while the pause's children were
+                        // still settling: the family stays paused for the next
+                        // Resume, and their runs are halted, not waited for.
+                        costPaused = true; costResumePending = false; costPauseCount &+= 1; try? persistState(active:true,durable:true)
+                        if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
+                        throw error
+                    }
+                }
+                // The paused work is taken: the pause is over on disk too.
+                if costResumePending {
+                    costResumePending = false; try persistState(active:true,durable:true)
+                    // Taken and saved: the root no longer needs to name this side.
+                    if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+                }
+                // Tool calls the pause held before they started run first,
+                // from the reply that issued them: it is never asked again.
+                if continued, !costPendingCalls.isEmpty {
+                    let (calls, attempts) = heldToolCalls()
+                    // Durable before any effect: after a crash these calls may
+                    // have begun, so recovery gives them unknown outcomes and
+                    // nothing replays them.
+                    costPendingCalls = []; try persistState(active:true,durable:true)
+                    if !calls.isEmpty {
+                        currentAttemptIDs = attempts
+                        try await runToolBatch(calls)
+                        await flushRequestLinks()
+                        boundary=context; try persistState(active:true); event("turn_end")
+                    } else { try persistState(active:true) }
+                }
+                if compactOnResume {
+                    // The manual compaction the pause cut, done again once parked
+                    // work is released and held calls have run (a failure here
+                    // cannot strand the family).
+                    compactOnResume=false
+                    // With the focus it was given, also after a reopen.
+                    compactionFocus = costPendingCompactionFocus
+                    manualCompactionInFlight = true; manualCompactionInFlightFocus = costPendingCompactionFocus
+                    // Nothing left to summarize is not a reason to strand the rest.
+                    do { try await compactContext() } catch let error as AgentError where error.code == "compact_unavailable" {}
+                    manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
+                    costPendingCompaction=false; costPendingCompactionFocus=nil; try persistState(active:true,durable:true)
+                }
+                // Nothing of the parent's own was cut off: wait for the resumed
+                // family as the turn's end would, and ask the model only once
+                // something arrives for it.
+                var familyOnly=false
+                if familyWaitResume {
+                    familyWaitResume=false
+                    if let coordinator=agentCoordinator, try await coordinator.boundary(self,final:true) {} else { familyOnly=true }
+                }
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
                 var rounds=0
-                while true {
+                if familyOnly {
+                    try finishPresentedTask("completed")
+                    if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
+                }
+                while !familyOnly {
                     // Pi's agent loop has no limit on model requests per run.
                     try Task.checkCancellation(); rounds += 1
                     // Retry repeats the failed model request before pending steering
@@ -161,7 +259,7 @@ extension AgentSession {
                     let resumingFailedRequest=retryFirstRequest && rounds == 1
                     // Each round makes a model request. At the chat's cost
                     // limit it stops here, before pending steering is delivered.
-                    try enforceCostLimit()
+                    try await enforceCostHold(); try enforceCostLimit()
                     let humanDrained=resumingFailedRequest ? false : try await drainSteering()
                     let agentDrained=resumingFailedRequest || agentCoordinator == nil ? false : try await agentCoordinator!.boundary(self,final:false)
                     let drained = humanDrained || agentDrained
@@ -170,6 +268,16 @@ extension AgentSession {
                     // queued edit took the hold first, or the message left)
                     // settles without asking the model about the old context.
                     if rounds == 1, !retryFirstRequest, !continued, !startedFollowUp, !drained { break }
+                    // A resumed sub-agent turn that had already answered when
+                    // its family paused has nothing to ask the model again. It
+                    // still takes its final boundary: steering accepted
+                    // meanwhile is delivered (and answered) before it seals.
+                    if rounds == 1, continued, isSubagent, !drained, let tail=continuationTail, !Self.continues(from:tail) {
+                        if let coordinator=agentCoordinator, try await coordinator.boundary(self,final:true) { continue }
+                        try finishPresentedTask("completed")
+                        if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
+                        break
+                    }
                     let resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
@@ -308,22 +416,33 @@ extension AgentSession {
             let cancelled = Task.isCancelled || error is CancellationError
             modelActive = false
             let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }
-            if let budgetError, familyBudgetEnabled || isSubagent {
+            if costResumePending {
+                // The Resume's run ended before it took the paused work: the
+                // family is still paused, for the next Resume, and its parked
+                // turns stay parked (never cancelled as a stopped run's are).
+                costResumePending = false; resumingCostPause = false; costPaused = true; costPauseCount &+= 1
+            }
+            // At the limit every chat pauses (`pauseAtCostLimit`); a family's
+            // sub-agent turns are parked, not cancelled or waited for.
+            if let budgetError {
                 stopFamilyAtLimit(budgetError)
-                if !isSubagent, let coordinator = agentCoordinator {
-                    state = .stopping; setFamilyWaiting(true); event("state")
-                    await Task { await coordinator.finishAtLimit(owner:id) }.value
-                }
-            } else if budgetError == nil, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
+            } else if budgetError == nil, !costPaused, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount
                 stop()
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
             }
             let error: Error = familyStopReason ?? error
             setFamilyWaiting(false)
-            queuePaused=true; runStatus=familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
-            errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
-            errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
+            // Paused, not failed: Resume goes on from here once the limit is
+            // raised. A managed child's turn is parked by its coordinator.
+            let pausedAtLimit = costPaused || isSubagent && budgetError != nil
+            // A manual compaction the pause cut is done again on Resume
+            // (already saved with the pause; `markCutCompaction`).
+            if costPaused { markCutCompaction() }
+            manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
+            queuePaused=true; runStatus=pausedAtLimit || familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            errorMessage=pausedAtLimit ? (isSubagent ? "Paused at the shared cost limit." : costPausedMessage) : (error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
+            errorCode=pausedAtLimit ? Self.costLimitCode : runStatus == .failed ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }
             if let partial=interruptedPartial(attemptIDs:partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }) {
                 // Publishing links can suspend below. Once the durable row
@@ -346,6 +465,19 @@ extension AgentSession {
         // the continuation's own receipt.
         retrySubmission = runStatus == .idle || activeSubmission?.turnID.hasPrefix(Self.continuePrefix) == true ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
+        // The pause landed as the run was settling: the run's own outcome
+        // stays, but the chat waits for the family's Resume.
+        if costPaused, !isSubagent, !hasWorkAfterCostPause {
+            // The reply that crossed the limit was the run's last word:
+            // nothing waits for Resume. The chat is simply at its limit, and
+            // a new message is refused there as before.
+            clearCostPauseWithoutWork()
+            if state != .error { state = .idle; runStatus = .idle }
+        }
+        if costPaused, state != .error {
+            queuePaused=true; state = .paused; runStatus = .cancelled
+            errorCode=Self.costLimitCode; errorMessage=errorMessage ?? costPausedMessage
+        }
         // A reply the journal refused has its log set aside before the run
         // is saved as settled: a reopen of a settled run removes the log.
         if partialReplyUnsaved { removeStreamedLog() }

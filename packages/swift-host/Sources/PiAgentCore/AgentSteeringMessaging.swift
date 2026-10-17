@@ -15,9 +15,9 @@ extension AgentSteeringCoordinator {
             if let receipt = try await job.owner.agentReceipt(key,digest:digest) { await lock.release(); return receipt }
             let state = await job.owner.agentState()
             try validateReply(call.arguments["reply_to"].text,child:child.id,author:"parent",state:state)
-            let message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child.id,turn:lease.turn,author:"subagent",kind:call.arguments["kind"].text!,text:call.arguments["message"].text!,task:job.plan.origin.description,epoch:lease.epoch,replyTo:call.arguments["reply_to"].text)
+            let message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child.id,turn:lease.turn,author:"subagent",kind:call.arguments["kind"].text!,text:call.arguments["message"].text!,task:job.plan.origin.description,epoch:lease.currentEpoch,replyTo:call.arguments["reply_to"].text)
             let receipt: JSON = ["version":3,"accepted":true,"route":"report","child_id":JSON(child.id),"turn":JSON(lease.turn),"message_id":JSON(message.id)]
-            let op = try await job.owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,message:message,epoch:lease.epoch),generation:lease.generation)
+            let op = try await job.owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,message:message,epoch:lease.currentEpoch),generation:lease.currentGeneration)
             // Child mirror repairs a lost sender receipt without reporting again.
             try await child.appendAgentRecord(JournalRecordKind.agentOperation,op,owner:job.owner.id)
             await lock.release(); await signal(job.owner.id).pulse(); return receipt
@@ -32,6 +32,9 @@ extension AgentSteeringCoordinator {
             do {
                 let delivered = try await deliver(owner:job.owner,recipient:session,childTurn:lease)
                 if final, !delivered {
+                    // A cost-limit pause defers the seal: the runner parks the
+                    // turn and Resume finds its answer already in place.
+                    if paused.contains(job.owner.id) { throw CancellationError() }
                     var terminal = jobs[lease.id] ?? job
                     terminal.turn.result = await session.agentResult(lease,plan:job.plan,cancelled:terminal.cancelled)
                     terminal.turn.status = terminal.turn.result!.status
@@ -44,6 +47,8 @@ extension AgentSteeringCoordinator {
         let lock = gate(session.id), wake = signal(session.id)
         while true {
             try Task.checkCancellation()
+            // Paused at the cost limit: the run ends here, holding its family.
+            if await session.costPaused { throw AgentSession.costHoldError }
             let revision = await wake.revision
             try await lock.acquire()
             do {
@@ -155,6 +160,8 @@ extension AgentSteeringCoordinator {
             let elapsed = start.duration(to:.now), ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
             let reason: String?
             if targets.isEmpty { reason = "empty" }
+            // Held at the cost limit: a wait ends (it is not cut) and says so.
+            else if await parent.costPaused { reason = "paused" }
             else if mode == "any" ? completed > 0 : completed == targets.count { reason = "settled" }
             else if inbox { reason = "message" }
             else if await parent.hasAgentUserSteering { reason = "steering" }

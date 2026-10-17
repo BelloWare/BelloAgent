@@ -174,7 +174,10 @@ extension AgentSession {
             await flushRequestLinks()
         } catch {
             if compactionState["phase"].text != "completed" {
-                if !Task.isCancelled, let fingerprint=compactionState["sourceFingerprint"].text {
+                // A cost-limit pause cut (or refused) it: not a failure of
+                // this context, so Resume compacts it again.
+                let paused = costPaused || (error as? AgentError)?.code == Self.costLimitCode || error is CancellationError
+                if !Task.isCancelled, !paused, let fingerprint=compactionState["sourceFingerprint"].text {
                     failedCompactionFingerprint=fingerprint
                     _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":["fingerprint":JSON(fingerprint)]],flush:true)
                 }

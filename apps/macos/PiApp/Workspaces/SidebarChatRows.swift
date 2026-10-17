@@ -109,7 +109,7 @@ struct ChatRowStats: Equatable {
         }
         let run = RunState(rawValue: state)
         guard run.isStopped else { return nil }
-        return (PiSessionState.label(state, costLimited: costLimited), run == .paused ? .piInfo : costLimited ? .piWarning : .piDanger)
+        return (PiSessionState.label(state, costLimited: costLimited), run == .paused ? (costLimited ? .piWarning : .piInfo) : costLimited ? .piWarning : .piDanger)
     }
     /// The states of a chat that is simply working: a turn, or its tool step.
     static let workingStates: Set<String> = [RunState.running.rawValue, "tool"]

@@ -96,7 +96,8 @@ import AppKit
         let available = !historical || (value.originalAvailability != nil && value.originalAvailability?.reason == nil)
         open.isEnabled = available && environment.isEnabled && (value.target != nil || value.operation == "subagent_report" && value.messageReference != nil)
         inspect.isEnabled = available && environment.isEnabled && value.target != nil
-        stop.isHidden = value.status.terminal || value.heldByUser || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
+        // A turn held at the cost limit is not running: nothing to stop until Resume.
+        stop.isHidden = value.status.terminal || value.heldByUser || value.summary?.pausedAtCostLimit == true || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
         stop.isEnabled = environment.isEnabled && value.status != .stopping
         buttons.invalidateIntrinsicContentSize(); buttons.needsLayout = true
     }

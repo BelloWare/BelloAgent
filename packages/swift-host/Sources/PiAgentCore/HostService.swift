@@ -599,6 +599,10 @@ public actor NativeHostService {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                     await didUnloadBudgetMember(value)
                 }
+                // No surviving root waits for a deleted side's Resume.
+                var forgotten: Set<String> = [id]
+                for (value, _) in family { forgotten.insert(value.id) }
+                for value in sessions.values { await value.forgetDeletedMembers(forgotten) }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
@@ -785,7 +789,10 @@ public actor NativeHostService {
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
-        case "run.continue": return try await session.continueRun(commandID: commandID, overrides: params)
+        case "run.continue":
+            // A paused family resumes only below its (root's) limit.
+            try await session.requireCostResumeRoom()
+            return try await session.continueRun(commandID: commandID, overrides: params)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":

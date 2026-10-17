@@ -169,6 +169,7 @@ extension SessionDisplay {
         beginTranscriptBatch(); defer { endTranscriptBatch() }
         if queue != run.queue { queue = run.queue }
         queuePaused = run.queuePaused
+        if costPaused != run.costPaused { costPaused = run.costPaused }
         if run.active {
             runState = .interrupted; runStatus = "interrupted"; uncertain = true
             failureMessage = "The previous run was interrupted before it finished. No model or tool request was replayed. Inspect tool effects before continuing."

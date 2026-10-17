@@ -14,7 +14,7 @@ enum TranscriptToolRow {
     nonisolated static func state(of tool: ToolView) -> TranscriptRowState {
         switch TranscriptActivity.outcome(of: tool) {
         case .running: return .running
-        case .cancelled, .unknown: return .stopped
+        case .cancelled, .unknown, .held: return .stopped
         case .failed: return .failed
         case .done: return .ok
         }
@@ -31,7 +31,7 @@ enum TranscriptToolRow {
         title(TranscriptActivity.actionParts(tool), outcome: TranscriptActivity.outcome(of: tool))
     }
     nonisolated private static func title(_ parts: TranscriptActivity.ActionParts, outcome: ActionOutcome) -> String {
-        outcome == .unknown || outcome == .cancelled ? TranscriptActivity.describe(parts, outcome: outcome).verb : parts.done
+        outcome == .unknown || outcome == .cancelled || outcome == .held ? TranscriptActivity.describe(parts, outcome: outcome).verb : parts.done
     }
     /// The collapsed line's summary: a failure's first line replaces the
     /// argument summary outright, because a row cannot say both.
@@ -52,8 +52,11 @@ enum TranscriptToolRow {
     /// ellipsized summary, so a long command never clips it.
     nonisolated static func suffix(of tool: ToolView) -> String? {
         let change = tool.added != nil || tool.removed != nil ? "+\(tool.added ?? 0) −\(tool.removed ?? 0)" : nil
-        guard TranscriptActivity.outcome(of: tool) == .unknown else { return change }
-        return [change, "· outcome unknown"].compactMap { $0 }.joined(separator: " ")
+        switch TranscriptActivity.outcome(of: tool) {
+        case .unknown: return [change, "· outcome unknown"].compactMap { $0 }.joined(separator: " ")
+        case .held: return [change, "· runs on Resume"].compactMap { $0 }.joined(separator: " ")
+        default: return change
+        }
     }
     /// What one call's row says and opens, worked out once, for the SwiftUI
     /// row and the native one alike. The call's arguments are read once: while

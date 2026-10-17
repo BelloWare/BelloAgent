@@ -12,6 +12,9 @@ struct DiscoveredSubagent: Sendable {
     /// Rebuildable UI ordinal in the owner's persisted acceptance order.
     var number: Int? = nil
     var effort: String? = nil
+    /// Unsealed and held at its family's cost limit (the owner's or the
+    /// child's saved `costPaused`): queued for Resume, not interrupted.
+    var costPaused = false
 }
 
 extension HistoryReader {
@@ -98,7 +101,8 @@ extension HistoryReader {
     func subagentRecords(_ path: URL, visit: ([String: WireValue], Int) throws -> Bool) throws {
         let file = try FileHandle(forReadingFrom: path); defer { try? file.close() }
         var pending = Data(), line = 0
-        let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run"].map { Data($0.utf8) }
+        // Run-state records carry a cost-limit pause (`costPaused`).
+        let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run", "pi-app.native.state.v1"].map { Data($0.utf8) }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
             subagentScannedBytes += bytes.count
             try Task.checkCancellation()
@@ -124,7 +128,7 @@ extension HistoryReader {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let byID = Dictionary(parents.filter { !$0.isSubagent && !$0.imported }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var plans: [String: [String: WireValue]] = [:], checked: Set<String> = []
-        var numbers: [String: [String: Int]] = [:]
+        var numbers: [String: [String: Int]] = [:], ownerPaused: [String: Bool] = [:]
         func plan(_ owner: String) throws -> [String: WireValue] {
             if checked.insert(owner).inserted {
                 guard let parent = byID[owner], let saved = parent.path else { return [:] }
@@ -132,6 +136,7 @@ extension HistoryReader {
                 guard path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath() else { throw StoreError.invalidRecord }
                 try subagentRecords(path) { row, line in
                     if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == owner, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
+                    if row["customType"]?.string == StateRecordTail.customType { ownerPaused[owner] = row["data"]?.object?["costPaused"]?.bool == true }
                     if let data = Self.subagentPlan(row),
                        let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
                        origin.link.valid {
@@ -151,7 +156,7 @@ extension HistoryReader {
             guard UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil,
                   path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath() else { continue }
             var prefix: [[String: WireValue]] = [], status: SubagentStatus = .interrupted, terminal = false
-            var latestTurn: Int?, executionID: String?, effort: String?
+            var latestTurn: Int?, executionID: String?, effort: String?, childPaused = false
             do {
                 try subagentRecords(path) { row, line in
                     if line <= 3 { prefix.append(row) }
@@ -161,6 +166,7 @@ extension HistoryReader {
                        data["delegationID"] == prefix[2]["data"]?.object?["link"]?.object?["delegationID"],
                        let value = data["status"]?.string.flatMap(SubagentStatus.init(rawValue:)), value.terminal { status = value; terminal = true }
                     let kind = row["customType"]?.string ?? ""
+                    if kind == StateRecordTail.customType { childPaused = row["data"]?.object?["costPaused"]?.bool == true }
                     let turnData = kind == "pi-app.agent-operation.v1" ? row["data"]?.object?["turn"]?.object : row["data"]?.object
                     if ["pi-app.agent-operation.v1", "pi-app.subagent-turn.v1", "pi-app.subagent-turn-state.v1", "pi-app.subagent-turn-terminal.v1"].contains(kind),
                        let data = turnData, data["childID"]?.string == path.deletingPathExtension().lastPathComponent,
@@ -184,7 +190,8 @@ extension HistoryReader {
                 if issue == nil, effective.model.reasoning == nil {
                     effective.model.reasoning = accepted?["origin"]?.object?["model"]?.object?["reasoning"]?.array?.compactMap(\.string)
                 }
-                found.append(DiscoveredSubagent(header: effective, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID], effort: effort))
+                let paused = !terminal && (childPaused || ownerPaused[header.link.budgetOwnerSessionID] == true)
+                found.append(DiscoveredSubagent(header: effective, path: path.path, task: accepted?["task"]?.string ?? "", status: paused ? .queued : status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID], effort: effort, costPaused: paused))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.
         }

@@ -7,6 +7,7 @@ struct ToolCallSummary: Equatable, Sendable {
     var failed = 0
     var skipped = 0
     var uncertain = 0
+    var held = 0
     var preparing = false
     var partial = false
 
@@ -23,6 +24,7 @@ struct ToolCallSummary: Equatable, Sendable {
                 case "failed": failed += 1
                 case "cancelled", "skipped": skipped += 1
                 case "recorded", "unknown", "interrupted": uncertain += 1
+                case ToolState.held: held += 1
                 default: break
                 }
             }
@@ -36,6 +38,7 @@ struct ToolCallSummary: Equatable, Sendable {
         if failed > 0 { parts.append("\(failed) failed") }
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if uncertain > 0 { parts.append("\(uncertain) outcome unknown") }
+        if held > 0 { parts.append("\(held) waiting for Resume") }
         if preparing { parts.append("Preparing tool call…") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

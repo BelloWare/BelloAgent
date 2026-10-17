@@ -42,8 +42,10 @@ extension AgentSession {
         var retries=0
         while true {
             try validateCompaction(revision,profile:originalProfile)
-            // A summary request is a model request of this chat: at its
-            // cost limit none is sent, first attempt or retry.
+            // A summary request is a model request of this chat: while its
+            // family is paused (its own pause, an ancestor's or its owner's
+            // hold) none is sent, first attempt or retry.
+            try await enforceCostHold()
             try enforceCostLimit()
             guard used<limit else { throw AgentError("compact_budget", "A summary request reached its \(limit)-attempt limit, including retries. Original context is retained.") }
             compactionPhysicalAttempts += 1; used += 1
@@ -53,9 +55,14 @@ extension AgentSession {
             let start=nowMS(); var requestMs: Double?
             defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
             do {
-                let reply=try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,
-                    sessionID:id,cacheSessionID:promptCacheSessionID,turnID:currentTurnID,purpose:"compaction",lifecycle:try await requestLifecycle(turnID:currentTurnID,purpose:"compaction"),
-                    onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
+                let lifecycle=try await requestLifecycle(turnID:currentTurnID,purpose:"compaction")
+                let client=self.client, apiKey=self.apiKey, sessionID=id, cacheSessionID=promptCacheSessionID, turnID=currentTurnID
+                // A summary request is cut at a cost-limit pause like any other.
+                let reply=try await abortable { [weak self] in
+                    try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,
+                        sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:"compaction",lifecycle:lifecycle,
+                        onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
+                }
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)
             } catch let cancelled as UnexplainedIncompleteCancellation {
@@ -74,7 +81,8 @@ extension AgentSession {
                       Self.isRetryable(error), !Task.isCancelled else { throw error }
                 retries += 1
                 compactionState["phase"]="retrying"; event("compaction_progress")
-                try await Task.sleep(nanoseconds:UInt64(retry.delayMs(attempt:retries)*1_000_000))
+                let delay=UInt64(retry.delayMs(attempt:retries)*1_000_000)
+                try await abortable { try await Task.sleep(nanoseconds:delay) }
                 compactionState["phase"]="summarizing"
             }
         }

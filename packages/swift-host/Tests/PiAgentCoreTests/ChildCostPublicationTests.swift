@@ -111,7 +111,13 @@ final class ChildCostPublicationTests: XCTestCase {
             XCTAssertEqual(readings.values.last?["spentUSD"].double,0.01,"Starting/progress does not invent another charge")
             if ending == "cancelled" { try await coordinator.stop(parent:parent,target:.init(childID:child,turn:2),human:true) }
             else { await client.release() }
-            try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+            if ending == "limit" {
+                // The family pauses at the limit: the turn is held for Resume
+                // with its completed request's charge published, not sealed.
+                try await eventually { let idle = await coordinator.jobs.isEmpty, paused = await parent.costPaused; return idle && paused }
+                let held = await parent.agentState().latest(child)?.status
+                XCTAssertEqual(held,.queued,ending)
+            } else { try await eventually { await parent.agentState().latest(child)?.status.terminal == true } }
             await coordinator.drain()
             let terminal = await coordinator.list(parent:parent,cursor:0,limit:10)
             XCTAssertTrue(terminal["children"].list[0]["progress"].isNull,"Sealing may cancel every progress publication")

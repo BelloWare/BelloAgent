@@ -74,6 +74,7 @@ extension AgentSession {
         return definitions
     }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
+        if let refusal = sideDelegationRefusal(call) { throw refusal }
         if SubagentSteeringContract.names.contains(call.name) {
             guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
             if result["isError"].flag != true, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait",
@@ -198,6 +199,8 @@ extension AgentSession {
         /// `message` (it may not fit): the MCP outcome marker stays until
         /// the row is in the journal (`MCPManager.resultsRetained`).
         var mcpResult = false, recorded = true
+        /// Held by a cost-limit pause before it started: no result row.
+        var held = false
     }
 
     /// Pi 0.85.1's executeToolCallsParallel: a reply's calls run together, each
@@ -207,11 +210,17 @@ extension AgentSession {
     /// removed every editing lock (2026-10-08).
     func runToolBatch(_ calls: [ToolCall]) async throws {
         do { try await enforceToolBudget() }
+        catch let error as AgentError where error.code == Self.costLimitCode {
+            // Paused at the cost limit before any of these started: they stay
+            // pending, durably, and run first on Resume (no new reply first).
+            costPendingCalls = calls.map(\.id); try persistState(active:true,durable:true)
+            throw error
+        }
         catch {
             for call in calls { try recordTool(call,result:resultText("Not executed: \((error as? AgentError)?.message ?? "Budget unavailable")",error:true),started:nil,state:.failed) }
             throw error
         }
-        toolInvocationsBegan.removeAll(); runStatus = .waitingTool
+        toolInvocationsBegan.removeAll(); heldBatchCalls.removeAll(); runStatus = .waitingTool
         for call in calls {
             setToolStateOwner(call.id)
             let fields=toolInputFields(call.arguments)
@@ -222,6 +231,8 @@ extension AgentSession {
         agentPreparedResults = [:]
         if let coordinator = agentCoordinator {
             for call in calls where SubagentSteeringContract.names.contains(call.name) {
+                // A side refuses delegation before any acceptance or receipt.
+                if sideDelegationRefusal(call) != nil { continue }
                 do {
                     try await enforceToolBudget()
                     let key = try agentToolKey(call)
@@ -229,6 +240,8 @@ extension AgentSession {
                     agentPreparedResults[call.id] = agentToolWire(receipt,key:key)
                 } catch {
                     if let accepted = await acceptedAgentToolResult(call,stopped:true) { agentPreparedResults[call.id] = accepted; continue }
+                    // Not accepted, and the pause closed the gate: held for Resume.
+                    if await failedByCostPause(error) { heldBatchCalls.insert(call.id); continue }
                     let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
                     let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
                     agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
@@ -239,7 +252,7 @@ extension AgentSession {
         if agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
             do {
                 let environment = try await delegationEnvironment()
-                let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
+                let planned = calls.filter { $0.name == "subagent" && sideDelegationRefusal($0) == nil }.compactMap { call -> (SubagentCallKey, ToolCall)? in
                     guard let assistant = toolHistory.owners[call.id] else { return nil }
                     return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
                 }
@@ -248,6 +261,10 @@ extension AgentSession {
                 // The assistant's calls are already durable. Settle every one
                 // before ending the turn, so Resume never needs reopen repair.
                 preflightCancelled = true
+            } catch {
+                // The pause closed delegation before these began: held for Resume.
+                guard await failedByCostPause(error) else { throw error }
+                for call in calls where call.name == "subagent" && sideDelegationRefusal(call) == nil { heldBatchCalls.insert(call.id) }
             }
         }
         let began=nowMS()
@@ -258,7 +275,8 @@ extension AgentSession {
         }
         let wall=nowMS()-began
         turnToolMs += wall; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, wall)
-        let finished=outcomes.compactMap { $0 }, invoked=finished.filter(\.mcpResult)
+        let held=outcomes.compactMap { $0 }.filter(\.held).map { calls[$0.index].id }
+        let finished=outcomes.compactMap { $0 }.filter { !$0.held }, invoked=finished.filter(\.mcpResult)
         do {
             for outcome in finished { try append(outcome.message, observedAt: outcome.observedAt) }
             // An MCP call may have changed something outside the project:
@@ -281,11 +299,26 @@ extension AgentSession {
             if !kept.isEmpty { await tools.resultsRetained(kept, retained:true) }
         }
         if Task.isCancelled || outcomes.contains(where: { $0?.cancelled == true }) { throw CancellationError() }
+        if !held.isEmpty {
+            // Calls the pause stopped at their own gate wait for Resume, as
+            // a batch held before it began does; the others kept their results.
+            costPendingCalls = Array(Set(costPendingCalls).union(held)).sorted { a, b in (calls.firstIndex { $0.id == a } ?? 0) < (calls.firstIndex { $0.id == b } ?? 0) }
+            try persistState(active:true,durable:true)
+            throw Self.costHoldError
+        }
     }
 
     /// Runs one call of a batch and ends its card; the row waits for the batch.
     func runToolCall(_ call: ToolCall, index: Int, cancelledBeforeInvocation: Bool = false) async -> ToolOutcome {
         let start=nowMS()
+        func heldOutcome() -> ToolOutcome {
+            // Saved now: a quit or crash while other calls run keeps it held.
+            if !costPendingCalls.contains(call.id) { costPendingCalls.append(call.id); try? persistState(active:true,durable:true) }
+            if var card=toolStates[call.id] { card["state"]=JSON(Self.heldToolState); setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:displayClock()); event("tool_execution_end") }
+            var outcome = ToolOutcome(index:index,message:ChatMessage(role:"toolResult",content:[]),observedAt:displayClock(),cancelled:false); outcome.held = true
+            return outcome
+        }
+        if heldBatchCalls.contains(call.id) { return heldOutcome() }
         let accepted = await acceptedAgentToolResult(call,stopped:true)
         func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false, mcpResult: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
@@ -327,6 +360,8 @@ extension AgentSession {
             if let accepted = await acceptedAgentToolResult(call,stopped:true) { return outcome(accepted,started:start,state:.completed,cancelled:cancelled) }
             // A call stopped before its tool was entered never ran.
             let entered=toolInvocationsBegan.contains(call.id)
+            // The pause closed its own gate before it began: held for Resume.
+            if !entered, !cancelled, await failedByCostPause(error) { return heldOutcome() }
             let text=cancelled ? (entered ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
             // Only an editing tool that had begun, and failed other than by
             // rejecting the call outright, may have left effects: its outcome

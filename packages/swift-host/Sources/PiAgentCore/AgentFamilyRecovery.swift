@@ -5,7 +5,7 @@ import Foundation
 /// terminals, receipt projections and context rows are evidence, not commands.
 enum AgentFamilyRecovery {
     static func recover(state: inout SubagentJournalState, parent: SessionJournal, owner: String, directory: URL,
-                        accounting: inout AttemptAccounting, spend: inout SessionSpend) throws {
+                        accounting: inout AttemptAccounting, spend: inout SessionSpend, costPaused: Bool = false) throws {
         guard state.origin == nil, state.family?.ownerID == owner else { return }
         func write<T: Encodable>(_ kind: String, _ data: T) throws {
             let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner),"data":try subagentJSON(data)]
@@ -71,7 +71,7 @@ enum AgentFamilyRecovery {
                       let scope = try? JSONDecoder().decode(RequestScope.self,from:admission["scope"].data()), scope.valid,
                       scope.delegation == plan.origin.link else { throw SubagentRecovery.damaged() }
                 if let number = scope.childTurn {
-                    guard let turn = state.family!.turns[AgentTurnTarget(childID:childID,turn:number).id], turn.parentExecutionID == scope.parentExecutionID else { throw SubagentRecovery.damaged() }
+                    guard let turn = state.family!.turns[AgentTurnTarget(childID:childID,turn:number).id], turn.acceptsParentExecution(scope.parentExecutionID) else { throw SubagentRecovery.damaged() }
                 }
                 if let update = try FamilyCharge.merge(cost,into:accounting.attempts[id],revision:accounting.revision,
                     child:.init(accepted:plan.origin,observed:childState.origin),failure:SubagentRecovery.damaged()) {
@@ -101,7 +101,26 @@ enum AgentFamilyRecovery {
             }
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
+                if costPaused, !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
+                    // Paused at the family's cost limit: the turn is held for
+                    // Resume, not interrupted. A run cut off mid-pause keeps
+                    // its place in the queue; its child mirror agrees.
+                    var held = original; held.status = .queued; held.result = nil
+                    if held != original { try write(JournalRecordKind.agentTurnState,held) }
+                    if let mirror = childState.family?.turns[original.id], mirror != held {
+                        for step in held.mirrorSteps(from:mirror) { try childWrite(JournalRecordKind.agentTurnState,step) }
+                    }
+                    continue
+                }
                 var terminal = original
+                // A Resume records continuations in the owner first; a turn
+                // sealed (by Stop or quit) before its child ran never reached
+                // the mirror. Catch the mirror up before any terminal record.
+                if let mirror = childState.family?.turns[original.id], !mirror.status.terminal,
+                   (mirror.continuations ?? []) != (original.continuations ?? []) {
+                    var queued = original; queued.status = .queued; queued.result = nil
+                    for step in queued.mirrorSteps(from:mirror) where step != mirror { try childWrite(JournalRecordKind.agentTurnState,step) }
+                }
                 if var evidence = childState.family?.turns[original.id], evidence.status.terminal {
                     // An older helper may seal a child before its accepted
                     // turn was mirrored. The owner's acceptance retains effort.
@@ -132,7 +151,8 @@ enum AgentFamilyRecovery {
                     try write(JournalRecordKind.agentMessage,message)
                 }
             }
-            for var message in state.family!.pending(author:"parent") where message.childID == childID {
+            // Steering for a held turn stays pending; it is delivered after Resume.
+            for var message in state.family!.pending(author:"parent") where message.childID == childID && !(costPaused && state.family!.latest(childID)?.status.terminal == false) {
                 message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
                 let notice = AgentFamilyMessage(id:"undelivered:" + message.id,sequence:state.family!.sequence + 1,childID:childID,turn:message.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(message.id) is retained but was not delivered before interruption.",task:message.task,epoch:message.epoch,replyTo:message.id)
                 if state.family!.messages[notice.id] == nil { try write(JournalRecordKind.agentMessage,notice) }
@@ -153,6 +173,18 @@ enum AgentFamilyRecovery {
 }
 
 extension AgentChildTurn {
+    /// The records that bring a child's mirror of this (unsealed) turn up to
+    /// the owner's: one per continuation it has not seen, then the status.
+    func mirrorSteps(from mirror: AgentChildTurn) -> [AgentChildTurn] {
+        let known = mirror.continuations ?? [], all = continuations ?? []
+        guard all.count >= known.count, Array(all.prefix(known.count)) == known else { return [self] }
+        var steps: [AgentChildTurn] = [], step = self
+        for count in stride(from:known.count + 1, through:all.count, by:1) {
+            step.continuations = Array(all.prefix(count)); step.status = .queued; step.result = nil; steps.append(step)
+        }
+        if steps.last != self { steps.append(self) }
+        return steps
+    }
     mutating func normalizeResult() {
         guard result != nil else { return }
         result?.envelope["version"] = 3; result?.envelope["child_id"] = JSON(childID); result?.envelope["turn"] = JSON(turn)

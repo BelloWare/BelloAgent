@@ -52,7 +52,7 @@ extension WorkspaceModel {
             value.link == found.header.link && value.revision > 0 &&
                 ((value.turn ?? 1) > (found.turn ?? 1) || ((value.turn ?? 1) == (found.turn ?? 1) && (!found.hasTerminalRecord || value.status == found.status))) ? value : nil
         }
-        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel)
+        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel, costPaused: found.costPaused ? true : nil)
         if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
         if live != nil { observeSubagentCost(summary) }
@@ -89,7 +89,9 @@ extension WorkspaceModel {
 
     func interruptSubagents(workspaceID: String) {
         for child in chats where child.workspaceID == workspaceID && child.isSubagent {
-            guard var summary = subagentSummaries[child.id], !summary.status.terminal else { continue }
+            // A turn held at its family's cost limit is not running: the
+            // helper's loss leaves it waiting for Resume, not interrupted.
+            guard var summary = subagentSummaries[child.id], !summary.status.terminal, summary.costPaused != true else { continue }
             summary.status = .interrupted; summary.revision = 0; summary.progress = nil; summary.progressEpoch = nil
             subagentSummaries[child.id] = summary; displays[child.id]?.subagentStatus = .interrupted
             displays[summary.link.budgetOwnerSessionID]?.childSummaries[child.id] = summary

@@ -193,6 +193,14 @@ final class WireContractTests: XCTestCase {
         XCTAssertEqual(TranscriptToolRow.state(of: skipped), .stopped)
         XCTAssertNil(TranscriptToolRow.suffix(of: skipped))
         XCTAssertEqual(ToolCallSummary(tools: [skipped]).label, "1 tool call · 1 skipped")
+        // Round 9: a call the cost-limit pause held before it began.
+        var held = bash; held.state = ToolState.held; held.durationMs = nil
+        XCTAssertEqual(TranscriptActivity.outcome(of: held), .held)
+        XCTAssertEqual(TranscriptToolRow.title(of: held), "Paused before running", "The row never says “Ran” for a held call")
+        XCTAssertEqual(TranscriptToolRow.state(of: held), .stopped)
+        XCTAssertEqual(TranscriptToolRow.suffix(of: held), "· runs on Resume")
+        XCTAssertEqual(ToolCallSummary(tools: [held]).label, "1 tool call · 1 waiting for Resume")
+        XCTAssertEqual(TranscriptActivity.changedFiles([held]), 0)
         var failed = bash; failed.state = "failed"; failed.output = "exit 1"
         XCTAssertEqual(TranscriptToolRow.state(of: failed), .failed)
         XCTAssertEqual(TranscriptToolRow.title(of: failed), "Ran")

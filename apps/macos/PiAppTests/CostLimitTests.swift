@@ -207,26 +207,28 @@ final class CostLimitTests: XCTestCase {
         XCTAssertNil(CostLimit.parse("0")); XCTAssertNil(CostLimit.parse("-3")); XCTAssertNil(CostLimit.parse("ten"))
     }
 
-    /// A run that reaches its limit stops before its next request, and the
-    /// conversation says so where it stopped, with Raise limit…: the button
-    /// opens the chat's limit editor, a raised limit reaches the helper, the
-    /// notice then offers Continue, and the stopped turn goes on from there.
-    /// The usage pill and the Inspector's Overview read "$0.004 of $0.003" meanwhile.
-    @MainActor func testTheStopNoticeAppearsAndRaiseLimitContinuesTheRun() async throws {
+    /// A run whose reply reaches the limit pauses there (owner, 2026-10-17:
+    /// every chat): that reply's tool call is held, and the conversation says
+    /// so with Raise limit…: the button opens the chat's limit editor, a
+    /// raised limit reaches the helper but resumes nothing, the card then
+    /// offers Resume, which runs the held call and goes on. The usage pill
+    /// and the Inspector's Overview read "$0.004 of $0.003" meanwhile.
+    @MainActor func testThePauseNoticeAppearsAndResumeRunsTheHeldCallAfterARaise() async throws {
         let chat = try await WireChat(); defer { Task { await chat.close() } }
         try await chat.model.setCostLimit(.usd(0.003), for: chat.id)
         chat.send("wire paid-tool")
-        try await chat.waitUntil("the run stopped at its limit") { chat.session.state == "error" && chat.session.failureCode == "cost_limit" }
+        try await chat.waitUntil("the run paused at its limit") { chat.session.costPaused && !chat.session.busy }
+        // The spend reading can follow the pause's snapshot under load; until
+        // it does, the card offers Resume and lets the helper refuse it.
+        try await chat.waitUntil("the card read the spend") { chat.session.presentedMessages.last?.failureCode == SessionDisplay.costPausedCode }
         let notice = try XCTUnwrap(chat.session.presentedMessages.last)
-        XCTAssertEqual(notice.failureCode, "cost_limit")
-        XCTAssertEqual(notice.text, "This chat reached its $0.003 cost limit ($0.004 spent). Raise the limit to continue.")
-        XCTAssertEqual(chat.card("bash")?.state, "completed", "The request in flight was not cut: its tool ran")
+        XCTAssertEqual(notice.failureCode, SessionDisplay.costPausedCode)
+        XCTAssertEqual(notice.text, "$0.004 spent of the $0.003 limit.")
+        XCTAssertNil(chat.card("bash")?.state == "completed" ? "ran" : nil, "The reply's call is held, not run")
         XCTAssertFalse(chat.replyRows.contains { $0.text.contains("Tool round finished") }, "The next request was not sent")
         try await chat.waitUntil("the usage figure shows the spend against the limit") {
             Self.trigger("session-stats-usage", in: chat.hosted)?.accessibilityLabel()?.contains("$0.004 of $0.003") == true
         }
-        // The pill opens the chat's Session Inspector, whose Overview reads
-        // the same spend against the limit, with the limit's editor.
         try XCTUnwrap(Self.trigger("session-stats-usage", in: chat.hosted)).performClick(nil)
         let inspector = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: chat.id))
         XCTAssertEqual(inspector.inspector.page, .overview)
@@ -235,35 +237,31 @@ final class CostLimitTests: XCTestCase {
         let read = Date().addingTimeInterval(20)
         repeat {
             overview = try await SessionTimingTests.recognizedText(in: window)
-            // The recognized text comes back in lower case.
             if overview.contains("0.004 of $0.003"), overview.contains("cost limit") { break }
         } while Date() < read
         XCTAssertTrue(overview.contains("0.004 of $0.003"), "The Overview's cost reads against the limit. OCR: \(overview)")
         XCTAssertTrue(overview.contains("cost limit"), "The Overview carries the limit's editor. OCR: \(overview)")
         inspector.close()
-        // Raise limit… opens the editor over itself.
         let raise = try await Self.waitForTrigger("cost-limit-raise", in: chat)
         raise.performClick(nil)
         try await chat.waitUntil("the limit editor opened") { CostLimitPopover.shared.presenter.isShown && CostLimitPopover.shared.sessionID == chat.id }
-        // What the editor's $10 chip does: the chat's own limit, saved and sent.
         try await chat.model.setCostLimit(.usd(10), for: chat.id)
         CostLimitPopover.shared.close()
         XCTAssertTrue(chat.replies.contains { $0.method == "session.configure" && $0.params["costLimit"] == .object(["usd": .number(10)]) },
                       "The raised limit reached the helper session")
-        try await chat.waitUntil("the notice offers Continue") { chat.session.presentedMessages.last?.failureCode == "cost_limit_raised" }
-        // The page's row for the notice is the raised one: Continue in place
-        // of Raise limit…. (Whether AppKit has already let go of the old
-        // button's view depends on the display cycle, so the row is read.)
-        try await chat.waitUntil("the page draws the notice raised") {
+        try await chat.waitUntil("the card offers Resume") { chat.session.presentedMessages.last?.failureCode == SessionDisplay.costPausedRaisedCode }
+        XCTAssertTrue(chat.session.costPaused, "Raising the limit alone resumes nothing")
+        try await chat.waitUntil("the page draws the card raised") {
             ConversationPaneTests.views(TranscriptRowContainer.self, in: chat.hosted).contains { row in
-                if case .message(let message) = row.item { return message.failureCode == SessionDisplay.costLimitRaised }
+                if case .message(let message) = row.item { return message.failureCode == SessionDisplay.costPausedRaisedCode }
                 return false
             }
         }
-        chat.model.costLimitNotice(.continueRun, sessionID: chat.id, anchor: nil)
-        try await chat.waitUntil("the stopped turn went on") {
-            !chat.session.busy && chat.session.failureMessage == nil && chat.replyRows.contains { $0.text.contains("Tool round finished") }
+        chat.model.resumeRun(sessionID: chat.id)
+        try await chat.waitUntil("the held call ran and the turn went on") {
+            !chat.session.busy && !chat.session.costPaused && chat.replyRows.contains { $0.text.contains("Tool round finished") }
         }
+        XCTAssertEqual(chat.card("bash")?.state, "completed", "The held call ran on Resume")
         try await chat.waitUntil("the spend counts the request that went on") { abs((chat.session.footer.cost.spentUSD ?? 0) - 0.008) < 1e-9 }
         XCTAssertFalse(chat.session.presentedMessages.contains { $0.failureCode != nil })
     }

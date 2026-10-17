@@ -359,6 +359,24 @@ final class SideBudgetTests: XCTestCase {
         await host.shutdown()
     }
 
+    /// Round 7: deleting an idle paused side takes it off its root's list of
+    /// sides waiting for Resume; a root paused only for it is not paused.
+    func testDeletingAPausedSideTakesItOffItsRootsPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), owner = try await open(host,"main", limit: 5)
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"side"])
+        let loaded = await host.loadedSession("side"), side = try XCTUnwrap(loaded)
+        _ = try await side.keep(whenFinished:false)
+        await side.roundSevenPause()
+        try await side.bindSideBudget(to:owner)
+        var members = await owner.costPausedMembers, paused = await owner.costPaused
+        XCTAssertEqual(members,["side"]); XCTAssertTrue(paused)
+        _ = try await host.command("session.forget",sessionID:"side",params:["descendantsDeleted":true,"ancestorsRepaired":true])
+        members = await owner.costPausedMembers; paused = await owner.costPaused
+        XCTAssertTrue(members.isEmpty, "A deleted side waits for no Resume"); XCTAssertFalse(paused, "Nothing else held the root")
+        await host.shutdown()
+    }
+
     func testDeletingMainWithLegacyReportedManagedSpendKeepsOrphanFamilyCountedOnce() async throws {
         for loadedSide in [false,true] {
             for loadedChild in [false,true] {
@@ -682,12 +700,13 @@ final class SideBudgetTests: XCTestCase {
         let first = try await start(side, attempt:"first"), running = try await start(parent, attempt:"running-main")
         let permit = await parent.requestPermits["running-main"]
         try await finish(first, attempt:"first",cost:1.2,outcome:"failed")
-        XCTAssertNoThrow(try permit?.check(), "A request already dispatched must finish")
+        XCTAssertThrowsError(try XCTUnwrap(permit).check(), "The family pauses at once: a dispatched request is cancelled")
         do { _ = try await start(side,attempt:"blocked"); XCTFail("Side must use main budget") }
         catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
         do { _ = try await start(parent,attempt:"also-blocked"); XCTFail("Main must include side spend") }
         catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
-        // Admission preceded the limit crossing. Settlement must still succeed.
+        // Admission preceded the limit crossing. Its settlement (what the
+        // aborted request reported) must still succeed.
         try await finish(running,attempt:"running-main",cost:0.3)
         await side.close(); let path = await parent.path; await parent.close()
         XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent("side_side.jsonl").path))
@@ -821,7 +840,10 @@ final class SideBudgetTests: XCTestCase {
         await side.close(); await main.close()
     }
 
-    func testOpeningASideDuringTheParentsRequestNeitherLosesItsChargeNorCancelsIt() async throws {
+    /// A side bound while the main request (begun before any family ledger)
+    /// is on the wire: the side's crossing pauses main at once, cancelling
+    /// that request, whose aborted attempt is still counted as unknown.
+    func testOpeningASideDuringTheParentsRequestKeepsItsChargeAndPausesIt() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = SideBudgetHeldClient()
         let main = try AgentSession(id:"main",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
@@ -832,15 +854,15 @@ final class SideBudgetTests: XCTestCase {
         let side = try await session("side",root:root,parent:main)
         let lifecycle = try await start(side,attempt:"side-crosses-limit")
         try await finish(lifecycle,attempt:"side-crosses-limit",cost:1.2)
-        let state = await main.snapshot()
-        XCTAssertEqual(state["state"].text,"running","A side must not cancel the main request already on the wire")
-        await client.release()
-        try await eventually { !(await main.isRunning) }
-        let cost = await main.costSnapshot
-        XCTAssertEqual(cost["spentUSD"].double ?? 0,1.5,accuracy:1e-9)
-        XCTAssertEqual(cost["reportedRequests"].int,2)
+        try await eventually(timeout:.seconds(2)) { !(await main.isRunning) }
+        let state = await main.snapshot(), cost = await main.costSnapshot
+        XCTAssertEqual(state["state"].text,"paused","The pre-ledger main request is cut at once")
+        XCTAssertEqual(state["costPaused"].flag,true); XCTAssertEqual(state["errorCode"].text,"cost_limit")
+        XCTAssertEqual(cost["spentUSD"].double ?? 0,1.2,accuracy:1e-9)
+        XCTAssertEqual(cost["reportedRequests"].int,1)
+        XCTAssertEqual(cost["unreportedRequests"].int,1,"The aborted request's cost stays unknown, never zero")
         let replies = await main.history.filter { $0.role == "assistant" }.map(\.text)
-        XCTAssertTrue(replies.contains("The admitted main request finished"))
+        XCTAssertFalse(replies.contains("The admitted main request finished"))
         await side.close(); await main.close()
     }
 
@@ -879,11 +901,20 @@ private actor SideBudgetHeldClient: ModelClient {
     }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
         started = true
-        while !released { try await Task.sleep(for:.milliseconds(2)) }
-        try Task.checkCancellation()
+        do { while !released { try await Task.sleep(for:.milliseconds(2)) }; try Task.checkCancellation() }
+        catch {
+            // A cut request reports its terminal observation without a cost.
+            var cut = billingObservation(profile:profile,session:sessionID,attempt:"main-before-side",cost:nil)
+            cut.monitoring["outcome"] = "cancelled"
+            await onObservation(cut); throw error
+        }
         var observation = billingObservation(profile:profile,session:sessionID,attempt:"main-before-side",cost:0.3)
         observation.fields = ["input":100,"output":20]
         await onObservation(observation)
         return answer("The admitted main request finished")
     }
+}
+
+private extension AgentSession {
+    func roundSevenPause() { costPaused = true; queuePaused = true; errorCode = AgentSession.costLimitCode }
 }

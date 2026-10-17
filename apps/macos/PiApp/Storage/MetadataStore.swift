@@ -303,6 +303,28 @@ actor MetadataStore {
 
     /// Loaded sides and managed children retain their actual budget ancestry
     /// outside the ordinary chat window. A fork source is only provenance.
+    /// Chat records by id, outside `loadChats`' window too: a paused side a
+    /// family Resume must reach. Deleted, missing or unreadable ones are left out.
+    func loadChats(ids: [String], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
+        let database = try ready()
+        var values: [(ChatRecord, Int64)] = []
+        for id in Set(ids) {
+            guard try get(String.self, kind: "session-deleted", id: id) == nil else { continue }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { continue }
+            guard result == SQLITE_ROW else { throw StoreError.unavailable }
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement, 0) else { continue }
+            decodedChats += 1
+            guard let chat = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)), chat.id == id else { continue }
+            values.append((chat, sqlite3_column_int64(statement, 1)))
+        }
+        return try migrateLoadedChats(values, profiles: profiles)
+    }
     func loadBudgetAncestors(of chats: [ChatRecord], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
         try migrateLoadedChats(budgetAncestorRecords(of: chats), profiles: profiles)
     }
