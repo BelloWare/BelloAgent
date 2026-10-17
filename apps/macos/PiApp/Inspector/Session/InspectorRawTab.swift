@@ -9,7 +9,7 @@ import AppKit
     private var notice = "" { didSet { refreshNotice() } }
     private var pageText = "", pageTotal = 0, pageOffset = 0, pageLoading = false
     private var headersText = ""
-    private var lastCaptureRevision = 0
+    private var lastCaptureRevisions: [String: Int] = [:]
     private var lastPart: InspectorRequestModel.RawPart?
     private var lastRow: String?
     private var lastFocus = 0
@@ -46,6 +46,7 @@ import AppKit
         switch request.raw {
         case .metadata: request.metadataText
         case .headers: headersText
+        case .events: lastCaptureRevisions["response", default: 0] == request.captureRevisions["response", default: 0] ? pageText : ""
         default: pageText
         }
     }
@@ -63,17 +64,18 @@ import AppKit
         else { refresh() }
     }
     func refresh() {
-        if lastCaptureRevision != request.captureRevision {
+        let eventsLost = request.raw == .events && lastCaptureRevisions["response", default: 0] != request.captureRevisions["response", default: 0]
+        if let kind = body?.kind, lastCaptureRevisions[kind, default: 0] != request.captureRevisions[kind, default: 0] {
             body?.stop(); body?.removeFromSuperview()
             if displayed === body { displayed = nil }
-            body = nil; bodyKey = nil; bodyRoute = nil
+            body = nil; bodyKey = nil; bodyRoute = nil; copySource = nil
         }
-        if lastRow != row?.id || lastPart != request.raw || lastCaptureRevision != request.captureRevision {
+        lastCaptureRevisions = request.captureRevisions
+        if lastRow != row?.id || lastPart != request.raw || eventsLost {
             copySource = nil; pageOffset = 0; pageText = ""; pageTotal = 0
             pageTask?.cancel(); pageTask = nil; currentPage = nil
             if lastRow != row?.id { notice = "" }
             lastRow = row?.id; lastPart = request.raw
-            lastCaptureRevision = request.captureRevision
             rebuildToolbar()
         }
         search.text = request.query
@@ -106,10 +108,14 @@ import AppKit
             let route = InspectorBodyRoute.resolve(row: row, kind: kind, metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if bodyKey != key {
                 bodyKey = key; bodyRoute = route
-                body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
+                let revision = request.captureRevisions[kind, default: 0]
+                body = CapturedBodyView(source: request.observingAvailability(route.source(inspector: inspector, request: request, row: row, kind: kind), attemptID: row.id, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] source in
+                    guard let self, self.bodyKey == key, self.request.captureRevisions[kind, default: 0] == revision else { return }
+                    self.copySource = source; self.refreshCopy()
+                })
             } else if bodyRoute != route, request.metadataLoaded {
                 bodyRoute = route
-                body?.update(source: route.source(inspector: inspector, request: request, row: row, kind: kind), retained: route == .archive)
+                body?.update(source: request.observingAvailability(route.source(inspector: inspector, request: request, row: row, kind: kind), attemptID: row.id, kind: kind), retained: route == .archive)
             }
             body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil)
             if let body { show(body) }
@@ -186,12 +192,12 @@ import AppKit
 
     private func copyView() {
         if showsBody {
-            guard let copySource, lastCaptureRevision == request.captureRevision else { return }
-            let revision = request.captureRevision
+            let kind = request.raw.rawValue, revision = request.captureRevisions[request.raw.rawValue, default: 0]
+            guard let copySource, lastCaptureRevisions[kind, default: 0] == revision else { return }
             Task {
                 do {
                     let text = try await copySource.render()
-                    guard request.captureRevision == revision else { return }
+                    guard request.captureRevisions[kind, default: 0] == revision else { return }
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); notice = ""
                 }
                 catch { if !(error is CancellationError) { notice = error.localizedDescription } }

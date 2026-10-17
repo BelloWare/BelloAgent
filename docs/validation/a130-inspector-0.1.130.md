@@ -456,3 +456,234 @@ minimum-window Request/Response scenes were inspected again in both appearances.
 No clone directories remained in this workstream's build root. All three requested
 corrections and the adjacent transient-route instance are resolved; nothing is
 left for an owner decision. No merge, release or shared-branch push was performed.
+
+
+## Round-2 review: per-body availability
+
+The review is confirmed. Capture Off changes `observedBytes` without making
+any retained body unavailable. A credential-omitted Request likewise must not
+retire a readable memory Response when the row moves to the archive. Availability
+and Raw invalidation revisions are now tracked separately for Request and
+Response. Links pagination is independent of body invalidation, including
+an explicit Clear. Events belong to Response and refresh when that capture is
+retired; `PayloadArchive.evict` deletes event indices but preserves message links. Request loss clears Conversation/delta only; Response loss
+clears Response only. Only the task reading the affected body is cancelled.
+
+Failing-first evidence used generated bodies and an archive with 260 generated
+message links. `review2-before-storage.log` ran against `ae26ae78` production:
+**3 tests failed, 20 assertions, zero unexpected errors**. The earlier
+`review2-before.log` had a fixture error (missing required `turnId`); this was
+corrected before collecting the evidence below. No production fix was applied
+until both requested regressions failed for their intended reasons.
+
+| Regression | Failing-first excerpt | Result |
+| --- | --- | --- |
+| `InspectorStorageTests.testCaptureOffStreamingKeepsRawLinksPagination` | revision `2` vs `1`; “Links must stay on rows 129–256”; “Copy must still use the selected links page” | Confirmed: metadata polling reset Links to row 1. |
+| `InspectorStorageTests.testCredentialOmittedRequestCompletionPreservesReadableResponse` | `combined` vs `hex`; response bytes `0` vs `868`; partial document `nil` vs `true` | Confirmed: completion discarded the selected readable prefix. |
+| `InspectorStorageTests.testLosingOneBodyPreservesTheOtherDocumentAndCopySource` | old view identity lost; `combined`/`json` vs `hex`; the other parsed document became nil | Nearby instance: actual loss of either body retired both. Both directions are covered. |
+| `InspectorRequestModelTests.testLosingHelperMemoryRetiresAResponseWithUnchangedArchiveMetadata` | retained response was not nil; `868` vs `0` | Self-review finding: the archive stays `not-retained` across helper-memory loss, so descriptor inequality missed a real loss. `review2-before-memory-loss.log`: 1 test, 2 failed assertions. |
+
+The self-review also deliberately delayed the initial metadata read while Raw
+loaded a readable prefix. The first per-body implementation failed
+`InspectorStorageTests.testRawBodyReadBeforeFirstMetadataStillRetiresWhenLost`:
+Copy stayed enabled and the 868-byte document stayed mounted after the first
+metadata record reported the loss (`review2-fixed-storage.log`: 12 passed,
+2 opt-in gallery skips, 1 test with 2 failed assertions). This was an intermediate
+regression caught before commit. Body readers now establish availability from their source metadata, before
+parsing; stale Raw callbacks are fenced by body identity and its revision. The original two regressions and the one-body-loss test already passed
+in that run. The full request-model class passed 8/8 in `review2-fixed-model.log`.
+
+The next review pass added the inverse ordering: source bytes read successfully,
+then a purge while parsing was held on the capture worker. A completion-only
+availability notification was too late: `testPurgeDuringFirstRawParseCannotPublishTheBody`
+failed twice, leaving the old body copyable. It now passes with source-metadata
+observation before parsing. The same run confirmed that Events, unlike Links,
+must retire with Response: `testClearingResponseRetiresItsRawEventIndex` failed
+twice because the deleted event index remained displayed/copyable. Response
+revision changes now refresh only that page; its Copy path also checks the
+revision before the observer refresh runs. `review2-fixed-storage-race.log`:
+**15 passed, 2 tests failed with 4 assertions, zero skips**. These intermediate
+regressions were caught by the self-review before commit. With both corrections,
+`review2-fixed-complete.log` passed **17/17**, including both gallery tests.
+The cancelled sibling-probe control passed in the expanded request-model class:
+**9/9** (`review2-fixed-model-race.log`).
+
+### Adversarial review of the whole branch
+
+Reviewed the full branch diff with `git diff origin/dev/next...HEAD` and the
+direct comparison `git diff origin/dev/next HEAD --` for every production file
+changed by this branch, then the final working-tree comparison `git diff
+origin/dev/next --` for those files. `origin/dev/next` was initially fetched at
+`5c52621c` and refreshed at the final audit to `daade17e` (common base `141666ca`).
+None of the seven production files changed upstream between those references;
+`review2-audit-final.diff` records the complete final comparison. The direct whole-tree comparison also shows other workstreams'
+commits absent from this branch; those files were not edited or reverted. The
+branch remains isolated for the lead's merge.
+
+The table lists the inputs that take a different branch for each changed
+production condition (related arithmetic guards are grouped). Unchanged request
+polling and task-generation guards were checked at their new call sites too.
+
+| Changed condition / branch | Inputs now taking the other branch; intended behavior and evidence |
+| --- | --- |
+| `PiChartTicks.numberStep`: positive finite `step` | Underflowed zero and overflowed infinite candidate scales are skipped. Finite candidates and ordinary ticks keep their prior scoring. Subnormal-to-maximum tests and numeric parity evidence above cover the endpoints. |
+| `numberStep`: `count` in 2…12 before integer conversion; finite `count * step` | NaN/infinite counts no longer reach `Int`; overflowing candidate domains are skipped. If no candidate fits, the accepted finite `top` is the fallback. The former 2…12 restriction remains. |
+| `multiples`: finite step and finite first/last | Infinite step returns the lower bound; overflowed multiples return no ticks. Bounded integer iteration replaces floating stride, which cannot reliably advance at huge indices. Zero/negative step and the 10,000-tick bound keep their previous behavior. |
+| `multiples`: finite, contained tick filter | Rounding may push a boundary tick outside its domain; such ticks are omitted. Valid interior ticks are unchanged. |
+| `automaticDomain`: finite, ordered input | Nonfinite or reversed inputs resolve to 0…1 before constructing a range. Accepted finite input remains on the numeric path. |
+| Off-zero domain: finite rounded endpoints, `min`/`max` with data bounds | Overflowed or inward-rounded endpoints use the original finite bound; valid outward rounding remains. Both positive and negative domains are covered. |
+| Zero-based domain: finite rounded upper/negative extent, outward clamps | Extreme rounding cannot construct an invalid range or exclude the data. Positive, all-negative and mixed-sign branch selection is unchanged. Cost values are nonnegative; the generic tick tests also cover negatives. |
+| `clean`: finite positive multiplier/product and finite rounded result | Tiny numbers whose multiplier overflows and extreme numbers whose final rounding overflows retain their original finite value. Ordinary rounding and the zero/nonfinite early return are unchanged. |
+| `DashboardQuery.dashboard`, `requestPage`, `sessionSummaries`: `offset >= 0` | Offsets above 100,000 are accepted. Negative offsets still fail; SQL retains 128/64 row limits and the same identity/status predicates. `Int.max` yields an empty page. Returned count cannot exceed remaining records, so `offset + count` is bounded. Reads use the existing snapshot transaction; sibling additions/removals do not bypass it. |
+| `MenuBarMetrics.usageMetrics`: nonnegative aligned offset | Aligned offsets above 100,000 are accepted; negative/unaligned offsets still fail. The 24-row limit, date validation, cancellation and physical/family scope predicates remain. The 100,009-route fixture covers menu and Inspector usage paths. |
+| `InspectorRequestModel.open`: mark metadata pending on source/outcome change | A same-attempt live/log or running/settled transition waits for its own descriptors before Raw changes route. Same source/outcome refreshes retain existing state. A new attempt already clears metadata/documents and now also clears its availability history. |
+| Request `refresh`: active guard | An active completed/idle request rereads descriptors even without a row change, detecting purge/expiry. Hidden or deselected requests read nothing; `.record` rows still do not fetch capture metadata. |
+| Per-body readability check | Readable archive/live states establish availability. Unreadable archive states probe the actual source: memory may still be readable. Off/credential-omitted/unavailable-to-unavailable changes retire nothing; readable-to-unreadable retires that body even if the archive descriptor is unchanged. |
+| Response growth from a readable source | A completed memory row with `not-retained` archive bytes takes its latest byte count from helper memory. Its loaded prefix remains until Load latest; capture Off cannot acquire readable bytes through this branch. |
+| Availability probe cancellation/generation/attempt guards | After each asynchronous source read, a cancelled/hidden/superseded read cannot invalidate or publish into the next selected request. `testCancelledAvailabilityProbeCannotRetireASiblingResponse` suspends a child-a probe, loads child-b, then delivers the old loss. The existing physical session source and same-session predecessor restrictions remain; sibling work does not share availability history. |
+| `invalidateBody`: active tab matches affected kind | Only loss of Request cancels Conversation/delta work; only loss of Response cancels Response work. Raw stops the affected body itself. Losing an unrelated body leaves a readable partial Response, Raw format and Copy source intact. |
+| Request-vs-Response retirement | Request loss resets Conversation/delta; Response loss resets Response/byte count. Explicit Clear calls both even if no descriptor was previously loaded, fencing pending copies. |
+| `source`: provided descriptors may be used before `metadataLoaded` | Only the availability probe can use its just-read metadata while publication is pending. The workspace, ready helper and physical session checks still apply; no helper is started to recover a missing body. |
+| Successful body read: same attempt, matching Raw body identity/revision | Readable source metadata now establishes availability before parsing, even if the Inspector metadata poll is still pending. The observing wrapper requires a live model, uncancelled task, same attempt and same body revision; unavailable descriptors establish nothing. Page/whole reads and source routing remain unchanged. Late callbacks from a replaced or invalidated body cannot establish availability or restore its Copy source. Parsed reads are cancellation-checked before publication. The delayed-first-metadata test covers the newly discovered ordering. |
+| Raw: affected mounted body's revision differs | Only that body view is stopped/replaced; a cached body is retired even while Links/Events is selected. An unrelated body's revision cannot reset Raw. Row/part navigation still resets its own page; body invalidation no longer resets Links. Response invalidation refreshes Events because its index is deleted with that body; Request-only loss leaves Events alone. |
+| Raw route change also requires loaded metadata | A transient log row with the previous live descriptors no longer triggers archive/live reloads. Actual persistent handoff still changes route after its descriptors arrive; memory completion preserves its live route. |
+| Events revision and Copy checks | Response revision changes reset only Events, whose archive indices are deleted with the response. Links remain. Before the queued view refresh, an old Events page supplies no copy text; Request-only loss does not affect it. |
+| Raw Copy revision checks before/after rendering | A purged body's pending copy cannot publish. The other body's revision cannot cancel a readable copy. Existing body/metadata/header/page selection still chooses the representation. |
+| `copyText` switch, nonempty header sections, nonempty text guard | Headers now use exactly the displayed masked header text. Empty Headers/Links no longer enable Copy because unrelated metadata exists, and an empty copy does not clear the clipboard. Metadata, Events and nonempty Links retain their own representations. |
+| Part-menu weak-self guard, current-part selection and fallback title | A released view supplies no menu; a live view lists the same six parts with the current part checked. The fallback Request title only applies if no matching part is found; every enum case is present. |
+| Toolbar collapse threshold and selector choice | At insufficient width, the six tabs become the existing PiKit menu; at sufficient width they remain tabs. Request/Response reserve search width; the other parts do not. Search shrinks between its prior preferred size and 120 points; the selected menu width is measured. Geometry and light/dark galleries cover 1000, 740, 700 and minimum 485-point panes plus actual minimum windows. |
+
+The state cross-check is explicit: streaming readable bodies keep their chosen
+prefix; Off streaming changes only observations; idle and paused requests refresh
+without forced body replacement; memory completion checks helper availability;
+persistent completion still hands off to the archive; helper restart retires lost
+memory but preserves readable archive captures; cancellation/hidden windows cannot
+publish late reads; and concurrent sibling work keeps physical session and
+attempt identities. No permission, tool, vault, retention or capture policy was
+changed. The report notice is a wording correction with no changed condition.
+Test-only fixture branches and opt-in gallery guards affect generated validation
+only; generated project changes only register the new test file.
+
+### Round-2 validation results
+
+The 32 regenerated images in `review2-gallery/` were inspected: light/dark
+Request/Response at 1000, 700 and 485-point panes, actual 1000 and minimum 700×520
+Inspector windows, Headers, purged bodies and the tiny-cost chart. Copy/menu/search
+fit; the purged view has no old body and Copy is disabled. Contact sheets
+`review2-contact-1.png` through `review2-contact-8.png` retain the visual review.
+
+All commands ran from this worktree, with
+`PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector`.
+The `run-ui.sh` wrapper printed above owns/releases the shared lock for each
+invocation. No serial-lane class was mixed with another class.
+
+Failing-first and intermediate control commands (each selector is prefixed by
+`-only-testing:PiAppTests/`):
+
+| Text log | Invocation after `"$PI_BUILD_ROOT/run-ui.sh"` |
+| --- | --- |
+| `review2-before-storage.log` | `InspectorStorageTests/testCaptureOffStreamingKeepsRawLinksPagination`, `InspectorStorageTests/testCredentialOmittedRequestCompletionPreservesReadableResponse`, `InspectorStorageTests/testLosingOneBodyPreservesTheOtherDocumentAndCopySource` |
+| `review2-before-memory-loss.log` | `InspectorRequestModelTests/testLosingHelperMemoryRetiresAResponseWithUnchangedArchiveMetadata` |
+| `review2-fixed-model.log`, `review2-fixed-model-race.log` | `InspectorRequestModelTests` |
+| `review2-fixed-storage.log` | `InspectorStorageTests` (gallery opt-in absent; 2 expected skips) |
+| `review2-fixed-storage-race.log`, `review2-fixed-complete.log` | `InspectorStorageTests`, with `TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$PI_BUILD_ROOT/review2-gallery"` |
+
+Mutation checks all compiled and failed the intended executed tests (exit 65),
+then restored production files. **10 variants caught; 12/12 selected test
+executions failed, 34 failed assertions, zero unexpected errors**. Each invocation
+was `"$PI_BUILD_ROOT/run-ui.sh"` with the following selectors, each prefixed by
+`-only-testing:PiAppTests/`. Log names are `review2-mutation-<variant>.log`.
+
+| Variant / key line broken | Test selectors | Failed tests / assertions |
+| --- | --- | ---: |
+| `descriptor`: restore descriptor inequality instead of prior readability | `InspectorStorageTests/testCaptureOffStreamingKeepsRawLinksPagination`; `InspectorStorageTests/testCredentialOmittedRequestCompletionPreservesReadableResponse` | 2 / 2 |
+| `blanket`: retire both bodies when one is lost | `InspectorStorageTests/testLosingOneBodyPreservesTheOtherDocumentAndCopySource` | 1 / 10 |
+| `unchanged`: require a changed descriptor to detect loss | `InspectorRequestModelTests/testLosingHelperMemoryRetiresAResponseWithUnchangedArchiveMetadata` | 1 / 2 |
+| `raw-body`: let any body's revision discard the mounted Raw body | `InspectorStorageTests/testLosingOneBodyPreservesTheOtherDocumentAndCopySource` | 1 / 8 |
+| `raw-pages`: reset unrelated pages on body revision changes | `InspectorStorageTests/testCaptureOffStreamingKeepsRawLinksPagination` | 1 / 1 |
+| `copy`: remove the post-render revision fence | `InspectorStorageTests/testACopyAlreadyRenderingCannotPublishAfterClear` | 1 / 1 |
+| `early-read`: stop recording availability at source metadata reads | `InspectorStorageTests/testRawBodyReadBeforeFirstMetadataStillRetiresWhenLost`; `InspectorStorageTests/testPurgeDuringFirstRawParseCannotPublishTheBody` | 2 / 4 |
+| `events`: stop refreshing Events on Response retirement | `InspectorStorageTests/testClearingResponseRetiresItsRawEventIndex` | 1 / 2 |
+| `events-copy`: permit copying an event page before its invalidation refresh | `InspectorStorageTests/testClearingResponseRetiresItsRawEventIndex` | 1 / 1 |
+| `cancelled-probe`: remove the guard immediately after the awaited source check | `InspectorRequestModelTests/testCancelledAvailabilityProbeCannotRetireASiblingResponse` | 1 / 3 |
+
+Final focused rerun commands (all after restoring production):
+
+```sh
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/InspectorDocumentCacheTests \
+  -only-testing:PiAppTests/InspectorIndexTests \
+  -only-testing:PiAppTests/InspectorRequestModelTests \
+  -only-testing:PiAppTests/SubagentInspectorTests \
+  -only-testing:PiAppTests/SubagentSteeringInspectorTests
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$PI_BUILD_ROOT/review2-gallery" \
+  "$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorStorageTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorNativeControlTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorNativeParityTests
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/InspectorSummaryRequestTests \
+  -only-testing:PiAppTests/InspectorFollowTests \
+  -only-testing:PiAppTests/InspectorEntryPointTests \
+  -only-testing:PiAppTests/InspectorWindowControlTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorExpandInPlaceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorExpandPerformanceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorOverviewDocumentGeometryTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorPerformanceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorFrameTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/SideBudgetInspectorLifetimeTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/ReportPageTests
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/DashboardTests \
+  -only-testing:PiAppTests/PiChartTicksTests \
+  -only-testing:PiAppTests/MenuBarMetricsTests
+```
+
+The final matrix passed **189/189 tests across 22 classes**, zero failures and
+zero skips: **104 Inspector-related, 33 Report, 19 Dashboard, 29 MenuBarMetrics
+and 4 chart tick tests**. Failing-first runs, mutations and repeated controls are
+excluded. No unrelated test failed. `review2-checks-summary.log` ends with
+`Failed: []`.
+
+| Class | Passed/total | Final text log |
+| --- | ---: | --- |
+| DashboardTests | 19/19 | `review2-final-chart-pagination.log` |
+| InspectorDocumentCacheTests | 3/3 | `review2-final-models.log` |
+| InspectorEntryPointTests | 7/7 | `review2-final-pages.log` |
+| InspectorExpandInPlaceTests | 8/8 | `review2-final-expand.log` |
+| InspectorExpandPerformanceTests | 2/2 | `review2-final-expand-performance.log` |
+| InspectorFollowTests | 2/2 | `review2-final-pages.log` |
+| InspectorFrameTests | 2/2 | `review2-final-frame.log` |
+| InspectorIndexTests | 11/11 | `review2-final-models.log` |
+| InspectorNativeControlTests | 12/12 | `review2-final-controls.log` |
+| InspectorNativeParityTests | 7/7 | `review2-final-parity.log` |
+| InspectorOverviewDocumentGeometryTests | 1/1 | `review2-final-overview-geometry.log` |
+| InspectorPerformanceTests | 2/2 | `review2-final-performance.log` |
+| InspectorRequestModelTests | 9/9 | `review2-final-models.log` |
+| InspectorStorageTests | 17/17 | `review2-final-storage-gallery.log` |
+| InspectorSummaryRequestTests | 5/5 | `review2-final-pages.log` |
+| InspectorWindowControlTests | 1/1 | `review2-final-pages.log` |
+| MenuBarMetricsTests | 29/29 | `review2-final-chart-pagination.log` |
+| PiChartTicksTests | 4/4 | `review2-final-chart-pagination.log` |
+| ReportPageTests | 33/33 | `review2-final-report.log` |
+| SideBudgetInspectorLifetimeTests | 2/2 | `review2-final-budget-lifetime.log` |
+| SubagentInspectorTests | 7/7 | `review2-final-models.log` |
+| SubagentSteeringInspectorTests | 6/6 | `review2-final-models.log` |
+
+The final gallery rerun again passed both opt-in tests; the minimum-window
+Request/Response scenes were rechecked after regeneration. The Debug frame fixture loaded the 5 MB Conversation in 440 ms, its Response
+in 12 ms, and Raw with 0 ms measured preparation (`review2-final-frame.log`).
+No clone directories remained under this workstream's build root; no extra DerivedData was created.
+
+Self-review outcome: the two reported scenarios are fixed. The review also
+confirmed lost memory behind unchanged archive metadata and caught two ordering
+cases in the intermediate implementation (before/during the first Raw parse),
+plus the need to retire Response event indices while preserving Links. All have
+regression and mutation evidence above. The cancelled sibling availability probe
+also passes its control and fails its mutation. No other defect was confirmed in
+the branch's changed conditions; no owner decision remains pending.
+
+No helper or wire behavior changed, so helper/wire/concurrent/acceptance suites
+were not rerun for this app-only follow-up. All data was generated; no installed
+app, real preferences/chats/credentials, Keychain, live capture or paid provider
+was used. Only the workstream branch is committed/pushed; the lead owns the merge
+and merged full gate.

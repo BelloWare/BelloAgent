@@ -87,12 +87,20 @@ import XCTest
     }
 
     func testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse() async throws {
+        try await checkMemoryCompletion(omittedRequest: false)
+    }
+
+    func testCredentialOmittedRequestCompletionPreservesReadableResponse() async throws {
+        try await checkMemoryCompletion(omittedRequest: true)
+    }
+
+    private func checkMemoryCompletion(omittedRequest: Bool) async throws {
         let root = scratchRoot("inspector-memory-completion")
         let workspace = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { workspace.shutdown(); try? FileManager.default.removeItem(at: root) }
         let archive = workspace.traces
         try await archive.configure(quota: 8_388_608, bodyRetention: 86400, metricRetention: 86400)
-        for part in [InspectorRequestModel.RawPart.request, .response] {
+        for part in omittedRequest ? [.response] : [InspectorRequestModel.RawPart.request, .response] {
             let inspector = SessionInspectorModel(scope: .init(sessionID: "session", workspaceID: "project"), title: "Memory capture", archive: archive, workspace: workspace,
                                                   usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
             let request = inspector.request
@@ -100,20 +108,21 @@ import XCTest
             let prefix = InspectorRequestModelTests.stream(2), complete = InspectorRequestModelTests.stream(20, finished: true)
             var finished = false
             request.sourceOverride = { _, kind in
-                InspectorRequestModelTests.source({ kind == "request" ? input : finished ? complete : prefix },
+                if kind == "request", omittedRequest { return InspectorRequestModelTests.source({ Data() }, state: { "credential-omitted" }) }
+                return InspectorRequestModelTests.source({ kind == "request" ? input : finished ? complete : prefix },
                                                   state: { kind == "request" || finished ? "complete" : "partial" })
             }
             request.metadataOverride = { row in
                 if row.source != .live { return try await archive.metadata(attempt: row.id) }
                 return ["outcome": .string("running"),
-                        "request": .object(["state": .string("complete"), "retainedBytes": .number(Double(input.count))]),
+                        "request": .object(["state": .string(omittedRequest ? "credential-omitted" : "complete"), "retainedBytes": .number(omittedRequest ? 0 : Double(input.count))]),
                         "response": .object(["state": .string("partial"), "retainedBytes": .number(Double(prefix.count))])]
             }
             let live = InspectorRequestRow(id: UUID().uuidString, wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "fixture", model: "fixture", outcome: "running", source: .live)
             request.tab = .response; request.open(live, predecessor: nil, previousLabel: nil); request.setActive(true)
             defer { request.setActive(false) }
             try await eventually("the memory response prefix") { request.response.value?.partial == true }
-            let parsedBytes = request.responseBytes, reads = request.bodyReads, revision = request.captureRevision
+            let parsedBytes = request.responseBytes, reads = request.bodyReads, revision = request.captureRevisions
             request.tab = .raw; request.raw = part; request.query = "word"
             let raw = InspectorRawTab(inspector: inspector, request: request, compact: false)
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
@@ -133,7 +142,7 @@ import XCTest
             finished = true; request.open(merged, predecessor: nil, previousLabel: nil)
             try await eventually("the completed memory metadata") { request.metadata["outcome"]?.string == "completed" && request.metadataText.contains("not-retained") }
             raw.refresh()
-            XCTAssertEqual(request.captureRevision, revision, "A durable row without durable bytes is not a purge")
+            XCTAssertEqual(request.captureRevisions, revision, "A durable row without durable bytes is not a purge")
             XCTAssertEqual(request.metadata["response"]?.object?["state"]?.string, "not-retained")
             let shown = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first)
             XCTAssertTrue(shown === body)
@@ -151,6 +160,152 @@ import XCTest
         }
         XCTAssertTrue(workspace.hosts.isEmpty, "Generated sources never start a helper")
         try await archive.close()
+    }
+
+    func testCaptureOffStreamingKeepsRawLinksPagination() async throws {
+        let root = scratchRoot("inspector-off-links")
+        let archive = PayloadArchive(root: root)
+        let inspector = SessionInspectorModel(scope: .init(sessionID: "session", workspaceID: "project"), title: "Capture Off", archive: archive, workspace: nil,
+                                              usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+        let request = inspector.request, id = UUID().uuidString
+        addTeardownBlock { @MainActor in
+            request.setActive(false); try? await archive.close(); try? FileManager.default.removeItem(at: root)
+        }
+        try await archive.configure(quota: 8_388_608, bodyRetention: 86400, metricRetention: 86400)
+        try await archive.begin(["attemptId": .string(id), "sessionId": .string("session"), "turnId": .string("t"),
+                                 "purpose": .string("turn"), "api": .string("openai-responses"), "requestedModel": .string("fixture"),
+                                 "mode": .string("off"), "outcome": .string("running"),
+                                 "messageIds": .array((0..<260).map { .string(String(format: "context-%03d", $0)) })], workspace: "project")
+        var observed = 10, polls = 0
+        request.metadataPollInterval = .milliseconds(40)
+        request.metadataOverride = { _ in
+            polls += 1
+            return ["outcome": .string("streaming"),
+                    "request": .object(["state": .string("not-captured"), "observedBytes": .number(10), "retainedBytes": .number(0)]),
+                    "response": .object(["state": .string("not-captured"), "observedBytes": .number(Double(observed)), "retainedBytes": .number(0)])]
+        }
+        request.sourceOverride = { _, _ in nil }
+        request.tab = .raw; request.raw = .links
+        request.open(InspectorRequestRow(id: id, wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "fixture", model: "fixture", outcome: "streaming", source: .live), predecessor: nil, previousLabel: nil)
+        request.setActive(true)
+        let raw = InspectorRawTab(inspector: inspector, request: request, compact: false)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = raw; window.orderFront(nil)
+        addTeardownBlock { @MainActor in
+            window.contentView = nil; window.close()
+        }
+        try await eventually("the first links page") { InspectorExpandFixture.descendants(PiKit.Pager.self, in: raw).first != nil && request.metadataLoaded }
+        let pager = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.Pager.self, in: raw).first)
+        pager.next.performClick(nil)
+        try await eventually("the second links page") { InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text.hasPrefix("context  context-128") == true }
+        let page = try XCTUnwrap(InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text)
+        let revision = request.captureRevisions, previousPolls = polls
+        observed = 100
+        try await eventually("several Off metadata polls") { polls >= previousPolls + 3 && request.metadata["response"]?.object?["observedBytes"]?.number == 100 }
+        raw.refresh()
+        XCTAssertEqual(request.captureRevisions, revision, "Changing observed bytes never makes an unavailable body disappear")
+        XCTAssertTrue(InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text == page, "Links must stay on rows 129–256")
+        let copy = try XCTUnwrap(copyButton(raw)); NSPasteboard.general.clearContents(); copy.performClick(nil)
+        XCTAssertTrue(NSPasteboard.general.string(forType: .string) == page, "Copy must still use the selected links page")
+        request.capturesCleared(); raw.refresh()
+        XCTAssertTrue(InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text == page, "Clearing bodies does not clear message links or their selected page")
+    }
+
+    func testLosingOneBodyPreservesTheOtherDocumentAndCopySource() async throws {
+        for lost in ["request", "response"] {
+            let fixture = try await fixture(), request = fixture.2.request, raw = fixture.3
+            addTeardownBlock { @MainActor in await self.close(fixture) }
+            request.raw = lost == "request" ? .response : .request; raw.refresh()
+            try await eventually("the other raw body") { self.copyButton(raw)?.isEnabled == true }
+            let body = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first)
+            body.setFormat(.hex)
+            let document = try XCTUnwrap(body.controller.document?.id), reads = request.bodyReads
+            var metadata = request.metadata
+            metadata[lost] = .object(["state": .string("purged"), "retainedBytes": .number(0)])
+            let updated = metadata
+            request.metadataOverride = { _ in updated }
+            request.sourceOverride = { row, kind in
+                kind == lost ? InspectorRequestModelTests.source({ Data() }, state: { "purged" }) : .archive(fixture.1, attemptID: row.id, kind: kind)
+            }
+            request.refresh()
+            try await eventually("one purged descriptor") { request.metadata[lost]?.object?["state"]?.string == "purged" && request.metadataLoaded }
+            raw.refresh()
+            let shown = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first)
+            XCTAssertTrue(shown === body); XCTAssertEqual(shown.format, .hex); XCTAssertEqual(shown.controller.document?.id, document)
+            XCTAssertEqual(request.bodyReads, reads)
+            XCTAssertTrue(copyButton(raw)?.isEnabled == true, "The other body's copy source remains readable")
+            if lost == "request" {
+                XCTAssertNil(request.conversation.value); XCTAssertNotNil(request.response.value)
+            } else {
+                XCTAssertNil(request.response.value); XCTAssertNotNil(request.conversation.value)
+            }
+        }
+    }
+
+    func testRawBodyReadBeforeFirstMetadataStillRetiresWhenLost() async throws {
+        try await checkFirstMetadata(parsePending: false)
+    }
+
+    func testPurgeDuringFirstRawParseCannotPublishTheBody() async throws {
+        try await checkFirstMetadata(parsePending: true)
+    }
+
+    private func checkFirstMetadata(parsePending: Bool) async throws {
+        let entered = DispatchSemaphore(value: 0), unblock = DispatchSemaphore(value: 0)
+        let held: Task<Void, Error>? = parsePending ? Task { try await CapturedBodyWorker.shared.run { entered.signal(); unblock.wait() } } : nil
+        defer { unblock.signal() }
+        if parsePending { try await eventually("the held body parser") { entered.wait(timeout: .now()) == .success } }
+        let root = scratchRoot("inspector-first-metadata"), prefix = InspectorRequestModelTests.stream(2)
+        let archive = PayloadArchive(root: root)
+        let inspector = SessionInspectorModel(scope: .init(sessionID: "session", workspaceID: "project"), title: "Pending metadata", archive: archive, workspace: nil,
+                                              usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+        let request = inspector.request
+        var available = true, descriptions = 0, release: CheckedContinuation<Void, Never>?
+        request.metadataOverride = { _ in
+            await withCheckedContinuation { release = $0 }
+            return ["outcome": .string("completed"), "response": .object(["state": .string("purged"), "retainedBytes": .number(0)])]
+        }
+        request.sourceOverride = { _, _ in
+            let source = InspectorRequestModelTests.source({ available ? prefix : Data() }, state: { available ? "partial" : "purged" })
+            return CapturedBodySource(metadata: { descriptions += 1; return try await source.metadata() }, page: source.page)
+        }
+        request.tab = .raw; request.raw = .response
+        request.open(InspectorRequestRow(id: UUID().uuidString, wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "fixture", model: "fixture", outcome: "completed", source: .log), predecessor: nil, previousLabel: nil)
+        request.setActive(true)
+        let raw = InspectorRawTab(inspector: inspector, request: request, compact: false)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = raw; window.orderFront(nil)
+        defer { request.setActive(false); release?.resume(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
+        try await eventually("Raw before its first metadata record") { (parsePending ? descriptions >= 2 : self.copyButton(raw)?.isEnabled == true) && release != nil }
+        XCTAssertFalse(request.metadataLoaded)
+        available = false; release?.resume(); release = nil
+        try await eventually("the first unavailable descriptor") { request.metadataLoaded }
+        raw.refresh()
+        if parsePending {
+            unblock.signal(); try await held?.value; try await CapturedBodyWorker.shared.run { }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertFalse(copyButton(raw)?.isEnabled == true, "The body read itself establishes prior availability")
+        XCTAssertNil(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first?.controller.document)
+    }
+
+    func testClearingResponseRetiresItsRawEventIndex() async throws {
+        let fixture = try await fixture(), archive = fixture.1, inspector = fixture.2, raw = fixture.3
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        let id = try XCTUnwrap(inspector.request.row?.id)
+        let event: WireValue = .object(["type": .string("generated-event-purge"), "start": .number(0), "end": .number(10), "observedAt": .number(1)])
+        try await archive.accept(["type": .string("events"), "attemptId": .string(id), "offset": .number(0), "events": .array([event])], workspace: "project")
+        inspector.request.raw = .events; raw.refresh()
+        try await eventually("the retained event index") { InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text.contains("generated-event-purge") == true }
+        try await archive.clear(sessionID: "session"); inspector.refresh()
+        try await eventually("the response purge") { inspector.request.metadata["response"]?.object?["state"]?.string == "purged" }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString("after clear", forType: .string)
+        inspector.request.capturesCleared(); copyButton(raw)?.performClick(nil)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "after clear", "Even before Raw refreshes, a retired event index cannot be copied")
+        raw.refresh()
+        XCTAssertFalse(InspectorExpandFixture.descendants(PagedTextView.self, in: raw).first?.text.contains("generated-event-purge") == true, "Events belong to the retired response, unlike message links")
+        NSPasteboard.general.clearContents(); copyButton(raw)?.performClick(nil)
+        XCTAssertFalse(NSPasteboard.general.string(forType: .string)?.contains("generated-event-purge") == true)
     }
 
     func testRawToolbarFitsEveryPartAtNarrowAndMinimumPaneWidths() async throws {

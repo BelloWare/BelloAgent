@@ -4,6 +4,9 @@
 
 ## 0.1.130
 
+- [x] Inspector invalidates only the body that became unreadable, preserving Off-stream Links pages and readable partial responses with credential-omitted input. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Inspector detects lost helper-memory bodies even when archive metadata is unchanged, including bodies read before metadata arrives. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
 - [x] Completing Session memory requests preserves Inspector Raw state and partial Response documents, with Load latest using the readable memory source. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] Raw search shrinks and part tabs become a menu when needed, keeping Copy and capture actions visible at the minimum Inspector width. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] The report notice describes configured metric retention instead of the obsolete 100,000-record limit. [Validation](docs/validation/a130-inspector-0.1.130.md).
