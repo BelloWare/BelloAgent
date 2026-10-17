@@ -360,6 +360,49 @@ final class SidebarSearchIndexTests: XCTestCase {
         await reopened.close()
     }
 
+    /// BUG-010 (review 2026-10-16): text after an embedded NUL, in what the
+    /// reader typed or in a tool's output, is searchable. NUL reads as a
+    /// separator in the text, the query and the excerpt alike, and an index
+    /// written by an earlier version (rows cut at the NUL) is built again.
+    func testTextAfterAnEmbeddedNULIsSearchable() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let journal = try SearchJournal(root.appendingPathComponent("nul.jsonl"), id: "nul")
+        try journal.message("u", role: "user", "prefixmarker\u{0}suffixneedle typed")
+        try journal.message("a", role: "assistant", [["type": "toolCall", "id": "c", "name": "read", "arguments": ["path": "f.txt"]]])
+        try journal.message("r", role: "toolResult", [["type": "text", "text": "toolprefix\u{0}\u{0}tooltailneedle in the file"]], extra: ["toolCallId": "c", "toolName": "read"])
+        let (index, query) = index(root)
+        let source = ChatSearchSource(id: "nul", path: journal.url.path)
+        _ = await index.reconcile([source])
+        func check(_ label: String) async throws {
+            let user = try await query.search("suffixneedle")
+            XCTAssertEqual(user["nul"]?.messageID, "u", label)
+            XCTAssertEqual(user["nul"]?.kind, .user, label)
+            if let hit = user["nul"] {
+                XCTAssertEqual((hit.excerpt as NSString).substring(with: hit.highlight), "suffixneedle", label)
+                XCTAssertEqual(hit.excerpt, "prefixmarker suffixneedle typed", label)
+            }
+            let tool = try await query.search("tooltailneedle")
+            XCTAssertEqual(tool["nul"]?.messageID, "r", label)
+            XCTAssertEqual(tool["nul"]?.kind, .toolOutput, label)
+            XCTAssertEqual(tool["nul"]?.excerpt, "toolprefix tooltailneedle in the file", label)
+            let typed = try await query.search("prefixmarker\u{0}suffixneedle")
+            XCTAssertEqual(typed["nul"]?.messageID, "u", "a query with a NUL reads it as the text does: \(label)")
+        }
+        try await check("fresh index")
+        await index.close()
+
+        // An index from before: written at version 1, where the NUL cut the
+        // rows short (modelled as the chat's rows missing, its pass recorded).
+        var other: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(index.url.path, &other, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(other, "DELETE FROM content WHERE chat='nul'; PRAGMA user_version=1;", nil, nil, nil), SQLITE_OK)
+        sqlite3_close_v2(other)
+        let reopened = ChatSearchIndex(url: index.url, indexDirectory: root)
+        _ = await reopened.reconcile([source])
+        try await check("index from version 1")
+        await reopened.close()
+    }
+
     /// Whitespace reads alike in the query and the text: a phrase typed with
     /// one space finds it across a line break or a run of spaces.
     func testAPhraseMatchesAcrossLineBreaks() async throws {

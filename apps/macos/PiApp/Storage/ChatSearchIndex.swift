@@ -84,14 +84,16 @@ extension ChatSearchHit {
         var hit = self; hit.excerpt = value.excerpt; hit.highlight = value.highlight; return hit
     }
     /// Whitespace runs as one space, in composed form: the index and the
-    /// query read "é" alike however it was typed.
+    /// query read "é" alike however it was typed. NUL separates as
+    /// whitespace does: SQLite's text ends at one, and the trigram index
+    /// would not match across it anyway.
     static func collapsed(_ text: String) -> String {
-        text.precomposedStringWithCanonicalMapping.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        text.precomposedStringWithCanonicalMapping.split(whereSeparator: { $0.isWhitespace || $0.isNewline || $0 == "\u{0}" }).joined(separator: " ")
     }
-    /// A query with spaces in a text whose spaces are newlines or runs.
+    /// A query with spaces in a text whose spaces are newlines, NULs or runs.
     private static func collapsedRange(of needle: String, in text: String) -> Range<String.Index>? {
         guard needle.contains(" ") else { return nil }
-        let pattern = needle.split(separator: " ").map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: "\\s+")
+        let pattern = needle.split(separator: " ").map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: "[\\s\\x{0}]+")
         return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
     }
 }
@@ -100,7 +102,8 @@ extension ChatSearchHit {
 enum ChatSearchDatabase {
     static let fileName = "search-index.sqlite"
     /// Bumped when what is indexed or how changes: the index is built again.
-    static let schemaVersion = 1
+    /// 2: text after a NUL is indexed (version 1 rows end at the first one).
+    static let schemaVersion = 2
     /// A long text (a tool's output can be a whole file) is indexed in
     /// pieces of this many characters, each overlapping the next by the
     /// longest query, so every match lies whole inside one piece. This
@@ -169,8 +172,18 @@ enum ChatSearchDatabase {
     /// Quoted as one FTS5 string, so nothing typed is read as query syntax.
     static func phrase(_ query: String) -> String { "\"" + query.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
     static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    /// Binds `value` by its length, never up to a NUL in it.
+    static func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+        var value = value
+        value.withUTF8 { bytes in
+            guard let base = bytes.baseAddress, !bytes.isEmpty else { sqlite3_bind_text(statement, index, "", 0, transient); return }
+            base.withMemoryRebound(to: CChar.self, capacity: bytes.count) { _ = sqlite3_bind_text(statement, index, $0, Int32(bytes.count), transient) }
+        }
+    }
+    /// A column's text by its length, never cut at a NUL in it.
     static func text(_ statement: OpaquePointer, _ column: Int32) -> String? {
-        sqlite3_column_text(statement, column).map { String(cString: $0) }
+        guard let bytes = sqlite3_column_text(statement, column) else { return nil }
+        return String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(statement, column))), as: UTF8.self)
     }
 }
 
@@ -536,12 +549,12 @@ actor ChatSearchIndex {
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, "INSERT INTO content(chat, msg, call, kind, pos, text) VALUES(?,?,?,?,?,?)", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
             defer { sqlite3_finalize(statement) }
-            sqlite3_bind_text(statement, 1, chat, -1, ChatSearchDatabase.transient)
-            sqlite3_bind_text(statement, 2, message, -1, ChatSearchDatabase.transient)
-            if let call = document.call { sqlite3_bind_text(statement, 3, call, -1, ChatSearchDatabase.transient) } else { sqlite3_bind_null(statement, 3) }
-            sqlite3_bind_text(statement, 4, document.kind.rawValue, -1, ChatSearchDatabase.transient)
+            ChatSearchDatabase.bind(statement, 1, chat)
+            ChatSearchDatabase.bind(statement, 2, message)
+            if let call = document.call { ChatSearchDatabase.bind(statement, 3, call) } else { sqlite3_bind_null(statement, 3) }
+            ChatSearchDatabase.bind(statement, 4, document.kind.rawValue)
             sqlite3_bind_int64(statement, 5, Int64(position))
-            sqlite3_bind_text(statement, 6, document.text, -1, ChatSearchDatabase.transient)
+            ChatSearchDatabase.bind(statement, 6, document.text)
             guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
         }
     }
@@ -553,10 +566,10 @@ actor ChatSearchIndex {
                                  -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
         for (index, value) in [source.id, source.path, revision, incarnation, lineage].enumerated() {
-            if let value { sqlite3_bind_text(statement, Int32(index + 1), value, -1, ChatSearchDatabase.transient) } else { sqlite3_bind_null(statement, Int32(index + 1)) }
+            if let value { ChatSearchDatabase.bind(statement, Int32(index + 1), value) } else { sqlite3_bind_null(statement, Int32(index + 1)) }
         }
         sqlite3_bind_int64(statement, 6, Int64(total))
-        if let newest { sqlite3_bind_text(statement, 7, newest, -1, ChatSearchDatabase.transient) } else { sqlite3_bind_null(statement, 7) }
+        if let newest { ChatSearchDatabase.bind(statement, 7, newest) } else { sqlite3_bind_null(statement, 7) }
         sqlite3_bind_int(statement, 8, unreadable ? 1 : 0)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
@@ -565,7 +578,7 @@ actor ChatSearchIndex {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
-        for (index, value) in values.enumerated() { sqlite3_bind_text(statement, Int32(index + 1), value, -1, ChatSearchDatabase.transient) }
+        for (index, value) in values.enumerated() { ChatSearchDatabase.bind(statement, Int32(index + 1), value) }
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
 
@@ -577,7 +590,7 @@ actor ChatSearchIndex {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, chat == nil ? "SELECT count(*) FROM content" : "SELECT count(*) FROM content WHERE chat=?", -1, &statement, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_finalize(statement) }
-        if let chat { sqlite3_bind_text(statement, 1, chat, -1, ChatSearchDatabase.transient) }
+        if let chat { ChatSearchDatabase.bind(statement, 1, chat) }
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
     func indexedChats() -> Set<String> { guard let db = try? ready() else { return [] }; return Set(states(db).keys) }
@@ -653,7 +666,7 @@ final class ChatSearchQuery: @unchecked Sendable {
             """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, ChatSearchDatabase.phrase(needle), -1, ChatSearchDatabase.transient)
+        ChatSearchDatabase.bind(statement, 1, ChatSearchDatabase.phrase(needle))
         var hits: [String: ChatSearchHit] = [:]
         while true {
             let status = sqlite3_step(statement)
