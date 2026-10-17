@@ -270,6 +270,16 @@ close (it ends with its runtime; `testClosingAnUnkeptPausedSideTakesItOffItsRoot
 | P2 a summary request checked only the chat's own pause | It asks `enforceCostHold` (own, ancestors', owner and coordinator holds) before every attempt | `FamilyLimitPauseTests.testASidesSummaryRequestWaitsForTheFamilysResume` (`r8-summary-hold`) |
 | P2 the cold reader ignored sides still waiting for an accepted Resume | A saved `costPausedMembers` without an active run reads as the family's pause (`pausedForResume`), as the helper's `membersPendingResume` | native `RunHoldTests.testAJournalWithSidesStillWaitingReadsAsPaused` |
 
+## Rounds 8–11: native checks
+
+After the soak, under the lane lock (`native10.sh`): RunHoldTests, CostPauseFamilyTests,
+CostPausePresentationTests, WorkspaceFailureTests and WireContractTests ran 44 tests, 0
+failures (1 skipped, a perf test). Each of the six app-side mutations failed its test on an
+assertion, not a build error: `r8-ancestors-first`, `r8-cold-members`, `r9-cold-unknown`,
+`r9-held-outcome`, `r10-archived-root` and `r11-edit-card`. Helper rounds 9–11 ran the full
+helper suite, with mutations `r9-resume-count`, `r9-held-card`, `r10-stopped-parks`,
+`r11-task-root`, `r11-early-forget` and `r11-stale-hold`.
+
 ## Known, for 0.1.130
 
 Owner decision: 0.1.129 ships after review round 11. Codex round 12 (at 7201fcbf) found
