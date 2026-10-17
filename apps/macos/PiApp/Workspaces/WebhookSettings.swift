@@ -284,12 +284,19 @@ struct WebhookContext: Sendable, Equatable {
     }
     /// The rows the exchange is read from: up to the task's last row, and
     /// its own rows when they are marked with it.
+    /// None when they hold neither its last row nor any row of its own: they
+    /// are another task's.
     static func bounded(_ messages: [TranscriptMessage], task: WebhookTask?) -> [TranscriptMessage] {
         guard let task else { return messages }
+        guard holds(task, in: messages) else { return [] }
         var rows = messages
         if let last = task.lastSourceID, let end = rows.lastIndex(where: { $0.id == last }) { rows = Array(rows[...end]) }
         let own = rows.filter { $0.taskRootID == task.rootID }
         return own.contains { $0.role == "user" } ? own : rows
+    }
+    /// Whether `messages` hold any of the task's rows: its last row, or one of its own.
+    static func holds(_ task: WebhookTask, in messages: [TranscriptMessage]) -> Bool {
+        messages.contains { $0.taskRootID == task.rootID || (task.lastSourceID != nil && $0.id == task.lastSourceID) }
     }
     /// Whether `messages` reach back to the request the task's exchange
     /// answers: its last request before the task's last row.

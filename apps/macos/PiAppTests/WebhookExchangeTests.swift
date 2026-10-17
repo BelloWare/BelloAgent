@@ -97,6 +97,33 @@ final class WebhookExchangeTests: XCTestCase {
         }
     }
 
+    /// An edit or resend can replace the finished task's branch while the
+    /// webhook is prepared: its last row is then in no history the reader
+    /// can reach. The replacement's rows are never sent as its exchange; the
+    /// rows on screen are used only when they hold the task.
+    @MainActor func testAReplacedBranchNeverLendsItsRowsToTheExchange() async throws {
+        for shown in [false, true] {
+            let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-replaced-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            defer { model.shutdown() }
+            let journal = try SearchJournal(root.appendingPathComponent("chat.jsonl"))
+            try journal.message("u2", role: "user", "Replacement request", extra: ["nativeTaskRoot": "t2"])
+            try journal.message("a2", role: "assistant", [["type": "text", "text": "Replacement reply"]], extra: ["nativeTaskRoot": "t2"])
+            model.chats = [ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: journal.url.path, profileID: "fixture")]
+            let display = SessionDisplay(id: "chat"); model.displays["chat"] = display
+            if shown {
+                var request = TranscriptMessage(id: "u1", role: "user", text: "Original request"); request.taskRootID = "t1"
+                var reply = TranscriptMessage(id: "a1", role: "assistant", text: "Original reply"); reply.taskRootID = "t1"
+                display.messages = [request, reply]
+            }
+            var settings = WebhookSettings(); settings.enabled = true; settings.url = "http://127.0.0.1:1/no-send"; settings.parameters = ""
+            let prepared = try await model.prepareWebhook(for: "chat", settings: settings, status: "completed", task: WebhookTask(rootID: "t1", lastSourceID: "a1"))
+            XCTAssertEqual(prepared.context.lastRequest, shown ? "Original request" : "", "shown: \(shown)")
+            XCTAssertEqual(prepared.context.lastReply, shown ? "Original reply" : "", "shown: \(shown)")
+        }
+    }
+
     /// Bounded to the finished task: a later turn's rows, and earlier ones,
     /// are not its exchange. Without an identity, the last request as before.
     func testTheExchangeIsBoundedToTheFinishedTask() {
@@ -115,6 +142,9 @@ final class WebhookExchangeTests: XCTestCase {
         let byLast = WebhookContext.exchange(in: legacy, task: WebhookTask(rootID: "t1", lastSourceID: "a1"))
         XCTAssertEqual(byLast.request, "Request"); XCTAssertEqual(byLast.reply, "Answer")
         XCTAssertEqual(WebhookContext.exchange(in: rows, task: nil).request, "Next")
+        let unrelated = WebhookContext.exchange(in: rows, task: WebhookTask(rootID: "t9", lastSourceID: "a9"))
+        XCTAssertEqual(unrelated.request, "", "Rows holding none of the task's are another task's")
+        XCTAssertEqual(unrelated.reply, "")
     }
 
     /// The tracker carries the finished task's identity out with its outcome.

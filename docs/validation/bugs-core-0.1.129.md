@@ -105,3 +105,22 @@ oracle forced off every time fails, listing all three attempts. Mutations:
 - loosening the strict oracle checks to 1.01: 1 failure.
 
 The class passed 3/3 after the change.
+
+## Review round 2 (Codex, 4a59e6d3): two P2s fixed
+
+- Webhook, branch replaced during preparation: when an edit or resend has replaced the finished
+  task's branch, its last row is in no history the chat can reach. Preparation no longer falls back
+  to the replacement branch's latest page. It uses the rows on screen only when they hold the task.
+  Otherwise the request and reply go out empty (conservative: the webhook still reports that the
+  chat finished, and never with another branch's exchange). `WebhookContext.bounded` also returns
+  no rows when the rows hold none of the task's.
+  - Test: `testAReplacedBranchNeverLendsItsRowsToTheExchange`. Before the fix it sent "Replacement
+    request/reply" (4 failures).
+  - Mutations: the old fallback, and the `bounded` guard removed, gave 6 failures between this test
+    and the unit test.
+- Settings retry test made deterministic: `compare` takes the oracle measurement as a closure. The
+  retry test feeds measurements derived from the native page (exact, or a point taller or shorter
+  in Connection with later groups and the document moved accordingly) instead of real SwiftUI
+  oracles. It covers matching at once, on the second attempt, on the third, and never (+1 and −1).
+  - Mutation (one attempt): 8 failures.
+- Reruns: WebhookExchangeTests + WebhookTests 22/22; SettingsFullDocumentGeometryTests 2/2.

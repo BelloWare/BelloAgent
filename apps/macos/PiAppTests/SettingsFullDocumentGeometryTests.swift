@@ -268,15 +268,12 @@ import XCTest
     /// in every run). When the oracle disagrees with the native page, the
     /// rows of all three pages are printed and a fresh oracle is built, up to
     /// twice more; the native page must match one of them exactly.
-    /// `perturb` changes the oracle built at each attempt it is given, for the
-    /// test of this path.
-    private func compare(_ native: NativePage, _ model: WorkspaceModel, _ controller: ConnectionSettingsController,
-                         perturb: (Int, inout Oracle) -> Void = { _, _ in }) async throws -> OracleOutcome {
-        let size = CGSize(width: native.scroll.bounds.width, height: native.scroll.bounds.height)
+    /// `measure` builds the oracle for each attempt: the real frozen page, or
+    /// controlled measurements for the test of this path.
+    private func compare(_ native: NativePage, measure: (Int) async throws -> Oracle) async throws -> OracleOutcome {
         var all: [String] = []
         for attempt in 0...2 {
-            var oracle = try await measureOracle(model, controller, size: size, attempt: attempt)
-            perturb(attempt, &oracle)
+            let oracle = try await measure(attempt)
             let found = differences(native, oracle)
             if found.isEmpty {
                 if attempt > 0 { print("ORACLE-REMEASURED SettingsFullDocumentGeometry: oracle \(attempt + 1) of 3 matched the native page; the earlier ones disagreed:\n" + all.joined(separator: "\n")) }
@@ -295,28 +292,47 @@ import XCTest
     func testCompleteConnectionGroupsMatchAfterTheFrozenLazyPageIsRealized() async throws {
         let (model, controller) = try await fixture()
         let native = try await measureNative(model, controller)
-        let outcome = try await compare(native, model, controller)
+        let size = CGSize(width: native.scroll.bounds.width, height: native.scroll.bounds.height)
+        let outcome = try await compare(native) { try await self.measureOracle(model, controller, size: size, attempt: $0) }
         if case .disagreed(let found) = outcome {
             XCTFail("No frozen oracle of three matched the native page:\n" + found.joined(separator: "\n"))
         }
     }
 
-    /// The re-measuring path: a first oracle a point off (as the frozen
-    /// SwiftUI page sometimes lays itself out) is measured again and the
-    /// fresh one decides; one that stays off fails with every disagreement.
+    /// The re-measuring path, on controlled measurements rather than real
+    /// oracles (whose own point of jitter is what it handles): an oracle that
+    /// matches the native page exactly, or one a point taller or shorter in
+    /// its Connection group, as the frozen SwiftUI page sometimes lays itself
+    /// out. A first one off is measured again and the fresh one decides; one
+    /// off every time fails with every disagreement.
     func testAnOracleThatDisagreesIsMeasuredAgain() async throws {
         let (model, controller) = try await fixture()
         let native = try await measureNative(model, controller)
-        func taller(_ oracle: inout Oracle) {
-            oracle.lazyFrames[.connection]?.size.height += 1
-            for group in [SettingsReferenceGroup.reasoning, .metadata, .routing, .capabilities] { oracle.lazyFrames[group]?.origin.y += 1 }
-            oracle.lazyBottom.documentHeight += 1
+        let nativeFrames = frames(native.page)
+        let retries = native.page.items[6].frame.maxY - native.page.items[5].frame.maxY
+        func oracle(off points: CGFloat) -> Oracle {
+            var groups = nativeFrames
+            groups[.connection]?.size.height += points
+            for group in [SettingsReferenceGroup.reasoning, .metadata, .routing, .capabilities] { groups[group]?.origin.y += points }
+            var complete = native.initial
+            complete.documentHeight = native.initial.documentHeight - retries + points
+            complete.knob = native.initial.knob * native.initial.documentHeight / complete.documentHeight
+            complete.origin = 0
+            return Oracle(lazyInitial: complete, lazyBottom: complete, lazyTop: complete, eager: complete, lazyFrames: groups, eagerFrames: groups,
+                          lazy: native.view, lazyScroll: native.scroll, eagerView: native.view, eagerScroll: native.scroll,
+                          lazyWindow: native.window, eagerWindow: native.window)
         }
-        let once = try await compare(native, model, controller) { attempt, oracle in if attempt == 0 { taller(&oracle) } }
-        XCTAssertEqual(once, .matched(attempt: 1), "A fresh oracle decides after a first one a point off")
-        let always = try await compare(native, model, controller) { _, oracle in taller(&oracle) }
-        guard case .disagreed(let found) = always else { return XCTFail("An oracle off every time must fail: \(always)") }
-        XCTAssertEqual(found.filter { $0.contains("connection original complete height") }.count, 3, "\(found)")
-        XCTAssertTrue(found.contains { $0.hasPrefix("oracle 3: ") && $0.contains("original complete content height") }, "\(found)")
+        let exact = try await compare(native) { _ in oracle(off: 0) }
+        XCTAssertEqual(exact, .matched(attempt: 0), "An exact oracle decides at once")
+        for off: CGFloat in [1, -1] {
+            let once = try await compare(native) { attempt in oracle(off: attempt == 0 ? off : 0) }
+            XCTAssertEqual(once, .matched(attempt: 1), "\(off): a fresh oracle decides after a first one a point off")
+            let twice = try await compare(native) { attempt in oracle(off: attempt < 2 ? off : 0) }
+            XCTAssertEqual(twice, .matched(attempt: 2), "\(off): the third oracle still decides")
+            let always = try await compare(native) { _ in oracle(off: off) }
+            guard case .disagreed(let found) = always else { XCTFail("\(off): an oracle off every time must fail: \(always)"); continue }
+            XCTAssertEqual(found.filter { $0.contains("connection original complete height") }.count, 3, "\(found)")
+            XCTAssertTrue(found.contains { $0.hasPrefix("oracle 3: ") && $0.contains("original complete content height") }, "\(found)")
+        }
     }
 }
