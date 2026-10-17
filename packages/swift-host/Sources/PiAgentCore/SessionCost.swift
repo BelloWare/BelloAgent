@@ -248,15 +248,18 @@ extension AgentSession {
     }
     /// What a Resume would go on with once a paused run has ended.
     var hasWorkAfterCostPause: Bool {
-        !costPendingCalls.isEmpty || costPendingCompaction || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || hasPendingAgentEvents ||
+        !costPendingCalls.isEmpty || costPendingCompaction || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || !costPendingSidePauses.isEmpty || hasPendingAgentEvents ||
         subagents.family?.turns.values.contains { !$0.status.terminal } == true ||
         continuationTail.map { Self.continues(from: $0) } ?? false
     }
     /// A pause with nothing left to resume ends by itself; the coordinator's
     /// hold (and its fence against the pause's late hold) is released too.
     @discardableResult func clearCostPauseWithoutWork() -> Bool {
+        withCostPauseFence { clearCurrentCostPauseWithoutWork() }
+    }
+    private func clearCurrentCostPauseWithoutWork() -> Bool {
         let saved = costPauseState, previous = (queuePaused,state,runStatus)
-        costPaused = false; queuePaused = false
+        costPaused = false; queuePaused = false; costResumeCount &+= 1
         if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
         if state != .error, runTask == nil || state == .paused { state = .idle; runStatus = .idle }
         do { try persistState(durable:true) }
@@ -264,8 +267,8 @@ extension AgentSession {
             restoreCostPause(saved); (queuePaused,state,runStatus) = previous
             failFamilyAccounting(error); return false
         }
-        if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
-        if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+        if !isSubagent, let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.activateResume(owner:self,generation:generation) } }
+        forgetSidePause()
         return true
     }
     /// The family reached its limit: pause at once, durably, before anything
@@ -276,13 +279,15 @@ extension AgentSession {
         guard !isSubagent, !budgetStopIssued else { return }
         budgetStopIssued = true; familyStopReason = reason
         rememberSidePauses()
+        let supersedes = supersedeCostResume()
         let pauses = !costPaused && hasCostPausableWork
-        if pauses {
-            costPaused = true; queuePaused = true; costPauseCount &+= 1
+        if pauses || supersedes {
+            costPaused = true; queuePaused = true
+            if pauses { costPauseCount &+= 1 }
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             markCutCompaction()
         }
-        if pauses || !costPendingSidePauses.isEmpty {
+        if pauses || supersedes || !costPendingSidePauses.isEmpty {
             do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
         }
         // Owner, 2026-10-17: only model requests are cut, as Stop cuts them
@@ -291,31 +296,41 @@ extension AgentSession {
         // new. Children are held by their coordinator the same way.
         abortModelRequests()
         if costPaused, let coordinator = agentCoordinator {
-            let generation = costPauseCount
+            let generation = pauseGeneration
             Task { await coordinator.pause(owner:self,generation:generation) }
         }
         if costPaused, runTask == nil { state = .paused; runStatus = .cancelled }
-        if pauses, !sideBudgetParents.isEmpty { Task { await self.publishSidePause() } }
+        if pauses, let publication = sidePausePublication() { Task { await self.publishSidePause(publication) } }
         notifySidesOfPause(reason)
         event("state")
     }
     /// Sides retain their ancestors, so callbacks hold only weak runtimes.
     func notifySidesOfPause(_ reason: AgentError) {
-        let resumes = costResumeCount
-        for notify in sideBudgetStops.values { Task { await notify(reason, resumes) } }
+        let generation = SidePausePublication(side:pauseGeneration,root:sideBudgetParents.last?.pauseGeneration ?? pauseGeneration)
+        for notify in sideBudgetStops.values { Task { await notify(reason, generation) } }
     }
     /// Save the fan-out in the same record as the pause, even when only
     /// sides have work. A side acknowledges only after its own pause and
     /// root membership are durable; idle sides never become paused members.
     func rememberSidePauses() {
-        for side in sideBudgetStops.keys.sorted() where !costPendingSidePauses.contains(side) { costPendingSidePauses.append(side) }
+        for side in sideBudgetStops.keys.sorted() where sideBudgetPauseClocks[side]?.acceptsMessages == true && !costPendingSidePauses.contains(side) { costPendingSidePauses.append(side) }
     }
-    func acknowledgeSidePause(_ side: String, resumes: Int? = nil) {
-        if let resumes, resumes != costResumeCount { return }
+    func acknowledgeSidePause(_ side: String, generation: SidePausePublication) {
+        // An acknowledgment retires only the intent generation it observed.
+        guard generation.side.clock === costPauseClock else { return }
+        generation.apply { acknowledgeCurrentSidePause(side) }
+    }
+    private func acknowledgeCurrentSidePause(_ side: String) {
         guard costPendingSidePauses.contains(side) else { return }
         let pending = costPendingSidePauses
         costPendingSidePauses.removeAll { $0 == side }
-        do { try persistState(durable:true) } catch { costPendingSidePauses = pending; failFamilyAccounting(error) }
+        // Pending fan-out keeps this generation open even after our own
+        // final reply. Retire it only once every side confirmed its state.
+        if costPaused, runTask == nil, !hasWorkAfterCostPause {
+            if !clearCostPauseWithoutWork() { costPendingSidePauses = pending }
+        } else {
+            do { try persistState(durable:true) } catch { costPendingSidePauses = pending; failFamilyAccounting(error) }
+        }
     }
     /// The manual compaction under way is cut by this pause: it is pending,
     /// with its focus, in the same record as the pause, so no crash between
@@ -330,18 +345,30 @@ extension AgentSession {
     /// missing membership: a side the root still lists is one its Resume
     /// already covers (the app resumes it next), so the root is not paused
     /// again.
-    @discardableResult func notePausedMember(_ side: String, repair: Bool = false) -> Bool {
+    @discardableResult func notePausedMember(_ side: String, publication: SidePausePublication, repair: Bool = false) -> Bool {
+        // No await between this generation check and the local durable write.
+        // Duplicates of a covered generation cannot undo an accepted Resume.
+        guard publication.root.clock === costPauseClock else { return false }
+        return publication.apply { noteCurrentPausedMember(side,publication:publication,repair:repair) } ?? false
+    }
+    private func noteCurrentPausedMember(_ side: String, publication: SidePausePublication, repair: Bool) -> Bool {
         guard !closed, ephemeral || journal != nil, !isSubagent, side != id else { return false }
-        let known = costPausedMembers.contains(side)
+        let previous = costMemberGenerations[side]
+        let known = costPausedMembers.contains(side), duplicate = previous == publication.side
+        let newPause = previous?.clock === publication.side.clock && previous?.pauses != publication.side.pauses
+        if duplicate, !known { return true } // A durable retirement already consumed this publication.
         // A known in-memory member may come from a failed save. Confirm it
         // again before another writer retires its only durable copy.
-        let first = !costPaused && !(repair && known)
+        let covered = known && (duplicate || repair && !newPause)
+        let first = !costPaused && !covered
+        let supersedes = !covered && supersedeCostResume()
         if !known { costPausedMembers.append(side) }
-        if first {
+        if first || supersedes {
             // The family's pause, as at the limit itself: saved, then every
             // model request in flight cut, the children held and the other
             // sides paused, under a new pause generation.
-            costPaused = true; queuePaused = true; costPauseCount &+= 1
+            costPaused = true; queuePaused = true
+            if first { costPauseCount &+= 1 }
             budgetStopIssued = true; familyStopReason = Self.costHoldError
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             markCutCompaction()
@@ -349,15 +376,40 @@ extension AgentSession {
             if runTask == nil { state = .paused; runStatus = .cancelled }
         }
         do { try persistState(durable:true) } catch { failFamilyAccounting(error); return false }
-        if first {
+        if first || supersedes {
             abortModelRequests()
-            if let coordinator = agentCoordinator { let generation = costPauseCount; Task { await coordinator.pause(owner:self,generation:generation) } }
+            if let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.pause(owner:self,generation:generation) } }
             notifySidesOfPause(Self.costHoldError)
         }
+        costMemberGenerations[side] = publication.side
         event("state"); return journal != nil
     }
     /// The side resumed by itself: the root no longer needs to hand it out.
-    func forgetPausedMember(_ side: String) {
+    func forgetPausedMember(_ side: String, generation: CostPauseGeneration, destination: CostPauseGeneration) {
+        // A late retirement cannot erase a member or fan-out of a newer pause.
+        guard destination.clock === costPauseClock else { return }
+        destination.clock.apply(destination) { generation.clock.apply(generation) { retirePausedMember(side) } }
+    }
+    func forgetClosedSide(_ side: String, generation: CostPauseGeneration) {
+        // Unlike Resume retirement, close ends all work of the issuing
+        // runtime. Check that generation and its registered clock, so a late
+        // close cannot retire a replacement runtime of the same side.
+        // An intermediate's no-work retirement can also notify the root.
+        // Take that root fence first, as publication/admission do.
+        let root = sideBudgetParents.last?.costPauseClock ?? costPauseClock
+        root.synchronized {
+            costPauseClock.apply(pauseGeneration) {
+                generation.clock.apply(generation) {
+                    guard generation.clock.isClosing, sideBudgetPauseClocks[side] === generation.clock else { return }
+                    retirePausedMember(side)
+                    if !costPausedMembers.contains(side), !costPendingSidePauses.contains(side) {
+                        sideBudgetStops.removeValue(forKey:side); sideBudgetPauseClocks.removeValue(forKey:side)
+                    }
+                }
+            }
+        }
+    }
+    private func retirePausedMember(_ side: String) {
         guard costPausedMembers.contains(side) || costPendingSidePauses.contains(side) else { return }
         let members = costPausedMembers, pending = costPendingSidePauses
         costPausedMembers.removeAll { $0 == side }; costPendingSidePauses.removeAll { $0 == side }
@@ -374,7 +426,8 @@ extension AgentSession {
     /// Sides deleted (with their descendants): none of them waits for a
     /// Resume any more, and a root paused only for them is not paused.
     func forgetDeletedMembers(_ ids: Set<String>) {
-        for side in Set(costPausedMembers + costPendingSidePauses) where ids.contains(side) { forgetPausedMember(side) }
+        for side in Set(costPausedMembers + costPendingSidePauses) where ids.contains(side) { retirePausedMember(side) }
+        for side in ids { sideBudgetStops.removeValue(forKey:side); sideBudgetPauseClocks.removeValue(forKey:side) }
     }
     /// Listed sides whose journal is gone (deleted while this root was not
     /// loaded, or an unkept side that ended with its runtime) are dropped

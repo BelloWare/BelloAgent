@@ -358,6 +358,8 @@ B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
   --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|PausedFamilyCompactionTests|CompactionSafetyTests|CompactionQueueTests'
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
 PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
 python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
@@ -548,6 +550,8 @@ swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
   --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|SubagentForkTests|Compaction'
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
 PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
 python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
@@ -768,6 +772,8 @@ B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
   --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests'
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
 PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
 python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
@@ -906,6 +912,8 @@ B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
   --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests'
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
 PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
 python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
@@ -1084,6 +1092,8 @@ B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
   --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests'
 swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
 PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
 python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
@@ -1112,3 +1122,297 @@ The code/test diff fingerprint remained unchanged through final validation
 remain under this build root. No unresolved in-scope finding or owner decision
 remains; the older host-actor preview/recovery findings remain recorded in
 Round 5 for separate work.
+
+## Round 7 — generation fences and two-phase Resume
+
+Confirmed both reports against `d34fdeb601f4d6a7db002ae0a9ea31ea8faff5d1`.
+The continuation loop could finish after Stop installed a coordinator hold,
+clear `costResumePending`, and leave the owner unpaused with held children.
+The side callback and the original publication could also publish the same
+pause on opposite sides of the root's accepted Resume. Checking the later
+acknowledgment did not protect the earlier membership mutation.
+
+The protocol now uses one runtime generation clock. A message captures its
+issuer's clock identity and pause/Resume counts **before** crossing actors;
+receivers check the stamp at the mutation, and check again after intervening
+awaits. The clock has no session reference, journal, provider work, or capture
+content. A fresh runtime has a fresh clock; closing/unloading retires the old
+clock. Synchronous fences order publication/admission against counter changes,
+always root before descendant, and are never held across an actor/provider
+await. The durable authority remains the existing journals, not the clock.
+
+Resume has two phases: prepare/install (steps 1–2), then commit/activate (step 3):
+
+1. Prepare advances `costResumeCount`, retains `costPaused`, and saves the
+   accepted receipt with that durable pause. It sets `costResumePending` and
+   captures `costResumeGeneration` at acceptance, before the run can be scheduled. Sides that applied an intent but
+   have not published are included in the reply before that intent is retired.
+2. Install drains the old runners and installs durable continuations under the
+   family gate. A separate install gate makes duplicate installs idempotent.
+   Jobs stay held throughout. Cancellation/Stop generation is checked after
+   the environment, gate, continuation, and final install awaits.
+3. The owner performs one final cancellation/generation check, then clears and
+   persists the pause/pending flags under the same synchronous clock fence,
+   without an intervening await. Failed persistence cannot expose a temporary
+   unpaused clock to another actor. Only the
+   stamped activation may pump installed jobs. Stop before commit restores the
+   same pause and halts children; a new Resume can release them. Stop after
+   commit follows ordinary cancellation and the existing execution fence.
+
+A new limit or genuinely new side pause during install supersedes the accepted
+Resume by advancing `R` once. It keeps the same open `P`, so old child runners
+can still drain into the hold. Installation uses the acceptance stamp, never a
+new stamp captured after the pause arrived.
+
+Acceptance failure restores the pause under a root-before-side clock fence.
+No publication can capture a transient counter that a later acceptance reuses.
+The same fence covers automatic no-work retirement and rollback. Pending side
+fan-out counts as work until acknowledged; its final acknowledgment retires an
+otherwise empty pause, so an idle side cannot leave a stale family hold.
+
+A failed install retains the durable
+pause and continuation prefix for the next Resume/recovery. A failed commit
+restores the pause and never activates jobs. Opening a journal never executes
+work. Capture Off/memory/persist use the same protocol and existing authority.
+
+### Round-7 message inventory
+
+`P` means the issuer's `costPauseCount`, `R` its `costResumeCount`, and `S` its
+Stop count. Every stamp also carries runtime clock identity. A publication
+checks the issuing pause state as well: a publication made during prepare
+cannot remain valid after commit, which uses the same `R`. Root publication
+fences use root `R`, since concurrent joining sides may advance root `P`
+without accepting a Resume. Park uses `P` plus a still-open pause: draining
+that same pause remains valid during prepare, and becomes stale at commit or
+a new pause. This is necessary for Resume to drain the old runners.
+
+| Cross-actor message | Receiver check and duplicate behavior | Stale/duplicate regression |
+| --- | --- | --- |
+| Inherited side pause, including intermediate → leaf | `receiveSidePause`: live issuer `P/R/pause-state` and root `R`; closed receivers do nothing. The returned publication retains the original root stamp. | `testStaleInheritedSidePauseIsIgnoredAfterRootResume` (direct and intermediate issuers) |
+| Scheduled/repair side publication | `publishSidePause`: captured side/root envelope before local persistence, root note, and returned acknowledgment; never restamp a delayed original. | `testDuplicateSidePublicationCannotUndoTheRootsAcceptedResume`, `testPublicationIssuedDuringPrepareCannotOutliveTheCommit` |
+| Root membership note and recovered membership transfer | `notePausedMember`: same envelope checked under synchronous root/issuer fences. Known duplicates confirm durability without starting another pause; retired duplicates cannot rejoin. Transfer retains its source until every root write succeeds and the envelope is still current. | `testDuplicateMembershipNoteIsIdempotentAndAnOldNoteCannotRejoin`; existing Round-4/6 transfer failure matrices |
+| Side-resumed membership forget | `forgetPausedMember`: current issuer `P/R` and destination root `P/R`; an older retirement cannot erase a newer pause/intent. | `testStaleMembershipForgetCannotEraseTheNextPause` |
+| Unkept-side terminal retirement | `forgetClosedSide`: current closing issuer generation and the ancestor's registered clock must match. Close advances `R` before sending; a replacement runtime cannot be retired by the old one. Duplicate retirement is harmless. Root `R` may advance while close travels: that does not create new work in a closed side. | `testClosingSideRetiresMembershipAcrossANewerRootPause`, `testStaleClosedSideRetirementCannotEraseAReplacement` |
+| Fan-out acknowledgment, including binding repair | `acknowledgeSidePause`: original issuing `P/R/pause-state` and root `R`, before durable intent removal. | `testStaleSideAcknowledgmentCannotEraseTheNextDurableFanOut`; existing partial-write matrix |
+| Coordinator pause / halt | `pause`: current owner `P/R`, checked at entry and between jobs. Halt no longer bypasses the fence. | `testStaleCoordinatorPauseAfterResume`, `testStaleCoordinatorHaltAfterResume` |
+| Child request pause / halt | `receiveChildPause`: current owner `P/R` at the synchronous mutation. Duplicate halt also compares `S`, so it does not repeatedly Stop a child. | `testStaleChildPauseAfterResume`, `testStaleChildHaltAfterResume` |
+| Job park | `park`: current owner `P` with pause still open; installed job instance and single-parker guard; recheck after family-gate/state awaits. | `testStaleParkJobAfterResume`; existing duplicate/old-job parking tests |
+| Owner queued record / child park mirror | `parkOwnedTurn` / `parkAgentTurn`: same open `P`; child latest turn must still be nonterminal. A terminal or newer follow-up cannot regain its pause. | `testStaleOwnerParkRecordAfterResume`, `testStaleChildParkMirrorAfterResume`, `testDuplicateParkMirrorCannotRestoreATerminalChildPause` |
+| Parked-state reader publication | `publishParkedSummary`: owner checks current open `P` after the coordinator's snapshot awaits. | `testStaleParkedPublicationAfterResume` (app discovery revision and child list) |
+| Resume installation / owner continuation append | `resumeParked` / `installResumedTurn`: acceptance-time owner `P/R/S`, Task cancellation, pending phase, family gate, and per-runtime prepared stamp. No job pumps in this phase. | `testStaleAndDuplicateResumeInstallAndActivation`, `testStopDuringContinuationInstallationKeepsTheFamilyResumable`, `testResumeInstallCannotRestampAnAcceptanceSupersededBeforeTheRunStarts` |
+| Resume activation | `activateResume`: current `P/R` and committed/unpaused owner; no await between check and pump. Repeated activation cannot append another continuation. | `testStaleAndDuplicateResumeInstallAndActivation` |
+| Child Resume mirror | `resumeAgentTurn`: current committed owner `P/R` and unpaused phase under the issuer fence. An equal installed lease is a no-op; a newer pause is preserved. | `testStaleAndDuplicateChildResumeInstall` |
+| Startup hold release | `releaseStaleHold`: current owner `P/R` before and after the owner-state await, with no jobs and unpaused owner. | `testStaleHoldReleaseCannotOverrideALaterResumeGeneration`; existing reopened-runtime hold tests |
+
+Wake signals carry no authority to change a pause: they only wake a waiter,
+which rechecks cancellation/generation/state. Authoritative deletion is a
+runtime-lifecycle operation: the host unloads the deleted writer first (retires
+its clock), then removes membership and callback registration. Recovery reads
+durable intent and validated ancestry; it issues new stamps from the new
+runtimes rather than replaying old runtime messages.
+
+### Round-7 state transitions and terminal paths
+
+This supplements the complete Round-4 field inventory and Round-6 record-order
+matrix; terminal-result identities, pending tool IDs, compaction focus, and
+input-disposition repair retain those rules.
+
+| State | Set / clear / move; persistence and terminal handling |
+| --- | --- |
+| Owner `costPaused`, `queuePaused` | Limit or valid membership note latches and persists the pause before fan-out. Prepare retains it. Only final Resume commit clears it after the last install await/check; cancelled install retains it. No-work retirement waits for fan-out acknowledgments and persists before releasing holds. Acceptance/retirement rollback is fenced against external clock readers. |
+| `costResumePending`, `resumingCostPause`, `costResumeGeneration` | Accepted prepare sets and captures the install stamp; saved as `costPaused`. Successful commit clears; cancellation/error restores the held family and clears only the in-flight operation. Reopen recovers the durable pause, never an automatically running Resume. |
+| `costPauseCount`, `costResumeCount`, `stopCount`; clock `live`, `closing`, captured pause state | Property observers publish runtime generations; restore initializes the clock explicitly. Prepare/terminal retirement advances `R`, a new pause advances `P`, Stop advances `S`. A new cause during prepare advances `R` once to supersede acceptance without changing the open `P`. Failed acceptance restores its `R`; an interrupted accepted Resume retains its new `R` and the same open `P`. Close advances its issuing generation and marks `closing`; final retirement sets `live=false`. Clock retirement prevents old-runtime messages after reopen. |
+| `costPendingSidePauses` | Saved with pause before callbacks; current acknowledgment removes only after side/root durability. Prepare promotes applied sides into root membership before clearing intent. Recovery still promotes saved unfinished descendants. A final reply cannot retire the pause while intents remain; the final idle acknowledgment retires an otherwise empty pause. Closed/deleted callback registrations cannot create new intents. |
+| `costPausedMembers`, `costMemberGenerations` | Root retains durable members until their own stamped retirement. Recovered intermediate copies move only after durable root acknowledgment and current generation check. Runtime duplicate stamps are bookkeeping, never substitutes for a required durable confirmation. Close retires all ancestors and unregisters callbacks; delete removes registrations after unloading. |
+| `sideBudgetPauseClocks` | Bound with each real side callback; provides synchronous pause admission/Resume ordering and discovers applied-but-unpublished sides. Clock identity distinguishes replacement runtimes. Closing/deletion removes registrations; retired clocks accept no new callbacks. |
+| Coordinator `paused`, `resumeGates`, `preparedResumes`, `activatedResumes`, `resumedThrough` | Current pause/halt inserts hold. Install holds while it drains and writes continuations; prepared stamp deduplicates install. Only stamped post-commit activation releases/pumps; a newer pause rejects it. Existing instance guards protect replacement jobs. |
+| Child `costPaused`, `lastCostHalt`, queued state | Current open-`P` park persists the child pause; repeated halt is idempotent. A committed owner Resume clears via a stamped child install; terminalization/recovery/follow-up retain the existing durable cleanup. A delayed park cannot re-pause a terminal child. |
+| `heldChildren`, terminal/result/report records | Unchanged authority: explicit child Stop seals rather than parks; terminal children are excluded from Resume. Gate serialization and Round-6 idempotent repair still protect every terminal/result/notice/mirror prefix. |
+| Wake revisions and test probes | Runtime notifications only. No durable membership or execution admission is inferred from a wake or a probe. Provider compaction stays outside the family gate; probes default to nil. |
+
+### Round-7 adversarial self-review
+
+Reviewed the whole branch's production changes from its common base with
+`origin/dev/next` (`141666ca479184d10a9791754d4c91df456599d8`), plus this round's
+working diff. A fresh fetch still has `origin/dev/next` at
+`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`. A two-dot comparison also contains unrelated changes already
+merged by other workstreams; those were not copied or reverted. The prior
+Round-4/6 condition tables still apply. For each new condition:
+
+| Condition | States taking the changed branch and opposite states checked |
+| --- | --- |
+| Live/current generation and publication phase | Streaming, idle and paused receivers ignore old messages after accepted Resume, close/unload, replacement runtime, or a newer pause. Current messages still save normally; a limit raise alone does not advance the generation. Idle intermediate sources can transfer descendant-only membership without becoming paused themselves. |
+| Same-generation duplicate membership | A repeat confirms a possibly unsaved member before source retirement, but cannot begin another pause. A new side generation still creates a new pause. Restart uses a fresh clock and durable repair membership, preserving a root Resume accepted before side binding. |
+| Applied-side promotion before intent retirement | Applied but unpublished sides join the reply once. Unapplied old callbacks become stale and cannot pause later; already durable members stay until their own Resume. Kept closed sides retain their durable obligation; deleted/unkept sides retire it. |
+| Install pending/final cancellation check | Stop before first continuation, after one continuation, and after the final install await leaves all unsealed children held and the app able to Resume again. Streaming tool drain remains cancellable. Successful prepare installs once and activates only after commit. Empty/queued/side-only Resumes follow the same commit rule. |
+| Acceptance/retirement rollback | Synchronous failure restores its counters before any external actor can capture a transient generation reused by the next Resume. The same root-before-side fence covers successful writes. Managed terminal cleanup has no outbound child-clock pause messages; snapshots remain actor-serialized. |
+| Final reply before side acknowledgment | Pending fan-out retains the open generation even when the root has finished. An active side becomes durable Resume membership; all-idle acknowledgments retire the empty hold. No callback is invalidated merely because the owner finished first. |
+| Fresh pause during installation | A new limit settlement or side pause invalidates acceptance even though `costPaused` is already true. Duplicate/repair notes for covered members do not. Repeated causes while that acceptance unwinds do not keep changing `R`; old runners still park under the same `P`. A superseded acceptance cannot be restamped when its run starts. |
+| Park/current-turn and child-install checks | Current unsealed children park normally; terminal or newer turns are never moved back. Old park/mirror/reader messages after Resume do nothing. Duplicate child installation leaves a running lease alone. Capture modes do not select different behavior. |
+| Close versus Resume retirement | A Resume retirement cannot remove a newer intent. A closing runtime has no future work and may retire its own membership even when the root accepts a newer Resume; generation/registered-clock checks protect replacement runtimes. Unregistering every ancestor prevents future fan-out to closed sides. |
+
+The additional findings were applied-but-unpublished membership, publication
+between prepare and commit, the child mirror/reader publication paths, and
+close retirement across a newer root Resume. The lock-order review also found that an intermediate retirement could acquire its clock before its root; retirement now takes the root fence first. `testIntermediateCloseRetirementTakesTheRootFenceBeforeWriting` holds the root clock and verifies that the intermediate clock stays available and no write occurs while waiting, then checks its final snapshot. These findings are fixed and covered above.
+The final condition sweep found that retaining `costPaused` during prepare
+could hide a genuinely new limit or membership cause; both now supersede the
+acceptance stamp as described above. It also checked the run-not-yet-started
+case and fenced the complete synchronous commit/rollback against clock readers.
+A subsequent counter-rollback audit reproduced a publication capturing a
+temporary acceptance generation and reusing it after the next Resume. It also
+found automatic no-work retirement could fence out unacknowledged side
+callbacks. Both now have failing-first observable regressions and fixes:
+acceptance/retirement are fenced through rollback, and pending fan-out keeps
+the pause open until acknowledgment.
+Family-turn snapshot/install and terminal writes remain under the family gate;
+long compaction runs outside it and reselects delivery under the gate afterward.
+The cold terminal mirror remains detached under the host runtime gate. Grepping
+the whole branch found no new synchronous journal open/replay on the host actor.
+No permission, capture, tool, vault, or data boundary changed. No new owner
+product decision is needed; older out-of-scope host preview/recovery findings
+remain recorded in Round 5.
+
+### Round-7 regression, mutation and final validation
+
+The initial failing-first run built and failed both reported cases. After
+correcting an overstrict snapshot assertion (an idle root still shows paused
+while its members await Resume), both tests were rerun against the pushed
+Round-6 production files with only nil-default scheduling probes added. They
+failed **5 assertions, 0 unexpected errors** (`round7-baseline-confirmed.log`):
+late publication re-paused the queue; interrupted installation lost the parent's
+pause, did not hold every child, and a second Resume could not release them.
+The runner restores all files in `finally`. The close-retirement sweep separately
+failed **2 assertions, 0 unexpected errors** before its fix (`round7-close-red.log`).
+
+The fresh-pause sweep also failed first: `testNewLimitDuringResumeInstallKeepsItsPause`
+and `testNewMemberDuringResumeInstallKeepsItsPause` produced **6 failed
+assertions, 0 unexpected errors** (`round7-new-pause-red.log`). They inspect the
+parent snapshot/queue hold, every child status, and provider request count.
+
+The rollback boundary failed **1 assertion, 0 unexpected errors**
+(`round7-rollback-red.log`). The final-reply/fan-out boundary failed **5 times,
+including 1 unexpected `nothing_to_continue` error** caused by lost membership
+(`round7-final-fanout-red.log`); four failures are snapshot assertions. Neither
+count includes a build error.
+
+The Stop-install regression now checks three barriers: before the first
+continuation, before the second, and after installation's final await. Every
+barrier checks the parent snapshot, child list, provider request count, and a
+successful second Resume. The 28 added tests bring `FamilyLimitPauseTests` from
+68 to 96. Older fixtures now establish an owner pause/commit along with the
+coordinator hold; they do not bypass the generation protocol in production.
+
+All fifteen mutations built and were detected. Sources are restored between cases
+and on exit. Two mutations deliberately destroy membership, causing the later
+Resume to throw `nothing_to_continue`; the generation mutation reports two
+unexpected errors and the fan-out mutation one, in addition to snapshot
+failures. No compile failure counts as mutation evidence. After the shared rollback fence was added, the lock-order
+mutation survived the original write-only assertion: it blocked before writing
+while still holding the intermediate clock. The strengthened regression also
+reads that clock while the root is held, and detects the mutation. The table
+reports that final run.
+
+| Mutation | Tests / failed assertions or errors / unexpected | Log under `$B/logs` |
+| --- | --- | --- |
+| Remove install cancellation/Stop checks | 1 / 2 / 0 | `round7-mutation-cancellation.log` |
+| Remove Resume publication fence and duplicate-note protection | 1 / 1 / 0 | `round7-mutation-publication.log` |
+| Allow prepare-time publication after commit | 1 / 4 / 0 | `round7-mutation-commit-phase.log` |
+| Do not promote applied-but-unpublished sides | 1 / 1 / 0 | `round7-mutation-unpublished-member.log` |
+| Ignore message generation counts | 3 / 5 / 2 | `round7-mutation-generation-fences.log` |
+| Use ordinary Resume retirement for close | 1 / 3 / 0 | `round7-mutation-close-retirement.log` |
+| Remove child-install generation/phase guard | 1 / 2 / 0 | `round7-mutation-child-install.log` |
+| Allow park mirror to re-pause a terminal child | 1 / 1 / 0 | `round7-mutation-terminal-park.log` |
+| Allow stale parked-state reader publication | 1 / 1 / 0 | `round7-mutation-reader-publication.log` |
+| Take intermediate close fences before the root | 1 / 1 / 0 | `round7-mutation-close-lock-order.log` |
+| Ignore new pause causes during install | 2 / 6 / 0 | `round7-mutation-new-pause.log` |
+| Restamp a superseded acceptance when its run begins | 1 / 2 / 0 | `round7-mutation-acceptance-generation.log` |
+| Expose a temporary acceptance generation before rollback | 1 / 2 / 0 | `round7-mutation-acceptance-rollback.log` |
+| Retire the pause before fan-out acknowledgment | 1 / 5 / 1 | `round7-mutation-pending-fanout.log` |
+| Keep an empty pause after all idle acknowledgments | 1 / 1 / 0 | `round7-mutation-idle-fanout-ack.log` |
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+python3 "$B/check-round7-baseline.py"
+python3 "$B/check-round7-mutations.py"
+python3 "$B/check-round7-extra-mutations.py"
+python3 "$B/check-round7-lock-mutation.py"
+xcodegen generate --quiet
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build \
+  --filter 'ContinueRunTests|QueueHandoffTests|QueueEditHoldTests|QueueDeliveryRecoveryTests|QueueEditingTests|SessionSettlementTests|RetryRecoveryTests|ConcurrentSessionsTests'
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/CostPausePresentationTests -only-testing:PiAppTests/CostLimitTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CostPauseFamilyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+```
+
+The three native commands run serially under the shared full-lane lock, acquired
+and released for each command by `check-round7-native.sh`, including failure
+cleanup. No named result bundle is supplied. The new source file required
+project regeneration; it produced no project-file diff. No UI changed, so no
+gallery regeneration is applicable. Tests use generated journals and loopback
+services only; the installed app, real preferences/chats/Keychain and paid
+providers were not used.
+
+Full runs were deliberately interrupted after the lock-order and
+counter-rollback findings; their partial output is retained as `round7-helper-full-interrupted.log` and
+`round7-before-rollback-fence-helper-full.log` and is not final evidence. An
+earlier test build was also invalidated by a fixture edit while compiling; it is not counted. Final validation below uses the restored
+source fingerprint and a fresh complete run.
+
+One affected-class run exposed a test timing race: the pre-existing
+`testAnsweredResumedChildSealsAtItsFinalBoundary` read its probe before the
+final-links callback had fired. The test now waits for that probe before
+asserting the captured status; the complete class then passed 94/94
+(`round7-new-pause-green-final.log`). This was a test synchronization fix, not
+a product failure hidden by a retry.
+
+Build diagnostics: the configured Swift 5 build succeeds. The existing
+nonisolated `AgentSession` initializer produces Swift 6 migration warnings;
+the final clock initialization adds four warnings for reading the recovered
+pause/Resume/Stop fields there (`Sessions.swift:642`). This round does not
+migrate the initializer or claim Swift 6-mode compatibility. Other existing
+initializer/test locking warnings remain visible in the text logs.
+
+Final validation, 2026-10-18, on the restored source fingerprint:
+
+| Check | Result | Text log under `$B/logs` |
+| --- | --- | --- |
+| Affected helper selection | **429 passed, 0 failed**; includes all **96** pause regressions | `round7-focused.log` |
+| Complete continuation/queue classes | **62 passed, 0 failed**: ContinueRun 14, ConcurrentSessions 6, QueueDeliveryRecovery 2, QueueEditHold 16, QueueEditing 12, QueueHandoff 3, RetryRecovery 2, SessionSettlement 7 | `round7-continuation-classes.log` |
+| Full helper suite | **1,070 passed, 7 skipped, 0 failed** (1,077 total; 423.49 s) | `round7-helper-full.log` |
+| Release helper bundle | **Passed** | `round7-bundle.log` |
+| Native RunHold / CostPausePresentation / CostLimit | **18 / 6 / 13 passed** (37 total), 0 failed | `round7-native-pause.log` |
+| Native CostPauseFamily | **3 passed, 0 failed** | `round7-native-family.log` |
+| Native LifecycleHelper, alone | **11 passed, 0 failed**; native total **51** | `round7-native-lifecycle.log` |
+| Wire | **36 passed, 0 failed** | `round7-wire.log` |
+| Concurrent host | **4 passed, 0 failed** | `round7-concurrent.log` |
+| Native acceptance | **3 passed, 0 failed** | `round7-acceptance.log` |
+
+The continuation-class run includes four tests also selected by the first
+filter; the full helper total is counted once. The seven skips are the normal
+opt-in fixture writer/large-journal/performance cases: ForkClone (1),
+ForkPerformance (1), HistoryReadCancellation (1), SessionOpenPerformance (4).
+There were no unrelated failures in the final runs.
+
+In the full helper run, Stop acknowledged in **0.405 ms** (`subagent.stop`)
+and **0.475 ms** (managed `turn.stop`) while sibling compaction remained held.
+Cold mirroring replayed **12,000 messages in 412 ms** while serving **103**
+other-chat snapshot/Stop pairs; the largest pair was below 1 ms (the log rounds
+it down to 0). The separate held-worker check also served the other chat while
+the cold mirror was blocked and kept opening the target reader runtime gated.
+
+`check-round7-final.py` verified the Swift source hashes before and after the
+full helper/build/native/wire sequence; they match
+`round7-validated-source.json`. `git diff --check` passed. The shared native
+lock was released after each run, including its cleanup path. No clone folders
+or automatic result bundles remain in this workstream's build root. A final
+fetch confirmed the reviewed `origin/dev/next` revision above is unchanged.
+No new owner decision or in-scope failing check remains; the migration warnings
+and prior out-of-scope findings are recorded above.

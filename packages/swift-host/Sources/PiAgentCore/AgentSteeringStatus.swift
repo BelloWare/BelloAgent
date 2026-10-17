@@ -116,11 +116,11 @@ extension AgentSteeringCoordinator {
     /// A parked turn's job is gone: its card and the family's discovery
     /// revision change now, so no reader keeps the queued row it read while
     /// the turn was parking.
-    func publishParked(_ job: Job) async {
+    func publishParked(_ job: Job, generation: CostPauseGeneration) async {
         let state = await job.owner.agentState()
         guard let latest = state.latest(job.turn.childID), latest.id == job.turn.id, !latest.status.terminal else { return }
         let paused = await job.owner.costPaused
-        await job.owner.subagentChanged(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:latest.status,revision:state.revision,tools:job.plan.origin.tools,turn:latest.turn,executionID:latest.executionID,progressEpoch:await job.owner.displayEpoch,effort:latest.effort ?? job.plan.origin.model.thinkingLevel,costPaused:Self.listsPaused(owner:paused,status:latest.status,running:false) ? true : nil))
+        await job.owner.publishParkedSummary(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:latest.status,revision:state.revision,tools:job.plan.origin.tools,turn:latest.turn,executionID:latest.executionID,progressEpoch:await job.owner.displayEpoch,effort:latest.effort ?? job.plan.origin.model.thinkingLevel,costPaused:Self.listsPaused(owner:paused,status:latest.status,running:false) ? true : nil),generation:generation)
     }
     func progress(_ target: AgentTurnTarget) async {
         guard let job = jobs[target.id], !job.sealed, let child = job.child else { return }

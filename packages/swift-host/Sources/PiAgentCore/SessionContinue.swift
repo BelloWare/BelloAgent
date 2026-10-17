@@ -41,11 +41,9 @@ extension AgentSession {
     var hasParkedAgentTurns: Bool {
         !isSubagent && agentCoordinator != nil && subagents.family?.turns.values.contains { !$0.status.terminal } == true
     }
-    /// Ends a cost-limit pause for a Resume, in memory: the caller persists
-    /// (and restores `CostPauseState` on any failure). The next run releases
-    /// the coordinator's hold and resumes parked turns. Returns the sides the
-    /// app resumes as well; each stays listed until it resumes itself
-    /// (`forgetPausedMember`), so a lost reply or failed fan-out can retry.
+    /// Retires a managed child's old pause at terminalization/follow-up or
+    /// after its owner's committed Resume. The caller persists the result.
+    /// Independent chats use begin/install/commit, never this early clear.
     func endCostPause() -> [String] {
         guard costPaused else { return costPausedMembers }
         costPaused = false; budgetStopIssued = false; costResumeCount &+= 1
@@ -57,6 +55,63 @@ extension AgentSession {
         resumingCostPause = !isSubagent && agentCoordinator != nil
         return costPausedMembers
     }
+    /// Prepare only: fence old messages, retain the pause, and name sides
+    /// which took a callback before that fence but have not published yet.
+    func beginCostResume() -> [String] {
+        costResumeCount &+= 1
+        for side in costPendingSidePauses where sideBudgetPauseClocks[side]?.isPaused == true && !costPausedMembers.contains(side) { costPausedMembers.append(side) }
+        costPendingSidePauses = []; budgetStopIssued = false
+        costResumePending = true; resumingCostPause = !isSubagent && agentCoordinator != nil
+        costResumeGeneration = pauseGeneration
+        if familyStopReason?.code == Self.costLimitCode { familyStopReason = nil }
+        return costPausedMembers
+    }
+    /// A new cause invalidates the accepted Resume, even before its run gets
+    /// to install. Keep the same open pause count so old runners still drain;
+    /// advance Resume only once, until that superseded operation unwinds.
+    func supersedeCostResume() -> Bool {
+        guard costResumePending, costResumeGeneration?.resumes == costResumeCount else { return false }
+        costResumeCount &+= 1; return true
+    }
+    /// The only successful Resume commit. Installation has returned from its
+    /// last await; cancellation and generation are checked on this actor, with
+    /// no await between the check and the durable state change.
+    func commitCostResume(_ generation: CostPauseGeneration, active: Bool) throws {
+        try costPauseClock.synchronized {
+            try generation.check()
+            guard costResumeGeneration == generation, costResumePending else { throw CancellationError() }
+            let saved = costPauseState
+            costPaused = false; costResumePending = false; resumingCostPause = false; costResumeGeneration = nil
+            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            do { try persistState(active:active,durable:true) }
+            catch { restoreCostPause(saved); costResumePending = true; costResumeGeneration = generation; throw error }
+        }
+        let wake = costResumeWake; Task { await wake.pulse() }
+    }
+    func awaitCostResume() async throws {
+        while true {
+            let revision = await costResumeWake.revision
+            try Task.checkCancellation()
+            if !costResumePending { if costPaused { throw Self.costHoldError }; return }
+            await costResumeWake.wait(after:revision)
+        }
+    }
+    func installCostResume() async throws {
+        guard costResumePending else { return }
+        guard let generation = costResumeGeneration else { throw CancellationError() }
+        for parent in sideBudgetParents.reversed() { try await parent.awaitCostResume(); try generation.check() }
+        if resumingCostPause, let coordinator = agentCoordinator { try await coordinator.resumeParked(owner:self,generation:generation) }
+        try commitCostResume(generation,active:true)
+        forgetSidePause()
+        // Activation follows the commit. A new pause/Stop can invalidate it;
+        // staged jobs remain held until this generation is activated.
+        if let coordinator = agentCoordinator { await coordinator.activateResume(owner:self,generation:generation) }
+    }
+    func abortCostResume() {
+        costPaused = true; costResumePending = false; resumingCostPause = false; costResumeGeneration = nil
+        let wake = costResumeWake; Task { await wake.pulse() }
+        if let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.pause(owner:self,generation:generation,halt:true) } }
+    }
     struct CostPauseState { var paused: Bool, members: [String], pending: [String], reason: AgentError?, issued: Bool, code: String?, message: String?, resumes: Int }
     var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,pending:costPendingSidePauses,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage,resumes:costResumeCount) }
     func restoreCostPause(_ saved: CostPauseState) {
@@ -65,7 +120,7 @@ extension AgentSession {
         budgetStopIssued = saved.issued; errorCode = saved.code; errorMessage = saved.message
         // A refused Resume ended nothing: side pauses issued before it still apply.
         costResumeCount = saved.resumes
-        resumingCostPause = false; familyWaitResume = false; compactOnResume = false; costResumePending = false
+        resumingCostPause = false; familyWaitResume = false; compactOnResume = false; costResumePending = false; costResumeGeneration = nil
     }
     /// The whole family's limit, checked before a Resume of a paused chat:
     /// a side reads its root's. Raising the limit alone resumes nothing.
@@ -99,6 +154,11 @@ extension AgentSession {
     /// to a helper that then restarted — finds it and runs nothing. A second
     /// Resume with a new identity while this one runs is refused as busy.
     public func continueRun(commandID: String, overrides: JSON = [:]) throws -> JSON {
+        // Acceptance can roll back its Resume count on a failed write. No
+        // cross-actor message may capture that temporary, reusable stamp.
+        try withCostPauseFence { try acceptContinuation(commandID:commandID,overrides:overrides) }
+    }
+    private func acceptContinuation(commandID: String, overrides: JSON) throws -> JSON {
         try requireIndependentSession()
         try requireAgentExecution()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
@@ -125,11 +185,11 @@ extension AgentSession {
             // Not before the Resume's run has taken the paused work
             // (`costResumePending`): a crash before then reopens the side
             // paused, and its root must still name it.
-            if committed, paused.paused, !costResumePending, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+            if committed, paused.paused, !costResumePending { forgetSidePause() }
         }
         // A root whose own Resume was accepted before its sides were
         // resumed (an app that quit in between) still hands them out.
-        if costPaused { members = endCostPause() } else if !isSubagent { members = costPausedMembers }
+        if !isSubagent { members = costPausedMembers }
         // A manual compaction the pause cut runs first in the Resume's own run
         // (with its overrides), which then goes on with the rest of the work.
         // Also once the pause is over (a helper that ended before it ran).
@@ -141,17 +201,21 @@ extension AgentSession {
         // family first, as its turn's end did; follow-ups go after it.
         guard !titleTask, !isConnectionTest, tailContinues || familyOnly else {
             if paused.paused || !members.isEmpty, queue.isEmpty, steering.isEmpty {
-                // Nothing of its own waits: the pause is over once saved.
+                // Empty install phase: no turn or provider await precedes this commit.
+                if paused.paused { members = beginCostResume() }
                 commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
                 queuePaused = false
                 if state != .error { state = .idle; runStatus = .idle }
-                do { try persistState(durable:true) } catch {
+                do {
+                    if paused.paused { try commitCostResume(pauseGeneration,active:false) }
+                    else { try persistState(durable:true) }
+                } catch {
                     commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); queuePaused = true; throw error
                 }
                 event("state")
                 // No run: release the coordinator's hold now.
                 resumingCostPause = false; committed = true
-                if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
+                if !isSubagent, let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.activateResume(owner:self,generation:generation) } }
                 return ["accepted": true, "continued": false, "resumedFamily": true, "pausedMembers": .array(members.map(JSON.string))]
             }
             // Pi: from an answered context (or none: a first message stopped
@@ -164,7 +228,10 @@ extension AgentSession {
             // Its receipt goes with the queue's release, in the same record:
             // the same command sent again releases nothing twice.
             commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
-            do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); throw error }
+            do {
+                if paused.paused { members = beginCostResume(); queuePaused = false; try persistState(durable:true); launch() }
+                else { try resumeQueue() }
+            } catch { commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); throw error }
             committed = true
             var reply: JSON = ["accepted": true, "continued": false, "resumedQueue": true]
             if paused.paused || !members.isEmpty { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
@@ -181,7 +248,7 @@ extension AgentSession {
         activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
         familyWaitResume = !tailContinues
         compactOnResume = compactFirst
-        costResumePending = paused.paused
+        if paused.paused { members = beginCostResume() }
         commandState(submission, "queued")
         // Saved as a run under way, with its receipt: a helper that dies
         // before the run's own first record leaves the chat interrupted, so

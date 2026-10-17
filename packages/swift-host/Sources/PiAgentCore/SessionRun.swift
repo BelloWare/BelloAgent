@@ -172,6 +172,7 @@ extension AgentSession {
                 if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
+                if costResumePending, !continuing { try await installCostResume() }
                 var startedFollowUp=false
                 if steering.isEmpty, !retrying, !continuing {
                     // A follow-up that cannot be answered stays queued, paused.
@@ -187,26 +188,9 @@ extension AgentSession {
                 let continued=continuing
                 continuing=false
                 if continued { try startAgentEpoch() }
-                // Resume after a cost-limit pause: parked sub-agent turns go on
-                // under this run's execution, before anything is asked again.
-                if resumingCostPause, !isSubagent {
-                    resumingCostPause=false
-                    do { try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount) }
-                    catch {
-                        // Stopped (or closed) while the pause's children were
-                        // still settling: the family stays paused for the next
-                        // Resume, and their runs are halted, not waited for.
-                        costPaused = true; costResumePending = false; costPauseCount &+= 1; try? persistState(active:true,durable:true)
-                        if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
-                        throw error
-                    }
-                }
-                // The paused work is taken: the pause is over on disk too.
-                if costResumePending {
-                    costResumePending = false; try persistState(active:true,durable:true)
-                    // Taken and saved: the root no longer needs to name this side.
-                    if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
-                }
+                // Install under the hold; the actor commits only after the
+                // final install await and cancellation/generation check.
+                try await installCostResume()
                 // Tool calls the pause held before they started run first,
                 // from the reply that issued them: it is never asked again.
                 if continued, !costPendingCalls.isEmpty {
@@ -420,7 +404,7 @@ extension AgentSession {
                 // The Resume's run ended before it took the paused work: the
                 // family is still paused, for the next Resume, and its parked
                 // turns stay parked (never cancelled as a stopped run's are).
-                costResumePending = false; resumingCostPause = false; costPaused = true; costPauseCount &+= 1
+                abortCostResume()
             }
             // At the limit every chat pauses (`pauseAtCostLimit`); a family's
             // sub-agent turns are parked, not cancelled or waited for.

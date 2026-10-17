@@ -14,7 +14,7 @@ extension AgentSession {
             familyCancelled = { generation in Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation) } }
             // A hold left by an earlier runtime of this chat (its pause ended
             // while unloaded, e.g. its only paused side was deleted) goes.
-            if !costPaused { await coordinator.releaseStaleHold(owner:self) }
+            if !costPaused { await coordinator.releaseStaleHold(owner:self,generation:pauseGeneration) }
         }
     }
     func startAgentEpoch() throws {
@@ -88,9 +88,19 @@ extension AgentSession {
     }
     /// Resume after a cost-limit pause: the same turn, bound to the owner's
     /// resumed execution. Its mirror records the continuation like the owner.
-    func resumeAgentTurn(_ turn: AgentChildTurn, owner: AgentSession, coordinator: AgentSteeringCoordinator) throws {
-        guard isSubagent, !closed, runTask == nil, subagents.origin?.link.budgetOwnerSessionID == owner.id,
-              let continuation = turn.continuations?.last else { throw SubagentRecovery.damaged() }
+    func resumeAgentTurn(_ turn: AgentChildTurn, owner: AgentSession, coordinator: AgentSteeringCoordinator, generation: CostPauseGeneration) throws {
+        // A child mirror belongs to the committed owner Resume, never a later
+        // pause. Holding this synchronous fence orders it before that pause.
+        let applied: Void? = try generation.clock.apply(generation) {
+            guard generation.clock === owner.costPauseClock, !owner.costPauseClock.isPaused else { throw CancellationError() }
+            try installAgentResume(turn,owner:owner,coordinator:coordinator)
+        }
+        guard applied != nil else { throw CancellationError() }
+    }
+    private func installAgentResume(_ turn: AgentChildTurn, owner: AgentSession, coordinator: AgentSteeringCoordinator) throws {
+        guard isSubagent, !closed, subagents.origin?.link.budgetOwnerSessionID == owner.id else { throw SubagentRecovery.damaged() }
+        if agentLease?.id == turn.id, agentLease?.continuations == turn.continuations, !costPaused { return }
+        guard runTask == nil, let continuation = turn.continuations?.last else { throw SubagentRecovery.damaged() }
         try journal?.promoteToSteering(managedChild:true)
         // A mirror that missed earlier Resumes catches up one continuation at
         // a time, as the owner recorded them.
@@ -105,7 +115,7 @@ extension AgentSession {
         // input this Resume releases, never a second submission of it.
         queue.removeAll { $0.turnID != turn.inputID }; steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
-        if costPaused { costPaused = false; errorCode = nil; errorMessage = nil; try persistState(durable:true) }
+        if costPaused { _ = endCostPause(); try persistState(durable:true) }
     }
     enum AgentTurnStart { case fresh, accepted, delivered }
     /// How far a resumed turn's task got, from durable evidence (its command
@@ -131,8 +141,14 @@ extension AgentSession {
         launch()
     }
     /// The coordinator parked this turn at the owner's cost-limit pause.
-    func parkAgentTurn(_ turn: AgentChildTurn) throws {
-        guard isSubagent else { return }
+    func parkAgentTurn(_ turn: AgentChildTurn, generation: CostPauseGeneration) throws {
+        // Same pause may still be draining during prepare; after commit or a
+        // newer pause, this old mirror write is a no-op. No await follows.
+        try generation.clock.applyPause(generation) { try parkCurrentAgentTurn(turn) }
+    }
+    private func parkCurrentAgentTurn(_ turn: AgentChildTurn) throws {
+        guard isSubagent,
+              subagents.family?.latest(id)?.id == turn.id, subagents.family?.turns[turn.id]?.status.terminal != true else { return }
         endSubagentProgress()
         if let saved = subagents.family?.turns[turn.id], saved.status != turn.status || saved.continuations != turn.continuations, !saved.status.terminal {
             try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
@@ -141,6 +157,20 @@ extension AgentSession {
         if state != .error { state = .paused; runStatus = .cancelled }
         errorCode = Self.costLimitCode; errorMessage = "Paused at the shared cost limit. It goes on when the main chat resumes."
         try persistState(durable:true); event("state")
+    }
+    func parkOwnedTurn(_ turn: AgentChildTurn, generation: CostPauseGeneration) throws {
+        guard generation.clock === costPauseClock, generation.isCurrentPause else { return }
+        try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+    }
+    func installResumedTurn(_ turn: AgentChildTurn, generation: CostPauseGeneration) throws {
+        try generation.check()
+        guard generation.clock === costPauseClock, costResumePending else { throw CancellationError() }
+        try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+    }
+    func publishParkedSummary(_ summary: SubagentSummary, generation: CostPauseGeneration) {
+        // A delayed discovery update cannot restore a pre-Resume pause badge.
+        guard generation.clock === costPauseClock, generation.isCurrentPause else { return }
+        subagentChanged(summary)
     }
     func startAgentTurn(_ turn: AgentChildTurn) throws {
         guard agentLease?.executionID == turn.executionID, !closed else { throw SubagentRecovery.damaged() }

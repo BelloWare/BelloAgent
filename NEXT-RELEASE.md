@@ -11,6 +11,7 @@
 - [x] Round-12 fourth follow-up: pause membership transfers require durable acknowledgment; failed retirements remain retryable; stopped child readers clear their pause and held tools during terminalization/recovery. Transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-4--transition-audit-before-implementation).
 - [x] Round-12 fifth follow-up: cold parked-child Stop mirrors its journal off the host actor, keeping other chats' snapshots and Stop responsive while the runtime gate protects the writer. [Validation](docs/validation/pause-r12-0.1.130.md#round-5--cold-terminal-mirror-responsiveness).
 - [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
+- [x] Round-12 seventh follow-up: generation-fenced pause messages and a two-phase Resume preserve the family through late publications, Stop, new pauses and failed acceptance writes. Stale-message matrix, transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-7--generation-fences-and-two-phase-resume).
 
 ## 0.1.129
 
