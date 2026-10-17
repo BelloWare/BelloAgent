@@ -946,7 +946,10 @@ import AppKit
         selectedDiffTask?.cancel()
         selectedDiffStale = false
         guard let repositoryRoot, let selection else { publish(\.diff, []); publish(\.diffLoading, false); return }
-        let entry = status.entries.first { $0.path == selection.path }
+        // A path can have two rows: a staged deletion and an untracked file
+        // saved there since. The row asked for is the one in its own section.
+        let entry = status.entries.first { $0.path == selection.path && (selection.staged ? $0.staged : $0.unstaged) }
+            ?? status.entries.first { $0.path == selection.path }
         // A rename is asked for under both names, or git sees a new file and
         // shows every one of its lines as added.
         let paths = [entry?.originalPath, selection.path].compactMap { $0 }
