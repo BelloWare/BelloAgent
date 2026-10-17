@@ -1177,6 +1177,23 @@ extension FamilyLimitPauseTests {
         await side.close(); await owner.close()
     }
 
+    /// An unkept side ends with its runtime: closing it takes it off its
+    /// root's list, and a root paused only for it is not paused.
+    func testClosingAnUnkeptPausedSideTakesItOffItsRootsPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root)
+        await owner.setCostLimit(5)
+        let side = try await side("side",parent:owner,root:root)
+        await side.fixtureCostPause()
+        try await side.bindSideBudget(to:owner)
+        var members = await owner.costPausedMembers; XCTAssertEqual(members,["side"])
+        await side.close()
+        members = await owner.costPausedMembers
+        let paused = await owner.costPaused
+        XCTAssertTrue(members.isEmpty); XCTAssertFalse(paused)
+        await owner.close()
+    }
+
     /// A listed side whose journal is gone (deleted while the root was not
     /// loaded) is dropped when the root reopens, and a pause held only for it ends.
     func testAReopenedRootDropsListedSidesThatNoLongerExist() async throws {

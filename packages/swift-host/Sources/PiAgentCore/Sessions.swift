@@ -693,6 +693,9 @@ public actor AgentSession {
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:costPauseCount,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
+        // An unkept side ends with its runtime: nothing of it waits for the
+        // family's Resume any more.
+        if ephemeral, let root = sideBudgetParents.last { await root.forgetPausedMember(id) }
         journal=nil
     }
 }
