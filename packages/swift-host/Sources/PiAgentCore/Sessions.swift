@@ -595,7 +595,15 @@ public actor AgentSession {
         if let hold=queueEdit, !(queue+steering).contains(where: { $0.turnID == hold.turnID }) { queueEdit=nil }
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
-        boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
+        // Held calls stay in the parent's context for Resume, but a new side
+        // or fork starts before that unfinished assistant/tool batch.
+        let completedTools=ToolHistoryIndex(context)
+        let unfinished=context.firstIndex { message in
+            message.role == "assistant" && message.replayEligible && message.content.contains {
+                $0["type"].text == "toolCall" && completedTools.results[message.id]?[$0["id"].text ?? ""] == nil
+            }
+        }
+        boundary=Array(context.prefix(unfinished ?? context.count)); state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
         dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.

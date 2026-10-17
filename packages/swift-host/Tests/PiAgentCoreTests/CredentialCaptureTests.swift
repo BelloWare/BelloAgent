@@ -8,6 +8,66 @@ private actor CredentialPackets {
 }
 
 final class CredentialCaptureTests: XCTestCase {
+    func testJSONEscapeEquivalentCredentialsAreMaskedAtEveryCaptureSplit() async throws {
+        let fixtures = [("sk-test-secret", #"\u0073k-test-secret"#),
+                        ("sk-test-secret", #"s\u006B-test-\u0073ecret"#),
+                        ("key/\"\\\n🙂", #"key\u002f\u0022\u005C\n\uD83d\uDE42"#)]
+        for (key, escaped) in fixtures { for mode in ["memory", "persist"] {
+            let prefix = "{\"error\":{\"message\":\"Rejected ", suffix = "\"},\"padding\":\"" + String(repeating: ".", count: 100) + "\"}"
+            let response = Data((prefix + escaped + suffix).utf8)
+            XCTAssertTrue(try JSON.parse(response)["error"]["message"].text?.contains(key) == true)
+            let expected = Data((prefix + String(repeating: "*", count: escaped.utf8.count) + suffix).utf8)
+            for split in -1...response.count {
+                let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+                _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+                let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: ["Authorization": "Bearer " + key])
+                await traces.head(id, status: 401, headers: ["content-type": "application/json"])
+                if split < 0 {
+                    for byte in response { await traces.append(id, data: Data([byte])) }
+                } else {
+                    await traces.append(id, data: Data(response.prefix(split)))
+                    await traces.append(id, data: Data(response.dropFirst(split)))
+                }
+                await traces.transport(id, observation: ["transportOutcome": "eof"])
+                await traces.finish(id, outcome: "failed", modelOutcome: "interrupted")
+                let retained: Data
+                if mode == "persist" {
+                    await traces.delivered()
+                    var bytes = Data()
+                    for packet in await packets.values where packet["type"].text == "bytes" && packet["body"].text == "response" {
+                        XCTAssertEqual(packet["offset"].int, bytes.count)
+                        bytes.append(try XCTUnwrap(Data(base64Encoded: packet["bytes"].text ?? "")))
+                    }
+                    retained = bytes
+                } else {
+                    let body = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(id), "body": "response"])
+                    retained = try XCTUnwrap(Data(base64Encoded: body["bytes"].text ?? ""))
+                }
+                let label = "\(mode), split \(split), \(escaped)"
+                XCTAssertEqual(retained, expected, label)
+                XCTAssertFalse(try JSON.parse(retained)["error"]["message"].text?.contains(key) == true, label)
+                let metadata = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])["response"]
+                XCTAssertEqual(metadata["credentialRedactions"].int, 1, label)
+                XCTAssertEqual(metadata["byteExact"].flag, false, label)
+                XCTAssertEqual(metadata["observedBytes"].int, retained.count, label)
+            }
+        } }
+    }
+
+    func testJSONEscapeMaskingLeavesMalformedAndUnrelatedEscapesUnchanged() {
+        let credentials = CaptureCredentials(headers: ["Authorization": "Bearer key/🙂"], configuredNames: [])
+        for text in [#"key\u002g🙂"#, #"key\u002f\uD83D"#, #"key\u002f\uDE42\uD83D"#,
+                     #"key\u002f\uD83D\u0041"#, #"key\u002f\uD83D\uDE43"#, #"key\x2f🙂"#] {
+            let original = Data(text.utf8)
+            for split in 0...original.count {
+                var masker = CaptureCredentials.ResponseMasker(credentials)
+                var retained = masker.feed(Data(original.prefix(split)))
+                retained.append(masker.feed(Data(original.dropFirst(split)), final: true))
+                XCTAssertEqual(retained, original); XCTAssertEqual(masker.replacements, 0)
+            }
+        }
+    }
+
     func testHeaderCaptureKeepsOrdinaryResponseFieldsAndMasksShortTokensCookiesAndCustomSecrets() {
         let headers = ["Authorization": "Bearer small", "Cookie": "session=private-cookie-value", "X-Custom-Credential": "custom-private-key", "X-Session-Id": "session-123"]
         let privacy = CaptureCredentials(headers: headers, configuredNames: ["X-Custom-Credential"])

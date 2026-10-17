@@ -31,7 +31,8 @@ extension AgentSteeringCoordinator {
         let plans = await parent.subagents
         let turns: [AgentChildTurn]
         if let wait = args["wait_id"].text {
-            guard let targets = state.operations[wait]?.waitTargets else { throw AgentError("subagent_scope", "Unknown wait") }
+            guard let operation = state.operations[wait],
+                  let targets = operation.waitTargets ?? (operation.receipt["route"].text == "start" ? operation.turn.map { [$0.target] } : nil) else { throw AgentError("subagent_scope", "Unknown wait") }
             turns = targets.compactMap { state.turns[$0.id] }
         } else {
             turns = (plans.callOrder ?? []).compactMap { plans.plans[$0]?.origin.link.childSessionID }.filter { args["child_id"].text == nil || $0 == args["child_id"].text }.compactMap { state.latest($0) }

@@ -60,7 +60,10 @@ extension AgentSession {
         // the request ends: a reply, a failure, or a Stop that cancels the
         // retried request itself (thrown as a CancellationError, not an
         // AgentError, so no catch below would see it).
-        defer { retryInfo = .null }
+        defer {
+            turnModelMs += modelRequestsMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelRequestsMs)
+            retryInfo = .null
+        }
         while true {
             attempt += 1
             // Every attempt, the first and each retry, is a model request:
@@ -293,7 +296,6 @@ extension AgentSession {
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }
-                    var modelMs=0.0
                     let operationID=UUID().uuidString
                     var recovered=false, completed: ModelReply?
                     while completed == nil {
@@ -316,9 +318,7 @@ extension AgentSession {
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
                             })
-                            modelMs += modelRequestsMs
                         } catch let error as AgentError {
-                            modelMs += modelRequestsMs
                             // Case 1 of pi's _checkCompaction: compact and retry once.
                             guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, canCompact(recovering:true), !Task.isCancelled else { throw error }
                             overflowRecoveryAttempted=true
@@ -347,7 +347,6 @@ extension AgentSession {
                     if reply.truncated, let reason=reply.terminal?.incompleteReason, reason != "max_output_tokens" {
                         throw PiErrorText.incompleteFailure(JSON(reason))
                     }
-                    turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
                     if partialTimeline.segments.isEmpty, let timeline=reply.message.responseTimeline { partialTimeline=timeline }
                     partialTimeline.finish(reply.truncated ? "incomplete":"completed")

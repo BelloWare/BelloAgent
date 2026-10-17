@@ -2,6 +2,54 @@ import XCTest
 @testable import PiAgentCore
 
 final class AgentSteeringCommandTests: XCTestCase {
+    func testStartWithWaitIDListsItsAcceptedTurnBeforeAndAfterReopen() async throws {
+        try await startWaitLookup(legacy: false)
+    }
+    func testLegacyStartWithWaitIDListsItsAcceptedTurnAfterReopen() async throws {
+        try await startWaitLookup(legacy: true)
+    }
+    private func startWaitLookup(legacy: Bool) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = AccountedAgentScript([answer("Child answer")], held: true), coordinator = AgentSteeringCoordinator()
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        let start = ToolCall(id:"start",name:"subagent_start",arguments:["task":"Inspect the project","mode":"wait","timeout_ms":0])
+        _ = try await parent.agentFixtureCall(start,newTask:true)
+        try await parent.runToolBatch([start])
+        let results = await parent.history.filter { $0.toolCallId == start.id }
+        let receipt = try JSON.parse(Data(try XCTUnwrap(results.last).text.utf8))
+        let waitID = try XCTUnwrap(receipt["wait"]["wait_id"].text), child = try XCTUnwrap(receipt["child_id"].text)
+        XCTAssertEqual(receipt["wait"]["wake_reason"].text,"timeout")
+        let args: JSON = ["action":"list","wait_id":JSON(waitID)]
+        func check(_ session: AgentSession) async {
+            do {
+                let listed = try await coordinator.status(args,parent:session)
+                XCTAssertEqual(listed["total"].int,1)
+                XCTAssertEqual(listed["children"].list.first?["child_id"].text,child)
+                XCTAssertEqual(listed["children"].list.first?["turn"].int,1)
+            } catch { XCTFail("Returned wait ID must remain usable: \(error)") }
+        }
+        if !legacy {
+            let operation = await parent.agentState().operations[waitID]
+            XCTAssertEqual(operation?.waitTargets, [.init(childID:child,turn:1)])
+            await check(parent)
+        }
+        await client.release(); try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+        let saved = await parent.path, path = try XCTUnwrap(saved)
+        await coordinator.drain(); await parent.close()
+        if legacy {
+            let lines = try String(contentsOfFile:path,encoding:.utf8).split(separator:"\n").map { line -> String in
+                var record = try JSON.parse(Data(line.utf8))
+                if record["customType"].text == JournalRecordKind.agentOperation { record["data"] = record["data"].removing(["waitTargets"]) }
+                return record.encoded()
+            }
+            try (lines.joined(separator:"\n") + "\n").write(toFile:path,atomically:true,encoding:.utf8)
+        }
+        let reopened = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:path)
+        await check(reopened)
+        await reopened.close()
+    }
+
     func testAcceptedStartDeduplicatesAndFollowUpUsesSameConversation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([answer("First answer"),answer("Second answer")])
