@@ -145,7 +145,8 @@ final class CostPauseFamilyTests: XCTestCase {
                 XCTAssertEqual(members, [side.id], "The resumed root still names its paused side")
                 // Round 6: the side is outside the loaded window (more than
                 // 10,000 newer records): its record is read from the store.
-                XCTAssertNotNil(try await second.store?.loadChats(ids: [side.id]).first)
+                let stored = try await second.store?.loadChats(ids: [side.id])
+                XCTAssertEqual(stored?.first?.id, side.id)
                 second.chats.removeAll { $0.id == side.id }
                 XCTAssertNil(second.record(side.id))
                 second.resumeCostPausedFamily(from: rootRecord)
