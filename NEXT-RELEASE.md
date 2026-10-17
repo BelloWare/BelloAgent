@@ -21,7 +21,7 @@
 - [x] Git path sweep: watchers preserve whitespace in external Git/common-directory paths, including embedded newlines.
 - [x] Git path sweep: reword detects active operation markers under newline-containing paths.
 - [x] Git path sweep: reword runs post-rewrite hooks in configured directories ending in a newline. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
-- [x] File-only panes yield to the main composer's minimum; side conversations reserve both control minima and share spare room by the saved fraction, retaining the released proportional split when both cannot fit. [Validation](docs/validation/a130-gitfiles-0.1.130.md#side-conversation-split-review-follow-up).
+- [x] File-only panes yield to the main composer's minimum; side conversations clamp the original proportional split only as needed to fit both control minima, keeping the original split when both cannot fit and the original drag scale. [Validation](docs/validation/a130-gitfiles-0.1.130.md#proportional-split-review-correction).
 
 ## 0.1.129
 

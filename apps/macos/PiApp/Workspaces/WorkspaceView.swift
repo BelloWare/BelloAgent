@@ -40,7 +40,6 @@ import Combine
     private var draggingSidebarWidth: CGFloat?
     private var draggingSideFraction: Double?
     private var splitDragStart: Double?
-    private var splitDragWidth: CGFloat?
     /// The window's disabled state (`.disabled` on the SwiftUI around it).
     var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { refresh() } } }
     /// Reduced motion as the SwiftUI around it has it (`piReduceMotion`).
@@ -109,18 +108,18 @@ import Combine
         }
         splitHandle.changed = { [weak self] translation in
             guard let self else { return }
-            let total = self.splitDragWidth ?? max(1, self.chats.dragWidth)
+            let total = max(1, self.region.bounds.width)
             let base = self.splitDragStart ?? self.visibleSplitFraction
-            if self.splitDragStart == nil { self.splitDragStart = base; self.splitDragWidth = total }
+            if self.splitDragStart == nil { self.splitDragStart = base }
             self.draggingSideFraction = SplitPane.clampFraction(base + Double(translation / total))
             self.splitHandle.dragging = true
             self.chats.needsLayout = true; self.refresh()
         }
         splitHandle.ended = { [weak self] translation in
             guard let self else { return }
-            let total = self.splitDragWidth ?? max(1, self.chats.dragWidth)
+            let total = max(1, self.region.bounds.width)
             let landed = SplitPane.clampFraction((self.splitDragStart ?? self.visibleSplitFraction) + Double(translation / total))
-            self.splitDragStart = nil; self.splitDragWidth = nil; self.draggingSideFraction = nil; self.splitHandle.dragging = false
+            self.splitDragStart = nil; self.draggingSideFraction = nil; self.splitHandle.dragging = false
             UserDefaults.standard.set(landed, forKey: "sidePaneFraction")
             self.chats.needsLayout = true; self.refresh()
         }
@@ -176,8 +175,11 @@ import Combine
     /// A control minimum can move the divider beyond the saved fraction.
     /// A new drag starts where the reader sees it, without a dead zone.
     private var visibleSplitFraction: Double {
-        if rightPane?.side != nil { return sideFraction }
         let usable = max(1, region.bounds.width - SplitPane.dividerWidth)
+        if rightPane?.side != nil {
+            let proposal = SplitPane.mainWidth(total: region.bounds.width, fraction: sideFraction)
+            return chats.mainWidth == proposal ? sideFraction : Double(chats.mainWidth / usable)
+        }
         return max(sideFraction, Double(chats.mainWidth / usable))
     }
     private func applySidebarWidth() {
@@ -419,23 +421,15 @@ import Combine
     override func hitTest(_ point: NSPoint) -> NSView? { covered ? nil : super.hitTest(point) }
     private var proposedMainWidth: CGFloat { side == nil ? bounds.width : SplitPane.mainWidth(total: bounds.width, fraction: fraction) }
     private var mainMinimum: CGFloat { ceil((main as? ConversationPaneView)?.minimumWidth ?? 0) }
-    private var sideSlack: CGFloat? {
-        guard let minimum = (side as? RightPaneView)?.sideMinimumWidth else { return nil }
-        return bounds.width - SplitPane.dividerWidth - mainMinimum - ceil(minimum)
-    }
-    /// With two composers, the saved fraction divides only the spare room.
-    var dragWidth: CGFloat {
-        if let slack = sideSlack, slack >= 0 { return slack }
-        return bounds.width
-    }
     /// Rounded to whole points so the two panes and their divider add up to the region.
     var mainWidth: CGFloat {
         guard side != nil else { return bounds.width }
-        if let slack = sideSlack {
+        if let sideMinimum = (side as? RightPaneView)?.sideMinimumWidth {
+            let maximum = bounds.width - SplitPane.dividerWidth - ceil(sideMinimum)
             // Preserve the released proportional split when both composers
             // cannot fit; giving one its minimum would hide the other's actions.
-            guard slack >= 0 else { return proposedMainWidth }
-            return mainMinimum + floor(slack * CGFloat(SplitPane.clampFraction(fraction)))
+            guard mainMinimum <= maximum else { return proposedMainWidth }
+            return min(maximum, max(proposedMainWidth, mainMinimum))
         }
         return min(max(0, bounds.width - SplitPane.dividerWidth), max(proposedMainWidth, mainMinimum))
     }

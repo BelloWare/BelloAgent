@@ -589,3 +589,249 @@ scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/File
 # side-split-file-review.log
 scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
 ```
+
+## Proportional split review correction
+
+The lead's review of `577ab0a3` supersedes the preceding section's instruction
+to divide spare room by the saved fraction. That formula changed valid wide
+splits and made dragging depend on control widths. This follow-up restores the
+released fraction's meaning.
+
+For a side conversation, compute the original `SplitPane.mainWidth` proposal.
+If both control minima fit, clamp that proposal between the main minimum and
+usable width minus the side minimum. If they cannot fit, return the proposal
+exactly. Minima retain the existing whole-point rounding; neither this fix nor
+a busy-state change rewrites the preference. File-only allocation is unchanged.
+The saved fraction remains a fraction of the whole region during a drag. A new
+drag starts from the visible divider when either minimum has moved it; an
+unclamped divider keeps the exact saved fraction, avoiding a rounding jump.
+`dragWidth` and the cached slack denominator are removed.
+
+### Failing-first evidence and coverage
+
+Production was still at `577ab0a3` for both independent baseline runs below.
+The native fixtures use two generated connections, saved side records and
+synthetic idle/busy states, without starting a provider or helper request.
+
+- `testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit`:
+  4000/4600-point windows, fractions 0.3/0.5/0.7, independent main/side busy
+  states (24 scenes). The independent proportional reference first verifies
+  that both original allocations already fit, then compares both `CGRect`s
+  exactly. `proportional-frames-before.log`: **1 test failed, 96 expected
+  assertion failures, 0 unexpected**. No fixture-premise assertion failed.
+- `testSideSplitDragKeepsTheWholeRegionFraction`: 1800/2400-point windows,
+  12-point motion, fraction before/after mouse-up, and a side-only busy change
+  whose new minimum still fits. `proportional-drag-before.log`: **1 test
+  failed, 23 expected assertion failures, 0 unexpected**.
+
+```text
+XCTAssertEqual failed: ("(0.0, 0.0, 1427.0, 800.0)") is not equal to ("(0.0, 0.0, 1109.0, 800.0)") - unchanged at 4000.0, fraction 0.3, main busy false, side busy false: unchanged proportional main frame
+XCTAssertEqualWithAccuracy failed: ("0.6714285714285715") is not equal to ("0.5080053368912608") +/- ("1e-06") - A drag is a fraction of the whole region
+```
+
+An earlier combined probe (`proportional-split-before.log`, 2 tests/2 failures)
+used XCTest's `continueAfterFailure = false`; its async matrix continued after
+teardown and attributed another frame failure to the next test. That setting
+was removed, the wide fixtures were enlarged so every form's minimum fits,
+and the independent runs above supply the clean baseline evidence.
+
+The first fixed-source run, `proportional-split-after.log`, passed **10/10**.
+The existing narrow matrix remains: 920×800/920×628, sidebar 300/420,
+independent main/side idle/busy, original fallback frames and every previously
+visible Send/Queue/Stop/Close side action. File-only tests still check all main
+composer controls inside their bounds with the file open/closed, at both
+heights and both sidebar widths. The updated clamp matrix covers 1240/1800
+windows and fractions 0.3/0.5/0.7.
+
+Two additional tests challenge clamp transitions:
+
+- `testSideSplitDragStartsAtEitherVisibleClampBoundary`: main minimum clamps
+  449 to 469 at fraction 0.3; the side minimum clamps 726 to 702 at fraction
+  0.7. Motion inwards from either visible divider updates the whole-region
+  fraction and does not jump at mouse-up.
+- `testSideMinimumChangesRecheckTheClampAndProportionalFallback`: at 1340,
+  main busy and fraction 0.7, changing only the side from idle to busy to idle
+  produces main/side widths 702/336 → 726/312 → 702/336. The middle state cannot
+  fit both minima, so it uses the exact proportional fallback. Fraction 0.7
+  remains stored throughout.
+
+The prior narrow fallback limitation remains explicitly owner-directed:
+existing 0.1.129 clipping at 920/sidebar 420 or a busy side is retained, while
+controls that were visible in 0.1.129 keep their original positions. No new
+product decision is needed for this correction.
+
+### Correction mutation checks
+
+Each mutation changed only production allocation/drag code and was restored in
+`finally`. All three valid mutation runs exited 65 because the targeted test
+assertions failed; none had an unexpected failure.
+
+| Deliberate regression | Test | Expected failures | Text log |
+| --- | --- | ---: | --- |
+| Replace the clamp with `mainMinimum + floor(slack * fraction)` | `testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit` | 96 (1 test) | proportional-mutation-slack.log |
+| Divide both drag callbacks by slack instead of region width | `testSideSplitDragKeepsTheWholeRegionFraction` | 7 (1 test) | proportional-mutation-drag.log |
+| Start a side drag at the stored fraction even when clamped | `testSideSplitDragStartsAtEitherVisibleClampBoundary` | 6 (1 test) | proportional-mutation-visible-origin.log |
+
+The slack mutation reproduces the baseline 1427-versus-1109 frame failure.
+The drag mutation reports 0.6714285714 instead of 0.5080053369 and a mouse-up
+jump. The visible-origin mutation leaves the lower clamp at 469 instead of
+481 and the upper clamp at 702 instead of 690. A first visible-origin mutation
+left an unused local and failed compilation (`proportional-mutation-visible-start.log`);
+that attempt is excluded from the assertion evidence. The corrected mutation
+removes the unused local and reaches the native test.
+
+### Regenerated galleries and adversarial self-review
+
+`WorkspaceSplitGalleryTests`: **2 passed, 0 failed, 0 skipped**, with both
+opt-in variables set. The full-lane lock was held for the entire native capture
+and released afterwards. All **28 PNGs were opened and visually inspected**
+from disk, without activating another app:
+
+- `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-proportional-split/sides`:
+  12 images, light/dark × idle/busy × 920×628/sidebar 300,
+  920×628/sidebar 420, and 1800×800/sidebar 300. At 1800, the main and side
+  remain exactly 749/749 with all composer actions and Close side visible.
+  At 920/sidebar 300, idle side Send and Close side remain visible. The busy
+  and sidebar-420 scenes show the documented original overflow; the native
+  reference assertions confirm unchanged action coordinates.
+- `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-proportional-split/files`:
+  16 images, light/dark × idle/busy × 920×800/920×628 × file open/closed.
+  All main composer controls remain inside the main pane. The file pane yields
+  room and retains its horizontal scrollbar.
+
+Adversarial self-review covered the **entire branch diff from `5c52621c`**, not
+only the correction to `577ab0a3`: the two preceding layout commits, this fix,
+all new tests, the generated project entries and the validation/release notes.
+The review specifically checked:
+
+- The original proportional helper, fraction bounds, divider rounding and
+  drag denominator are unchanged. Valid proposals are returned exactly;
+  lower/upper clamps and the impossible-minima fallback are separate cases.
+  File-only allocation and visible drag start remain the first fix's policy.
+- Main and side composer forms use their original proportional proposals,
+  preventing allocation/minimum feedback. A file covering a mounted side
+  retains that side's minimum, while removing the side restores the file-only
+  policy. Standalone right panes keep the actual-width proposal.
+- Side control-size notifications reach the ancestor split. A side-only busy
+  change can move from clamp to fallback and back without changing the stored
+  fraction; it does not move an already valid split. Mouse-up uses the same
+  captured start as drag motion, including both visible clamp boundaries.
+- The reference allocates native panes independently of `WorkspaceChatsLayer`;
+  the exact-frame test checks its fit premises before comparing frames. The
+  fallback tests compare the actual Send/Queue/Stop/Close side geometry with
+  the original proportional reference, not just a duplicate width formula.
+- The diff adds no provider, helper, permission, capture, tool, vault, data,
+  focus or page-visibility behavior. The generated project diff only registers
+  `WorkspaceSplitTests.swift`. Fixtures restore isolated test preferences and
+  use the workspace teardown helper.
+
+No additional regression was found in this review. The retained narrow
+fallback limitation is documented above rather than silently changing the
+owner's requested 0.1.129 behavior.
+
+### Correction focused validation
+
+Final restored-source runs: **200 passed, 0 failed, 0 skipped** across 15
+classes. All focus-changing native runs held the shared full-lane lock and
+released only their own lock in `finally`; serial classes ran alone. Reused
+this workstream's build root. No extra DerivedData root or clone directory was
+created. No helper or wire code changed, so those suites were not rerun.
+
+| Class | Passed | Failed | Text log |
+| --- | ---: | ---: | --- |
+| WorkspaceSplitTests | 10 | 0 | proportional-split-final.log |
+| WorkspaceSplitGalleryTests | 2 | 0 | proportional-split-gallery.log |
+| WorkspaceRootTests | 7 | 0 | proportional-split-workspace-root.log |
+| SmoothShellTests | 5 | 0 | proportional-split-smooth-shell.log |
+| ShellComposerTests | 5 | 0 | proportional-split-shell-composer.log |
+| ConversationPaneTests | 81 | 0 | proportional-split-conversation-pane.log |
+| ComposerBarLayoutTests | 7 | 0 | proportional-split-composer-bar.log |
+| GitPanelNarrowParityTests | 8 | 0 | proportional-split-right-pane-parity.log |
+| WorkspaceRedrawTests | 1 | 0 | proportional-split-redraw.log |
+| FileFolderTests | 19 | 0 | proportional-split-file-folder.log |
+| FileReviewStateTests | 20 | 0 | proportional-split-file-review.log |
+| TabPaneTests | 10 | 0 | proportional-split-tabs-and-files.log |
+| FileTabTests | 16 | 0 | proportional-split-tabs-and-files.log |
+| FileHiddenReadTests | 5 | 0 | proportional-split-tabs-and-files.log |
+| SmoothPaneAndKeyboardTests | 4 | 0 | proportional-split-tabs-and-files.log |
+
+No unrelated test failed. Existing generated-store teardown diagnostics remain:
+`vnode unlinked while in use` appeared 210 times in the ConversationPane log
+and 9 times in the GitPanelNarrowParity log (also 9 in the preceding follow-up's
+parity log). `ConversationPaneFixture.swift:87–88` and
+`GitPanelNarrowParityTests.swift:77,284` remove their generated stores without
+awaiting shutdown. Those unrelated fixtures are unchanged. No final run hit
+AppKit's layout-pass guard; the split regression/gallery logs contain none of
+these SQLite diagnostics.
+
+Exact commands follow, run from the assigned worktree under
+`build-a130-gitfiles/evidence/run-split-check.py`. The text logs, command ledger
+and mutation runner are in that evidence folder. No named result bundle was
+requested. The gallery opt-ins were both set; all images were inspected as
+recorded above.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+
+# proportional-split-before.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragKeepsTheWholeRegionFraction
+
+# proportional-frames-before.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit
+
+# proportional-drag-before.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragKeepsTheWholeRegionFraction
+
+# proportional-split-after.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests
+
+# proportional-mutation-slack.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit
+
+# proportional-mutation-drag.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragKeepsTheWholeRegionFraction
+
+# proportional-mutation-visible-start.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragStartsAtEitherVisibleClampBoundary
+
+# proportional-mutation-visible-origin.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragStartsAtEitherVisibleClampBoundary
+
+# proportional-split-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests
+
+# proportional-split-gallery.log
+TEST_RUNNER_PI_WORKSPACE_SPLIT_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-proportional-split/files \
+TEST_RUNNER_PI_WORKSPACE_SPLIT_SIDE_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-proportional-split/sides \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitGalleryTests
+
+# proportional-split-workspace-root.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRootTests
+
+# proportional-split-smooth-shell.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SmoothShellTests
+
+# proportional-split-shell-composer.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ShellComposerTests
+
+# proportional-split-conversation-pane.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+
+# proportional-split-composer-bar.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ComposerBarLayoutTests
+
+# proportional-split-right-pane-parity.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+
+# proportional-split-redraw.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRedrawTests
+
+# proportional-split-file-folder.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+
+# proportional-split-file-review.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+
+# proportional-split-tabs-and-files.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabPaneTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/SmoothPaneAndKeyboardTests
+```

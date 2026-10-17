@@ -93,7 +93,29 @@ import XCTest
         }
     }
 
-    func testSideConversationReservesBothMinimaAndSharesSlackByTheSavedFraction() async throws {
+    func testSideConversationPreservesProportionalFramesWhenBothMinimaAlreadyFit() async throws {
+        let fixture = try WorkspaceSplitFixture(test: self)
+        let side = try fixture.showSide()
+        let reference = try WorkspaceSideSplitReference(test: self, fixture: fixture)
+        for width: CGFloat in [4000, 4600] {
+            fixture.window.setContentSize(NSSize(width: width, height: 800))
+            for fraction in [0.3, 0.5, 0.7] {
+                UserDefaults.standard.set(fraction, forKey: "sidePaneFraction")
+                fixture.view.refresh()
+                for mainBusy in [false, true] {
+                    fixture.session.state = mainBusy ? "running" : "idle"
+                    for sideBusy in [false, true] {
+                        side.state = sideBusy ? "running" : "idle"
+                        await fixture.settle()
+                        try reference.assertSplit(fixture, fits: true, proportional: true,
+                            scene: "unchanged at \(width), fraction \(fraction), main busy \(mainBusy), side busy \(sideBusy)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testSideConversationClampsTheProportionalSplitToBothMinima() async throws {
         let fixture = try WorkspaceSplitFixture(test: self)
         let side = try fixture.showSide()
         let reference = try WorkspaceSideSplitReference(test: self, fixture: fixture)
@@ -113,7 +135,7 @@ import XCTest
         }
     }
 
-    func testSideSplitDragAndBusyChangesUseTheSpaceBeyondBothMinima() async throws {
+    func testSideSplitDragKeepsTheWholeRegionFraction() async throws {
         let fixture = try WorkspaceSplitFixture(test: self)
         let side = try fixture.showSide()
         let reference = try WorkspaceSideSplitReference(test: self, fixture: fixture)
@@ -124,20 +146,72 @@ import XCTest
             fixture.window.setContentSize(NSSize(width: width, height: 800))
             await fixture.settle()
             let pane = try XCTUnwrap(fixture.view.conversation)
+            let chats = try XCTUnwrap(pane.superview as? WorkspaceChatsLayer)
             let before = pane.bounds.width
+            let expectedFraction = 0.5 + 12 / Double(chats.bounds.width)
             fixture.view.splitHandle.changed?(12)
             await fixture.settle()
             let dragged = pane.bounds.width
-            if width == 2400 { XCTAssertEqual(dragged, before + 12, accuracy: 1, "The forms stay the same in this wider fixture") }
+            XCTAssertEqual(fixture.view.sideFraction, expectedFraction, accuracy: 0.000001, "A drag is a fraction of the whole region")
+            XCTAssertEqual(UserDefaults.standard.double(forKey: "sidePaneFraction"), 0.5, "The preference changes only at mouse-up")
+            XCTAssertEqual(dragged, before + 12, accuracy: 1)
             fixture.view.splitHandle.ended?(12)
             await fixture.settle()
             XCTAssertEqual(pane.bounds.width, dragged, accuracy: 1, "Ending the drag keeps the divider in place, even if a control form changed")
-            try reference.assertSplit(fixture, fits: true, scene: "side drag at \(width)")
+            XCTAssertEqual(fixture.view.sideFraction, expectedFraction, accuracy: 0.000001)
+            try reference.assertSplit(fixture, fits: true, proportional: true, scene: "side drag at \(width)")
             let idleWidth = pane.bounds.width
             side.state = "running"
             await fixture.settle()
-            XCTAssertNotEqual(pane.bounds.width, idleWidth, "The side's changing control minimum must update the split")
-            try reference.assertSplit(fixture, fits: true, scene: "only the side becomes busy at \(width)")
+            XCTAssertEqual(pane.bounds.width, idleWidth, "Changing a minimum that still fits must not move the divider")
+            try reference.assertSplit(fixture, fits: true, proportional: true, scene: "only the side becomes busy at \(width)")
+        }
+    }
+
+    func testSideSplitDragStartsAtEitherVisibleClampBoundary() async throws {
+        let fixture = try WorkspaceSplitFixture(test: self)
+        _ = try fixture.showSide()
+        let reference = try WorkspaceSideSplitReference(test: self, fixture: fixture)
+        fixture.session.state = "running"
+        for (width, fraction, movement) in [(CGFloat(1800), 0.3, CGFloat(12)), (1340, 0.7, -12)] {
+            fixture.window.setContentSize(NSSize(width: width, height: 800))
+            UserDefaults.standard.set(fraction, forKey: "sidePaneFraction")
+            fixture.view.refresh()
+            await fixture.settle()
+            try reference.assertSplit(fixture, fits: true, scene: "clamp at fraction \(fraction)")
+            let pane = try XCTUnwrap(fixture.view.conversation)
+            let chats = try XCTUnwrap(pane.superview as? WorkspaceChatsLayer)
+            let side = try XCTUnwrap(fixture.view.rightPane?.subviews.compactMap { $0 as? SidePaneView }.first)
+            let before = pane.bounds.width
+            let boundary = movement > 0 ? ceil(pane.minimumWidth) : chats.bounds.width - SplitPane.dividerWidth - ceil(side.minimumWidth)
+            XCTAssertEqual(before, boundary, "This fixture must hit the requested clamp boundary")
+            let visibleFraction = Double(before / (chats.bounds.width - SplitPane.dividerWidth))
+            let expectedFraction = visibleFraction + Double(movement / chats.bounds.width)
+            fixture.view.splitHandle.changed?(movement)
+            await fixture.settle()
+            XCTAssertEqual(fixture.view.sideFraction, expectedFraction, accuracy: 0.000001)
+            XCTAssertEqual(pane.bounds.width, before + movement, accuracy: 1, "Move from the actual divider without a dead zone")
+            let dragged = pane.bounds.width
+            fixture.view.splitHandle.ended?(movement)
+            await fixture.settle()
+            XCTAssertEqual(fixture.view.sideFraction, expectedFraction, accuracy: 0.000001)
+            XCTAssertEqual(pane.bounds.width, dragged, accuracy: 0.01)
+        }
+    }
+
+    func testSideMinimumChangesRecheckTheClampAndProportionalFallback() async throws {
+        let fixture = try WorkspaceSplitFixture(test: self)
+        let side = try fixture.showSide()
+        let reference = try WorkspaceSideSplitReference(test: self, fixture: fixture)
+        fixture.window.setContentSize(NSSize(width: 1340, height: 800))
+        fixture.session.state = "running"
+        UserDefaults.standard.set(0.7, forKey: "sidePaneFraction")
+        fixture.view.refresh()
+        for busy in [false, true, false] {
+            side.state = busy ? "running" : "idle"
+            await fixture.settle()
+            try reference.assertSplit(fixture, fits: !busy, scene: "clamp changes to fallback, side busy \(busy)")
+            XCTAssertEqual(fixture.view.sideFraction, 0.7, "Changing control minima does not rewrite the saved fraction")
         }
     }
 
@@ -334,7 +408,7 @@ import XCTest
         test.addTeardownBlock { @MainActor [window] in window.contentView = nil; window.close() }
     }
 
-    func assertSplit(_ fixture: WorkspaceSplitFixture, fits: Bool, scene: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    func assertSplit(_ fixture: WorkspaceSplitFixture, fits: Bool, proportional: Bool = false, scene: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let actualMain = try XCTUnwrap(fixture.view.conversation, file: file, line: line)
         let chats = try XCTUnwrap(actualMain.superview as? WorkspaceChatsLayer, file: file, line: line)
         let actualRight = try XCTUnwrap(fixture.view.rightPane, file: file, line: line)
@@ -350,7 +424,13 @@ import XCTest
         let mainMinimum = ceil(main.minimumWidth), sideMinimum = ceil(side.minimumWidth)
         let slack = chats.bounds.width - SplitPane.dividerWidth - mainMinimum - sideMinimum
         XCTAssertEqual(slack >= 0, fits, "\(scene): fixture must exercise the intended branch", file: file, line: line)
-        let expected = fits ? mainMinimum + floor(slack * CGFloat(fraction)) : oldMain
+        if proportional {
+            XCTAssertGreaterThanOrEqual(oldMain, mainMinimum, "The old proposal must already fit the main controls", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(oldSide, sideMinimum, "The old proposal must already fit the side controls", file: file, line: line)
+            XCTAssertEqual(actualMain.frame, main.frame, "\(scene): unchanged proportional main frame", file: file, line: line)
+            XCTAssertEqual(actualRight.frame, right.frame, "\(scene): unchanged proportional side frame", file: file, line: line)
+        }
+        let expected = fits ? min(max(oldMain, mainMinimum), chats.bounds.width - SplitPane.dividerWidth - sideMinimum) : oldMain
         XCTAssertEqual(actualMain.bounds.width, expected, accuracy: 0.01, scene, file: file, line: line)
         XCTAssertEqual(actualRight.bounds.width, chats.bounds.width - SplitPane.dividerWidth - expected, accuracy: 0.01, scene, file: file, line: line)
         if fits {
