@@ -1,6 +1,6 @@
 # Bello Agent 0.1.129 — the cost limit pauses at once, family delete, outside review fixes
 
-Status: **packaged; publication pending.** Marketing version 0.1.129, build 133. Previous public release: 0.1.128/build 132.
+Status: **released and verified 2026-10-18.** Marketing version 0.1.129, build 133. Previous public release: 0.1.128/build 132.
 
 ## Owner request
 
@@ -76,4 +76,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `63b24d33` ("Release Bello Agent 0.1.129"), tag `v0.1.129`, pushed atomically to `main` and `dev/next`.
+- `BelloAgent-0.1.129.dmg`, sha256 `2c124a883c0fe04c0ce488357efd5a64efe849faefce38a191bff6e010f4aabf`, 15,736,136 bytes; Developer ID signed and notarized (submission `71354d24-97da-4f99-b3f3-9df19671b530`, Accepted), stapled.
+- `validate-release.py --previous-build 132`: passed (0.1.129 build 133, Ed25519 signature verified).
+- Website commit `f5c21ad` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical.
