@@ -175,6 +175,31 @@ held-call release/tool start) each have a durable repair or are ordered save-fir
 Remaining tolerated window: a live Stop seals a never-started resumed turn without its
 child runtime; the stale child mirror is repaired by the next cold reopen (above).
 
+## Review round 4 (Codex, 1 P1 + 5 P2) and the same kinds of case
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 the held-call release was written but not forced to disk before the tools ran | Saved with `durable: true` (journal fsync) before `runToolBatch` | `CostLimitTests.testHeldCallReleaseIsSyncedBeforeTheToolBegins` (`r4-release-durable`) |
+| P2 held calls left by a helper that ended after Resume was accepted lost Resume, and a Send bypassed them | Held calls are continuation work with or without the pause: `canContinue`, `run.continue`'s tail, and a Send waits behind them (`pausedWithPending`, `resumeQueue` refuses); also an accepted Resume keeps the pause on disk (`costResumePending`) until its run has taken the parked work, and a run that ends before that stays paused | `testHeldCallsLeftByAnAcceptedResumeKeepResumeAndGoBeforeASend` (`r4-continuable`, `r4-send-waits`, `r4-resume-pending`) |
+| P2 a pause during agent-control admission gave permanent failures (`tool_unavailable`, `subagent_closed`) | `failedByCostPause`: an admission the pause closed is a hold — the v3 preparation, the v2 delegation environment and a call's own catch before entry | `FamilyLimitPauseTests.testAPauseDuringAgentControlAdmissionHoldsTheCall` (`r4-admission`) |
+| P2 a cut compaction was recorded pending only after the pause's record | `markCutCompaction` sets it (with its focus) in the pause's own record, for the chat's own pause and a root paused by a side | `CostLimitTests.testACutCompactionIsSavedWithThePauseAndKeepsItsFocusAcrossAReopen` (`r4-compaction-with-pause`) |
+| P2 the `/compact <instructions>` focus was lost | `costPendingCompactionFocus` is saved with the pending compaction and restored for the redo, also after reopening | same test (`r4-focus`) |
+| P2 `subagent.list` between park and settle showed queued without the pause; the job's end bumped no revision | The flag is derived from the saved queued state (`listsPaused`); `publishParked` sends the parked summary when the job goes, and the snapshot's `subagentsRevision` includes the change count | `testAParkingTurnListsItsPauseAndItsJobsEndIsPublished` (`r4-list-derive`, `r4-publish-parked`) |
+| Same kind: a cut compaction left once the pause ended on disk | Pending compaction is continuation work too: Resume offered, Send waits, Resume compacts without a pause | `testACutCompactionLeftAfterThePauseEndedKeepsResume` (`r4-compaction-continuable`, `r4-compaction-first`, `r4-compaction-send`) |
+
+Same-kind audit. Durable saves before effects: every pause-related save is now `durable`
+— the pause (`pauseAtCostLimit`, `notePausedMember`, `forgetPausedMember`), the batch
+hold, a call held at its gate, the batch-end hold union, a child's park
+(`parkAgentTurn`) and resume (`resumeAgentTurn`), Resume's commit (run and no-run
+paths), a stopped Resume's re-pause, the end of `costResumePending` and the held-call
+release and compaction-redo clears. A child's release/continue saves run with no run
+task, so they flush already. Work restorable only through a flag: held calls and a cut
+compaction no longer depend on `costPaused`; parked turns are covered by
+`costResumePending`. Admission errors: the three sites above; any other error before a
+call enters still fails it (a held call that is really unavailable fails on Resume).
+Stale summaries: a job goes in two places — `finishJob`, after the terminal seal record
+(a terminal row does not read the job), and `park`, now published.
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
