@@ -69,7 +69,7 @@ final class CostPauseFamilyTests: XCTestCase {
 
     @MainActor private func pauseRelaunchAndResume(fromSide: Bool) async throws {
         // Forty words stream for about nine seconds: the crossing lands mid-reply.
-        let setup = try await gatewayWorkspace("cost-pause-family", projectID: "cost-pause-project", gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "40"])
+        let setup = try await gatewayWorkspace("cost-pause-family", projectID: "cost-pause-project", readme: true, gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "40"])
         let first = await launch(setup)
         first.selectedWorkspaceID = setup.workspace.id; first.profileChoice = setup.profile.id
         let parent = ChatRecord(id: "parent-" + UUID().uuidString, workspaceID: setup.workspace.id, title: "Parent", path: nil, profileID: setup.profile.id)
@@ -88,7 +88,9 @@ final class CostPauseFamilyTests: XCTestCase {
         await waitFor("The side's reply never started streaming") {
             first.sides[parent.id]?.kept == true && sideView.messages.last?.isStreaming == true
         }
-        parentView.draft = "Another question"; first.send(sessionID: parent.id)
+        // The chat's reply asks to read a file and crosses the limit: that
+        // call is held for Resume (owner, 2026-10-17), so the chat has work too.
+        parentView.draft = "Please read fixture README.md"; first.send(sessionID: parent.id)
         let crossed = Date()
         await waitFor("The family never paused") { parentView.costPaused && sideView.costPaused && !sideView.busy && !parentView.busy }
         XCTAssertLessThan(Date().timeIntervalSince(crossed), 7, "The side's slow reply was cut, not drained")
@@ -129,8 +131,9 @@ final class CostPauseFamilyTests: XCTestCase {
                 let main = try? await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object
                 let sideState = try? await host.request("session.status", sessionID: side.id).object
                 let sideRequests = try await Self.captures(setup.base).filter { $0.sessionID == side.id }.count
-                done = main?["cost"]?.object?["paused"] == nil && sideState?["state"]?.string == "idle" && sideState?["costPaused"] == nil
-                    && sideRequests > sideSent
+                let mainState = try? await host.request("session.status", sessionID: parent.id).object
+                done = main?["cost"]?.object?["paused"] == nil && mainState?["state"]?.string == "idle" && sideState?["state"]?.string == "idle"
+                    && sideState?["costPaused"] == nil && sideRequests > sideSent
                 if !done { try await Task.sleep(for: .milliseconds(50)) }
             }
             XCTAssertTrue(done, "The root and its side never both resumed")
@@ -171,7 +174,8 @@ final class CostPauseFamilyTests: XCTestCase {
         await waitFor("The chat's pause never ended") { !reopened.costPaused && !reopened.resuming }
         let after = try await Self.captures(setup.base)
         XCTAssertEqual(after.filter { $0.sessionID == side.id }.count, sideSent + 1, "One continuation for the side")
-        XCTAssertEqual(after.filter { $0.sessionID == parent.id }.count, cutParent, "The chat had nothing of its own cut off")
+        XCTAssertEqual(after.filter { $0.sessionID == parent.id }.count, cutParent + 1, "The held read ran, then one request")
+        XCTAssertTrue(reopened.messages.contains { $0.text.contains("Fixture read completed") })
         XCTAssertNil(second.error, second.error ?? "")
     }
 }

@@ -1,29 +1,43 @@
 # Sub-agents in Bello Agent — Design v2
 
-## 0.1.129 owner decisions, 2026-10-16
+## 0.1.129 owner decisions, 2026-10-16 and 2026-10-17
 
 These supersede the limit-stop and side-delegation text further down.
 
-**The cost limit pauses the family at once, and only Resume continues it.**
-When the shared budget is reached by any charge source (main, side, nested
-side, sub-agent or side-owned sub-agent), every in-flight provider request,
-retry wait and running tool in the family is cancelled the way Stop cancels it.
-Nothing new starts. Aborted requests keep what they reported; unknown cost stays
-unknown. Work that was under way becomes a durable **Paused at the cost limit**
-state (`costPaused` in the run state, `cost.paused` and `costPaused` in
-snapshots), which survives quit, relaunch and a helper restart. Unsealed
-sub-agent turns are *parked*, not sealed: running and queued turns are saved as
-`queued` with no result, keep their acceptance order and their undelivered
-parent messages, and their runtimes are released. Raising the limit resumes
-nothing. While the spend is still at the limit, Resume is refused with the reason
-shown. After a raise, Resume (`run.continue`) on the root resumes its own run and
-parked turns and returns the sides that paused (`pausedMembers`); the app resumes
-each of them the same way. A resumed turn continues under the parent's new
-execution (`AgentChildTurn.continuations`, one appended per Resume and ignored by
-older helpers); one whose task was delivered continues from its own context
-without being sent the task again, and one that had already answered is sealed
-with that answer. A message sent while paused waits for Resume. See
-`docs/validation/limit-pause-0.1.129.md` for the state machine.
+**The cost limit pauses every chat and its family; only Resume continues.**
+It applies to plain chats (no side or sub-agent ever) and to families alike,
+replacing both the 0.1.128 turn-boundary stop and the first 0.1.129 draft.
+When spend reaches the limit through any charge source (main, side, nested side,
+sub-agent, side-owned sub-agent, a late correction or a lowered limit):
+
+1. Every model request in flight in the chat or family is cut at once, as Stop
+   cuts it: its partial reply is kept as an interrupted row that is never sent
+   again (pi parity). Its reported cost counts; unknown stays unknown.
+2. Tools already running are **not** cut. They finish and record their real
+   results, in the main chat and in sub-agents.
+3. Nothing new starts: no model request, no tool. Tool calls of a completed reply
+   that had not started (including the reply that crossed the limit) are held
+   (`costPendingCalls`, durable; no outcome is invented for them after a
+   relaunch). On Resume they run first, then the next model request; the reply
+   that issued them is never asked for again.
+
+The pause is durable (`costPaused` in the run state, `cost.paused` and
+`costPaused` in snapshots) across quit, relaunch and helper restart. A run whose
+crossing reply was its last word, with nothing held, queued or delegated, is not
+left paused: the chat is simply at its limit and new messages are refused there.
+Unsealed sub-agent turns are parked as `queued` with no result (never
+`not_executed`), keeping their order and undelivered parent messages; a child's
+running tool finishes first. Raising the limit resumes nothing. Resume is refused
+at or over the limit with the reason. After a raise, Resume (`run.continue`) on
+the root resumes its own run and parked turns and returns the sides that paused
+(`pausedMembers`, kept until each side resumes); the app resumes each, and asks
+the root's helper first when a cold side's Resume is pressed. Resumed turns
+continue under the parent's new execution (`AgentChildTurn.continuations`); one
+whose task was delivered (by durable receipt, not the loaded window) continues
+from its context; one accepted but not delivered is released, not resubmitted;
+one that had answered still takes its final boundary before it seals. Idle sides
+stay unmarked. Paused sub-agents have no Stop of their own (Resume, then Stop).
+See `docs/validation/limit-pause-0.1.129.md` for the state machine.
 
 **Sides never start or message sub-agents.** At any depth a side refuses
 `subagent_start`, `subagent_send` and v2 `subagent` with `read_only` before any
@@ -666,7 +680,7 @@ The parent is not continuable until this recovery completes. Inspection remains 
 | Action | Behavior |
 |---|---|
 | Stop parent | Close family admission, stop active children and parent work, cancel queued children |
-| Family cost limit reached (0.1.129) | Pause at once: cancel requests/tools like Stop, park unsealed child turns as queued, persist `costPaused`; Resume only after a raise |
+| Cost limit reached (0.1.129) | Pause at once: cut model requests like Stop, let running tools finish, hold unstarted calls, park unsealed child turns as queued, persist `costPaused`; Resume only after a raise |
 | Stop one child | Stop only that child; return its cancellation result; parent may continue after its batch |
 | Hide or leave a transcript | Work continues |
 | Check for Updates | No pause |
@@ -823,20 +837,21 @@ Corrupt or contradictory accounting authority blocks further family requests unt
 
 ### 5.5 Limit enforcement
 
-Since 0.1.129 (owner, 2026-10-16) reaching the limit **pauses** the family at once:
+Since 0.1.129 (owner, 2026-10-16/17) reaching the limit **pauses** the chat and its family at once, for plain chats too:
 
-1. Close admission immediately.
-2. Persist `costPaused` for every owner with unfinished work, before anything is cancelled.
-3. Invalidate outstanding request permits and cancel active provider requests, retry waits, tools and summaries in the whole family, as Stop does.
-4. Park unsealed child turns: running and queued turns are saved as `queued` with no result; their runtimes are released.
-5. Continue accepting final accounting for already-admitted attempts; unknown cost stays unknown.
-6. Present **Paused at the cost limit** with spend and limit on the main chat, paused sides and sub-agent cards/readers.
+1. Close admission and the tool gate immediately (`enforceCostHold`).
+2. Persist `costPaused` for every owner with unfinished work, before anything is cut.
+3. Cut every model request in flight (permits and the run's request task) and retry back-offs, as Stop cuts them. Running tools are not cut; they finish with real results.
+4. Hold tool calls that had not started (`costPendingCalls`); they run first on Resume.
+5. Park unsealed child turns as `queued` with no result once their runs end.
+6. Continue accepting final accounting for already-admitted attempts; unknown cost stays unknown.
+7. Present **Paused at the cost limit** with spend and limit on the main chat, paused sides and sub-agent cards/readers.
 
-Lowering a family's limit below its current reported total also pauses the family. Raising or removing the limit does not restart anything; only Resume does, and only below the limit.
+Lowering the limit below the current reported total also pauses. Raising or removing the limit does not restart anything; only Resume does, and only below the limit.
 
 The limit cannot be a guaranteed exact billing ceiling: a request that crosses it has already been paid for, and some providers do not report cost. Display that coverage honestly.
 
-Legacy v2 delegation (steering disabled, not shipped) has no resumable child turn: its children are cancelled as interrupted/not executed when the family pauses. Chats that have never shared a budget keep their between-request cost-limit stop.
+Legacy v2 delegation (steering disabled, not shipped) has no resumable child turn.
 
 ### 5.6 Budget lifetime and display
 
@@ -1370,7 +1385,7 @@ Recovery support remains active for existing data even when the new-tool rollout
 | Child compaction | Existing compaction safeguards; every summary attempt charged to parent |
 | Child tool has uncertain effects | Preserve uncertainty in journal, card, and returned error |
 | Child fails while siblings run | Return that outcome; siblings continue unless owner/family cancellation applies |
-| Family limit reached | Pause the whole family at once; park unsealed turns; Resume only after a raise (0.1.129) |
+| Family limit reached | Pause at once: cut model requests, let tools finish, hold unstarted calls, park unsealed turns; Resume only after a raise (0.1.129) |
 | Cost or result synchronization fails | Stop further admission; retain recovery evidence; no fabricated success |
 | Child finishes before parent result append | Recover terminal result once |
 | Parent batch contains repeated tool IDs across turns | Match full call identity |

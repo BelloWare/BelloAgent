@@ -1,36 +1,31 @@
 # Cost limit pauses the family; sides never delegate — 0.1.129
 
 Branch `dev/a129-limit-pause`, based on `dev/next` 9d4123f6 (released 0.1.128).
-Owner decisions, 2026-10-16:
+Owner decisions:
 
-- A. "Pause immediately, and support resume once I increase the limit" — "Wait for Resume click".
-- B. "Do not allow side to start their own" sub-agents.
+- A (2026-10-16). "Pause immediately, and support resume once I increase the limit" — "Wait for Resume click".
+- A, revised (2026-10-17), for **all** chats, plain and family: cut only model requests ("just cut off model reply so you can resume cleanly"); running tools finish with real results; nothing new starts; held calls run first on Resume; never regenerate a reply whose calls are pending.
+- B (2026-10## A. The limit-pause state machine (owner rule of 2026-10-17)
 
-All evidence uses generated fixtures, loopback gateways and the build root
-`/Users/admin/Library/Caches/BelloSwiftWork/build-limit-pause` (logs in `logs/`).
-No installed app, real preferences, Keychain, real chats or paid provider was used.
-
-## A. The limit-pause state machine
-
-`AgentSession.stopFamilyAtLimit` stays the only budget-induced Stop. It no longer
-waits for a drain fence (`inFlightBudgetAttempts.isEmpty && !modelActive`).
+`AgentSession.stopFamilyAtLimit` → `pauseAtCostLimit` is the only budget pause. It
+is not Stop (`stopCount` is unchanged) and has no drain fence.
 
 | From | Event | To |
 | --- | --- | --- |
-| Running family (any member has a run, queued input or an unsealed child turn) | Any charge reaches the root's limit: own, side, nested side, sub-agent or side-owned sub-agent settlement; a late correction; adoption; or lowering the limit | **Paused**: `costPaused` is persisted in the run state *before* anything is cancelled. Then Stop's cancellation: every request permit, run task (retry waits, tools, summaries) and, through `AgentSteeringCoordinator.pause`, every child run. Sides are reached through the root's weak side callbacks and pause the same way. |
-| Owner with nothing unfinished | Same event | Gates close (one Stop, as before); no durable pause. A side that pauses registers with its root (`costPausedMembers`), and the root then shows the pause too. |
-| Paused, a child turn running | Its run ends (cancelled, failed, or the limit refused it) | **Parked**: owner and child journals record the turn as `queued` with no result; its runtime is released. A child that reaches its final boundary during the pause does not seal (it would read as interrupted); its answer stays in place. A turn that had completed seals normally. |
-| Paused, a child turn queued | — | Stays `queued` (never `not_executed`), keeps its acceptance order and undelivered parent messages. |
-| Paused | Accounting for aborted requests arrives | Accepted; reported cost counts, unreported stays unknown. |
-| Paused | Quit, relaunch or helper restart | Still paused: `costPaused` restores; recovery keeps unsealed turns `queued` (a turn still `running` because the helper died mid-pause is requeued, owner and child mirror), pending parent messages stay pending. |
-| Paused | Limit raised (or removed) | Still paused. Nothing starts. |
-| Paused | New user message | Queued for after Resume (`delivery: after-resume`). |
-| Paused | Resume (`run.continue`) at or over the limit | Refused, `cost_limit`: "Still at the cost limit. Raise the limit above the current spend, then choose Resume." (a side checks its root's limit). `queue.resume` and `turn.retry` refuse while paused too. |
-| Paused | Resume below the limit | **Running**: the pause ends; the run resumes its own cut-off work if any, else waits at the family boundary for the resumed children; parked turns are re-queued under the run's new execution (`AgentChildTurn.continuations`, +1 per Resume); queued follow-ups go after. The reply names paused sides (`pausedMembers`); the app resumes each. A resumed turn whose task was delivered continues from its own context (task not resent); one that had answered seals with that answer. |
+| A run in progress (any chat), or a family member with a run, queued input or an unsealed child turn | Spend reaches the limit: own or plain-chat count, side, nested side, sub-agent or side-owned sub-agent settlement, a late correction, adoption, or lowering the limit | **Paused**: `costPaused` persisted first. Every model request in flight is cut (request permits; the run's request task `abortable`, which also cuts a retry back-off). Its partial reply becomes an interrupted row, never resent. Running tools are **not** cut. Sides are reached through the root's weak callbacks; children through `AgentSteeringCoordinator.pause` (their model requests only). |
+| Paused, a tool running | It finishes | Its real result is recorded. The next gate (`enforceCostHold`: round start, retry attempt, tool batch; for a child also its owner's pause and its coordinator's hold) ends the run, paused. |
+| Paused, a completed reply's calls not started (the crossing reply included) | Tool gate | **Held**: no result, ids saved as `costPendingCalls` (durable). A relaunch gives them no invented outcome. |
+| Paused, a child turn's run ends (cut, gated, or refused) | Runner | **Parked**: `queued`, no result, in owner and child journals; runtime released. At its final boundary during the pause a child does not seal. A completed turn seals normally. |
+| Paused, child turn queued | — | Stays queued (never `not_executed`). |
+| Paused | The run ends with nothing held, queued, delegated, pending or cut off | Not paused: the chat is at its limit; new messages are refused there. A root paused only for a side clears when that side resumes or clears. |
+| Paused | Final family boundary or `subagent_wait` | The boundary ends the run (held); a wait returns `wake_reason: paused` (it is not cut). |
+| Paused | Quit, relaunch, helper restart | Still paused; a tool still running at quit is interrupted as Stop does (unknown outcome, not replayed); held calls stay held; parked turns stay queued (a turn still `running` after a crash is requeued). |
+| Paused | Limit raised | Still paused. Nothing starts. |
+| Paused | New user message | Queued for after Resume. |
+| Paused | Resume at or over the limit | Refused, `cost_limit`, with the reason. Any refused Resume (including invalid overrides) leaves the pause and side membership exactly as they were. |
+| Paused | Resume below the limit | **Running**: held calls run first, from the reply that issued them; then a model request. The coordinator's hold is released even with no parked turn; Resume first waits for the pause's runners to finish parking, then requeues parked turns under the new execution (`continuations`). `pausedMembers` stay listed until each side resumes; a retried Resume still names them. |
 
-Legacy v2 delegation (steering disabled; not shipped) has no resumable turn; its
-children are cancelled at the pause. Chats that never shared a budget keep their
-0.1.128 between-request stop (see *Needs owner decision*).
+ *Needs owner decision*).
 
 Journal compatibility: no new status. `continuations` is optional and ignored by
 older helpers (identity comparisons pass); an older helper reopening a paused family
@@ -135,12 +130,35 @@ Earlier focused gallery runs on this shared Mac twice failed the sub-agent/steer
 galleries' `canBackToSubagentParent` key-window check (another workstream's windows);
 both passed in the full gate.
 
+## Review round 1 (Codex, 9 findings) — all fixed
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 coordinator hold never cleared without parked turns | Every Resume releases it (`resumeParked` always; the no-run path too) | `FamilyLimitPauseTests.testResumeWithoutParkedTurnsReleasesTheCoordinatorHold` (`mutation-r1-no-hold-release`) |
+| P1 Resume before parking finished | `resumeParked` applies a late pause, then waits for the pause's runners; pause generations ignore a pause older than a Resume | `testResumeWaitsForTurnsStillParking` (`mutation-r1-no-park-wait`) |
+| P1 delivery judged from the loaded window | Durable command receipt decides `.delivered` | `testResumedTurnStartUsesDurableEvidence` (`mutation-r1-window-only`) |
+| P2 accepted-but-undelivered input lost | The turn's own queued submission is kept and released | same test (`mutation-r1-drop-accepted`) |
+| P2 side membership cleared before fan-out | Kept until each side resumes; duplicate replies include it | `testRootKeepsPausedSidesUntilTheyResumeAndRefusalsChangeNothing` (`mutation-r1-forget-members`) |
+| P2 cold side skipped its root | The app asks the root's helper (`rootReadsCostPaused`) | native `CostPauseFamilyTests.testAColdSidesResumeResumesItsRootFirst` (`mutation-r1-cold-root`) |
+| P2 answered child bypassed its final boundary | It takes `boundary(final:)` before ending | `testAnsweredResumedChildSealsAtItsFinalBoundary` (`mutation-r1-skip-final-boundary`) |
+| P2 overrides validated after clearing the pause | Any refusal restores the saved pause state | `testRootKeepsPausedSides…` (`mutation-r1-no-rollback`) |
+| P2 cold discovery read paused children as interrupted | Owner/child `costPaused` keeps them queued and paused | native `CostPausePresentationTests.testColdDiscoveryKeepsPausedChildrenQueued` (`mutation-r1-cold-discovery`) |
+
+## Owner rule of 2026-10-17 — evidence
+
+| Requirement | Test | Mutation |
+| --- | --- | --- |
+| Running tool survives with its real result (main and side) | `CostLimitTests.testARunningToolSurvivesThePauseAndARelaunchKeepsThePause`, `FamilyLimitPauseTests.testSidesPauseImmediately…`, `AgentSteeringBoundaryTests.testChildCostLimitPausesParentInUnrelatedToolUntilResume` | `o-tools-cut` (pause calls Stop): 8 failures |
+| Held calls of the crossing reply run first on Resume, no new request before | `CostLimitTests.testRunPausesWhenSpendReachesTheLimitAndHeldToolsRunFirstOnResume`, `testHeldToolCallsSurviveARelaunchAndRunFirstOnResume`; native `CostLimitTests.testThePauseNoticeAppearsAndResumeRunsTheHeldCallAfterARaise`, `CostPauseFamilyTests` | `o-no-hold` 5, `o-no-held-run` 9, `o-fabricate` 3 |
+| A plain chat pauses and resumes | the plain-chat tests above, `testLoweringTheLimitMidRequestPausesAndResumeGoesOn` | `o-plain-no-pause` (both plain triggers): 2 |
+| Relaunch while a tool is still finishing | `testARunningToolSurvivesThePauseAndARelaunchKeepsThePause` (quit-early case) | — |
+| Final family wait ends at the pause | `FamilyLimitPauseTests.testPauseSurvivesReopen…` | `o-boundary-wait`: 2 |
+
+The old app "Stopped at this chat's cost limit → Continue" card is no longer reached by a run (every run pauses); it remains only for journals written by older builds. A message refused at the limit still shows its send notice.
+
 ## Needs owner decision
 
-1. **Ordinary chats** (never shared a budget: no side or sub-agent ever) keep the
-   0.1.128 between-request stop ("Stopped at this chat's cost limit" → Continue). Should
-   they pause the same way?
-2. **Paused sub-agents have no Stop.** To drop paused work: Resume, then Stop. A
-   per-child "discard" could be added.
-3. Sides that were idle at the limit are not marked paused; the root's card covers them,
-   and their next send is refused at the limit as before.
+Decided by the owner on 2026-10-17: plain chats pause too; paused sub-agents keep
+Resume-then-Stop (no Discard); idle sides stay unmarked. Remaining limitation: a
+plain chat's compaction summary request in flight is not cut by the pause (its
+gate refuses the next one).
