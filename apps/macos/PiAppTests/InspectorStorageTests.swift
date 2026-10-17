@@ -86,6 +86,127 @@ import XCTest
         XCTAssertEqual(refreshed.controller.document?.id, document)
     }
 
+    func testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse() async throws {
+        let root = scratchRoot("inspector-memory-completion")
+        let workspace = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { workspace.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let archive = workspace.traces
+        try await archive.configure(quota: 8_388_608, bodyRetention: 86400, metricRetention: 86400)
+        for part in [InspectorRequestModel.RawPart.request, .response] {
+            let inspector = SessionInspectorModel(scope: .init(sessionID: "session", workspaceID: "project"), title: "Memory capture", archive: archive, workspace: workspace,
+                                                  usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+            let request = inspector.request
+            let input = InspectorRequestModelTests.requestBody(2)
+            let prefix = InspectorRequestModelTests.stream(2), complete = InspectorRequestModelTests.stream(20, finished: true)
+            var finished = false
+            request.sourceOverride = { _, kind in
+                InspectorRequestModelTests.source({ kind == "request" ? input : finished ? complete : prefix },
+                                                  state: { kind == "request" || finished ? "complete" : "partial" })
+            }
+            request.metadataOverride = { row in
+                if row.source != .live { return try await archive.metadata(attempt: row.id) }
+                return ["outcome": .string("running"),
+                        "request": .object(["state": .string("complete"), "retainedBytes": .number(Double(input.count))]),
+                        "response": .object(["state": .string("partial"), "retainedBytes": .number(Double(prefix.count))])]
+            }
+            let live = InspectorRequestRow(id: UUID().uuidString, wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "fixture", model: "fixture", outcome: "running", source: .live)
+            request.tab = .response; request.open(live, predecessor: nil, previousLabel: nil); request.setActive(true)
+            defer { request.setActive(false) }
+            try await eventually("the memory response prefix") { request.response.value?.partial == true }
+            let parsedBytes = request.responseBytes, reads = request.bodyReads, revision = request.captureRevision
+            request.tab = .raw; request.raw = part; request.query = "word"
+            let raw = InspectorRawTab(inspector: inspector, request: request, compact: false)
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = raw; window.orderFront(nil)
+            defer { window.contentView = nil; window.close() }
+            try await eventually("the memory raw body") { self.copyButton(raw)?.isEnabled == true }
+            let body = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first)
+            body.setFormat(.hex)
+            let document = try XCTUnwrap(body.controller.document?.id)
+            let metadata: [String: WireValue] = ["attemptId": .string(live.id), "sessionId": .string("session"), "turnId": .string("t"),
+                "mode": .string("memory"), "outcome": .string("completed"), "api": .string("openai-responses"),
+                "request": .object(["observedBytes": .number(Double(input.count))]), "response": .object(["observedBytes": .number(Double(complete.count))])]
+            try await archive.begin(metadata, workspace: "project"); try await archive.finish(metadata)
+            var durable = live; durable.source = .log; durable.outcome = "completed"
+            let merged = try XCTUnwrap(InspectorIndex.merge(durable: [durable], live: [live]).first)
+            XCTAssertEqual(merged.source, .log)
+            finished = true; request.open(merged, predecessor: nil, previousLabel: nil)
+            try await eventually("the completed memory metadata") { request.metadata["outcome"]?.string == "completed" && request.metadataText.contains("not-retained") }
+            raw.refresh()
+            XCTAssertEqual(request.captureRevision, revision, "A durable row without durable bytes is not a purge")
+            XCTAssertEqual(request.metadata["response"]?.object?["state"]?.string, "not-retained")
+            let shown = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first)
+            XCTAssertTrue(shown === body)
+            XCTAssertEqual(shown.format, .hex); XCTAssertEqual(shown.controller.document?.id, document)
+            XCTAssertEqual(shown.searchQuery, "word")
+            XCTAssertEqual(request.response.value?.partial, true); XCTAssertEqual(request.responseBytes, parsedBytes)
+            XCTAssertEqual(request.bodyReads, reads)
+            XCTAssertEqual(request.growingBytes, complete.count, "Load latest uses the readable memory source")
+            request.tab = .response
+            await Task.yield()
+            XCTAssertEqual(request.response.value?.partial, true, "Opening Response keeps the chosen prefix")
+            request.loadLatest()
+            try await eventually("the explicitly requested final response") { request.response.value?.partial == false }
+            XCTAssertEqual(request.responseBytes, complete.count)
+        }
+        XCTAssertTrue(workspace.hosts.isEmpty, "Generated sources never start a helper")
+        try await archive.close()
+    }
+
+    func testRawToolbarFitsEveryPartAtNarrowAndMinimumPaneWidths() async throws {
+        let fixture = try await fixture(), request = fixture.2.request, raw = fixture.3, window = fixture.4
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        // The minimum 700-point window reserves 214 points plus its rule for the navigator.
+        let minimumPane = SessionInspectorWindowController.minimumSize.width - 215
+        for width in [1000, 740, 700, minimumPane] as [CGFloat] {
+            window.setContentSize(NSSize(width: width, height: 600)); raw.compact = width < 900
+            for part in InspectorRequestModel.RawPart.allCases {
+                request.raw = part; raw.refresh(); raw.layoutSubtreeIfNeeded()
+                let copy = try XCTUnwrap(copyButton(raw))
+                let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+                var controls: [NSView] = [copy, menu]
+                if let parts = InspectorExpandFixture.descendants(PiKit.Tabs<InspectorRequestModel.RawPart>.self, in: raw).first { controls.append(parts) }
+                if let parts = InspectorExpandFixture.descendants(PiKit.MenuButton.self, in: raw).first(where: { $0.accessibilityIdentifier() == "inspector-raw-parts-menu" }) {
+                    controls.append(parts)
+                    let entries = parts.entries().compactMap { if case .item(let item) = $0 { return item }; return nil }
+                    XCTAssertEqual(entries.map(\.title), ["Request", "Response", "Headers", "Metadata", "Links", "Events"])
+                    XCTAssertEqual(entries.filter(\.checked).map(\.title), [parts.label])
+                    XCTAssertEqual(parts.accessibilityLabel(), parts.label)
+                    let next = (try XCTUnwrap(InspectorRequestModel.RawPart.allCases.firstIndex(of: part)) + 1) % entries.count
+                    entries[next].perform()
+                    XCTAssertEqual(request.raw, InspectorRequestModel.RawPart.allCases[next])
+                    request.raw = part; raw.refresh(); raw.layoutSubtreeIfNeeded()
+                }
+                if part == .request || part == .response {
+                    let search = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorSearchField.self, in: raw).first)
+                    XCTAssertGreaterThanOrEqual(search.frame.width, 120)
+                    controls.append(search)
+                }
+                for control in controls {
+                    let frame = control.convert(control.bounds, to: raw)
+                    XCTAssertGreaterThanOrEqual(frame.minX, 0, "\(part) at \(width): \(frame)")
+                    XCTAssertLessThanOrEqual(frame.maxX, raw.bounds.width, "\(part) at \(width): \(frame)")
+                }
+            }
+        }
+    }
+
+    func testRawSearchKeepsFocusAndQueryWhenPartsCollapse() async throws {
+        let fixture = try await fixture(), request = fixture.2.request, raw = fixture.3, window = fixture.4
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        request.query = "message"; raw.refresh(); raw.layoutSubtreeIfNeeded()
+        let search = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorSearchField.self, in: raw).first)
+        window.makeKeyAndOrderFront(nil); XCTAssertTrue(window.makeFirstResponder(search.field))
+        let editor = search.field.currentEditor()
+        for width in [700, 485, 1000] {
+            window.setContentSize(NSSize(width: width, height: 600)); raw.compact = width < 900
+            raw.layoutSubtreeIfNeeded()
+            XCTAssertTrue(search.field.currentEditor() === editor)
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(search.field.stringValue, "message"); XCTAssertEqual(request.query, "message")
+        }
+    }
+
     func testACopyAlreadyRenderingCannotPublishAfterClear() async throws {
         let fixture = try await fixture(), archive = fixture.1, inspector = fixture.2, raw = fixture.3
         addTeardownBlock { @MainActor in await self.close(fixture) }
@@ -174,6 +295,47 @@ import XCTest
                 window.setContentSize(NSSize(width: width, height: 300))
                 chart.frame = canvas.bounds.insetBy(dx: 24, dy: 24)
                 try capture(canvas, to: folder.appendingPathComponent("cost-\(name)-\(width).png"))
+            }
+        }
+    }
+
+    func testGalleryRawToolbarAtWindowWidths() async throws {
+        guard let path = testEnvironment("PI_APP_INSPECTOR_STORAGE_GALLERY") else { throw XCTSkip("Set PI_APP_INSPECTOR_STORAGE_GALLERY") }
+        let folder = URL(fileURLWithPath: path).appendingPathComponent("raw-toolbar")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let fixture = try await fixture(), inspector = fixture.2, raw = fixture.3, window = fixture.4
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        let canvas = FillView(.piContent)
+        window.contentView = canvas; canvas.addSubview(raw)
+        raw.autoresizingMask = [.width, .height]; raw.frame = canvas.bounds
+        for part in [InspectorRequestModel.RawPart.request, .response] {
+            inspector.request.raw = part; raw.refresh()
+            try await eventually("gallery body") { self.copyButton(raw)?.isEnabled == true }
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                window.appearance = NSAppearance(named: appearance)
+                for width in [1000, 700, 485] {
+                    raw.compact = width < 900
+                    window.setContentSize(NSSize(width: width, height: 600))
+                    try capture(canvas, to: folder.appendingPathComponent("\(part)-\(name)-pane-\(width).png"))
+                }
+            }
+        }
+        let full = SessionInspectorView(inspector: inspector)
+        window.contentView = full
+        for part in [InspectorRequestModel.RawPart.request, .response] {
+            inspector.request.raw = part; full.refresh(); full.layoutSubtreeIfNeeded()
+            let mounted = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorRawTab.self, in: full).first)
+            mounted.refresh()
+            try await eventually("full Inspector gallery body") { self.copyButton(mounted)?.isEnabled == true }
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                window.appearance = NSAppearance(named: appearance)
+                for size in [NSSize(width: 1000, height: 700), SessionInspectorWindowController.minimumSize] {
+                    window.setContentSize(size)
+                    try capture(full, to: folder.appendingPathComponent("\(part)-\(name)-window-\(Int(size.width)).png"))
+                    XCTAssertGreaterThanOrEqual(mounted.bounds.width, 485)
+                    let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: mounted).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+                    XCTAssertLessThanOrEqual(menu.convert(menu.bounds, to: mounted).maxX, mounted.bounds.width)
+                }
             }
         }
     }

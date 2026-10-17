@@ -241,10 +241,218 @@ The final Inspector/gallery invocation is recorded above and writes `final-raw-f
 
 Regenerated and visually inspected all 12 PNGs under `gallery/`: Headers, purged request, and tiny-cost chart; light/dark; 1000/700-point widths. The fixture uses a native Pi background and generated capture data. Masked headers remain readable, the purged view shows no body and disables Copy, and tiny cost has finite ticks at zero, 5e-301 and 1e-300. The first transparent component-only captures were replaced with captures of the same components on the app's actual background color.
 
-Separate existing issue, left unchanged per scope: `apps/macos/PiApp/Inspector/Session/InspectorRawTab.swift:84` gives Request/Response search a fixed 180-point compact width alongside all six part tabs. At 700-point Raw content width, Copy/menu overflow the right edge (`purged-light-700.png`, `purged-dark-700.png`); Headers fits because it has no search field. `rebuildToolbar` and its layout are unchanged. **Needs owner decision** for a separate responsive-toolbar change; no product decision is needed for the four assigned fixes.
+Separate existing issue, initially left unchanged per scope (resolved in the review follow-up below): `apps/macos/PiApp/Inspector/Session/InspectorRawTab.swift:84` gives Request/Response search a fixed 180-point compact width alongside all six part tabs. At 700-point Raw content width, Copy/menu overflow the right edge (`purged-light-700.png`, `purged-dark-700.png`); Headers fits because it has no search field. `rebuildToolbar` and its layout were unchanged in the initial commit. The owner subsequently authorized the responsive-toolbar fix; no decision remains pending.
 
-Separate existing wording issue: `apps/macos/PiApp/Dashboard/ReportController.swift:336` still describes a 100,000-record retention bound in its error notice, while `PayloadArchive.begin` no longer enforces that bound. Left for a separate wording correction; retention policy is unchanged here.
+Separate existing wording issue, resolved in the review follow-up below: `apps/macos/PiApp/Dashboard/ReportController.swift:336` still describes a 100,000-record retention bound in its report notice, while `PayloadArchive.begin` no longer enforces that bound. Left for a separate wording correction; retention policy is unchanged here.
 
 Self-review refinement: the first draft invalidated on every Refresh, unnecessarily replacing an unchanged Raw document and resetting Hex to JSON. `testRefreshPreservesAnUnchangedRawDocumentAndFormat` failed that draft with 3 assertions (`refresh-preservation-before.log`). Invalidation is now specific to successful clearing or changed unavailable descriptors. The complete refined Inspector class passes all 7 tests with the gallery enabled (`final-raw-final.log`); all 12 regenerated images were reviewed again. The Inspector-specific mutations above were run against this refinement.
 
 No finding was rejected. No helper or wire behavior changed, so helper/wire/concurrent/acceptance suites are not required for this app-only patch. The native harness stages the Release helper as usual; the full merged gate remains with the lead.
+
+
+## Review follow-up: session memory, narrow Raw toolbar and report notice
+
+The owner authorized these three corrections after reviewing commit `7ac553a4`.
+All three are confirmed; no owner decision remains pending.
+
+### Session-memory completion
+
+`InspectorIndex.merge` correctly prefers the completed durable row. For Session
+memory captures, that row describes bodies as `not-retained`, while the helper
+still holds readable bytes. The new removal check incorrectly treated the log's
+descriptor as evidence that the body itself had disappeared.
+
+`testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse` uses a
+generated unfinished response, a real memory-mode archive record, the actual
+index merge, and a generated readable helper-source seam (no helper or provider
+starts). It covers both Raw Request and Response, retaining the mounted body,
+Hex format, document identity, query, parsed response prefix and read count.
+The final memory byte count must remain offered through Load latest; only the
+explicit Load latest action replaces the parsed prefix.
+
+Before the fix, both cases failed: capture revision `1 != 0`, the mounted Raw
+view changed, its document disappeared, the parsed response became nil and its
+byte count became zero. `growingBytes` was `0` instead of `4143`. Evidence:
+`review1-before-inspector.log`, exit 65; this test contributed 14 assertion
+failures before the later mounted-view assertion was strengthened.
+
+The fix resolves the actual body source using the newly read descriptors and
+checks its metadata before invalidating. Readable memory bodies keep their
+state; the response's actual retained byte count supplies Load latest. Durable
+metadata still accurately says `not-retained`. The check reads metadata only,
+respects cancellation and request identity, and leaves explicit capture clearing
+and unavailable-source invalidation intact.
+
+### Narrow Raw toolbar
+
+`testRawToolbarFitsEveryPartAtNarrowAndMinimumPaneWidths` reproduced clipping
+in Request/Response at 700 points and all parts in the 485-point pane available
+inside the minimum 700-point Inspector window. For example, Links' capture menu
+ended at x=573.5 in a 485-point pane. The same baseline Inspector run contributed
+18 geometry failures, for **2 tests / 32 assertion failures** in total.
+
+The toolbar now allows search to shrink to 120 points, then uses the existing
+PiKit menu-button control for all six parts when the tabs no longer fit. Copy
+and capture actions remain visible. Tests cover every part, menu entries and
+selection, accessibility names, and search focus/query across resizing.
+
+### Report notice
+
+`testPrepareQueriesTheArchiveAndBrushNarrowsTheActiveSnapshot` now checks the
+successful report's notice. Before the fix it failed both assertions: the text
+still contained `100,000` and did not describe configured retention
+(`review1-before-report.log`, **1 test / 2 assertion failures**, exit 65).
+The notice now states the 128-request page size, 60 time buckets and configured
+metric retention period. Storage policy is unchanged.
+
+
+The first fixed control exposed a second instance in the same transition:
+Raw could see the new `.log` row with the old live descriptor before the
+asynchronous metadata read completed. It briefly switched to the archive and
+back to memory, replacing both Raw documents despite preserving the view and
+Hex selection. The same regression failed its two document-identity assertions
+(`review1-fixed-storage-compiled.log`); the other eight non-gallery Inspector
+checks passed, and two galleries were skipped in that control. The fix marks
+metadata pending before publishing the changed row and defers Raw route changes
+until metadata is loaded. This also preserves the prefix until Load latest.
+
+Harness-only correction: the first fixed build stopped on Swift's
+warnings-as-errors check for an ambiguous trailing closure in the new menu test.
+It was parenthesized; no product failure was hidden by that compile error.
+The report control subsequently passed 1/1 in
+`review1-fixed-report-compiled.log`.
+
+### Follow-up validation evidence
+
+Failing-first excerpts (before any production edits):
+
+```text
+review1-before-inspector.log:
+XCTAssertEqual failed: ("1") is not equal to ("0") - A durable row without durable bytes is not a purge
+XCTAssertEqual failed: ("Optional(0)") is not equal to ("Optional(4143)") - Load latest uses the readable memory source
+XCTAssertLessThanOrEqual failed: ("573.5") is greater than ("485.0") - links at 485.0
+Executed 2 tests, with 32 failures (0 unexpected)
+
+review1-before-report.log:
+XCTAssertFalse failed - The report must not advertise an obsolete record ceiling
+XCTAssertTrue failed - The notice explains the configured metric lifetime
+Executed 1 test, with 2 failures (0 unexpected)
+```
+
+The fixed storage control passed **11/11, zero skips**, including both opt-in
+galleries (`review1-fixed-storage-routes.log`). All six follow-up mutations
+compiled and failed their intended assertions (exit 65); the original files
+were restored after each run:
+
+| Mutation log | Removed behavior | Regression | Failed tests / assertions |
+| --- | --- | --- | ---: |
+| `review1-mutation-source.log` | Actual-source readability check | `testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse` | 1 / 14 |
+| `review1-mutation-growth.log` | Actual response retained byte count | same memory regression | 1 / 2 |
+| `review1-mutation-route.log` | Wait for the new row's metadata before switching Raw sources | same memory regression | 1 / 2 |
+| `review1-mutation-parts.log` | Collapse overflowing part tabs | `testRawToolbarFitsEveryPartAtNarrowAndMinimumPaneWidths` | 1 / 16 |
+| `review1-mutation-search.log` | Shrink search before collapsing | same toolbar regression (740-point case) | 1 / 2 |
+| `review1-mutation-notice.log` | Correct retention wording | `testPrepareQueriesTheArchiveAndBrushNarrowsTheActiveSnapshot` | 1 / 2 |
+
+Exact focused commands use the build root and lock wrapper documented above:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector
+# Failing first, then fixed controls / individual mutation checks as listed above.
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/InspectorStorageTests/testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse \
+  -only-testing:PiAppTests/InspectorStorageTests/testRawToolbarFitsEveryPartAtNarrowAndMinimumPaneWidths
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/ReportPageTests/testPrepareQueriesTheArchiveAndBrushNarrowsTheActiveSnapshot
+# Each mutation uses its single corresponding selector from those commands.
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$PI_BUILD_ROOT/review1-gallery" \
+  "$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorStorageTests
+```
+
+Gallery review: **32 generated images** under `review1-gallery/` were inspected.
+The new `raw-toolbar/` folder contains 20 Request/Response images: light and
+dark at standalone pane widths 1000, 700 and 485, plus full Inspector windows
+at 1000×700 and the actual 700×520 minimum. Search, Copy, capture menu and
+format controls fit; the full minimum window retains a scrollable response.
+The existing 12 Headers, purged-body and tiny-cost scenes were regenerated and
+inspected too. The geometry regression also covers 740 points, exercising the
+search-shrink range, and every Raw part at the minimum content width.
+
+Nearby sweep: the transient Raw source change above was the additional real
+instance, fixed in `InspectorRawTab.refreshContent` and
+`InspectorRequestModel.open`. No other capture invalidation path or stale
+100,000-record claim remained in Inspector/Dashboard. No helper or wire code
+changed; helper/wire/concurrent/acceptance suites remain outside this app-only
+follow-up. No live captures, real user data, credentials or paid calls were used.
+
+Final focused rerun commands (each invocation takes/releases the shared lock;
+serial-lane classes run alone):
+
+```sh
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/InspectorDocumentCacheTests \
+  -only-testing:PiAppTests/InspectorIndexTests \
+  -only-testing:PiAppTests/InspectorRequestModelTests \
+  -only-testing:PiAppTests/SubagentInspectorTests \
+  -only-testing:PiAppTests/SubagentSteeringInspectorTests
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$PI_BUILD_ROOT/review1-gallery" \
+  "$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorStorageTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorNativeControlTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorNativeParityTests
+"$PI_BUILD_ROOT/run-ui.sh" \
+  -only-testing:PiAppTests/InspectorSummaryRequestTests \
+  -only-testing:PiAppTests/InspectorFollowTests \
+  -only-testing:PiAppTests/InspectorEntryPointTests \
+  -only-testing:PiAppTests/InspectorWindowControlTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorExpandInPlaceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorExpandPerformanceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorOverviewDocumentGeometryTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorPerformanceTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/InspectorFrameTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/SideBudgetInspectorLifetimeTests
+"$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/ReportPageTests
+```
+
+The final focused rerun passed **129/129 distinct tests across 19 classes**,
+with zero failures and zero skips: **96 Inspector-related tests + 33 ReportPage
+tests**. No unrelated test failed. Failing-first runs, mutation runs and repeated
+controls are excluded from that total.
+
+| Class | Passed/total | Final text log |
+| --- | ---: | --- |
+| InspectorDocumentCacheTests | 3/3 | `review1-final-models.log` |
+| InspectorIndexTests | 11/11 | `review1-final-models.log` |
+| InspectorRequestModelTests | 7/7 | `review1-final-models.log` |
+| SubagentInspectorTests | 7/7 | `review1-final-models.log` |
+| SubagentSteeringInspectorTests | 6/6 | `review1-final-models.log` |
+| InspectorStorageTests | 11/11 | `review1-final-storage-gallery.log` |
+| InspectorNativeControlTests | 12/12 | `review1-final-controls.log` |
+| InspectorNativeParityTests | 7/7 | `review1-final-parity.log` |
+| InspectorSummaryRequestTests | 5/5 | `review1-final-pages.log` |
+| InspectorFollowTests | 2/2 | `review1-final-pages.log` |
+| InspectorEntryPointTests | 7/7 | `review1-final-pages.log` |
+| InspectorWindowControlTests | 1/1 | `review1-final-pages.log` |
+| InspectorExpandInPlaceTests | 8/8 | `review1-final-expand.log` |
+| InspectorExpandPerformanceTests | 2/2 | `review1-final-expand-performance.log` |
+| InspectorOverviewDocumentGeometryTests | 1/1 | `review1-final-overview-geometry.log` |
+| InspectorPerformanceTests | 2/2 | `review1-final-performance.log` |
+| InspectorFrameTests | 2/2 | `review1-final-frame.log` |
+| SideBudgetInspectorLifetimeTests | 2/2 | `review1-final-budget-lifetime.log` |
+| ReportPageTests | 33/33 | `review1-final-report-gallery.log` |
+
+
+The notice's native `ShellNote`/PiKit card was also captured from the prepared
+controller's actual text at 1000, 700 and 485 points, light and dark. All six
+images in `review1-gallery/report-notice/` were inspected: the complete wording
+wraps without clipping. The full ReportPage class was rerun with that capture
+enabled and passed **33/33, zero skips** (`review1-final-report-gallery.log`):
+
+```sh
+TEST_RUNNER_PI_APP_REPORT_NOTICE_GALLERY="$PI_BUILD_ROOT/review1-gallery/report-notice" \
+  "$PI_BUILD_ROOT/run-ui.sh" -only-testing:PiAppTests/ReportPageTests
+```
+
+This brings the reviewed follow-up gallery to **38 images**. The final regenerated
+minimum-window Request/Response scenes were inspected again in both appearances.
+No clone directories remained in this workstream's build root. All three requested
+corrections and the adjacent transient-route instance are resolved; nothing is
+left for an owner decision. No merge, release or shared-branch push was performed.

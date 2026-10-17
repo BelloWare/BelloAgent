@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Completing Session memory requests preserves Inspector Raw state and partial Response documents, with Load latest using the readable memory source. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw search shrinks and part tabs become a menu when needed, keeping Copy and capture actions visible at the minimum Inspector width. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] The report notice describes configured metric retention instead of the obsolete 100,000-record limit. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
 - [x] Tiny reported costs and subnormal values produce finite chart domains and ticks without trapping. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] Clearing captures and refreshing an open Inspector retires parsed/Raw bodies and pending copies, then reloads purged metadata. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] Report request paging reaches retained rows beyond 100,000 with the existing 128-row page size. [Validation](docs/validation/a130-inspector-0.1.130.md).

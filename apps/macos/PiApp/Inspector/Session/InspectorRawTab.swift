@@ -21,8 +21,15 @@ import AppKit
     private var textKey: String?
     private var footer: NSView?
     private var toolbar: ShellStack?
+    private var partsCollapsed = false
     private var status: PiKit.Note?
     private lazy var parts = PiKit.Tabs(selection: request.raw, items: [(InspectorRequestModel.RawPart.request, "Request"), (.response, "Response"), (.headers, "Headers"), (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")]) { [weak request] in request?.raw = $0 }
+    private lazy var partsMenu = PiKit.MenuButton(title: "Request", identifier: "inspector-raw-parts-menu", help: "Raw capture part") { [weak self] in
+        guard let self else { return [] }
+        return self.parts.items.map { part, title in
+            .button(title, checked: self.request.raw == part) { [weak request = self.request] in request?.raw = part }
+        }
+    }
     private lazy var search = InspectorSearchField(text: request.query) { [weak request] in request?.query = $0 }
     private lazy var copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .ghost) { [weak self] in self?.copyView() }
     private lazy var captureMenu: PiKit.MenuControl = {
@@ -80,7 +87,8 @@ import AppKit
     private func rebuildToolbar() {
         parts.selection = request.raw
         parts.setAccessibilityIdentifier("inspector-raw-parts")
-        var items: [ShellItem] = [.view(parts), .spacer(4)]
+        partsMenu.label = parts.items.first { $0.0 == request.raw }?.1 ?? "Request"
+        var items: [ShellItem] = [.view(partsCollapsed ? partsMenu : parts), .spacer(4)]
         if showsBody { items.append(.view(search, .fixed(compact ? 180 : 250))) }
         items += [.view(copy), .view(captureMenu, .fixed(28))]
         if let toolbar { toolbar.items = items }
@@ -99,7 +107,7 @@ import AppKit
             if bodyKey != key {
                 bodyKey = key; bodyRoute = route
                 body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
-            } else if bodyRoute != route {
+            } else if bodyRoute != route, request.metadataLoaded {
                 bodyRoute = route
                 body?.update(source: route.source(inspector: inspector, request: request, row: row, kind: kind), retained: route == .archive)
             }
@@ -282,7 +290,13 @@ import AppKit
         let inset = compact ? PiSpacing.lg : PiSpacing.xl
         let width = max(0, bounds.width - 2 * inset)
         if let toolbar {
-            if let index = toolbar.items.firstIndex(where: { $0.view === search }) { toolbar.items[index].size = .fixed(compact ? 180 : 250) }
+            let actions = copy.intrinsicContentSize.width + 28 + 4 + PiSpacing.sm * (showsBody ? 4 : 3)
+            let collapsed = parts.intrinsicContentSize.width + actions + (showsBody ? 120 : 0) > width
+            if partsCollapsed != collapsed { partsCollapsed = collapsed; rebuildToolbar() }
+            if let index = toolbar.items.firstIndex(where: { $0.view === search }) {
+                let selector = partsCollapsed ? partsMenu.intrinsicContentSize.width : parts.intrinsicContentSize.width
+                toolbar.items[index].size = .fixed(min(compact ? 180 : 250, max(120, width - selector - actions)))
+            }
             let height = toolbar.height(forWidth: width); toolbar.frame = CGRect(x: inset, y: 12, width: width, height: height)
         }
         let top = (toolbar?.frame.maxY ?? 12) + 10

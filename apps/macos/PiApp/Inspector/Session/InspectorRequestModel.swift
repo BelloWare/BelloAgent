@@ -83,6 +83,8 @@ enum InspectorLoad<Value> {
             if active { start() }
         } else {
             let metadataChanged = self.row?.source != row.source || self.row?.outcome != row.outcome
+            // Raw keeps its current source until this row's metadata arrives.
+            if metadataChanged { metadataLoaded = false }
             if self.row != row { self.row = row }
             if active, metadataChanged { loadMetadata() }
             if self.predecessor?.id != predecessor?.id { self.predecessor = predecessor; self.previousLabel = previousLabel; delta = nil; deltaNote = nil; if active { loadVisibleTab() } }
@@ -155,10 +157,20 @@ enum InspectorLoad<Value> {
                     guard let current = self.row, current.id == id else { return }
                     let value = try await self.readMetadata(current)
                     guard !Task.isCancelled, self.generation == generation, self.row?.id == id else { return }
-                    if ["request", "response"].contains(where: { kind in
-                        guard let state = value[kind]?.object?["state"]?.string else { return false }
-                        return self.metadata[kind] != value[kind] && !MessageBodyReader.canReadRetained(state)
-                    }) { self.invalidateBodies() }
+                    var unavailable = false
+                    var grown = value["response"]?.object?["retainedBytes"]?.nonnegativeInteger
+                    for kind in ["request", "response"] {
+                        guard let state = value[kind]?.object?["state"]?.string, !MessageBodyReader.canReadRetained(state) else { continue }
+                        // A completed row moves to the log even when its bodies
+                        // remain in helper memory. Check the source before retiring them.
+                        let described = try? await self.source(current, kind: kind, metadata: value)?.metadata()
+                        guard !Task.isCancelled, self.generation == generation, self.row?.id == id else { return }
+                        let readable = MessageBodyReader.canReadRetained(described?.body["state"]?.string ?? "")
+                        if readable, kind == "response" { grown = described?.body["retainedBytes"]?.nonnegativeInteger }
+                        if self.metadata[kind] != value[kind], !readable { unavailable = true }
+                    }
+                    guard !Task.isCancelled, self.generation == generation, self.row?.id == id else { return }
+                    if unavailable { self.invalidateBodies() }
                     if self.metadata["request"] != value["request"] {
                         // The page may have opened before the request capture
                         // arrived. An empty/partial parse is not its final body.
@@ -176,7 +188,6 @@ enum InspectorLoad<Value> {
                     }
                     self.metadataLoaded = true; self.metadataFailure = nil
                     let running = ["running", "streaming"].contains(value["outcome"]?.string ?? "")
-                    let grown = value["response"]?.object?["retainedBytes"]?.nonnegativeInteger
                     if grown != self.growingBytes { self.growingBytes = grown }
                     if self.bodyTask == nil { self.loadVisibleTab() }
                     // Only a request still running is read again, and only its metadata.
@@ -201,13 +212,14 @@ enum InspectorLoad<Value> {
 
     // MARK: Bodies
 
-    private func source(_ row: InspectorRequestRow, kind: String) -> CapturedBodySource? {
+    private func source(_ row: InspectorRequestRow, kind: String, metadata described: [String: WireValue]? = nil) -> CapturedBodySource? {
         if let sourceOverride { return sourceOverride(row, kind) }
+        let metadata = described ?? self.metadata
         let state = metadata[kind]?.object?["state"]?.string ?? ""
         if row.source != .live, MessageBodyReader.canReadRetained(state) { return .archive(archive, attemptID: row.id, kind: kind) }
         // The helper let go of a request the log saved: its bodies are read there.
         if metadata[kind]?.object?["savedToLog"]?.bool == true { return .archive(archive, attemptID: row.id, kind: kind) }
-        if let workspace, metadataLoaded, liveCapture { return .live(workspace, sessionID: sessionID, attemptID: row.id, kind: kind) }
+        if let workspace, metadataLoaded || described != nil, liveCapture { return .live(workspace, sessionID: sessionID, attemptID: row.id, kind: kind) }
         return nil
     }
     /// The chat's helper is running and holds its session-memory captures.

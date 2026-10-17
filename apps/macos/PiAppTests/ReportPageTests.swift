@@ -146,6 +146,29 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(snapshot.scopeCounts.dispatched, 1)
         XCTAssertNil(report.failure)
         XCTAssertTrue(report.hasResults)
+        XCTAssertFalse(report.notice.contains("100,000"), "The report must not advertise an obsolete record ceiling")
+        XCTAssertTrue(report.notice.contains("retention"), "The notice explains the configured metric lifetime")
+        if let path = testEnvironment("PI_APP_REPORT_NOTICE_GALLERY") {
+            let folder = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let canvas = FillView(.piContent), note = PiKit.card(ShellNote(report.notice), padding: PiSpacing.md)
+            canvas.addSubview(note)
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 180), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = canvas; window.orderFront(nil)
+            defer { window.contentView = nil; window.close() }
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                window.appearance = NSAppearance(named: appearance)
+                for width in [1000, 700, 485] {
+                    let height = PiKit.height(of: note, width: CGFloat(width) - 48)
+                    window.setContentSize(NSSize(width: CGFloat(width), height: height + 48))
+                    note.frame = canvas.bounds.insetBy(dx: 24, dy: 24)
+                    canvas.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    let image = try XCTUnwrap(canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds))
+                    canvas.cacheDisplay(in: canvas.bounds, to: image)
+                    try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("notice-\(name)-\(width).png"))
+                }
+            }
+        }
 
         // A brush outside the request narrows the active snapshot to nothing without touching the window.
         let brush = try XCTUnwrap(DashboardBrush(now.addingTimeInterval(-300), now.addingTimeInterval(-60), in: snapshot.filter))
