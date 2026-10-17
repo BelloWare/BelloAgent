@@ -56,7 +56,22 @@ extension WorkspaceModel {
         let navigation = organizationNavigationRevision, selection = selectionRevision
         var seen: Set<String> = []
         let targets = ids.filter { seen.insert($0).inserted }
+        let archiving: [String]
+        if case .archived(true) = change { archiving = targets.filter { record($0)?.isSubagent == false } }
+        else { archiving = [] }
+        // Retire preparation at the click, before discovery or persistence
+        // yields. A later Restore cannot revive that accepted work.
+        for id in archiving {
+            archiveRevisions[id, default: 0] += 1
+            archivingSessions[id, default: 0] += 1
+        }
         let task = organizationScheduler.enqueue(ids: Set(targets)) { [self] in
+            defer {
+                for id in archiving {
+                    let remaining = archivingSessions[id, default: 1] - 1
+                    archivingSessions[id] = remaining > 0 ? remaining : nil
+                }
+            }
             guard !installPreparing, !isShutDown else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
             guard !targets.isEmpty, targets.count <= Self.markedSessionLimit, let store else { throw StoreError.invalidRecord }
             if case .archived = change { for id in targets where record(id)?.isSubagent == false { await reconcileSubagents(parentID: id) } }
@@ -164,6 +179,15 @@ extension WorkspaceModel {
                     }
                 }
             }
+        }
+    }
+
+    /// Work accepted before Archive stays undelivered, including after Restore.
+    /// Work accepted during the metadata write must wait for another Send too.
+    func requireUnarchived(_ id: String, revision: Int) throws {
+        guard let item = record(id) else { throw HostError.rejected("session_unavailable", "This chat is no longer available.") }
+        guard !item.isArchived, archivingSessions[id] == nil, archiveRevisions[id, default: 0] == revision else {
+            throw HostError.rejected("session_archived", "Archive cancelled this operation. Restore the chat if needed, then try again.")
         }
     }
 }

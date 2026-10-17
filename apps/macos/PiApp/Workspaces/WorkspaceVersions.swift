@@ -164,6 +164,7 @@ extension WorkspaceModel {
         // The fork opens only if the reader is still where they asked for
         // it, as with /fork: one who moved on meanwhile is not pulled back.
         let selectedBefore = selectedID
+        let navigation = organizationNavigationRevision
         Task { [weak self] in
             guard let self else { return }
             defer {
@@ -175,7 +176,7 @@ extension WorkspaceModel {
             }
             do {
                 let fork = try await self.createFork(parentID: sessionID, atMessageID: messageID)
-                guard self.selectedID == selectedBefore else { return }
+                guard self.selectedID == selectedBefore, self.organizationNavigationRevision == navigation else { return }
                 await self.select(fork.id)
                 self.focusComposer(fork.id)
             } catch {

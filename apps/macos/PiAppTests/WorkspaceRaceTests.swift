@@ -1,0 +1,299 @@
+import XCTest
+@testable import PiApp
+
+@MainActor final class WorkspaceRaceTests: XCTestCase {
+    private func fixture(pending: Bool = false) async throws -> (WorkspaceModel, SessionDisplay, WorkspaceRaceHost) {
+        let root = scratchRoot("workspace-race")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let workspace = WorkspaceRecord(id: "w", path: root.path, trusted: true)
+        var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "fixture"
+        var config = VaultConfiguration()
+        config.workspaces = [workspace]; config.profiles = [.init(profile: profile, apiKey: "generated-fixture-key")]
+        config.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        model.prewarmsHelpers = false
+        try await model.reloadConfiguration()
+        var chat = ChatRecord(id: "chat", workspaceID: workspace.id, title: "Fixture", profileID: profile.id)
+        chat.titleWasEdited = true
+        let view = SessionDisplay(id: chat.id)
+        view.selectionMetadataLoaded = true; view.snapshotInFlight = true
+        model.chats = [chat]; model.displays[chat.id] = view
+        model.selectedID = chat.id; model.focusedSessionID = chat.id; model.selected = view
+        if pending { model.pendingChatIDs.insert(chat.id) }
+        else { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+        let wire = WorkspaceRaceHost(root: root)
+        try await wire.host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[workspace.id] = wire.host
+        model.boundHostConnections[workspace.id] = wire.host.connectionID
+        return (model, view, wire)
+    }
+
+    func testCaptureSettingsPreserveOptOutAndTimestampThroughReloadAndOpen() async throws {
+        let (model, view, wire) = try await fixture()
+        let settings = ConnectionSettingsController(model: model)
+        await settings.load(discardingDrafts: true)
+        XCTAssertEqual(settings.preferences.capture.defaultMode, "persist")
+        settings.preferences.capture.retentionDays = 7
+        try await model.setCaptureMode("off", sessionID: view.id)
+        let since = try XCTUnwrap(model.configuration.capture.sessionSince[view.id])
+        XCTAssertFalse(since.isEmpty)
+        let saved = await settings.save(); XCTAssertTrue(saved, settings.message)
+        try await model.reloadConfiguration()
+        let reloaded = try await model.vault.load()
+        XCTAssertEqual(reloaded.capture.sessionModes[view.id], "off")
+        XCTAssertEqual(reloaded.capture.sessionSince[view.id], since)
+        XCTAssertEqual(reloaded.capture.retentionDays, 7)
+        model.opened.remove(view.id); wire.frames = []
+        _ = try await model.open(try XCTUnwrap(model.record(view.id)))
+        XCTAssertEqual(wire.frames.last { $0["method"]?.string == "debug.mode" }?["params"]?.object?["mode"]?.string, "off")
+    }
+
+    func testCapturePreferencesMergeIndividuallyAndNeverCopySessionState() {
+        let baseline = VaultConfiguration()
+        var edits = baseline; edits.capture.retentionDays = 7
+        var current = baseline
+        current.capture.defaultMode = "off"; current.capture.quotaBytes *= 2; current.capture.quotaUnlimited = true
+        current.capture.sessionModes["chat"] = "off"; current.capture.sessionSince["chat"] = "newer"
+        let retained = ConnectionSettingsController.merging(edits, from: baseline, onto: current)
+        current.capture.retentionDays = 7
+        XCTAssertEqual(retained.capture, current.capture)
+        edits = baseline
+        edits.capture.defaultMode = "memory"; edits.capture.quotaBytes *= 3; edits.capture.quotaUnlimited = true
+        current = baseline; current.capture.retentionDays = 2
+        current.capture.sessionModes["chat"] = "off"; current.capture.sessionSince["chat"] = "newer"
+        let merged = ConnectionSettingsController.merging(edits, from: baseline, onto: current)
+        XCTAssertEqual(merged.capture.defaultMode, "memory"); XCTAssertEqual(merged.capture.quotaBytes, edits.capture.quotaBytes)
+        XCTAssertTrue(merged.capture.quotaUnlimited); XCTAssertEqual(merged.capture.retentionDays, 2)
+        XCTAssertEqual(merged.capture.sessionModes, current.capture.sessionModes)
+        XCTAssertEqual(merged.capture.sessionSince, current.capture.sessionSince)
+    }
+
+    func testDeleteRefusesPendingFirstSendAndKeepsDurableChat() async throws {
+        try await pendingSend(discardDirectly: false)
+    }
+
+    func testDeleteRefusesPendingSideFirstSend() async throws {
+        let (model, parent, wire) = try await fixture()
+        let side = SideRecord(id: "side", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Side", pending: true)
+        let view = SessionDisplay(id: side.id)
+        view.selectionMetadataLoaded = true; view.snapshotInFlight = true; view.draft = "First side message"
+        model.sides[parent.id] = side; model.displays[side.id] = view
+        wire.heldMethod = "session.open"
+        model.send(sessionID: side.id)
+        try await eventually("parent opening for first side send") { wire.held != nil }
+        XCTAssertTrue(view.loading); XCTAssertTrue(model.side(side.id)?.pending == true)
+        model.deleteChat(side.id)
+        XCTAssertTrue(model.error?.contains("Stop work") == true)
+        wire.release()
+        try await eventually("side send finished") { !view.loading }
+        XCTAssertNotNil(model.record(side.id)); XCTAssertTrue(model.displays[side.id] === view)
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: side.id)
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }.count, 1)
+    }
+
+    func testRemovedChatAbortsMaterializingSubmission() async throws {
+        try await pendingSend(discardDirectly: true)
+    }
+
+    func testRemovedPlaceholderMaterializationThrowsAfterCleaningItsRow() async throws {
+        let (model, view, _) = try await fixture(pending: true)
+        let store = try XCTUnwrap(model.store)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+        defer { released.signal() }
+        try await eventually("metadata actor held") { entered.wait(timeout: .now()) == .success }
+        let materialize = Task { try await model.materializeChat(view.id) }
+        try await eventually("materialization pending") { model.pendingChatSaveCounts[view.id] == 1 }
+        model.discardPendingChat(view.id)
+        released.signal(); try await barrier.value
+        do { try await materialize.value; XCTFail("A removed placeholder must not report successful materialization") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("no longer available")) }
+        let saved = try await store.get(ChatRecord.self, kind: "chat", id: view.id)
+        XCTAssertNil(saved)
+    }
+
+    private func pendingSend(discardDirectly: Bool) async throws {
+        let (model, view, wire) = try await fixture(pending: true)
+        let store = try XCTUnwrap(model.store)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+        defer { released.signal() }
+        try await eventually("metadata actor held") { entered.wait(timeout: .now()) == .success }
+        view.draft = "First message"
+        model.send(sessionID: view.id)
+        try await eventually("first metadata write pending") { model.pendingChatSaveCounts[view.id] == 1 }
+        XCTAssertTrue(view.loading); XCTAssertFalse(view.busy)
+        if discardDirectly { model.discardPendingChat(view.id) }
+        else {
+            model.deleteChat(view.id)
+            XCTAssertNotNil(model.record(view.id), "Delete must refuse an accepted first send")
+            XCTAssertTrue(model.displays[view.id] === view)
+            XCTAssertTrue(model.error?.contains("Stop work") == true)
+        }
+        released.signal(); try await barrier.value
+        try await eventually("send settled") { !view.loading }
+        let saved = try await store.get(ChatRecord.self, kind: "chat", id: view.id)
+        XCTAssertEqual(saved != nil, !discardDirectly)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, discardDirectly ? 0 : 1)
+        if discardDirectly { XCTAssertFalse(model.opened.contains(view.id)) }
+    }
+
+    func testArchiveDuringSendOpeningReturnsUnsentDraft() async throws { try await archiveDuringOpening("turn.submit") }
+    func testArchiveThenRestoreStillInvalidatesPendingSend() async throws { try await archiveDuringOpening("turn.submit", restore: true) }
+    func testArchiveDuringEditOpeningKeepsReplacementDraft() async throws { try await archiveDuringOpening("turn.edit") }
+    func testArchiveDuringResumeOpeningDoesNotContinue() async throws { try await archiveDuringOpening("run.continue") }
+    func testArchiveDuringCompactionOpeningDoesNotDispatch() async throws { try await archiveDuringOpening("context.compact") }
+    func testArchiveDuringQueueResumeOpeningDoesNotDispatch() async throws { try await archiveDuringOpening("queue.resume") }
+
+    func testBulkRestoreDoesNotCancelAnActiveChatsPendingSend() async throws {
+        let (model, view, wire) = try await fixture()
+        var archived = ChatRecord(id: "archived", workspaceID: "w", title: "Archived", profileID: "p")
+        archived.archivedAt = Date()
+        model.chats.append(archived); try await model.store?.put(archived, kind: "chat", id: archived.id)
+        wire.heldMethod = "session.open"
+        view.draft = "An active chat's message"; model.send(sessionID: view.id)
+        try await eventually("active chat open held") { wire.held != nil }
+        model.markedSessionIDs = [view.id, archived.id]
+        model.archiveMarkedSessions(false)
+        try await eventually("bulk restore finished") { model.record(archived.id)?.isArchived == false && !model.organizationScheduler.inFlight }
+        wire.release()
+        try await eventually("active chat send finished") { !view.loading }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
+        XCTAssertNil(view.sendFailure); XCTAssertEqual(view.draft, "")
+    }
+
+    private func archiveDuringOpening(_ method: String, restore: Bool = false) async throws {
+        let (model, view, wire) = try await fixture()
+        wire.heldMethod = "session.open"
+        view.draft = "Recoverable input"
+        switch method {
+        case "turn.submit": model.send(sessionID: view.id)
+        case "turn.edit": view.editingMessageID = "original"; model.sendEdit(sessionID: view.id)
+        case "run.continue": model.resumeRun(sessionID: view.id)
+        default: model.action(method, sessionID: view.id)
+        }
+        try await eventually("session open held") { wire.held != nil }
+        _ = try await model.enqueueOrganization([view.id], change: .archived(true)).value
+        XCTAssertTrue(model.record(view.id)?.isArchived == true)
+        if restore { _ = try await model.enqueueOrganization([view.id], change: .archived(false)).value }
+        wire.release()
+        try await eventually("preparation finished") {
+            !view.loading && !view.resuming && (model.error != nil || view.sendFailure != nil || !view.editNotice.isEmpty || wire.frames.contains { $0["method"]?.string == method })
+        }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == method }, "Archived preparation dispatched \(method)")
+        XCTAssertEqual(view.draft, "Recoverable input")
+        if method == "turn.submit" || method == "turn.edit" {
+            let draft = try await model.store?.get(DraftRecord.self, kind: "draft", id: view.id)
+            XCTAssertEqual(draft?.text, "Recoverable input")
+        }
+        let pending = try await model.store?.list(CommandIntent.self, kind: "pending:\(view.id)")
+        XCTAssertTrue(pending?.isEmpty == true, "Undispatched work must not become uncertain after relaunch")
+    }
+
+    func testArchiveInvalidatesSendBeforeArchiveCommitReturns() async throws {
+        let (model, view, wire) = try await fixture()
+        let store = try XCTUnwrap(model.store), gate = AsyncGate()
+        var writing = false
+        model.organizationWrite = { ids, change in
+            writing = true; await gate.wait()
+            return try await store.updateChatOrganizations(ids: ids, change: change)
+        }
+        wire.heldMethod = "session.open"
+        view.draft = "Do not send while archiving"; model.send(sessionID: view.id)
+        try await eventually("open held") { wire.held != nil }
+        let archive = model.enqueueOrganization([view.id], change: .archived(true))
+        try await eventually("archive commit held") { writing }
+        wire.release()
+        do { try await eventually("send finished before archive write") { !view.loading } }
+        catch { await gate.open(); _ = try? await archive.value; throw error }
+        await gate.open(); _ = try await archive.value
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "turn.submit" })
+        XCTAssertEqual(view.draft, "Do not send while archiving")
+    }
+
+    func testSendStartedDuringArchiveCommitKeepsItsDraft() async throws {
+        let (model, view, wire) = try await fixture()
+        let store = try XCTUnwrap(model.store), gate = AsyncGate()
+        var writing = false
+        model.organizationWrite = { ids, change in
+            writing = true; await gate.wait()
+            return try await store.updateChatOrganizations(ids: ids, change: change)
+        }
+        model.opened.insert(view.id)
+        let archive = model.enqueueOrganization([view.id], change: .archived(true))
+        try await eventually("archive commit held") { writing }
+        view.draft = "Typed during archive"; model.send(sessionID: view.id)
+        do { try await eventually("send settled") { !view.loading } }
+        catch { await gate.open(); _ = try? await archive.value; throw error }
+        await gate.open(); _ = try await archive.value
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "turn.submit" })
+        XCTAssertEqual(view.draft, "Typed during archive")
+    }
+
+    func testReplyForkKeepsReportNavigation() async throws { try await forkNavigation(reply: true, returnToChats: false) }
+    func testReplyForkDoesNotNavigateAfterLeavingAndReturning() async throws { try await forkNavigation(reply: true, returnToChats: true) }
+    func testWholeChatForkKeepsReportNavigation() async throws { try await forkNavigation(reply: false, returnToChats: false) }
+    func testReplyForkStillOpensWithoutNewNavigation() async throws { try await forkNavigation(reply: true, returnToChats: false, navigate: false) }
+    func testWholeChatForkStillOpensWithoutNewNavigation() async throws { try await forkNavigation(reply: false, returnToChats: false, navigate: false) }
+
+    private func forkNavigation(reply: Bool, returnToChats: Bool, navigate: Bool = true) async throws {
+        let (model, view, wire) = try await fixture()
+        model.opened.insert(view.id); wire.heldMethod = "session.fork"
+        if reply { model.forkFromReply(sessionID: view.id, messageID: "reply") }
+        else { model.forkSession(view.id) }
+        try await eventually("fork creation held") { wire.held != nil }
+        if navigate { model.openReport() }
+        if returnToChats { model.closeReport() }
+        wire.release()
+        try await eventually("fork finished") { model.forkingReplies.isEmpty && !view.loading }
+        let fork = try XCTUnwrap(model.chats.first { $0.id != view.id })
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: fork.id)
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(model.page, !navigate || returnToChats ? .chats : .report)
+        XCTAssertEqual(model.selectedID, navigate ? view.id : fork.id)
+        XCTAssertEqual(model.focusedSessionID, navigate ? view.id : fork.id)
+        if navigate { XCTAssertEqual(model.displays[fork.id]?.composerFocusRequest, 0) }
+        XCTAssertNil(model.error)
+    }
+}
+
+@MainActor private final class WorkspaceRaceHost {
+    let root: URL
+    var frames: [[String: WireValue]] = []
+    var heldMethod: String?
+    var held: [String: WireValue]?
+    lazy var host = HostSupervisor(commandSender: { [weak self] frame in
+        guard let self else { return }
+        self.frames.append(frame)
+        if frame["method"]?.string == self.heldMethod { self.held = frame }
+        else { self.answer(frame) }
+    })
+    init(root: URL) { self.root = root }
+    func release() { let frame = held; held = nil; heldMethod = nil; if let frame { answer(frame) } }
+    private func answer(_ frame: [String: WireValue]) {
+        var result: [String: WireValue] = [:]
+        let side = frame["method"]?.string == "side.open"
+        if side || frame["method"]?.string == "session.fork", let id = frame["params"]?.object?[side ? "sideSessionId" : "forkSessionId"]?.string {
+            let path = root.appendingPathComponent("Workspaces/w/Sessions/\(side ? "side" : "fork")_\(id).jsonl")
+            do {
+                try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let header: [String: WireValue] = ["type": .string("session"), "version": .number(3), "id": .string(id)]
+                var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to: path)
+                result = ["sessionId": .string(id), "path": .string(path.path)]
+            } catch { XCTFail("Generated fork could not be written: \(error)") }
+        }
+        guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }
+        host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch), "commandId": command,
+                             "ok": .bool(true), "result": .object(result)]), connectionID: connection)
+    }
+}
+
+private struct WorkspaceRaceStoreBarrier: Encodable, Sendable {
+    let entered: DispatchSemaphore
+    let released: DispatchSemaphore
+    func encode(to encoder: Encoder) throws {
+        entered.signal(); released.wait()
+        var value = encoder.singleValueContainer(); try value.encode(true)
+    }
+}

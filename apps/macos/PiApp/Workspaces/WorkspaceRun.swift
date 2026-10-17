@@ -133,7 +133,7 @@ extension WorkspaceModel {
         let named = drawsRow ? nameAfterFirstMessage(item.id, text: text.isEmpty && skills.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, skills: skills) : nil
         return Submission(item: item, view: view, store: store, steer: steer, text: text, attachments: attachments, skills: skills,
                           directCommand: directCommand, commandID: commandID, turnID: turnID, connection: connection,
-                          accepted: accepted, drawsRow: drawsRow, named: named)
+                          accepted: accepted, drawsRow: drawsRow, named: named, archiveRevision: archiveRevisions[item.id, default: 0])
     }
     /// Sends the accepted message: the chat's record and the command's durable
     /// record are written, the helper is given the command, and the chat's
@@ -173,6 +173,7 @@ extension WorkspaceModel {
         if let recording = progress.recording { try await recording.value; pendingIntentsChanged(item.id) }
         sendSteps?("durable")
         try requireConnection(lease)
+        try requireUnarchived(item.id, revision: submission.archiveRevision)
         progress.dispatched = true
         // A message going out is activity: the chat moves up its sidebar group.
         noteChatActivity(item.id)
@@ -330,6 +331,7 @@ extension WorkspaceModel {
         // the originating pane's choice before opening or awaiting its helper.
         let requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
         let commandID = UUID().uuidString
+        let archiveRevision = archiveRevisions[id, default: 0]
         Task { do {
             let lease = try connectionLease(for: item)
             let host = try await open(item)
@@ -339,6 +341,7 @@ extension WorkspaceModel {
                 pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
+            if method != "turn.stop" { try requireUnarchived(item.id, revision: archiveRevision) }
             _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
@@ -404,6 +407,7 @@ private struct Submission {
     let drawsRow: Bool
     /// The title this message gave its chat on Return.
     let named: String?
+    let archiveRevision: Int
 }
 
 /// How far a send got, so that a failure undoes no more than it did.

@@ -8,6 +8,10 @@
 - [x] Start-with-wait IDs work in status listings immediately and after reopening, including older saved starts. [Validation](docs/validation/a130-helper-0.1.130.md).
 - [x] Reopened cost-paused chats seed sides and whole-chat forks from the last complete tool boundary; the parent keeps its held calls for Resume. [Validation](docs/validation/a130-helper-0.1.130.md).
 - [x] Failed and stopped model requests retain their elapsed time in turn/session totals across reopening; retry backoff stays excluded. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] APP-WORKSPACE-1: Settings merges capture preferences individually, preserving newer chat opt-outs and timestamps. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
 
 ## 0.1.129
 

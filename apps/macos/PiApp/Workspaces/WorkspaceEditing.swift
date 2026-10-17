@@ -154,6 +154,7 @@ extension WorkspaceModel {
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
         let generation = view.editGeneration
+        let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true
         Task {
@@ -172,6 +173,7 @@ extension WorkspaceModel {
                 let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills, draftReviewTracked: true)
                 if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
+                try requireUnarchived(item.id, revision: archiveRevision)
                 dispatched = true
                 noteChatActivity(item.id)
                 if !view.busy { shown = (.queued, view.runState); view.runState = .queued }

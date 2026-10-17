@@ -86,7 +86,7 @@ extension WorkspaceModel {
             try await store.remove(kind: "chat", id: id)
             PerformanceProbe.shared.count("pendingChatDiscardCleanupWrites")
             pendingChatIDs.remove(id)
-            return
+            throw HostError.failure("This chat is no longer available.")
         }
         if let index = chats.firstIndex(where: { $0.id == id }) {
             chats[index].topicID = effectiveTopicID(for: chats[index])
@@ -205,11 +205,11 @@ extension WorkspaceModel {
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
         guard let id, let item = record(id), !item.isSubagent else { return }
+        guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
         if let info = side(id), info.pending { Task { await discardPendingSide(info) }; return }
         if let busy = runningBudgetDependent(of:id) { error = budgetMemberBusy(busy); return }
-        guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         Task {
             do {
                 // Discovery reads metadata and member journals off the main
