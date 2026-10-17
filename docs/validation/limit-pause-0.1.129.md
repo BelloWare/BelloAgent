@@ -140,6 +140,20 @@ Earlier runs: `verify-1.out` (first submission) is superseded. `FamilyLimitPause
 | P2 overrides validated after clearing the pause | Any refusal restores the saved pause state | `testRootKeepsPausedSides…` (`mutation-r1-no-rollback`) |
 | P2 cold discovery read paused children as interrupted | Owner/child `costPaused` keeps them queued and paused | native `CostPausePresentationTests.testColdDiscoveryKeepsPausedChildrenQueued` (`mutation-r1-cold-discovery`) |
 
+## Review round 2 (Codex, 3 P1 + 5 P2) and the compaction rule — all fixed
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| Owner: a compaction summary in flight is a model request | Summary requests and their back-off are `abortable`; a cut (or refusal at the limit) is not a failed compaction of the context; a cut manual compaction is redone on Resume (`costPendingCompaction`, durable) | `CostLimitTests.testThePauseCutsACompactionSummaryAndResumeCompactsAgain` (`r2-compaction-not-cut`, `r2-compaction-fingerprint`) |
+| P1 held calls consumed only in memory | Their release is persisted before any of them runs: a crash gives unknown outcomes, never a replay | `testResumedHeldCallIsDurablyConsumedBeforeItRuns` (`r2-consume-late`) |
+| P1 a child inserted after the pause's snapshot waited unpumped | It parks on insertion (after the command releases the owner's lock); Resume parks any runnerless queued job it finds | `FamilyLimitPauseTests.testAChildOpenedAcrossThePauseParksOnInsertion` (`r2-late-job`) |
+| P1 the parking wait ignored Stop | The wait checks cancellation; a Stop during it re-pauses the family and halts the held children (an explicit halt is never fenced off) | `testStopWhileResumeWaitsHaltsHeldChildrenAndKeepsThePause` (`r2-uncancellable-wait`); `testResumeWaitsForTurnsStillParking` now waits on a real running child tool |
+| P2 pause fence keyed by chat id | Keyed by the owner runtime | `testAReopenedOwnersFirstPauseIsNotMistakenForAnOldOne` (`r2-id-fence`) |
+| P2 calls gated after the batch gate got failed results | A call stopped at its own gate (or agent-control preparation) is held; the rest keep their results | `CostLimitTests.testACallHeldAtItsOwnGateRunsOnResume` (`r2-per-call-fail`) |
+| P2 cold discovery never read run-state rows | `pi-app.native.state.v1` is scanned; the fixture's pause now sits past line 3 | native `testColdDiscoveryKeepsPausedChildrenQueued` (`r2-discovery-needle`) |
+| P2 sides still paused after a lost root reply | The root's snapshot names its still-paused sides; every family Resume reads them | native `CostPauseFamilyTests.testSidesStillPausedAfterALostRootResumeAreRecovered` (`r2-members-lost`) |
+| P2 a parked child with held input could not unload | Durable held input of a paused child does not pin it | `testAParkedChildWithHeldInputUnloads` (`r2-pinned-input`) |
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
@@ -155,6 +169,5 @@ The old app "Stopped at this chat's cost limit → Continue" card is no longer r
 ## Needs owner decision
 
 Decided by the owner on 2026-10-17: plain chats pause too; paused sub-agents keep
-Resume-then-Stop (no Discard); idle sides stay unmarked. Remaining limitation: a
-plain chat's compaction summary request in flight is not cut by the pause (its
-gate refuses the next one).
+Resume-then-Stop (no Discard); idle sides stay unmarked. Compaction summaries are
+model requests and are cut too (review round 2); no known limitation remains.

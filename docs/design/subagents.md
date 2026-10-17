@@ -10,7 +10,8 @@ replacing both the 0.1.128 turn-boundary stop and the first 0.1.129 draft.
 When spend reaches the limit through any charge source (main, side, nested side,
 sub-agent, side-owned sub-agent, a late correction or a lowered limit):
 
-1. Every model request in flight in the chat or family is cut at once, as Stop
+1. Every model request in flight in the chat or family (compaction summaries
+   included; a cut compaction is done again on Resume) is cut at once, as Stop
    cuts it: its partial reply is kept as an interrupted row that is never sent
    again (pi parity). Its reported cost counts; unknown stays unknown.
 2. Tools already running are **not** cut. They finish and record their real

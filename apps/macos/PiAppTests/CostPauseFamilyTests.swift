@@ -137,10 +137,11 @@ final class CostPauseFamilyTests: XCTestCase {
             if rootAlreadyResumed {
                 // As if the root's Resume was accepted and the app quit before
                 // asking the sides: the side is still paused.
-                _ = try await host.request("run.continue", sessionID: parent.id, params: [:], commandID: UUID().uuidString)
+                let accepted = await second.performResume(rootRecord, view: nil, member: true)
+                XCTAssertNotNil(accepted)
                 try await Task.sleep(for: .milliseconds(300))
-                let sideState = try await host.request("session.status", sessionID: side.id).object
-                XCTAssertEqual(sideState?["costPaused"]?.bool, true)
+                let members = try? await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object?["cost"]?.object?["pausedMembers"]?.array?.compactMap(\.string)
+                XCTAssertEqual(members, [side.id], "The resumed root still names its paused side")
                 second.resumeCostPausedFamily(from: rootRecord)
             } else {
                 second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))
