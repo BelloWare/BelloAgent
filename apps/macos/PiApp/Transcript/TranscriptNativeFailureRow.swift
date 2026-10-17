@@ -72,7 +72,7 @@ import AppKit
         if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode || message.failureCode == "coordination_limit" { return .paused }
         switch message.failureCode {
         case SessionDisplay.costPausedCode: return .costPaused(raised: false, child: false)
-        case SessionDisplay.costPausedRaisedCode, SessionDisplay.costPausedResumingCode: return .costPaused(raised: true, child: false)
+        case SessionDisplay.costPausedRaisedCode, SessionDisplay.costPausedResumingCode, SessionDisplay.costPausedEditingCode: return .costPaused(raised: true, child: false)
         case SessionDisplay.costPausedChildCode: return .costPaused(raised: false, child: true)
         default: break
         }
@@ -95,7 +95,7 @@ import AppKit
         // Nothing while a Resume is on its way.
         case .skillChanged(let queued): return queued && message.failureCode == SessionDisplay.skillUpdatedCode ? .resume : nil
         case .costPaused(let raised, let child):
-            if child || message.failureCode == SessionDisplay.costPausedResumingCode { return nil }
+            if child || message.failureCode == SessionDisplay.costPausedResumingCode || message.failureCode == SessionDisplay.costPausedEditingCode { return nil }
             return raised ? .resume : .raise
         }
     }

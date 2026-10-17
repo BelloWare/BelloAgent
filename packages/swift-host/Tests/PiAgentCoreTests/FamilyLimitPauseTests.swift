@@ -1276,3 +1276,75 @@ extension FamilyLimitPauseTests {
         await client.releaseAll(); await coordinator.drain(); await owner.close()
     }
 }
+
+/// Review round 11 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A paused owner whose task root a compaction summarized away (reopened
+    /// with no user row in context) still resumes its parked children.
+    func testResumeWithoutATaskRootStillResumesParkedChildren() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        _ = try await startChild(owner, coordinator, "parked")
+        try await eventually { await client.children.count == 1 }
+        await owner.fixtureCostPause()
+        await coordinator.pause(owner:owner,generation:1)
+        try await eventually(timeout:.seconds(5)) { await coordinator.jobs.isEmpty }
+        await owner.fixtureForgetTask()
+        await client.releaseAll()
+        _ = try await owner.continueRun(commandID:"resume")
+        try await eventually(timeout:.seconds(10)) {
+            let busy = await owner.isRunning, jobs = await coordinator.jobs.isEmpty
+            return !busy && jobs
+        }
+        let state = await owner.agentState(), paused = await owner.costPaused
+        XCTAssertTrue(state.turns.values.allSatisfy { $0.status == .completed }, "\(state.turns.values.map(\.status))")
+        XCTAssertFalse(paused, "Resume did not fail back into the pause")
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// A side's accepted Resume that is still waiting for its children to
+    /// finish parking keeps its place in the root's list until its run has
+    /// taken the work: a crash then still finds it from the root.
+    func testASideStaysListedUntilItsResumeIsTaken() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore())
+        await owner.setCostLimit(5)
+        let client = LimitRunClient(mode:"queued"), gate = OpenGate()
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled:{ child in await gate.wait(); await child.close() })
+        let side = try await self.side("side",parent:owner,root:root,client:client,tools:RecordingTools())
+        _ = try await side.keep(whenFinished:false)
+        await side.enableSubagents(SubagentCoordinator()); await side.enableAgentSteering(coordinator)
+        _ = try await startChild(side, coordinator, "kid")
+        try await eventually { await client.children.count == 1 }
+        await side.fixtureCostPause()
+        await coordinator.pause(owner:side,generation:1)
+        try await eventually { await gate.waiting }
+        try await side.bindSideBudget(to:owner)
+        _ = try await owner.continueRun(commandID:"resume-root")
+        _ = try await side.continueRun(commandID:"resume-side")
+        try await Task.sleep(for:.milliseconds(150))
+        var members = await owner.costPausedMembers
+        XCTAssertEqual(members,["side"],"Still listed while its Resume waits for parking")
+        await gate.open(); await client.releaseAll()
+        try await eventually(timeout:.seconds(10)) { await owner.costPausedMembers.isEmpty }
+        members = await owner.costPausedMembers; XCTAssertTrue(members.isEmpty)
+        await coordinator.drain(); await side.close(); await owner.close()
+    }
+
+    /// A hold an earlier runtime of a chat left in the coordinator goes when
+    /// an unpaused runtime of it attaches.
+    func testAnUnpausedRuntimeReleasesAStaleCoordinatorHold() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        await coordinator.fixturePause("parent")
+        let owner = try await steeringOwner(root, client:ScriptClient([]), coordinator:coordinator)
+        try await eventually { !(await coordinator.paused.contains("parent")) }
+        await owner.close()
+    }
+}
+
+private extension AgentSession {
+    func fixtureForgetTask() { taskRootID = nil; activeTaskPresentation = nil; currentTurnID = "" }
+}

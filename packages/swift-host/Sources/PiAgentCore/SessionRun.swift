@@ -8,7 +8,11 @@ extension AgentSession {
         turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
         if !costLimitReached, accountingFailure == nil { familyStopReason = nil; budgetStopIssued = false }
         presentationUtility = compactOnly || titleTask
-        if retrying || continuing, let root = taskRootID {
+        // A continuation of a context whose user rows a compaction summarized
+        // has no task root left: it takes its continued turn's (or its own),
+        // so its execution, and the family it resumes, have one.
+        if retrying || continuing, let root = taskRootID ?? (continuing ? continuedTurn ?? activeSubmission?.turnID : nil) {
+            if taskRootID == nil { taskRootID = root }
             beginPresentedTask(root)
             activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
             activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
@@ -198,7 +202,11 @@ extension AgentSession {
                     }
                 }
                 // The paused work is taken: the pause is over on disk too.
-                if costResumePending { costResumePending = false; try persistState(active:true,durable:true) }
+                if costResumePending {
+                    costResumePending = false; try persistState(active:true,durable:true)
+                    // Taken and saved: the root no longer needs to name this side.
+                    if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+                }
                 // Tool calls the pause held before they started run first,
                 // from the reply that issued them: it is never asked again.
                 if continued, !costPendingCalls.isEmpty {

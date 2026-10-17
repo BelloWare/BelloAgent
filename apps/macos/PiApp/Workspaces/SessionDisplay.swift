@@ -333,7 +333,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The family's pause at its shared limit: held (Raise limit…), raised
     /// (Resume), a Resume on its way, and a sub-agent's (no action of its own).
     nonisolated static let costPausedCode = "cost_paused", costPausedRaisedCode = "cost_paused_raised",
-                           costPausedResumingCode = "cost_paused_resuming", costPausedChildCode = "cost_paused_child"
+                           costPausedResumingCode = "cost_paused_resuming", costPausedChildCode = "cost_paused_child",
+                           costPausedEditingCode = "cost_paused_editing"
     /// The pause's card, with the live spend and the limit it waits under.
     var costPausedRow: TranscriptMessage {
         let reading = footer.cost, spent = reading.budgetOwnerID == nil ? reading.spentUSD : reading.budgetSpentUSD
@@ -347,7 +348,12 @@ struct TranscriptVersionView: Equatable, Sendable {
         let queued = queuePaused && !queue.isEmpty
         if isManagedSubagent { row.failureCode = Self.costPausedChildCode }
         else if resuming { row.failureCode = Self.costPausedResumingCode }
-        else if spent == nil {
+        else if (queueEditHold != nil || continuable == false) && !(costLimitHeld && spent != nil) {
+            // Resume waits as `showsPausedRun` does: a queued message's edit
+            // holds the chat until it is finished or cancelled.
+            row.failureCode = Self.costPausedEditingCode
+            row.detail = "Finish or cancel the message edit, then choose Resume."
+        } else if spent == nil {
             // Before the helper reads the spend (a chat read from its journal):
             // Resume is offered, and the helper refuses it at the limit.
             row.failureCode = Self.costPausedRaisedCode

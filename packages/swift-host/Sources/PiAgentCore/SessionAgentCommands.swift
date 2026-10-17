@@ -7,11 +7,14 @@ extension AgentSession {
         }
     }
     // Internal fixture entry as well as the sole production switch's target.
-    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) {
+    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) async {
         agentCoordinator = coordinator
         if !isSubagent {
             let owner = id, runtime = displayEpoch
             familyCancelled = { generation in Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation) } }
+            // A hold left by an earlier runtime of this chat (its pause ended
+            // while unloaded, e.g. its only paused side was deleted) goes.
+            if !costPaused { await coordinator.releaseStaleHold(owner:self) }
         }
     }
     func startAgentEpoch() throws {

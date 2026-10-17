@@ -277,6 +277,12 @@ actor AgentSteeringCoordinator {
         await publishParked(job)
         await signal(job.owner.id).pulse()
     }
+    /// Drops the hold of an owner that is not paused (one an earlier runtime
+    /// of the chat left), once nothing of it runs.
+    func releaseStaleHold(owner: AgentSession) async {
+        guard paused.contains(owner.id), !jobs.values.contains(where: { $0.owner.id == owner.id }), !(await owner.costPaused) else { return }
+        paused.remove(owner.id); pump(owner.id)
+    }
     /// The owner paused at its family's cost limit: queued turns park now;
     /// running ones lose only their model request in flight. A child's tool
     /// finishes with its real result, then its gate holds the run and its

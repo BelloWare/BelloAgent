@@ -13,6 +13,20 @@ final class CostPausePresentationTests: XCTestCase {
         return view
     }
 
+    /// Round 11: while a queued message's edit holds the chat (the helper
+    /// says it cannot continue), the raised card offers no Resume.
+    @MainActor func testTheRaisedCardOffersNoResumeWhileAnEditHoldsTheChat() throws {
+        let view = paused("main")
+        view.applyCostReading(SessionCostReading(limit: .usd(5), spentUSD: 0.6, reportedRequests: 3))
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.costPausedRaisedCode)
+        view.observeRunState(["state":.string("paused"), "runStatus":.string("cancelled"), "queuePaused":.bool(true),
+            "continuable":.bool(false), "costPaused":.bool(true), "errorCode":.string("cost_limit")])
+        let card = try XCTUnwrap(view.presentedMessages.last)
+        XCTAssertEqual(card.failureCode, SessionDisplay.costPausedEditingCode)
+        XCTAssertEqual(card.detail, "Finish or cancel the message edit, then choose Resume.")
+        XCTAssertFalse(view.offersResume)
+    }
+
     @MainActor func testTheCardOffersRaiseLimitAtTheLimitAndResumeOnlyAfterARaise() throws {
         let view = paused("main")
         view.applyCostReading(SessionCostReading(limit: .usd(0.5), spentUSD: 0.6, reportedRequests: 3, unreportedRequests: 2))

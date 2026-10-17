@@ -118,7 +118,10 @@ extension AgentSession {
         defer {
             if !committed, paused.paused { restoreCostPause(paused) }
             // A side that resumed no longer needs its root to name it.
-            if committed, paused.paused, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+            // Not before the Resume's run has taken the paused work
+            // (`costResumePending`): a crash before then reopens the side
+            // paused, and its root must still name it.
+            if committed, paused.paused, !costResumePending, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
         // A root whose own Resume was accepted before its sides were
         // resumed (an app that quit in between) still hands them out.
