@@ -8,6 +8,243 @@ private actor CredentialPackets {
 }
 
 final class CredentialCaptureTests: XCTestCase {
+    func testConfiguredHeaderMatchingUsageSchemaPreservesNormalizedAccounting() async throws {
+        for key in ["status", "input", "output", "raw", "reported", "unreported", "invalid", "us"] {
+            let raw: JSON = ["input_tokens": 12, "output_tokens": 3, "output_tokens_details": ["reasoning_tokens": -1], "diagnostic": .array([.object([key: JSON(key)])])]
+            let usage = UsageObservation.normalized(raw, api: "openai-responses")
+            for mode in ["off", "memory", "persist"] { for outcome in ["completed", "cancelled", "failed"] {
+                let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+                var profile = try fixtureProfile().raw; profile["headers"] = ["X-Region": JSON(key)]
+                _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+                let id = await traces.begin(session: "s", turn: "t", profile: try Profile(profile), purpose: "turn", body: Data(), headers: ["X-Region": key])
+                await traces.usage(id, usage)
+                let label = "\(key), \(mode), \(outcome)", running = await traces.latest("s")
+                XCTAssertEqual(running["usage"].removing(["raw"]), usage.removing(["raw"]), label)
+                await traces.finish(id, outcome: outcome, modelOutcome: outcome == "completed" ? "completed" : "interrupted")
+                await traces.delivered()
+                let settled = await traces.latest("s")
+                XCTAssertEqual(settled["usage"].removing(["raw"]), usage.removing(["raw"]), label)
+                let diagnostic = settled["usage"]["raw"]["diagnostic"].list.first ?? .null
+                XCTAssertEqual(diagnostic[CaptureCredentials.fingerprint(key)].text, CaptureCredentials.fingerprint(key), label)
+                for packet in await packets.values where !packet["metadata"]["usage"].map.isEmpty {
+                    XCTAssertEqual(packet["metadata"]["usage"].removing(["raw"]), usage.removing(["raw"]), label)
+                }
+            } }
+        }
+    }
+
+    func testConfiguredHeaderMatchingGatewaySchemaPreservesReportedAccounting() async throws {
+        for key in ["status", "cost", "usd", "reported", "hit", "source", "us"] {
+            var raw = try fixtureProfile().raw
+            raw["headers"] = ["X-Region": JSON(key)]
+            raw["routing"] = ["replayPolicy": "portable", "reference": "fixture-v1", "cacheHeader": "x-cache"]
+            let profile = try Profile(raw)
+            for mode in ["off", "memory", "persist"] { for streaming in [false, true] {
+                let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+                _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+                let id = await traces.begin(session: "s", turn: "t", profile: profile, purpose: "turn", body: Data(), headers: ["X-Region": key])
+                let headers = ["content-type": streaming ? "text/event-stream" : "application/json", "x-litellm-response-cost": "0.5", "x-cache": "HIT"]
+                let body: JSON = streaming ? ["type": "response.completed", "response": ["usage": ["cost": 0.5]]] : ["usage": ["cost": 0.5]]
+                var expected = GatewayTelemetry(profile: profile)
+                expected.head(headers, excluding: { $0.contains(key) }); expected.body(body, streaming: streaming, excluding: { $0.contains(key) })
+                await traces.head(id, status: 200, headers: headers)
+                await traces.reported(id, value: body, streaming: streaming)
+                let label = "\(key), \(mode), streaming=\(streaming)", running = await traces.latest("s")
+                XCTAssertEqual(running["gateway"], expected.json, label)
+                XCTAssertEqual(running["gateway"]["cost"]["status"].text, "reported", label)
+                XCTAssertEqual(running["gateway"]["cache"]["status"].text, "hit", label)
+                await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+                await traces.delivered()
+                let settled = await traces.latest("s")
+                XCTAssertEqual(settled["gateway"], expected.json, label)
+                for packet in await packets.values where packet["type"].text == "finish" {
+                    XCTAssertEqual(packet["metadata"]["gateway"], expected.json, label)
+                }
+            } }
+        }
+    }
+
+    func testSSEEventTypesMaskCredentialsBeforePreviewInMemoryAndPersistedPages() async throws {
+        let key = "sk-generated-event-secret"
+        var names = Array(repeating: "response.output_text.delta", count: 130)
+        names[0] = key; names[1] = String(repeating: "x", count: 124) + key
+        names[128] = key; names[129] = String(repeating: "y", count: 160)
+        let response = Data(names.map { "event: \($0)\ndata: {}\n\n" }.joined().utf8)
+        for mode in ["memory", "persist"] {
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: ["Authorization": "Bearer " + key])
+            var parser = SSEParser(), parsed: [SSEEvent] = []
+            for byte in response {
+                let chunk = Data([byte])
+                await traces.append(id, data: chunk)
+                for event in try parser.feed(chunk) { parsed.append(event); await traces.event(id, event) }
+            }
+            XCTAssertEqual(parsed.map(\.event), names, "The parser still receives the original stream")
+            var indexed: [JSON] = []
+            for offset in [0, 128] {
+                let page = try await traces.command("debug.raw-events", session: "s", params: ["attemptId": JSON(id), "offset": JSON(offset)])
+                XCTAssertEqual(page["total"].int, names.count)
+                indexed += page["events"].list
+            }
+            XCTAssertEqual(indexed.count, names.count)
+            for (index, entry) in indexed.enumerated() {
+                let expected = names[index].contains(key) ? CaptureCredentials.fingerprint(names[index]) : preview(names[index], bytes: 128)
+                XCTAssertEqual(entry["type"].text, expected, "\(mode), event \(index)")
+                XCTAssertEqual(entry["start"].int, parsed[index].start); XCTAssertEqual(entry["end"].int, parsed[index].end)
+            }
+            await traces.transport(id, observation: ["transportOutcome": "eof"])
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let emitted = await packets.values, pages = emitted.filter { $0["type"].text == "events" }
+            let retained: Data
+            if mode == "persist" {
+                XCTAssertEqual(pages.map { $0["offset"].int }, [0, 128])
+                XCTAssertEqual(pages.flatMap { $0["events"].list }, indexed)
+                retained = emitted.filter { $0["type"].text == "bytes" && $0["body"].text == "response" }.reduce(into: Data()) { $0.append(Data(base64Encoded: $1["bytes"].text!)!) }
+            } else {
+                XCTAssertTrue(pages.isEmpty)
+                let body = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(id), "body": "response"])
+                retained = try XCTUnwrap(Data(base64Encoded: body["bytes"].text ?? ""))
+            }
+            XCTAssertEqual(retained.count, response.count); XCTAssertFalse(String(decoding: retained, as: UTF8.self).contains(key))
+            let attempt = await traces.latest("s")
+            XCTAssertEqual(attempt["response"]["credentialRedactions"].int, 3)
+            XCTAssertEqual(attempt["rawEventIndexCount"].int, names.count)
+            for packet in emitted where packet["type"].text != "bytes" { XCTAssertFalse(packet.encoded().contains(key), mode) }
+        }
+    }
+
+    func testCapturedRequestAndResponseHeaderNamesCannotEchoCredentials() async throws {
+        let key = "sk-generated-header-value", requestName = "X-Request-" + key, responseName = "x-response-" + key
+        for mode in ["memory", "persist"] {
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let headers = ["Authorization": "Bearer " + key, requestName: "fixture-header-value", "Content-Type": "application/json"]
+            let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: headers)
+            await traces.head(id, status: 200, headers: [responseName: "diagnostic", "x-hidden-" + key: key, "x-long-" + key: String(repeating: "x", count: 16_385), "content-type": "text/event-stream", "retry-after": key])
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let attempt = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])
+            XCTAssertNotNil(attempt["requestHeaders"].map[CaptureCredentials.fingerprint(requestName.lowercased())], mode)
+            XCTAssertEqual(attempt["responseHeaders"][CaptureCredentials.fingerprint(responseName)].text, "diagnostic", mode)
+            XCTAssertEqual(attempt["responseHeaders"][CaptureCredentials.fingerprint("x-hidden-" + key)].text, "********", mode)
+            XCTAssertEqual(attempt["responseHeaders"][CaptureCredentials.fingerprint("x-long-" + key)].text, "[omitted: header exceeds capture safety limits]", mode)
+            XCTAssertEqual(attempt["requestHeaders"]["content-type"].text, "application/json")
+            XCTAssertEqual(attempt["responseHeaders"]["content-type"].text, "text/event-stream")
+            XCTAssertEqual(attempt["responseHeaders"]["retry-after"].text, "********")
+            XCTAssertEqual(headers["Authorization"], "Bearer " + key, "Wire headers remain unchanged")
+            XCTAssertFalse(attempt.encoded().contains(key), mode)
+            for packet in await packets.values { XCTAssertFalse(packet.encoded().contains(key), mode) }
+        }
+    }
+
+    func testGatewayCacheHeaderSourceCannotEchoCredentials() async throws {
+        let key = "sk-generated-cache-value", name = "x-cache-sk-generated-cache-value"
+        var raw = try fixtureProfile().raw
+        raw["routing"] = ["replayPolicy": "portable", "reference": "fixture-v1", "cacheHeader": JSON(name)]
+        let profile = try Profile(raw)
+        for mode in ["memory", "persist"] {
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let id = await traces.begin(session: "s", turn: "t", profile: profile, purpose: "turn", body: Data(), headers: ["Authorization": "Bearer " + key])
+            await traces.head(id, status: 200, headers: [name: "HIT"])
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let attempt = await traces.latest("s")
+            XCTAssertEqual(attempt["gateway"]["cache"]["status"].text, "hit")
+            XCTAssertEqual(attempt["gateway"]["cache"]["source"].text, CaptureCredentials.fingerprint("header:" + name), mode)
+            for packet in await packets.values { XCTAssertFalse(packet["metadata"]["gateway"].encoded().contains(key), mode) }
+        }
+    }
+
+    func testCapturedRawUsageSanitizesNestedCredentialValuesAndFieldNames() async throws {
+        let key = "sk-generated-usage-value"
+        let raw: JSON = ["input_tokens": 12, "output_tokens": 3, "diagnostic": .array([["message": JSON(key), "nested": .object([key: "marker"])]]), "ordinary": "retained"]
+        var accumulator = ProviderAccumulator(api: "openai-responses")
+        try accumulator.acceptJSON(["status": "completed", "output": [], "usage": raw])
+        let usage = try accumulator.result().usage
+        XCTAssertEqual(usage["raw"], raw, "The provider's result remains unchanged")
+        for mode in ["memory", "persist"] {
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: ["Authorization": "Bearer " + key])
+            await traces.usage(id, usage)
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let attempt = await traces.latest("s"), captured = attempt["usage"]
+            XCTAssertEqual(captured["input"].int, 12); XCTAssertEqual(captured["output"].int, 3)
+            XCTAssertEqual(captured["raw"]["ordinary"].text, "retained")
+            let diagnostic = try XCTUnwrap(captured["raw"]["diagnostic"].list.first)
+            XCTAssertEqual(diagnostic["message"].text, CaptureCredentials.fingerprint(key), mode)
+            XCTAssertEqual(diagnostic["nested"][CaptureCredentials.fingerprint(key)].text, "marker", mode)
+            XCTAssertFalse(attempt.encoded().contains(key), mode)
+            for packet in await packets.values { XCTAssertFalse(packet.encoded().contains(key), mode) }
+        }
+    }
+
+    func testLoopbackErrorIDsAndRetryFieldsDoNotEscapeCaptureMasking() async throws {
+        let source = #"""
+import http.server, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+class Gateway(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        key = self.headers['Authorization'].removeprefix('Bearer ')
+        payload = json.dumps({'error': {'message': 'Rejected ' + key, 'code': key, 'type': key, key: 'diagnostic'}})
+        streaming = self.path.startswith('/sse/')
+        body = (('id: ' + key + '\nretry: ' + key + '\nevent: error\ndata: ' + payload + '\n\n') if streaming else payload).encode()
+        self.send_response(200 if streaming else 401)
+        self.send_header('Content-Type', 'text/event-stream' if streaming else 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        for name in ['Retry-After', 'X-Request-Id', 'X-Litellm-Call-Id', 'X-Litellm-Version']:
+            self.send_header(name, key)
+        self.end_headers(); self.wfile.write(body); self.wfile.flush()
+server = http.server.HTTPServer(('127.0.0.1', 0), Gateway)
+(root / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (root / 'ready.tmp').replace(root / 'ready.json')
+server.serve_forever()
+"""#
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try await PythonGateway.start(source: source, root: root); defer { gateway.stop() }
+        let key = "sk-generated-audit-value"
+        for mode in ["memory", "persist"] { for kind in ["http", "sse"] {
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            var raw = try fixtureProfile().raw
+            raw["baseUrl"] = JSON("http://127.0.0.1:\(gateway.port)/\(kind)")
+            let client = ProviderClient(traces: traces)
+            do {
+                _ = try await client.complete(profile: Profile(raw), apiKey: key, messages: [ChatMessage(role: "user", content: [textBlock("fixture")])], instructions: "fixture", tools: [], sessionID: "s", turnID: "t", purpose: "compaction", onDelta: { _ in })
+                XCTFail("The generated error must fail the request")
+            } catch let error as AgentError {
+                XCTAssertEqual(error.code, kind == "sse" ? "provider_failed" : "provider_http")
+                XCTAssertFalse(error.message.contains(key)); XCTAssertFalse(error.providerMessage?.contains(key) == true)
+                let id = try XCTUnwrap(error.attemptID)
+                await traces.operation(id, ["phase": "failed", "errorCode": JSON(error.code), "error": JSON(error.message)])
+            }
+            await traces.delivered()
+            let attempt = await traces.latest("s"), emitted = await packets.values
+            XCTAssertFalse(attempt.encoded().contains(key))
+            XCTAssertEqual(attempt["responseHeaders"]["retry-after"].text, "********")
+            XCTAssertTrue(attempt["gateway"]["callId"].isNull); XCTAssertTrue(attempt["gateway"]["gatewayVersion"].isNull)
+            let retained: Data, events: [JSON]
+            if mode == "persist" {
+                retained = emitted.filter { $0["type"].text == "bytes" && $0["body"].text == "response" }.reduce(into: Data()) { $0.append(Data(base64Encoded: $1["bytes"].text!)!) }
+                events = emitted.filter { $0["type"].text == "events" }.flatMap { $0["events"].list }
+            } else {
+                let id = try XCTUnwrap(attempt["attemptId"].text)
+                let body = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(id), "body": "response"])
+                retained = try XCTUnwrap(Data(base64Encoded: body["bytes"].text ?? ""))
+                events = try await traces.command("debug.raw-events", session: "s", params: ["attemptId": JSON(id)])["events"].list
+            }
+            XCTAssertFalse(retained.isEmpty); XCTAssertFalse(String(decoding: retained, as: UTF8.self).contains(key))
+            XCTAssertEqual(events.count, kind == "sse" ? 1 : 0)
+            for event in events { XCTAssertEqual(Set(event.map.keys), ["type", "start", "end", "observedAt"]); XCTAssertEqual(event["type"].text, "error") }
+            for packet in emitted where packet["type"].text != "bytes" { XCTAssertFalse(packet.encoded().contains(key)) }
+        } }
+    }
+
     func testJSONEscapeEquivalentCredentialsAreMaskedAtEveryCaptureSplit() async throws {
         let fixtures = [("sk-test-secret", #"\u0073k-test-secret"#),
                         ("sk-test-secret", #"s\u006B-test-\u0073ecret"#),

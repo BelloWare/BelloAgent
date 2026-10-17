@@ -2,6 +2,40 @@ import XCTest
 @testable import PiAgentCore
 
 final class RoutingTests: XCTestCase {
+    func testConfiguredHeaderMatchingSchemaKeysKeepsPinnedReplayAfterReopen() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        for region in ["status", "us", "effectiveModel"] { for mode in ["off", "memory", "persist"] {
+            var raw = try fixtureProfile().raw
+            raw["headers"] = ["X-Region": JSON(region)]
+            raw["routing"] = ["replayPolicy": "pinned", "expectedModel": "actual-a", "replayContract": "Gateway fixes compatible upstream"]
+            let profile = try Profile(raw), traces = TraceStore(), label = "\(region), \(mode)"
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let id = await traces.begin(session: "s", turn: "t", profile: profile, purpose: "turn", body: Data(), headers: ["Authorization": "Bearer fixture-key", "X-Region": region])
+            await traces.head(id, status: 200, headers: ["x-litellm-model-name": "actual-a"])
+            var message = ChatMessage(role: "assistant", content: [textBlock("answer")])
+            message.providerItems = [["type": "reasoning", "encrypted_content": "opaque"]]
+            message.providerIdentity = await traces.identity(id)
+            message.providerBinding = try ProviderClient.replayBinding(profile)
+            XCTAssertEqual(message.providerIdentity?["status"].text, "reported", label)
+            XCTAssertEqual(try ProviderClient.replayItems(message, profile: profile), message.providerItems, label)
+            let monitoring = await traces.monitoring(id)
+            XCTAssertEqual(monitoring["identity"]["status"].text, "reported", label)
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let path = root.appendingPathComponent("\(region)-\(mode).jsonl")
+            do {
+                let journal = try SessionJournal(url: path, id: "s", cwd: root, binding: profile.binding, create: true)
+                try journal.append(["type": "message", "message": message.pi], id: message.id)
+            }
+            let journal = try SessionJournal(url: path, id: "s", cwd: root, binding: profile.binding, create: false)
+            let reader = try journal.recordReader()
+            var saved: JSON?
+            while let record = try reader.next() { if record["id"].text == message.id { saved = record["message"] } }
+            let restored = try ChatMessage(id: message.id, pi: XCTUnwrap(saved))
+            XCTAssertEqual(try ProviderClient.replayItems(restored, profile: profile), message.providerItems, label)
+        } }
+    }
+
     func testAliasEchoLateAndConflictingIdentityNeverGuessDeployment() throws {
         var raw=try fixtureProfile().raw
         raw["routing"]=["reference":"Fixture v1","modelHeader":"x-fixture-model","deploymentHeader":"x-fixture-deployment"]
