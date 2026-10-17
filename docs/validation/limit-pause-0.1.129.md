@@ -231,6 +231,37 @@ them. Family members by the loaded window: managed sub-agent records are always 
 writes a fresh run state (no pause, no held work), so its copied unsealed turns are sealed
 by recovery (no pause) and never restarted; there is no delete-turn or rewind operation.
 
+## Review round 7 (Codex, 4 P2, side pause membership)
+
+**Structural choice.** Codex suggested one source of truth: the root's latched pause plus
+its generation, with membership derived instead of stored. The part that removes these
+classes was adopted: a side now asks its ancestors' latched pause at every admission
+(`enforceCostHold`), as it shares their spend. A side pause issued by an ancestor is applied
+whatever the limit says later, fenced only by the ancestor's Resume count. Membership stays a
+stored list on the root, because a cold side (not loaded, possibly never opened since a
+relaunch) cannot be asked whether it has held work without opening its journal for every
+snapshot and Resume. The list is the root's durable index of sides awaiting the family's
+Resume, and it now validates itself: it is pruned against the side journals on reopen,
+dropped on deletion, and a first membership is a full pause. Rebuilding pause ownership this
+late would rewrite every Resume path the six earlier rounds tested; the in-place fixes keep
+all of those tests passing.
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P2 side pause callbacks re-checked the numeric limit (a raise before them skipped the sides); side admission ignored the root's latched pause | Callbacks carry the pause reason and the issuer's Resume count (`costResumeCount`) and apply the latched pause unless a Resume came since; `enforceCostHold` checks every ancestor's `costPaused` | `FamilyLimitPauseTests.testASidePauseIssuedBeforeARaiseStillPausesTheSide` (`r7-latched-callback`, `r7-resume-fence`); `testASideStartsNothingWhileItsRootIsPausedAfterARaise` (`r7-side-admission`) |
+| P2 a repaired membership set the root's flags without the pause transition | A root's first paused member is a full pause: new generation, saved, model requests cut, coordinator hold, other sides paused | `testRepairingASidesPauseIntoARunningRootPausesItFully` (`r7-repair-transition`) |
+| P2 a root whose Resume was accepted, with sides not yet resumed, offered no Resume after relaunch | While sides it lists still wait and nothing of its own runs (`membersPendingResume`), the root shows the family's pause (`costPaused`, `cost.paused`, state `paused`, `continuable`) and its Resume hands the sides out again; nothing of its own is held | `testARootWithSidesStillWaitingKeepsOfferingTheFamilysResume` (`r7-members-pending`, `r7-members-handed`); native `CostPauseFamilyTests.testSidesStillPausedAfterALostRootResumeAreRecovered` now goes through `resumeRun` on the root's view (`r7-native-entry`) |
+| P2 deleting an idle paused side left it in the root's list, so a root paused only for it stayed paused | `session.forget` takes every forgotten id off loaded roots' lists (a root paused only for them ends its pause); a reopened root drops listed sides whose journal is gone | `SideBudgetTests.testDeletingAPausedSideTakesItOffItsRootsPause` (`r7-forget-deleted`); `testAReopenedRootDropsListedSidesThatNoLongerExist` (`r7-drop-missing`) |
+
+Same-kind audit. Every path that puts a chat into the pause now goes through the full
+transition: `pauseAtCostLimit`, a root's first member, a child's park, or a Resume that ended
+before taking its work. Every way a side learns of the pause is latched: the ancestor's
+callback, its admission check, and its own durable flag on reopen. Ways a member leaves the
+list: its own Resume (`forgetPausedMember`), automatic clear, deletion, and pruning on
+reopen. An unkept side that pauses and then ends with its runtime is pruned at the root's next
+reopen; while the root stays loaded it remains listed, and Resume skips it harmlessly (no
+record).
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
