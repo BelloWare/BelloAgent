@@ -69,6 +69,34 @@ final class WebhookExchangeTests: XCTestCase {
         }
     }
 
+    /// A task longer than one history page (60 rows): its request is pages
+    /// back from its last row, and a later turn may have pushed that row off
+    /// the latest page too. Every reply of the task is read, and nothing else.
+    @MainActor func testATaskLongerThanAPageIsReadWhole() async throws {
+        for later in [0, 90] {
+            let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-long-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            defer { model.shutdown() }
+            let journal = try SearchJournal(root.appendingPathComponent("chat.jsonl"))
+            func row(_ id: String, _ role: String, _ text: String, task: String) throws {
+                let content: Any = role == "user" ? text : [["type": "text", "text": text]]
+                try journal.message(id, role: role, content, extra: ["nativeTaskRoot": task])
+            }
+            try row("u0", "user", "Old request", task: "t0"); try row("a0", "assistant", "Old answer", task: "t0")
+            try row("u1", "user", "Long request", task: "t1")
+            for step in 0..<130 { try row("s\(step)", "assistant", "Step \(step)", task: "t1") }
+            for step in 0..<later { try row("n\(step)", step == 0 ? "user" : "assistant", "Later \(step)", task: "t2") }
+            model.chats = [ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: journal.url.path, profileID: "fixture")]
+            let display = SessionDisplay(id: "chat"); model.displays["chat"] = display
+            display.messages = [TranscriptMessage(id: "u1", role: "user", text: "Long request")]
+            var settings = WebhookSettings(); settings.enabled = true; settings.url = "http://127.0.0.1:1/no-send"; settings.parameters = ""
+            let prepared = try await model.prepareWebhook(for: "chat", settings: settings, status: "completed", task: WebhookTask(rootID: "t1", lastSourceID: "s129"))
+            XCTAssertEqual(prepared.context.lastRequest, "Long request", "later rows: \(later)")
+            XCTAssertEqual(prepared.context.lastReply, (0..<130).map { "Step \($0)" }.joined(separator: "\n\n"), "later rows: \(later)")
+        }
+    }
+
     /// Bounded to the finished task: a later turn's rows, and earlier ones,
     /// are not its exchange. Without an identity, the last request as before.
     func testTheExchangeIsBoundedToTheFinishedTask() {

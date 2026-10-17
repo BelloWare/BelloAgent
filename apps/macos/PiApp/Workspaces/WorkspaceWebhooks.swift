@@ -108,11 +108,7 @@ extension WorkspaceModel {
         // next turn may already have started. A chat not yet saved has only
         // the rows on screen.
         var messages = display?.messages ?? []
-        if let path = item.path, let page = try? await history.read(path: path) {
-            messages = page.messages
-            if let task, !WebhookContext.holds(task, in: messages), let last = task.lastSourceID,
-               let around = try? await history.read(path: path, around: last) { messages = around.messages }
-        }
+        if let path = item.path, let read = await completedExchange(path: path, task: task) { messages = read }
         (context.lastRequest, context.lastReply) = WebhookContext.exchange(in: messages, task: task)
         let parameters = try settings.parameterList()
         var values = context.values
@@ -134,6 +130,29 @@ extension WorkspaceModel {
         }
         preparation.request = try WebhookRequest.render(settings, values: values)
         return preparation
+    }
+
+    /// The rows a finished task's exchange is read from: the chat's latest
+    /// page, or the page ending at the task's last row when a later turn has
+    /// moved past it, then older pages until they reach the request the
+    /// exchange answers. A task can be longer than one page (60 rows or
+    /// 256 KiB). Nil when the history cannot be read.
+    private func completedExchange(path: String, task: WebhookTask?) async -> [TranscriptMessage]? {
+        guard var page = try? await history.read(path: path) else { return nil }
+        if let task, let last = task.lastSourceID, !page.messages.contains(where: { $0.id == last }) {
+            // The page that ends at the task's last row: the page before the row after it.
+            guard let around = try? await history.read(path: path, around: last),
+                  let index = around.messages.firstIndex(where: { $0.id == last }) else { return page.messages }
+            if index + 1 < around.messages.count, let after = try? await history.read(path: path, before: around.messages[index + 1].id) {
+                page = after
+            } else { page = around }
+        }
+        var rows = page.messages
+        while !WebhookContext.reachesRequest(rows, task: task), let older = page.older?.entry,
+              let next = try? await history.read(path: path, before: older), !next.messages.isEmpty {
+            page = next; rows = next.messages + rows
+        }
+        return rows
     }
 
     /// The connection's mini model writes the parameters, from the chat's

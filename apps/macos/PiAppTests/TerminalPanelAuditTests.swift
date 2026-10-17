@@ -844,6 +844,47 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         press("h", code: 4, modifiers: .control); XCTAssertEqual(taken(), "\u{08}")
         XCTAssertEqual(interpreted, [], "with nothing composed, special keys are the program's")
     }
+
+    /// An input method that commits its composition and then declines the
+    /// key forwards it as a command (`moveLeft:`, `deleteForward:`, …). The
+    /// terminal sends that key's own sequence, as it would with nothing composed.
+    @MainActor func testAKeyTheInputMethodDeclinesStillReachesTheProgram() throws {
+        let emulator = TerminalEmulator(columns: 40, rows: 8)
+        let view = TerminalView(emulator: emulator)
+        view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
+        let window = window(view, width: 420, height: 180)
+        defer { window.contentView = nil; window.close() }
+        window.makeFirstResponder(view)
+        var sent = Data()
+        view.onInput = { sent.append($0) }
+        func taken() -> String { defer { sent = Data() }; return String(decoding: sent, as: UTF8.self) }
+        let commands: [UInt16: Selector] = [123: #selector(NSResponder.moveLeft(_:)), 124: #selector(NSResponder.moveRight(_:)),
+                                            126: #selector(NSResponder.moveUp(_:)), 117: #selector(NSResponder.deleteForward(_:)),
+                                            115: #selector(NSResponder.moveToBeginningOfLine(_:)), 36: #selector(NSResponder.insertNewline(_:))]
+        view.interpretKeys = { [weak view] events in
+            guard let view, let event = events.first else { return }
+            // Commit what is composed, then decline the key.
+            view.insertText("確定", replacementRange: NSRange(location: NSNotFound, length: 0))
+            if let command = commands[event.keyCode] { view.doCommand(by: command) }
+        }
+        func press(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = []) {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber,
+                                               context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+            else { return XCTFail("Could not make a key event") }
+            view.keyDown(with: event)
+        }
+        for (characters, code, expected) in [("\u{f702}", UInt16(123), "\u{1b}[D"), ("\u{f703}", 124, "\u{1b}[C"), ("\u{f700}", 126, "\u{1b}[A"),
+                                             ("\u{f728}", 117, "\u{1b}[3~"), ("\u{f729}", 115, "\u{1b}[H"), ("\r", 36, "\r")] {
+            view.setMarkedText("かく", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            press(characters, code: code)
+            XCTAssertEqual(taken(), "確定" + expected, "key \(code): the commit, then the key's own sequence")
+            XCTAssertFalse(view.hasMarkedText())
+        }
+        // Shift and Option still reach the sequence.
+        view.setMarkedText("かく", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        press("\u{f702}", code: 123, modifiers: .shift)
+        XCTAssertEqual(taken(), "確定\u{1b}[1;2D")
+    }
 }
 
 

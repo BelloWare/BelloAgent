@@ -51,6 +51,9 @@ import CoreText
     private var selectionAutoscrollTimer: Timer?
     var selectionAutoscrollActive: Bool { selectionAutoscrollTimer != nil }
     private var markedText = ""
+    /// The key handed to the input method while it composes, for the
+    /// terminal to send if the input method declines it.
+    private var composingKey: NSEvent?
     /// Hands key events to the text input system; a seam, so a test can stand
     /// in for an input method that holds repeats back.
     var interpretKeys: (([NSEvent]) -> Void)?
@@ -505,15 +508,24 @@ import CoreText
         if flags.contains(.command) { super.keyDown(with: event); return }
         // While an input method composes, Return, the arrows, Backspace,
         // Escape and control keys accept or edit the composition: it sees
-        // them first. A key it does not take comes back as `doCommand(by:)`.
+        // them first. A key it declines comes back as `doCommand(by:)`, and
+        // then sends the terminal's own sequence for this event.
         if !markedText.isEmpty {
+            composingKey = event; defer { composingKey = nil }
             if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
             return
         }
+        if sendTerminalKey(event) { return }
+        if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
+    }
+    /// Sends a key's terminal sequence: a special key, a control or Meta
+    /// character, or a held key's repeat. False for a key to be typed.
+    private func sendTerminalKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let shift = flags.contains(.shift), control = flags.contains(.control), option = flags.contains(.option)
         if let key = TerminalKeyEncoder.key(forKeyCode: event.keyCode, shift: shift) {
             send(TerminalKeyEncoder.encode(key, applicationCursor: emulator.applicationCursorKeys, shift: shift, control: control, option: option))
-            return
+            return true
         }
         if control, let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
             let value = scalar.value
@@ -532,19 +544,19 @@ import CoreText
                 default: break
                 }
             }
-            if let byte { send(option ? Data([0x1b, byte]) : Data([byte])); return }
+            if let byte { send(option ? Data([0x1b, byte]) : Data([byte])); return true }
         }
         if option, optionSendsMeta, !control, let characters = event.charactersIgnoringModifiers, characters.utf8.count == 1, characters.unicodeScalars.first!.value < 0x80 {
-            send(Data([0x1b]) + Data(characters.utf8)); return
+            send(Data([0x1b]) + Data(characters.utf8)); return true
         }
         // macOS's press-and-hold holds a held key's repeats back to offer
         // its accents, through the text input system; a terminal repeats the
         // key instead. Only for a plain keyboard layout and nothing being
         // composed, so input methods and dead keys work as before.
         if event.isARepeat, markedText.isEmpty, let characters = event.characters, Self.repeatsAsTyped(characters), keyboardIsLayout() {
-            send(characters); return
+            send(characters); return true
         }
-        if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
+        return false
     }
     override func keyUp(with event: NSEvent) {
         if event.keyCode == heldKeyCode { heldKeyCode = nil }
@@ -577,6 +589,11 @@ import CoreText
     }
     nonisolated override func doCommand(by selector: Selector) {
         MainActor.assumeIsolated {
+            // A key the input method declined while composing: its own sequence.
+            if let event = composingKey {
+                composingKey = nil
+                if sendTerminalKey(event) { return }
+            }
             switch selector {
             case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): send("\r")
             case #selector(insertTab(_:)): send("\t")

@@ -279,15 +279,22 @@ struct WebhookContext: Sendable, Equatable {
     /// one it wrote, so neither a later turn nor an earlier one is read.
     /// Rows from before task roots were recorded are bounded by the last row.
     static func exchange(in messages: [TranscriptMessage], task: WebhookTask?) -> (request: String, reply: String) {
-        guard let task else { return exchange(in: messages) }
+        guard task != nil else { return exchange(in: messages) }
+        return exchange(in: bounded(messages, task: task))
+    }
+    /// The rows the exchange is read from: up to the task's last row, and
+    /// its own rows when they are marked with it.
+    static func bounded(_ messages: [TranscriptMessage], task: WebhookTask?) -> [TranscriptMessage] {
+        guard let task else { return messages }
         var rows = messages
         if let last = task.lastSourceID, let end = rows.lastIndex(where: { $0.id == last }) { rows = Array(rows[...end]) }
         let own = rows.filter { $0.taskRootID == task.rootID }
-        return exchange(in: own.contains { $0.role == "user" } ? own : rows)
+        return own.contains { $0.role == "user" } ? own : rows
     }
-    /// Whether `messages` hold the task's rows.
-    static func holds(_ task: WebhookTask, in messages: [TranscriptMessage]) -> Bool {
-        messages.contains { $0.taskRootID == task.rootID || $0.id == task.lastSourceID }
+    /// Whether `messages` reach back to the request the task's exchange
+    /// answers: its last request before the task's last row.
+    static func reachesRequest(_ messages: [TranscriptMessage], task: WebhookTask?) -> Bool {
+        bounded(messages, task: task).contains { $0.role == "user" && $0.kind == nil && !$0.isStreaming }
     }
     static func exchange(in messages: [TranscriptMessage]) -> (request: String, reply: String) {
         let visible = messages.filter { $0.kind == nil && !$0.isStreaming }
