@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).
 - [x] Start-with-wait IDs work in status listings immediately and after reopening, including older saved starts. [Validation](docs/validation/a130-helper-0.1.130.md).
 - [x] Reopened cost-paused chats seed sides and whole-chat forks from the last complete tool boundary; the parent keeps its held calls for Resume. [Validation](docs/validation/a130-helper-0.1.130.md).

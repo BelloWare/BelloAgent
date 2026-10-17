@@ -135,8 +135,86 @@ memory: bodyEcho=false, eventTypeEcho=true, durableEventTypeEcho=false
 persist: bodyEcho=false, eventTypeEcho=true, durableEventTypeEcho=true
 ```
 
-This is a distinct missing sanitizer in a different function, rather than JSON escape matching in response bodies. It is left for the lead under the instruction to report other bugs instead of expanding this workstream. No real credential was used.
+This is a distinct missing sanitizer in a different function, rather than JSON escape matching in response bodies. At the original handoff it was left for the lead under the instruction to report other bugs instead of expanding this workstream. The owner subsequently assigned it; the follow-up below resolves it. No real credential was used.
 
 ## Decisions and remaining work
 
-No assigned finding rejected. No owner decision or UX change is required for these fixes. The separate SSE event-type issue above remains unresolved; no unrelated bug has been fixed. The lead retains merge and full native-gate responsibility. This workstream created no DerivedData or clone folders; its helper builds, logs and scratch probe occupy about 557 MiB in its assigned build root.
+No original assigned finding rejected. No owner decision or UX change is required for these fixes. The SSE event-type issue was unresolved at the original handoff and is now addressed below. The lead retains merge and full native-gate responsibility. The original workstream created no DerivedData or clone folders; its helper builds, logs and scratch probe occupied about 557 MiB in its assigned build root.
+
+## Follow-up — capture metadata credentials
+
+Owner-assigned follow-up on `dev/a130-helper`, after the original branch was merged and this worktree fast-forwarded to `5c52621c`. All evidence for this section is in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/sse-metadata/`. The same build root was reused. Generated credentials and an ephemeral loopback gateway only.
+
+### Confirmed fixes and failing-first evidence
+
+The first run added four regressions without changing production code: all four failed, with 30 assertion failures and no unexpected errors (`failing-first.log`). Each test exercises memory and persist modes.
+
+1. **SSE event types — confirmed and fixed.** `CredentialCaptureTests.testSSEEventTypesMaskCredentialsBeforePreviewInMemoryAndPersistedPages` feeds 130 real SSE events one byte at a time, including an exact credential, a credential crossing the 128-byte preview boundary, normal names, and both full and final partial persistence pages. Before the fix: `XCTAssertEqual failed: Optional("sk-generated-event-secret") ... Optional("[sha256:dc4ac548…]") - memory, event 0`, with the same failure in persist mode; event 1 retained `xxxxxxxx…sk-g`. `TraceStore.event()` now fingerprints a credential-bearing name before previewing it. The test checks original parser input, event counts, offsets, memory pages, persistent pages and length-preserving response masking.
+2. **Request/response header names — confirmed sweep instance, fixed.** `testCapturedRequestAndResponseHeaderNamesCannotEchoCredentials` reproduced a key embedded in a valid custom header name. The value was protected, but the dictionary key was retained and delivered unchanged: `XCTAssertFalse failed - memory` and `... - persist`; the expected fingerprinted header was missing. Both header capture methods now fingerprint credential-bearing normalized names. Tests also cover masked header values, oversized values, ordinary readable headers, `Retry-After`, and unchanged wire headers.
+3. **Gateway cache provenance — confirmed sweep instance, fixed.** `testGatewayCacheHeaderSourceCannotEchoCredentials` uses an accepted routing contract with the generated credential embedded in `cacheHeader`. The cache observation was safe but `gateway.cache.source` retained `header:x-cache-sk-generated-cache-value`: `XCTAssertEqual failed: Optional("header:x-cache-sk-generated-cache-value") ... Optional("[sha256:f709f328…]")` in both modes. Capture now applies the existing recursive metadata sanitizer to gateway metadata; the cache hit observation remains intact.
+4. **Raw usage metadata — confirmed sweep instance, fixed.** `testCapturedRawUsageSanitizesNestedCredentialValuesAndFieldNames` passes a real `ProviderAccumulator` result to capture. Normalized usage retains arbitrary provider fields under `usage.raw`; a nested credential value and object key both escaped body masking. Before the fix: `XCTAssertEqual failed: Optional("sk-generated-usage-value") ... Optional("[sha256:21fa0a45…]")` and the fingerprinted key was missing in both modes. Capture sanitizes its usage copy, and the recursive sanitizer now handles object keys as well as values. Numeric accounting, ordinary fields and the original provider result are unchanged.
+
+All 17 `CredentialCaptureTests` then passed (`fixed.log`). No new source files were added, so project regeneration was unnecessary. No UI changed.
+
+### Remaining metadata sweep
+
+- **SSE `id` and `retry`:** `Transport.swift` retains only `event`, `data`, and numeric byte offsets in `SSEEvent`. ID/retry text is not separately indexed; its response bytes pass through the masker.
+- **HTTP IDs and retry headers:** header values already use credential checks. Routing/gateway call IDs and gateway versions already reject credential-bearing values. Normal retry behavior and provider parsing remain unchanged.
+- **Error metadata:** provider HTTP/stream errors use fixed local error codes and typed `ProviderFailure`; `ProviderClient.safeFailure` sanitizes provider message/code/type text before it reaches operation diagnostics. Summary outcomes allowlist status/reason fields. Transport outcomes and recorder failure messages are local constants; the recorder returns only an acknowledgment boolean. No additional error-path fix was needed.
+- **Other structured metadata:** routing identity already uses the sanitizer. Usage was the arbitrary provider object that bypassed it and is fixed above. Request scopes, message links and attempt IDs are helper-owned correlation identities and remain unchanged.
+
+`testLoopbackErrorIDsAndRetryFieldsDoNotEscapeCaptureMasking` verifies both HTTP 401 and SSE error responses in both capture modes. The generated gateway echoes a synthetic key in SSE ID/retry fields, provider error message/code/type/object keys, `Retry-After`, request ID, gateway call ID and gateway version. It checks sanitized error text and operation metadata, masked retained response bytes, metadata packets, and the absence of ID/retry fields from event indices. All four loopback scenarios pass.
+
+### Mutation checks
+
+Each mutation ran alone, rebuilt the helper test executable, failed its targeted regression as expected, and restored the fixed file in a `finally` block. `mutations.log` records all seven; `capture.log` is the successful restored-source run.
+
+| Mutation log | Regression | Result |
+| --- | --- | --- |
+| `mutation-event-sanitizer.log` | `testSSEEventTypesMaskCredentialsBeforePreviewInMemoryAndPersistedPages` | 1 failed test; 3 assertions |
+| `mutation-event-preview-order.log` | same; sanitize after clipping | 1 failed test; 1 assertion |
+| `mutation-request-header-name.log` | `testCapturedRequestAndResponseHeaderNamesCannotEchoCredentials` | 1 failed test; 8 assertions |
+| `mutation-response-header-names.log` | same; restore all three original response-name returns | 1 failed test; 10 assertions |
+| `mutation-gateway-source.log` | `testGatewayCacheHeaderSourceCannotEchoCredentials` | 1 failed test; 4 assertions |
+| `mutation-usage-sanitizer.log` | `testCapturedRawUsageSanitizesNestedCredentialValuesAndFieldNames` | 1 failed test; 8 assertions |
+| `mutation-metadata-field-names.log` | same; retain original object keys | 1 failed test; 6 assertions |
+
+### Follow-up validation commands
+
+Run from this worktree, serially; logs are separate from the original workstream's evidence:
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+# Failing first, before production edits:
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter 'CredentialCaptureTests/test(SSEEventTypesMask|CapturedRequestAndResponseHeaderNames|GatewayCacheHeaderSource|CapturedRawUsage)'
+# Fixed credential class:
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter '^PiAgentCoreTests.CredentialCaptureTests/'
+# Each mutation used the same swift command, --filter CredentialCaptureTests/<regression> from the table.
+python3 "$BUILD/metadata-mutations.py"
+# Restored capture and adjacent classes:
+export PI_BUILD_ROOT="$BUILD" SWIFT_BACKTRACE='enable=yes,interactive=no,threads=all'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter '^PiAgentCoreTests.(CredentialCaptureTests|CaptureTraceTests|CaptureConcurrencyTests|CaptureDrainTests|TraceBufferPerformanceTests|GatewayTelemetryTests|RoutingTests|ProviderStreamErrorTests|ProviderStreamingTests|ProviderMediaTypeTests|HTTPIngressTests)/'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+PI_BUILD_ROOT="$BUILD" python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+git diff --check
+```
+
+| Suite / log | Result | Duration |
+| --- | --- | ---: |
+| Fixed credential class, `fixed.log` | 17 passed, 0 failed | 2.496 s |
+| Restored capture and adjacent classes, `capture.log` | 62 passed, 0 failed | 14.327 s |
+| Isolated helper measurements, `helper-cost.log` | 5 passed, 0 failed | 3.698 s |
+| Remaining full helper suite, `helper.log` | 1,026 executed: 1,019 passed, 7 skipped, 0 failed | 391.526 s |
+| Release bundle, `bundle.log` | passed | 74.186 s |
+| Release wire, `wire.log` | 36 passed, 0 failed | 33.255 s |
+| Release concurrent, `concurrent.log` | 4 passed, 0 failed | 24.933 s |
+| Release acceptance, `acceptance.log` | 3 passed, 0 failed | 3.458 s |
+
+Full helper total: **1,031 executed, 1,024 passed, 7 skipped, 0 failed**. The seven skips are the same existing opt-in checks: one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. There were no unrelated failures. `results.json` retains exact runner commands and elapsed times; `git diff --check` passed.
+
+No owner decision is needed and no capture finding from this follow-up remains unresolved. The lead retains review, merge and full native-gate responsibility. This follow-up created no DerivedData, clone folders or xcresult bundles.

@@ -46,7 +46,7 @@ struct CaptureCredentials: Sendable {
         .object(Dictionary(headers.map { name, value in
             let name = name.lowercased(), credential = Self.credential(value, header: name)
             let safe = Self.ordinaryHeaders.contains(name) && !configuredNames.contains(name) && !Self.sensitiveHeader(name) && !contains(value)
-            return (name, JSON(safe ? value : credential.prefix + Self.masked(credential.value, showSuffix: name != "cookie" && name != "set-cookie")))
+            return (metadataText(name), JSON(safe ? value : credential.prefix + Self.masked(credential.value, showSuffix: name != "cookie" && name != "set-cookie")))
         }, uniquingKeysWith: { _, last in last }))
     }
     func responseHeaders(_ headers: [String: String], metadataHeaders _: Set<String>) -> JSON {
@@ -56,11 +56,11 @@ struct CaptureCredentials: Sendable {
             // caching and debugging fields not known to the gateway parser.
             // A gateway echo must not reintroduce a captured request credential.
             let safe = !Self.sensitiveHeader(name) && !configuredNames.contains(name) && !contains(value)
-            guard safe else { return (name, JSON("********")) }
+            guard safe else { return (metadataText(name), JSON("********")) }
             guard value.utf8.count <= 16_384, !value.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
-                return (name, JSON("[omitted: header exceeds capture safety limits]"))
+                return (metadataText(name), JSON("[omitted: header exceeds capture safety limits]"))
             }
-            return (name, JSON(value))
+            return (metadataText(name), JSON(value))
         }, uniquingKeysWith: { _, last in last }))
     }
     func metadataText(_ value: String) -> String {
@@ -72,7 +72,7 @@ struct CaptureCredentials: Sendable {
         switch value {
         case .string(let text): return JSON(metadataText(text))
         case .array(let array): return .array(array.map(metadata))
-        case .object(let object): return .object(object.mapValues(metadata))
+        case .object(let object): return .object(Dictionary(object.map { (metadataText($0.key), metadata($0.value)) }, uniquingKeysWith: { _, last in last }))
         default: return value
         }
     }
