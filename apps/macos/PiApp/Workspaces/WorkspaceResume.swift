@@ -34,10 +34,11 @@ extension WorkspaceModel {
         // The run goes on in the latest version, and the transcript returns to it, as for a send.
         latestVersion(sessionID: id)
         view.resuming = true
+        let archiveRevision = archiveRevisions[id, default: 0]
         resumeSteps?("accepted")
         Task {
             defer { view.resuming = false; updateHostActivity(workspaceID: item.workspaceID) }
-            _ = await performResume(item, view: view)
+            _ = await performResume(item, view: view, archiveRevision: archiveRevision)
         }
     }
 
@@ -124,8 +125,9 @@ extension WorkspaceModel {
     /// chat. Returns the helper's reply; nil when it was refused or failed.
     /// `member`: part of a family Resume, where a chat with nothing of its
     /// own left (a side the root already resumed) is not an error.
-    func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false) async -> [String: WireValue]? {
+    func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false, archiveRevision: Int? = nil) async -> [String: WireValue]? {
         let commandID = UUID().uuidString, params = turnOverrides(for: item)
+        let archiveRevision = archiveRevision ?? archiveRevisions[item.id, default: 0]
         let durable = !isEphemeral(item.id)
         var recorded = false
         defer { refresh(item.id) }
@@ -143,6 +145,7 @@ extension WorkspaceModel {
                 recorded = true; pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
+            try requireUnarchived(item.id, revision: archiveRevision)
             resumeSteps?("dispatched")
             let reply = try await host.request("run.continue", sessionID: item.id, params: params, commandID: commandID)
             view?.acceptedCommands.insert(commandID)

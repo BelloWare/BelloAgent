@@ -107,6 +107,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let organizationScheduler = SessionOrganizationScheduler()
     var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
     var archiveStopRevisions: [String: Int] = [:]
+    var archiveRevisions: [String: Int] = [:]
+    var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?

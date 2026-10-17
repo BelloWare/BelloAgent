@@ -2,6 +2,13 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] APP-WORKSPACE-1: Settings merges capture preferences individually, preserving newer chat opt-outs and timestamps. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

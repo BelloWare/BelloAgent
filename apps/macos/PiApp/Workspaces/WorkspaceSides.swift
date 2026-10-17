@@ -614,6 +614,7 @@ extension WorkspaceModel {
     }
     func forkSession(_ parentID: String) {
         guard !installPreparing, let view = displays[parentID], !view.loading else { return }
+        let navigation = organizationNavigationRevision
         view.loading = true
         Task { defer {
             view.loading = false
@@ -623,7 +624,7 @@ extension WorkspaceModel {
             }
         }; do {
             let fork = try await createFork(parentID: parentID)
-            if selectedID == parentID || focusedSessionID == parentID { await select(fork.id) }
+            if organizationNavigationRevision == navigation, selectedID == parentID || focusedSessionID == parentID { await select(fork.id) }
         } catch { self.error = error.localizedDescription } }
     }
     /// `/fork` copies the whole conversation into a chat of its own. With
