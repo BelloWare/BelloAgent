@@ -109,17 +109,18 @@ The new pause tests depend on new API, so mutations demonstrate them:
 
 `FamilyLimitPauseTests` passed 12 consecutive repetitions after the final race fix.
 
-### Full gate (after review round 6, includes dev/next 1f1a319d)
+### Full gate (after review round 7, includes dev/next 1f1a319d)
 
 `PI_BUILD_ROOT=…/build-limit-pause scripts/verify-release.sh` under the shared lane lock
-(`verify-7.out`, logs in `verify-logs/`): **all passed in 57 min 3 s** (rounds 4 and 5's
-`verify-5.out` and `verify-6.out` also passed).
+(`verify-8.out`, logs in `verify-logs/`): **all passed in 57 min 13 s** (`verify-5.out`
+to `verify-7.out` also passed). Round 8's small fixes were checked with focused runs only;
+the final gate runs on dev/next.
 
 | Suite | Result |
 | --- | --- |
 | Native serial lane | 896 tests, 44 skipped, 0 failures |
 | Native parallel lane (8 clones) | 2,648 passed, 0 failed, 38 skipped |
-| Helper | 1,000 tests, 7 skipped, 0 failures; streaming cost 5/5 |
+| Helper | 1,007 tests, 7 skipped, 0 failures; streaming cost 5/5 |
 | Wire / concurrent / acceptance / Python | 36 / 4 / 3 / 86, all OK |
 | Gallery | 3 tests, 0 failures (230 screenshots) |
 
@@ -260,6 +261,14 @@ callback, its admission check, and its own durable flag on reopen. Ways a member
 list: its own Resume (`forgetPausedMember`), automatic clear, deletion, an unkept side's
 close (it ends with its runtime; `testClosingAnUnkeptPausedSideTakesItOffItsRootsPause`,
 `r7-unkept-close`), and pruning on reopen.
+
+## Review round 8 (Codex, 1 P1 + 2 P2)
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 a nested side resumed before its paused parent met that parent's pause and paused the family again | The family Resume reaches paused sides ancestors first (`ancestorsFirst`, after loading missing records and their ancestors) | native `RunHoldTests.testPausedSidesResumeAncestorsFirst` |
+| P2 a summary request checked only the chat's own pause | It asks `enforceCostHold` (own, ancestors', owner and coordinator holds) before every attempt | `FamilyLimitPauseTests.testASidesSummaryRequestWaitsForTheFamilysResume` (`r8-summary-hold`) |
+| P2 the cold reader ignored sides still waiting for an accepted Resume | A saved `costPausedMembers` without an active run reads as the family's pause (`pausedForResume`), as the helper's `membersPendingResume` | native `RunHoldTests.testAJournalWithSidesStillWaitingReadsAsPaused` |
 
 ## Owner rule of 2026-10-17 — evidence
 
