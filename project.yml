@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.128
-    CURRENT_PROJECT_VERSION: 132
+    MARKETING_VERSION: 0.1.129
+    CURRENT_PROJECT_VERSION: 133
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Sub-agents and sides at the main chat's top right, numbered and rendered. Their spend counts toward the main chat, and sub-agents start only when you ask."
+    RELEASE_MESSAGE: "The cost limit pauses at once and resumes after you raise it. Deleting a chat deletes its sides and sub-agents. Eleven fixes from an outside review."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

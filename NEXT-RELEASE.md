@@ -1,6 +1,6 @@
-# Next release: 0.1.129
+# Next release: 0.1.130
 
-**Released 2026-10-16:** 0.1.128 (build 132, tag `v0.1.128`) is the latest release; record `docs/validation/Bello-Agent-0.1.128-2026-10-16.md`.
+**Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
 ## 0.1.129
 
@@ -21,7 +21,7 @@
 - [ ] Still unexplained, each with failure diagnostics now:
   - `SessionTimingTests.testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow`: stale "latest 100 tok/s" OCR, 3 of 5 lanes on `dev/a129-flakes`;
   - `ContextReadingTests.testAChangedModelOrJournalCountsAgain`: the 66.7 s hang, 1/48 then 0/160;
-  - `SettingsFullDocumentGeometryTests`: a 1 pt difference, once;
+  - `SettingsFullDocumentGeometryTests`: explained (frozen 0.1.119 oracle varies ±1 pt; the product is constant), see bugs-core;
   - FileHiddenRead resume, PiSheetWindow closed-sheet release, transcript reveal and pasted-image cleanup start: not reproduced.
 - [x] Deleting a chat deletes its whole family (`dev/a129-family-delete`, owner decisions 2026-10-16): the chat, its saved sides at every depth (including unlisted ones) and their sub-agents go to Trash under one durable intent, listed by name on a Pi confirmation sheet. Deleting a side deletes its descendants and keeps its spend counted in main. A missing, removed or untrusted project no longer blocks deletion; only the app's own chat data is removed and a skipped side-cost repair is named. Sides published without a chat row go too; overlapping interrupted deletions finish first instead of being adopted. Sides get a Delete Side button. Earlier orphan sides are untouched. [Validation](docs/validation/family-delete-0.1.129.md).
 

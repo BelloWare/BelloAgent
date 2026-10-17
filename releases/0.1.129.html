@@ -1,0 +1,15 @@
+<h2>Bello Agent 0.1.129</h2>
+<ul>
+<li><strong>The cost limit pauses right away.</strong> When a chat reaches its cost limit, the reply being written is cut off at once, in plain chats and in chats with sides and sub-agents. Tools that are already running finish normally; nothing new starts. Raise the limit, then click Resume: tool calls that were waiting run first, and the chat, its sub-agents and its sides carry on. The pause survives quitting the app.</li>
+<li><strong>Deleting a chat deletes its sides and sub-agents.</strong> The confirmation lists the sides that go with it. A chat whose project folder is missing, moved or untrusted can still be deleted. Sides have a Delete Side button.</li>
+<li>Sides are read-only and can no longer start or message sub-agents.</li>
+<li>While a chat is paused at its cost limit, earlier messages can't be edited until you click Resume.</li>
+<li>Git: dropping or popping a stash never removes a different stash added at the same moment; Discard works before the first commit; Git uses your <code>XDG_CONFIG_HOME</code> settings; a file deleted and recreated shows the right diff.</li>
+<li>Remote MCP servers that ping during a tool call no longer break the call.</li>
+<li>Completion webhooks carry the finished task's own request and reply, even for long tasks.</li>
+<li>Typing in the terminal with an input method (such as Chinese or Japanese) works correctly.</li>
+<li>Search finds text that follows a NUL character. The search index rebuilds once.</li>
+<li>A steering message promoted from the queue reaches a parent that is waiting on its sub-agents.</li>
+<li>A side covered by another tab keeps its failure mark.</li>
+<li>Providers that answer with <code>Application/JSON</code> are understood.</li>
+</ul>
