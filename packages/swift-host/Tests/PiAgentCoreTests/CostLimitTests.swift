@@ -137,8 +137,8 @@ private final class StateProbe: @unchecked Sendable {
     /// calls was written, and whether a sync followed it yet.
     private(set) var releaseWritten = false, releaseSynced = false
     private var armed = false
-    /// Once set: the journal is copied at the first sync after a record of
-    /// an accepted Resume (active, no pause, calls still held).
+    /// Once set: the journal is copied at the first sync after a run-state
+    /// record of a Resume's run that no longer shows the pause.
     private var copy: (from: URL, to: URL)?, acceptedPending = false
     func arm() { lock.lock(); armed = true; lock.unlock() }
     func copyAtAcceptedResume(from: URL, to: URL) { lock.lock(); copy = (from, to); lock.unlock() }
@@ -147,7 +147,7 @@ private final class StateProbe: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let data = record["data"]; states.append(data)
         if armed, !releaseWritten, data["costPendingCalls"].isNull { releaseWritten = true }
-        acceptedPending = copy != nil && data["active"].flag == true && data["costPaused"].isNull && !data["costPendingCalls"].isNull
+        if copy != nil, data["active"].flag == true, data["costPaused"].isNull { acceptedPending = true }
     }
     func beforeSynchronize() {
         lock.lock(); defer { lock.unlock() }
@@ -382,8 +382,9 @@ final class CostLimitTests: XCTestCase {
         await s.close()
     }
 
-    /// Round 4: the helper ends after a Resume was accepted (the pause is
-    /// over on disk) but before its run took the held calls. The reopened
+    /// Round 4: an accepted Resume keeps the pause on disk until its run has
+    /// taken the paused work. The helper then ends after that (the pause is
+    /// over on disk) but before the run took the held calls. The reopened
     /// chat still offers Resume, a message sent meanwhile waits behind the
     /// calls, and Resume runs them first, before any model request.
     func testHeldCallsLeftByAnAcceptedResumeKeepResumeAndGoBeforeASend() async throws {
@@ -401,7 +402,9 @@ final class CostLimitTests: XCTestCase {
         probe.copyAtAcceptedResume(from: URL(fileURLWithPath: path), to: crash)
         _ = try await s.continueRun(commandID: "resume")
         _ = try await settled(s); await s.close()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: crash.path), "The accepted Resume's record was copied")
+        let accepted = try XCTUnwrap(probe.states.first { $0["commands"].list.contains { $0["turnId"].text == "continue:resume" } })
+        XCTAssertEqual(accepted["costPaused"].flag, true, "Accepted, not yet taken: still paused on disk")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: crash.path), "The run's record was copied")
         let after = BillingClient(turns: [.reply(answer("Done"), cost: 0.01), .reply(answer("Later done"), cost: 0.01)])
         let tools = RequestCountingTools(client: after)
         let reopened = try await session(copyRoot, id: "held", client: after, tools: tools, limit: 1, resume: crash.path)
@@ -450,6 +453,46 @@ final class CostLimitTests: XCTestCase {
         let texts = await client.summaryTexts
         XCTAssertEqual(texts.count, 2)
         XCTAssertTrue(texts.last?.contains("KEEP-THE-API-NOTES") == true, "The redone summary keeps the focus")
+        XCTAssertEqual(state["compaction"]["phase"].text, "completed"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        await reopened.close()
+    }
+
+    /// Round 4 sibling: a compaction the pause cut is work of its own. Left
+    /// by a helper that ended once the Resume's run had ended the pause on
+    /// disk, it keeps Resume, holds a message sent meanwhile, and runs.
+    func testACutCompactionLeftAfterThePauseEndedKeepsResume() async throws {
+        let root = try temporaryDirectory(), copyRoot = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: copyRoot) }
+        let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.02), .reply(answer("Done"), cost: 0.01), .reply(answer("Later done"), cost: 0.01)],
+                                   summaries: [.reply(answer("Summary of the retained history."), cost: 0.005), .reply(answer("Summary again."), cost: 0.005)])
+        let probe = StateProbe()
+        let s = try await session(root, id: "cut", client: client, tools: EvidenceTools(), limit: 1, policy: Self.smallTail, probe: probe)
+        try await send(s, "Append once")
+        _ = try await settled(s)
+        await client.holdSummaries(true)
+        try await s.compact()
+        try await eventually { await client.holdingSummary }
+        await s.setCostLimit(0.01)
+        _ = try await settled(s)
+        await s.setCostLimit(1)
+        let saved = await s.path, path = try XCTUnwrap(saved)
+        try FileManager.default.createDirectory(at: copyRoot.appendingPathComponent("state"), withIntermediateDirectories: true)
+        let crash = copyRoot.appendingPathComponent("state").appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+        probe.copyAtAcceptedResume(from: URL(fileURLWithPath: path), to: crash)
+        await client.holdSummaries(false)
+        _ = try await s.continueRun(commandID: "resume")
+        _ = try await settled(s); await s.close()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: crash.path))
+        let reopened = try await session(copyRoot, id: "cut", client: client, tools: EvidenceTools(), limit: 1, resume: crash.path, policy: Self.smallTail)
+        var state = await reopened.snapshot()
+        XCTAssertNotEqual(state["costPaused"].flag, true); XCTAssertEqual(state["continuable"].flag, true, "The cut compaction keeps Resume")
+        let sent = try await reopened.submit(Submission(commandID: "later", turnID: "later", text: "Later"), steer: false)
+        XCTAssertEqual(sent["delivery"].text, "after-resume")
+        let reply = try await reopened.continueRun(commandID: "resume-again")
+        XCTAssertEqual(reply["compacting"].flag, true)
+        state = try await settled(reopened)
+        let summaries = await client.summaryRequests
+        XCTAssertEqual(summaries, 3, "Cut, done before the copy's end, and done again here")
         XCTAssertEqual(state["compaction"]["phase"].text, "completed"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
         await reopened.close()
     }

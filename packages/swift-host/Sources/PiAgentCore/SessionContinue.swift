@@ -31,9 +31,9 @@ extension AgentSession {
     var canContinue: Bool {
         guard !isSubagent, runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest else { return false }
         // A family paused at its cost limit always has its Resume, and so do
-        // tool calls the pause held, even with the pause already ended (a
-        // helper that stopped between Resume's acceptance and its run).
-        if costPaused || !costPendingCalls.isEmpty { return true }
+        // tool calls or a compaction the pause cut, even with the pause
+        // already ended (a helper that stopped before Resume's run did them).
+        if costPaused || !costPendingCalls.isEmpty || costPendingCompaction { return true }
         guard let tail = continuationTail else { return false }
         return Self.continues(from: tail) || hasPendingAgentEvents
     }
@@ -59,7 +59,7 @@ extension AgentSession {
     func restoreCostPause(_ saved: CostPauseState) {
         costPaused = saved.paused; costPausedMembers = saved.members; familyStopReason = saved.reason
         budgetStopIssued = saved.issued; errorCode = saved.code; errorMessage = saved.message
-        resumingCostPause = false; familyWaitResume = false; compactOnResume = false
+        resumingCostPause = false; familyWaitResume = false; compactOnResume = false; costResumePending = false
     }
     /// The whole family's limit, checked before a Resume of a paused chat:
     /// a side reads its root's. Raising the limit alone resumes nothing.
@@ -121,8 +121,9 @@ extension AgentSession {
         if costPaused { members = endCostPause() }
         // A manual compaction the pause cut runs first in the Resume's own run
         // (with its overrides), which then goes on with the rest of the work.
-        let compactFirst = paused.paused && costPendingCompaction && !titleTask
-        let familyOnly = paused.paused && (hasParkedAgentTurns || compactFirst)
+        // Also once the pause is over (a helper that ended before it ran).
+        let compactFirst = costPendingCompaction && !titleTask
+        let familyOnly = paused.paused && hasParkedAgentTurns || compactFirst
         // Held tool calls are a run to go on with: they run first.
         let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents || !costPendingCalls.isEmpty
         // With nothing of its own cut off, the run waits for the resumed
@@ -169,6 +170,7 @@ extension AgentSession {
         activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
         familyWaitResume = !tailContinues
         compactOnResume = compactFirst
+        costResumePending = paused.paused
         commandState(submission, "queued")
         // Saved as a run under way, with its receipt: a helper that dies
         // before the run's own first record leaves the chat interrupted, so

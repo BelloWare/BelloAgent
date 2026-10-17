@@ -192,11 +192,13 @@ extension AgentSession {
                         // Stopped (or closed) while the pause's children were
                         // still settling: the family stays paused for the next
                         // Resume, and their runs are halted, not waited for.
-                        costPaused = true; costPauseCount &+= 1; try? persistState(active:true,durable:true)
+                        costPaused = true; costResumePending = false; costPauseCount &+= 1; try? persistState(active:true,durable:true)
                         if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
                         throw error
                     }
                 }
+                // The paused work is taken: the pause is over on disk too.
+                if costResumePending { costResumePending = false; try persistState(active:true,durable:true) }
                 // Tool calls the pause held before they started run first,
                 // from the reply that issued them: it is never asked again.
                 if continued, !costPendingCalls.isEmpty {
@@ -406,6 +408,12 @@ extension AgentSession {
             let cancelled = Task.isCancelled || error is CancellationError
             modelActive = false
             let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }
+            if costResumePending {
+                // The Resume's run ended before it took the paused work: the
+                // family is still paused, for the next Resume, and its parked
+                // turns stay parked (never cancelled as a stopped run's are).
+                costResumePending = false; resumingCostPause = false; costPaused = true; costPauseCount &+= 1
+            }
             // At the limit every chat pauses (`pauseAtCostLimit`); a family's
             // sub-agent turns are parked, not cancelled or waited for.
             if let budgetError {

@@ -43,10 +43,10 @@ extension AgentSession {
     /// them, and nothing is sent until Resume.
     /// So does a family paused at its cost limit: a message sent after the
     /// limit is raised waits for Resume, which never happens by itself.
-    /// Held tool calls (`costPendingCalls`) wait like a pause, also once the
-    /// pause itself is over (a helper that ended before Resume ran them): a
+    /// Held tool calls (`costPendingCalls`) and a cut compaction wait like a
+    /// pause, also once the pause itself is over (a helper that ended before Resume ran them): a
     /// message sent now goes after them, through Resume.
-    var pausedWithPending: Bool { runTask == nil && queuePaused && (!queue.isEmpty || !steering.isEmpty || costPaused || !costPendingCalls.isEmpty) }
+    var pausedWithPending: Bool { runTask == nil && queuePaused && (!queue.isEmpty || !steering.isEmpty || costPaused || !costPendingCalls.isEmpty || costPendingCompaction) }
     static var costPausedResumeError: AgentError {
         AgentError(costLimitCode, "This chat is paused at its cost limit. Choose Resume to go on with the paused work.")
     }
@@ -137,7 +137,7 @@ extension AgentSession {
         guard queueEdit == nil else { throw Self.editHeldError }
         // Only the run's Resume (`run.continue`) ends a cost-limit pause: it
         // also resumes the parked sub-agent turns and names paused sides.
-        guard !costPaused, costPendingCalls.isEmpty else { throw Self.costPausedResumeError }
+        guard !costPaused, costPendingCalls.isEmpty, !costPendingCompaction else { throw Self.costPausedResumeError }
         queuePaused=false; try persistState()
         if !queue.isEmpty || !steering.isEmpty { launch(); return }
         if errorCode == Self.costLimitCode, !costLimitReached {

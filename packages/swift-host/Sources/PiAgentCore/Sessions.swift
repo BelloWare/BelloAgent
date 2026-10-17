@@ -118,6 +118,10 @@ public actor AgentSession {
     /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
     /// own to continue waits for them instead of asking the model.
     var resumingCostPause = false
+    /// A Resume of a pause was accepted, and its run has not yet taken the
+    /// paused work (parked turns). Saved as the pause itself: a helper that
+    /// ends in between reopens paused, and the next Resume does it again.
+    var costResumePending = false
     var familyWaitResume = false
     /// Advances with each cost-limit pause; a Resume covers the pauses so far.
     var costPauseCount = 0
@@ -513,8 +517,9 @@ public actor AgentSession {
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             costPendingCompaction = saved["costPendingCompaction"].flag == true
             costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
-            // Held calls go first: nothing queued is sent past them.
-            if !costPendingCalls.isEmpty { queuePaused = true }
+            // Held calls and a cut compaction go first: nothing queued is
+            // sent past them.
+            if !costPendingCalls.isEmpty || costPendingCompaction { queuePaused = true }
             if costPaused {
                 // Paused at the family's limit, also when the helper ended
                 // mid-pause: the pause, not an interruption, is what waits.

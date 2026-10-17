@@ -380,7 +380,7 @@ extension AgentSession {
         if queueEditForgottenRevision > 0 { value["queueEditForgottenRevision"]=JSON(queueEditForgottenRevision) }
         if errorCode == Self.skillUpdatedCode, let skillUpdatedTurnID { value["skillUpdatedTurnId"]=JSON(skillUpdatedTurnID) }
         // Absent unless paused at the family's cost limit (`pauseAtCostLimit`).
-        if costPaused { value["costPaused"] = true }
+        if costPaused || costResumePending { value["costPaused"] = true }
         if costPendingCompaction { value["costPendingCompaction"] = true }
         if costPendingCompaction, let costPendingCompactionFocus { value["costPendingCompactionFocus"] = JSON(costPendingCompactionFocus) }
         if !costPendingCalls.isEmpty { value["costPendingCalls"] = .array(costPendingCalls.map(JSON.string)) }
