@@ -56,3 +56,38 @@ WebhookExchangeTests + WebhookTests 20; helper MCP 31, AgentSteering*/QueueEditi
 
 No UI drawing changed, so no gallery scenes were regenerated beyond the gate's own run.
 
+
+## Review round 1 (Codex, 200920f9): two P2s fixed
+
+| Finding | Fix | Failing first | Mutation |
+| --- | --- | --- | --- |
+| Webhook: a task longer than one history page (60 rows / 256 KiB) lost its request; the `around:` fallback started at the last row | `completedExchange` reads the latest page (or the page ending at the task's last row when a later turn pushed it off), then older pages until the bounded rows reach the task's request. `holds` is replaced by `bounded`/`reachesRequest`. | `WebhookExchangeTests.testATaskLongerThanAPageIsReadWhole` (130-row task, with and without 90 later rows): empty request, reply only "Step 129" | Backward loop disabled: 4 failures |
+| Terminal: a key the input method declines while composing (`moveLeft:`, `deleteForward:`, …) was dropped | The composing key is kept while the input method has it; `doCommand(by:)` sends its terminal sequence through the same encoder as uncomposed keys (`sendTerminalKey`). | `TerminalPanelSerialTests.testAKeyTheInputMethodDeclinesStillReachesTheProgram`: arrows, forward delete, Home and Shift-Left sent nothing after the commit | Fallback removed: 6 failures |
+
+Reruns: TerminalPanelSerialTests + TerminalPanelAuditTests 26/26; WebhookExchangeTests + WebhookTests 21/21.
+
+## SettingsFullDocumentGeometryTests: the 1 pt miss
+
+What the evidence shows:
+- The product page is constant. The native Settings page's Connection group was 783 pt in every run
+  examined: the failing gate, the failing neighbour run, and every passing run (more than 170).
+- The varying side is the frozen 0.1.119 SwiftUI oracle. Its Connection group is 784 in the gate
+  (lazy and eager hosting views alike) and 782 in one neighbour run (lazy only; the eager view in
+  the same process was 783). One hosting view keeps its value through every phase of the test.
+- Frequency: 1 in 52 runs of the class after its serial-lane neighbours
+  (SessionStatisticsParityTests, SessionUsageWindowFrameTests, SettingsCloseNativeTests);
+  0 in 100 iterations alone; 0 in 40 iterations under ten busy CPU loops; 0 in 640 fresh oracle
+  views built in one process (including after the neighbours, before or after window attachment,
+  at display scale 1 or 2, with the catalog loading, after warming fonts, dark app appearance,
+  every text field focused in turn).
+- No model, controller or catalog publication happens while the oracle lays out (instrumented).
+
+Not yet known: which row inside the oracle's Connection group gains or loses the point. The
+failing runs above had no per-row dump of the lazy oracle. The test now prints every view inside
+the Connection band for the native page and both oracle pages (with text field fonts and intrinsic
+heights) whenever the pages disagree (`SETTINGS-CONNECTION-ROWS`); the output path was checked by
+forcing it.
+
+Needs a decision: keep the strict oracle and use the next sighting's row dump, or treat the
+oracle's own ±1 pt as noise (the eager comparison already allows 1.01 pt), or re-measure the oracle
+on a mismatch.

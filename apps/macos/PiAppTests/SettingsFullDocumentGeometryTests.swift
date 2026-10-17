@@ -88,6 +88,21 @@ import XCTest
             try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent(name + ".png"))
         }
     }
+    /// Every view inside `group`'s band of the document, by origin: when the
+    /// pages disagree, which row is taller is in the log.
+    private func rows(_ root: NSView, document: NSView, within band: CGRect) -> [String] {
+        var lines: [String] = []
+        func walk(_ view: NSView) {
+            let frame = view.convert(view.bounds, to: document)
+            if frame.minY >= band.minY - 0.5, frame.maxY <= band.maxY + 0.5, view !== document {
+                lines.append("\(type(of: view)) y=\(frame.minY - band.minY) h=\(frame.height) x=\(frame.minX) w=\(frame.width)")
+                if let field = view as? NSTextField { lines.append("  field font=\(field.font?.fontName ?? "-") \(field.font?.pointSize ?? 0) intrinsic=\(field.intrinsicContentSize.height)") }
+            }
+            for child in view.subviews { walk(child) }
+        }
+        walk(document)
+        return lines
+    }
     private func frames(_ page: VerticalStack) -> [SettingsReferenceGroup: CGRect] {
         Dictionary(uniqueKeysWithValues: zip(SettingsReferenceGroup.allCases, page.items).map { ($0.0, $0.1.frame) })
     }
@@ -179,6 +194,14 @@ import XCTest
         try record("complete", kind: "frozen-eager", snapshot: eagerComplete, groups: eagerGeometry.groups, window: eagerWindow)
 
         let nativeFrames = frames(page)
+        if let native = nativeFrames[.connection], let original = lazyBottomFrames[.connection], let eagerConnection = eagerGeometry.groups[.connection],
+           abs(native.height - original.height) > 0.5 || abs(native.height - eagerConnection.height) > 0.5 {
+            print("SETTINGS-CONNECTION-ROWS native scale=\(nativeWindow.backingScaleFactor)\n" + rows(page, document: page, within: native).joined(separator: "\n"))
+            // The lazy page is back at its top: its Connection group is realized there.
+            let lazyConnection = try XCTUnwrap(lazyGeometry.groups[.connection])
+            print("SETTINGS-CONNECTION-ROWS frozen-lazy scale=\(lazyWindow.backingScaleFactor)\n" + rows(lazy, document: try XCTUnwrap(lazyScroll.documentView), within: lazyConnection).joined(separator: "\n"))
+            print("SETTINGS-CONNECTION-ROWS frozen-eager scale=\(eagerWindow.backingScaleFactor)\n" + rows(eager, document: try XCTUnwrap(eagerScroll.documentView), within: eagerConnection).joined(separator: "\n"))
+        }
         for group in SettingsReferenceGroup.allCases {
             let expected = try XCTUnwrap(lazyBottomFrames[group])
             let actual = try XCTUnwrap(nativeFrames[group])
