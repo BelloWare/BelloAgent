@@ -218,6 +218,9 @@ final class CostLimitTests: XCTestCase {
         try await chat.model.setCostLimit(.usd(0.003), for: chat.id)
         chat.send("wire paid-tool")
         try await chat.waitUntil("the run paused at its limit") { chat.session.costPaused && !chat.session.busy }
+        // The spend reading can follow the pause's snapshot under load; until
+        // it does, the card offers Resume and lets the helper refuse it.
+        try await chat.waitUntil("the card read the spend") { chat.session.presentedMessages.last?.failureCode == SessionDisplay.costPausedCode }
         let notice = try XCTUnwrap(chat.session.presentedMessages.last)
         XCTAssertEqual(notice.failureCode, SessionDisplay.costPausedCode)
         XCTAssertEqual(notice.text, "$0.004 spent of the $0.003 limit.")

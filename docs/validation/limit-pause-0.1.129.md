@@ -109,26 +109,22 @@ The new pause tests depend on new API, so mutations demonstrate them:
 
 `FamilyLimitPauseTests` passed 12 consecutive repetitions after the final race fix.
 
-### Full gate
+### Full gate (after review round 1, the owner rule of 2026-10-17 and the dev/next merge)
 
-`PI_BUILD_ROOT=…/build-limit-pause scripts/verify-release.sh` (under the shared lane
-lock; `verify-1.out`, logs in `verify-logs/`):
+`PI_BUILD_ROOT=…/build-limit-pause scripts/verify-release.sh` under the shared lane lock
+(`verify-2.out`, logs in `verify-logs/`):
 
 | Suite | Result |
 | --- | --- |
-| Native serial lane | 882 tests, 43 skipped, 0 failures |
-| Native parallel lane (8 clones) | 2,633 passed, 0 failed, 38 skipped |
-| Helper | 964 tests, 7 skipped, 0 failures; streaming cost 5/5 |
-| Wire | 36 tests: 1 failure in the rewritten side cost test (its assertions read the side's inherited history and assumed a tool round). Corrected; the test and then the whole wire suite passed, 36/36 (`logs/wire-rerun.log`) |
-| Concurrent / acceptance / Python | 4 / 3 / 86, all OK |
-| Gallery | 3 tests, 1 failure: `testRenderRedesignGallery` "session did not settle" under the loaded gate. Unchanged code path; it passed alone (`logs/redesign-gallery-1.log`, 495 s). The sub-agent and steering galleries (with the updated cost scenes) passed. |
+| Native serial lane | 889 tests, 43 skipped, 0 failures |
+| Native parallel lane (8 clones) | 2,631 passed, 1 failed, 38 skipped: `CostLimitTests.testThePauseNoticeAppearsAndResumeRunsTheHeldCallAfterARaise` asserted the held card before the spend reading had arrived under load (product behaviour is correct: unknown spend offers Resume and the helper refuses at the limit). The test now waits for the reading; the same wait was added to `CostPauseFamilyTests`. Alone it passed 3/3 before the change; both classes passed after it (`logs/pause-notice-*.log`, `logs/r3-native.log`). |
+| Helper | 971 tests, 7 skipped, 0 failures; streaming cost 5/5 |
+| Wire / concurrent / acceptance / Python | 36 / 4 / 3 / 86, all OK |
+| Gallery | 3 tests, 0 failures (230 screenshots); `testRenderRedesignGallery` did not recur |
 
-`scripts/test-subagent-cache.py` on the release helper: 26 requests, 22 comparisons,
-no prefix breaks, 100% previous-prefix retention (`logs/subagent-cache.log`).
-
-Earlier focused gallery runs on this shared Mac twice failed the sub-agent/steering
-galleries' `canBackToSubagentParent` key-window check (another workstream's windows);
-both passed in the full gate.
+Earlier runs: `verify-1.out` (first submission) is superseded. `FamilyLimitPauseTests`,
+`CostLimitTests` and `AgentSteeringBoundaryTests` passed 8 consecutive repetitions
+(`logs/rep-r2-*.log`). `scripts/test-subagent-cache.py`: no prefix breaks (tools unchanged).
 
 ## Review round 1 (Codex, 9 findings) — all fixed
 

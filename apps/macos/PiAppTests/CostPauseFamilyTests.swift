@@ -102,6 +102,9 @@ final class CostPauseFamilyTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTAssertEqual(cut.last?.cancelled, true, "The side's request in flight was cancelled at the limit")
+        await waitFor("The cards never read the spend") {
+            [parentView, sideView].allSatisfy { $0.presentedMessages.last?.failureCode == SessionDisplay.costPausedCode }
+        }
         for (view, shared) in [(parentView, false), (sideView, true)] {
             let card = try XCTUnwrap(view.presentedMessages.last)
             XCTAssertEqual(card.failureCode, SessionDisplay.costPausedCode)
