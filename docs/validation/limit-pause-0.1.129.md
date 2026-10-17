@@ -200,6 +200,21 @@ call enters still fails it (a held call that is really unavailable fails on Resu
 Stale summaries: a job goes in two places — `finishJob`, after the terminal seal record
 (a terminal row does not read the job), and `park`, now published.
 
+## Review round 5 (Codex, 1 P1 + 1 P2) and the same kinds of case
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 a pause's parking loop (a snapshot across awaits) could park a job a concurrent Resume had just reinstalled, leaving an unsealed turn with no runner | Each job has an identity (`instance`) and a `parking` mark: `park` acts only on the job still installed, once, and removes only that job; the pause loop re-reads each job, and stops once a Resume covers its generation; Resume's own parking loop re-reads too | `FamilyLimitPauseTests.testAStaleParkNeverRemovesAJobAResumeInstalled` (`r5-park-identity`; `r5-no-identity`, both guards removed: the family never completes) |
+| P2 after a relaunch, reopening a side the root's Resume already covered re-paused the root | A side's rebinding is a membership `repair`: it adds a missing membership (and the pause with it) but leaves a side the root still lists alone | `testRebindingASideTheRootsResumeCoversDoesNotPauseTheRootAgain` (`r5-repair-repause`) |
+
+Same-kind audit. Coordinator loops across awaits over a jobs snapshot: the pause loop and
+Resume's parking loop (above), and `cancel`, which now re-reads each job and judges it by
+its own execution; `finishJob` removes only its own job; `drain` (shutdown) only stops and
+waits. Paths that set a pause: a fresh `pauseAtCostLimit`, a child's `parkAgentTurn`
+(only through the identity-checked `park`), a side's first pause reaching its root, and a
+Resume that ended before taking its work (intended); the only repair path,
+`bindSideBudget`, is membership-only for a side already listed.
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |

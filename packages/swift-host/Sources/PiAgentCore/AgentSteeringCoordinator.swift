@@ -351,7 +351,8 @@ actor AgentSteeringCoordinator {
             catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
         if let child { await settled(child) }
-        jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 }; pump(job.owner.id)
+        if jobs[job.turn.id]?.instance == job.instance { jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 } }
+        pump(job.owner.id)
         await signal(job.owner.id).pulse()
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
@@ -369,7 +370,13 @@ actor AgentSteeringCoordinator {
     }
     func cancel(owner: String, runtimeID: String, through: Int) async {
         cancelledThrough[runtimeID] = max(cancelledThrough[runtimeID,default:-1],through)
-        for job in Array(jobs.values) where job.owner.id == owner && job.turn.currentRuntimeID == runtimeID && job.turn.currentGeneration <= through { await stop(owner:owner,target:job.turn.target,human:false) }
+        // Each job is read again after the awaits: a turn reinstalled since
+        // (a Resume's new job) is judged by its own execution, not a snapshot.
+        for snapshot in Array(jobs.values) where snapshot.owner.id == owner {
+            guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance,
+                  job.turn.currentRuntimeID == runtimeID, job.turn.currentGeneration <= through else { continue }
+            await stop(owner:owner,target:job.turn.target,human:false)
+        }
     }
     func drain(owner: String? = nil) async {
         let current = jobs.values.filter { owner == nil || $0.owner.id == owner }
