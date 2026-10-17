@@ -996,6 +996,8 @@ extension FamilyLimitPauseTests {
         await coordinator.park(stale,child:nil)
         let kept = await coordinator.jobs[stale.turn.id]
         XCTAssertNotNil(kept,"The Resume's job for the turn is kept")
+        XCTAssertEqual(kept?.parking,false,"Nor is it marked as parking, which would refuse its own park later")
+        XCTAssertNotEqual(kept?.instance,stale.instance)
         await client.releaseAll()
         try await eventually(timeout:.seconds(10)) { await owner.agentState().turns.values.allSatisfy { $0.status == .completed } }
         await coordinator.drain(); await owner.close()
