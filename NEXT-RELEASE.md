@@ -22,6 +22,8 @@
   - FileHiddenRead resume, PiSheetWindow closed-sheet release, transcript reveal and pasted-image cleanup start: not reproduced.
 - [x] Deleting a chat deletes its whole family (`dev/a129-family-delete`, owner decisions 2026-10-16): the chat, its saved sides at every depth (including unlisted ones) and their sub-agents go to Trash under one durable intent, listed by name on a Pi confirmation sheet. Deleting a side deletes its descendants and keeps its spend counted in main. A missing, removed or untrusted project no longer blocks deletion; only the app's own chat data is removed and a skipped side-cost repair is named. Sides published without a chat row go too; overlapping interrupted deletions finish first instead of being adopted. Sides get a Delete Side button. Earlier orphan sides are untouched. [Validation](docs/validation/family-delete-0.1.129.md).
 
+- [x] Inspector raw-search intermittent failure explained (`dev/a129-flake-inspector`): the test proceeded while the outline still held its empty placeholder (document applied a main-queue turn later), so "Show all" was a no-op. It now waits for the request's own rows; a 40-run probe went from 4 lost mounts to 0. Test-only. [Validation](docs/validation/flake-inspector-0.1.129.md).
+
 ## 0.1.128
 
 - [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).

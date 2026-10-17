@@ -163,9 +163,14 @@ import XCTest
         controller.present(.overview)
         try await eventually("The retained gallery request enters the Inspector's index") { inspector.indexLoaded && inspector.index.request(requestID) != nil }
         inspector.select(.request(requestID)); inspector.request.tab = .conversation
-        try await eventually("The gallery conversation outline mounts") {
+        // The outline mounts with empty placeholder content and receives the
+        // document on a later main-queue turn. "Show all" before that turn
+        // finds no section row and does nothing, so wait for the document's
+        // own rows, not only for a mounted outline and a parsed document.
+        try await eventually("The gallery conversation outline shows the request") {
             root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            return inspector.request.conversation.value != nil && InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root).first?.coordinator != nil
+            return inspector.request.conversation.value != nil && InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root).first?
+                .coordinator?.content?.key.hasPrefix(requestID + ":request:") == true
         }
         let outline = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root).first)
         let coordinator = try XCTUnwrap(outline.coordinator)
