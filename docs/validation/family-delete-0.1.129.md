@@ -175,3 +175,61 @@ Neither failure involves deletion code:
 The earlier 50 KB perf and gallery failures did not recur.
 
 The serial-lane failure was `SubagentOpeningTests.testLiveDiscoverySurvivesTopicMovesAndLosesAuthorityWhenTheHelperExits`: the child status was still `running` where `interrupted` was expected after the helper exited. This is sub-agent discovery after a helper exit, not deletion; the class does not call deletion. It is unchanged by this branch and passed 12/12 in each of five runs alone on the same build. It is handed to the flakes workstream; I did not try to fix it.
+
+## Review round 2 and the SubagentOpening intermittent failure (2026-10-17)
+
+### `SubagentOpeningTests.testLiveDiscoverySurvivesTopicMovesAndLosesAuthorityWhenTheHelperExits`
+
+**Symptom.** In the round-1 gate's serial lane, the child stayed `running` after the helper was killed; the test expected `interrupted`. The class passed 12/12 in five runs alone.
+
+**Cause (product).** With capture on, `HostTransport.captureEnded` reports `.failed` as soon as the helper process dies. `fail()` then runs `onLoss`, which calls `interruptSubagents` and marks running children `interrupted`. The `.exited` event, which is what clears `connectionID`, arrives only after the pending capture task and the `interrupted` capture write have finished. Under load, that gap is long.
+
+During that gap, a live `subagent.list` registration can finish. In the fixture, such registrations are frequent: the parent is mid-turn and its snapshot refreshes call `refreshSubagentGroups` whenever `subagentsRevision` changes. If the registration already had its reply, it was waiting on archive/history actor hops when the helper died. Its only authority check was `connectionID == connection`, which still held, so it wrote `running` back over the interruption. When `.exited` arrived, nothing interrupted the children again, because the loss had already been reported once.
+
+**Evidence.** The new deterministic test `testLiveRegistrationFinishingAfterHelperLossCannotRestoreRunning` reproduces the window exactly:
+1. It delivers `.failed` on the live connection, so `connectionID` is unchanged.
+2. It checks that the child is now `interrupted`.
+3. It completes a live list registration for the old connection.
+
+On the pre-fix code, the status went back to `running`, the same symptom as the gate.
+
+**Fix.** Live sub-agent summaries are accepted only while the connection is both current and ready (`liveSubagentAuthority`). `fail()` clears `isReady`. The check is applied in `registerDiscoveredSubagent` and in both guards in `refreshSubagentGroups`.
+- Mutation S3 (drop the ready check): the new test fails with `running`.
+- After the fix: `SubagentOpeningTests` passed 13/13.
+
+**Reproduction attempts on the original test.** Each was run under the full-lane lock, with 10 `yes` CPU hogs, as 15 consecutive single-test runs:
+- Pre-fix code: 0 of 15 failed.
+- Fixed code: 0 of 15 failed.
+
+The window depends on capture-finalization timing in the full serial lane, so the original test was not reproduced on its own. The deterministic test covers the mechanism instead.
+
+### Codex review round 2
+
+- **[P2] Side marks leaked when the tombstone read failed.** Each side is now added to the cleanup set before the tombstone await, so any failure releases its deleting mark. A test seam `deletionTombstoneRead` exists for this.
+  - New test `testFailedTombstoneReadReleasesEverySideMark`: the read fails, no side stays marked, the side reopens, and a retry deletes the whole family.
+  - Mutation S1 restores the old order: `["side"]` stays marked and reopening fails with "This chat is being deleted."
+- **[P3] Deleted sides' recovery notices lingered.** Deleting a member now removes its `sideKeepIssues` entry and advances `sideKeepResolutionRevision`, as registration and dismissal already do.
+  - `testPublishedSideWithoutAChatRowGoesWithItsChat` now also asserts that the notice is gone.
+  - Mutation S2: the notice stayed.
+
+Focused results: `FamilyDeletionTests` passed 10/10 and `SubagentOpeningTests` 13/13, both under the lock.
+
+### Full gate, round 2
+
+`verify-release.sh` was run on bfa9387d under the shared lock (58 min 46 s).
+
+| Suite | Result |
+| --- | --- |
+| Native serial lane | 888 executed, 43 skipped, 1 failing test |
+| Native parallel lane | 2,638 passed, 0 failed, 38 skipped |
+| Helper cost | 5/5 |
+| Helper | 963 executed, 7 skipped, 0 failures |
+| Wire | 36 OK |
+| Concurrent | 4 OK |
+| Acceptance | 3 OK |
+| Python | 86 OK |
+| Gallery | 3/3, 230 screenshots |
+
+`SubagentOpeningTests` passed in the lane.
+
+The serial-lane failure is a new intermittent one, not explained yet, in code this branch does not touch: `InspectorNativeControlTests.testRawSearchAfterExpandedTextAndResponseKeepsTheInitialHeaderInset`. The wait "The whole system prompt and tool schemas mount before raw search" timed out after 11.5 s, and the test then threw `CancellationError`. The class passed 12/12 in each of five runs alone under the lock on the same build. Its cause is not investigated here.
