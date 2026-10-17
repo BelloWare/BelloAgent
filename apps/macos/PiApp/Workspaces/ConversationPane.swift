@@ -199,8 +199,8 @@ struct SideActions {
     var minimumWidth: CGFloat {
         max(composer.isHidden ? 0 : composer.minimumWidth, sideHeader.superview === self ? sideHeader.minimumWidth : 0)
     }
-    /// A side's enclosing pane proposal can be narrower than its overflowing
-    /// body. The composer's trial forms still use that enclosing proposal.
+    /// The enclosing split's proposal can be narrower than the control minimum.
+    /// The composer's trial forms still use that enclosing proposal.
     var composerProposalWidth: CGFloat? {
         didSet {
             guard oldValue != composerProposalWidth else { return }

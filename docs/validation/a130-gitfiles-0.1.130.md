@@ -198,3 +198,174 @@ edges. The split assigns that pane about 309 points
 (`apps/macos/PiApp/Workspaces/WorkspaceView.swift:417`), while the pane exposes
 a composer minimum (`apps/macos/PiApp/Workspaces/ConversationPane.swift:199`).
 This work does not change either layout function; no layout fix was attempted.
+
+## Narrow workspace split follow-up
+
+The owner authorized the layout observation above after merging round one.
+Baseline: `5c52621c` (the fast-forwarded `dev/a130-gitfiles` worktree). The bug is
+**confirmed and fixed**: `WorkspaceChatsLayer` used only the stored fraction,
+ignoring `ConversationPaneView.minimumWidth`.
+
+The split now offers the requested width to the composer's existing compact
+forms, reserves at least the resulting control minimum (rounded up), and gives
+the file pane the remainder. The preferred fraction, sidebar width and
+920×628-point window minimum stay unchanged. Widening restores the preferred
+split. Existing size-change propagation also reallocates space when Steer/Stop
+appear or disappear; no new observation or composer sizing mechanism is needed.
+The resize handle's accessibility hint describes the minimum-width constraint.
+A new drag starts from the visible divider when the minimum displaced the saved
+fraction, so dragging right responds immediately; the preference is still saved
+only when the drag ends.
+
+**Needs owner decision:** keep an open file in the remaining width when both
+panes cannot retain their preferred shares. This is the conservative implemented
+choice: no automatic file closure, sidebar resize or increased window minimum.
+With two connection choices, the generated fixture's compact chat minimum is
+400 points idle / 469 busy. At 920 points, a 300-point sidebar leaves the file
+218 / 149 points; a 420-point sidebar leaves 98 / 29 points. A file in that last
+case is too narrow for useful reading until the reader widens the window or
+shrinks the sidebar. Automatic pane collapse or sidebar changes need an owner
+UX decision. The chat's controls remain inside their bounds in every case.
+
+### Regression and mutation evidence
+
+`WorkspaceSplitTests.testFilePaneYieldsToTheChatMinimumAtNarrowWindowSizes`
+mounts the real native workspace at 920×800 and the actual minimum 920×628,
+with file open/closed, 300/420-point sidebar, and idle/busy composer. It checks
+the exposed minimum, every visible native composer control's bounds, both pane
+frames, the unchanged window size/minimum and saved split.
+
+`WorkspaceSplitTests.testDraggingAndChangingComposerControlsPreserveThePreferredSplit`
+drives the real split handle to its lower bound, changes idle → busy → idle
+without resizing, then widens and closes the file. It checks that the file gets
+space back, the stored fraction returns when it fits, and the closed-file chat
+fills the column.
+
+`WorkspaceSplitTests.testDraggingRightStartsAtTheVisibleMinimumBoundary` checks
+a 12-point rightward drag from the clamped minimum and its committed position.
+With only the width reservation applied, it failed twice (`split-drag-red.log`):
+`("400.0") is not equal to ("412.0") +/- ("1.0")`, during the drag and on release.
+This caught the dead zone introduced by starting a drag from the displaced saved
+fraction. The drag now starts from the visible allocation.
+
+Failing first, with production layout unchanged (`split-red.log`): **2 tests
+failed, 99 expected assertion failures**. Representative output:
+
+```text
+XCTAssertGreaterThanOrEqual failed: ("309.0") is less than ("400.0") - 920×800, sidebar 300.0, file true, busy false
+Attach Image… at (-19.5, 53.0, 28.0, 28.0) outside (0.0, 0.0, 309.0, 96.0)
+Send at (298.5, 52.0, 30.0, 30.0) outside (0.0, 0.0, 309.0, 96.0)
+SPLIT 920×628, sidebar 420.0, file true, busy true: chat=249.0, minimum=469.0, file=249.0
+Executed 2 tests, with 99 failures (0 unexpected)
+```
+
+After the fix (`split-green.log`): **2 passed, 0 failed**. The same default-sidebar
+scene measures `chat=400.0, minimum=400.0, file=218.0` while idle and
+`chat=469.0, minimum=469.0, file=149.0` while busy, at both heights.
+
+After the drag-origin correction (`split-drag-green.log`): **3 passed, 0 failed**.
+Both mutations were then tested and restored:
+
+- Replace `max(proposedMainWidth, ceil(minimum))` with `proposedMainWidth`:
+  **3 tests failed, 104 expected assertion failures** (`split-minimum-mutation.log`).
+  The matrix again reports 309 < 400/469 and clipped controls.
+- Replace the visible drag-origin calculation with the stored `sideFraction`:
+  **2 passed, 1 failed, 2 expected assertion failures** (`split-drag-mutation.log`).
+  The 12-point drag again stays at 400 instead of reaching 412.
+
+The first width-mutation attempt (`split-mutation.log`) stopped at compilation:
+the strict unused-variable check rejected the now-unused `minimum` binding.
+That attempt is not counted as mutation evidence. Removing the unused binding
+along with the reservation produced the actual test failures above.
+
+The nearby right-pane/side-pane minimum and proposal handling already exists
+and is unchanged; its focused parity class is included below. No helper, wire,
+permission, capture, credential or persistence behavior changes in this follow-up.
+
+### Gallery inspection
+
+`WorkspaceSplitGalleryTests`: **1 passed, 0 failed**, with all **16 PNGs viewed**
+in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-split`.
+The scenes are Aqua / Dark Aqua × 920×800 / 920×628 × file open / closed ×
+idle / busy, using a generated text file, synthetic chat and memory vault.
+Every composer control, including Attach at the left and Send/Queue/Stop at the
+right, is visible inside the card and chat. Closing the file restores the wider
+composer, and opening it selects the existing compact control forms. The file
+retains its tab and horizontal scrolling while using the smaller remainder.
+The capture run held the shared full-lane lock throughout; viewing the saved
+PNGs required no app activation. The gallery command is included below.
+
+### Focused validation commands and results
+
+Text evidence lives under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+All native runs used this workstream's build root and held the shared full-lane
+lock for their run, releasing it in `finally`. Serial-lane classes ran alone.
+Helper/wire suites were not rerun because this follow-up changes only app layout
+and tests.
+
+Final focused runs after restoring both mutations: **153 passed, 0 failed,
+0 skipped**. No unrelated test failures.
+
+| Class | Passed | Failed | Text log |
+| --- | ---: | ---: | --- |
+| WorkspaceSplitTests | 3 | 0 | split-final.log |
+| WorkspaceSplitGalleryTests | 1 | 0 | split-gallery.log |
+| WorkspaceRootTests | 7 | 0 | split-workspace-root.log |
+| SmoothShellTests | 5 | 0 | split-smooth-shell.log |
+| ShellComposerTests | 5 | 0 | split-shell-composer.log |
+| ConversationPaneTests | 81 | 0 | split-conversation-pane.log |
+| ComposerBarLayoutTests | 7 | 0 | split-composer-bar.log |
+| GitPanelNarrowParityTests | 8 | 0 | split-right-pane-parity.log |
+| TabPaneTests | 10 | 0 | split-tabs-and-files.log |
+| FileTabTests | 16 | 0 | split-tabs-and-files.log |
+| FileHiddenReadTests | 5 | 0 | split-tabs-and-files.log |
+| SmoothPaneAndKeyboardTests | 4 | 0 | split-tabs-and-files.log |
+| WorkspaceRedrawTests | 1 | 0 | split-redraw.log |
+
+Unrelated fixture diagnostic, recorded without expanding the fix:
+`ConversationPaneTests` passed all 81 tests but printed 210
+SQLite `vnode unlinked while in use` diagnostics during generated-store teardown
+(`split-conversation-pane.log`). Its unchanged `Pane.close()` immediately removes
+the directory after `model.shutdown()` in
+`apps/macos/PiAppTests/ConversationPaneFixture.swift:87–88`, without awaiting
+store closure. The new split fixture uses `registerWorkspaceFixtureTeardown`;
+its regression and gallery logs contain no such diagnostics.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+
+# split-red.log, split-green.log, split-drag-green.log,
+# split-minimum-mutation.log, split-drag-mutation.log, split-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests
+
+# split-drag-red.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testDraggingRightStartsAtTheVisibleMinimumBoundary
+
+# split-gallery.log
+TEST_RUNNER_PI_WORKSPACE_SPLIT_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-split scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitGalleryTests
+
+# split-workspace-root.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRootTests
+
+# split-smooth-shell.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SmoothShellTests
+
+# split-shell-composer.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ShellComposerTests
+
+# split-conversation-pane.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+
+# split-composer-bar.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ComposerBarLayoutTests
+
+# split-right-pane-parity.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+
+# split-tabs-and-files.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabPaneTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/SmoothPaneAndKeyboardTests
+
+# split-redraw.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRedrawTests
+```
