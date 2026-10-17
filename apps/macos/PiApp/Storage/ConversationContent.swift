@@ -11,82 +11,140 @@ struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }
 
 enum ConversationContent {
-    /// Find's display projection is separate from retained-source search and
-    /// Copy Conversation. Tool receipts keep their own record identity, even
-    /// when the transcript draws their prose in the issuing call's card.
-    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false, standaloneToolResult: Bool = false) -> String {
-        let message = entry["message"]?.object ?? [:]
-        func prose(_ source: String) -> String { TranscriptMarkdown.renderedText(source) }
-        if entry["type"]?.string == "compaction" { return TranscriptMarkdown.renderedText(TranscriptMessage.compactionText(entry), style: .summary) }
-        if message["role"]?.string == "assistant" || message["nativeAgentDelivery"]?.object != nil || message["nativeKind"]?.string == "agent_message" {
-            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), rawReply: rawReply)
+    /// The same normalized rows the transcript draws, indexed by retained
+    /// source. A receipt in its call's card owns that card's output, not a
+    /// second copy of it; hidden ledgers/checkpoints own no displayed text.
+    struct Presentation {
+        var rows: [String: [TranscriptItem]] = [:]
+        private var results: [String: ToolView] = [:]
+        private var outputCalls: Set<String> = []
+        init(_ messages: [TranscriptMessage]) {
+            self.init(TaskTranscriptPlan.rows(messages, lifecycle: nil), messages: messages)
         }
-        if managedChild, message["role"]?.string == "user" {
-            return prose(TranscriptMessage.project(id: "", message: message).text)
+        // Keep the large row values out of the planner's call frame on a
+        // cooperative worker's small stack.
+        private init(_ planned: [TranscriptItem], messages: [TranscriptMessage]) {
+            for message in messages { rows[message.id] = [] }
+            var cards: [String: [ToolView]] = [:]
+            for row in planned {
+                switch row {
+                case .message(let message): rows[message.id, default: []].append(row)
+                case .block(let block):
+                    for message in block.replies {
+                        rows[message.id, default: []].append(row)
+                        if message.role == "assistant" { cards[message.id, default: []] += message.tools ?? [] }
+                    }
+                }
+            }
+            var issuers: [String: (String, ToolView)] = [:], receipts: [String: String] = [:]
+            for message in messages {
+                for tool in cards[message.id] ?? [] { issuers[tool.id] = (message.id, tool) }
+                guard message.role == "tool" || message.kind == "toolResult", rows[message.id]?.isEmpty == true,
+                      let call = message.toolCallID, let (source, tool) = issuers[call] else { continue }
+                let key = ToolOccurrence.key(source, call)
+                if let earlier = receipts[key] { results.removeValue(forKey: earlier) }
+                receipts[key] = message.id; results[message.id] = tool; outputCalls.insert(key)
+            }
         }
-        if standaloneToolResult {
-            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), standaloneToolResult: true)
+        func text(_ id: String, rawReply: Bool = false, toolInputs: [String: String] = [:]) -> String {
+            if let tool = results[id] { return toolPayload(tool).output }
+            return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs)
         }
-        if let name = message["toolName"]?.string, SubagentToolView.isControl(name), let result = ToolResultRecord.of(message) {
-            let value = SubagentToolView(ToolView(id: result.call, name: name, state: result.record.cardState, input: "", output: result.record.output, durationMs: nil, truncated: false))
-            return [prose(value.result), value.error ?? ""].joined(separator: "\n")
-        }
-        return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), rawReply: rawReply)
     }
-    /// Current streaming text and rows that have not reached the journal yet.
+    /// Find is separate from retained-source search and Copy Conversation.
+    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false) -> String {
+        if entry["type"]?.string == "compaction" {
+            return transcriptText(TranscriptMessage(id: entry["id"]?.string ?? "", role: "system", text: TranscriptMessage.compactionText(entry), kind: "compaction"))
+        }
+        let message = TranscriptMessage.project(id: entry["id"]?.string ?? "", message: entry["message"]?.object ?? [:])
+        if managedChild, message.role == "user" { return TranscriptMarkdown.renderedText(message.text) }
+        return transcriptText(message, rawReply: rawReply)
+    }
     /// Called by the history actor, never by a layout or paint pass.
-    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false, standaloneToolResult: Bool = false) -> String {
-        func prose(_ source: String, streaming: Bool = false) -> String { TranscriptMarkdown.renderedText(source, streaming: streaming) }
-        func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
+    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false) -> String {
+        Presentation([message]).text(message.id, rawReply: rawReply)
+    }
+    /// Presentation belongs to the planner: a persisted system ledger may be
+    /// an assistant response, with separate prose, reasoning and card rows.
+    private static func transcriptText(_ rows: [TranscriptItem], rawReply: Bool = false, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:]) -> String {
+        joined(rows.map { row in
+            switch row {
+            case .message(let message): return messageText(message, rawReply: rawReply)
+            case .block(let block):
+                if let part = block.part, let message = block.message {
+                    return partText(part, message: message, rawReply: rawReply, omittingOutputs: omittingOutputs, toolInputs: toolInputs)
+                }
+                switch block.presentation {
+                case .body, .reply: return block.message.map { replyText($0, raw: rawReply) } ?? ""
+                case .work:
+                    return joined(block.activity.flatMap { message in
+                        [TranscriptMarkdown.renderedText(message.thinking ?? "", style: .reasoning, streaming: message.isStreaming)]
+                            + (message.tools ?? []).map { tool in
+                                if let input = toolInputs[ToolOccurrence.key(message.id, tool.id)] { return input }
+                                let payload = toolPayload(tool)
+                                return omittingOutputs.contains(ToolOccurrence.key(message.id, tool.id)) ? payload.input : joined([payload.input, payload.output])
+                            }
+                    })
+                default: return ""
+                }
+            }
+        })
+    }
+    private static func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
+    private static func replyText(_ message: TranscriptMessage, raw: Bool) -> String {
+        ReplySource.shows(message, raw: raw) ? message.text : TranscriptMarkdown.renderedText(message.text, streaming: message.isStreaming)
+    }
+    private static func partText(_ part: ResponseTimeline.Segment, message: TranscriptMessage, rawReply: Bool, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:]) -> String {
+        let row = TranscriptTimelinePart(part: part, message: message)
+        if ["text", "refusal"].contains(part.part.kind) { return replyText(row.source, raw: rawReply) }
+        if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) {
+            if let input = toolInputs[ToolOccurrence.key(message.id, call)] { return input }
+            let payload = toolPayload(tool)
+            return omittingOutputs.contains(ToolOccurrence.key(message.id, call)) ? payload.input : joined([payload.input, payload.output])
+        }
+        if ["toolArguments", "status"].contains(part.part.kind) { return part.text }
+        return TranscriptMarkdown.renderedText(part.text, style: row.reasoning ? .reasoning : .prose, streaming: row.source.isStreaming)
+    }
+    private static func messageText(_ message: TranscriptMessage, rawReply: Bool) -> String {
+        func prose(_ source: String) -> String { TranscriptMarkdown.renderedText(source) }
         if message.nativeAgentDelivery != nil || message.kind == "agent_message" {
             let events = AgentMessagePresentation(message).events
             guard !events.isEmpty else { return AgentMessagePresentation.unavailable }
-            return events.map {
-                joined([$0.title, $0.label, prose($0.text), $0.note ?? ""])
-            }.joined(separator: "\n\n")
+            return events.map { joined([$0.title, $0.label, prose($0.text), $0.note ?? ""]) }.joined(separator: "\n\n")
         }
-        if standaloneToolResult { return prose(message.text) }
+        if message.kind == "toolResult" || message.role == "tool" { return prose(message.text) }
         if message.kind == "compaction" { return TranscriptMarkdown.renderedText(message.text, style: .summary) }
         if message.kind == "branch" { return message.detail ?? message.text }
         if message.kind == "failure" || message.kind == "versionBanner" { return joined([message.text, message.detail ?? ""]) }
         if message.kind == "requestInfo" { return joined([message.detail ?? "", TranscriptActivity.earlyEnd(message.stopReason) ?? ""]) }
-        func replyText(_ source: TranscriptMessage) -> String {
-            ReplySource.shows(source, raw: rawReply) ? source.text : prose(source.text, streaming: source.isStreaming)
+        if message.kind == "execution" {
+            let parts = message.responseTimeline.map { timeline in
+                timeline.supported ? timeline.segments.map { partText($0, message: message, rawReply: rawReply) } : []
+            } ?? []
+            let unfinished = message.responseTimeline.map { $0.supported && $0.terminal == nil } ?? false
+            return joined([message.detail ?? message.text] + parts + [unfinished ? TranscriptTimelinePart.completionNotRecorded : ""])
         }
-        if message.role == "assistant" || message.kind == "execution", let timeline = message.responseTimeline, timeline.supported, !timeline.segments.isEmpty {
-            let parts = timeline.segments.map { part in
-                if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) { return toolText(tool) }
-                let row = TranscriptTimelinePart(part: part, message: message)
-                switch part.part.kind {
-                case "text", "refusal": return replyText(row.source)
-                case "toolArguments", "status": return part.text
-                default: return prose(part.text, streaming: row.source.isStreaming)
-                }
-            }
-            return joined((message.kind == "execution" ? [message.detail ?? message.text] : []) + parts)
-        }
-        if message.kind == "execution" { return message.detail ?? message.text }
-        let rendered = message.role == "assistant"
-        let words = [rendered ? replyText(message) : message.text,
-                     rendered ? prose(message.thinking ?? "", streaming: message.isStreaming) : message.thinking ?? ""]
-        return joined(words + (message.tools ?? []).map(toolText))
+        return message.role == "assistant" ? replyText(message, raw: rawReply) : message.text
     }
     /// Search the native card's payload, keeping its file/agent label. The
     /// argument envelope is not the command, diff or formatted JSON it draws.
-    static func toolText(_ tool: ToolView) -> String {
-        func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
+    static func toolText(_ tool: ToolView, inputOnly: Bool = false) -> String {
+        let payload = toolPayload(tool)
+        return inputOnly ? payload.input : joined([payload.input, payload.output])
+    }
+    private static func toolPayload(_ tool: ToolView) -> (input: String, output: String) {
         switch TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false) {
-        case .io(_, let input, let output, _, _): return joined([input, output ?? ""])
-        case .terminal(let command, let output, _): return joined([command, output])
+        case .io(_, let input, let output, _, _): return (input, output ?? "")
+        case .terminal(let command, let output, _): return (command, output)
         case .read(let text, _, let path, _):
             let window = TranscriptReadCardText.window(of: text)
-            return joined([path ?? "", window.lines.joined(separator: "\n"), window.note ?? ""])
+            return (path ?? "", joined([window.lines.joined(separator: "\n"), window.note ?? ""]))
         case .diff(let request, let path, _, _, _):
             let text = request.tooLarge ? joined(request.mode == "edit" ? [request.before, request.after] : [request.after])
                 : request.rows.map(\.text).joined(separator: "\n")
-            return joined([path ?? "", text])
+            return (joined([path ?? "", text]), "")
         case .subagent(let value):
-            return joined([value.title, TranscriptMarkdown.renderedText(value.task), TranscriptMarkdown.renderedText(value.result), value.error ?? ""])
+            return (joined([value.title, TranscriptMarkdown.renderedText(value.task)]), joined([TranscriptMarkdown.renderedText(value.result), value.error ?? ""]))
         }
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar

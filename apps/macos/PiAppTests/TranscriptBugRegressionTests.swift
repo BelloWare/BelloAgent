@@ -657,6 +657,293 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertTrue(hidden.hits.isEmpty, "The paired I/O card shows literal Markdown marks")
     }
 
+    private func recoveryLedger(terminal: String? = nil, legacy: Bool = false) throws -> [String: WireValue] {
+        var fields: [String: WireValue] = ["role": .string("system"), "nativeKind": .string("requestLedger"),
+            "nativePresentationSourceID": .string("missing-reply"), "content": .array([])]
+        if legacy {
+            fields["content"] = .array([.object(["type": .string("thinking"), "thinking": .string("**alpha** beta")]),
+                .object(["type": .string("text"), "text": .string("Visible **gamma** delta")])])
+        } else {
+            var timeline = ResponseTimeline()
+            timeline.consume(.init(attemptID: "recovery", ordinal: 0, itemID: "thought", kind: "reasoningText", update: "replace", text: "**alpha** beta"))
+            timeline.consume(.init(attemptID: "recovery", ordinal: 1, itemID: "words", kind: "text", update: "replace", text: "Visible **gamma** delta and [site](https://recovery.test)"))
+            if let terminal { timeline.finish(terminal) }
+            fields["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+        }
+        return fields
+    }
+    @MainActor private func plannedPayload(_ messages: [TranscriptMessage], raw: Bool = false) -> [String: String] {
+        var payload: [String: [String]] = [:]
+        for item in TaskTranscriptPlan.rows(messages, lifecycle: nil) {
+            if case .message(let message) = item {
+                let text = rowPayload(message)
+                if !text.isEmpty { payload[message.id, default: []].append(text) }
+                continue
+            }
+            guard case .block(let block) = item, block.presentation != .response, block.presentation != .summary else { continue }
+            if block.part != nil, let message = block.message, let tool = message.tools?.first {
+                payload[message.id, default: []].append(cardPayload(tool)); continue
+            }
+            let disclosure = TranscriptRowDisclosure(work: true,
+                openTools: Set(block.replies.flatMap { message in (message.tools ?? []).map { ToolOccurrence.key(message.id, $0.id) } }),
+                openReasoning: Set(block.replies.map(\.id)), compaction: true, raw: raw)
+            let row = TranscriptRowRenderer.content(for: item, inputs: .init(item: item, fresh: false, actions: .init(), width: 620,
+                environment: .init(), disclosure: disclosure))
+            row.frame = CGRect(x: 0, y: 0, width: 620, height: 500); row.frame.size.height = row.settle().height; row.layoutSubtreeIfNeeded()
+            let shown = TranscriptNativeDocument.textViews(in: row).filter { $0.isSelectable && !$0.isHiddenOrHasHiddenAncestor }
+                .map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+            if !shown.isEmpty { payload[block.message?.id ?? block.activity.first?.id ?? block.id, default: []].append(shown) }
+        }
+        return payload.mapValues { $0.joined(separator: "\n") }
+    }
+    @MainActor func testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive() throws {
+        for terminal: String? in [nil, "completed", "interrupted"] { for legacy in [false, true] { for raw in [false, true] {
+            let fields = try recoveryLedger(terminal: terminal, legacy: legacy), message = TranscriptMessage.project(id: "reply", message: fields)
+            let shown = plannedPayload([message], raw: raw)["reply"] ?? ""
+            XCTAssertTrue(shown.contains("alpha beta"))
+            XCTAssertEqual(ConversationContent.transcriptText(message, rawReply: raw), shown, "Live terminal=\(terminal ?? "missing"), legacy=\(legacy), raw=\(raw)")
+            XCTAssertEqual(ConversationContent.transcriptText(["id": .string("reply"), "message": .object(fields)], rawReply: raw), shown,
+                "Saved terminal=\(terminal ?? "missing"), legacy=\(legacy), raw=\(raw)")
+        } } }
+    }
+    @MainActor func testFindSearchesOrphanLedgerTextAndReasoningAfterRecovery() async throws {
+        for saved in [true, false] {
+            let entry: WireValue = .object(["type": .string("message"), "id": .string("reply"), "parentId": .null,
+                "message": .object(try recoveryLedger())])
+            let (model, pane, window) = try await findFixture(saved: true, entries: [entry])
+            if !saved { model.chats[0].path = nil }
+            try await assertFind("alpha beta", in: pane, window: window)
+            try await assertFind("gamma delta", in: pane, window: window)
+            model.selected?.disclosure.setOpen(true, .source("reply")); pane.refresh()
+            try await assertFind("recovery.test", in: pane, window: window)
+        }
+    }
+    @MainActor func testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions() async throws {
+        var fields = try recoveryLedger(terminal: "completed")
+        fields["nativePresentationSourceID"] = .string("accepted")
+        let accepted: WireValue = .object(["type": .string("message"), "id": .string("accepted"), "parentId": .string("reply"),
+            "message": .object(["role": .string("assistant"), "content": .string("Accepted answer")])])
+        for superseded in [true, false] {
+            var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])]
+            if superseded { entries.append(accepted) }
+            else {
+                var cleared = ResponseTimeline(); cleared.finish("failed")
+                var discarded = fields
+                discarded["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(cleared))
+                entries.append(.object(["type": .string("custom"), "customType": .string("pi-app.presentation.update.v1"),
+                    "id": .string("discard"), "parentId": .string("reply"), "data": .object(["id": .string("reply")]), "message": .object(discarded)]))
+            }
+            let (model, _, _) = try await findFixture(saved: true, entries: entries)
+            let rows = try XCTUnwrap(model.selected).presentedMessages, shown = plannedPayload(rows)
+            XCTAssertFalse(shown.values.contains { $0.contains("alpha beta") })
+            let live = try await model.history.searchPresented(rows, query: "alpha beta", start: 0)
+            XCTAssertTrue(live.hits.isEmpty)
+            for presented in [rows, []] {
+                let saved = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "alpha beta", start: 0,
+                    renderedAgentProse: true, presented: presented)
+                XCTAssertTrue(saved.hits.isEmpty, "superseded=\(superseded), presented=\(!presented.isEmpty)")
+            }
+        }
+    }
+
+    @MainActor func testRecoveryPlannerCorpusMatchesSavedAndLiveSearch() async throws {
+        let encoded = try XCTUnwrap(recoveryLedger(terminal: "completed")["nativeResponseTimeline"])
+        let execution: [String: WireValue] = ["role": .string("system"), "nativeKind": .string("execution"), "content": .string("Hidden canonical"),
+            "nativeReplayEligible": .bool(false), "nativeDetail": .string("Compaction stage"), "nativeOperationID": .string("operation"), "nativeResponseTimeline": encoded]
+        var unfinished = execution
+        unfinished["nativeResponseTimeline"] = try recoveryLedger()["nativeResponseTimeline"]
+        var unsupported = try recoveryLedger(legacy: true), future = try XCTUnwrap(encoded.object)
+        future["version"] = .number(999); unsupported["nativeResponseTimeline"] = .object(future)
+        let summary: WireValue = .object(["type": .string("compaction"), "id": .string("summary"), "parentId": .string("reply"),
+            "summary": .string("Hidden checkpoint **alpha** beta"), "nativeCompactionVersion": .number(2),
+            "nativeCompaction": .object(["operationId": .string("operation"), "version": .number(2), "sourceIDs": .array([]), "protectedIDs": .array([]), "keptIDs": .array([])])])
+        for (name, fields, checkpoint) in [("unfinished operation", unfinished, false), ("adopted operation", unfinished, true),
+                                           ("duplicate checkpoint", execution, true), ("unsupported ledger", unsupported, false)] {
+            var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])]
+            if checkpoint { entries.append(summary) }
+            let (model, _, _) = try await findFixture(saved: true, entries: entries)
+            let rows = try XCTUnwrap(model.selected).presentedMessages, shown = plannedPayload(rows)
+            let live = try await model.history.searchPresented(rows, query: "", start: 0)
+            for row in rows { XCTAssertEqual(live.hits.first { $0.id == row.id }?.preview, shown[row.id] ?? "", "Live \(name), \(row.id)") }
+            for presented in [rows, []] {
+                let saved = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "", start: 0,
+                    renderedAgentProse: true, presented: presented)
+                for row in rows { XCTAssertEqual(saved.hits.first { $0.id == row.id }?.preview, shown[row.id] ?? "", "Saved \(name), \(row.id), presented=\(!presented.isEmpty)") }
+            }
+        }
+    }
+
+    @MainActor func testPlannedPairedToolPayloadsMatchSavedAndLiveSearch() async throws {
+        let cases: [(String, WireValue, String)] = [
+            ("custom_fixture", .object(["key": .string("value")]), "**alpha** beta"),
+            ("bash", .object(["command": .string("printf fixture")]), "**alpha** beta"),
+            ("read", .object(["path": .string("fixture.txt")]), "**alpha** beta"),
+            ("edit", .object(["path": .string("fixture.txt"), "oldText": .string("old tail"), "newText": .string("new tail")]), "Transport receipt"),
+            ("subagent_start", .object(["task": .string("**Task** prose")]), #"{"text":"**alpha** beta"}"#)]
+        for (name, arguments, output) in cases { for separated in [false, true] {
+            let call = toolEntry(name, arguments: arguments)
+            let entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": call["message"]!]),
+                .object(["type": .string("message"), "id": .string("result"), "parentId": .string("reply"), "message": .object([
+                    "role": .string("toolResult"), "toolName": .string(name), "toolCallId": .string("call"), "content": .string(output),
+                    "nativeToolStats": .object(["outcome": .string("succeeded")])])])]
+            var records = entries
+            if separated {
+                var parent = "reply"
+                for i in 0..<40 {
+                    let id = "spacer-\(i)"
+                    records.insert(.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent),
+                        "message": .object(["role": .string("system"), "nativeKind": .string("notice"), "nativeReplayEligible": .bool(false), "content": .string("Spacer \(i)")])]), at: records.count - 1)
+                    parent = id
+                }
+                records[records.count - 1].object.map { original in
+                    var value = original; value["parentId"] = .string(parent); records[records.count - 1] = .object(value)
+                }
+            }
+            let (model, _, _) = try await findFixture(saved: true, entries: records)
+            let rows = try XCTUnwrap(model.selected).presentedMessages, payload = plannedPayload(rows)
+            let shown = ["reply", "result"].compactMap { payload[$0] }.filter { !$0.isEmpty }.joined(separator: "\n")
+            let live = try await model.history.searchPresented(rows, query: "", start: 0)
+            XCTAssertEqual(live.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "Live paired \(name), separated=\(separated)")
+            for presented in [rows, []] {
+                let saved = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "", start: 0,
+                    renderedAgentProse: true, presented: presented)
+                XCTAssertEqual(saved.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "Saved paired \(name), presented=\(!presented.isEmpty), separated=\(separated)")
+            }
+        } }
+    }
+
+    @MainActor func testColdPlannerContextCrossesDecodeRuns() async throws {
+        for tool in [false, true] {
+            var fields = tool ? try XCTUnwrap(toolEntry("custom_fixture", arguments: .object(["key": .string("value")]))["message"]?.object) : try recoveryLedger(terminal: "completed")
+            if !tool { fields["nativePresentationSourceID"] = .string("result") }
+            var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])]
+            var parent = "reply"
+            for i in 0..<40 {
+                let id = "spacer-\(i)"
+                entries.append(.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent),
+                    "message": .object(["role": .string("system"), "nativeKind": .string("notice"), "nativeReplayEligible": .bool(false), "content": .string("Spacer \(i)")])]))
+                parent = id
+            }
+            let result: [String: WireValue] = tool
+                ? ["role": .string("toolResult"), "toolName": .string("custom_fixture"), "toolCallId": .string("call"), "content": .string("**alpha** beta"), "nativeToolStats": .object(["outcome": .string("succeeded")])]
+                : ["role": .string("assistant"), "content": .string("Accepted answer")]
+            entries.append(.object(["type": .string("message"), "id": .string("result"), "parentId": .string(parent), "message": .object(result)]))
+            let (model, _, _) = try await findFixture(saved: true, entries: entries)
+            let rows = try XCTUnwrap(model.selected).presentedMessages
+            XCTAssertEqual(rows.count, 42)
+            let query = tool ? "**alpha** beta" : "alpha beta"
+            for presented in [rows, []] {
+                let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: query, start: 0,
+                    renderedAgentProse: true, presented: presented)
+                XCTAssertEqual(found.hits.map(\.id), tool ? ["result"] : [], "tool=\(tool), presented=\(!presented.isEmpty)")
+            }
+        }
+    }
+
+    func testPlannerDependencyIndexKeepsReusedCallsAndActiveBranchesSeparate() throws {
+        let index = try HistoryOffsetIndex()
+        let records: [HistoryOffset] = [
+            .init(id: "first", parent: nil, offset: 0, length: 1, type: "message", role: "assistant", calls: ["call"]),
+            .init(id: "old-result", parent: "first", offset: 1, length: 1, type: "message", role: "toolResult", resultCall: "call"),
+            .init(id: "second", parent: "old-result", offset: 2, length: 1, type: "message", role: "assistant", calls: ["call"]),
+            .init(id: "new-result", parent: "second", offset: 3, length: 1, type: "message", role: "toolResult", resultCall: "call"),
+            .init(id: "operation", parent: "new-result", offset: 4, length: 1, type: "message", role: "system", operationID: "compact"),
+            .init(id: "summary", parent: "operation", offset: 5, length: 1, type: "compaction")]
+        for record in records { try index.insert(record); try index.append(record) }
+        func peers(_ id: String, calls: [String] = [], result: String? = nil, operation: String? = nil) throws -> Set<String> {
+            Set(try index.related(to: id, calls: calls, result: result, operation: operation).map(\.id))
+        }
+        XCTAssertEqual(try peers("first", calls: ["call"]), ["old-result"])
+        XCTAssertEqual(try peers("second", calls: ["call"]), ["new-result"])
+        XCTAssertEqual(try peers("old-result", result: "call"), ["first"])
+        XCTAssertEqual(try peers("new-result", result: "call"), ["second"])
+        XCTAssertEqual(try peers("summary", operation: "compact"), ["operation"])
+        try index.branch(from: "second", kept: ["first", "old-result"])
+        XCTAssertEqual(try peers("first", calls: ["call"]), ["old-result"], "Abandoned call/result links stay outside the active plan")
+        XCTAssertTrue(try peers("old-result", operation: "compact").isEmpty)
+    }
+    @MainActor func testSearchKeepsCapturedOrphanPresentationWhenFinalReplyIsAppended() async throws {
+        var fields = try recoveryLedger(terminal: "completed"); fields["nativePresentationSourceID"] = .string("accepted")
+        let entry: WireValue = .object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])
+        let (model, _, _) = try await findFixture(saved: true, entries: [entry])
+        let rows = try XCTUnwrap(model.selected).presentedMessages, path = try XCTUnwrap(model.chats[0].path)
+        let accepted: WireValue = .object(["type": .string("message"), "id": .string("accepted"), "parentId": .string("reply"),
+            "message": .object(["role": .string("assistant"), "content": .string("Accepted answer")])])
+        let file = try FileHandle(forWritingTo: URL(fileURLWithPath: path)); defer { try? file.close() }
+        try file.seekToEnd(); try file.write(contentsOf: JSONEncoder().encode(accepted)); try file.write(contentsOf: Data([10]))
+        let captured = try await model.history.searchContent(path: path, query: "alpha beta", start: 0, renderedAgentProse: true, presented: rows)
+        XCTAssertEqual(captured.hits.map(\.id), ["reply"], "The current pane still draws the orphan; a later journal append does not override that snapshot")
+        let reopened = try await model.history.read(path: path, whole: true)
+        let refreshed = try await model.history.searchContent(path: path, query: "alpha beta", start: 0, renderedAgentProse: true, presented: reopened.messages)
+        XCTAssertTrue(refreshed.hits.isEmpty, "The refreshed planner hides the superseded ledger")
+    }
+
+    func testPlannerDependencyIndexKeepsLiteralCallIDs() throws {
+        let index = try HistoryOffsetIndex()
+        let first = "call\u{0}first", second = "call\u{0}second"
+        let records: [HistoryOffset] = [
+            .init(id: "first", parent: nil, offset: 0, length: 1, type: "message", role: "assistant", calls: [first]),
+            .init(id: "second", parent: "first", offset: 1, length: 1, type: "message", role: "assistant", calls: [second]),
+            .init(id: "first-result", parent: "second", offset: 2, length: 1, type: "message", role: "toolResult", resultCall: first),
+            .init(id: "second-result", parent: "first-result", offset: 3, length: 1, type: "message", role: "toolResult", resultCall: second)]
+        for record in records { try index.insert(record); try index.append(record) }
+        let peers = try index.related(to: "first-result", calls: [], result: first, operation: nil)
+        XCTAssertEqual(Set(peers.map(\.id)), ["first"], "The complete provider call ID selects its own issuer")
+    }
+
+    @MainActor func testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns() async throws {
+        var fields = try XCTUnwrap(toolEntry("custom_fixture", arguments: .object(["key": .string("value")]))["message"]?.object)
+        fields["nativeResponseTimeline"] = .object(["version": .number(999), "segments": .array([]), "omittedEvents": .number(0), "coverage": .string("observed")])
+        var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(fields)])]
+        var parent = "reply"
+        for i in 0..<40 {
+            let id = "spacer-\(i)"
+            entries.append(.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent),
+                "message": .object(["role": .string("system"), "nativeKind": .string("notice"), "content": .string("Spacer \(i)")])]))
+            parent = id
+        }
+        entries.append(.object(["type": .string("message"), "id": .string("result"), "parentId": .string(parent), "message": .object([
+            "role": .string("toolResult"), "toolName": .string("custom_fixture"), "toolCallId": .string("call"), "content": .string("**alpha** beta"),
+            "nativeToolStats": .object(["outcome": .string("succeeded")])])]))
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        let rows = try XCTUnwrap(model.selected).presentedMessages, shown = plannedPayload(rows)
+        XCTAssertTrue(shown["reply"]?.contains("**alpha** beta") == true)
+        XCTAssertEqual(shown["result"], "alpha beta")
+        let live = try await model.history.searchPresented(rows, query: "", start: 0)
+        for id in ["reply", "result"] { XCTAssertEqual(live.hits.first { $0.id == id }?.preview, shown[id], "Live legacy \(id)") }
+        for presented in [rows, []] {
+            let saved = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "", start: 0, renderedAgentProse: true, presented: presented)
+            for id in ["reply", "result"] { XCTAssertEqual(saved.hits.first { $0.id == id }?.preview, shown[id], "Saved legacy \(id), presented=\(!presented.isEmpty)") }
+        }
+    }
+
+    @MainActor func testColdCompactionContextUsesBothRetainedOperationIdentityForms() async throws {
+        for nested in [false, true] {
+            let identity: WireValue = .object(["operationId": .string("operation"), "version": .number(2), "sourceIDs": .array([]), "protectedIDs": .array([]), "keptIDs": .array([])])
+            var timeline = ResponseTimeline(); timeline.finish("completed")
+            var operation: [String: WireValue] = ["role": .string("system"), "nativeKind": .string("execution"), "nativeReplayEligible": .bool(false),
+                "nativeDetail": .string("Recorded operation"), "content": .string(""), "nativeResponseTimeline": try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))]
+            if nested { operation["nativeCompaction"] = identity } else { operation["nativeOperationID"] = .string("operation") }
+            var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": .object(operation)])]
+            var parent = "reply"
+            for i in 0..<40 {
+                let id = "spacer-\(i)"
+                entries.append(.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent), "message": .object([
+                    "role": .string("system"), "nativeKind": .string("notice"), "nativeReplayEligible": .bool(false), "content": .string("Spacer \(i)")])]))
+                parent = id
+            }
+            entries.append(.object(["type": .string("compaction"), "id": .string("summary"), "parentId": .string(parent),
+                "summary": .string("Hidden **checkpoint** token"), "nativeCompactionVersion": .number(2), "nativeCompaction": identity]))
+            let (model, _, _) = try await findFixture(saved: true, entries: entries)
+            let rows = try XCTUnwrap(model.selected).presentedMessages
+            XCTAssertNil(plannedPayload(rows)["summary"])
+            for presented in [rows, []] {
+                let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "checkpoint token", start: 0, renderedAgentProse: true, presented: presented)
+                XCTAssertTrue(found.hits.isEmpty, "nested=\(nested), presented=\(!presented.isEmpty)")
+            }
+        }
+    }
+
     @MainActor private func cardPayload(_ tool: ToolView) -> String {
         let value = TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false)
         let card = TranscriptNativeCard.make(value)

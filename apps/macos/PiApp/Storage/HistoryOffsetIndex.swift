@@ -6,6 +6,7 @@ struct HistoryOffset: Codable {
     var fromMessageID: String?; var keptIDs: [String]?; var role: String? = nil
     var presentation = false
     var adopted = false
+    var calls: [String]? = nil; var resultCall: String? = nil; var operationID: String? = nil
     var selectedPrefix: [String]? = nil; var contextSelection: [String]? = nil
 }
 
@@ -32,7 +33,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         path = directory.appendingPathComponent(Self.filePrefix + "p\(getpid())-" + UUID().uuidString + ".sqlite")
         guard sqlite3_open(path.path, &db) == SQLITE_OK else { throw StoreError.unreadableRecord }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT); CREATE TABLE seen(id TEXT PRIMARY KEY); BEGIN")
+        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value); BEGIN")
     }
     deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: path) }
     private func execute(_ sql: String) throws {
@@ -42,7 +43,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw StoreError.unreadableRecord }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        for (i, value) in strings.enumerated() { sqlite3_bind_text(statement, Int32(i + 1), value, -1, transient) }
+        for (i, value) in strings.enumerated() { sqlite3_bind_text(statement, Int32(i + 1), value, Int32(value.utf8.count), transient) }
         if let data { _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, Int32(strings.count + 1), $0.baseAddress, Int32($0.count), transient) } }
         return statement
     }
@@ -57,10 +58,18 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     }
     func insert(_ ref: HistoryOffset) throws {
         try done(query("INSERT INTO refs VALUES(?,?)", strings: [ref.id], data: JSONEncoder().encode(ref)))
+        if ref.calls?.isEmpty == false || ref.resultCall != nil || ref.operationID != nil { try replaceLinks(ref) }
         recordCount += 1
+    }
+    private func replaceLinks(_ ref: HistoryOffset) throws {
+        try done(query("DELETE FROM links WHERE id=?", strings: [ref.id]))
+        for call in Set(ref.calls ?? []) { try done(query("INSERT INTO links VALUES(?,'call',?)", strings: [ref.id, call])) }
+        if let call = ref.resultCall { try done(query("INSERT INTO links VALUES(?,'result',?)", strings: [ref.id, call])) }
+        if let operation = ref.operationID { try done(query("INSERT INTO links VALUES(?,'operation',?)", strings: [ref.id, operation])) }
     }
     func replaceMetadata(_ ref: HistoryOffset) throws {
         try done(query("UPDATE refs SET payload=?2 WHERE id=?1", strings: [ref.id], data: JSONEncoder().encode(ref)))
+        try replaceLinks(ref)
     }
     func ref(_ id: String) throws -> HistoryOffset? {
         let statement = try query("SELECT payload FROM refs WHERE id=?", strings: [id]); defer { sqlite3_finalize(statement) }
@@ -68,6 +77,30 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         if status == SQLITE_DONE { return nil }
         guard status == SQLITE_ROW, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.unreadableRecord }
         return try JSONDecoder().decode(HistoryOffset.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0))))
+    }
+    /// The retained neighbours needed by the row planner, across decode-run
+    /// boundaries. All joins use the active visible branch, never abandoned rows.
+    func related(to id: String, calls: [String], result: String?, operation: String?) throws -> [HistoryOffset] {
+        guard !calls.isEmpty || result != nil || operation != nil, let position = try ordinal(of: id) else { return [] }
+        var ids = Set<String>()
+        func linked(_ kind: String, _ value: String, condition: String = "", order: String = "ASC") throws -> (String, Int)? {
+            let statement = try query("SELECT v.id,v.n FROM links l JOIN visible v ON v.id=l.id WHERE l.kind=? AND l.value=? \(condition) ORDER BY v.n \(order) LIMIT 1", strings: [kind, value])
+            defer { sqlite3_finalize(statement) }
+            guard try next(statement), let text = sqlite3_column_text(statement, 0) else { return nil }
+            return (String(cString: text), Int(sqlite3_column_int64(statement, 1)))
+        }
+        func receipt(_ call: String, after: Int) throws {
+            let end = try linked("call", call, condition: "AND v.n>\(after)")?.1
+            let condition = "AND v.n>\(after)" + (end.map { " AND v.n<\($0)" } ?? "")
+            if let row = try linked("result", call, condition: condition, order: "DESC") { ids.insert(row.0) }
+        }
+        for call in calls { try receipt(call, after: position) }
+        if let result, let issuer = try linked("call", result, condition: "AND v.n<\(position)", order: "DESC") {
+            ids.insert(issuer.0); try receipt(result, after: issuer.1)
+        }
+        if let operation, let row = try linked("operation", operation) { ids.insert(row.0) }
+        ids.remove(id)
+        return try ids.compactMap { try ref($0) }
     }
     func constructChain(leaf: String?) throws {
         var id = leaf, ordinal = 0

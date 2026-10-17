@@ -382,28 +382,36 @@ actor HistoryReader {
                           changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
         return HistoryRevision(path: path, stamp: revision(stamp))
     }
-    /// The most record bytes one run of a search holds at once.
+    /// The primary record bytes decoded in one search run; indexed peers are transient.
     static let searchRunBytes = 16 * 1_048_576
-    /// The planner draws an unpaired receipt as Markdown; a paired receipt
-    /// keeps the representation of its issuing call's card.
-    private func standaloneToolResults(_ rows: [TranscriptMessage]) -> Set<String> {
-        guard rows.contains(where: { $0.role == "tool" || $0.kind == "toolResult" }) else { return [] }
-        return Set(TaskTranscriptPlan.rows(rows, lifecycle: nil).compactMap {
-            if case .message(let message) = $0, message.role == "tool" || message.kind == "toolResult" { return message.id }
-            return nil
-        })
+    /// Search and reopened pages decode the same retained presentation,
+    /// including adopted checkpoints and unfinished operations.
+    private static func displayedMessage(_ value: [String: WireValue], ref: Ref) -> TranscriptMessage {
+        var message: TranscriptMessage
+        if ref.type == "branch" { message = .init(id: ref.id, role: "system", text: branchText, kind: "branch") }
+        else if ref.type == "compaction" {
+            message = .project(id: ref.id, message: ["role": .string("system"), "content": .string(TranscriptMessage.compactionText(value))])
+            message.kind = "compaction"
+            let kept = Set(value["nativeKeptIDs"]?.array?.compactMap(\.string) ?? []).count
+            let tokens = value["tokensBefore"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
+            message.operationID = value["nativeCompaction"]?.object?["operationId"]?.string
+            message.detail = "Compacted \(tokens) tokens · \(kept) message\(kept == 1 ? "" : "s") kept"
+        } else { message = .project(id: ref.id, message: value["message"]?.object ?? [:]) }
+        if ref.adopted { message.responseTimeline?.finish("completed"); message.detail = "Compaction · Checkpoint durably adopted" }
+        if ref.presentation, message.responseTimeline?.terminal == nil { message.detail = (message.detail ?? "Operation") + " · no terminal receipt" }
+        return message
     }
-    /// The searchable text of each record in `range`, in order: read in
-    /// order from the file, decoded concurrently. A record that cannot be
-    /// read or decoded carries its error, thrown when the search reaches it.
+    /// Read and decode a bounded run before planning it. Presented rows use
+    /// the reader's captured plan; unloaded records use the same planner over
+    /// this run, with paired tool receipts resolved as on a reopened page.
     private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedTask: String?,
-                          streaming: [String: TranscriptMessage], rawReplies: Set<String>, standaloneResults: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
+                          presented: ConversationContent.Presentation, rawReplies: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
             let ref = try branch.at(position)
             refs.append(ref)
-            if ref.type == "branch" || streaming[ref.id] != nil { records.append(nil); continue }
+            if ref.type == "branch" || presented.rows[ref.id] != nil { records.append(nil); continue }
             decodedRecords += 1
             do {
                 try file.seek(toOffset: ref.offset)
@@ -411,25 +419,92 @@ actor HistoryReader {
                 records.append(.success(bytes))
             } catch { records.append(.failure(error)) }
         }
-        var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
-        let edit = renderedAgentProse ? Self.branchText : "## Edit\n\n" + Self.branchText + "\n\n", read = records, references = refs
-        texts.withUnsafeMutableBufferPointer { buffer in
-            // Each iteration writes its own element only.
+        var decoded = [Result<[String: WireValue], Error>?](repeating: nil, count: refs.count)
+        let read = records
+        decoded.withUnsafeMutableBufferPointer { buffer in
             nonisolated(unsafe) let output = buffer
             DispatchQueue.concurrentPerform(iterations: read.count) { index in
-                if let current = streaming[references[index].id] {
-                    output[index] = .success(ConversationContent.transcriptText(current, rawReply: rawReplies.contains(current.id), standaloneToolResult: standaloneResults.contains(current.id))); return
+                output[index] = read[index].map { bytes in bytes.flatMap { data in
+                    Result { try JSONDecoder().decode(WireValue.self, from: data).object ?? [:] }
+                } }
+            }
+        }
+        var messages: [TranscriptMessage] = [], results: [String: ToolResultRecord] = [:]
+        if renderedAgentProse {
+            for (index, ref) in refs.enumerated() where presented.rows[ref.id] == nil {
+                if ref.type == "branch" { messages.append(Self.displayedMessage([:], ref: ref)); continue }
+                guard case .success(let record)? = decoded[index] else { continue }
+                messages.append(Self.displayedMessage(record, ref: ref))
+                if let result = ToolResultRecord.of(record["message"]?.object ?? [:]) { results[ref.id] = result.record }
+            }
+        }
+        let sources = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        var contextual: [String: String] = [:]
+        for message in messages {
+            try Task.checkCancellation()
+            let call = message.toolCallID ?? (message.kind == "execution" ? TaskTranscriptPlan.startedCall(message) : nil)
+            let related = try branch.related(to: message.id, calls: (message.tools ?? []).map(\.id), result: call, operation: message.operationID)
+            let source = try message.presentationSourceID.flatMap { try branch.index(of: $0) == nil ? nil : $0 }
+            guard related.contains(where: { sources[$0.id] == nil }) || source.map({ sources[$0] == nil }) == true else { continue }
+            // Context is transient per source, not retained for the whole search.
+            // A source's exact indexed peer is read directly, without rescanning
+            // history or moving either the reader or the search cursor.
+            var context = [message], receipts: [String: ToolResultRecord] = [:], toolInputs: [String: String] = [:]
+            if let result = results[message.id] { receipts[message.id] = result }
+            for ref in related {
+                try Task.checkCancellation()
+                if let value = sources[ref.id] {
+                    context.append(value); receipts[ref.id] = results[ref.id]; continue
                 }
-                switch read[index] {
-                case nil: output[index] = .success(edit)
-                case .failure(let error)?: output[index] = .failure(error)
-                case .success(let bytes)?:
-                    output[index] = Result {
-                        let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
-                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedTask == references[index].id, rawReply: rawReplies.contains(references[index].id),
-                            standaloneToolResult: standaloneResults.contains(references[index].id)) : ConversationContent.text(record)
+                if message.kind == "compaction", let operation = ref.operationID {
+                    context.append(.init(id: ref.id, role: "system", text: "", kind: "execution", operationID: operation)); continue
+                }
+                try file.seek(toOffset: ref.offset)
+                guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
+                decodedRecords += 1
+                let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
+                let peer = Self.displayedMessage(record, ref: ref), result = ToolResultRecord.of(record["message"]?.object ?? [:])
+                if let result, message.tools?.contains(where: { $0.id == result.call }) == true {
+                    // A call searches its input; its receipt searches output.
+                    // Release each distant output after deriving that input,
+                    // rather than retaining every result of a wide tool round.
+                    let resolved = TranscriptMessage.resolvingToolResults([message, peer], results: [peer.id: result.record])
+                    let paired = ConversationContent.Presentation(resolved).rows[peer.id]?.isEmpty == true
+                    if let tool = resolved.first?.tools?.first(where: { $0.id == result.call }) {
+                        toolInputs[ToolOccurrence.key(message.id, tool.id)] = ConversationContent.toolText(tool, inputOnly: paired)
                     }
+                } else {
+                    context.append(peer)
+                    if let result { receipts[ref.id] = result.record }
                 }
+            }
+            let linkedSources = context.compactMap(\.presentationSourceID)
+            for source in linkedSources where !context.contains(where: { $0.id == source }) {
+                if try branch.index(of: source) != nil { context.append(.init(id: source, role: "system", text: "")) }
+            }
+            let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
+            context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
+            let projection = ConversationContent.Presentation(TranscriptMessage.resolvingToolResults(context, results: receipts))
+            contextual[message.id] = projection.text(message.id, rawReply: rawReplies.contains(message.id), toolInputs: toolInputs)
+        }
+        let plan = ConversationContent.Presentation(TranscriptMessage.resolvingToolResults(messages, results: results))
+        var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
+        let values = decoded, references = refs, overrides = contextual
+        texts.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let output = buffer
+            DispatchQueue.concurrentPerform(iterations: values.count) { index in
+                let ref = references[index]
+                if renderedAgentProse, presented.rows[ref.id] != nil {
+                    output[index] = .success(presented.text(ref.id, rawReply: rawReplies.contains(ref.id))); return
+                }
+                if case .failure(let error)? = values[index] { output[index] = .failure(error); return }
+                if renderedAgentProse {
+                    if let text = overrides[ref.id] { output[index] = .success(text); return }
+                    if managedTask == ref.id, let message = sources[ref.id], message.role == "user" {
+                        output[index] = .success(TranscriptMarkdown.renderedText(message.text))
+                    } else { output[index] = .success(plan.text(ref.id, rawReply: rawReplies.contains(ref.id))) }
+                } else if ref.type == "branch" { output[index] = .success("## Edit\n\n" + Self.branchText + "\n\n") }
+                else if case .success(let record)? = values[index] { output[index] = .success(ConversationContent.text(record)) }
             }
         }
         return zip(refs, texts).map { ($0, $1) }
@@ -494,19 +569,17 @@ actor HistoryReader {
             try searchReadObserver?(.captured)
         }
         try searchReadObserver?(.indexed)
-        // A live snapshot can be ahead of the journal. Keep its streaming
-        // revision and the display-only agent attribution. Append only genuinely
-        // unsaved rows, without duplicating a saved tool result in its call's card.
-        var streaming: [String: TranscriptMessage] = [:], unsaved: [TranscriptMessage] = []
+        // The captured display owns presentation, including recovery rows and
+        // completed cards. An abandoned saved row is never treated as unsaved.
+        var current: [TranscriptMessage] = [], unsaved: [TranscriptMessage] = []
         if renderedAgentProse {
             for row in presented {
-                if try branch.ref(row.id) == nil { unsaved.append(row) }
-                else if row.state == "streaming" || row.nativeAgentDelivery != nil || row.kind == "agent_message",
-                        try branch.index(of: row.id) != nil { streaming[row.id] = row }
+                if try branch.ref(row.id) == nil { unsaved.append(row); current.append(row) }
+                else if try branch.index(of: row.id) != nil { current.append(row) }
             }
         }
+        let presentation = ConversationContent.Presentation(current)
         let managedTask = managedChild ? try branch.firstUser() : nil
-        let standaloneResults = standaloneToolResults(presented)
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
         // conversation before answering. Stop after a bounded window and let the
@@ -514,16 +587,16 @@ actor HistoryReader {
         let limit = min(total, min(start, total) + 5_000)
         var hits: [ContentHit] = [], cursor = min(start, total)
         // Records are read in order and decoded a run at a time on every
-        // core: decoding is nearly all a search costs, one record's text
-        // never depends on another's, and the hits are taken in order from
+        // core: decoding is nearly all a search costs. Plan each bounded
+        // run together, then take its projected hits in order from
         // the run as before. A run starts small, so a query that fills its
         // hundred hits early decodes little past them, and grows.
         var run = 32
         let needle = ConversationContent.asciiNeedle(query)
         while cursor < min(limit, branch.count) && hits.count < 100 {
             try Task.checkCancellation()
-            // A run holds every record it reads twice over (its bytes and its
-            // text), so it is bounded by bytes as well as by count.
+            // A run holds source bytes and their decoded/projected forms,
+            // so it is bounded by bytes as well as by count.
             var end = cursor, bytes = 0
             while end < min(branch.count, min(limit, cursor + run)) {
                 let length = try branch.at(end).length
@@ -532,7 +605,7 @@ actor HistoryReader {
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, streaming: streaming, rawReplies: rawReplies, standaloneResults: standaloneResults)
+            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, presented: presentation, rawReplies: rawReplies)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -549,7 +622,7 @@ actor HistoryReader {
         }
         while cursor >= branch.count && cursor < limit && hits.count < 100 {
             try Task.checkCancellation()
-            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id), standaloneToolResult: standaloneResults.contains(row.id))
+            let row = unsaved[cursor - branch.count], text = presentation.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1
@@ -568,9 +641,9 @@ actor HistoryReader {
     func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         var hits: [ContentHit] = [], cursor = min(start, rows.count)
-        let standaloneResults = standaloneToolResults(rows)
+        let presentation = ConversationContent.Presentation(rows)
         while cursor < rows.count && hits.count < 100 {
-            let row = rows[cursor], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id), standaloneToolResult: standaloneResults.contains(row.id))
+            let row = rows[cursor], text = presentation.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1
@@ -869,10 +942,12 @@ actor HistoryReader {
                         if value.id == nil || parent != leaf { linear = false }
                         if let parent, try branch.ref(parent) == nil { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
-                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
+                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
                         if let target = value.presentationTarget {
                             guard var original = try branch.ref(target), original.presentation else { throw StoreError.unreadableRecord }
                             original.offset = offset; original.length = pending.count
+                            original.calls = value.message?.calls.isEmpty == false ? value.message?.calls : nil
+                            original.operationID = value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil
                             try branch.replaceMetadata(original)
                         }
                         if let operation = value.message?.nativeOperationID, value.type == "message" { presentationOperations[operation] = id }
@@ -1022,25 +1097,11 @@ actor HistoryReader {
             guard let data = try file.read(upToCount: ref.length), data.count == ref.length else { throw StoreError.unreadableRecord }
             decodedRecords += 1
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
-            var message: TranscriptMessage
-            if value["type"]?.string == "branch" { message = .init(id: ref.id, role: "system", text: Self.branchText, kind: "branch") }
-            else if value["type"]?.string == "compaction" {
-                message = TranscriptMessage.project(id: ref.id, message: ["role": .string("system"), "content": .string(TranscriptMessage.compactionText(value))])
-                let kept = Set(value["nativeKeptIDs"]?.array?.compactMap(\.string) ?? []).count
-                let tokens = value["tokensBefore"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
-                message.operationID = value["nativeCompaction"]?.object?["operationId"]?.string
-                message.kind = "compaction"; message.detail = "Compacted \(tokens) tokens · \(kept) message\(kept == 1 ? "" : "s") kept"
+            var message = Self.displayedMessage(value, ref: ref)
+            if let result = ToolResultRecord.of(value["message"]?.object ?? [:]) { toolResults[ref.id] = result.record }
+            if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {
+                message.versions = MessageVersionMark(index: at + 1, count: ids.count, ids: ids.count <= 64 ? ids : nil)
             }
-            else {
-                let row = value["message"]?.object ?? [:]
-                if let result = ToolResultRecord.of(row) { toolResults[ref.id] = result.record }
-                message = TranscriptMessage.project(id: ref.id, message: row)
-                if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {
-                    message.versions = MessageVersionMark(index: at + 1, count: ids.count, ids: ids.count <= 64 ? ids : nil)
-                }
-            }
-            if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }
-            if ref.presentation, message.responseTimeline?.terminal == nil { message.detail=(message.detail ?? "Operation") + " · no terminal receipt" }
             let count = try JSONEncoder().encode(message).count
             // A page may hold one large complete row. Never shorten a source
             // just to fit the preferred window size; native layout is virtual.
@@ -1125,6 +1186,8 @@ extension HistoryReader {
                 guard (row.kind == .message ? value.type == "message" && value.id == row.id : value.presentationTarget == row.id), let message = value.message else { return nil }
                 ref.type = "message"; ref.role = message.role
                 ref.presentation = ["execution", "requestLedger"].contains(message.nativeKind ?? "")
+                ref.calls = message.calls.isEmpty ? nil : message.calls; ref.resultCall = message.role == "toolResult" ? message.toolCallId : nil
+                ref.operationID = message.nativeKind == "execution" ? (message.nativeOperationID ?? message.nativeCompaction?.operationId) : nil
                 if let operation = message.nativeOperationID { operations[operation] = seed.rows.count; seed.presentationOperations[operation] = row.id }
                 seed.roles[row.id] = message.role
                 if message.contentIndexed != true { seed.contextSafe = false }

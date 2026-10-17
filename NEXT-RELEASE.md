@@ -26,6 +26,11 @@
 - [x] Agent cards with unavailable attribution search their displayed notice. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find distinguishes standalone Markdown tool-result rows from literal results paired with their call cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
+- [x] Find consumes the transcript planner's normalized rows, including orphan request ledgers, legacy recovery prose/reasoning and unfinished-operation notices. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find suppresses superseded ledgers and duplicate checkpoints using the active history branch, including dependencies across decoding windows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps paired tool inputs/results in their displayed card format without duplicate output, including distant receipts and unsupported-timeline recovery rows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find preserves the captured completed-row presentation when a final reply is appended during a search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

@@ -433,8 +433,8 @@ import AppKit
         }
         if open, message.responseTimeline?.supported == true, message.responseTimeline?.terminal == nil {
             let text = noReceipt ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); noReceipt = text; return text }()
-            text.update(text: "Completion not recorded", face: Self.noReceiptFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
-            text.setAccessibilityLabel("Completion not recorded")
+            text.update(text: TranscriptTimelinePart.completionNotRecorded, face: Self.noReceiptFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
+            text.setAccessibilityLabel(TranscriptTimelinePart.completionNotRecorded)
         } else if let noReceipt { noReceipt.removeFromSuperview(); self.noReceipt = nil }
         setAccessibilityLabel(nil)
     }

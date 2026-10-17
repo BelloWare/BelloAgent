@@ -1426,3 +1426,427 @@ No helper or wire behavior changed, so the full helper and Python wire/concurren
 acceptance lanes were not rerun; `TranscriptWirePageTests` covers the app model
 projection touched here. No assigned issue or owner decision remains unresolved.
 The lead retains independent review, the merged full gate and merge.
+
+
+## Round 5: planner-owned recovery presentation (2026-10-18)
+
+Base: `51f6b9d2e6eedf32b041b641b805e9bb9ff185dd`. Work remains on
+`dev/a130-transcript` in its assigned worktree and build root. The review finding
+is confirmed and fixed. The projection now consumes actual
+`TaskTranscriptPlan.rows` output, indexed by retained message identity, for
+saved, captured and unsaved messages. It does not independently promote a
+persisted system request ledger to an assistant response.
+
+### R5-1: orphan request-ledger text and reasoning — confirmed and fixed
+
+`testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive` compares the
+projection with mounted native planned rows for missing/completed/interrupted
+terminals, timeline/legacy content and rendered/raw modes, both saved and live:
+24 exact comparisons. Against the Round-4 production code,
+`round5-failing-first-corpus.log` reports **0 passed, 1 failed**, with 24 failing
+assertions. Representative excerpt:
+
+```text
+XCTAssertEqual failed: ("") is not equal to ("alpha beta
+Visible gamma delta and site")
+```
+
+`testFindSearchesOrphanLedgerTextAndReasoningAfterRecovery` exercises the real
+pane, reopening a generated journal and then using its no-journal live path.
+It finds and visibly highlights formatted reasoning, formatted answer text and
+the raw link destination. Its six missing-hit assertions failed before the fix
+in `round5-failing-first.log`. The original first corpus helper also reported
+six missing legacy-block keys; the helper was corrected, then the unchanged
+production code was rerun to obtain the independent 24-assertion failure above.
+The planner-bypass mutation makes both tests fail again.
+
+### Nearby instances and boundary checks
+
+- **Hidden recovery rows:** `testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions`
+  covers superseded ledgers and cleared presentation updates in live, saved
+  captured and cold search. A first attempt that planned each record separately
+  failed three assertions (`round5-planner-first-fixed.log`: 49 passed, 1 failed).
+  The projection now plans rows together, as the transcript does.
+- **Recovery captions, terminal notices and checkpoints:**
+  `testRecoveryPlannerCorpusMatchesSavedAndLiveSearch` adds 18 exact native
+  comparisons for unfinished/adopted executions, suppressed duplicate checkpoints
+  and unsupported legacy ledgers. `round5-recovery-context-first-valid.log`
+  failed 13 assertions (0 passed, 1 failed), including a missing `Completion not
+  recorded`, a missing ` · no terminal receipt`, and a visible adopted caption
+  replaced by its old caption. Search and page decoding now share
+  `displayedMessage`; the existing terminal-note literal is shared with the
+  native view. The earlier `round5-recovery-context-first.log` also exposed an
+  invalid checkpoint fixture; its v2 source/protected/kept IDs were corrected
+  before the valid failing-first rerun. No production fix was made between
+  those two fixture runs.
+- **Paired tool receipts:** `testPlannedPairedToolPayloadsMatchSavedAndLiveSearch`
+  compares actual native generic, bash, read, edit and subagent cards, adjacent
+  and separated by 40 notices, against live/saved-captured/cold search (30 exact
+  comparisons). `round5-paired-corpus-first.log` failed 11 assertions in the
+  initial adjacent corpus: duplicated output, different saved card formatting,
+  and an edit transport receipt absent from the card. Card payloads now come
+  from the native card model; the issuing source owns the input and its retained
+  receipt owns displayed output. The planner determines whether a receipt is
+  part of a card or a separate row.
+- **Decoding-window context:** `testColdPlannerContextCrossesDecodeRuns` failed
+  twice in `round5-cross-run-first.log` (0 passed, 1 failed): a hidden distant
+  ledger was found, and a literal distant receipt was missed. The private,
+  rebuildable history offset index now retains call/result/operation links.
+  Search reads exact active-branch peers when they are outside the bounded
+  decoding run, then uses the same planner. It preserves receipt IDs and search
+  positions. `testPlannerDependencyIndexKeepsReusedCallsAndActiveBranchesSeparate`
+  verifies reused call IDs, operation links and abandoned-branch exclusion.
+- **Literal provider call IDs:** self-review of that new link index found SQLite
+  binding stopped at embedded NULs. `testPlannerDependencyIndexKeepsLiteralCallIDs`
+  failed once before the fix (`round5-call-id-first.log`), selecting
+  `["second-result", "second"]` instead of `["first"]`. Explicit UTF-8 byte
+  lengths preserve the complete call ID. This is a correction to the new index,
+  not a change to the journal format.
+- **Unsupported tool timelines:** self-review found the initial distant-receipt
+  optimization always removed output from the issuer. For an unsupported
+  timeline the native planner shows both the legacy card and a separate receipt.
+  `testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns` failed the
+  cold issuer comparison (`round5-legacy-context-first.log`: 1 passed, 1 failed).
+  It now adds six exact native comparisons; the optimization consults the actual
+  paired plan before omitting output.
+- **Older operation identities:** `testColdCompactionContextUsesBothRetainedOperationIdentityForms`
+  tests top-level and nested compaction operation IDs across 40 intervening rows.
+  The nested cold case failed (`round5-operation-id-first.log`: 1 passed,
+  1 failed, `nested=true, presented=false`). New index metadata now uses the same
+  nested-ID fallback as `TranscriptMessage.project`; existing adoption behavior
+  is unchanged.
+- **Captured reader state:** `testSearchKeepsCapturedOrphanPresentationWhenFinalReplyIsAppended`
+  appends a final reply after the display snapshot. The current pane retains its
+  visible orphan content; a reopened snapshot suppresses it. This is a control
+  for the new complete-row snapshot overlay, with a mutation below.
+
+The corpus gains 78 native payload comparisons, for **363 total** across the
+branch's Markdown/raw, tool, user/status, summary, agent and recovery cases.
+The new tests are generated fixtures with no live provider or real user data.
+
+### Adversarial self-review
+
+Reviewed the whole production branch diff against
+`141666ca479184d10a9791754d4c91df456599d8`, including parsed heading offsets and
+CR/CRLF handling, narrow Copy geometry, literal truncation markers, shared
+Markdown rendering, source disclosure, refresh/navigation focus identity,
+reconciliation, native tool disclosure and all row projections. Round-5 review
+specifically exercised active versus abandoned branches, repeated/literal call
+IDs, legacy/future timelines, overwritten presentation receipts, distant
+operation identities and a saved journal growing after the reader snapshot.
+The confirmed issues from this review are listed above and fixed.
+
+The search keeps its existing 5,000-source window, 100-hit page and bounded
+primary decoding runs. Extra context is obtained from indexed retained peers,
+not an unbounded body scan. Distant tool outputs are processed one at a time
+rather than retained across a wide tool round. Cancellation and captured-prefix
+checks remain in place; source search/copy and journal schema are unchanged.
+
+An intermediate implementation combined planning and collecting large enum rows
+in one initializer and exhausted the Debug cooperative-worker stack. This was
+not an unrelated test failure: `round5-context-fixed.log` exited 65 with 47 passed
+and five crashed methods; an attempted metrics shortcut still exited 65 with
+48 passed and four crashes (`round5-context-fixed-metrics.log`). Test-host crash
+stacks showed `TaskTranscriptPlan.rows`/`TranscriptBlock.init`/`___chkstk_darwin`
+under `ConversationContent.Presentation.init`. The shortcut was discarded.
+Separating the planner invocation from collecting its large row values fixed
+those failures without changing the planner; `round5-context-fixed-stack.log`
+passed all 52 tests then present, followed by 53, 55 and finally 58 passing
+regression methods as the corpus grew. The text-log parser counts XCTest
+assertion failures only, so its zero `failed` for those two crashed runs must
+not be mistaken for success; their exit status and crashed methods are recorded
+here explicitly.
+
+The first crashed run named `testFindMatchesFormattedLiveReasoning`,
+`testFindMatchesViewRawInUnsavedReply`,
+`testPlannedPairedToolPayloadsMatchSavedAndLiveSearch`,
+`testRecoveryPlannerCorpusMatchesSavedAndLiveSearch` and
+`testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions`. The metrics
+attempt crashed the same set except formatted live reasoning. All five pass in
+the final regression run.
+
+
+### Round-5 mutation evidence
+
+Each mutation was applied independently and restored in `finally` before the
+next run. All named results below require a running XCTest assertion failure,
+not just a nonzero build exit. The first legacy-tool mutation left an unused
+local and was rejected by the warnings-as-errors build
+(`round5-mutation-legacy-tool.log`); it is **not** counted. The corrected
+`legacy-tool-pairing` mutation changes the pairing decision while leaving valid
+code and fails the intended native comparison.
+
+| Mutation (log suffix) | Regression method(s) | Passed / failed |
+| --- | --- | --- |
+| `planner` | `testFindSearchesOrphanLedgerTextAndReasoningAfterRecovery`, `testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive` | 0 / 2 |
+| `plan-context` | `testRecoveryPlannerCorpusMatchesSavedAndLiveSearch`, `testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions` | 0 / 2 |
+| `saved-presentation` | `testRecoveryPlannerCorpusMatchesSavedAndLiveSearch` | 0 / 1 |
+| `terminal-notice` | `testRecoveryPlannerCorpusMatchesSavedAndLiveSearch` | 0 / 1 |
+| `paired-output` | `testPlannedPairedToolPayloadsMatchSavedAndLiveSearch` | 0 / 1 |
+| `cross-run` | `testColdPlannerContextCrossesDecodeRuns`, `testPlannedPairedToolPayloadsMatchSavedAndLiveSearch` | 0 / 2 |
+| `literal-call-id` | `testPlannerDependencyIndexKeepsLiteralCallIDs` | 0 / 1 |
+| `legacy-tool-pairing` | `testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns` | 0 / 1 |
+| `nested-operation-id` | `testColdCompactionContextUsesBothRetainedOperationIdentityForms` | 0 / 1 |
+| `captured-presentation` | `testSearchKeepsCapturedOrphanPresentationWhenFinalReplyIsAppended` | 0 / 1 |
+
+All ten semantic mutations were caught (13 failing test invocations).
+
+
+### Round-5 exact commands
+
+All runs use this workstream's build root and the shared full-lane lock, acquired
+with an owner token and released in `finally`, including failing tests and
+mutations. No named xcresult bundle was requested; the text logs below are the
+evidence. The native script regenerates the project and removes old automatic
+result bundles. The installed app was never launched.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+```
+
+The following commands are the exact native invocations for failing-first,
+intermediate and mutation runs. Log names share
+`$PI_BUILD_ROOT/validation/` and the `.log` extension.
+
+```sh
+# round5-adversarial-fixed.log
+# round5-context-boundaries-fixed.log
+# round5-context-fixed-metrics.log
+# round5-context-fixed-stack.log
+# round5-context-fixed.log
+# round5-planner-first-fixed.log
+# round5-regression-fixed.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round5-call-id-first.log
+# round5-mutation-literal-call-id.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPlannerDependencyIndexKeepsLiteralCallIDs
+
+# round5-cross-run-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testColdPlannerContextCrossesDecodeRuns
+
+# round5-failing-first-corpus.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive
+
+# round5-failing-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindSearchesOrphanLedgerTextAndReasoningAfterRecovery \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions
+
+# round5-legacy-context-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPlannerDependencyIndexKeepsLiteralCallIDs
+
+# round5-mutation-captured-presentation.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSearchKeepsCapturedOrphanPresentationWhenFinalReplyIsAppended
+
+# round5-mutation-cross-run.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testColdPlannerContextCrossesDecodeRuns \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPlannedPairedToolPayloadsMatchSavedAndLiveSearch
+
+# round5-mutation-legacy-tool-pairing.log
+# round5-mutation-legacy-tool.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns
+
+# round5-mutation-nested-operation-id.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testColdCompactionContextUsesBothRetainedOperationIdentityForms
+
+# round5-mutation-paired-output.log
+# round5-paired-corpus-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPlannedPairedToolPayloadsMatchSavedAndLiveSearch
+
+# round5-mutation-plan-context.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRecoverySearchFollowsPlannerSuppressionAndDiscardedRevisions \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRecoveryPlannerCorpusMatchesSavedAndLiveSearch
+
+# round5-mutation-planner.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testOrphanLedgerProjectionEqualsPlannedNativeRowsSavedAndLive \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindSearchesOrphanLedgerTextAndReasoningAfterRecovery
+
+# round5-mutation-saved-presentation.log
+# round5-mutation-terminal-notice.log
+# round5-recovery-context-first-valid.log
+# round5-recovery-context-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRecoveryPlannerCorpusMatchesSavedAndLiveSearch
+
+# round5-operation-id-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testColdCompactionContextUsesBothRetainedOperationIdentityForms \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnsupportedToolTimelineKeepsBothNativeRecoveryRowsAcrossRuns
+
+```
+
+
+### Round-5 final validation
+
+After every mutation was restored: **793 passed, 0 failed, 8 skipped** across
+74 focused classes. Serial classes ran alone. There were no unexplained final
+failures. The merged full release gate remains the lead's responsibility.
+
+| Final text log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round5-regression-final.log` | 58 | 0 | 0 |
+| `round5-affected-final.log` | 617 | 0 | 7 |
+| `round5-timeline-final.log` | 30 | 0 | 0 |
+| `round5-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round5-agent-reader-final.log` | 55 | 0 | 0 |
+| `round5-wire-page-final.log` | 4 | 0 | 0 |
+| `round5-history-edge-timing-final.log` | 2 | 0 | 0 |
+| `round5-history-edit-final.log` | 3 | 0 | 0 |
+| `round5-inline-timing-final.log` | 1 | 0 | 0 |
+| `round5-streaming-serial-final.log` | 1 | 0 | 1 |
+| `round5-gallery-final.log` | 3 | 0 | 0 |
+
+Seven skips are explicit opt-in checks: retained-journal index/open measurements,
+skill-pill captures, Markdown line-pitch/token-cost measurements, Markdown sample
+capture and the 70-turn wire performance probe. The eighth is
+`TranscriptStreamingSerialTests.testAReplyCountsAsReadOnlyOnceItsEndHasBeenOnScreen`:
+“A receipt needs this app's own key, unoccluded window; this desktop cannot
+provide one.” That environment-dependent check remains unverified here; it is
+not counted as a pass. Its class's other test passed. All requested recovery,
+projection and Find regressions executed and passed.
+
+Exact final commands (same build root and lock ownership wrapper as above):
+
+```sh
+# round5-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round5-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round5-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round5-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round5-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round5-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round5-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round5-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round5-inline-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InlineSkillPillTimingTests
+
+# round5-streaming-serial-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptStreamingSerialTests
+
+# round5-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round5" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+
+```
+
+`TranscriptBugGalleryTests` regenerated nine images under
+`$PI_BUILD_ROOT/validation/gallery-round5`; all nine were opened and visually
+inspected: `transcript-{light,dark,narrow}.png`, `rows-{light,dark,narrow}.png`,
+and `recovery-{light,dark,narrow}.png`. The recovered reasoning and answer draw
+correctly; the formatted `gamma delta` hit remains visible in both appearances
+and at 360 points. The unfinished operation caption and completion notice fit.
+The previous scenes retain the user highlight, summary and agent content, both
+edit tails, ordered-list marker highlight and unclipped heading Copy button.
+Narrow metadata uses the existing ellipsis; no new clipping was observed.
+
+No helper or wire behavior changed, so the full helper and Python wire/concurrent/
+acceptance suites were not rerun. The focused app wire tests are included above.
+`git diff --check` passes. No clone folders remain under this workstream's build
+root; its full-lane lock was released after every run. No installed app, real
+preferences, chats, credentials or Keychain were used. No assigned product issue
+or owner decision remains unresolved; the one desktop prerequisite skip is
+recorded above for the lead's full gate.
