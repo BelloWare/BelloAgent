@@ -21,6 +21,12 @@ import Combine
     /// Hands a side's view its new width.
     var updateSideView: ((NSView, SideRecord, SessionDisplay, CGFloat) -> Void)?
     private var sideView: NSView?
+    var sideMinimumWidth: CGFloat? { (sideView as? SidePaneView)?.minimumWidth }
+    /// Choose composer forms before the workspace reserves both control minima.
+    /// Standalone panes continue to propose their actual allocated width.
+    var composerProposalWidth: CGFloat? {
+        didSet { if oldValue != composerProposalWidth { updateComposerProposal() } }
+    }
     private var sideKey: (id: String, session: ObjectIdentifier)?
     private(set) var strip: TabStripView?
     private let content = TabContentContainer()
@@ -37,12 +43,13 @@ import Combine
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
-    func contentSizeChanged() { needsLayout = true }
+    func contentSizeChanged() { needsLayout = true; PiKit.sizeChanged(self) }
 
     /// The window's disabled state: no tab is chosen, closed or dragged.
     var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { strip?.inheritedEnabled = inheritedEnabled } } }
 
     func update(side: (info: SideRecord, session: SessionDisplay)?, width: CGFloat, force: Bool = false) {
+        let width = composerProposalWidth ?? width
         let key = side.map { ($0.info.id, ObjectIdentifier($0.session)) }
         if key?.0 != sideKey?.id || key?.1 != sideKey?.session {
             sideView?.removeFromSuperview(); sideView = nil
@@ -95,7 +102,7 @@ import Combine
         // report hides the tab's content without this pane undoing it.
         sideView?.alphaValue = shown != nil ? 0 : 1
         if let shown { content.show(shown, for: pane) } else { content.letGo() }
-        needsLayout = true
+        contentSizeChanged()
         // Laid out now, as SwiftUI laid the pane out in the same pass: the
         // tab's content is there, at its size, before what moves focus into
         // it looks for it.
@@ -110,13 +117,7 @@ import Combine
     override func layout() {
         flush()
         super.layout()
-        // The workspace can resize this pane after its model update when
-        // its divider moves. Give the composer the
-        // current enclosing proposal before measuring its control minimum.
-        if width != bounds.width, let side, let sideView {
-            width = bounds.width
-            updateSideView?(sideView, side.info, side.session, width)
-        }
+        updateComposerProposal()
         var top: CGFloat = 0
         if let strip { strip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: TabStripView.height); top = TabStripView.height }
         // Opacity kept the side in the released ZStack's layout. Its fixed
@@ -126,6 +127,13 @@ import Combine
         let body = CGRect(x: (bounds.width - bodyWidth) / 2, y: top, width: bodyWidth, height: max(0, bounds.height - top))
         sideView?.frame = body
         content.frame = body
+    }
+    private func updateComposerProposal() {
+        let proposal = composerProposalWidth ?? bounds.width
+        if width != proposal, let side, let sideView {
+            width = proposal
+            updateSideView?(sideView, side.info, side.session, width)
+        }
     }
     /// A covered side takes no clicks.
     override func hitTest(_ point: NSPoint) -> NSView? {

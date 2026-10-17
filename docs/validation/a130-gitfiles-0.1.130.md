@@ -369,3 +369,223 @@ scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabP
 # split-redraw.log
 scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRedrawTests
 ```
+
+## Side-conversation split review follow-up
+
+The review finding is **confirmed and fixed**. The preceding layout fix applied
+the file-only yielding policy to `RightPaneView` even when it held a saved side
+conversation. At 920×628/800 with a 300-point sidebar and two connections, the
+main chat took 400 points and left 218 for the side's 336-point body. Send ended
+at x=652 and Close side at x=662 in a region ending at x=619. The independent
+proportional reference placed them at x=606.5 and x=616.5 respectively, both
+visible. All measurements below use points relative to that content region.
+
+The split now distinguishes these cases:
+
+- No side conversation: retain the file-only fix, including compact composer
+  forms, saved fraction, window minimum and drag behavior.
+- A side conversation, including one covered by a file: measure both composers
+  against the original proportional proposals. When their rounded minima fit,
+  main width is `mainMinimum + floor(spareWidth * savedFraction)` and the side
+  gets its minimum plus the remaining spare width. Proposals stay independent
+  of the resulting allocations, avoiding feedback between form selection and
+  minimum reservation.
+- If both minima cannot fit: use the original `SplitPane.mainWidth` result
+  exactly, as explicitly requested by the owner. At width 920 the allocation
+  is 309/309 with sidebar 300, or 249/249 with sidebar 420, for idle and busy
+  sessions alike. The saved fraction and 920×628 window minimum are unchanged.
+
+Nearby cases covered by the same change: a side's Stop/Steer controls changing
+its minimum without a window resize; creating/removing a side under an open
+file; and a drag crossing a composer-form threshold. `RightPaneView` propagates
+size changes to the split. Side drags divide their movement by spare width and
+retain the starting scale until mouse-up, so a changed form cannot make release
+jump to another split. Standalone right panes retain their allocated-width
+proposals and their released body layout.
+
+### Failing-first evidence and regression coverage
+
+Evidence prefix: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/`.
+Production code was unchanged for `side-split-before.log`: **7 tests, 4 failed
+test methods, 112 assertion failures**; the three existing file-only methods
+passed. New methods:
+
+| Test in WorkspaceSplitTests | Coverage |
+| --- | --- |
+| testSideConversationKeepsTheReleasedSplitWhenBothMinimaCannotFit | 920×800 and 920×628; sidebar 300/420; independent main/side idle and busy states; exact old widths and Send/Queue/Stop/Close positions |
+| testSideConversationReservesBothMinimaAndSharesSlackByTheSavedFraction | Both minima and saved-fraction slack allocation; 1240 and 1800 points; fractions 0.3/0.5/0.7; independent busy states |
+| testSideSplitDragAndBusyChangesUseTheSpaceBeyondBothMinima | Drag movement at stable forms, release after a form change, side-only busy transitions at 1800 and 2400 points |
+| testCoveredSideKeepsItsMinimumUntilRemovedFromTheFilePane | Opening a side under a file invokes the side policy; removing it restores file-only reservation |
+
+The visibility oracle mounts a separate `RightPaneView` with the same synthetic
+saved side and controls, manually allocating the released proportional widths.
+It bypasses `WorkspaceChatsLayer`. If both minima cannot fit, every action's
+horizontal bounds must equal the reference; every previously visible action
+must remain visible. When minima fit, both allocations must satisfy them and
+all tested side actions must lie within the region. The original file-only
+matrix still checks every composer control against its composer and chat bounds.
+
+Representative failing-first assertions (`side-split-before.log`):
+
+```text
+XCTAssertEqualWithAccuracy failed: ("400.0") is not equal to ("309.0")
+XCTAssertEqualWithAccuracy failed: ("218.0") is not equal to ("309.0")
+XCTAssertLessThanOrEqual failed: ("652.0") is greater than ("619.0") - ... Send must remain visible
+XCTAssertLessThanOrEqual failed: ("662.0") is greater than ("619.0") - ... Close side must remain visible
+```
+
+An intermediate run (`side-split-after.log`) passed the allocation/visibility
+cases but failed three drag assertions. Two were fixture assumptions: busy
+controls can select a smaller form, and a 12-point movement at 1800 can cross a
+form threshold. The corrected test checks minimum changes in either direction,
+uses 2400 for stable-form movement, and retains 1800 for the threshold case.
+Its fresh failing-first run (`side-split-drag-before.log`, **1 test, 1 failure**)
+isolated the real mouse-up jump before fixing the drag scale:
+
+```text
+XCTAssertEqualWithAccuracy failed: ("783.0") is not equal to ("972.0") +/- ("1.0") - Ending the drag keeps the divider in place, even if a control form changed
+```
+
+After the fix, `side-split-green.log`: **7 passed, 0 failed**.
+
+Four isolated mutations were caught, then restored in `finally`:
+
+| Mutation | Regression | Result | Log |
+| --- | --- | --- | --- |
+| In the insufficient-space branch, restore main-only reservation | testSideConversationKeepsTheReleasedSplitWhenBothMinimaCannotFit | 1 test, 1 failure: 400 != 309 | side-split-mutation-fallback-first-failure.log |
+| Replace the both-minima allocation with the proportional width even when both fit | testSideConversationReservesBothMinimaAndSharesSlackByTheSavedFraction | 1 test, 32 failures: e.g. 469 != 461 | side-split-mutation-reserve.log |
+| Stop RightPaneView from forwarding size changes to its parent | testSideSplitDragAndBusyChangesUseTheSpaceBeyondBothMinima | 1 test, 6 failures: side-only busy leaves main at 972 instead of 925 | side-split-mutation-side-size.log |
+| Stop retaining the drag's initial spare-width scale | testSideSplitDragAndBusyChangesUseTheSpaceBeyondBothMinima | 1 test, 1 failure: mouse-up jumps from 972 to 783 | side-split-mutation-drag.log |
+
+The full fallback-mutant matrix first reported the expected geometry/visibility
+assertions, then hit AppKit's repeated-layout-pass guard after resizing the
+reference window (`side-split-mutation-fallback.log` and `-fallback-repeat.log`;
+neither has a completed XCTest count). The completed mutation run above set
+XCTest's `continueAfterFailure = false` temporarily, keeping the assertions
+unchanged and stopping at the first failed width assertion. Both the mutation
+and this fail-fast setting were restored before final validation. No such
+layout exception occurred in `side-split-green.log`.
+
+### Narrow fallback limitation retained by owner request
+
+Both control minima exceed the available width in every 920-point side-chat
+fixture. Idle minima are 400/336; busy minima are 469/405. The fallback preserves
+0.1.129 geometry, including its existing clipping; it does not claim that both
+composers fit. For example, with sidebar 300, a busy side's Stop ends at x=641
+and Close side at x=651 beyond the x=619 region edge. With sidebar 420, even
+idle Send ends at x=516.5 and Close side at x=526.5 beyond the x=499 edge. Those
+bounds exactly match the proportional reference, while idle Send/Close at
+sidebar 300 remain visible. This is the owner's explicit conservative fallback;
+changing that existing narrow UX would require a separate owner decision.
+
+### Follow-up gallery inspection
+
+`WorkspaceSplitGalleryTests`: **2 passed, 0 failed, 0 skipped**. Captured with
+the shared full-lane lock held throughout, using only generated files, memory
+vaults and synthetic chat states. All **28 PNGs were opened and visually
+inspected**, without activating another app:
+
+- `build-a130-gitfiles/gallery-side-split/sides`: 12 images, Aqua/Dark Aqua ×
+  idle/busy × 920×628/sidebar 300, 920×628/sidebar 420, 1800×800/sidebar 300.
+  At sidebar 300, idle Send and Close side are visible. The narrow busy/420
+  scenes show the documented released overflow. The 1800-point scenes keep
+  both composers and Send/Queue/Stop/Close side fully visible in both themes.
+- `build-a130-gitfiles/gallery-side-split/files`: 16 images, Aqua/Dark Aqua ×
+  920×800/920×628 × file open/closed × idle/busy. The file-only fix still keeps
+  all main composer controls inside the chat; the file uses the remainder and
+  retains horizontal scrolling.
+
+These folders are under `/Users/admin/Library/Caches/BelloSwiftWork/`. The
+gallery assertions also compare every side scene to its independent reference
+or verify both minima, as appropriate. Text evidence: `side-split-gallery.log`.
+
+### Follow-up focused validation
+
+Final restored-source runs: **197 passed, 0 failed, 0 skipped** across the 15
+classes below. Every native run held the shared full-lane lock and released
+only its own lock in `finally`; serial-lane classes ran alone. All builds used
+this workstream's existing build root. No extra DerivedData root or clone
+folder was created. No helper/wire behavior changed, so those suites were not
+rerun for this app-layout follow-up.
+
+| Class | Passed | Failed | Text log |
+| --- | ---: | ---: | --- |
+| WorkspaceSplitTests | 7 | 0 | side-split-final.log |
+| WorkspaceSplitGalleryTests | 2 | 0 | side-split-gallery.log |
+| WorkspaceRootTests | 7 | 0 | side-split-workspace-root.log |
+| SmoothShellTests | 5 | 0 | side-split-smooth-shell.log |
+| ShellComposerTests | 5 | 0 | side-split-shell-composer.log |
+| ConversationPaneTests | 81 | 0 | side-split-conversation-pane.log |
+| ComposerBarLayoutTests | 7 | 0 | side-split-composer-bar.log |
+| GitPanelNarrowParityTests | 8 | 0 | side-split-right-pane-parity.log |
+| WorkspaceRedrawTests | 1 | 0 | side-split-redraw.log |
+| FileHiddenReadTests | 5 | 0 | side-split-tabs-and-files.log |
+| FileTabTests | 16 | 0 | side-split-tabs-and-files.log |
+| SmoothPaneAndKeyboardTests | 4 | 0 | side-split-tabs-and-files.log |
+| TabPaneTests | 10 | 0 | side-split-tabs-and-files.log |
+| FileFolderTests | 19 | 0 | side-split-file-folder.log |
+| FileReviewStateTests | 20 | 0 | side-split-file-review.log |
+
+No unrelated test failures. The existing generated-store teardown diagnostic
+from `ConversationPaneFixture.swift:87–88` appeared 213 times in
+`side-split-conversation-pane.log` (`vnode unlinked while in use`), with all 81
+asserting tests passing. As in the earlier follow-up, this is recorded without
+changing that unrelated fixture. None of the final restored-source runs hit
+AppKit's layout-pass guard. The new split regression/gallery fixtures use
+`registerWorkspaceFixtureTeardown`.
+
+Exact commands below were run from this worktree under the lock wrapper
+`build-a130-gitfiles/evidence/run-split-check.py`. The galleries used both opt-in
+variables; no gallery tests were skipped. Logs and the command ledger remain
+under the evidence directory named above.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+
+# side-split-before.log, side-split-after.log, side-split-green.log, side-split-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests
+
+# side-split-drag-before.log, side-split-mutation-side-size.log, side-split-mutation-drag.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideSplitDragAndBusyChangesUseTheSpaceBeyondBothMinima
+
+# side-split-mutation-fallback.log, -fallback-repeat.log, -fallback-first-failure.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideConversationKeepsTheReleasedSplitWhenBothMinimaCannotFit
+
+# side-split-mutation-reserve.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitTests/testSideConversationReservesBothMinimaAndSharesSlackByTheSavedFraction
+
+# side-split-gallery.log
+TEST_RUNNER_PI_WORKSPACE_SPLIT_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-side-split/files \
+TEST_RUNNER_PI_WORKSPACE_SPLIT_SIDE_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/gallery-side-split/sides \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceSplitGalleryTests
+
+# side-split-workspace-root.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRootTests
+
+# side-split-smooth-shell.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SmoothShellTests
+
+# side-split-shell-composer.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ShellComposerTests
+
+# side-split-conversation-pane.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+
+# side-split-composer-bar.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ComposerBarLayoutTests
+
+# side-split-right-pane-parity.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+
+# side-split-redraw.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRedrawTests
+
+# side-split-tabs-and-files.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabPaneTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/SmoothPaneAndKeyboardTests
+
+# side-split-file-folder.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+
+# side-split-file-review.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+```
