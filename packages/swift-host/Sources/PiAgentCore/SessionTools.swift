@@ -298,7 +298,8 @@ extension AgentSession {
         if !held.isEmpty {
             // Calls the pause stopped at their own gate wait for Resume, as
             // a batch held before it began does; the others kept their results.
-            costPendingCalls = held; try persistState(active:true)
+            costPendingCalls = Array(Set(costPendingCalls).union(held)).sorted { a, b in (calls.firstIndex { $0.id == a } ?? 0) < (calls.firstIndex { $0.id == b } ?? 0) }
+            try persistState(active:true)
             throw Self.costHoldError
         }
     }
@@ -307,6 +308,8 @@ extension AgentSession {
     func runToolCall(_ call: ToolCall, index: Int, cancelledBeforeInvocation: Bool = false) async -> ToolOutcome {
         let start=nowMS()
         func heldOutcome() -> ToolOutcome {
+            // Saved now: a quit or crash while other calls run keeps it held.
+            if !costPendingCalls.contains(call.id) { costPendingCalls.append(call.id); try? persistState(active:true) }
             if var card=toolStates[call.id] { card["state"]="queued"; setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:displayClock()); event("tool_execution_end") }
             var outcome = ToolOutcome(index:index,message:ChatMessage(role:"toolResult",content:[]),observedAt:displayClock(),cancelled:false); outcome.held = true
             return outcome

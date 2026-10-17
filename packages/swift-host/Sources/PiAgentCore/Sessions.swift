@@ -126,6 +126,7 @@ public actor AgentSession {
     var costPendingCalls: [String] = []
     /// A manual compaction the pause cut: Resume runs it again.
     var costPendingCompaction = false
+    var compactOnResume = false
     /// Cancels the model request (or retry back-off) under way, if any.
     var modelRequestAbort: (@Sendable () -> Void)?
     var familyCancelled: (@Sendable (Int) -> Void)?

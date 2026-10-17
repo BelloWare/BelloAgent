@@ -113,6 +113,14 @@ enum AgentFamilyRecovery {
                     continue
                 }
                 var terminal = original
+                // A Resume records continuations in the owner first; a turn
+                // sealed (by Stop or quit) before its child ran never reached
+                // the mirror. Catch the mirror up before any terminal record.
+                if let mirror = childState.family?.turns[original.id], !mirror.status.terminal,
+                   (mirror.continuations ?? []) != (original.continuations ?? []) {
+                    var queued = original; queued.status = .queued; queued.result = nil
+                    for step in queued.mirrorSteps(from:mirror) where step != mirror { try childWrite(JournalRecordKind.agentTurnState,step) }
+                }
                 if var evidence = childState.family?.turns[original.id], evidence.status.terminal {
                     // An older helper may seal a child before its accepted
                     // turn was mirrored. The owner's acceptance retains effort.

@@ -57,7 +57,7 @@ extension AgentSession {
     func restoreCostPause(_ saved: CostPauseState) {
         costPaused = saved.paused; costPausedMembers = saved.members; familyStopReason = saved.reason
         budgetStopIssued = saved.issued; errorCode = saved.code; errorMessage = saved.message
-        resumingCostPause = false; familyWaitResume = false
+        resumingCostPause = false; familyWaitResume = false; compactOnResume = false
     }
     /// The whole family's limit, checked before a Resume of a paused chat:
     /// a side reads its root's. Raising the limit alone resumes nothing.
@@ -117,17 +117,10 @@ extension AgentSession {
             if committed, paused.paused, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
         if costPaused { members = endCostPause() }
-        if paused.paused, costPendingCompaction, !titleTask {
-            // The pause cut a manual compaction: Resume compacts again first.
-            let intent = Submission(commandID: commandID, turnID: receiptKey, text: "[Compact now]")
-            activeSubmission = intent; currentTurnID = intent.turnID; commandState(intent, "queued")
-            costPendingCompaction = false; queuePaused = false; errorMessage = nil; errorCode = nil
-            do { try persistState() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; activeSubmission = nil; costPendingCompaction = true; throw error }
-            committed = true
-            launch(compactOnly: true)
-            return ["accepted": true, "continued": true, "compacting": true, "resumedFamily": true, "pausedMembers": .array(members.map(JSON.string))]
-        }
-        let familyOnly = paused.paused && hasParkedAgentTurns
+        // A manual compaction the pause cut runs first in the Resume's own run
+        // (with its overrides), which then goes on with the rest of the work.
+        let compactFirst = paused.paused && costPendingCompaction && !titleTask
+        let familyOnly = paused.paused && (hasParkedAgentTurns || compactFirst)
         // Held tool calls are a run to go on with: they run first.
         let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents || !costPendingCalls.isEmpty
         // With nothing of its own cut off, the run waits for the resumed
@@ -173,6 +166,7 @@ extension AgentSession {
         if let turn = continuedTurn { currentTurnID = turn }
         activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
         familyWaitResume = !tailContinues
+        compactOnResume = compactFirst
         commandState(submission, "queued")
         // Saved as a run under way, with its receipt: a helper that dies
         // before the run's own first record leaves the chat interrupted, so
@@ -187,6 +181,7 @@ extension AgentSession {
         committed = true
         launch()
         var reply: JSON = ["accepted": true, "continued": true]
+        if compactFirst { reply["compacting"] = true }
         if paused.paused { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
         return reply
     }

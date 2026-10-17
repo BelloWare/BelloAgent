@@ -207,6 +207,15 @@ extension AgentSession {
                         boundary=context; try persistState(active:true); event("turn_end")
                     } else { try persistState(active:true) }
                 }
+                if compactOnResume {
+                    // The manual compaction the pause cut, done again once parked
+                    // work is released and held calls have run (a failure here
+                    // cannot strand the family).
+                    compactOnResume=false
+                    // Nothing left to summarize is not a reason to strand the rest.
+                    do { try await compactContext() } catch let error as AgentError where error.code == "compact_unavailable" {}
+                    costPendingCompaction=false; try persistState(active:true)
+                }
                 // Nothing of the parent's own was cut off: wait for the resumed
                 // family as the turn's end would, and ask the model only once
                 // something arrives for it.
@@ -435,10 +444,8 @@ extension AgentSession {
             // The reply that crossed the limit was the run's last word:
             // nothing waits for Resume. The chat is simply at its limit, and
             // a new message is refused there as before.
-            costPaused = false; queuePaused = false
-            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            clearCostPauseWithoutWork()
             if state != .error { state = .idle; runStatus = .idle }
-            if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
         if costPaused, state != .error {
             queuePaused=true; state = .paused; runStatus = .cancelled

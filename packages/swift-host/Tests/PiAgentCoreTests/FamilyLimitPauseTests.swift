@@ -819,3 +819,100 @@ private actor ChildToolClient: ModelClient {
         return reply
     }
 }
+
+/// Review round 3 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A pause that ends by itself (the crossing reply was the run's last
+    /// word) also releases the coordinator: later sub-agents run.
+    func testAnAutomaticallyClearedPauseReleasesTheCoordinator() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AnsweringChildClient(), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        await owner.setCostLimit(0.0005)
+        _ = try await owner.submit(Submission(commandID:"command",turnID:"turn",text:"Answer"),steer:false)
+        try await eventually { await client.waiting }
+        await client.release()
+        try await eventually { !(await owner.isRunning) }
+        let paused = await owner.costPaused; XCTAssertFalse(paused,"Nothing waits: not left paused")
+        try await eventually(timeout:.seconds(2)) { !(await coordinator.paused.contains("parent")) }
+        await owner.setCostLimit(5)
+        _ = try await startChild(owner, coordinator, "later")
+        try await eventually(timeout:.seconds(3)) { await client.requests >= 2 }
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// Stop or quit sealed a resumed turn whose child never ran: its mirror
+    /// lacks the continuation. Reopening catches the mirror up first instead
+    /// of failing the whole family.
+    func testReopenRepairsAMirrorThatMissedAContinuationBeforeSealing() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:LimitRunClient(mode:"queued"), coordinator:coordinator)
+        await coordinator.fixturePause("parent")
+        let id = try await startChild(owner, coordinator, "stale")
+        try await eventually { await coordinator.jobs.isEmpty }
+        let state = await owner.agentState(), plans = await owner.subagents.plans
+        var turn = try XCTUnwrap(state.latest(id)); let plan = try XCTUnwrap(plans.values.first)
+        turn.continuations = [AgentTurnContinuation(parentExecutionID:turn.parentExecutionID,generation:0,runtimeID:turn.runtimeID,epoch:turn.epoch)]
+        try await owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+        var sealed = turn; sealed.status = .notExecuted
+        sealed.result = SubagentToolResult(plan:plan,status:.notExecuted,error:AgentError("subagent_stopped","Stopped before execution")); sealed.normalizeResult()
+        try await owner.appendAgentRecord(JournalRecordKind.agentTerminal,sealed)
+        let saved = await owner.path, path = try XCTUnwrap(saved)
+        await owner.close()
+        let reopened = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),resumePath:path)
+        let child = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:root.appendingPathComponent(id + ".jsonl").path)
+        let mirror = await child.agentState().turns[turn.id]
+        XCTAssertEqual(mirror?.status,.notExecuted); XCTAssertEqual(mirror?.continuations?.count,1)
+        await child.close(); await reopened.close()
+    }
+
+    /// A Compact Now refused during the pause is done again on Resume, and
+    /// the paused sub-agents still resume (not stranded behind it).
+    func testCompactionRedoneOnResumeStillResumesParkedChildren() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"background"), coordinator = AgentSteeringCoordinator()
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await parent.enableFamilyBudget(); await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.setCostLimit(0.5)
+        _ = try await parent.submit(Submission(commandID:"command",turnID:"turn",text:"Two workers"),steer:false)
+        try await eventually { await client.children.count == 2 }
+        await client.releaseFirst()
+        try await eventually(timeout:.seconds(3)) { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
+        try await parent.compact()
+        try await eventually { !(await parent.isRunning) }
+        let pending = await parent.costPendingCompaction, paused = await parent.costPaused
+        XCTAssertTrue(pending,"The refused compaction waits for Resume"); XCTAssertTrue(paused)
+        await parent.setCostLimit(20); await client.releaseAll()
+        _ = try await parent.continueRun(commandID:"resume")
+        try await eventually(timeout:.seconds(10)) { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
+        let family = await parent.agentState(), still = await parent.costPendingCompaction
+        XCTAssertTrue(family.turns.values.allSatisfy { $0.status == .completed },"\(family.turns.values.map(\.status))")
+        XCTAssertFalse(still)
+        await coordinator.drain(); await parent.close()
+    }
+
+    /// The root's list of paused sides follows each side's own durable pause
+    /// when the side binds again (a crash between the two saves).
+    func testSideBindingRepairsTheRootsPausedMembers() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root)
+        await owner.setCostLimit(5)
+        let side = try await self.side("side",parent:owner,root:root)
+        await side.fixtureCostPause()
+        try await side.bindSideBudget(to:owner)
+        let members = await owner.costPausedMembers, rootPaused = await owner.costPaused
+        XCTAssertEqual(members,["side"]); XCTAssertTrue(rootPaused)
+        await side.fixtureEndPause()
+        try await side.bindSideBudget(to:owner)
+        let after = await owner.costPausedMembers; XCTAssertTrue(after.isEmpty)
+        await side.close(); await owner.close()
+    }
+}
+
+private extension AgentSession {
+    func fixtureEndPause() { costPaused = false; queuePaused = false; errorCode = nil; errorMessage = nil }
+}

@@ -25,6 +25,11 @@ extension AgentSession {
             for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideRecord(record, side:id, parents:sideBudgetIDs) }
         }
         try await refreshSideCharges()
+        // The root's list of paused sides follows each side's own durable
+        // pause: a crash between the two saves is repaired here.
+        if let root = sideBudgetParents.last {
+            if costPaused { await root.notePausedMember(id) } else { await root.forgetPausedMember(id) }
+        }
     }
 
     func refreshSideCharges() async throws {

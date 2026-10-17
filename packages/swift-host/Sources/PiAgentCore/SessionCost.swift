@@ -226,6 +226,15 @@ extension AgentSession {
         subagents.family?.turns.values.contains { !$0.status.terminal } == true ||
         continuationTail.map { Self.continues(from: $0) } ?? false
     }
+    /// A pause with nothing left to resume ends by itself; the coordinator's
+    /// hold (and its fence against the pause's late hold) is released too.
+    func clearCostPauseWithoutWork() {
+        costPaused = false; queuePaused = false
+        if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+        if state != .error, runTask == nil || state == .paused { state = .idle; runStatus = .idle }
+        if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
+        if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+    }
     /// The family reached its limit: pause at once, durably, before anything
     /// is cancelled. Called only through `stopFamilyAtLimit`. A chat with no
     /// unfinished work only closes its gates; a side that pauses tells its
@@ -277,9 +286,7 @@ extension AgentSession {
         costPausedMembers.remove(at: index)
         // Paused only for that side, with nothing of its own: no longer paused.
         if costPaused, runTask == nil, !hasWorkAfterCostPause {
-            costPaused = false; queuePaused = false
-            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
-            if state != .error { state = .idle; runStatus = .idle }
+            clearCostPauseWithoutWork()
             event("state")
         }
         try? persistState()
