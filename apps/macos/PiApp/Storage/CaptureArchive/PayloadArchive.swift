@@ -107,6 +107,9 @@ actor PayloadArchive {
         savedSideBudgets = try CaptureLineage.savedSideBudgets(db)
         try CaptureSubagents.prepare(db)
         try db.execute("CREATE INDEX IF NOT EXISTS attempts_filter ON attempts(wall,workspace,session,purpose,api,outcome)")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_session ON attempts(session,id)")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_completed ON attempts(wall,id) WHERE outcome!='running'")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_expiring_metrics ON attempts(metrics_retained,wall,id) WHERE metrics_retained=1 AND outcome!='running'")
         try db.execute("CREATE TABLE IF NOT EXISTS bodies(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, observed INTEGER NOT NULL DEFAULT 0, length INTEGER NOT NULL DEFAULT 0, digest BLOB, PRIMARY KEY(attempt,kind))")
         try db.execute("CREATE TABLE IF NOT EXISTS chunks(scope TEXT NOT NULL, id TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(scope,id))")
         try db.execute("CREATE TABLE IF NOT EXISTS refs(attempt TEXT NOT NULL, kind TEXT NOT NULL, ordinal INTEGER NOT NULL, scope TEXT NOT NULL, chunk TEXT NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(attempt,kind,ordinal), FOREIGN KEY(attempt,kind) REFERENCES bodies(attempt,kind) ON DELETE CASCADE, FOREIGN KEY(scope,chunk) REFERENCES chunks(scope,id))")
@@ -508,7 +511,7 @@ actor PayloadArchive {
                     return value
                 }),
                 "total": .number(Double(try db.rows("SELECT COUNT(*) AS n FROM event_indices WHERE attempt=?", [.text(attemptID)]).first?["n"]?.number ?? 0)),
-                "boundary": .string("SSE byte offsets into the original response. Indices are bounded to 4096 per request / 100000 globally and expire with bodies; omitted counts are in request metadata.")]
+                "boundary": .string("SSE byte offsets into the original response. Indices expire with bodies; omitted counts are in request metadata.")]
     }
     /// Message ids linked to an attempt: produced messages first, then the
     /// context messages it consumed. Empty when links were never recorded.
@@ -639,9 +642,20 @@ actor PayloadArchive {
     }
     func clear(sessionID: String) throws {
         let db = try ready()
-        let ids = try db.rows("SELECT id FROM attempts WHERE session=?", [.text(sessionID)]).compactMap { $0["id"]?.string }
-        guard ids.allSatisfy({ !leases.contains($0) && !writers.keys.contains(writerKey($0, "request")) && !writers.keys.contains(writerKey($0, "response")) }) else { throw CaptureFailure.busy }
-        for id in ids { try evict(id, state: "purged") }; try collectGarbage()
+        // A lease or writer in a later page must leave earlier pages intact.
+        // Files are collected only after the whole clear commits.
+        try db.transaction {
+            var after = ""
+            while true {
+                let batch = try db.rows("SELECT id FROM attempts WHERE session=? AND id>? ORDER BY id LIMIT ?",
+                                        [.text(sessionID), .text(after), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last else { break }
+                after = try archiveText(last, "id")
+                for row in batch { try evict(archiveText(row, "id"), state: "purged") }
+            }
+        }
+        try collectGarbage()
     }
     func purge(attemptID: String) throws { _ = try record(attemptID); try evict(attemptID, state: "purged"); try collectGarbage() }
     private func evict(_ id: String, state: String) throws {
@@ -664,10 +678,18 @@ actor PayloadArchive {
         guard let quota else { return }
         let db = try ready()
         if try chunkTotalsNow().bytes + bytes <= quota { return }
-        for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs) ORDER BY wall") {
-            let id = try archiveText(row, "id"); if leases.contains(id) { continue }
-            try evict(id, state: "expired"); try collectGarbage()
-            if try chunkTotalsNow().bytes + bytes <= quota { return }
+        var after: (wall: Double, id: String) = (-.infinity, "")
+        while true {
+            let batch = try db.rows("SELECT wall,id FROM attempts WHERE (wall,id)>(?,?) AND outcome!='running' AND EXISTS (SELECT 1 FROM refs WHERE attempt=attempts.id) ORDER BY wall,id LIMIT ?",
+                                    [.real(after.wall), .text(after.id), .integer(Int64(Self.maintenanceBatch))])
+            largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+            guard let last = batch.last, let wall = last["wall"]?.double else { break }
+            after = (wall, try archiveText(last, "id"))
+            for row in batch {
+                let id = try archiveText(row, "id"); if leases.contains(id) { continue }
+                try evict(id, state: "expired"); try collectGarbage()
+                if try chunkTotalsNow().bytes + bytes <= quota { return }
+            }
         }
         throw CaptureFailure.quota
     }
@@ -677,8 +699,8 @@ actor PayloadArchive {
         // One commit for the whole sweep. Each eviction and each expiry used to
         // be its own transaction, which under synchronous=FULL is one fsync per
         // row: an overdue sweep of a large archive froze the app for minutes.
-        // Page ids in key order, advancing past export leases as well as
-        // expired rows. Neither retention query materialises the overdue set.
+        // Page through indexed cursors, advancing past export leases as well
+        // as expired rows. Neither query materialises the overdue set.
         try db.transaction {
             var after = ""
             while true {
@@ -691,13 +713,13 @@ actor PayloadArchive {
                     let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
                 }
             }
-            after = ""
+            var metricAfter: (wall: Double, id: String) = (-.infinity, "")
             while true {
-                let batch = try db.rows("SELECT id FROM attempts WHERE id>? AND outcome!='running' AND metrics_retained=1 AND wall<? ORDER BY id LIMIT ?",
-                                        [.text(after), .real(time - metricRetention), .integer(Int64(Self.maintenanceBatch))])
+                let batch = try db.rows("SELECT wall,id FROM attempts WHERE (wall,id)>(?,?) AND outcome!='running' AND metrics_retained=1 AND wall<? ORDER BY wall,id LIMIT ?",
+                                        [.real(metricAfter.wall), .text(metricAfter.id), .real(time - metricRetention), .integer(Int64(Self.maintenanceBatch))])
                 largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
-                guard let last = batch.last else { break }
-                after = try archiveText(last, "id")
+                guard let last = batch.last, let wall = last["wall"]?.double else { break }
+                metricAfter = (wall, try archiveText(last, "id"))
                 for expiring in batch {
                     let id = try archiveText(expiring, "id")
                     guard !leases.contains(id) else { continue }

@@ -173,7 +173,8 @@ import AppKit
             } else if let workspace = inspector.workspace {
                 do {
                     value = try await workspace.debugRequest("debug.raw-events", sessionID: row.sessionID ?? inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
-                } catch HostError.rejected(let code, _) where code == "capture_saved" {
+                } catch {
+                    guard try await archiveOwnsCapture(after: error, row: row) else { throw error }
                     value = try await inspector.archive.eventIndices(attemptID: row.id, offset: key.offset)
                 }
             } else { throw HostError.failure("No event index was retained for this request.") }
@@ -193,12 +194,12 @@ import AppKit
 
     // MARK: Copy, capture settings and exports
 
-    private func capturesSavedToLog(_ row: InspectorRequestRow) async throws -> Bool {
+    private func capturesSavedToLog(_ row: InspectorRequestRow, requireConfirmation: Bool = false) async throws -> Bool {
         // A completed log row can still have its bodies and event index only
         // in helper memory. The helper releases those only after this handoff.
         try Task.checkCancellation()
         let sessionID = row.sessionID ?? inspector.scope.sessionID
-        let fallback = row.source != .live || (request.row?.id == row.id && request.metadata["response"]?.object?["savedToLog"]?.bool == true)
+        let fallback = !requireConfirmation && (row.source != .live || (request.row?.id == row.id && request.metadata["response"]?.object?["savedToLog"]?.bool == true))
         if let workspace = inspector.workspace {
             do {
                 let live = try await workspace.debugRequest("debug.attempt", sessionID: sessionID, params: ["attemptId": .string(row.id)])
@@ -214,6 +215,18 @@ import AppKit
             }
         }
         return fallback
+    }
+
+    private func archiveOwnsCapture(after error: Error, row: InspectorRequestRow) async throws -> Bool {
+        try Task.checkCancellation()
+        switch error {
+        case HostError.rejected("capture_saved", _): return true
+        case TraceError.changed, HostError.rejected("capture_unavailable", _):
+            // Verification can race the final acknowledgement or the helper's
+            // pruning. A log row alone cannot prove that memory bytes survived.
+            return try await capturesSavedToLog(row, requireConfirmation: true)
+        default: return false
+        }
     }
 
     private func copyView() {
@@ -286,7 +299,8 @@ import AppKit
             } else if let workspace = inspector.workspace {
                 do {
                     saved = try await workspace.persistAttempt(sessionID: sessionID, attemptID: row.id, destination: destination)
-                } catch HostError.rejected(let code, _) where code == "capture_saved" {
+                } catch {
+                    guard try await archiveOwnsCapture(after: error, row: row) else { throw error }
                     saved = try await inspector.archive.exportRetained(sessionID: sessionID, attemptID: row.id, destination: destination)
                 }
             } else { throw HostError.failure("This request's bytes are not available.") }

@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import XCTest
 @testable import PiApp
 
@@ -134,6 +135,30 @@ import XCTest
         try await checkCompletedCaptureActions(mode: "persist", probeFailure: true)
     }
 
+    func testExportRechecksHandoffAfterTheLastBodyRead() async throws {
+        try await checkCompletedCaptureActions(mode: "persist", handoff: "export-verified")
+    }
+
+    func testExportRechecksHandoffWhenVerificationRecordWasPruned() async throws {
+        try await checkCompletedCaptureActions(mode: "persist", handoff: "export-pruned")
+    }
+
+    func testExportRechecksHandoffWhenBodyRecordWasPruned() async throws {
+        try await checkCompletedCaptureActions(mode: "persist", handoff: "export-pruned-read")
+    }
+
+    func testEventsRecheckHandoffWhenHelperRecordWasPruned() async throws {
+        try await checkCompletedCaptureActions(mode: "persist", handoff: "events-pruned")
+    }
+
+    func testChangedMemoryExportDoesNotRetryAnEmptyArchive() async throws {
+        try await checkCompletedCaptureActions(mode: "memory", handoff: "export-changed-memory")
+    }
+
+    func testPrunedMemoryExportDoesNotRetryAnEmptyArchive() async throws {
+        try await checkCompletedCaptureActions(mode: "memory", handoff: "export-pruned")
+    }
+
     private func checkCompletedCaptureActions(mode: String, expireMetrics: Bool = false, stopHelper: Bool = false,
                                               handoff: String? = nil, navigateOnExport: Bool = false, probeFailure: Bool = false) async throws {
         let root = scratchRoot("inspector-capture-actions")
@@ -166,17 +191,30 @@ import XCTest
                                           "events": .array(Array(events.dropFirst(offset).prefix(128)))], workspace: "project")
             }
         }
-        var commands: [[String: WireValue]] = [], host: HostSupervisor!, handoffs = 0, failProbe = false
+        var commands: [[String: WireValue]] = [], host: HostSupervisor!, handoffs = 0, failProbe = false, pruned = false
         func markSaved(_ saved: Bool) {
             for kind in ["request", "response"] {
                 var descriptor = metadata[kind]!.object!; descriptor["savedToLog"] = .bool(saved); metadata[kind] = .object(descriptor)
+                let bytes = kind == "request" ? input : output
+                metadata[kind + "Hash"] = saved || mode == "off" ? .null : .object(["sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())])
             }
         }
+        markSaved(false)
         host = HostSupervisor(commandSender: { frame in
             commands.append(frame)
             XCTAssertEqual(frame["sessionId"]?.string, "child", "Use the selected request's physical session, never the Inspector owner")
             XCTAssertEqual(frame["params"]?.object?["attemptId"]?.string, id)
             let params = frame["params"]?.object ?? [:], offset = Int(params["offset"]?.number ?? 0)
+            if handoffs == 0, (handoff == "events-pruned" && frame["method"]?.string == "debug.raw-events") ||
+                (handoff == "export-pruned-read" && frame["method"]?.string == "debug.body") {
+                handoffs += 1; markSaved(true); pruned = true
+            }
+            if pruned {
+                host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(host.epoch!),
+                                     "commandId": frame["commandId"]!, "ok": .bool(false),
+                                     "result": .object(["code": .string("capture_unavailable"), "message": .string("Generated helper record was pruned")])]), connectionID: host.connectionID!)
+                return
+            }
             if failProbe, frame["method"]?.string == "debug.attempt" {
                 host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(host.epoch!),
                                      "commandId": frame["commandId"]!, "ok": .bool(false),
@@ -201,6 +239,16 @@ import XCTest
                 XCTAssertNotEqual(mode, "off", "Off has no readable body")
                 XCTAssertFalse(metadata["response"]?.object?["savedToLog"]?.bool == true, "Saved helper buffers have been released")
                 result = ["bytes": .string(Data(bytes.dropFirst(offset).prefix(32_768)).base64EncodedString()), "retainedBytes": .number(Double(bytes.count))]
+                if handoffs == 0, params["body"]?.string == "response", offset + 32_768 >= output.count,
+                   ["export-verified", "export-pruned", "export-changed-memory"].contains(handoff ?? "") {
+                    handoffs += 1
+                    if mode == "persist" { markSaved(true) }
+                    else {
+                        var descriptor = metadata["response"]!.object!; descriptor["reason"] = .string("Generated descriptor change")
+                        metadata["response"] = .object(descriptor)
+                    }
+                    pruned = handoff == "export-pruned"
+                }
             default: XCTFail("Unexpected generated command: \(frame)"); result = [:]
             }
             host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(host.epoch!),
@@ -218,7 +266,7 @@ import XCTest
         try await eventually("live capture metadata") { request.metadataLoaded }
         metadata["outcome"] = .string("completed")
         try await archive.finish(metadata)
-        if mode == "persist" { markSaved(handoff != "events") }
+        if mode == "persist" { markSaved(!(handoff?.hasPrefix("events") ?? false)) }
         let saved = try await archive.inspectorRows(sessionID: "child", workspaceID: "project")
         let merged = try XCTUnwrap(InspectorIndex.merge(durable: saved.rows, live: [live]).first)
         XCTAssertEqual(merged.source, .log)
@@ -251,7 +299,7 @@ import XCTest
         PiQuestion.shared.answerAlert = { _ in .alertFirstButtonReturn }
         PiQuestion.shared.chooseFiles = {
             failProbe = probeFailure
-            if handoff == "export" { markSaved(false) }
+            if handoff?.hasPrefix("export") == true { markSaved(false) }
             if navigateOnExport {
                 request.setActive(false); request.raw = .metadata
                 var sibling = merged; sibling.id = UUID().uuidString; sibling.sessionID = "sibling"
@@ -262,11 +310,14 @@ import XCTest
         let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
         XCTAssertTrue(PiMenus.perform("inspector-export-bodies", in: PiMenus.menu(menu.entries())))
         let exported = destination.appendingPathComponent(id)
-        if probeFailure, mode == "memory" {
-            func reportedFailure() -> Bool { InspectorExpandFixture.descendants(PiKit.Note.self, in: raw).contains { $0.text == "Generated ownership lookup failure" } }
+        if mode == "memory", probeFailure || handoff != nil {
+            let expected = probeFailure ? "Generated ownership lookup failure" : handoff == "export-pruned" ? "Generated helper record was pruned" : TraceError.changed.localizedDescription
+            func reportedFailure() -> Bool { InspectorExpandFixture.descendants(PiKit.Note.self, in: raw).contains { $0.text == expected } }
             try await eventually("the export result") { reportedFailure() || FileManager.default.fileExists(atPath: exported.path) }
             XCTAssertFalse(FileManager.default.fileExists(atPath: exported.path), "A failed ownership query cannot publish a successful empty memory export")
             XCTAssertTrue(reportedFailure())
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty, "Failed transfer staging must be removed")
+            if handoff != nil { XCTAssertEqual(handoffs, 1) }
             return
         }
         do { try await eventually("the export manifest", timeout: .seconds(3)) { FileManager.default.fileExists(atPath: exported.appendingPathComponent("manifest.json").path) } }
@@ -277,7 +328,7 @@ import XCTest
             if mode != "off", FileManager.default.fileExists(atPath: file.path) { XCTAssertEqual(try Data(contentsOf: file), expected) }
         }
         if handoff != nil { XCTAssertEqual(handoffs, 1) }
-        if mode == "memory", !expireMetrics, !navigateOnExport, let path = testEnvironment("PI_APP_INSPECTOR_STORAGE_GALLERY") {
+        if mode != "off", !expireMetrics, !navigateOnExport, !probeFailure, !stopHelper, handoff == nil, let path = testEnvironment("PI_APP_INSPECTOR_STORAGE_GALLERY") {
             let folder = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let canvas = FillView(.piContent)
@@ -288,7 +339,7 @@ import XCTest
                 window.appearance = NSAppearance(named: appearance)
                 for width in [1000, 700, 485] {
                     raw.compact = width < 900; window.setContentSize(NSSize(width: width, height: 600))
-                    try capture(canvas, to: folder.appendingPathComponent("memory-events-export-\(name)-\(width).png"))
+                    try capture(canvas, to: folder.appendingPathComponent("\(mode)-events-export-\(name)-\(width).png"))
                 }
             }
         }

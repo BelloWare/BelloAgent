@@ -4,6 +4,12 @@
 
 ## 0.1.130
 
+- [x] Metric retention seeks through an ordered index, avoiding repeated scans and sorts on large overdue archives. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Clearing captures pages large chats atomically, preserving every body if a later capture is busy. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Quota eviction pages oldest captures through an index and stops as soon as space is available, even beyond 100,000 requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Inspector export and Events recheck changed or pruned helper captures and retry confirmed archive handoffs. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Raw Events describes body retention without the removed event-count caps. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+
 - [x] Retention sweeps page overdue captures, keeping Reports and durable capture recording available beyond 100,000 expired requests while respecting export leases. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
 - [x] Completed Session memory captures export their retained bytes and show helper-held Events; reads follow the acknowledged payload handoff to the archive. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
 - [x] Completed capture-Off requests show their remaining helper-held Events without inventing retained bodies. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
