@@ -111,6 +111,8 @@ public actor AgentSession {
     var lastCostHalt: CostPauseGeneration?
     let costResumeWake = AgentWakeSignal()
     var beforeSidePausePublication: (@Sendable () async -> Void)?
+    var beforeSidePauseForget: (@Sendable () async -> Void)?
+    var beforeSidePauseAcknowledgment: (@Sendable () async -> Void)?
     var beforeSidePauseRetirement: (@Sendable () async -> Void)?
     /// Advances with each accepted Resume of a pause: a side pause issued
     /// before it is not applied after it.
@@ -130,6 +132,8 @@ public actor AgentSession {
     /// Side callbacks not yet acknowledged. Saved with the issuing pause;
     /// recovery checks their journals before deciding which sides held work.
     var costPendingSidePauses: [String] = []
+    /// Sender-owned membership intent; removed only after the root saves it.
+    var costPendingMembership: SidePauseIntent?
     /// Set by a Resume of a paused family: the run resumes the parked
     /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
     /// own to continue waits for them instead of asking the model.
@@ -425,11 +429,13 @@ public actor AgentSession {
             try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":data], flush:true)
             try accounting.consume(kind:JournalRecordKind.cost,data:data,spend:&spend); spendTracked = true
         }
+        var recoveredSideIDs = Set<String>()
         if resumePath != nil, subagents.origin == nil {
             let family = try SideBudgetRecovery.savedFamily(owner:id,directory:directory)
             // Recovery imports nested ledgers before their runtimes bind. The
             // same validated persisted origins authorize those cold mirrors.
             sideBudgetMembers = Dictionary(uniqueKeysWithValues:family.map { ($0.origin.id,$0.parents) })
+            recoveredSideIDs = Set(family.map { $0.origin.id })
             for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory, family:family) {
                 guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { continue }
                 record.data["accountingRevision"] = JSON(accounting.revision + 1)
@@ -529,28 +535,10 @@ public actor AgentSession {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
             }
-            costPaused = saved["costPaused"].flag == true
-            costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
-            costPendingSidePauses = saved["costPendingSidePauses"].list.compactMap(\.text)
-            // A crash can precede every side callback. Only validated saved
-            // descendants with unfinished work join the family's Resume.
-            costPendingSidePauses = try costPendingSidePauses.filter { side in
-                guard sideBudgetMembers[side] != nil, let file = try SideBudgetRecovery.journalURL(side,directory:directory) else { return false }
-                return try SideBudgetRecovery.pauseState(file, id:side).hasWork
-            }
-            for side in costPendingSidePauses where !costPausedMembers.contains(side) { costPausedMembers.append(side) }
-            if !costPendingSidePauses.isEmpty {
-                // An idle intermediate only carries its descendants' pause
-                // to the root. Roots (including orphaned sides) retain the
-                // aggregate pause until their family Resume is accepted.
-                let parent = isSideChat ? parentInfo["parentSessionId"].text : nil
-                let hasParent = try parent.map { try SideBudgetRecovery.parentExists($0,directory:directory) } ?? false
-                if !hasParent || SideBudgetRecovery.hasPauseWork(saved, family:subagents.family) { costPaused = true }
-            }
-            if !costPaused, isSideChat, SideBudgetRecovery.hasPauseWork(saved, family:subagents.family),
-               try SideBudgetRecovery.inheritsPendingPause(id:id,parent:parentInfo["parentSessionId"].text,directory:directory) {
-                costPaused = true
-            }
+            let recoveredPause = try SideBudgetRecovery.pause(saved,id:id,parent:replayed.parentInfo,
+                family:replayed.subagents.family,sides:recoveredSideIDs,directory:directory)
+            costPaused = recoveredPause.paused; costPausedMembers = recoveredPause.members
+            costPendingSidePauses = recoveredPause.pending
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             costPendingCompaction = saved["costPendingCompaction"].flag == true
             costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
@@ -628,18 +616,11 @@ public actor AgentSession {
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
-        try retireTerminalAgentPause(); boundary = context
-        dropMissingPausedMembers()
-        // An inherited pause is durable before binding acknowledges its
-        // ancestor's callback intent, also before the next helper restart.
-        if costPaused != (stateRecord?["costPaused"].flag == true) ||
-            costPausedMembers != (stateRecord?["costPausedMembers"].list.compactMap(\.text) ?? []) ||
-            costPendingSidePauses != (stateRecord?["costPendingSidePauses"].list.compactMap(\.text) ?? []) { try persistState(durable:true) }
+        try dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }
         else if stored != nil, !replayed.resumed { JournalCheckpoint.remove(for: url) }
-        costPauseClock.update(pauses:costPauseCount,resumes:costResumeCount,paused:costPaused,stops:stopCount)
     }
     public var isRunning: Bool { runTask != nil }
     public var isEphemeral: Bool { ephemeral }
@@ -717,9 +698,16 @@ public actor AgentSession {
         (isIdle || isSubagent && costPaused && runTask == nil && steering.isEmpty) && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
         (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true || costPaused)
     }
-    public func unloadIfIdle() -> Bool {
+    public func unloadIfIdle() async -> Bool {
+        if closed { return !ephemeral && journal == nil }
         guard canUnload else { return false }
-        cancelHistoryLoads(); closed=true; costPauseClock.retire(); journal=nil
+        // Close admission before the await. A kept sender cannot retire its
+        // clock while a legitimate membership change still needs that clock.
+        withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
+        guard await drainSidePauseChanges() else {
+            withCostPauseFence { closed = false; costPauseClock.acceptMessages(true) }; return false
+        }
+        cancelHistoryLoads(); costPauseClock.retire(); journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch
             Task { await coordinator.release(owner: owner, runtimeID: runtimeID) }
@@ -727,7 +715,8 @@ public actor AgentSession {
         return true
     }
     public func close() async {
-        cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
+        cancelHistoryLoads(); stop(); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
@@ -743,6 +732,9 @@ public actor AgentSession {
             await beforeSidePauseRetirement?()
             for ancestor in sideBudgetParents.reversed() { await ancestor.forgetClosedSide(id,generation:generation) }
         }
+        // Shutdown may encounter an unavailable root writer. The sender's
+        // durable intent remains for cold recovery; no clock revives on open.
+        if !ephemeral { _ = await drainSidePauseChanges() }
         costPauseClock.retire(); journal=nil
     }
 }

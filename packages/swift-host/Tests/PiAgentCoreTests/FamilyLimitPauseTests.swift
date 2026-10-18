@@ -2101,6 +2101,8 @@ extension FamilyLimitPauseTests {
         let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
             resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),beforeJournalAppend:{ barrier.append($0) })
         let side = try await faultSide(parent:owner,root:root,fault:fault)
+        let leaf = try await self.side("leaf",parent:side,root:root)
+        _ = try await leaf.keep(whenFinished:false); try await leaf.fixtureSavedPauseMembers([])
         try await owner.fixtureSavedPauseMembers([])
         try await side.fixturePauseLists(members:["leaf"],pending:[])
         barrier.arm()
@@ -2115,7 +2117,7 @@ extension FamilyLimitPauseTests {
         catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_pause_write") }
         let snapshot = await side.snapshot()
         XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,["leaf","later"])
-        fault.disarm(); await side.close(); await owner.close()
+        fault.disarm(); await leaf.close(); await side.close(); await owner.close()
     }
 
     func testSideFanoutKeepsIntentUntilBothPauseAndRootMembershipAreDurable() async throws {
@@ -3394,5 +3396,355 @@ private final class ResumeAcceptanceFault: @unchecked Sendable {
 private extension AgentSession {
     func fixturePublicationObserved(_ probe: CloseFenceProbe) -> SidePausePublication? {
         probe.mark("capturing"); return sidePausePublication()
+    }
+}
+
+
+extension FamilyLimitPauseTests {
+    func testRecoveryRetiresFanoutWhoseOnlyRecipientAlreadyFinished() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root)
+        _ = try await side.keep(whenFinished:false)
+        try await owner.fixtureSavedPauseMembers([]); try await owner.fixturePauseLists(members:[],pending:["side"])
+        let path = await owner.path
+        // The side's completed state is durable, but the root has not saved
+        // its fan-out acknowledgment when both runtimes disappear.
+        try await side.fixtureCrashPauseRuntime(); try await owner.fixtureCrashPauseRuntime()
+        let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path)
+        let snapshot = await restored.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true,"Recovery must not retain a family pause after its final idle recipient completed")
+        XCTAssertEqual(snapshot["state"].text,"idle")
+        await restored.close()
+    }
+
+    func testQueuedRetirementReissuesItsIntentAfterAnotherRootPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), retirement = OpenGate()
+        _ = try await side.keep(whenFinished:false)
+        try await side.fixtureSavedPauseMembers([]); _ = await side.fixturePublishSidePause(repair:true)
+        _ = try await owner.continueRun(commandID:"root")
+        await side.fixtureHoldPauseForget(retirement)
+        _ = try await side.continueRun(commandID:"side")
+        try await eventually { await retirement.waiting }
+        // Another pause starts while this now-idle side's retirement is
+        // queued. Its current lack of work acknowledges that newer fan-out.
+        await owner.fixtureCostPause(); try await owner.fixtureRememberSidePauses()
+        let fanout = try XCTUnwrap(awaitValue:await owner.pendingSidePause("side"))
+        let publication = await side.receiveSidePause(AgentSession.costHoldError,generation:fanout)
+        let confirmed = await side.publishSidePause(publication,repair:true); XCTAssertTrue(confirmed)
+        if confirmed { await owner.acknowledgeSidePause("side",generation:fanout) }
+        await retirement.open()
+        do { try await eventually(timeout:.seconds(2)) { await owner.snapshot()["costPaused"].flag != true } }
+        catch { XCTFail("The legitimate retirement must be reissued under the root's new generation") }
+        let snapshot = await owner.snapshot()
+        XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty,"An idle side must not remain in the app's Resume members")
+        await side.close(); await owner.close()
+    }
+
+    func testFanoutAcknowledgesSideCompletionDuringMembershipDelivery() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root)
+        let receipt = OpenGate(), retirement = OpenGate()
+        try await owner.fixtureSavedPauseMembers([]); try await owner.fixturePauseLists(members:[],pending:["side"])
+        let fanout = SidePausePublication(side:owner.pauseGeneration,root:owner.pauseGeneration)
+        try await side.fixtureSavedPauseMembers([])
+        await side.fixtureHoldPauseAcknowledgment(receipt)
+        let publication = Task { await side.fixturePublishSidePause(repair:true) }
+        try await eventually { await receipt.waiting }
+        await side.fixtureHoldPauseForget(retirement)
+        _ = try await side.continueRun(commandID:"completed-side")
+        try await eventually { await retirement.waiting }
+        await receipt.open()
+        let confirmed = await publication.value
+        XCTAssertTrue(confirmed,"A recipient completing during the root await must acknowledge the still-current fan-out")
+        if confirmed { await owner.acknowledgeSidePause("side",generation:fanout) }
+        await retirement.open()
+        try await eventually { await owner.costPausedMembers.isEmpty }
+        let snapshot = await owner.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true,"A completed side must leave no family Resume in the app")
+        await side.close(); await owner.close()
+    }
+
+    func testDuplicateMembershipDeliveryAcknowledgesTheSameFanout() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), receipt = OpenGate()
+        try await owner.fixtureSavedPauseMembers([]); try await owner.fixturePauseLists(members:[],pending:["side"])
+        let fanout = SidePausePublication(side:owner.pauseGeneration,root:owner.pauseGeneration)
+        try await side.fixtureSavedPauseMembers([])
+        await side.fixtureHoldPauseAcknowledgment(receipt)
+        let first = Task { await side.fixturePublishSidePause(repair:true) }
+        try await eventually { await receipt.waiting }
+        await side.fixtureHoldPauseAcknowledgment(nil)
+        let second = await side.fixturePublishSidePause(repair:true); XCTAssertTrue(second)
+        await receipt.open()
+        let confirmed = await first.value; XCTAssertTrue(confirmed,"The same durably acknowledged source intent is idempotent")
+        if confirmed { await owner.acknowledgeSidePause("side",generation:fanout) }
+        _ = try await side.continueRun(commandID:"side")
+        try await eventually { await owner.costPausedMembers.isEmpty }
+        let snapshot = await owner.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true,"Duplicate publication must not leave the app waiting on a lost fan-out acknowledgment")
+        await side.close(); await owner.close()
+    }
+
+    func testAutomaticRetirementIncludesAnAlreadyAcknowledgedSidesNewPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AnsweringChildClient(), coordinator = AgentSteeringCoordinator(), settling = OpenGate(), publication = OpenGate()
+        let owner = try await steeringOwner(root,client:client,coordinator:coordinator)
+        let side = try await side("side",parent:owner,root:root,client:ScriptClient([answer("Done")]))
+        _ = try await side.keep(whenFinished:false)
+        await owner.fixtureFinalLinks { await settling.wait() }
+        await owner.setCostLimit(0.0005)
+        _ = try await owner.submit(Submission(commandID:"answer",turnID:"answer",text:"Answer"),steer:false)
+        try await eventually { await client.waiting }; await client.release()
+        try await eventually { await settling.waiting }
+        try await eventually { await owner.costPendingSidePauses.isEmpty }
+        await owner.setCostLimit(5)
+        await side.fixtureHoldPausePublication(publication)
+        _ = try await side.submit(Submission(commandID:"late",turnID:"late",text:"New side work"),steer:false)
+        try await eventually { await publication.waiting }
+        try await eventually { !(await side.isRunning) }
+        await settling.open(); try await eventually { !(await owner.isRunning) }
+        let snapshot = await owner.snapshot()
+        XCTAssertEqual(snapshot["costPaused"].flag,true,"Cleanup must retain an applied side pause even after its earlier fan-out acknowledgment")
+        var reply: JSON = .null
+        do { reply = try await owner.continueRun(commandID:"root-resume") }
+        catch { XCTFail("The family must still have a Resume: \(error)") }
+        XCTAssertEqual(reply["pausedMembers"].list,["side"],"The app must be told to Resume the unpublished side")
+        await publication.open(); await side.fixtureHoldPausePublication(nil)
+        _ = try await side.continueRun(commandID:"side-resume")
+        try await eventually { !(await side.isRunning) }
+        await side.close(); await owner.close()
+    }
+
+    func testKeptSideUnloadDrainsItsResumeRetirement() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate()
+        _ = try await side.keep(whenFinished:false)
+        try await side.fixtureSavedPauseMembers([]); _ = await side.fixturePublishSidePause(repair:true)
+        let reply = try await owner.continueRun(commandID:"root")
+        XCTAssertEqual(reply["pausedMembers"].list,["side"])
+        await side.fixtureHoldPauseForget(gate)
+        _ = try await side.continueRun(commandID:"side")
+        try await eventually { await gate.waiting }
+        let unloaded = await side.unloadIfIdle(); XCTAssertTrue(unloaded)
+        await gate.open()
+        do { try await eventually(timeout:.seconds(2)) { await owner.snapshot()["costPaused"].flag != true } }
+        catch { XCTFail("Unload must not strand the app's family pause after the side's Resume completed") }
+        let snapshot = await owner.snapshot()
+        XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty,"The root must durably acknowledge retirement before the side clock retires")
+        await owner.close()
+    }
+}
+private extension AgentSession {
+    func fixtureHoldPauseForget(_ gate: OpenGate) { beforeSidePauseForget = { await gate.wait() } }
+    func fixtureHoldPauseAcknowledgment(_ gate: OpenGate?) {
+        if let gate { beforeSidePauseAcknowledgment = { await gate.wait() } } else { beforeSidePauseAcknowledgment = nil }
+    }
+}
+
+extension FamilyLimitPauseTests {
+    func testKeptSideCloseAppliesOutstandingFanoutBeforeRetiringItsClock() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate()
+        _ = try await side.keep(whenFinished:false)
+        await side.fixtureQueue(Submission(commandID:"pending",turnID:"pending",text:"Held work"))
+        try await side.fixtureSavePauseState()
+        await owner.fixtureDelaySidePauses(gate)
+        await owner.fixtureCostPause(); try await owner.fixtureRememberSidePauses()
+        await owner.notifySidesOfPause(AgentSession.costHoldError)
+        try await eventually { await gate.waiting }
+        await side.close()
+        let reply = try await owner.continueRun(commandID:"root")
+        XCTAssertEqual(reply["pausedMembers"].list,["side"],"Close must hand over unapplied fan-out before retiring a kept side")
+        let snapshot = await owner.snapshot()
+        XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,["side"])
+        await gate.open(); await owner.close()
+    }
+
+    func testIdleSideUnloadAcknowledgesOutstandingFanout() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate()
+        _ = try await side.keep(whenFinished:false)
+        await owner.fixtureDelaySidePauses(gate)
+        await owner.fixtureCostPause(); try await owner.fixtureRememberSidePauses()
+        await owner.notifySidesOfPause(AgentSession.costHoldError)
+        try await eventually { await gate.waiting }
+        let unloaded = await side.unloadIfIdle(); XCTAssertTrue(unloaded)
+        let snapshot = await owner.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true,"An idle recipient must not leave an unacknowledgeable fan-out holding the root")
+        await gate.open(); await owner.close()
+    }
+
+    func testMembershipIntentRepairsEachPartialWriteAfterBothRuntimesRestart() async throws {
+        for paused in [false,true] { for cut in 0..<2 {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate(), fault = SealWriteFault()
+            _ = try await side.keep(whenFinished:false)
+            try await side.fixtureSavedPauseMembers([])
+            try await owner.fixtureSavedPauseMembers(paused ? [] : ["side"])
+            if paused { try await side.fixtureStageMembership() }
+            else {
+                _ = try await owner.continueRun(commandID:"root")
+                await side.fixtureHoldPauseForget(gate)
+                _ = try await side.continueRun(commandID:"side")
+                try await eventually { await gate.waiting }
+            }
+            let intent = try XCTUnwrap(awaitValue:await side.costPendingMembership)
+            let publication = try XCTUnwrap(awaitValue:await side.sidePausePublication())
+            let ownerPath = await owner.path, sidePath = try XCTUnwrap(awaitValue:await side.path)
+            try await owner.fixtureSealWriter(fault); try await side.fixtureSealWriter(fault)
+            fault.arm(after:cut)
+            let delivered = await side.deliverSidePauseIntent(intent,publication:publication,repair:true)
+            XCTAssertFalse(delivered)
+            XCTAssertEqual(fault.disarm(),cut); XCTAssertTrue(fault.failed)
+            try await side.fixtureSavePauseState() // An unrelated later save cannot discard the failed intent.
+            let saved = try SideBudgetRecovery.pauseState(URL(fileURLWithPath:sidePath),id:"side").state
+            XCTAssertEqual(saved["costPendingMembership"],intent.saved,"The source keeps its intent until both records are durable")
+            try await side.fixtureCrashPauseRuntime(); try await owner.fixtureCrashPauseRuntime()
+            await gate.open()
+            let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:ownerPath)
+            let snapshot = await restored.snapshot()
+            XCTAssertEqual(snapshot["costPaused"].flag == true,paused,"Root recovery must reconcile unopened senders, cut=\(cut)")
+            XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,paused ? ["side"] : [])
+            if paused {
+                let reply = try await restored.continueRun(commandID:"recovered-root")
+                XCTAssertEqual(reply["pausedMembers"].list,["side"])
+            }
+            let reopened = try AgentSession(id:"side",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:sidePath)
+            let restoredIntent = await reopened.costPendingMembership
+            XCTAssertEqual(restoredIntent,intent,"The final replay state retains the sender intent before binding reissues it")
+            for _ in 0..<2 { try await reopened.bindSideBudget(to:restored) }
+            let after = await restored.snapshot()
+            XCTAssertEqual(after["queuePaused"].flag,false,"Replaying an acknowledged intent cannot undo the root's Resume")
+            let retired = try SideBudgetRecovery.pauseState(URL(fileURLWithPath:sidePath),id:"side").state
+            XCTAssertTrue(retired["costPendingMembership"].isNull)
+            if paused { _ = try await reopened.continueRun(commandID:"recovered-side") }
+            try await eventually { await restored.snapshot()["costPaused"].flag != true }
+            await reopened.close(); await restored.close()
+        } }
+    }
+}
+private extension AgentSession {
+    func fixtureStageMembership() throws { rememberSideMembership(paused:costPaused); try persistState(durable:true) }
+    func fixtureCrashPauseRuntime() throws { try journal?.synchronize(); closed = true; costPauseClock.retire(); journal = nil }
+}
+
+extension FamilyLimitPauseTests {
+    func testRecoveredTransferDoesNotResurrectAnAlreadyResumedDescendant() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), middle = try await side("middle",parent:owner,root:root)
+        let leaf = try await side("leaf",parent:middle,root:root)
+        _ = try await middle.keep(whenFinished:false); _ = try await leaf.keep(whenFinished:false)
+        try await leaf.fixtureSavedPauseMembers([]); _ = await leaf.fixturePublishSidePause(repair:true)
+        // The root saved the transfer but the source's acknowledgment save
+        // failed. Its old copy must not recreate membership after leaf Resume.
+        try await middle.fixturePauseLists(members:["leaf"],pending:[])
+        _ = try await owner.continueRun(commandID:"root"); _ = try await leaf.continueRun(commandID:"leaf")
+        try await eventually { await owner.snapshot()["costPaused"].flag != true }
+        let path = await middle.path
+        try await middle.fixtureCrashPauseRuntime()
+        let reopened = try AgentSession(id:"middle",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path)
+        try await reopened.bindSideBudget(to:owner)
+        let snapshot = await owner.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true,"An old transfer copy cannot undo the completed family Resume")
+        XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty)
+        await leaf.close(); await reopened.close(); await owner.close()
+    }
+
+    func testColdRootFindsAnUnopenedIntermediatesTransferIntent() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), middle = try await side("middle",parent:owner,root:root)
+        let leaf = try await side("leaf",parent:middle,root:root)
+        _ = try await middle.keep(whenFinished:false); _ = try await leaf.keep(whenFinished:false)
+        await leaf.fixtureQueue(Submission(commandID:"pending",turnID:"pending",text:"Held work")); try await leaf.fixtureSavePauseState()
+        // The intermediate's durable fan-out is the only pause record so far.
+        try await middle.fixturePauseLists(members:[],pending:["leaf"])
+        let path = await owner.path
+        try await leaf.fixtureCrashPauseRuntime(); try await middle.fixtureCrashPauseRuntime(); try await owner.fixtureCrashPauseRuntime()
+        let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path)
+        let snapshot = await restored.snapshot()
+        XCTAssertEqual(snapshot["costPaused"].flag,true)
+        var reply: JSON = .null
+        do { reply = try await restored.continueRun(commandID:"root") }
+        catch { XCTFail("The unopened intermediate must hand its durable intent to the root: \(error)") }
+        XCTAssertEqual(reply["pausedMembers"].list,["leaf"])
+        await restored.close()
+    }
+}
+
+extension FamilyLimitPauseTests {
+    func testMembershipAcknowledgmentSurvivesTheRootsAutomaticRetirement() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate()
+        _ = try await side.keep(whenFinished:false)
+        try await owner.fixtureSavedPauseMembers([]); try await owner.fixturePauseLists(members:[],pending:["side"])
+        let fanout = SidePausePublication(side:owner.pauseGeneration,root:owner.pauseGeneration)
+        try await side.fixtureSavedPauseMembers([]); try await side.fixtureStageMembership()
+        let publication = try XCTUnwrap(awaitValue:await side.sidePausePublication())
+        let noted = await owner.notePausedMember("side",publication:publication,repair:true); XCTAssertTrue(noted)
+        await side.fixtureHoldPauseForget(gate)
+        _ = try await side.continueRun(commandID:"side")
+        try await eventually { await gate.waiting }
+        // Resume won after application, before the fan-out's publication.
+        let confirmed = await side.publishSidePause(publication,repair:true)
+        XCTAssertTrue(confirmed,"Confirm the completed recipient without publishing its old pause")
+        if confirmed { await owner.acknowledgeSidePause("side",generation:fanout) }
+        await gate.open()
+        try await eventually(timeout:.seconds(2)) { await owner.snapshot()["costPaused"].flag != true }
+        try await eventually(timeout:.seconds(2)) { await side.costPendingMembership == nil }
+        let file = try XCTUnwrap(awaitValue:await side.path)
+        XCTAssertTrue(try SideBudgetRecovery.pauseState(URL(fileURLWithPath:file),id:"side").state["costPendingMembership"].isNull)
+        await side.close(); await owner.close()
+    }
+
+    func testFailedMembershipAcknowledgmentKeepsTheSenderUnloadRetryable() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let fault = PauseWriteFault(), gate = OpenGate()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),
+            beforeJournalAppend:{ try fault.append($0,writer:"parent") })
+        let side = try await side("side",parent:owner,root:root); _ = try await side.keep(whenFinished:false)
+        try await side.fixtureSavedPauseMembers([]); _ = await side.fixturePublishSidePause(repair:true)
+        _ = try await owner.continueRun(commandID:"root")
+        await side.fixtureHoldPauseForget(gate); _ = try await side.continueRun(commandID:"side")
+        try await eventually { await gate.waiting }
+        fault.arm("parent",emptyMembers:true)
+        let refused = await side.unloadIfIdle(); XCTAssertFalse(refused)
+        let held = await owner.snapshot(); XCTAssertEqual(held["cost"]["pausedMembers"].list,["side"])
+        XCTAssertTrue(side.costPauseClock.acceptsMessages,"A failed handover must leave its sender retryable")
+        fault.disarm()
+        let unloaded = await side.unloadIfIdle(); XCTAssertTrue(unloaded)
+        let finished = await owner.snapshot(); XCTAssertNotEqual(finished["costPaused"].flag,true)
+        await gate.open(); await owner.close()
+    }
+
+    func testKeptSideCloseDrainsBothMembershipDirections() async throws {
+        for paused in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let owner = try familyFixture(root:root), side = try await side("side",parent:owner,root:root), gate = OpenGate()
+            _ = try await side.keep(whenFinished:false)
+            try await side.fixtureSavedPauseMembers([])
+            let pending: Task<Bool,Never>?
+            if paused {
+                try await side.fixtureStageMembership(); await side.fixtureHoldPausePublication(gate)
+                pending = Task { await side.fixturePublishSidePause() }
+            } else {
+                _ = await side.fixturePublishSidePause(repair:true); _ = try await owner.continueRun(commandID:"root")
+                await side.fixtureHoldPauseForget(gate); _ = try await side.continueRun(commandID:"side"); pending = nil
+            }
+            try await eventually { await gate.waiting }
+            await side.close()
+            let snapshot = await owner.snapshot()
+            XCTAssertEqual(snapshot["costPaused"].flag == true,paused)
+            XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,paused ? ["side"] : [])
+            await gate.open(); _ = await pending?.value
+            let afterLateTask = await owner.snapshot(); XCTAssertEqual(afterLateTask["costPaused"],snapshot["costPaused"])
+            await owner.close()
+        }
     }
 }

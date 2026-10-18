@@ -12,6 +12,7 @@
 - [x] Round-12 fifth follow-up: cold parked-child Stop mirrors its journal off the host actor, keeping other chats' snapshots and Stop responsive while the runtime gate protects the writer. [Validation](docs/validation/pause-r12-0.1.130.md#round-5--cold-terminal-mirror-responsiveness).
 - [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
 - [x] Round-12 seventh follow-up: generation-fenced pause messages and a two-phase Resume preserve the family through late publications, Stop, new pauses and failed acceptance writes. Stale-message matrix, transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-7--generation-fences-and-two-phase-resume).
+- [x] Round-12 eighth follow-up: side membership changes survive unload and restart through durable acknowledgments; automatic retirement includes applied but unpublished pauses, and recovered transfers stay root-owned. Lifecycle audit, warning comparison and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-8--durable-membership-intents-and-runtime-retirement).
 
 ## 0.1.129
 

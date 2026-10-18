@@ -35,22 +35,41 @@ extension AgentSession {
         }
         // The root's list of paused sides follows each side's own durable
         // pause: a crash between the two saves is repaired here.
+        rememberSideMembership(paused:costPaused)
         try persistState(durable:true)
         if let root = sideBudgetParents.last {
             // Cold recovery also serves orphaned sides. Once ancestry is
             // bound, move any recovered descendant membership to the root,
             // where each descendant's Resume will retire it.
             let members = costPausedMembers, publication = SidePausePublication(side:pauseGeneration,root:root.pauseGeneration)
-            for member in members { guard await root.notePausedMember(member,publication:publication,repair:true) else { return } }
-            guard publication.isCurrent else { return }
+            for member in members {
+                // A live descendant supplies its own fence. A cold one is
+                // inspected off-actor while the host retains its runtime gate.
+                // Either way, a completed Resume retires an old transfer copy.
+                let live = await root.sidePauseGeneration(member)
+                let paused: Bool
+                if let live { paused = live.paused }
+                else {
+                    let directory = directory, pending = costPendingSidePauses.contains(member)
+                    paused = try await Task.detached {
+                        guard let file = try SideBudgetRecovery.journalURL(member,directory:directory) else { return false }
+                        let saved = try SideBudgetRecovery.pauseState(file,id:member)
+                        return saved.state["costPaused"].flag == true || pending && saved.hasWork
+                    }.value
+                }
+                let receipt = SidePausePublication(side:live ?? publication.side,root:publication.root)
+                let confirmed = paused ? await root.notePausedMember(member,publication:receipt,repair:true) :
+                    await root.forgetPausedMember(member,generation:receipt.side,destination:receipt.root)
+                guard confirmed else { return }
+            }
+            guard publication.side.isCurrent, publication.side.clock.isPaused == publication.side.paused else { return }
             if !members.isEmpty {
                 let previous = costPausedMembers
                 costPausedMembers.removeAll { members.contains($0) }
                 do { try persistState(durable:true) }
                 catch { costPausedMembers = previous; throw error }
             }
-            if costPaused { guard await publishSidePause(publication,repair:true) else { return } }
-            else { await root.forgetPausedMember(id,generation:pauseGeneration,destination:root.pauseGeneration) }
+            guard await drainSidePauseIntent() else { return }
         }
         for (ancestor,generation) in intents { await ancestor.acknowledgeSidePause(id,generation:generation) }
     }
@@ -111,15 +130,34 @@ extension AgentSession {
     /// in-memory flag is set. Also confirms idle/descendant-only fan-out.
     func publishSidePause(_ publication: SidePausePublication, repair: Bool = false) async -> Bool {
         if !repair { await beforeSidePausePublication?() }
-        guard publication.isCurrent, !closed, ephemeral || journal != nil else { return false }
-        do { guard try publication.apply({ try persistState(durable:true) }) != nil else { return false } }
+        guard !closed, ephemeral || journal != nil else { return false }
+        if !publication.isCurrent { return confirmCompletedSidePause(publication) }
+        do {
+            guard try publication.apply({ () throws -> Void in
+                if costPaused { rememberSideMembership(paused:true) }
+                try persistState(durable:true)
+            }) != nil else { return false }
+        } catch { failFamilyAccounting(error); return false }
+        guard costPaused else { return true }
+        guard let intent = costPendingMembership else { return false }
+        if await deliverSidePauseIntent(intent,publication:publication,repair:repair) { return true }
+        // Completion can also win during the receiver await, after membership
+        // was durable but before the sender can consume its acknowledgment.
+        return confirmCompletedSidePause(publication)
+    }
+    private func confirmCompletedSidePause(_ publication: SidePausePublication) -> Bool {
+        // Confirm current completion for the still-current fan-out issuer;
+        // never republish the obsolete pause. Its ack checks the issuer again.
+        guard !closed, ephemeral || journal != nil, publication.side.clock === costPauseClock, publication.root.isCurrentResume,
+              !costPaused, !costResumePending, costResumeCount > publication.side.resumes else { return false }
+        do { try persistState(durable:true); return true }
         catch { failFamilyAccounting(error); return false }
-        guard costPaused, let root = sideBudgetParents.last else { return true }
-        let confirmed = await root.notePausedMember(id,publication:publication,repair:repair)
-        // Close advances the issuer before retiring its root membership.
-        return confirmed && publication.isCurrent && !closed
     }
 
+    func sidePauseGeneration(_ side: String) -> CostPauseGeneration? {
+        guard let clock = sideBudgetPauseClocks[side], clock.acceptsMessages else { return nil }
+        return clock.generation
+    }
     func pendingSidePause(_ side: String) -> SidePausePublication? {
         costPendingSidePauses.contains(side) ? SidePausePublication(side:pauseGeneration,root:sideBudgetParents.last?.pauseGeneration ?? pauseGeneration) : nil
     }

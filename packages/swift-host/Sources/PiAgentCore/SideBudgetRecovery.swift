@@ -29,6 +29,25 @@ enum SideBudgetRecovery {
         !state["queue"].list.isEmpty || !state["steering"].list.isEmpty || !state["delivering"].isNull ||
         family?.turns.values.contains { !$0.status.terminal } == true
     }
+    /// Compute the pause projection from replay values before assigning it
+    /// to the runtime. No actor-isolated initializer state escapes in filters.
+    static func pause(_ saved: JSON, id: String, parent: JSON, family: AgentFamilyState?, sides: Set<String>, directory: URL) throws -> (paused: Bool, members: [String], pending: [String]) {
+        var paused = saved["costPaused"].flag == true
+        var members = saved["costPausedMembers"].list.compactMap(\.text)
+        let pending = try saved["costPendingSidePauses"].list.compactMap(\.text).filter { side in
+            guard sides.contains(side), let file = try journalURL(side,directory:directory) else { return false }
+            return try pauseState(file,id:side).hasWork
+        }
+        for side in pending where !members.contains(side) { members.append(side) }
+        let ancestor = parent["relationship"].text != "fork" ? parent["parentSessionId"].text : nil
+        if !pending.isEmpty {
+            let hasParent = try ancestor.map { try parentExists($0,directory:directory) } ?? false
+            if !hasParent || hasPauseWork(saved,family:family) { paused = true }
+        }
+        if !paused, let ancestor, hasPauseWork(saved,family:family),
+           try inheritsPendingPause(id:id,parent:ancestor,directory:directory) { paused = true }
+        return (paused,members,pending)
+    }
     /// The root may already have accepted Resume before this side opens:
     /// its membership remains until the side takes that Resume itself.
     static func inheritsPendingPause(id: String, parent: String?, directory: URL) throws -> Bool {

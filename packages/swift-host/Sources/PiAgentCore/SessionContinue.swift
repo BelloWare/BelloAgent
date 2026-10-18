@@ -59,7 +59,7 @@ extension AgentSession {
     /// which took a callback before that fence but have not published yet.
     func beginCostResume() -> [String] {
         costResumeCount &+= 1
-        for side in costPendingSidePauses where sideBudgetPauseClocks[side]?.isPaused == true && !costPausedMembers.contains(side) { costPausedMembers.append(side) }
+        rememberAppliedSidePauses()
         costPendingSidePauses = []; budgetStopIssued = false
         costResumePending = true; resumingCostPause = !isSubagent && agentCoordinator != nil
         costResumeGeneration = pauseGeneration
@@ -83,6 +83,7 @@ extension AgentSession {
             let saved = costPauseState
             costPaused = false; costResumePending = false; resumingCostPause = false; costResumeGeneration = nil
             if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            rememberSideMembership(paused:false)
             do { try persistState(active:active,durable:true) }
             catch { restoreCostPause(saved); costResumePending = true; costResumeGeneration = generation; throw error }
         }
@@ -112,11 +113,11 @@ extension AgentSession {
         let wake = costResumeWake; Task { await wake.pulse() }
         if let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.pause(owner:self,generation:generation,halt:true) } }
     }
-    struct CostPauseState { var paused: Bool, members: [String], pending: [String], reason: AgentError?, issued: Bool, code: String?, message: String?, resumes: Int }
-    var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,pending:costPendingSidePauses,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage,resumes:costResumeCount) }
+    struct CostPauseState { var paused: Bool, members: [String], pending: [String], membership: SidePauseIntent?, reason: AgentError?, issued: Bool, code: String?, message: String?, resumes: Int }
+    var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,pending:costPendingSidePauses,membership:costPendingMembership,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage,resumes:costResumeCount) }
     func restoreCostPause(_ saved: CostPauseState) {
         costPaused = saved.paused; costPausedMembers = saved.members; familyStopReason = saved.reason
-        costPendingSidePauses = saved.pending
+        costPendingSidePauses = saved.pending; costPendingMembership = saved.membership
         budgetStopIssued = saved.issued; errorCode = saved.code; errorMessage = saved.message
         // A refused Resume ended nothing: side pauses issued before it still apply.
         costResumeCount = saved.resumes

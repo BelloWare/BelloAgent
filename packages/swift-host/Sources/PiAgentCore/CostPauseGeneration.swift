@@ -6,7 +6,7 @@ import Foundation
 final class CostPauseClock: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var pauses = 0, resumes = 0, stops = 0
-    private var paused = false, live = true, closing = false
+    private var paused = false, live = true, closing = false, accepting = true
     func update(pauses: Int? = nil, resumes: Int? = nil, paused: Bool? = nil, stops: Int? = nil) {
         lock.lock(); defer { lock.unlock() }
         if let pauses { self.pauses = pauses }; if let resumes { self.resumes = resumes }
@@ -17,8 +17,9 @@ final class CostPauseClock: @unchecked Sendable {
         return CostPauseGeneration(clock:self,pauses:pauses,resumes:resumes,stops:stops,paused:paused)
     }
     var isPaused: Bool { lock.lock(); defer { lock.unlock() }; return paused }
-    var acceptsMessages: Bool { lock.lock(); defer { lock.unlock() }; return live && !closing }
+    var acceptsMessages: Bool { lock.lock(); defer { lock.unlock() }; return live && !closing && accepting }
     var isClosing: Bool { lock.lock(); defer { lock.unlock() }; return closing }
+    func acceptMessages(_ value: Bool) { lock.lock(); accepting = value; lock.unlock() }
     func beginClosing() { lock.lock(); closing = true; lock.unlock() }
     func retire() { lock.lock(); live = false; lock.unlock() }
     func synchronized<T>(_ body: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try body() }
@@ -75,6 +76,19 @@ struct SidePausePublication: Sendable {
     }
 }
 
+/// One desired membership state, saved with the pause/Resume that issued it.
+/// Its identity fences acknowledgments across retries, replacement intents and
+/// runtime replacement; it contains no conversation or capture content.
+struct SidePauseIntent: Equatable, Sendable {
+    let id: String, paused: Bool
+    init(paused: Bool) { id = UUID().uuidString; self.paused = paused }
+    init?(_ saved: JSON) {
+        guard let id = saved["id"].text, !id.isEmpty, let paused = saved["paused"].flag else { return nil }
+        self.id = id; self.paused = paused
+    }
+    var saved: JSON { ["id":JSON(id),"paused":JSON(paused)] }
+}
+
 extension AgentSession {
     nonisolated var pauseGeneration: CostPauseGeneration { costPauseClock.generation }
     /// A failed synchronous transition restores its counters before another
@@ -101,9 +115,75 @@ extension AgentSession {
             } else { abortModelRequests() }
         }
     }
+    /// The caller saves this in the same state record as the local change,
+    /// before scheduling any cross-actor delivery. A newer change supersedes
+    /// the old desired state; its acknowledgment cannot clear the new intent.
+    func rememberSideMembership(paused: Bool) {
+        guard isSideChat else { return }
+        if costPendingMembership?.paused != paused { costPendingMembership = SidePauseIntent(paused:paused) }
+    }
     func forgetSidePause() {
-        guard let root = sideBudgetParents.last else { return }
-        let side = id, generation = pauseGeneration, destination = root.pauseGeneration
-        Task { await root.forgetPausedMember(side,generation:generation,destination:destination) }
+        guard let publication = sidePausePublication(), let intent = costPendingMembership else { return }
+        let before = beforeSidePauseForget
+        Task {
+            await before?()
+            // This task drives a durable intent, rather than reviving an old
+            // message. If the sender still owns it, issue fresh receiver stamps.
+            guard publication.side.isCurrent, costPendingMembership == intent else { return }
+            _ = await drainSidePauseIntent()
+        }
+    }
+    /// Lifecycle drain bypasses a queued delivery, using the current runtime
+    /// stamps. Reopening does the same after binding. Stale tasks remain no-ops.
+    func drainSidePauseIntent() async -> Bool {
+        while let intent = costPendingMembership {
+            guard let publication = sidePausePublication() else { return true } // Orphan: no root to notify.
+            if await deliverSidePauseIntent(intent,publication:publication,repair:true) { continue }
+            // Automatic receiver retirement may advance its clock while
+            // acknowledging this write. The intent is still durable: retry
+            // under its new stamp, never revive the stale delivery task.
+            guard costPendingMembership == intent, publication.side.isCurrent,
+                  !publication.root.isCurrent, publication.root.clock.acceptsMessages else { return false }
+        }
+        return true
+    }
+    /// Admission is already closed and the registered clock rejects new
+    /// fan-out. Take any earlier fan-out before handing the sender over;
+    /// even an idle recipient must durably acknowledge its lack of work.
+    func drainSidePauseChanges() async -> Bool {
+        var incoming: [(AgentSession,SidePausePublication)] = []
+        for ancestor in sideBudgetParents {
+            if let generation = await ancestor.pendingSidePause(id) {
+                generation.apply { stopFamilyAtLimit(Self.costHoldError) }
+                incoming.append((ancestor,generation))
+            }
+        }
+        do { if !incoming.isEmpty { try persistState(durable:true) } }
+        catch { failFamilyAccounting(error); return false }
+        guard await drainSidePauseIntent() else { return false }
+        for (ancestor,generation) in incoming { await ancestor.acknowledgeSidePause(id,generation:generation) }
+        return true
+    }
+    func deliverSidePauseIntent(_ intent: SidePauseIntent, publication: SidePausePublication, repair: Bool = false) async -> Bool {
+        guard costPendingMembership == intent, intent.paused == costPaused,
+              publication.isCurrent, let root = sideBudgetParents.last else { return false }
+        let confirmed: Bool
+        if intent.paused { confirmed = await root.notePausedMember(id,publication:publication,repair:repair) }
+        else { confirmed = await root.forgetPausedMember(id,generation:publication.side,destination:publication.root) }
+        guard confirmed else { return false }
+        await beforeSidePauseAcknowledgment?()
+        // The receipt acknowledges this source generation/intent, after the
+        // receiver's durable mutation. The root may have advanced its clock
+        // as part of that very retirement; it cannot revoke a durable ack.
+        // A newer source change still rejects it, by both generation and ID.
+        return publication.side.clock.apply(publication.side,matchingPause:true) {
+            // A duplicate delivery may already have saved this same receipt
+            // while we awaited the root. Its durable ack is still an ack.
+            if costPendingMembership == nil { return true }
+            guard costPendingMembership == intent else { return false }
+            costPendingMembership = nil
+            do { try persistState(durable:true); return true }
+            catch { costPendingMembership = intent; failFamilyAccounting(error); return false }
+        } ?? false
     }
 }

@@ -1416,3 +1416,287 @@ or automatic result bundles remain in this workstream's build root. A final
 fetch confirmed the reviewed `origin/dev/next` revision above is unchanged.
 No new owner decision or in-scope failing check remains; the migration warnings
 and prior out-of-scope findings are recorded above.
+
+## Round 8 — durable membership intents and runtime retirement
+
+Confirmed both reports against `2e5eada6daa0d9d6a7349f685f18848341e34746`.
+An idle side could acknowledge the original fan-out, acquire work and pause
+before its publication ran. The root's final-reply cleanup examined only its
+lists and advanced Resume past that legitimate publication. Separately, a kept
+side could finish Resume and unload before its unstructured retirement reached
+the root; retiring its clock discarded the only membership removal.
+
+The sender now records `costPendingMembership = {id, paused}` in the **same
+state record** as its own pause or committed Resume/automatic retirement. A
+unique identity distinguishes a later desired state from an old acknowledgment.
+The receiver saves membership before acknowledging; only that acknowledgment
+can clear the sender's intent. A failed receiver write retains the source. A
+failed source acknowledgment write restores the intent, including across a later
+unrelated state save. The state holds identifiers and booleans, not conversation
+or capture content. Unkept sides continue using their existing in-memory policy;
+this does not create journals or enable capture for them.
+
+Unload first closes admission under the root-before-side fence and stops new
+fan-out registration. It applies/acknowledges previously issued incoming
+fan-out, then drains outbound membership intents, before retiring its clock.
+A failed handover refuses unload and restores admission so it can be retried.
+Close drains too; if its receiver is unavailable during shutdown, the kept
+sender's journal retains the intent. Cold root recovery reads validated side
+metadata off the host actor, including unopened descendants, and binding
+replays the intent with the replacement runtime's generation. Old runtime tasks
+remain invalid. Root automatic retirement and Resume acceptance take a census
+of **all registered applied pauses**, including a side which already
+acknowledged its original fan-out. Bound intermediates never acquire that
+aggregate membership.
+
+A durable acknowledgment belongs to the sender generation and intent identity.
+The root may advance its own clock as part of automatically retiring its final
+member; that cannot revoke an already durable acknowledgment. The sender still
+rejects an acknowledgment for a superseded intent or generation. Likewise, when
+a fan-out recipient resumes between application and publication, its current
+completed state can acknowledge the still-current fan-out issuer. It does not
+republish the obsolete pause.
+
+### Lifecycle sweep and transition table
+
+The sweep includes all unstructured pause tasks and the awaited transfer and
+recovery paths which can outlive their original caller.
+
+| Field/message | Set or move | Clear/acknowledge | Retirement/restart rule |
+|---|---|---|---|
+| `costPaused`, `costPauseCount` | New local/inherited pause, saved before cancellation/publication | Resume commit after final install await and cancellation check; automatic retirement after registered-side census; terminal child cleanup | Recovered flag initializes the runtime clock in the isolated recovery step; a fresh runtime never revives old tasks. |
+| `costResumePending`, `costResumeGeneration`, `costResumeCount` | Accepted Resume retains the durable pause during install; new limit/Stop invalidates install | Commit clears pending/paused together with the retirement intent; failure restores pause state and the prior intent | Existing two-phase install and every cancellation check remain intact. |
+| `costPendingMembership` (new) | Pause writes `{id, true}`; committed Resume or automatic retirement writes `{id, false}` before scheduling | Receiver durable acknowledgment, checked against sender generation and the exact intent ID; source clear saved separately, with rollback | Unload drains; close hands an unacknowledged kept intent to recovery; reopening reissues under the new runtime. |
+| Side pause publication (`Task` in `pauseAtCostLimit`) | Same-record local pause and membership intent | Root `notePausedMember` durably saves, then sender saves acknowledgment | A stale task is inert; the durable intent survives it. A duplicate is idempotent. |
+| Membership retirement (`Task` in `forgetSidePause`) | Same-record successful local Resume/automatic retirement | Root `forgetPausedMember` returns durable success, then sender clears its intent | Cannot retire the sender clock first; receiver failure leaves unload retryable. Retirement does not consume a newer fan-out. |
+| `costPausedMembers` | Root publication/census/recovery; an intermediate may retain an unacknowledged recovery copy | Side retirement, terminal close or deletion; intermediate copy clears only after acknowledged root reconciliation | A live descendant supplies its own generation fence. Cold transfer inspection runs detached under the host runtime gate; an already resumed descendant is retired rather than republished. |
+| `costPendingSidePauses` / fan-out tasks | Saved before callbacks, including idle issuers | Recipient confirms durable pause plus root membership, or durable lack/completion of work; original issuer generation checked on ack | Closing/unloading recipients drain incoming intents. Cold root recovery accounts for an unopened intermediate's pending fan-out. |
+| Clock `accepting` / `live` / `closing` | Quiesce closes new fan-out admission before lifecycle awaits; ephemeral terminal close marks closing | Failed unload restores accepting; successful unload/close retires live | Quiescing kept sides still count in the applied-pause census. Terminal ephemeral sides do not. Deleted clocks are removed before census/retirement. |
+| Coordinator `paused`, pause/halt tasks | Owner's durable pause/Stop precedes the stamped task | Committed, current Resume activation releases it | Close awaits halt/drain. Host dependent checks pin owners of live children; restart rebuilds from durable turns. No new membership-only task is required here. |
+| Park tasks, child mirror and parked publication | Owner pause generation plus current job identity, family gate around durable writes | Resume installation or repaired terminal seal; old/duplicate job messages rejected | Owner/child journals remain the recovery authority; release occurs after settlement. |
+| Resume activation and wake tasks | Issued after durable commit | Current-generation activation; wakes only pulse a signal | Durable owner state and staged turns survive loss of a runtime-only activation. Wakes own no durable membership. |
+| `heldChildren`, child `costPaused`, `queuePaused`, `costPendingCalls`, pending compaction | Existing Stop/parking/tool-boundary writes | Existing idempotent seal, terminal recovery, follow-up or successful Resume | Retained-reader, cold mirror, partial-seal and Stop/Resume regressions remain in the focused/full gates. |
+
+Additional confirmed findings from this sweep, fixed separately from the two
+reported races:
+
+- Kept close could retire its clock before applying an outstanding fan-out;
+  idle unload could leave the root's fan-out permanently unacknowledged.
+- A retained intermediate transfer copy could resurrect a descendant after its
+  Resume; cold root recovery could miss an unopened intermediate's outstanding
+  fan-out. Root recovery and transfer reconciliation now inspect current
+  descendant pause metadata, retaining root ownership.
+- Fan-out publication losing a race to its recipient's completed Resume must
+  acknowledge completion without publishing the old pause. Root automatic
+  retirement must not invalidate its own durable acknowledgment.
+- Completion during the root acknowledgment await, and a duplicate whose
+  source acknowledgment was already saved, must also confirm the fan-out.
+  Otherwise an idle side leaves its root waiting on an obsolete pending list.
+- A queued retirement drives its still-current durable intent with fresh root
+  stamps; it must not be abandoned merely because the root began another pause
+  before the task ran. Receiver messages remain generation-checked.
+- Cold pruning of a completed recipient is a recovered acknowledgment and
+  retires an otherwise empty root hold. Recovery uses the replay consumer's
+  final state, which decodes the latest buffered state record; its raw
+  accumulator can still contain nil or an older checkpoint.
+
+### Failing-first and mutation evidence
+
+All fixtures are generated in temporary directories. Gates hold exact message
+boundaries, not provider timing. Assertions cover app snapshots and
+`pausedMembers` replies as well as saved intent records.
+
+- `round8-failing-first.log`: both reported races failed on the original
+  implementation plus a nil-by-default retirement test seam: **2 tests,
+  6 failed assertions**. Root cleanup returned `nothing_to_continue` and omitted
+  the side; kept unload left the root snapshot paused with that side listed.
+- `round8-lifecycle-audit-red.log`: **3 tests, 3 failed assertions** (two failing
+  lifecycle tests, the partial-write test passing) before the incoming drain.
+- `round8-transfer-audit-red.log`: **2 tests, 5 failed assertions** before cold
+  transfer reconciliation. The root omitted an unopened leaf or became paused
+  again after that leaf had completed Resume.
+- The partial-write matrix injects failure before the receiver's state write and
+  after it, at the sender's acknowledgment write, for both pause and retirement.
+  It performs another source state save, kills both fixture runtimes without
+  orderly close, opens the root before the side, then rebinds twice. The root's
+  snapshot/Resume reply and source acknowledgment must be correct exactly once.
+- A separate receiver-only failure test proves failed handover refuses unload
+  without retiring the clock and that a subsequent unload repairs it.
+
+Mutation results and final suite counts are recorded below after validation.
+
+### Adversarial self-review
+
+Reviewed the complete workstream diff against `origin/dev/next`
+(`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`), distinguishing unrelated changes
+on that branch from this workstream (common base
+`141666ca479184d10a9791754d4c91df456599d8`). Rechecked the earlier condition audit
+and the Round-7 generation/installation matrix, plus every new branch:
+
+| Changed condition | States taking the new branch; intended outcome |
+|---|---|
+| Census finds registered applied sides outside the pending list | Active side after idle acknowledgment, publication queued, kept runtime quiescing/unloaded: retain/include its pause. Idle, resumed, terminal-close and deleted sides are excluded; bound intermediates do not own the census. |
+| Membership intent exists | Streaming pause, paused idle runtime, own Resume completion, restart: save desired state before delivery and retain it through any unacknowledged write. Plain roots, forks and managed children create no side intent. |
+| Sender is quiescing/closed | New work/fan-out admission stops before await; already-issued incoming work is reconciled. Kept source failure remains durable; unkept terminal close uses its existing terminal retirement. Repeated unload of an already released kept child remains successful. |
+| Receiver acknowledgment is false or source save fails | Retain retryable intent; no accepted unload, no loss through a later state save. Source identity/generation prevents an old acknowledgment from clearing a new desired state. |
+| Receiver advances its clock during acknowledged retirement | Apply the durable receipt only to its still-current source intent; do not recreate membership merely to satisfy the old destination stamp. |
+| Publication stamp is obsolete but recipient completed Resume | Check both before and after the receiver await. Confirm durable current completion only while the original root Resume generation is still current and the source remains open; acknowledge fan-out, never note membership. Other stale publications remain no-ops. |
+| Duplicate finds its source receipt already cleared | Under the same source generation/pause fence, absence means a concurrent successful delivery saved the acknowledgment. Return that success; a newer source generation/intent is still rejected. |
+| Queued retirement finds a new root generation | Reissue only the same current sender intent with fresh destination stamps. Retry a changed destination generation during drain; retain the intent on writer failure or shutdown. No stale receiver message is revived. |
+| Root opens before senders | Read validated descendant metadata off-host; import applied pauses and unacknowledged retirements before producing the snapshot/Resume reply. Existing accepted membership does not pause the root again. |
+| Cold fan-out recipients have all completed | Pruned pending membership is an acknowledgment; clear the root hold only when no own work or other member remains. Read the final replay state, not the consumer's lazily decoded accumulator. |
+| Transfer target already resumed | Reconcile retirement instead of publishing the stale copy. Live targets supply their own generation; cold metadata is inspected off-actor while runtime ownership is gated. |
+| Authoritative deletion | Remove the deleted runtime's registered clock before retirement so census cannot reinsert it. No deletion/capture/data scope is expanded. |
+
+Rechecked streaming, idle, paused, interrupted/restarted, cancellation during
+all install awaits, sibling compaction/tools, retained and cold children, and
+Off/memory/persist capture. The full original Stop/Resume, partial seal, terminal
+follow-up and cold-host responsiveness tests remain enabled. No UI, permission,
+vault, tool authority, provider or capture production paths were enabled.
+
+### Warning comparison
+
+Clean Release helper builds use the same build root and scratch directory, with
+source-only snapshots in `$B/round8-warning-source` (removed afterward), Xcode
+16.1's Swift toolchain, and identical commands:
+
+```sh
+swift package --package-path "$B/round8-warning-source/packages/swift-host" --scratch-path "$B/swift-host" clean
+swift build --package-path "$B/round8-warning-source/packages/swift-host" --scratch-path "$B/swift-host" --configuration release --arch arm64
+```
+
+The comparison counts compiler diagnostic lines once per source location, not
+repeated caret text. `origin/dev/next`: **70**; pushed Round-7 branch: **98**.
+The latter includes the four reported clock reads and additional pause-recovery
+initializer diagnostics from earlier rounds. Pause projection now uses replay
+values before assignment, and the existing isolated recovery step initializes
+the clock and completes terminal/membership recovery. This is a narrow pause
+recovery change, not an initializer-wide Swift 6 migration. Final count/signature
+comparison is recorded with the Release bundle run below.
+
+The 16 independent mutants all compiled and failed the selected observable
+regression(s); the source was restored in `finally` after each run:
+
+| Mutation | Failed assertions |
+|---|---:|
+| Omit the applied-side census before automatic retirement | 3 |
+| Retire the kept sender without draining | 3 |
+| Omit the durable membership intent from saved state | 6 |
+| Clear the sender despite receiver failure (receiver-only fault) | 3 |
+| Discard the intent after a failed source acknowledgment write | 2 |
+| Skip incoming fan-out drain during close/unload | 3 |
+| Ignore cold membership retirement | 2 |
+| Republish an already resumed transfer target | 2 |
+| Discard a completed recipient's fan-out acknowledgment | 3 |
+| Require the root's old clock after it durably retires the member | 2 |
+| Commit Resume without recording its retirement intent | 2 |
+| Ignore completion during the receiver acknowledgment await | 2 |
+| Reject a duplicate whose source acknowledgment was already saved | 2 |
+| Send a queued retirement only with its obsolete destination stamp | 3 |
+| Prune cold idle recipients without retiring the empty hold | 2 |
+| Recover from the raw accumulator instead of the final replay state | 6 |
+
+Evidence: `round8-mutation-*.log`, `round8-mutations.json`; **16/16 detected**.
+The restored class passed **106/106** before the wire audit and **110/110**
+after the final mutation. The two acknowledgment mutants assert the root's
+app-visible pause as well as the delivery result.
+The first receiver-ack mutant escaped the shared two-writer fault because the
+source write also failed, retaining the intent for a different reason. Running
+that mutant against the existing receiver-only fault caught it; both fault
+models are retained. This was a test coverage gap, not a surviving mutant.
+
+During implementation, adding a closed-runtime guard temporarily broke repeated
+unload in the child-runtime fixture (66 assertions in one 18-child/source matrix).
+Already released kept runtimes again return success. A transfer barrier fixture
+previously named a nonexistent leaf; it now creates a real kept, paused leaf so
+it still exercises source rollback after an actual receiver write. The first
+broad focused attempt had three failures (the intermediate ownership expectation
+and the completed-recipient acknowledgment ordering), both corrected before the
+initial **506/506** affected-helper run. These diagnostic attempts remain in
+`round8-family-initial.log`, `round8-family-third.log` and
+`round8-focused-initial.log`; no unrelated failure was suppressed.
+
+The first full wire run then caught a real acknowledgment regression: **35
+passed, 1 failed**, reproducible alone. A side's final reply cleared its own
+pause while its membership publication awaited the root; the callback returned
+false after that await and left the root's fan-out pending. The deterministic
+acknowledgment/duplicate pair failed **2 tests / 3 assertions** before the fix
+(`round8-wire-audit-red.log`), then passed. The queued-retirement sweep failed
+**1 test / 3 assertions** before fresh-stamp delivery
+(`round8-retirement-reissue-red.log`). Previous passing gates and the failed wire
+log are retained as `round8-*-before-wire-fix.log`. Final runs below include all
+four additional regressions.
+
+The last cold-recovery case failed **1 test / 2 assertions**
+(`round8-cold-idle-red.log`). Retiring the pruned fan-out also required reading
+the final replay state: the raw replay accumulator had not decoded its newest
+state record. The partial-write matrix now also checks that the original sender
+intent survives reopen before binding. Both corrections have independent
+mutants. An intermediate diagnostic probe incorrectly read a path after its
+fixture runtime released the journal and trapped; the probe was removed. It
+did not affect production code. The validation runner deliberately rejected its
+old source fingerprint when this last test was added; all final gates were
+restarted from a new fingerprint.
+
+### Final commands and results
+
+All commands run in this worktree, with
+`B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12`. Text logs are in
+`$B/logs/round8-*.log`. No installed app, credentials, live capture or paid
+provider was used. There are no UI code changes requiring gallery regeneration.
+
+```sh
+FILTER='FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|SideBudgetUpgradeTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests|ContinueRunTests|ConcurrentSessionsTests|QueueDeliveryRecoveryTests|QueueEditHoldTests|QueueEditingTests|QueueHandoffTests|RetryRecoveryTests|SessionSettlementTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --filter "$FILTER"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/CostPausePresentationTests -only-testing:PiAppTests/CostLimitTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CostPauseFamilyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+```
+
+Each native invocation separately acquires the shared `full-lane.lock`, writes
+its own owner identity and releases it with an EXIT/signal trap. Lifecycle runs
+alone, and the family/UI fixture class also runs alone. No named xcresult bundle
+is requested; own automatic bundles are removed after each native invocation.
+The validation runner fingerprints all helper sources/tests before and after
+its run (`round8-validated-source.json`).
+
+Final clean warning comparison: **70 base / 98 before / 67 after**, with **zero
+added warning signatures** relative to `origin/dev/next` (multiset comparison
+by source filename and diagnostic message, preserving multiplicity). The final
+comparison used the same source-snapshot path, clean scratch directory and
+commands as both baseline builds. The source snapshot was removed afterward.
+Evidence: `round8-warnings-origin.log`, `round8-warnings-before.log`,
+`round8-warnings-after.log`, `round8-warning-counts.json`.
+
+| Final suite | Result | Log under `$B/logs` |
+|---|---|---|
+| Affected helper classes (including 110 family-pause tests) | 510 passed, 0 failed; 286.1 s | `round8-focused.log` |
+| Full helper suite | 1,084 passed, 7 skipped, 0 failed (1,091 total); 429.2 s | `round8-helper-full.log` |
+| Release helper build | Passed; 74.2 s | `round8-bundle.log` |
+| Native RunHold / CostPausePresentation / CostLimit | 18 / 6 / 13 passed, 0 failed | `round8-native-pause.log` |
+| Native CostPauseFamily | 3 passed, 0 failed | `round8-native-family.log` |
+| Native LifecycleHelper (alone) | 11 passed, 0 failed; native total **51/51** | `round8-native-lifecycle.log` |
+| Wire | 36 passed, 0 failed; 33.2 s | `round8-wire.log` |
+| Concurrent | 4 passed, 0 failed; 24.9 s | `round8-concurrent.log` |
+| Acceptance | 3 passed, 0 failed; 3.5 s | `round8-acceptance.log` |
+
+The seven skips are the existing opt-in fixture/performance cases: ForkClone
+(1), ForkPerformance (1), HistoryReadCancellation (1), SessionOpenPerformance
+(4). In the full run, `subagent.stop` acknowledged in **4.585 ms** and managed
+`turn.stop` in **0.377 ms** while sibling compaction remained held. A 12,000-row
+cold terminal mirror took **423 ms**, serving **105** other-chat snapshot/Stop
+pairs with worst combined latency **under 1 ms**. No unrelated failure remains
+in these final helper runs.
+
+The previously failing wire case also passed alone against the final Release
+helper while waiting for the native lock (`round8-wire-cost-release.log`). The
+final runner verified an unchanged source/test fingerprint after every gate.
+Own automatic xcresult bundles and clone folders are absent, the temporary
+warning-build source copy is removed, and this workstream released its native
+lock after each invocation. No owner decision or in-scope unresolved finding
+remains. Nothing was merged or published to a release branch.
