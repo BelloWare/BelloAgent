@@ -531,7 +531,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var hasActiveWork: Bool { !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var connectionProbes = 0
+    var hasActiveWork: Bool { connectionProbes > 0 || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 

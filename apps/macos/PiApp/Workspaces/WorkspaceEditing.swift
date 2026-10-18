@@ -10,7 +10,7 @@ extension WorkspaceModel {
     nonisolated static func editTurnParams(messageID: String, text: String, turnID: String, attachments: [AttachmentRecord], skills: [SkillChip], model: String? = nil, thinkingLevel: String? = nil) -> [String: WireValue] {
         var params: [String: WireValue] = ["messageId": .string(messageID), "text": .string(text), "clientTurnId": .string(turnID),
                                            "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]
-        if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty, model.count <= 200 { params["model"] = .string(model) }
+        if let model = TurnOverrides.normalizedModel(model) { params["model"] = .string(model) }
         if let thinkingLevel, ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(thinkingLevel) { params["thinkingLevel"] = .string(thinkingLevel) }
         return params
     }
@@ -166,7 +166,7 @@ extension WorkspaceModel {
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             do {
                 let connection = Result { try connectionLease(for: item) }
-                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
+                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion) }
                 let lease = try connection.get()
                 try requireConnection(lease)
                 let host = try await open(item)

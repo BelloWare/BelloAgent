@@ -11,7 +11,7 @@ final class RecoveredDraftTests: XCTestCase {
         let view = SessionDisplay(id: "chat"); view.selectionMetadataLoaded = true; view.draft = "Current draft"
         model.displays[view.id] = view
         let intent = CommandIntent(id: "command", sessionID: view.id, turnID: "turn", text: "Interrupted message", state: "intent")
-        try await store.recordSubmission(intent, draft: view.savedDraft)
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion)
         view.recovered = [intent]; view.uncertain = true
         return (model, view, store, intent)
     }
@@ -22,7 +22,7 @@ final class RecoveredDraftTests: XCTestCase {
         let (model, view, store, original) = try await fixture()
         view.attachments = (0..<4).map(image); view.skills = (0..<8).map(skill)
         var intent = original; intent.attachments = [image(4)]; intent.skills = [skill(8)]
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
         model.recoverDraft(intent, insert: true)
         try await eventually("recovery answered") { !view.notice.isEmpty || view.recovered.isEmpty }
         XCTAssertEqual(view.draft, "Current draft"); XCTAssertEqual(view.attachments, (0..<4).map(image)); XCTAssertEqual(view.skills, (0..<8).map(skill))
@@ -50,7 +50,7 @@ final class RecoveredDraftTests: XCTestCase {
         model.selectedID = parent.id; model.selected = parent; model.focusedSessionID = view.id
         view.attachments = [image(0)]; view.skills = [skill(0)]
         var intent = original; intent.attachments = [image(1)]; intent.skills = [skill(1)]
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
         let db = try XCTUnwrap(database)
@@ -139,7 +139,7 @@ final class RecoveredDraftTests: XCTestCase {
         let (model, view, store, original) = try await fixture()
         view.attachments = (0..<3).map(image)
         var intent = original; intent.attachments = [image(3)]; view.recovered = [intent]
-        try await store.recordSubmission(intent, draft: view.savedDraft)
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion)
         // Hold only this fixture database while the store waits to begin its
         // transaction, so a completed paste can arrive at that exact point.
         var database: OpaquePointer?

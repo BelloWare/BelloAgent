@@ -863,6 +863,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pageRows: PageRows { PageRows(count: messages.count, first: messages.first?.id, last: messages.last?.id) }
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
+    var draftVersion = DraftVersion()
     var selectionMetadataLoaded = false
     /// This window is detached from the helper's live tail (a newer gap,
     /// source load or explicit retained-message inspection). Earlier rows

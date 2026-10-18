@@ -17,6 +17,9 @@ extension WorkspaceModel {
     /// opens a chat, loads repository resources, or launches configured tools.
     /// Requests remain attributable to the real workspace in the request report.
     func verifyOnboardingConnection(_ profile: ProfileRecord) async throws {
+        guard !installPreparing, !isShutDown else { throw ConnectionProbeError.cancelled }
+        connectionProbes += 1
+        defer { connectionProbes -= 1 }
         try await ensureConfiguration()
         guard store != nil, profileChoice == profile.id,
               let workspace = workspaces.first(where: { $0.id == selectedWorkspaceID && $0.trusted }),

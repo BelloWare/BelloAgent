@@ -3,7 +3,7 @@ import Foundation
 import SQLite3
 
 enum StoreError: Error, Equatable, LocalizedError {
-    case unavailable, invalidRecord, staleRevision
+    case unavailable, invalidRecord, staleRevision, draftConflict
     /// A conversation file could not be read. Distinct from `invalidRecord`,
     /// which is about writing desktop metadata: reporting a read failure with a
     /// write message told the user a save had failed when nothing was saved.
@@ -14,6 +14,7 @@ enum StoreError: Error, Equatable, LocalizedError {
         case .unavailable: "Desktop storage is unavailable."
         case .invalidRecord: "The desktop record could not be saved."
         case .staleRevision: "A newer version of this desktop record has already been saved."
+        case .draftConflict: "Another app instance saved this draft. Its saved copy and your composer were kept. Copy your unsaved input before closing this instance."
         case .unreadableRecord: "This conversation file could not be read. Its bytes were left untouched."
         case .missingJournal(let path): "The conversation file is no longer at \(path). Nothing was written in its place."
         }
@@ -61,6 +62,17 @@ final class DraftWriteEvents: @unchecked Sendable {
     }
 }
 
+/// A display's last loaded or committed draft. Store transactions advance
+/// this shared version only after commit, so overlapping local saves use the
+/// same revision while a second app instance keeps its independent baseline.
+final class DraftVersion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (draft: DraftRecord?, revision: Int64?)
+    init(draft: DraftRecord? = nil, revision: Int64? = nil) { value = (draft, revision) }
+    var snapshot: (draft: DraftRecord?, revision: Int64?) { lock.withLock { value } }
+    fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision) } }
+}
+
 actor MetadataStore {
     /// Input records can hold an edited message, its displaced draft and a
     /// queued rewrite. Each supported 256 KiB text can expand sixfold in JSON
@@ -74,6 +86,7 @@ actor MetadataStore {
     /// Draft writes so far, and those of a transaction not yet committed.
     private var draftSequence = 0
     private var transactionDrafts: [(String, Bool)]?
+    private var transactionDraftVersions: [(DraftVersion, DraftRecord, Int64)] = []
     private func noteDraftWrite(_ id: String, _ holdsDraft: Bool) {
         if transactionDrafts != nil { transactionDrafts?.append((id, holdsDraft)); return }
         draftSequence += 1; draftWrites.send(id, holdsDraft, draftSequence)
@@ -135,7 +148,10 @@ actor MetadataStore {
         lastReservedRevision = max(latest + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
         return lastReservedRevision
     }
-    func put<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64? = nil, releasingTitleClaim: Bool = false) throws {
+    func put<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64? = nil, releasingTitleClaim: Bool = false, draftVersion: DraftVersion? = nil) throws {
+        if let draftVersion, kind == "draft", let draft = value as? DraftRecord {
+            try putDraft(draft, version: draftVersion, revision: revision); return
+        }
         let database = try ready()
         let savedRevision: Int64
         if kind == TopicRecord.recordKind {
@@ -171,6 +187,38 @@ actor MetadataStore {
         guard sqlite3_changes(database) == 1 else { throw StoreError.staleRevision }
         if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
+    }
+    private func putDraft(_ draft: DraftRecord, version: DraftVersion, revision: Int64?) throws {
+        _ = try ready()
+        let previous = version.snapshot
+        // An unchanged stale composer owns no write, even at Quit. Normalize
+        // optional empty arrays used by older drafts before comparing them.
+        guard !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
+        func save() throws {
+            let current = try draftVersion(id: draft.id).snapshot
+            guard current.revision == previous.revision else { throw StoreError.draftConflict }
+            let next = try revision ?? reserveRevision(kind: "draft", id: draft.id)
+            try put(draft, kind: "draft", id: draft.id, revision: next)
+            transactionDraftVersions.append((version, draft, next))
+        }
+        // BEGIN IMMEDIATE makes the comparison and write indivisible across
+        // independent MetadataStore actors and app processes.
+        if transactionDrafts != nil { try save() } else { try transaction(save) }
+    }
+    func draftVersion(id: String) throws -> DraftVersion {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='draft' AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, id, -1, transient)
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE { return DraftVersion() }
+        guard result == SQLITE_ROW else { throw StoreError.unavailable }
+        let size = Int(sqlite3_column_bytes(statement, 0))
+        guard size <= Self.inputRecordByteLimit, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+        let draft = try JSONDecoder().decode(DraftRecord.self, from: Data(bytes: bytes, count: size))
+        return DraftVersion(draft: draft, revision: sqlite3_column_int64(statement, 1))
     }
     /// Update only the cost choice from the latest durable chat. The revision
     /// also protects it from unrelated writes holding an older chat copy.
@@ -565,9 +613,11 @@ actor MetadataStore {
         do {
             let result = try operation()
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            for (version, draft, revision) in transactionDraftVersions { version.committed(draft, revision: revision) }
+            transactionDraftVersions.removeAll()
             flushTransactionDrafts()
             return result
-        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch { transactionDraftVersions.removeAll(); transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
 
     /// Just enough of every chat to decide membership: id, project, group and
@@ -644,12 +694,16 @@ actor MetadataStore {
     /// actor; the answers do not depend on each other.
     struct SelectionMetadata: Sendable {
         var draft: DraftRecord?
+        var draftVersion: DraftVersion?
         var anchor: TranscriptAnchor?
         var recovered: [CommandIntent] = []
     }
     func selectionMetadata(id: String, draft wantsDraft: Bool, anchor wantsAnchor: Bool) throws -> SelectionMetadata {
         var value = SelectionMetadata()
-        if wantsDraft { value.draft = try get(DraftRecord.self, kind: "draft", id: id) }
+        if wantsDraft {
+            let version = try draftVersion(id: id)
+            value.draft = version.snapshot.draft; value.draftVersion = version
+        }
         if wantsAnchor { value.anchor = try get(TranscriptAnchor.self, kind: "anchor", id: id) }
         value.recovered = try list(CommandIntent.self, kind: "pending:" + id)
         return value
@@ -720,18 +774,18 @@ actor MetadataStore {
     /// journal): the record that lets a crash flag or recover the message,
     /// and the draft that no longer holds its text. Either both are on disk
     /// or neither is, so the text is never in neither place.
-    func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?) throws {
+    func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
         try transaction {
-            if let draft { try put(draft, kind: "draft", id: draft.id) }
+            if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
             try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
         }
     }
     /// A submission the helper never acted on went back into the composer:
     /// the draft that holds its text again and the end of its record, in one
     /// commit.
-    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?) throws {
+    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
         try transaction {
-            if let draft { try put(draft, kind: "draft", id: draft.id) }
+            if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
             try remove(kind: "pending:\(sessionID)", id: commandID)
         }
     }
@@ -740,14 +794,14 @@ actor MetadataStore {
         guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }
         intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID)
     }
-    func preserveSubmissionReviews(sessionID: String, commands: Set<String>) throws {
+    func preserveSubmissionReviews(sessionID: String, commands: Set<String>, draftVersion: DraftVersion? = nil) throws {
         // Read inside the actor: a review marker must never overwrite newer
         // typing with the draft a journal read started from.
         guard var draft = try get(DraftRecord.self, kind: "draft", id: sessionID) else { return }
         draft.requireSubmissionReview(commands)
-        try put(draft, kind: "draft", id: sessionID)
+        try put(draft, kind: "draft", id: sessionID, draftVersion: draftVersion)
     }
-    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord) throws -> ChatRecord {
+    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord, draftVersion: DraftVersion? = nil) throws -> ChatRecord {
         try transaction {
             guard proposed.id == expected.id else { throw StoreError.staleRevision }
             let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id)
@@ -776,7 +830,7 @@ actor MetadataStore {
                 let parent = try get(ChatRecord.self, kind: "chat", id: parentID)
                 chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
             }
-            try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
+            try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id, draftVersion: draftVersion); try remove(kind: "side-keep", id: chat.id)
             try put(SideKeepRegistration(expected: expected, path: chat.path), kind: SideKeepRegistration.kind, id: chat.id)
             // The registered chat now owns this reference. Other dismissed
             // paths with the same ID remain independently protected.
@@ -1183,6 +1237,20 @@ struct DraftRecord: Codable, Sendable, Equatable {
     /// Returned input may already have run. This gate belongs to the draft,
     /// not the transient run state or the helper's bounded receipt list.
     var submissionReviews: Set<String>?
+    func hasSameContents(as other: DraftRecord) -> Bool {
+        func normalized(_ draft: DraftRecord) -> DraftRecord {
+            var value = draft
+            value.attachments = value.attachments ?? []; value.skills = value.skills ?? []
+            value.submissionReviews = value.submissionReviews ?? []
+            if var edit = value.edit {
+                edit.originalAttachments = edit.originalAttachments ?? []; edit.originalSkills = edit.originalSkills ?? []
+                edit.originalSubmissionReviews = edit.originalSubmissionReviews ?? []
+                edit.inputReviewRequired = edit.inputReviewRequired ?? false; value.edit = edit
+            }
+            return value
+        }
+        return normalized(self) == normalized(other)
+    }
     /// Unsent work the sidebar marks (a draft marker): text, an image or a
     /// skill in the composer, the draft an edit of an earlier message set
     /// aside, or a queued message being rewritten (not merely opened).

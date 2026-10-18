@@ -33,6 +33,35 @@ private final class DelayedConcurrencyVault: VaultStorage, @unchecked Sendable {
 }
 
 final class WorkspaceConcurrencyTests: XCTestCase {
+    @MainActor func testOnboardingProbeCannotStartInsideShutdownOrUpdateBarrier() async throws {
+        let model = try await fixture(count: 0)
+        model.selectedWorkspaceID = "project"; model.profileChoice = "connection"
+        let profile = try XCTUnwrap(model.profiles.first)
+        model.installPreparing = true
+        do { try await model.verifyOnboardingConnection(profile); XCTFail("Update barrier must refuse a new probe") } catch ConnectionProbeError.cancelled { }
+        XCTAssertEqual(model.connectionProbes, 0)
+        model.installPreparing = false; model.shutdown()
+        do { try await model.verifyOnboardingConnection(profile); XCTFail("Shutdown must refuse a new probe") } catch ConnectionProbeError.cancelled { }
+        XCTAssertEqual(model.connectionProbes, 0)
+    }
+
+    @MainActor func testOnboardingProbeCountsAsActiveWhileCredentialsArePending() async throws {
+        let storage = DelayedConcurrencyVault(), model = try await fixture(count: 0, storage: storage)
+        model.prewarmsHelpers = false; model.selectedWorkspaceID = "project"; model.profileChoice = "connection"
+        let entered = expectation(description: "probe credentials held")
+        storage.holdNextRead(entered); defer { storage.resume.signal() }
+        let probe = Task { try await model.verifyOnboardingConnection(try XCTUnwrap(model.profiles.first)) }
+        await fulfillment(of: [entered], timeout: 3)
+        XCTAssertTrue(model.hasActiveWork, "The private onboarding helper must participate in update/quit work accounting")
+        XCTAssertFalse(model.acquireUpdateBarrier())
+        model.releaseUpdateBarrier()
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("Pause must wait for the private probe") } catch { }
+        probe.cancel(); storage.resume.signal()
+        do { try await probe.value; XCTFail("Cancelled probe must not complete") } catch { }
+        XCTAssertFalse(model.hasActiveWork); XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertTrue(model.acquireUpdateBarrier()); model.releaseUpdateBarrier()
+    }
+
     @MainActor private func fixture(count: Int, storage: any VaultStorage = MemoryVaultStorage()) async throws -> WorkspaceModel {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("workspace-concurrency-" + UUID().uuidString)

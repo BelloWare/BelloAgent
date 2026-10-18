@@ -35,6 +35,7 @@ extension WorkspaceModel {
         let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata && view.scrollAnchor == nil)
         guard current() else { return false }
         if wantsMetadata {
+            if let version = metadata.draftVersion { view.draftVersion = version }
             if let draft = metadata.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
                view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
                 view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
@@ -84,7 +85,7 @@ extension WorkspaceModel {
         let previous = draftWrites.tasks[view.id]; previous?.cancel(); await previous?.value
         if !isEphemeral(view.id) {
             guard let store else { throw StoreError.unavailable }
-            try await store.preserveSubmissionReviews(sessionID: view.id, commands: commands)
+            try await store.preserveSubmissionReviews(sessionID: view.id, commands: commands, draftVersion: view.draftVersion)
         }
         // Only a successful marker write allows a terminal receipt to remove
         // the last evidence that the returned draft may already have run.
@@ -113,7 +114,7 @@ extension WorkspaceModel {
         // Unkept side drafts stay in memory by design; on host loss their text
         // is moved into the parent composer instead (discardLostSides).
         guard !isEphemeral(view.id), !pendingChatIDs.contains(view.id) else { return }
-        draftWrites.tasks[view.id]?.cancel()
+        let previous = draftWrites.tasks[view.id]; previous?.cancel()
         // The entry is cleared when this write finishes, and only by the write
         // that owns it: a newer one replaces the token first, so a cancelled
         // task's own cleanup can never drop it.
@@ -122,10 +123,15 @@ extension WorkspaceModel {
         draftWrites.tasks[id] = Task {
             defer { if draftWrites.tokens[id] == token { draftWrites.tokens.removeValue(forKey: id); draftWrites.tasks.removeValue(forKey: id) } }
             do {
+                // Cancellation cannot withdraw a write already in the store.
+                // Compare against its committed version, including an undo
+                // back to the draft that was originally loaded.
+                await previous?.value
+                try Task.checkCancellation()
                 guard let store else { throw StoreError.unavailable }
                 let revision = try await store.reserveRevision(kind: "draft", id: draft.id)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
-                try await store.put(draft, kind: "draft", id: draft.id, revision: revision); draftWrites.failed = false
+                try await store.put(draft, kind: "draft", id: draft.id, revision: revision, draftVersion: view.draftVersion); draftWrites.failed = false
             }
             catch is CancellationError { }
             catch StoreError.staleRevision { /* A newer send, flush or edit already saved this draft. */ }
@@ -141,7 +147,12 @@ extension WorkspaceModel {
     /// the same inside prepareForInstall.
     func flushDrafts() async throws {
         for task in draftWrites.recoveries.values { await task.value }
-        for task in draftWrites.tasks.values { task.cancel() }; draftWrites.tasks.removeAll(); draftWrites.tokens.removeAll()
+        let pending = draftWrites.tasks, tokens = draftWrites.tokens
+        for task in pending.values { task.cancel() }
+        for task in pending.values { await task.value }
+        for id in pending.keys where draftWrites.tokens[id] == tokens[id] {
+            draftWrites.tasks.removeValue(forKey: id); draftWrites.tokens.removeValue(forKey: id)
+        }
         let retained = displays.values.filter { !isEphemeral($0.id) }
         guard !retained.isEmpty else { return }
         guard let store else { throw StoreError.unavailable }
@@ -159,7 +170,7 @@ extension WorkspaceModel {
                 // writing it erased the draft that is on disk.
                 continue
             }
-            if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id) }
+            if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion) }
             if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: view.id) }
         }
     }
@@ -223,7 +234,7 @@ extension WorkspaceModel {
                 // image conversions wait behind it; typing before it began
                 // was included above. Quit awaits this task as well.
                 view.recoveringDraft = true
-                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged)
+                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged, draftVersion: view.draftVersion)
                 if let merged {
                     view.draft = merged.text; view.attachments = merged.attachments ?? []; view.skills = merged.skills ?? []; view.directCommand = false
                     view.submissionReviews = merged.submissionReviews ?? []

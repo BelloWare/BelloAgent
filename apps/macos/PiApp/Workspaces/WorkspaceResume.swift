@@ -203,6 +203,7 @@ extension WorkspaceModel {
     /// when the chat is next used, and a paused chat shows Resume.
     func pauseRunsForUpdate(settleTimeout: TimeInterval = 15) async throws {
         guard !isShutDown else { throw CancellationError() }
+        guard attachmentImports == 0 else { throw HostError.failure("An image is still being added. Try the update again once it finishes.") }
         // No new send, Resume or command starts meanwhile; one already under
         // way (a send, a Retry or a compaction awaiting credentials, its
         // helper or its session) gets there first, so its run is paused with
@@ -216,7 +217,7 @@ extension WorkspaceModel {
         // model answers, and ends with its helper like any run.
         let readers = { [unowned self] (id: String) -> Bool in record(id).map { !$0.isUtilityChat } ?? true }
         func underWay() -> Bool {
-            if !hostStarts.isEmpty { return true }
+            if !hostStarts.isEmpty || connectionProbes > 0 { return true }
             if displays.values.contains(where: { ($0.loading || $0.resuming) && readers($0.id) }) { return true }
             // Any session being opened, a background request's too: once
             // open it would start a helper the pause no longer stops.

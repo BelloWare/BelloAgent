@@ -4,6 +4,13 @@ import Foundation
 // the bookkeeping that keeps two callers from starting either twice.
 
 extension WorkspaceModel {
+    /// Runtime publication belongs to the connection that acknowledged it,
+    /// even if the same supervisor has already started a replacement helper.
+    func requireHost(_ host: HostSupervisor, connection: UUID?, workspaceID: String) throws {
+        guard !isShutDown, let connection, host.isReady, host.connectionID == connection,
+              hosts[workspaceID] === host else { throw HostError.failure("The project host changed while opening this chat. Open it again to continue.") }
+    }
+
     func host(for workspace: WorkspaceRecord) async throws -> HostSupervisor {
         try Task.checkCancellation()
         guard !isShutDown else { throw CancellationError() }
@@ -264,7 +271,9 @@ extension WorkspaceModel {
             _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
         if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
+            let connection = host.connectionID
             if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
+            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
             idleTasks[item.workspaceID]?.cancel(); accepted = true; return host
         }
         if isEphemeral(item.id) { throw HostError.failure("This unkept side lost its host. Open a new side from the parent; nothing was replayed.") }
@@ -286,7 +295,7 @@ extension WorkspaceModel {
         if automaticContext { try requireAutomaticContext(item.id) }
         let key = credential["apiKey"]?.string ?? ""
         if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") }
-        let host = try await host(for: workspace)
+        let host = try await host(for: workspace), connection = host.connectionID
         defer { if automaticContext { scheduleIdle(workspaceID: item.workspaceID, host: host) } }
         try Task.checkCancellation()
         guard !isShutDown else { throw CancellationError() }
@@ -313,15 +322,19 @@ extension WorkspaceModel {
             if let path = item.path { params["path"] = .string(path) }
             // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.
+            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
             if let pending = sessionOpenings[item.id] {
                 try await pending.task.value
             } else if !opened.contains(item.id) {
                 let token = UUID()
                 let task = Task { [self] in
                     try Task.checkCancellation()
+                    try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                     try await withConnectionOpen(item, lease: lease, host: host) {
                         try await reconcileJournal(item.id, host: host, profile: profile)
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         let initial = try await host.request("session.open", sessionID: item.id, params: params)
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         // A prior open may have created this runtime before
                         // capture/path setup failed. session.open then returns
                         // that same runtime without applying its new arguments.
@@ -338,18 +351,22 @@ extension WorkspaceModel {
                             // storage failure, even though the in-memory path is known.
                             try await store.put(chats[index], kind: "chat", id: item.id)
                         }
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         if !item.isSubagent, initial.object?["subagentsRevision"] != nil { try await reconcileCapturedBudget(item, host: host) }
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
                         observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeCompaction(initial.object ?? [:])
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
                         let preference = try await capturePreference(sessionID: item.id)
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         // Managed readers inherit their owner's capture policy;
                         // opening one must never issue a child policy change.
                         if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
                         // Recovery may have unloaded this reader after its open
                         // reply, while path/capture persistence yielded above.
                         try Task.checkCancellation()
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         opened.insert(item.id)
                         // Recovery may have corrected the cost after the open
                         // response. Read just the authoritative numeric state.
@@ -357,6 +374,7 @@ extension WorkspaceModel {
                         // Settings or this chat's override may have changed
                         // while its seed or opening acknowledgement was read.
                         if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
                         displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
@@ -369,6 +387,7 @@ extension WorkspaceModel {
             }
         }
         try requireConnection(lease)
+        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
         accepted = true
         return host
     }

@@ -186,8 +186,8 @@ extension WorkspaceModel {
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
-        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
-        let host = try await open(parent); host.isBusy = true
+        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id, draftVersion: view.draftVersion)
+        let host = try await open(parent), connection = host.connectionID; host.isBusy = true
         let result: [String: WireValue]
         var written = false
         do {
@@ -211,18 +211,23 @@ extension WorkspaceModel {
             if !written {
                 try? await store.remove(kind: "side-keep", id: id)
                 try? await store.remove(kind: "draft", id: id)
+                view.draftVersion = DraftVersion()
             }
             throw error
         }
         let preference = try await capturePreference(sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         _ = try await host.request("debug.mode", sessionID: id, params: ["mode": .string(preference.mode)])
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         view.captureMode = preference.mode
         let initial = try await host.request("session.status", sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
         if sides[parentID]?.id == id { sides[parentID]?.boundary = result["side"]?.object ?? [:] }
-        opened.insert(id); view.captureAvailable = true
         try await reconcileSessionProfile(saved, host: host)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
+        opened.insert(id); view.captureAvailable = true
         if selectedID == parentID, sides[parentID]?.id == id { focusedSessionID = id }
         updateHostActivity(workspaceID: info.workspaceID); refresh(id)
     }
@@ -290,13 +295,15 @@ extension WorkspaceModel {
             sideDraftTransfers[info.id] = (token, Task { for await _ in done {} })
             defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
             do {
-                let saved = try await store.get(DraftRecord.self, kind: "draft", id: info.parentID) ?? DraftRecord(id: info.parentID, text: "")
+                let version = try await store.draftVersion(id: info.parentID)
+                let saved = version.snapshot.draft ?? DraftRecord(id: info.parentID, text: "")
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // The parent's draft may have loaded meanwhile: it takes the
                 // draft itself, and the saved one follows from it.
                 if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
-                let merged = saved.receiving(moving)
-                try await store.put(merged, kind: "draft", id: info.parentID)
+                let merged = saved.receiving(moving), revision = version.snapshot.revision
+                try await store.put(merged, kind: "draft", id: info.parentID, draftVersion: version)
+                if let parent = displays[info.parentID], parent.draftVersion.snapshot.revision == revision { parent.draftVersion = version }
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // Or loaded the copy from before this write: given the draft
                 // too, unless what it loaded already holds all of it.
@@ -415,6 +422,7 @@ extension WorkspaceModel {
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
                 guard current() else { return }
                 if !view.selectionMetadataLoaded {
+                    if let version = metadata?.draftVersion { view.draftVersion = version }
                     if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
                        view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
                     if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
@@ -521,9 +529,9 @@ extension WorkspaceModel {
         }
         try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
-        let draft: DraftRecord
-        if let view { draft = view.savedDraft }
-        else { draft = try await store.get(DraftRecord.self, kind: "draft", id: id) ?? DraftRecord(id: id, text: "") }
+        let draft: DraftRecord, version: DraftVersion
+        if let view { draft = view.savedDraft; version = view.draftVersion }
+        else { version = try await store.draftVersion(id: id); draft = version.snapshot.draft ?? DraftRecord(id: id, text: "") }
         var retained = intent.chat
         // The file as the helper names it, which is how every snapshot will
         // name it. The app's own spelling of the same file (/private/tmp for
@@ -538,7 +546,7 @@ extension WorkspaceModel {
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
-        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat)
+        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat, draftVersion: version)
         await finishSideKeepRegistration(retained, expected: intent.chat)
     }
     private func finishSideKeepRegistration(_ saved: ChatRecord, expected: ChatRecord) async {
@@ -608,7 +616,7 @@ extension WorkspaceModel {
             // A side whose saved draft never loaded holds nothing of the user's
             // yet: writing its empty composer would erase the one on disk.
             if view.selectionMetadataLoaded {
-                try await store.put(view.savedDraft, kind: "draft", id: id)
+                try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion)
                 if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
             }
             view.presentation.cancel()
@@ -650,7 +658,7 @@ extension WorkspaceModel {
         if atMessageID != nil { fork.parentSessionID = parent.id }
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
-        let host = try await open(parent)
+        let host = try await open(parent), connection = host.connectionID
         var params: [String: WireValue] = ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]
         if let atMessageID { params["atMessageId"] = .string(atMessageID) }
         let result: [String: WireValue]
@@ -664,14 +672,20 @@ extension WorkspaceModel {
         }
         guard result["sessionId"]?.string == id else { throw HostError.failure("The fork identity changed. Its recovery intent was preserved.") }
         try await registerKeptSide(id: id, path: result["path"]?.string)
-        let view = SessionDisplay(id: id); displays[id] = view; opened.insert(id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        let view = SessionDisplay(id: id); displays[id] = view
         let preference = try await capturePreference(sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
         _ = try await host.request("debug.mode", sessionID: id, params: ["mode": .string(preference.mode)])
-        view.captureMode = preference.mode; view.captureAvailable = true
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        view.captureMode = preference.mode
         let initial = try await host.request("session.status", sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
         try await reconcileSessionProfile(fork, host: host)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        opened.insert(id); view.captureAvailable = true
         refresh(id)
         return fork
     }

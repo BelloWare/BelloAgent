@@ -688,3 +688,282 @@ Per-class final counts:
 | `WorkspaceTests` | 17 | 0 | 0 |
 
 Final checks: every mutation source matches its corrected snapshot; `xcodegen generate --quiet` reproduces the project byte-for-byte; `git diff --check` passes. No clone folders remained. Automatic result bundles were removed from this build root and text logs were retained. No assigned finding, observed nearby instance or test failure remains unresolved. Lead review, merge and the full merged gate remain outside this branch.
+
+## Round 3 review and cross-cutting hunt
+
+Continued from `49271c71` on `dev/a130-workspace`; no merge or fast-forward.
+All new evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round3`.
+The app/helper fixtures use generated data, memory vaults and loopback endpoints. No installed app,
+real preferences, chats, credentials, Keychain, live capture or paid provider was used.
+
+### Admitted clipboard imports during update pausing — confirmed and fixed
+
+`pauseRunsForUpdate` now refuses before setting `installPreparing` while an image import
+is admitted. This lets the existing clipboard-conversion ticket hand its generated file to
+inspection. The existing update failure flow offers a retry; no extra prompt was added.
+The ordinary update barrier and Quit already refuse imports, and new imports remain blocked
+once a barrier is acquired.
+
+Regression: `ImportLifecycleTests.testPauseForUpdatePreservesAnAdmittedClipboardImport`
+holds an admitted conversion across pause preparation, then performs NativeComposer's
+file-inspection handoff and checks the saved attachment. `first-boundaries.log` failed:
+
+```text
+XCTAssertTrue failed - Pause must refuse before closing admission on an accepted clipboard conversion
+XCTAssertEqual failed: ("[]") is not equal to ("[...generated PNG...]")
+```
+
+Mutation: remove the import guard; `mutation-boundaries-runtime.log` fails the same test,
+including its persisted-attachment assertion. The sweep also rechecked direct-file imports,
+shutdown admission and the Quit confirmation recheck through `ImportLifecycleTests` and
+`WindowLifecycleTests`.
+
+### WIRE-CONTRACT-4 — confirmed and fixed
+
+The picker and turn-parameter validation now use the helper's existing 200 UTF-8 byte limit.
+Both remembered-default creation and application normalize aliases, so legacy oversized
+choices cannot become a new chat's accepted default. The helper's validation was already
+correct and is unchanged.
+
+Regressions in `ModelSwitchTests` cover 199, 200, 201 and 210 UTF-8 bytes, persisted chat/default
+records, and a decoded legacy default. Failing-first evidence is in `first-boundaries.log`
+and `first-defaults-and-fixtures.log`: an oversized alias was accepted, saved and copied
+into defaults instead of being refused (`XCTAssertNotNil` / `XCTAssertNil` / persisted-model
+assertions failed).
+
+Nearby instance, separately confirmed: `WorkspaceEditing.editTurnParams` also counted characters
+and admitted control characters. `MessageDetailTests.testEditModelOverrideUsesTheSameUTF8AndPrintableLimit`
+failed for a 201-byte alias and a DEL character in `first-sweep.log`. It now uses the same
+normalizer. Mutation: restore character counting; all three model regression tests fail
+in `mutation-boundaries-runtime.log`.
+
+### PERSISTENCE-COMPAT-1 — confirmed and fixed
+
+Each loaded composer carries the draft and SQLite revision it read. Versioned saves compare
+that revision inside `BEGIN IMMEDIATE`, then advance the composer's shared version only after
+commit. Concurrent local debounce/submission/flush operations share that version; independent
+instances do not. Unchanged drafts, including legacy nil/empty fields and edited drafts,
+perform no write. A conflicting edit stays in its composer, the other instance's saved copy
+stays on disk, and the existing failure banner/failed quit or update flush reports the conflict.
+This conservative policy does not merge different writers' text or silently select a winner.
+
+`DraftConcurrencyTests` uses two independent models/stores sharing one generated database.
+It covers both a missing initial draft and an existing empty draft, conflicting debounce and
+flush saves, concurrent writers, legacy edited drafts and transaction rollback. Failing-first
+`first-drafts.log` showed:
+
+```text
+XCTAssertEqual failed: ("Optional("")") is not equal to ("Optional("Saved by A")")
+failed - A conflicting draft must not silently replace another instance's text
+XCTAssertEqual failed: ("Optional("Still owned by B")") is not equal to ("Optional("Saved by A")")
+```
+
+Nearby instances use the same versioned write: pending-chat materialization, edit submission,
+submission/recovery transactions, returned-input review markers, side publication/registration,
+side closing, and transfers to an unloaded parent's draft. A transfer preserves its side input
+when the parent changed. Existing local typing revision guards remain in effect. A transaction
+rollback never advances a version. Legacy edited-draft nil/false normalization was caught and
+corrected by `first-sweep.log` before final validation.
+
+The adversarial review caught a required ordering detail in the new unchanged check: cancellation
+cannot withdraw a draft write already admitted to the store. Both a flush and a newer debounce
+now await earlier admitted writes before comparing their shared committed version. They retain
+newer task tokens rather than deleting another write's entry. The two held-write regressions
+failed first in `first-draft-settlement.log` with `Older queued write` persisted instead of the
+composer's undo back to an empty draft. The corrected draft/recovery/bookkeeping/durability batch
+passed 39 tests in `fixed-draft-settlement.log`. Removing the waits fails both tests in
+`mutation-draft-settlement.log`; the final affected-class run follows restoration.
+
+Mutation evidence: disabling the atomic revision comparison fails the conflict and concurrent-writer
+tests (`mutation-draft-cas.log`); disabling the unchanged check fails both unchanged-stale-instance
+and legacy-edit tests (`mutation-draft-unchanged.log`). All mutation sources were restored.
+
+The first broader run (`focused-state.log`, 236 tests) found 19 assertions across ten tests whose
+fixtures directly seeded/changed a draft while marking its display loaded, without adopting its
+revision. The fixtures now use the same version for simulated local writes or load the seeded
+revision. Assertions and limits were retained. Recovery, bookkeeping and durability passed in
+`first-defaults-and-fixtures.log`; the full affected classes are rerun below.
+
+Nearby issue left outside this draft-content fix: the anchor write at `apps/macos/PiApp/Workspaces/WorkspaceDrafts.swift:164`
+still has last-writer-wins semantics. A second instance's loaded reading position can supersede
+another instance's newer reading position when it quits. It does not overwrite draft content.
+
+### CONCURRENCY-LIFECYCLE-3 — confirmed and fixed
+
+Ordinary opens, side publication and forks capture the acknowledging helper connection and
+check readiness, supervisor identity and connection identity after suspension and before
+runtime publication. Fork registration remains durable even if the helper dies; the next
+open must issue `session.open`. Capture setup/status and profile reconciliation cannot publish
+old runtime state on a replacement connection. The cached-open return also rechecks its helper
+after asynchronous credential reconciliation.
+
+`WorkspaceRaceTests` reproduces the ordinary final-reply/loss callback ordering and holds fork
+registration after its successful reply. `first-runtime.log` failed both cache-empty assertions
+and both required-reopen counts. The fork fixture also reconnects the same supervisor before
+releasing registration, and a side fixture delivers loss immediately after its final status reply.
+Both fail against the original production paths in `mutation-boundaries-runtime.log`.
+
+Nearby instance, separately confirmed: `withConnectionOpen`'s invalid-profile cleanup used only
+`isReady`, so it could stop and close the replacement helper's runtime. `first-sweep.log` showed
+`2` cleanup commands where `0` were expected and the replacement cache entry removed. Cleanup
+now checks its captured connection before each command and cache removal. Restoring the old
+opening/publication/cleanup paths fails all five runtime race tests in the mutation run.
+
+### Lead decision — pending onboarding tests count as active work
+
+A counter spans onboarding probe admission, configuration/credential reads, private helper work
+and cleanup, and decrements on success, failure or cancellation. `hasActiveWork` includes it;
+Pause and Install waits for it with the existing preparation deadline. Shutdown/update barriers
+refuse new probes. Existing work/quit/update questions are reused; no prompt was added.
+
+`WorkspaceConcurrencyTests.testOnboardingProbeCountsAsActiveWhileCredentialsArePending` holds a
+memory-vault read. Failing-first `first-boundaries.log` showed active-work false, update-barrier
+acquisition true and pause returning while the probe remained admitted. The test cancels and
+releases the read before any provider call. A second test checks admission after update/shutdown.
+Removing the work accounting/wait and admission guards fails both tests in
+`mutation-boundaries-runtime.log` (only the generated loopback endpoint is reachable).
+
+### Adversarial review
+
+- Import admission: only a previously admitted import now refuses Pause and Install; zero imports
+  take the original path. The guard runs before any await or barrier mutation, so conversion can
+  finish. Already acquired barriers continue blocking new imports.
+- Probe accounting: pending credential reads, helper requests and cleanup now count as work; all
+  exits decrement. A counter handles overlapping probes. Existing deadlines bound update waiting;
+  no helper is silently replayed and no new confirmation appears.
+- Model normalization: ASCII aliases retain the same limit; multibyte aliases are measured exactly
+  as the helper measures them. Valid boundary aliases remain unchanged. Legacy invalid defaults
+  fall back through the existing connection-default behavior rather than being propagated.
+- Draft comparisons: unchanged loaded snapshots skip writing even if another instance advanced
+  the row. Actual local edits require the exact observed revision, including missing/deleted rows.
+  Only successful commits advance the shared version. Older local debounces still lose to newer
+  reserved revisions; external conflicts use a distinct error and are not swallowed as old typing.
+- Draft write settlement: cancelled work already admitted to the store is awaited before a newer
+  comparison. Newer typing owns a different task token and is not removed by an older flush.
+  Cancellation still prevents a waiting debounce from admitting a new write.
+- Draft transactions: failed submission/recovery/side registration leaves both row and version at
+  their prior state. Reviews, attachments, skills, displaced edits and queued edits remain part of
+  the persisted draft. Unloaded/subagent displays retain their previous flush exclusions.
+- Helper identity: a dead, replaced or detached supervisor now refuses publication/return; a live
+  unchanged connection follows the original route. Durable fork/side metadata is retained. Late
+  cleanup never sends Stop/Close to a replacement helper or removes its runtime cache entry.
+
+### Final Round 3 validation
+
+Final native coverage: **710 distinct tests passed, 0 failed, 0 skipped** (latest run of each class).
+The first UI batch ran 237 tests: 236 passed and one failed with four assertions. Its refresh-review fixture
+seeded a loaded draft without its version, as the earlier recovery fixtures did. The simulated local
+submission now carries that version; no assertion was weakened. The entire `WorkspaceRefreshLifecycleTests`
+class passed **32/32** in `final-refresh-recheck.log`. All other native final batches passed on their first run.
+
+Full helper suite: **1027 passed, 0 failed, 7 skipped** across the normal and isolated streaming-cost lanes.
+The seven expected opt-in skips are the shared fork-fixture writer, large-fork measurement, rapid-search
+supersession measurement and four retained/long-session memory/open/slim measurements. No helper source changed.
+The full suite was nevertheless run for the app-side wire-contract change.
+
+Release-helper Python suites: **wire 36/36, concurrent 4/4, acceptance 3/3**.
+Four mutation runs detected **17 failing regression tests**; all mutated sources were restored before final validation.
+
+The shared full-lane lock covered the UI/focus batch, each serial class by itself, gallery capture and
+the isolated helper timing tests. The refresh recheck has no windows or focus changes and ran as a focused model class.
+All builds used this workstream's existing build root; helper unit-test artifacts use its `swift-verify` subdirectory.
+
+Gallery: `TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY` was set explicitly. All **12** PNGs were opened and inspected:
+model validation, draft conflict and import/update messages in light/dark at 760 pt and the 300 pt stress width.
+Text and controls fit at the normal width; the stress width retains the existing three-line ellipsis for longer
+messages, with Copy and Dismiss visible and unobstructed. No layout or control behavior changed.
+
+Exact final commands (full text also retained in the matching `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/ImportLifecycleTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceConcurrencyTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/ComposerImportSubmissionTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/SideBudgetIntegrationTests -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/ForkFromReplyTests -only-testing:PiAppTests/MessageDetailTests -only-testing:PiAppTests/ConfigurationVaultTests -only-testing:PiAppTests/CostLimitOpeningTests -only-testing:PiAppTests/CostLimitTests -only-testing:PiAppTests/ComposerAttachmentDestinationTests -only-testing:PiAppTests/QueuedAttachmentLimitTests -only-testing:PiAppTests/PastedAttachmentTests -only-testing:PiAppTests/CatalogSourceTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ModelSwitchTests -only-testing:PiAppTests/CatalogModelPickerTests -only-testing:PiAppTests/OnboardingTests -only-testing:PiAppTests/SettingsSaveTests -only-testing:PiAppTests/ConnectionSettingsFlowTests -only-testing:PiAppTests/KeychainSettingsTimeoutTests -only-testing:PiAppTests/WorkspaceTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceFollowupTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/MessageVersionTranscriptTests -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/ContextReadingTests -only-testing:PiAppTests/AutomaticContextTests -only-testing:PiAppTests/SkillRefreshTests -only-testing:PiAppTests/UpdatePauseTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round3/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests
+swift build --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --build-tests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --skip-build --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --skip-build --filter StreamingCostTests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+```
+
+Per native class (final pass / fail / skip counts):
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `AutomaticContextTests` | 11 | 0 | 0 |
+| `CatalogModelPickerTests` | 5 | 0 | 0 |
+| `CatalogSourceTests` | 9 | 0 | 0 |
+| `ComposerAttachmentDestinationTests` | 2 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ConfigurationVaultTests` | 14 | 0 | 0 |
+| `ConnectionSettingsFlowTests` | 6 | 0 | 0 |
+| `ContextReadingTests` | 3 | 0 | 0 |
+| `ConversationFamilyTests` | 22 | 0 | 0 |
+| `ConversationPaneTests` | 81 | 0 | 0 |
+| `CostLimitOpeningTests` | 1 | 0 | 0 |
+| `CostLimitTests` | 13 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 7 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `ForkFromReplyTests` | 5 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoricalEditingTests` | 5 | 0 | 0 |
+| `ImportLifecycleTests` | 4 | 0 | 0 |
+| `KeychainSettingsTimeoutTests` | 13 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MessageDetailTests` | 10 | 0 | 0 |
+| `MessageVersionTranscriptTests` | 8 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `ModelSwitchTests` | 24 | 0 | 0 |
+| `OnboardingTests` | 20 | 0 | 0 |
+| `PastedAttachmentTests` | 8 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueueEditInteractionTests` | 17 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SettingsSaveTests` | 15 | 0 | 0 |
+| `SideBudgetIntegrationTests` | 18 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `SkillRefreshTests` | 15 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentOpeningTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `UpdatePauseTests` | 7 | 0 | 0 |
+| `WindowLifecycleTests` | 4 | 0 | 0 |
+| `WorkspaceConcurrencyTests` | 10 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceFollowupTests` | 9 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 38 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+| `WorkspaceValidationGalleryTests` | 1 | 0 | 0 |
+
+No assigned item or test failure remains unresolved. The cross-instance scroll-anchor issue above remains
+outside scope. Permission/capture/tool/vault/data boundaries and the helper wire schema are unchanged.
+Lead review, merging and the merged full gate remain the lead's responsibility.
+
+
+The isolated timing checks measured delta accumulation at 5.54 µs/delta (later 5.88 µs),
+with -25,184 bytes of measured heap growth; streamed-page deltas used 0.548 ms CPU/delta
+and a 2,386-byte maximum frame. These are unchanged-helper regression measurements,
+not a claimed performance improvement from this patch. Full measurements are in `helper-cost.log`.
+
+Final housekeeping: `git diff --check` passed; `xcodegen generate --quiet` reproduced the
+project byte-for-byte. No clone folders remained, the automatic native result bundle was
+removed, and text logs were retained. Every acquired full-lane lock was released.

@@ -1160,7 +1160,7 @@ extension WorkspaceRefreshLifecycleTests {
         f.view.historyState = .ready; f.view.presentation.identity = ("runtime", "root"); f.view.selectionMetadataLoaded = true
         let intent = CommandIntent(id: "command", sessionID: f.chat.id, turnID: "turn", text: "Returned", state: "intent")
         f.view.draft = "Returned\n\nNew typing"; f.view.recovered = [intent]; f.view.uncertain = true
-        try await store.recordSubmission(intent, draft: f.view.savedDraft)
+        try await store.recordSubmission(intent, draft: f.view.savedDraft, draftVersion: f.view.draftVersion)
         try RecoveredDraftTests.sql("CREATE TRIGGER refuse_review BEFORE UPDATE ON records WHEN OLD.kind='draft' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: f.model.root)
         var snapshot = streamed(sequence: 2, answer: "Answer")
         snapshot["commands"] = .array([.object(["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("completed")])])

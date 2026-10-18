@@ -93,7 +93,7 @@ extension WorkspaceModel {
         }
         pendingChatIDs.remove(id)
         if let draft = displays[id]?.savedDraft, !draft.text.isEmpty || !(draft.attachments ?? []).isEmpty {
-            try await store.put(draft, kind: "draft", id: id)
+            try await store.put(draft, kind: "draft", id: id, draftVersion: displays[id]?.draftVersion)
             PerformanceProbe.shared.count("pendingChatDraftWrites")
         }
     }

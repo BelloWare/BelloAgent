@@ -39,25 +39,30 @@ extension WorkspaceModel {
     func withConnectionOpen(_ item: ChatRecord, lease: ConnectionLease, host: HostSupervisor,
                             operation: @MainActor () async throws -> Void) async throws {
         try requireConnection(lease)
+        let connection = host.connectionID
+        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
         do {
             try await operation()
+            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
             try requireConnection(lease)
         } catch {
             do { try requireConnection(lease) } catch let gone {
-                if host.isReady {
+                if host.isReady, host.connectionID == connection, hosts[item.workspaceID] === host {
                     opened.insert(item.id)
                     do {
                         _ = try await host.request("turn.stop", sessionID: item.id)
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         _ = try await host.request("session.close", sessionID: item.id)
+                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
                         helperSessionDidUnload(item.id)
                     } catch HostError.rejected(let code, _) where code == "session_missing" {
-                        helperSessionDidUnload(item.id)
+                        if host.connectionID == connection, hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
                     } catch {
                         // A live busy runtime remains tracked; host loss has
                         // already cleared it and must not be undone here.
                         if !host.isReady, hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
                     }
-                } else if hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
+                } else if !host.isReady, hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
                 throw gone
             }
             throw error

@@ -52,6 +52,30 @@ import AppKit
         model.releaseUpdateBarrier()
     }
 
+    func testPauseForUpdatePreservesAnAdmittedClipboardImport() async throws {
+        let (model, view, image) = try fixture()
+        // Clipboard conversion owns this ticket before it hands the file to
+        // attachImageFiles for inspection, just as NativeComposer does.
+        let clipboard = model.beginImageImport(sessionID: view.id)
+        view.loading = true
+        var finished = false, refused = false
+        let pause = Task {
+            defer { finished = true }
+            do { try await model.pauseRunsForUpdate() } catch { refused = true }
+        }
+        try await eventually("pause entered or refused") { model.installPreparing || finished }
+        XCTAssertTrue(clipboard.isCurrent())
+        model.attachImageFiles([image], sessionID: view.id); clipboard.finish()
+        view.loading = false
+        await pause.value
+        try await eventually("clipboard inspection finished") { model.attachmentImports == 0 }
+        XCTAssertTrue(refused, "Pause must refuse before closing admission on an accepted clipboard conversion")
+        XCTAssertEqual(view.attachments.map(\.path), [image.path])
+        try await model.flushDrafts()
+        let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: view.id)
+        XCTAssertEqual(saved?.attachments?.map(\.path), [image.path])
+    }
+
     func testShutdownBarrierBlocksNewFileAndClipboardImports() async throws {
         let (model, view, image) = try fixture()
         model.installPreparing = true

@@ -4,6 +4,13 @@
 
 ## 0.1.130
 
+- [x] Update pausing preserves admitted clipboard images by refusing until imports finish. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] WIRE-CONTRACT-4: Model picks, saved defaults and edit overrides follow the helper's 200 UTF-8 byte limit. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] PERSISTENCE-COMPAT-1: Unchanged drafts do not overwrite another instance's saves; conflicting edits keep both copies and refuse the flush. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] CONCURRENCY-LIFECYCLE-3: Late opening/fork/side completions cannot restore a dead helper's runtime cache. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Late opening cleanup cannot stop or close a replacement helper's chat. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Onboarding connection tests count as active work; update pausing waits for them and barriers refuse new probes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

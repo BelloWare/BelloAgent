@@ -28,6 +28,93 @@ import XCTest
         return (model, view, wire)
     }
 
+    private func bindLossHandling(_ model: WorkspaceModel, _ wire: WorkspaceRaceHost) async throws {
+        model.boundHostConnections.removeValue(forKey: "w")
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+    }
+
+    func testOldOpeningCleanupCannotCloseTheReplacementHelpersRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let chat = try XCTUnwrap(model.record(view.id)), lease = try model.connectionLease(for: chat)
+        let gate = AsyncGate(); var waiting = false
+        let old = Task { try await model.withConnectionOpen(chat, lease: lease, host: wire.host) { waiting = true; await gate.wait() } }
+        try await eventually("old opening held") { waiting }
+        try await wire.host.shutdownAndWait()
+        model.profileDeletionGenerations[chat.profileID, default: 0] += 1
+        _ = try await model.open(chat)
+        let before = wire.frames.filter { $0["method"]?.string == "turn.stop" || $0["method"]?.string == "session.close" }.count
+        await gate.open(); _ = try? await old.value
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.stop" || $0["method"]?.string == "session.close" }.count, before)
+        XCTAssertTrue(model.opened.contains(chat.id), "Cleanup of an old lease must not unload the replacement runtime")
+    }
+
+    func testOpenReplyFollowedByHelperLossCannotRepublishItsRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        wire.heldMethod = "debug.mode"
+        let opening = Task { try await model.open(try XCTUnwrap(model.record(view.id))) }
+        try await eventually("capture reply held") { wire.held != nil }
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.release()
+        wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        _ = try? await opening.value
+        XCTAssertFalse(model.opened.contains(view.id), "A reply resumed after loss must not restore the dead runtime")
+        try await wire.host.shutdownAndWait()
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+        let before = wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == view.id }.count
+        _ = try await model.open(try XCTUnwrap(model.record(view.id)))
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == view.id }.count, before + 1)
+    }
+
+    func testForkRegistrationAfterHelperLossKeepsTheForkButReopensItsRuntime() async throws { try await forkRegistrationAfterLoss(reconnectEarly: false) }
+    func testForkRegistrationCannotPublishOnAReplacementConnection() async throws { try await forkRegistrationAfterLoss(reconnectEarly: true) }
+
+    private func forkRegistrationAfterLoss(reconnectEarly: Bool) async throws {
+        let (model, parent, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        wire.heldMethod = "session.fork"
+        let creation = Task { try await model.createFork(parentID: parent.id) }
+        try await eventually("fork reply held") { wire.held != nil }
+        let id = try XCTUnwrap(wire.held?["params"]?.object?["forkSessionId"]?.string)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        defer { released.signal() }
+        let blocker = Task { try await model.store?.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "registration") }
+        try await eventually("store held before registration") { entered.wait(timeout: .now()) == .success }
+        wire.release()
+        try await wire.host.shutdownAndWait()
+        if reconnectEarly {
+            try await wire.host.connect(cwd: model.root, state: model.root.appendingPathComponent("replacement-host"))
+            _ = try await wire.host.request("workspace.open")
+            model.boundHostConnections["w"] = wire.host.connectionID
+        }
+        released.signal(); try await blocker.value
+        _ = try? await creation.value
+        let fork = try XCTUnwrap(model.record(id))
+        XCTAssertFalse(model.opened.contains(id), "Durable registration cannot publish a dead helper session")
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+        _ = try await model.open(fork)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == id }.count, 1)
+    }
+
+    func testSidePublicationReplyFollowedByLossCannotRepublishItsRuntime() async throws {
+        let (model, parent, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        wire.heldMethod = "session.status"; wire.heldSessionID = side.id
+        let publication = Task { try await model.publishPendingSide(side, view: view) }
+        try await eventually("side status reply held") { wire.held != nil }
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.release(); wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        _ = try? await publication.value
+        let saved = try XCTUnwrap(model.record(side.id))
+        XCTAssertFalse(model.opened.contains(side.id))
+        try await wire.host.shutdownAndWait()
+        _ = try await model.open(saved)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == side.id }.count, 1)
+    }
+
     func testOpeningReconcilesReplacementCredentialsBeforeSendingAgain() async throws {
         let (model, view, wire) = try await fixture()
         wire.heldMethod = "session.open"
