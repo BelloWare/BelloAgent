@@ -600,12 +600,18 @@ actor HistoryReader {
     }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
-                       agentPresentation: AgentTranscriptPresentation? = nil) throws -> ContentSearch {
+                       agentPresentation: AgentTranscriptPresentation? = nil) async throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file), branch: HistoryOffsetIndex, prefix: SHA256.Digest?
         var published = false
-        defer { if !published { indexes.removeValue(forKey: path); searchDigests.removeValue(forKey: path) } }
+        defer {
+            if !published, !Task.isCancelled {
+                // A page or newer query may have replaced the cached snapshot.
+                if indexes[path]?.stamp == identity { indexes.removeValue(forKey: path) }
+                if searchDigests[path]?.stamp == identity { searchDigests.removeValue(forKey: path) }
+            }
+        }
         if renderedAgentProse {
             // A running helper may append throughout this read. Index only the
             // bytes captured at entry and ignore an unfinished last record.
@@ -650,6 +656,9 @@ actor HistoryReader {
         var run = 32
         let needle = ConversationContent.asciiNeedle(query)
         while cursor < min(limit, branch.count) && hits.count < 100 {
+            // The file and immutable branch are this search's snapshot. Let
+            // a reader page between bounded runs instead of waiting for Find.
+            await Task.yield()
             try Task.checkCancellation()
             // A run holds source bytes and their decoded/projected forms,
             // so it is bounded by bytes as well as by count.

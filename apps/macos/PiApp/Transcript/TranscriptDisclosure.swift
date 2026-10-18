@@ -28,11 +28,12 @@ enum ToolOccurrence {
         /// `source` is a reply read as its markdown source rather than
         /// rendered: open means raw. It is keyed by the reply, so every part
         /// of its text switches together.
-        enum Kind: Hashable { case work, tool, reasoning, compaction, response, responseLine, turnFold, source }
+        enum Kind: Hashable { case work, tool, toolLines, reasoning, compaction, response, responseLine, turnFold, source }
         let kind: Kind
         let id: String
         static func work(_ id: String) -> Part { Part(kind: .work, id: id) }
         static func tool(_ id: String) -> Part { Part(kind: .tool, id: id) }
+        static func toolLines(_ id: String) -> Part { Part(kind: .toolLines, id: id) }
         static func reasoning(_ id: String) -> Part { Part(kind: .reasoning, id: id) }
         static func compaction(_ id: String) -> Part { Part(kind: .compaction, id: id) }
         static func response(_ id: String) -> Part { Part(kind: .response, id: id) }
@@ -85,6 +86,8 @@ enum ToolOccurrence {
 struct TranscriptRowDisclosure: Equatable {
     var work = false
     var openTools: Set<String> = []
+    /// Inner read/diff expansion survives releasing its native card.
+    var expandedTools: Set<String> = []
     var openReasoning: Set<String> = []
     var compaction = false
     /// The reader folded everything inside this row's response: whatever is
@@ -138,7 +141,11 @@ struct TranscriptRowDisclosure: Equatable {
                 value.responseFolded = value.responseLine || store.isOpen(.response(message.id))
             }
             value.compaction = store.isOpen(.compaction(message.id))
-            for tool in message.tools ?? [] where store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
+            for tool in message.tools ?? [] {
+                if store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
+                let key = ToolOccurrence.key(message.id, tool.id)
+                if store.isOpen(.toolLines(key)) { value.expandedTools.insert(key) }
+            }
             if store.isOpen(.reasoning(message.id)) { value.openReasoning.insert(message.id) }
         case .block(let block):
             // `key` stays with the block for its whole life; `id` follows its
@@ -151,6 +158,8 @@ struct TranscriptRowDisclosure: Equatable {
             for reply in block.replies { for tool in reply.tools ?? [] {
                 let id = block.presentation == .work ? ToolOccurrence.key(reply.id,tool.id) : tool.id
                 if store.isOpen(.tool(id)) { value.openTools.insert(id) }
+                let key = ToolOccurrence.key(reply.id, tool.id)
+                if store.isOpen(.toolLines(key)) { value.expandedTools.insert(key) }
             } }
             for reply in block.replies where store.isOpen(.reasoning(reply.id)) { value.openReasoning.insert(reply.id) }
             // `replies` already holds `message`, so its cards were read above,

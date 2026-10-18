@@ -546,7 +546,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             if TranscriptLayoutClock.recording { TranscriptLayoutClock.disclosurePrunes += 1 }
             let live = Set(items.flatMap { item -> [String] in
                 switch item {
-                case .message(let message): return [message.id] + (message.tools ?? []).map(\.id)
+                case .message(let message): return [message.id] + (message.tools ?? []).flatMap { [$0.id, ToolOccurrence.key(message.id, $0.id)] }
                 case .block(let block):
                     return [block.key, block.id] + block.tools.map(\.id) + block.replies.flatMap { reply in [reply.id] + (reply.tools ?? []).flatMap { [$0.id, ToolOccurrence.key(reply.id,$0.id)] } }
                 }

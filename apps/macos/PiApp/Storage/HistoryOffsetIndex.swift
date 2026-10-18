@@ -33,7 +33,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         path = directory.appendingPathComponent(Self.filePrefix + "p\(getpid())-" + UUID().uuidString + ".sqlite")
         guard sqlite3_open(path.path, &db) == SQLITE_OK else { throw StoreError.unreadableRecord }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value); BEGIN")
+        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, n INTEGER, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value,n); BEGIN")
     }
     deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: path) }
     private func execute(_ sql: String) throws {
@@ -62,10 +62,11 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         recordCount += 1
     }
     private func replaceLinks(_ ref: HistoryOffset) throws {
+        let position = try ordinal(of: ref.id).map(String.init) ?? "NULL"
         try done(query("DELETE FROM links WHERE id=?", strings: [ref.id]))
-        for call in Set(ref.calls ?? []) { try done(query("INSERT INTO links VALUES(?,'call',?)", strings: [ref.id, call])) }
-        if let call = ref.resultCall { try done(query("INSERT INTO links VALUES(?,'result',?)", strings: [ref.id, call])) }
-        if let operation = ref.operationID { try done(query("INSERT INTO links VALUES(?,'operation',?)", strings: [ref.id, operation])) }
+        for call in Set(ref.calls ?? []) { try done(query("INSERT INTO links VALUES(?,'call',?,\(position))", strings: [ref.id, call])) }
+        if let call = ref.resultCall { try done(query("INSERT INTO links VALUES(?,'result',?,\(position))", strings: [ref.id, call])) }
+        if let operation = ref.operationID { try done(query("INSERT INTO links VALUES(?,'operation',?,\(position))", strings: [ref.id, operation])) }
     }
     func replaceMetadata(_ ref: HistoryOffset) throws {
         try done(query("UPDATE refs SET payload=?2 WHERE id=?1", strings: [ref.id], data: JSONEncoder().encode(ref)))
@@ -79,12 +80,13 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         return try JSONDecoder().decode(HistoryOffset.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0))))
     }
     /// The retained neighbours needed by the row planner, across decode-run
-    /// boundaries. All joins use the active visible branch, never abandoned rows.
+    /// boundaries. Links carry active-branch positions, so each neighbour is
+    /// an indexed range seek even when a provider reuses the same call ID.
     func related(to id: String, calls: [String], result: String?, operation: String?) throws -> [HistoryOffset] {
         guard !calls.isEmpty || result != nil || operation != nil, let position = try ordinal(of: id) else { return [] }
         var ids = Set<String>()
         func linked(_ kind: String, _ value: String, condition: String = "", order: String = "ASC") throws -> (String, Int)? {
-            let statement = try query("SELECT v.id,v.n FROM links l JOIN visible v ON v.id=l.id WHERE l.kind=? AND l.value=? \(condition) ORDER BY v.n \(order) LIMIT 1", strings: [kind, value])
+            let statement = try query("SELECT v.id,v.n FROM links v WHERE v.kind=? AND v.value=? AND v.n IS NOT NULL \(condition) ORDER BY v.n \(order) LIMIT 1", strings: [kind, value])
             defer { sqlite3_finalize(statement) }
             guard try next(statement), let text = sqlite3_column_text(statement, 0) else { return nil }
             return (String(cString: text), Int(sqlite3_column_int64(statement, 1)))
@@ -130,6 +132,9 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         if ref.type == "branch" { lineage = ref.id }
         try done(query("INSERT INTO visible VALUES(\(nextOrdinal),?,?)", strings: [ref.id, ref.role ?? ""]))
         try done(query("INSERT OR IGNORE INTO seen VALUES(?)", strings: [ref.id]))
+        if ref.calls?.isEmpty == false || ref.resultCall != nil || ref.operationID != nil {
+            try done(query("UPDATE links SET n=\(nextOrdinal) WHERE id=?", strings: [ref.id]))
+        }
         nextOrdinal += 1; count += 1
     }
     func branch(from: String?, kept: [String]) throws {
@@ -139,6 +144,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
             for id in kept { try done(query("INSERT OR IGNORE INTO kept VALUES(?)", strings: [id])) }
             try execute("DELETE FROM visible WHERE id NOT IN (SELECT id FROM kept); DROP TABLE kept")
         }
+        try execute("UPDATE links SET n=NULL WHERE n IS NOT NULL AND id NOT IN (SELECT id FROM visible)")
         count = try scalar("SELECT count(*) FROM visible")
         for id in kept where try ordinal(of: id) == nil {
             guard let ref = try ref(id), try hasSeen(id) else { throw StoreError.unreadableRecord }
@@ -147,7 +153,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     }
     func selectTimeline(_ ids: [String]) throws {
         guard Set(ids).count == ids.count else { throw StoreError.unreadableRecord }
-        try execute("DELETE FROM visible"); count = 0
+        try execute("DELETE FROM visible; UPDATE links SET n=NULL"); count = 0
         for id in ids {
             guard try hasSeen(id), let ref = try ref(id) else { throw StoreError.unreadableRecord }
             try append(ref)
@@ -165,7 +171,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     func finish() throws {
         // Compact branch holes into a dense position table once. Reads now do
         // primary-key lookups rather than OFFSET walks over a long journal.
-        try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; COMMIT")
+        try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; UPDATE links SET n=(SELECT n FROM visible WHERE visible.id=links.id); COMMIT")
         count = try scalar("SELECT count(*) FROM visible")
     }
     /// Test seam: the database's size, on disk or held.

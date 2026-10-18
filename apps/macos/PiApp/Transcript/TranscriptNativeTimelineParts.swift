@@ -19,6 +19,8 @@ import AppKit
         var cardOpen = false
         var fetched: ToolInputDocument? = nil
         var toggleCard: () -> Void = {}
+        var cardExpanded: Bool? = nil
+        var toggleCardExpanded: (() -> Void)? = nil
         var raw = false
         /// The row's way to switch the reply to its source; nil where no
         /// conversation disclosure is reachable.
@@ -84,7 +86,8 @@ import AppKit
                 return action
             }()
             action.update(tool: model.card!, open: model.cardOpen, fetched: model.fetched, environment: model.environment,
-                          toggle: model.toggleCard, openFile: model.actions.openFile, actions: model.actions)
+                          toggle: model.toggleCard, openFile: model.actions.openFile, actions: model.actions,
+                          expanded: model.cardExpanded, toggleExpanded: model.toggleCardExpanded)
         case .work:
             configureWork(row, model)
         }
@@ -242,6 +245,7 @@ import AppKit
             open: disclosure.work && !disclosure.responseFolded, toggle: { toggle(.work(block.key)) },
             card: card, cardOpen: key.map { disclosure.openTools.contains($0) && !disclosure.responseFolded } ?? false,
             fetched: key.flatMap { disclosure.toolInputs[$0] }, toggleCard: { if let key { toggle(.tool(key)) } },
+            cardExpanded: key.map { disclosure.expandedTools.contains($0) }, toggleCardExpanded: { if let key { toggle(.toolLines(key)) } },
             raw: disclosure.raw, toggleRow: toggle, fold: fold, environment: inputs.environment))
         // The words are their own element (the reply's); a work row's line is.
         setAccessibilityElement(false)

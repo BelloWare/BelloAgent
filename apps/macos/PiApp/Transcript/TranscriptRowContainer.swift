@@ -92,6 +92,7 @@ struct TranscriptRowEnvironment: Equatable {
         var width: CGFloat
         var replies: [ReplyWorkKey]
         var openTools: Set<String>
+        var expandedTools: Set<String>
         var openReasoning: Set<String>
         var inputs: [String: ToolInputDocument]
         var environment: TranscriptRowEnvironment
@@ -106,7 +107,7 @@ struct TranscriptRowEnvironment: Equatable {
                                     tools: reply.tools ?? [], accounting: showsUsage ? reply.accounting : nil)
             }
         } else { replies = [] }
-        return WorkListKey(width: width, replies: replies, openTools: disclosure.openTools,
+        return WorkListKey(width: width, replies: replies, openTools: disclosure.openTools, expandedTools: disclosure.expandedTools,
                            openReasoning: disclosure.openReasoning, inputs: disclosure.toolInputs, environment: environment)
     }
     /// How often this row has been able to reuse its work list's measured
@@ -645,7 +646,10 @@ struct TranscriptRowEnvironment: Equatable {
         updateRoot()
         measuring = false
         invalidateIntrinsicContentSize()
-        onDisclosureChanged?()
+        // More-lines keeps its existing resize path, without starting an
+        // outer fold animation merely because its state is now retained.
+        if part.kind == .toolLines { onHeightInvalidated?() }
+        else { onDisclosureChanged?() }
     }
     /// Ends a selection held in any row that draws this reply's text.
     private func releaseSelection(inReply id: String) {

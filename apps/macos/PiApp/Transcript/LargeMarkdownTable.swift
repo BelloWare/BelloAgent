@@ -94,9 +94,12 @@ enum MarkdownTablePresentation {
     }
     @objc private func selectCell() {
         let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
-        let column = table.clickedColumn
+        showCell(row: row, column: table.clickedColumn)
+    }
+    func showCell(row: Int, column: Int) {
         guard rows.indices.contains(row) else { return }
-        show(rows[row].indices.contains(column) ? rows[row][column] : rows[row].joined(separator: "\t"), placeholder: false)
+        let source = table.tableColumns.indices.contains(column) ? Int(table.tableColumns[column].identifier.rawValue) ?? -1 : -1
+        show(rows[row].indices.contains(source) ? rows[row][source] : rows[row].joined(separator: "\t"), placeholder: false)
     }
     /// The chosen cell's whole text in ink; the hint before any in the quieter ink.
     private func show(_ text: String, placeholder: Bool) {

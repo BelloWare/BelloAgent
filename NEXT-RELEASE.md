@@ -4,7 +4,7 @@
 
 ## 0.1.130
 
-- [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and list-fence comments and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Heading Copy preserves CR, CRLF and mixed source line endings. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
@@ -43,6 +43,12 @@
 - [x] Find expands fetched edit content using the actual native card model, including matches beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find retains the displayed file header on linked I/O fallback cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Fetched sub-agent task bodies keep the original visible row heading in Find. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find dependency lookups index active-branch positions, bounding reused tool-call IDs without scanning and sorting every reuse. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields between bounded scan batches so history paging can finish while a search runs. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Cancelling Find preserves the warm paging index; failed old searches do not discard a newer cached snapshot. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Read/diff card expansion belongs to the tool occurrence and survives native-host eviction without stale row heights. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Reordered full-table cells show and copy the value from the clicked column's stable identity. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 

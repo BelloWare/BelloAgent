@@ -3,6 +3,68 @@ import XCTest
 @testable import PiApp
 
 final class TranscriptBugGalleryTests: XCTestCase {
+    @MainActor func testExpandedReadRemountGallery() async throws {
+        guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(760)), ("dark", .darkAqua, 760), ("narrow", .aqua, 360)] {
+            let tool = TranscriptNativeWorkBehaviourTests.read(output: (1...100).map { "Generated line \($0)" }.joined(separator: "\n"))
+            let message = TranscriptMessage(id: "reply", role: "assistant", text: "", tools: [tool])
+            let item = try XCTUnwrap(TaskTranscriptPlan.rows([message], lifecycle: nil).first { if case .block(let block) = $0 { return block.presentation == .work }; return false })
+            let disclosure = TranscriptDisclosure()
+            if case .block(let block) = item { disclosure.setOpen(true, .work(block.key)) }
+            disclosure.setOpen(true, .tool(ToolOccurrence.key(message.id, tool.id)))
+            var environment = TranscriptRowEnvironment(); environment.colorScheme = appearance == .darkAqua ? .dark : .light
+            let row = TranscriptRowContainer(item: item, fresh: false, actions: .init(), environment: environment, disclosure: disclosure)
+            let following = TranscriptRowContainer(item: TranscriptNativePartView.wordsItem(.init(id: "next", role: "assistant", text: "Following reply, immediately after the expanded card.")), fresh: false, actions: .init(), environment: environment)
+            let canvas = TranscriptNativeRowParityTests.ParityCanvas()
+            canvas.addSubview(row); canvas.addSubview(following)
+            let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: width, height: 640)); scroll.documentView = canvas
+            let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance); window.contentView = scroll; window.makeKeyAndOrderFront(nil)
+            defer { window.contentView = nil; window.close() }
+            func draw() {
+                row.frame = CGRect(origin: .zero, size: row.measure(width: width))
+                following.frame = CGRect(origin: CGPoint(x: 0, y: row.frame.maxY), size: following.measure(width: width))
+                canvas.frame.size = CGSize(width: width, height: following.frame.maxY + 24)
+                row.layoutForViewport(); following.layoutForViewport(); window.displayIfNeeded()
+            }
+            draw()
+            XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptCardMoreLines.self, in: row).first).accessibilityPerformPress())
+            try await eventually("Expanded read validates before eviction") { draw(); return !row.needsMountedValidation }
+            window.makeFirstResponder(nil); row.releaseHost(); XCTAssertFalse(row.isHosted)
+            row.prepareToDraw(); draw()
+            XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeReadCard.self, in: row).first).expanded)
+            XCTAssertEqual(row.frame.height, row.hostedFittingHeight, accuracy: 1)
+            scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, canvas.frame.height - scroll.contentSize.height)))
+            for _ in 0..<4 { draw(); await Task.yield(); try await Task.sleep(for: .milliseconds(10)) }
+            let bitmap = try XCTUnwrap(scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds))
+            scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("expanded-read-\(name).png"))
+        }
+    }
+    @MainActor func testReorderedTableDetailsGallery() async throws {
+        guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(880)), ("dark", .darkAqua, 880), ("narrow", .aqua, 440)] {
+            let before = Set(MarkdownTableWindow.open.map(ObjectIdentifier.init))
+            MarkdownTableWindow.open(header: [AttributedString("A"), AttributedString("B")], rows: (1...41).map { [AttributedString("A\($0)"), AttributedString("B\($0)")] })
+            let window = try XCTUnwrap(MarkdownTableWindow.open.first { !before.contains(ObjectIdentifier($0)) })
+            defer { window.close() }
+            window.appearance = NSAppearance(named: appearance); window.setContentSize(CGSize(width: width, height: 600))
+            let controller = try XCTUnwrap(MarkdownTableWindow.controller(of: window)), content = try XCTUnwrap(window.contentView)
+            let table = try XCTUnwrap(controller.gridScroll.documentView as? NSTableView)
+            table.moveColumn(1, toColumn: 0); table.reloadData(); table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            controller.showCell(row: 0, column: 0)
+            XCTAssertEqual((controller.detailScroll.documentView as? NSTextView)?.string, "B1")
+            for _ in 0..<4 { content.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield(); try await Task.sleep(for: .milliseconds(10)) }
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("reordered-table-\(name).png"))
+        }
+    }
+
     @MainActor func testRecoveredLedgerFindGallery() async throws {
         guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
         let directory = URL(fileURLWithPath: path)

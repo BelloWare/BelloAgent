@@ -2730,3 +2730,403 @@ No helper/package/protocol change, live user data, installed app, real preferenc
 Keychain, paid provider or live capture was involved. The only outstanding validation
 limit is the explicit desktop prerequisite above; there is no unresolved owner
 decision for these fixes.
+
+## Round 8 — bounded Find dependencies and second-hunt transcript fixes
+
+Baseline: `3bd0daf3bb836a485dad6a374ebdf9b81d96982e`, on
+`dev/a130-transcript`. The second hunt ran without this branch; its numbered-fence
+heading bug is already fixed here. The performance, read-card and reordered-table
+findings are confirmed. All fixtures are generated; no helper, provider or real
+conversation is involved.
+
+### Findings and failing-first evidence
+
+Evidence remains text under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`.
+All named regressions below are in `TranscriptBugRegressionTests`.
+
+| Finding | Result and regression | Failing-first evidence / change |
+| --- | --- | --- |
+| **R8 dependency lookup** | Confirmed + fixed; `testReusedToolDependenciesStayWithinPagingBudget` | 5,000 pairs sharing one provider call ID, all 5,000 call lookups checked for the correct receipt: **19.313107 s**, failing the 1 s bound. The same fixture after the fix took **0.296897 s** (subsequent full-class run **0.314506 s**). Links now carry nullable active-branch positions and use `(kind,value,n)` range seeks for the next call, latest receipt, previous issuer and first operation. No per-lookup join/sort of the reuse set remains. |
+| **R8 paging during Find** | Confirmed + fixed; `testPagingCanFinishWhileFindScansReusedCalls` | A warm page waited **25.293904 s**, failing the 0.5 s bound; completion order was `[search, page]`. With the same 5,000-pair generated journal, paging took **0.016705 s**, order `[page, search]` (full-class run **0.013921 s**). Search yields its actor between bounded runs, keeping its own file handle and immutable branch snapshot. |
+| **Second-hunt TRANSCRIPT-1** | Confirmed + fixed; `testExpandedReadAndDiffSurviveHostEviction` | The remounted read was collapsed; cached height **1,588 pt** versus fitting height **268 pt**. The test waits for validation, releases the real host, checks that it was released, rebuilds at the same width and compares cached/fitting geometry. Expansion now lives in `TranscriptDisclosure.toolLines`, keyed by reply + call, and is restored before card measurement. |
+| **Nearby diff expansion** | Confirmed + fixed by the same state path and test | The diff also remounted collapsed, **339 pt** cached versus **295 pt** fitting in the initial timeline case. The final corpus includes read and diff cards in timeline rows, single-card legacy work and eight-card virtual work lists. It also asserts that expanding changes the work-list height, so matching two stale outer heights cannot hide an undersized body. |
+| **Second-hunt TRANSCRIPT-2** | Already fixed on the baseline; `testNumberedFenceKeepsHeadingCopyBoundaries` | The exact numbered `sh` fence fixture passes before any round-8 production edit. The real Done heading control copies `# Done\nFinished.`; targets are Setup/Done only, and Setup retains the complete fenced list. No new Copy implementation change is needed. The earlier canonical-heading fix, not a new scanner special case, covers this shape. |
+| **Second-hunt TRANSCRIPT-3** | Confirmed + fixed; `testReorderedFullTableCellDetailsCopyTheVisibleColumn` | After moving B before A, the real first grid cell reads **B1**, but the selection callback displays **A1**, and copying the selected detail also returns **A1**. Resolve the visual column's `NSTableColumn.identifier` before indexing the source row. Missing-column/keyboard whole-row fallback and full-table TSV copying retain their prior behavior. |
+| **Nearby Find cancellation** | Confirmed + fixed; paging regression extended | Cancelling the superseded query discarded the warm index: **0 bytes** retained instead of **4,784,128**. Cancellation now leaves it intact. Failure cleanup checks the captured stamp so an old search cannot remove a newer page/query snapshot after an actor yield. |
+
+`round8-failing-first.log` is **1 passed / 4 failed / 0 skipped**, exit 65.
+The numbered-fence control passed; the timing, paging and read/diff assertions
+failed as above. Its table failure was a synthetic-click setup failure, not bug
+evidence. Two focused attempts (`round8-table-first.log` and
+`round8-table-click-first.log`, each **0/1/0**) also failed to deliver a native
+click; the desktop reported the test app inactive. Those outputs are retained.
+
+The table's action now delegates its row/visual-column arguments to `showCell`,
+with the original selection body preserved until the valid failing-first run.
+The fixture obtains both indexes from the real cell rectangle, verifies the
+native cell's B1 text, invokes that same selection handler and copies through
+its actual NSTextView. It does not pretend an undelivered mouse event is a
+successful click. An intermediate selector-overload compilation failure is
+recorded in `round8-selection-cancellation-first.log` (**0 tests**, exit 65),
+then the helper was named distinctly. Neither setup nor compile failure counts
+as product or mutation evidence.
+
+`round8-core-fixed-table-first.log` was **4/1/0**: dependency/index, paging and
+all six expansion configurations passed, while the synthetic table event still
+missed. The valid `round8-selection-cancellation-first-compiled.log` is
+**0/2/0**, exit 65: it fails on **A1 versus B1** in both the visible detail and
+pasteboard, and on the discarded index after cancellation. Only then were those
+two behaviors fixed. `round8-regression-fixed.log` passes **85/0/0**.
+
+### Input, geometry and branch audit
+
+The round-7 renderer-input table still applies. The additional state follows
+these paths explicitly:
+
+| Input/state | Renderer / cache / search |
+| --- | --- |
+| Inner read/diff expansion | `TranscriptDisclosure.toolLines(ToolOccurrence.key(reply,call))` → `TranscriptRowDisclosure.expandedTools` → timeline part or legacy activity → action row → native card, before its model is configured and its geometry reused. The virtual work-list item carries the same value; its toggle relay writes the same occurrence. |
+| Work-list geometry | Its cache key now includes `expandedTools`; local expansion can no longer reuse the previous collapsed work-list height. Shared immutable geometry continues to exclude tool-card rows. |
+| Disclosure lifetime | Native-host eviction retains the conversation value. Message-level pruning recognizes scoped tool occurrences as block-level pruning already did. No source journal or persisted preference is changed. |
+| Find payload | Search still covers the same complete foldable body it reveals. More/fewer controls add no content occurrence; expansion from Find uses the native card's existing `setExpanded` path and therefore records the same disclosure. |
+| Active dependency positions | Inserted refs start unselected; append supplies their position; metadata replacement preserves it; branch pruning clears abandoned links; timeline selection clears/reassigns positions; final dense compaction remaps them. `testDependencyPositionsFollowSelectionAndMetadata` covers an abandoned issuer with a retained receipt, metadata replacement, reordered selection and compaction. Existing literal-NUL and every-page-boundary tests remain in the full regression class. |
+| Table selection | The action receives the same clicked row and visual column as before. The helper resolves the current table column's original numeric identifier, matching the grid data source's lookup. |
+
+No new source files were added or removed, so no project regeneration is needed.
+No helper package or wire protocol changed; helper and Python wire/concurrent/
+acceptance suites are not required. The affected app wire tests are rerun below.
+
+### Round-8 adversarial self-review
+
+Reviewed the complete production diff since `3bd0daf3`, checking the indexed
+lookup against both directions of reused calls, branch holes, retained receipts
+whose issuer was abandoned, metadata replacement, reordered timelines, final
+position compaction, and literal IDs. Every neighbour query uses the same index;
+there is no remaining `links`/`visible` sort in a lookup. The index is a private,
+rebuildable database; source journals and their byte offsets are unchanged.
+
+Actor reentrancy keeps each search's file handle, branch and presentation values
+local. Source-prefix validation still fences replacement/truncation/rewrite;
+append-only growth retains its established behavior. Cancellation keeps the warm
+index, while an actual failure invalidates only caches at the captured stamp.
+The old search cannot clear a newer page's index. Existing search cancellation,
+100-hit/5,000-record limits and bounded decode runs remain in place.
+
+Checked expansion through timeline rows, legacy activity, the eight-card virtual
+list, disclosure pruning, the row/work-list caches and Find's expansion calls.
+Both read and diff used the same discarded local boolean, so both now use the
+same saved occurrence state. A new native card receives that state before its
+model/height are built; standalone test/reference cards retain their existing
+optional local-state behavior. The new field affects geometry, not stored tool
+arguments, output ownership, permissions or capture.
+
+This review caught an unintended UX change in the initial implementation:
+recording the more-lines state through the generic disclosure callback started
+an outer fold animation. `testMoreLinesKeepsItsExistingResizeBehavior` failed
+first in `round8-motion-first.log` (**0/1/0**, exit 65), with
+`Saving inner-card state must not add a new outer fold animation`.
+Inner-card changes now use the existing height-invalidation path. This preserves
+the former resize behavior instead of adding an animation policy. The final
+regression class therefore contains **86 methods** (seven added this round).
+
+For the table, the grid already resolved stable column identifiers; only its
+detail-selection path indexed visual positions. No other `clickedColumn` or
+`selectedColumn` source indexing remains in Transcript. The exact numbered-fence
+fixture and the old-scanner mutation also verify that the earlier canonical
+heading fix covers the second hunt without another parser or scanner change.
+No owner decision is needed for these behavior-preserving repairs.
+
+### Round-8 mutation checks
+
+All **10** mutations compiled and failed their intended assertion (exit 65),
+then restored the production file in `finally`. No setup or compiler failure
+counts as a caught mutation. The motion control passed **2/0/0** before its
+mutation; the complete restored class then passed **86/0/0**.
+
+| Log / mutation | Failing test | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| `round8-mutation-lookup.log`: Restore the reuse-set join/sort | `testReusedToolDependenciesStayWithinPagingBudget` | 0 | 1 | 0 |
+| `round8-mutation-yield.log`: Remove the actor yield | `testPagingCanFinishWhileFindScansReusedCalls` | 0 | 1 | 0 |
+| `round8-mutation-cancel.log`: Discard the index on cancellation | `testPagingCanFinishWhileFindScansReusedCalls` | 0 | 1 | 0 |
+| `round8-mutation-position.log`: Omit the final dense-position remap | `testDependencyPositionsFollowSelectionAndMetadata` | 0 | 1 | 0 |
+| `round8-mutation-branch.log`: Keep abandoned link positions | `testDependencyPositionsFollowSelectionAndMetadata` | 0 | 1 | 0 |
+| `round8-mutation-expansion-save.log`: Disconnect saving expansion | `testExpandedReadAndDiffSurviveHostEviction` | 0 | 1 | 0 |
+| `round8-mutation-expansion-restore.log`: Omit restoring expansion | `testExpandedReadAndDiffSurviveHostEviction` | 0 | 1 | 0 |
+| `round8-mutation-column.log`: Index by visual position | `testReorderedFullTableCellDetailsCopyTheVisibleColumn` | 0 | 1 | 0 |
+| `round8-mutation-numbered-fence.log`: Restore the pre-branch scanner | `testNumberedFenceKeepsHeadingCopyBoundaries` | 0 | 1 | 0 |
+| `round8-mutation-motion.log`: Route more-lines through the outer fold animation | `testMoreLinesKeepsItsExistingResizeBehavior` | 0 | 1 | 0 |
+
+The lookup reversal took **18.675256 s**; removing the yield delayed the warm
+page **1.089727 s** and reversed completion to `[search, page]`. The table
+mutation returned A1 in both the details and pasteboard. Restoring the entire
+old scanner from `141666ca` broke the new numbered-fence fixture, confirming
+that the existing canonical-heading implementation is the relevant fix.
+
+Exact failing-first, control and mutation commands (each run under the shared
+lock, in this worktree, with text redirected to its named log):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round8-failing-first.log — 1/4/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReusedToolDependenciesStayWithinPagingBudget -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn -only-testing:PiAppTests/TranscriptBugRegressionTests/testNumberedFenceKeepsHeadingCopyBoundaries
+
+# round8-table-first.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn
+
+# round8-table-click-first.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn
+
+# round8-core-fixed-table-first.log — 4/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReusedToolDependenciesStayWithinPagingBudget -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn -only-testing:PiAppTests/TranscriptBugRegressionTests/testDependencyPositionsFollowSelectionAndMetadata
+
+# round8-selection-cancellation-first.log — 0/0/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls
+
+# round8-selection-cancellation-first-compiled.log — 0/2/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls
+
+# round8-regression-fixed.log — 85/0/0, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round8-motion-first.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testMoreLinesKeepsItsExistingResizeBehavior
+
+# round8-motion-fixed.log — 2/0/0, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testMoreLinesKeepsItsExistingResizeBehavior -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction
+
+# round8-mutation-lookup.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReusedToolDependenciesStayWithinPagingBudget
+
+# round8-mutation-yield.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls
+
+# round8-mutation-cancel.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls
+
+# round8-mutation-position.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testDependencyPositionsFollowSelectionAndMetadata
+
+# round8-mutation-branch.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testDependencyPositionsFollowSelectionAndMetadata
+
+# round8-mutation-expansion-save.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction
+
+# round8-mutation-expansion-restore.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction
+
+# round8-mutation-column.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testReorderedFullTableCellDetailsCopyTheVisibleColumn
+
+# round8-mutation-numbered-fence.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testNumberedFenceKeepsHeadingCopyBoundaries
+
+# round8-mutation-motion.log — 0/1/0, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testMoreLinesKeepsItsExistingResizeBehavior
+```
+
+### Round-8 final validation
+
+After restoring all mutations: **1,004 passed, 0 failed, 12 skipped** across
+**92 distinct classes**. Counts are test methods. The final gallery rerun replaces
+its initial successful run in these totals; controls and mutations are not
+double-counted. Every native/focus run used this worktree, its own build root,
+and the shared full-lane lock. Serial lanes ran alone.
+
+| Final text log | Suite | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| `round8-regression-final.log` | TranscriptBugRegressionTests | 86 | 0 | 0 |
+| `round8-affected-final.log` | 64 affected app classes | 617 | 0 | 7 |
+| `round8-timeline-final.log` | TranscriptNativeTimelineBehaviourTests | 30 | 0 | 0 |
+| `round8-agent-markdown-final.log` | SubagentMarkdownTests | 19 | 0 | 0 |
+| `round8-agent-reader-final.log` | SubagentReaderTests | 55 | 0 | 0 |
+| `round8-wire-page-final.log` | TranscriptWirePageTests | 4 | 0 | 0 |
+| `round8-history-edge-timing-final.log` | HistoryEdgeTimingTests | 2 | 0 | 0 |
+| `round8-history-edit-final.log` | HistoryEditTests | 3 | 0 | 0 |
+| `round8-inline-timing-final.log` | InlineSkillPillTimingTests | 1 | 0 | 0 |
+| `round8-streaming-serial-final.log` | TranscriptStreamingSerialTests | 1 | 0 | 1 |
+| `round8-agent-inputs-final.log` | 6 agent input/navigation classes | 47 | 0 | 0 |
+| `round8-agent-adjacent-final.log` | 4 family/metadata/panel/discovery classes | 55 | 0 | 0 |
+| `round8-disclosure-final.log` | 6 disclosure/geometry/work/chrome classes | 61 | 0 | 3 |
+| `round8-chrome-parity-final.log` | TranscriptNativeChromeParityTests | 5 | 0 | 1 |
+| `round8-agent-opening-final.log` | SubagentOpeningTests | 13 | 0 | 0 |
+| `round8-gallery-opaque-final.log` | TranscriptBugGalleryTests | 5 | 0 | 0 |
+
+The seven affected-suite skips are the existing opt-in long-history/index
+measurements, skill-pill capture, Markdown line-pitch/token-cost measurements,
+Markdown sample capture and 70-turn wire measurement. The additional parity
+skips are `testProbeDisclosure`, `testProbeWorkSymbols`,
+`testSweepWorkSymbolOffsets`, and `testSweepChromeSymbolOffsets` (calibration
+probes/sweeps, not behavior tests). The remaining skip is
+`TranscriptStreamingSerialTests.testAReplyCountsAsReadOnlyOnceItsEndHasBeenOnScreen`:
+`A receipt needs this app's own key, unoccluded window; this desktop cannot provide one.`
+That behavior remains **unverified** for the lead's merged gate with the window
+prerequisite. No failing test was discarded.
+
+An extra filename-based selector, `MessageVersionTests`, selected zero methods
+(`round8-versions-final.log`, **0/0/0**, exit 0), so it contributes no coverage
+or class to the totals. The file actually defines `MessageVersionTranscriptTests`
+(**8/0/0**) and `ForkFromReplyTests` (**5/0/0**), both already present in the
+64-class affected run. `SubagentOpeningTests` then ran alone (**13/0/0**).
+
+Final measured results are **0.328565 s** for all 5,000 dependency lookups and
+**0.017038 s** for the concurrent warm page, completion order `[page, search]`.
+The production regression also checks every returned receipt. A supplementary
+in-memory SQLite `EXPLAIN QUERY PLAN` of the new schema and four lookup shapes
+(`round8-query-plan.log`) uses `link_values (kind,value,n)` range searches in
+every case, with no temporary ordering B-tree.
+
+Exact final commands (from the worktree, each inside the shared lock wrapper):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round8-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round8-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round8-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round8-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round8-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+
+# round8-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round8-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round8-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryEditTests
+
+# round8-inline-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InlineSkillPillTimingTests
+
+# round8-streaming-serial-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptStreamingSerialTests
+
+# round8-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentNavigationTests -only-testing:PiAppTests/SubagentEffortTests -only-testing:PiAppTests/InheritedSubagentReaderTests -only-testing:PiAppTests/SubagentCostTests -only-testing:PiAppTests/SubagentDisplayTests -only-testing:PiAppTests/SubagentMetadataTests
+
+# round8-agent-adjacent-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/SubagentPanelTests -only-testing:PiAppTests/SubagentDiscoveryTests
+
+# round8-disclosure-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/NativeWorkListViewportTests -only-testing:PiAppTests/TranscriptTurnFoldTests -only-testing:PiAppTests/TranscriptGeometryCacheTests -only-testing:PiAppTests/TranscriptKeptRowsTests -only-testing:PiAppTests/TranscriptNativeChromeBehaviourTests -only-testing:PiAppTests/TranscriptNativeWorkParityTests
+
+# round8-chrome-parity-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptNativeChromeParityTests
+
+# round8-agent-opening-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+
+# round8-gallery-opaque-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation/gallery-round8 scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugGalleryTests
+
+# round8-versions-final.log — selector setup only; zero methods
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/MessageVersionTests
+```
+
+### Round-8 visual inspection
+
+Regenerated and inspected **15 PNGs** in `validation/gallery-round8` beneath
+this build root: all five scenes in light, dark and narrow presentations.
+
+- `expanded-read-{light,dark,narrow}.png`: after real host eviction/remount,
+  lines 68–100 and “Show fewer lines” remain visible; the following reply starts
+  directly after the card/footer, with no stale expanded-height gap. The narrow
+  capture is **360 pt** wide. The initial successful gallery used a transparent
+  scroll backdrop; removed that fixture setting, reran the full gallery class
+  (**5/0/0**) and inspected the opaque captures for legibility.
+- `reordered-table-{light,dark,narrow}.png`: B is the left column, B1 is selected
+  and the detail pane reads B1, in all three appearances/widths. Narrow is the
+  existing table window's **440 pt** minimum; the separate regression verifies
+  selecting/copying the real detail NSTextView yields B1.
+- `transcript-{light,dark,narrow}.png`: heading Copy stays within the 360 pt
+  viewport; literal marker diff retains both changed tails, and the ordered
+  marker `2.` is highlighted.
+- `rows-{light,dark,narrow}.png` and `recovery-{light,dark,narrow}.png`: user
+  focus, summary/list text, notice/sub-agent cards and recovered-response phrase
+  highlights remain visible. These 12 unaffected-scene files are byte-identical
+  to their already-inspected captures after the backdrop-only gallery rerun.
+
+The final diff passed `git diff --check`. No clone directories remain under this
+workstream's build root; the final disk check showed **12.62 GiB free**. All locks
+owned by this workstream were released. The current lock belongs to another
+workstream and was left untouched. Evidence is the text logs and gallery PNGs;
+no named result bundle was requested. No installed app, real chats/preferences,
+Keychain, paid provider or live capture was used. There is no unresolved product
+or owner decision; the desktop-dependent receipt test remains the validation
+limit described above.

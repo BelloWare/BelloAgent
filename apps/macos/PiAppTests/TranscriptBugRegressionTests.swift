@@ -7,6 +7,209 @@ final class TranscriptBugRegressionTests: XCTestCase {
     static let before = "header\n…[truncated, 12 more bytes]\nold tail"
     static let after = "header\n…[truncated, 12 more bytes]\nnew tail"
 
+
+    @MainActor func testNumberedFenceKeepsHeadingCopyBoundaries() throws {
+        let setup = "# Setup\n\n1. ```sh\n   # comment\n   echo ok\n   ```\n\n"
+        let done = "# Done\nFinished.", source = setup + done
+        let sections = TranscriptCopy.targets(in: source).filter { if case .section = $0.kind { return true }; return false }
+        XCTAssertEqual(sections.map(\.text), [setup, done])
+        let message = TranscriptMessage(id: "reply", role: "assistant", text: source)
+        let row = TranscriptNativeReplyRow(inputs: .init(item: TranscriptNativePartView.wordsItem(message), fresh: false,
+            actions: .init(), width: 620, environment: .init(), disclosure: .init()))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 620, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = row
+        defer { window.contentView = nil; window.close() }
+        row.layoutSubtreeIfNeeded()
+        let surface = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: row).first)
+        let text = surface.textView, manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+        let range = (text.string as NSString).range(of: "Done")
+        let rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+        surface.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved,
+            location: surface.convert(NSPoint(x: rect.midX, y: rect.midY + text.topInset), to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+        let action = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownHeadingActionView }.first)
+        XCTAssertEqual(action.copy.accessibilityLabel(), "Copy Done as Markdown")
+        XCTAssertTrue(action.copy.accessibilityPerformPress())
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), done)
+        XCTAssertEqual(text.copyTargets().map(\.label), ["Copy Setup as Markdown", "Copy Done as Markdown"])
+    }
+
+    func testReusedToolDependenciesStayWithinPagingBudget() throws {
+        let index = try HistoryOffsetIndex()
+        for n in 0..<5_000 {
+            let call = HistoryOffset(id: "call\(n)", offset: 0, length: 1, type: "message", role: "assistant", calls: ["reused"])
+            let result = HistoryOffset(id: "result\(n)", offset: 0, length: 1, type: "message", role: "toolResult", resultCall: "reused")
+            for record in [call, result] { try index.insert(record); try index.append(record) }
+        }
+        try index.finish()
+        let start = ProcessInfo.processInfo.systemUptime
+        for n in 0..<5_000 {
+            let peers = try index.related(to: "call\(n)", calls: ["reused"], result: nil, operation: nil)
+            XCTAssertEqual(peers.map(\.id), ["result\(n)"])
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        print("REUSED-DEPENDENCIES pairs=5000 lookups=5000 seconds=\(elapsed)")
+        XCTAssertLessThan(elapsed, 1.0, "Indexed neighbours must not scan and sort the reuse set for each call")
+    }
+
+    func testDependencyPositionsFollowSelectionAndMetadata() throws {
+        let index = try HistoryOffsetIndex()
+        var records: [HistoryOffset] = []
+        for n in 0..<3 {
+            records += [.init(id: "c\(n)", offset: 0, length: 1, type: "message", calls: ["reuse"]),
+                        .init(id: "r\(n)", offset: 0, length: 1, type: "message", resultCall: n == 2 ? "old" : "reuse")]
+        }
+        for ref in records { try index.insert(ref); try index.append(ref) }
+        try index.branch(from: nil, kept: ["c0", "r0", "r1", "c2", "r2"])
+        var receipt = records[5]; receipt.resultCall = "reuse"; try index.replaceMetadata(receipt)
+        func check() throws {
+            for n in [0, 2] {
+                XCTAssertEqual(try index.related(to: "c\(n)", calls: ["reuse"], result: nil, operation: nil).map(\.id), ["r\(n)"])
+                XCTAssertEqual(try index.related(to: "r\(n)", calls: [], result: "reuse", operation: nil).map(\.id), ["c\(n)"])
+            }
+        }
+        XCTAssertEqual(try index.related(to: "c0", calls: ["reuse"], result: nil, operation: nil).map(\.id), ["r1"], "An abandoned issuer cannot hide the retained receipt")
+        XCTAssertEqual(try index.related(to: "r1", calls: [], result: "reuse", operation: nil).map(\.id), ["c0"])
+        try index.selectTimeline(["c2", "r2", "c0", "r0"]); try check()
+        try index.finish(); try check()
+        XCTAssertTrue(try index.related(to: "c1", calls: ["reuse"], result: nil, operation: nil).isEmpty)
+    }
+
+    private final class SearchOrder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+        func add(_ value: String) { lock.lock(); defer { lock.unlock() }; values.append(value) }
+        var events: [String] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+    func testPagingCanFinishWhileFindScansReusedCalls() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("transcript-find-paging-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("fixture.jsonl"), reader = HistoryReader(indexDirectory: root)
+        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
+        var parent: WireValue = .null
+        for n in 0..<5_000 {
+            for (id, message): (String, [String: WireValue]) in [
+                ("call\(n)", ["role": .string("assistant"), "content": .array([.object(["type": .string("toolCall"), "id": .string("reused"), "name": .string("fixture"), "arguments": .object(["value": .number(Double(n))])])])]),
+                ("result\(n)", ["role": .string("toolResult"), "toolCallId": .string("reused"), "toolName": .string("fixture"), "content": .string("result \(n)")])
+            ] {
+                let entry: WireValue = .object(["type": .string("message"), "id": .string(id), "parentId": parent, "message": .object(message)])
+                bytes.append(try JSONEncoder().encode(entry)); bytes.append(10); parent = .string(id)
+            }
+        }
+        try bytes.write(to: path)
+        _ = try await reader.read(path: path.path, whole: true)
+        let indexed = expectation(description: "Find has captured its index"), order = SearchOrder()
+        await reader.observeSearchReads { stage in
+            if stage == .indexed { indexed.fulfill() }
+            if stage == .scanned { order.add("search") }
+        }
+        let search = Task { try await reader.searchContent(path: path.path, query: "absent needle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [indexed], timeout: 10)
+        let start = ProcessInfo.processInfo.systemUptime
+        let page = try await reader.read(path: path.path, position: 8_000)
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        order.add("page")
+        let result = try await search.value
+        print("FIND-PAGING pairs=5000 page-seconds=\(elapsed) order=\(order.events)")
+        XCTAssertEqual(order.events, ["page", "search"], "Find must yield its actor so paging can finish during the scan")
+        XCTAssertLessThan(elapsed, 0.5, "A warm page must not wait for Find's 5,000-record window")
+        XCTAssertTrue(page.messages.contains { $0.id == "call4000" })
+        XCTAssertTrue(result.hits.isEmpty); XCTAssertEqual(result.next, 5_000)
+        let cachedBytes = await reader.retainedIndexBytes
+        let cancelling = expectation(description: "The superseded query has its index")
+        await reader.observeSearchReads { if $0 == .indexed { cancelling.fulfill() } }
+        let obsolete = Task { try await reader.searchContent(path: path.path, query: "another absent needle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [cancelling], timeout: 10)
+        obsolete.cancel()
+        do { _ = try await obsolete.value; XCTFail("The superseded search must cancel") }
+        catch is CancellationError { }
+        let retainedBytes = await reader.retainedIndexBytes
+        XCTAssertEqual(retainedBytes, cachedBytes, "Cancelling Find must not discard the warm index needed by paging")
+    }
+
+    @MainActor func testExpandedReadAndDiffSurviveHostEviction() async throws {
+        let lines = (1...100).map { "line \($0)" }.joined(separator: "\n")
+        for name in ["read", "edit"] {
+            let tool = name == "read" ? TranscriptNativeWorkBehaviourTests.read(output: lines)
+                : ToolView(id: "r1", name: "edit", state: "completed", input: WireValue.object(["path": .string("fixture.txt"), "oldText": .string(""), "newText": .string(lines)]).pretty, output: "ok", truncated: false)
+            for (timeline, count) in [(false, 1), (false, 8), (true, 1)] {
+                var message = TranscriptMessage.project(id: "reply", message: try XCTUnwrap(toolEntry(name, arguments: .object(["path": .string("fixture.txt")]))["message"]?.object))
+                message.tools = (0..<count).map { index in var value = tool; value.id = "r\(index)"; return value }
+                if timeline {
+                    // The generated call's stable ID is the timeline part's ID.
+                    message.tools?[0].id = "call"
+                } else { message.responseTimeline = nil }
+                let item = try XCTUnwrap(TaskTranscriptPlan.rows([message], lifecycle: nil).first { if case .block(let block) = $0 { return block.presentation == .work }; return false })
+                let disclosure = TranscriptDisclosure()
+                if case .block(let block) = item { disclosure.setOpen(true, .work(block.key)) }
+                disclosure.setOpen(true, .tool(ToolOccurrence.key(message.id, message.tools![0].id)))
+                let row = TranscriptRowContainer(item: item, fresh: false, actions: .init(), disclosure: disclosure)
+                let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 620, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false; window.contentView = NSView(); window.contentView?.addSubview(row)
+                defer { window.contentView = nil; window.close() }
+                func draw() { row.frame.size = row.measure(width: 620); row.layoutForViewport(); window.displayIfNeeded() }
+                draw()
+                let collapsed = row.measure(width: 620).height
+                let more = try XCTUnwrap(ConversationPaneTests.views(TranscriptCardMoreLines.self, in: row).first)
+                XCTAssertTrue(more.accessibilityPerformPress())
+                try await eventually("Expanded card has validated its own height") { draw(); return !row.needsMountedValidation }
+                let height = row.measure(width: 620).height
+                XCTAssertGreaterThan(height, collapsed, "Expanding the body updates the cached work-list height")
+                XCTAssertEqual(height, row.hostedFittingHeight, accuracy: 1)
+                window.makeFirstResponder(nil); row.releaseHost()
+                XCTAssertFalse(row.isHosted, "The view must really have been evicted")
+                row.prepareToDraw(); draw()
+                if name == "read" { XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeReadCard.self, in: row).first).expanded) }
+                else { XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeDiffCard.self, in: row).first).expanded) }
+                XCTAssertEqual(row.measure(width: 620).height, row.hostedFittingHeight, accuracy: 1, "\(name), timeline=\(timeline): no blank gap after remount")
+                XCTAssertEqual(row.measure(width: 620).height, height, accuracy: 1)
+            }
+        }
+    }
+
+    @MainActor func testMoreLinesKeepsItsExistingResizeBehavior() async throws {
+        let (model, pane, window) = try await findFixture(saved: false)
+        let session = try XCTUnwrap(model.selected)
+        let tool = TranscriptNativeWorkBehaviourTests.read(output: (1...100).map { "line \($0)" }.joined(separator: "\n"))
+        session.messages[1].tools = [tool]
+        for case .block(let block) in TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil) where block.presentation == .work {
+            session.disclosure.setOpen(true, .work(block.key))
+        }
+        session.disclosure.setOpen(true, .tool(ToolOccurrence.key(session.messages[1].id, tool.id)))
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); pane.document.finishDisclosureMotion()
+        let before = TranscriptNativeDocument.reducesMotionOverride
+        TranscriptNativeDocument.reducesMotionOverride = false
+        defer { TranscriptNativeDocument.reducesMotionOverride = before }
+        let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeReadCard.self, in: pane).first)
+        let more = try XCTUnwrap(ConversationPaneTests.views(TranscriptCardMoreLines.self, in: card).first)
+        XCTAssertTrue(more.accessibilityPerformPress()); XCTAssertTrue(card.expanded)
+        XCTAssertFalse(pane.document.isMovingDisclosure, "Saving inner-card state must not add a new outer fold animation")
+    }
+
+    @MainActor func testReorderedFullTableCellDetailsCopyTheVisibleColumn() throws {
+        let before = Set(MarkdownTableWindow.open.map(ObjectIdentifier.init))
+        MarkdownTableWindow.open(header: [AttributedString("A"), AttributedString("B")],
+            rows: (1...41).map { [AttributedString("A\($0)"), AttributedString("B\($0)")] })
+        let window = try XCTUnwrap(MarkdownTableWindow.open.first { !before.contains(ObjectIdentifier($0)) })
+        defer { window.close() }
+        let controller = try XCTUnwrap(MarkdownTableWindow.controller(of: window))
+        let table = try XCTUnwrap(controller.gridScroll.documentView as? NSTableView)
+        table.moveColumn(1, toColumn: 0); table.reloadData()
+        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let rect = table.frameOfCell(atColumn: 0, row: 0), point = NSPoint(x: rect.midX, y: rect.midY)
+        let clickedRow = table.row(at: point), clickedColumn = table.column(at: point)
+        XCTAssertEqual(clickedRow, 0); XCTAssertEqual(clickedColumn, 0)
+        let cell = try XCTUnwrap(table.view(atColumn: clickedColumn, row: clickedRow, makeIfNecessary: true) as? NSTableCellView)
+        XCTAssertEqual(cell.textField?.stringValue, "B1")
+        table.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+        controller.showCell(row: clickedRow, column: clickedColumn)
+        let detail = try XCTUnwrap(controller.detailScroll.documentView as? NSTextView)
+        XCTAssertEqual(detail.string, "B1")
+        detail.selectAll(nil); detail.copy(nil)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "B1")
+    }
+
     @MainActor func testHeadingCopyUsesTheRenderedTopLevelHeading() throws {
         let message = TranscriptMessage(id: "reply", role: "assistant", text: Self.nestedHeading)
         let row = TranscriptNativeReplyRow(inputs: .init(item: TranscriptNativePartView.wordsItem(message), fresh: false,
