@@ -34,7 +34,13 @@ extension WorkspaceModel {
             if let cursor {
                 if cursor.incarnation.hasPrefix("file:") {
                     params["entry"] = .string(cursor.entry); params["lineage"] = .string(cursor.lineage)
-                } else { params["cursor"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(cursor)) }
+                } else {
+                    params["cursor"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(cursor))
+                    // A follow-up can replace the runtime without replacing
+                    // the journal. Rebind only after validating this entry
+                    // still belongs to the held lineage.
+                    params["rebind"] = .bool(true)
+                }
             }
             if let around { params["around"] = .string(around) }
             if start { params["edge"] = .string("start") }
@@ -43,7 +49,7 @@ extension WorkspaceModel {
             }
             // Reveals, Home and position reads all validate the held window
             // when handing its file boundary to the helper.
-            if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
+            if cursor == nil, let validating {
                 params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
             }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
@@ -168,9 +174,9 @@ extension WorkspaceModel {
         }
     }
 
-    func reloadHistory(_ id: String, around: String? = nil) {
+    func reloadHistory(_ id: String, around: String? = nil, navigation: TranscriptNavigationToken? = nil) {
         guard let view = displays[id], let item = record(id) else { return }
-        let navigation = transcriptNavigation(id, advancing: true)
+        let navigation = navigation ?? transcriptNavigation(id, advancing: true)
         if !view.draftReady {
             // Retry must also check pending input. A successful history page
             // by itself cannot release a draft whose acceptance read failed.
@@ -186,6 +192,7 @@ extension WorkspaceModel {
             return
         }
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
+        view.presentation.reloadTarget = around.map(ConversationPresentation.ReloadTarget.message) ?? .latest
         let generation = view.presentationGeneration
         // The reads of the page being replaced end with it: neither boundary
         // is left loading, or failed, behind the cover.
@@ -274,7 +281,8 @@ extension WorkspaceModel {
                 // with the boundary it has now; the next request reads that.
                 // (Reporting it stopped earlier rows from loading on their own.)
                 guard (newer ? view.newerPage.cursor : view.olderPage.cursor) == cursor else { return false }
-                let handoff = page.incarnation.hasPrefix("file:") != cursor.incarnation.hasPrefix("file:")
+                let handoff = page.incarnation != cursor.incarnation &&
+                    (!page.incarnation.hasPrefix("file:") || !cursor.incarnation.hasPrefix("file:"))
                 guard (page.incarnation == cursor.incarnation || handoff), page.lineage == cursor.lineage else {
                     throw HostError.failure("History source changed. Use Latest to reload, or reopen the retained message.")
                 }

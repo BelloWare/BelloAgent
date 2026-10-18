@@ -62,6 +62,7 @@ import Combine
         updates.reportFailure = { [weak model] in model?.error = $0 }
         updates.pauseActiveWork = { [weak model] in try await model?.pauseRunsForUpdate() }
         updates.runningChats = { [weak model] in model?.runningChatCount ?? 0 }
+        updates.runningToolCalls = { [weak model] in model?.resourceInvocations.values.reduce(0, +) ?? 0 }
         observer = ShellObserver { [weak self] in self?.configurationChanged() }
         observer.observe(model)
     }

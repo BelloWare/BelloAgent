@@ -23,6 +23,27 @@ private final class HostReplies: @unchecked Sendable {
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
 final class HostServiceTests: XCTestCase {
+    func testQuiescenceRejectsSubmissionPreflightAdmission() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let gate = SubmissionPreflightGate(), host = NativeHostService(emit: { _ in })
+            _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+            _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+            await host.holdSubmissionPreflight(at: gate)
+            let sending = Task { try await host.command(method, sessionID: "s", params: ["clientTurnId": "t", "text": "Held before admission", "messageId": "old"]) }
+            try await eventually { await gate.entered }
+            do { _ = try await host.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("Quiescence crossed \(method) preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "session_busy") }
+            _ = try await host.command("turn.stop", sessionID: "s", params: [:])
+            await gate.release()
+            do { _ = try await sending.value; XCTFail("Stop must retire the preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "submission_stopped") }
+            let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
+            XCTAssertEqual(quiet["quiesced"].flag, true)
+            await host.shutdown()
+        }
+    }
+
     func testQuiescenceRejectsInspectorExecutionAndUnretainedResults() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var repository = URL(fileURLWithPath: #filePath)

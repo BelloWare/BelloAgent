@@ -4,6 +4,13 @@
 
 ## 0.1.130
 
+- [x] Invalid command IDs cannot overflow helper rejection frames. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Runtime replacement restarts visible history loads and preserves their requested destination. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Retained-history paging rebinds stable message boundaries after same-ID runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Helper quiescence refuses commands still in submission preflight. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Onboarding connection tests participate in update activity and confirmed helper shutdown. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Update confirmation names Inspector-only tool calls accurately. [Validation](docs/validation/a130-wire-0.1.130.md).
+
 - [x] WIRE-CONTRACT-1: Oversized capture metadata uses acknowledged chunks and arrives complete without stopping other chats. [Validation](docs/validation/a130-wire-0.1.130.md).
 - [x] WIRE-CONTRACT-2: Inspector MCP execution and result retention block app/helper update quiescence, including late IPC replies. [Validation](docs/validation/a130-wire-0.1.130.md).
 - [x] CONCURRENCY-LIFECYCLE-2: Inspector MCP work pins the project helper through its durable-result acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md).

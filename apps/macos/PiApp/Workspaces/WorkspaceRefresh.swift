@@ -92,6 +92,7 @@ extension WorkspaceModel {
                 guard view.adoptSnapshotEpoch(result["monitoring"]?.object?["epoch"]?.string) else { return }
                 if previousEpoch != nil, previousEpoch != view.snapshotEpoch {
                     generation = view.presentationGeneration; requestedRevision = view.projectionRevision
+                    resumeVisibleReaders()
                 }
                 let appliedEpoch = view.snapshotEpoch
                 guard (result["seq"]?.number ?? -1) >= view.lastSequence else { return }

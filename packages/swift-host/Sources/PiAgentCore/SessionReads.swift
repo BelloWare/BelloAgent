@@ -19,7 +19,10 @@ extension AgentSession {
     private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation) async throws -> JSON {
         try cancellation.checkCancellation()
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
-        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != presentationTimeline {
+        // Retained readers can follow a same-ID runtime replacement using
+        // their stable message boundary. Branch and entry checks still apply.
+        let rebind = params["rebind"].flag == true
+        if let cursor, (!rebind && cursor.incarnation != displayEpoch) || cursor.lineage != presentationTimeline {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         let entry = cursor?.entry ?? params["entry"].text
@@ -38,7 +41,7 @@ extension AgentSession {
         }
         try cancellation.checkCancellation()
         let lineage = presentationTimeline
-        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
+        if let cursor, (!rebind && cursor.incarnation != displayEpoch) || cursor.lineage != lineage {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }

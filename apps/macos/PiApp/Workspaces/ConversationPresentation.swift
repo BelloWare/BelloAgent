@@ -92,6 +92,8 @@ struct ConversationHistoryPage: Sendable {
 /// Navigation owns these tasks, never the helper's agent/run tasks. The runtime
 /// display and draft stay alive while each visit receives a fresh generation.
 @MainActor final class ConversationPresentation {
+    enum ReloadTarget { case latest, message(String) }
+    var reloadTarget: ReloadTarget?
     var generation = UUID()
     var navigation: Task<Void, Never>?
     var olderTask: Task<Bool, Never>?
@@ -116,7 +118,7 @@ struct ConversationHistoryPage: Sendable {
         secondary?.cancel(); secondary = nil
     }
     func begin() {
-        cancel(); generation = UUID(); identity = nil; partialTurnInput = nil
+        cancel(); generation = UUID(); identity = nil; partialTurnInput = nil; reloadTarget = nil
         initializationPending = true
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
     }

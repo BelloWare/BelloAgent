@@ -12,6 +12,7 @@ import http.client
 import importlib.util
 import json
 import pathlib
+import queue
 import sys
 import tempfile
 import threading
@@ -467,6 +468,22 @@ class FixtureContractTests(unittest.TestCase):
 
 
 class NativeIntegration(unittest.TestCase):
+    def test_invalid_oversized_command_identity_is_rejected_without_losing_helper(self):
+        for identity in ['x' * 1_100_000, '\x01' * 200_000]:
+            self.peer.post('runtime.info', command_id=identity)
+            try:
+                reply = self.peer.next_frame(timeout=3)
+            except queue.Empty:
+                self.fail('No rejection frame; helper exit=%s' % self.peer.process.poll())
+            self.assertEqual(reply['kind'], 'reply')
+            self.assertFalse(reply['ok'])
+            self.assertEqual(reply['error']['code'], 'invalid_command')
+            self.assertEqual(reply.get('commandId', ''), '')
+            self.assertIsNone(self.peer.process.poll())
+            self.peer.command('runtime.info')
+        self.assertLessEqual(self.peer.maximum_frame_bytes, 1_048_576)
+        self.assertEqual(self.peer.errors, [])
+
     @classmethod
     def setUpClass(cls):
         cls.server = http.server.ThreadingHTTPServer(('127.0.0.1',0),Fixture)

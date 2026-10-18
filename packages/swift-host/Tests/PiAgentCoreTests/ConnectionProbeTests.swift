@@ -75,8 +75,19 @@ final class ConnectionProbeTests: XCTestCase {
         raw["baseUrl"] = JSON(base); raw["modelId"] = "owner-selected-router"
         raw["maxOutputTokens"] = 8192; raw["thinkingLevel"] = "high"
         raw["compat"] = ["supportsMaxOutputTokens": false]
-        let result = try await service.command("connection.test", sessionID: "connection-test-fixture",
-            params: ["profile": raw, "apiKey": "synthetic-probe-key"])
+        try Data().write(to: scratch.appendingPathComponent("hold-probe"))
+        let profile = raw
+        let probe = Task { try await service.command("connection.test", sessionID: "connection-test-fixture",
+            params: ["profile": profile, "apiKey": "synthetic-probe-key"]) }
+        defer { probe.cancel(); try? Data().write(to: scratch.appendingPathComponent("release-probe")) }
+        try await eventually { FileManager.default.fileExists(atPath: scratch.appendingPathComponent("probe-arrived").path) }
+        do { _ = try await service.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("A scoped connection probe is active helper work") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "session_busy") }
+        try Data().write(to: scratch.appendingPathComponent("release-probe"))
+        let result = try await probe.value
+        let quiet = try await service.command("workspace.quiesce", sessionID: nil, params: [:])
+        XCTAssertEqual(quiet["quiesced"].flag, true)
+        _ = try await service.command("workspace.resume", sessionID: nil, params: [:])
         XCTAssertEqual(result["verified"], true); XCTAssertEqual(result["model"], "owner-selected-router")
         let attempts = try await service.command("debug.list", sessionID: "connection-test-fixture", params: [:])["attempts"].list
         XCTAssertEqual(attempts.count, 1)
@@ -111,7 +122,7 @@ final class ConnectionProbeTests: XCTestCase {
     }
 
     static let gatewayScript = #"""
-import base64, http.server, json, pathlib, sys
+import base64, http.server, json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
 mode = sys.argv[2] if len(sys.argv) > 2 else 'probe'
 class Gateway(http.server.BaseHTTPRequestHandler):
@@ -159,6 +170,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['input'] == [{'role':'system','content':'This is a connection test. Reply briefly with OK.'},{'role':'user','content':[{'type':'input_text','text':'Reply with OK to confirm this connection.'}]}]
         except (AssertionError, KeyError, ValueError):
             self.send_response(422); self.end_headers(); self.wfile.write(b'{"error":"invalid probe"}'); return
+        if (root / 'hold-probe').exists():
+            (root / 'probe-arrived').touch()
+            deadline = time.monotonic() + 20
+            while not (root / 'release-probe').exists() and time.monotonic() < deadline: time.sleep(.01)
         response = json.dumps({'id':'response-probe','object':'response','status':'completed','model':body['model'],
             'output':[{'id':'message-probe','type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':'OK'}]}],
             'usage':{'input_tokens':12,'output_tokens':1,'total_tokens':13}}, separators=(',', ':')).encode()

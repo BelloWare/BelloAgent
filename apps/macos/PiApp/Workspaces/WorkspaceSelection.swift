@@ -49,6 +49,16 @@ extension WorkspaceModel {
     func resumeVisibleReaders() {
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.isShutDown else { return }
+            for view in self.displays.values where self.transcriptShows(view.id) && view.needsVisibleHistoryLoad {
+                // Runtime retirement keeps a reload's explicit destination;
+                // ordinary selection still resumes from its held position.
+                let navigation = self.transcriptNavigation(view.id)
+                switch view.presentation.reloadTarget {
+                case .latest: self.reloadHistory(view.id, navigation: navigation)
+                case .message(let id): self.reloadHistory(view.id, around: id, navigation: navigation)
+                case nil: break
+                }
+            }
             for tab in self.tabs.allTabs.compactMap({ $0 as? SubagentTab }) where self.subagentTabIsShown(tab.key) {
                 tab.ensureLoaded()
                 self.displays[tab.key]?.findHost?.resumeFindNavigation()

@@ -180,6 +180,11 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             tool_arguments = {"child_id": prompt.split()[-1], "message": "managed child short followup"}
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
+            if os.environ.get("PI_APP_UI_FIXTURE_PROBE_BARRIER") == "1":
+                Path("probe-arrived").touch()
+                deadline = time.monotonic() + 20
+                while not Path("probe-release").exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
             text = "OK"
         if "EXPLICIT-FIXTURE-SELECTED" in json.dumps(body) and "skill fixture" in prompt.lower():
             text += "\n\nEXPLICIT-FIXTURE-SELECTED: the selected skill reached the request."

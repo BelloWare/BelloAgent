@@ -11,6 +11,20 @@ import Sparkle
 /// Cancel aborts the install and changes nothing. Sparkle itself is never
 /// reached: its check and its relaunch are the controller's seams.
 final class UpdatePauseTests: XCTestCase {
+    @MainActor func testToolOnlyInstallNamesTheActiveWorkAndKeepsTheConfirmationFlow() async {
+        let rig = Rig(answer: .alertFirstButtonReturn)
+        rig.controller.runningChats = { 0 }
+        rig.controller.runningToolCalls = { 1 }
+        XCTAssertTrue(rig.controller.shouldRelaunch())
+        var handled = 0
+        _ = rig.controller.postponeRelaunch { handled += 1 }
+        await settled(rig) { handled == 1 }
+        XCTAssertEqual(rig.questions.first?.messageText, "A tool call is still running")
+        XCTAssertFalse(rig.questions.first?.informativeText.contains("each paused chat") ?? true)
+        XCTAssertEqual(rig.questions.first?.buttons.map(\.title), ["Pause and Install", "Cancel"])
+        XCTAssertEqual(rig.steps, ["pause", "barrier", "prepare"])
+    }
+
     /// The controller with every seam recorded, and the question answered `answer`.
     @MainActor private final class Rig {
         let controller = UpdateController()
@@ -145,5 +159,37 @@ final class UpdatePauseTests: XCTestCase {
         _ = rig.controller.postponeRelaunch { handled += 1 }
         await settled(rig) { handled == 1 }
         XCTAssertEqual(rig.steps, ["barrier", "prepare"]); XCTAssertTrue(rig.questions.isEmpty)
+    }
+}
+
+final class UpdatePauseGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testUpdateActivityQuestions() async throws {
+        guard let path = testEnvironment("PI_APP_UPDATE_PAUSE_GALLERY") else { throw XCTSkip("Set PI_APP_UPDATE_PAUSE_GALLERY for update questions") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { PiQuestion.shared.answerAlert = nil; window.orderOut(nil); window.close() }
+        window.makeKeyAndOrderFront(nil)
+        for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            for width in [640, 920] {
+                window.appearance = NSAppearance(named: appearance); window.setContentSize(NSSize(width: width, height: 600))
+                for (scene, chats, tools) in [("tool", 0, 1), ("tools", 0, 2), ("background", 0, 0), ("chats", 2, 0)] {
+                    let controller = UpdateController()
+                    controller.hasActiveWork = { true }; controller.runningChats = { chats }; controller.runningToolCalls = { tools }
+                    var question: NSAlert?, handled = false
+                    PiQuestion.shared.answerAlert = { question = $0; return .alertSecondButtonReturn }
+                    XCTAssertTrue(controller.shouldRelaunch())
+                    _ = controller.postponeRelaunch { handled = true }
+                    try await eventually("The update question is built") { handled }
+                    let alert = try XCTUnwrap(question)
+                    alert.beginSheetModal(for: window, completionHandler: { _ in })
+                    let sheet = try XCTUnwrap(window.attachedSheet)
+                    try await Task.sleep(for: .milliseconds(250))
+                    try SessionStatsPopoverTests.capture(sheet, to: folder.appendingPathComponent("\(scene)-\(name)-\(width).png"))
+                    window.endSheet(sheet); sheet.orderOut(nil)
+                }
+            }
+        }
     }
 }

@@ -9,9 +9,9 @@ Branch: `dev/a130-wire`; base `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`. All ge
 - **CONCURRENCY-LIFECYCLE-2:** the same pin participates in host busy state and both idle-timer eligibility checks. Finishing a concurrent chat cannot stop a helper carrying an Inspector call. On completion/error the pin is released and ordinary idle scheduling resumes. Existing explicit Quit/Pause confirmation and unknown-outcome recovery remain unchanged.
 - **WIRE-CONTRACT-3:** snapshot ordering uses the existing `monitoring.epoch` (the helper's `displayEpoch`), not the session ID alone. A replacement resets sequence, projection, receipt/task/context revisions and queue-edit revision gates; it retires in-flight presentation reads. The first lower-sequence snapshot applies immediately. Retired runtime identities cannot be adopted again, and asynchronous decode is fenced. Navigation changes still win. No helper runtime/recovery rewrite or reader unload/reopen is needed.
 
-**Needs owner decision:** `apps/macos/PiApp/Application/UpdateController.swift:85` still describes MCP-only activity as a running chat in the existing Pause and Install confirmation. This branch preserves that copy and the explicitly confirmed pause policy; it prevents unconfirmed installation and idle shutdown. Any MCP-specific confirmation wording is a separate visible-UX decision.
+**Initial review decision, resolved in round 2:** MCP-specific update wording was deferred for owner approval. The lead approved it in the follow-up request; the current confirmation accurately names Inspector-only calls and other background work while preserving the confirmation flow.
 
-No view/layout/style changes or production feature switches. Native mounted-reader integration checks cover the changed presentation behavior. `SubagentDisplayGalleryTests` regenerated 40 images under the shared lock; the light/dark `child-report` scenes at 1240×800 and 640×600 were visually inspected. No new layout issue was found; narrow labels use the existing ellipsis/wrapping.
+The initial fixes made no view/layout/style changes or production feature-switch changes. Native mounted-reader integration checks cover the changed presentation behavior. `SubagentDisplayGalleryTests` regenerated 40 images under the shared lock; the light/dark `child-report` scenes at 1240×800 and 640×600 were visually inspected. No new layout issue was found; narrow labels use the existing ellipsis/wrapping.
 
 ## Fail first and mutation evidence
 
@@ -79,7 +79,7 @@ Focused regression/mutation runs use the same native command with `/testInspecto
 
 The additional native guard runs use `-only-testing:PiAppTests/MCPInvocationRetentionTests/testDiscoveryPreservesTheHostsExistingActivityPin`, or the pair `-only-testing:PiAppTests/MCPInvocationRetentionTests/testTimedOutInvocationPinsActivityUntilItsPhysicalReplyOrHostExit -only-testing:PiAppTests/MCPInvocationRetentionTests/testTimedOutRetentionAcknowledgementPinsActivityUntilItsPhysicalReply`, with the same `PI_BUILD_ROOT` and script.
 
-## Contract sweep: helper-to-app frames
+## Initial contract sweep: helper-to-app frames
 
 Inspected every emission in `NativeHostService`, `CaptureDelivery` and `PiHost/Main.swift`, plus app `HostTransport`, `HostFrameDecoder`, `HostInbox`, `HostSupervisor`, `DisplayResultReader` and shared Python `HostPeer`.
 
@@ -97,7 +97,7 @@ Inspected every emission in `NativeHostService`, `CaptureDelivery` and `PiHost/M
 
 The Python wire client now checks the 1 MiB physical-frame limit for **every received kind**, reassembles capture chunks, and calls its existing capture consumer only for complete packets. Native/Swift tests include JSON escaping and Unicode, malformed final JSON, gaps, mixed identities, rejection and final-ack ordering.
 
-## Contract sweep: activity and quiescence
+## Initial contract sweep: activity and quiescence
 
 Inspected the host command dispatch stages, session run/close/idle predicates, coordinator lifecycle, MCP execution/retention, capture outbox, and the app's update, idle, host startup, Resources, title, webhook, connection-test, context and history callers.
 
@@ -113,7 +113,7 @@ Inspected the host command dispatch stages, session run/close/idle predicates, c
 | Configuration, recovery/import/rebind, journal slimming and budget repair | Existing workspace-change/runtime/journal gates, not a blanket activity pin. Parallel helper work owns preview/import/recover scheduling; this branch does not edit those functions. |
 | Onboarding `connection.test` | Additional audit gap: its private helper is outside `WorkspaceModel.hosts` and its local request is not part of `hasActiveWork`; see follow-up below. |
 
-## Contract sweep: session ID versus runtime identity
+## Initial contract sweep: session ID versus runtime identity
 
 - `WorkspaceHosts.open`, `opened`, `sessionOpenings`, `helperSessionDidUnload` and host-loss resets: explicit unload/reconnect paths already fence connections. `openAgentChild` is the intentional same-ID replacement without unload; fixed at snapshot adoption so the reader stays attached.
 - `WorkspaceRefresh`, `SessionDisplay`: sequence/projection/task/receipt/monitoring/context/queue-edit gates now reset for a replacement epoch; old snapshots cannot settle intents, adopt side state, replace paths or update subagent lists.
@@ -124,7 +124,7 @@ Inspected the host command dispatch stages, session run/close/idle predicates, c
 - Completion sound and webhook trackers: already compare monitoring epochs and use a baseline on epoch changes; managed children do not produce independent notifications.
 - Capture/Inspector caches: physical attempt ID + host epoch/workspace scope, not the session runtime sequence. MCP retention uses host epoch + unique command ID. Drafts, saved metadata, message accounting and journal ancestry intentionally remain durable session identities.
 
-## Additional findings, not fixed in this scope
+## Initial additional findings (all addressed in round 2 below)
 
 1. `packages/swift-host/Sources/PiAgentCore/HostService.swift:124` and `:185`: a generated command with a 1,100,000-byte invalid `commandId` fits the inbound command-frame allowance, but its rejection echoes that ID without bounding the reply. The Release helper exits 70. Reproduced in `sweep-overlong-command-id.log`; this is distinct from capture delivery and needs a separate fix.
 2. `apps/macos/PiApp/Workspaces/WorkspaceConnectionProbe.swift:31`–`:65`: onboarding creates a private helper and sends `connection.test` without registering it in `hosts` or the workspace activity predicate. An update/idle sweep cannot account for that pending request. Static contract finding only; no live/provider probe performed. Needs owner decision: whether update should await/cancel onboarding connection tests explicitly. Kept outside this branch's assigned Inspector MCP fix.
@@ -132,6 +132,109 @@ Inspected the host command dispatch stages, session run/close/idle predicates, c
 3. `apps/macos/PiApp/Workspaces/WorkspaceHistory.swift:37` and `packages/swift-host/Sources/PiAgentCore/SessionReads.swift:22`: a reader browsing retained history can still hold an old helper-incarnation cursor after same-ID runtime replacement; paging sends it unchanged and the helper rejects it as stale. The live-tail regression is fixed, but automatic rebinding of a held history cursor is a separate pre-existing navigation case. Static contract finding; no cursor migration added here.
 4. `packages/swift-host/Sources/PiAgentCore/HostService.swift:774` and `:410`: non-MCP submission preflight awaits skill/resource preparation after its quiescence check but before the session becomes busy. A raw wire `workspace.quiesce` can cross that interval without an independent admission counter. Native send/open callers already have activity guards. Static protocol finding; the scoped Inspector counter does not change general submission admission.
 
-## Adversarial self-review
+## Initial adversarial self-review
 
-Reviewed the final diff for chunk rejection/close races, prefix-vs-durable acknowledgement, malformed/changing chunk IDs, Unicode/JSON escaping, retained capture/credential boundaries, pin admission before awaits, concurrent pins, cancelled-sheet result retention, failed saves, caller timeout versus physical command completion, settlement-waiter release on host loss, execution-vs-retention quiescence, navigation winning over awaited snapshots, retired-epoch rollback, same-epoch ordering, and durable cost/notification identities. No TraceStore masking, tool authorization, vault, journal or production rollout change. The assigned fixes have no remaining identified defect in the exercised paths. The separately listed rejection-frame, onboarding-activity, retained-history-cursor and general-preflight gaps remain outside this workstream. All native changes are in activity/transport/snapshot code; no visual-control code changed.
+Reviewed the final diff for chunk rejection/close races, prefix-vs-durable acknowledgement, malformed/changing chunk IDs, Unicode/JSON escaping, retained capture/credential boundaries, pin admission before awaits, concurrent pins, cancelled-sheet result retention, failed saves, caller timeout versus physical command completion, settlement-waiter release on host loss, execution-vs-retention quiescence, navigation winning over awaited snapshots, retired-epoch rollback, same-epoch ordering, and durable cost/notification identities. No TraceStore masking, tool authorization, vault, journal or production rollout change. The assigned fixes have no remaining identified defect in the exercised paths. At that point the separately listed rejection-frame, onboarding-activity, retained-history-cursor and general-preflight gaps remained outside scope. Round 2 below resolves all four. The initial native changes were in activity/transport/snapshot code, with no visual-control changes.
+
+
+## Round 2: review recovery and authorized follow-ups
+
+Starting commit: `355c900637df12c12cd30155df0bdc3f08944801`. The lead explicitly requested all four recorded follow-ups and approved accurate Inspector-only update wording. The read-only review's loading-state finding is confirmed. No product decision remains pending for these changes.
+
+- Rejections omit an inadmissibly long command identity (empty echo, never a truncated valid identity) and use the same encoded-byte bound as accepted replies. Valid rejected identities still correlate normally.
+- Epoch retirement clears the old initial loading state before changing its generation, clears edge-loading flags, and reconciles only still-visible readers. Old tasks cannot publish or clear newer loading flags. Reload recovery retains its explicit destination; ordinary initial loading retains the scroll anchor and draft initialization.
+- Native history requests explicitly opt into stable-entry rebinding. The helper validates lineage before and after older-index loading and verifies the boundary message still exists. Strict callers still reject stale incarnations. The native page joins only after lineage, overlap and residency validation; opposite boundaries adopt the replacement incarnation without changing the reader's anchor.
+- A host admission count covers changing-session commands across preflight and admission, including submit/steer/edit, Resume's budget check, retry, queue resume and compaction. Inspector execution retains its separate execution/retention count and `mcp_busy` error. Quiescence refuses before crossing an outstanding admission.
+- Onboarding probes pin app activity before their first await, register their scoped helpers for the existing confirmed pause/Quit shutdown, and release activity after cleanup/accounting. Barrier/shutdown checks prevent late preflight from starting a new provider request. Raw `connection.test` also pins helper admission through completion. This preserves explicit Pause and Install semantics; Check for Updates remains passive.
+- The confirmation distinguishes one/multiple Inspector calls and other background work from running chats. Existing buttons, cancellation and pause/install ordering are unchanged. Existing chat wording is retained.
+
+### Failing-first evidence
+
+All logs below are under `build-a130-wire/logs/round2/` (absolute build root above).
+
+- `helper-baseline.log`: three new regressions failed, eight assertions total. Rejection frames measured **1,100,266** and **1,200,266** bytes; all three held submission methods allowed quiescence; the old cursor threw `history_changed`.
+- `native-baseline.log`: four tests failed, sixteen assertions total. Initial and reload reads remained `.loading`; paging refused the replacement incarnation; tool-only confirmation said “Pause the running chat”; the held onboarding probe allowed the update barrier.
+- `probe-helper-baseline.log`: the existing real-loopback connection-probe regression, extended with a response barrier, failed because raw helper quiescence acknowledged while the probe was running.
+- `helper-focused.log`: after fixes, **22 tests passed**, zero failures/skips, across ReplyEncodingTests, HostServiceTests, HistoryWindowTests and ConnectionProbeTests.
+
+### Round 2 nearby sweep
+
+Rechecked all pre-admission `reply` sites (malformed envelope, invalid ID, stale epoch, mutation tombstones/conflicts and capacity refusal), accepted/cached replies and transfer fallback. Ready/incompatible and session event frames remain fixed-schema/validated-identity output; all capture kinds retain the generic chunk boundary from round 1. No TraceStore edit.
+
+Rechecked changing-session dispatch and each preflight await, scoped connection probes, Inspector execution/retention, helper startup, resource discovery, paused queues, run continuation, compaction, side/fork/session opening and runtime gates. External execution now has a session, Inspector retention, or admission owner. Read-only discovery/history/context work keeps its existing cancellation behavior; session/fork/side opening creates idle runtimes and does not submit provider work. Parallel preview/import/recover scheduling remains untouched.
+
+Rechecked presentation cancellation and generation sites in selection, sides, hosted/inherited readers, reload, pending-project cleanup and shutdown; only epoch retirement changed generation without clearing initial loading. Rechecked both history paging directions, file/helper handoff, position/reveal validation, lineage changes, missing boundary IDs, retired snapshots, delayed page publication and same-epoch ordering. Persistent drafts/accounting stay keyed by durable session identity.
+
+### Round 2 final validation and adversarial review
+
+Mutation evidence:
+
+- `native-mutation.log`: remove initial-load cleanup, restore the old handoff gate, ignore onboarding activity, and force the chat-only prompt. **All 4 tests failed, 17 assertions**. All native mutations were restored.
+- `native-recovery-navigation-baseline.log`: the added recovery-token assertion failed because the provisional reload restart advanced navigation. Recovery now passes the current token; explicit user reloads still advance it. `native-recovery-navigation-mutation.log` ignores that supplied token: **1 test failed, 1 assertion**. Restored before final validation; `native-recovery-navigation-fixed.log` passes the regression (1 test, zero failures).
+
+- `helper-mutation.log`: disable the quiescence admission check, disallow cursor rebinding, and echo the full invalid command identity. **All 4 tests failed, 11 assertions**, with the original errors/overflows restored. Restored all sources in a `finally` block.
+- `wire-mutation.log`: build the mutated Release helper and run the new invalid-ID wire case. **1 test failed** with `No rejection frame; helper exit=70`. This independently verifies the writer/process failure, not just JSON size. Restored the source and rebuilt the fixed Release helper for native/final wire runs.
+- `native-reload-target-baseline.log`: after the loading reset alone, **57 of 58 tests passed**; the recovery regression failed twice because reload resumed at `held`/offset 17 instead of `destination`/offset 0. Preserving the reload target fixed those assertions. The fake transport regression now releases its first snapshot explicitly so automatic recovery's follow-up snapshot does not delay the test on an unanswered fake request.
+- `native-fixed.log`: **25 passed**, zero failures/skips (22 OnboardingTests, 2 focused history regressions, 1 tool-only confirmation regression).
+
+Commands (all run from this worktree; `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire`, `H=$B/swift-host/arm64-apple-macosx/release/pi-native-host`):
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ReplyEncodingTests|HostServiceTests|HistoryWindowTests|ConnectionProbeTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$H"
+python3 scripts/test-concurrent-native-host.py "$H"
+python3 scripts/test-native-acceptance.py "$H"
+```
+
+Native focused/galleries use `PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO` with the class filters listed in the final table. Serial-lane classes each run alone. Every final native run and the Release wire lane acquire/release the shared full-lane lock, with owner matching in an EXIT trap; no foreign lock is removed. Gallery variables are `TEST_RUNNER_PI_APP_UPDATE_PAUSE_GALLERY="$B/gallery-round2/update"` and `TEST_RUNNER_PI_APP_SUB_DISPLAY_GALLERY="$B/gallery-round2/readers"`.
+
+Full helper result: `helper-final.log` **1,028 passed + 7 skipped**, zero failures, 435.604 seconds; `helper-streaming-final.log` **5 passed**, zero failures/skips, 3.599 seconds. Combined **1,033 passed + 7 existing opt-in skips** (1,040 executed). Skips remain the fixture writer, large-fork performance, rapid-supersession measurement and four session-open performance probes.
+
+Release suites: `test-native-host.log` **39 passed**, `test-concurrent-native-host.log` **4 passed**, `test-native-acceptance.log` **3 passed**. Zero failures/skips. The wire suite includes both 1.1 MB ASCII and JSON-expanded invalid identities, then a successful `runtime.info` on the same helper.
+
+The core native command is:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests \
+  -only-testing:PiAppTests/OnboardingTests \
+  -only-testing:PiAppTests/UpdatePauseTests \
+  -only-testing:PiAppTests/HistoryEdgeTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/WorkspaceConcurrencyTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/MCPInvocationRetentionTests \
+  -only-testing:PiAppTests/HostFrameTests \
+  -only-testing:PiAppTests/HostTransportTests \
+  -only-testing:PiAppTests/HostSupervisorTests \
+  -only-testing:PiAppTests/HardeningTests
+```
+
+Separate invocations of `PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/<Class>` run `HistoryEdgeTimingTests`, `HistoryEditTests`, `SubagentOpeningTests`, `SubagentNavigationTests`, `LifecycleHelperTests`, and `WindowLifecycleTests`. The gallery classes use the same command, each alone, with the runner environment assignments above.
+
+Final native totals: **261 passed**, zero failures/skips, across 24 classes. Native final log breakdown:
+
+| Log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `native-final.log` | 219 | 0 | 0 |
+| `native-HistoryEdgeTimingTests.log` | 2 | 0 | 0 |
+| `native-HistoryEditTests.log` | 3 | 0 | 0 |
+| `native-SubagentOpeningTests.log` | 14 | 0 | 0 |
+| `native-SubagentNavigationTests.log` | 7 | 0 | 0 |
+| `native-LifecycleHelperTests.log` | 11 | 0 | 0 |
+| `native-WindowLifecycleTests.log` | 3 | 0 | 0 |
+| `native-update-gallery.log` | 1 | 0 | 0 |
+| `native-reader-gallery.log` | 1 | 0 | 0 |
+
+The 219-test core comprises Hardening 12, HistoryEdge 16, HistoryExtent 25, HostFrame 4, HostSupervisor 10, HostTransport 8, LaunchSelection 20, LongJournalHistory 1, MCPInvocationRetention 9, Onboarding 22, RunHold 18, UpdatePause 8, WorkspaceConcurrency 8, WorkspaceFailure 6, WorkspaceRefreshLifecycle 35, and Workspace 17.
+
+Galleries regenerated **16 update-question PNGs** and **40 reader PNGs**. Inspected the single-tool question in light/dark at both 640/920 host widths, plural tools and background work in dark/narrow, and `child-report` in light/dark at 1240×800 and 640×600. Text and actions fit; no new clipping or layout regression. Artifacts remain under `$B/gallery-round2/{update,readers}`. All gallery/focus runs held the shared lock. The lock was released after the final run; no foreign lock was removed. No clone folders remain in this build root.
+
+Final adversarial self-review covered invalid-ID collision/correlation and JSON escaping; every reply/capture writer path; counter entry before awaits and release on failures/stop; helper-owned execution versus retained MCP results; onboarding preflight, barrier races, caller cancellation and physical helper shutdown; epoch changes during initial/reload/edge reads; stable entry and lineage validation; delayed old-task publication; explicit reload destinations; recovery preserving navigation tokens; and confirmation cancel/accept ordering. The extra destination/token assertions caught and corrected two recovery details before the final pass. Permission, capture, vault, tool and durable-data boundaries are unchanged. Preview/import/recover and TraceStore remain untouched. All mutations are restored, no unrelated test failed, and no identified issue remains unresolved in this follow-up scope.
