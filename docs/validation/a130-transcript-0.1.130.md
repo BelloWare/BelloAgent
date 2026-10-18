@@ -3520,3 +3520,391 @@ scripts/test-macos.sh -parallel-testing-enabled NO \
 No helper or wire implementation changed; the full helper and Python wire/concurrent/acceptance gates were not required for this app-only fix. No UI layout or appearance changed in round 9; the inspected round-8 galleries remain the UI evidence. No source files were added or removed, so project regeneration was unnecessary. There is no unresolved product decision or unfixed round-9 finding.
 
 The final `git diff --check` passed. No clone folders remain under this build root, and no shared lock remains owned by this workstream. The rejected oversized experiment fixture was removed; 12.01 GiB remained free. Evidence is in text logs; no named result bundle was requested. No installed app, real preferences/chats, Keychain, live capture or paid provider was used. `scripts/test-lanes.py list` classifies `TranscriptBugRegressionTests` as serial (pasteboard, timing), so the new timing assertions also run alone in the lead’s full gate.
+
+## Round 10 — continuation summaries, bounded issuer payloads, failed cards
+
+The three review findings are **confirmed and fixed**. This round changes the
+app's Find projection/cache only; it does not change helper wire behavior,
+permissions, capture, credentials, saved source, or native card presentation.
+All fixtures are generated under the test's temporary directory. The installed
+app was not launched. Native runs use this workstream's build root and hold the
+shared full-lane lock, including the pasteboard/timing regression class.
+
+### Failing-first evidence
+
+`round10-failing-first-tests.log`: **0 passed / 3 failed**, exit 65, before any
+production fix. The earlier `round10-failing-first.log` is a test-compilation
+failure (Swift 6 isolation on the native test helper), not reproduction evidence;
+the helper was made static and the same three cases rerun.
+
+| Finding | Regression | Original failure |
+| --- | --- | --- |
+| Failed edit/write work-line summaries disappear | `testFailedToolSummariesEqualDisplayedCardsSavedAndLive` | `Permission denied` returned `[]` instead of receipt `result`; native card/row comparison lacked that displayed line. Bash is the control: its output already displays the full error. |
+| An unsupported timeline retains all receipt bodies | `testWideLegacyIssuerRetainsOnlyBoundedMatchState` | 32 × 256 KiB receipts retained **8,390,038 bytes** of accumulated projected card text. The original 128 KiB assertion failed. |
+| Continuations recreate dependency projections | `testFindContinuationsDecodeDependenciesOnceAcrossTenPages` | **10,050 decodes**, **3,029,378 decoded bytes** for a **308,604-byte** generated journal across ten pages; expected every record at most once. The test took **310.189 s**. |
+
+```text
+CONTINUATION-COST pages=10 decodes=10050 bytes=3029378 source=308604
+RETAINED-SEARCH bytes=8390038 source=8403230
+XCTAssertEqual failed: ("[]") is not equal to ("[\"result\"]") - write
+```
+
+The memory case was subsequently strengthened to **64 × 1 MiB receipts** and a
+2 MiB bound that includes the SQLite pager, retained projection fragments,
+matcher boundary/snippet, and the current replay fragment. This measures the
+search's retained projection state, not the test host's RSS or the fixture
+builder's source arrays. Source decoding continues to obey the existing shared
+16 MiB/32-record budget, with one oversized source record alone. A single native
+card's transient decode/render remains necessary; the search no longer retains
+the sum of those cards or joins all their bodies into a second large string.
+
+The legacy planner displays both its cards and standalone receipt rows. The
+expected total is therefore **128 displayed occurrences**, not 64. Paired
+supported timelines continue to own each output only once, in their receipt.
+
+### Implementation and presentation inputs
+
+- The round-7 input table treated work-line summaries as chrome. Failed edit/write
+  summaries are an exception: they are the only visible error text.
+  Failed `.diff` cards use the actual `TranscriptToolRow.Model.summary` when
+  failure output exists. This is precisely the work row's first displayed error
+  line. Hidden later edit/write error lines remain unsearchable; bash keeps its
+  displayed full output. Failed cards without output do not duplicate the path.
+  Both native action-row search and history use this same summary input.
+- `ConversationContent.Presentation.parts` exposes the canonical planner's
+  ordered text/card fragments. The existing whole-text projection uses the same
+  fragments. History consumes them incrementally, preserving interleaving,
+  repeated card positions, multiline queries, case folding and source mode.
+- Per-issuer card fragments spill after 64 KiB to an atomically created
+  mode-0600 scratch descriptor (`mkstemp`).
+  The file is **unlinked immediately after opening, before payload writes**;
+  completion, cancellation and process exit close it without leaving a payload
+  copy. It is never retained by a continuation. Only source offsets, match
+  counts, bounded displayed snippets and ownership facts survive in the existing
+  private index file's bounded SQLite pager. Replaying an ordered/repeated card
+  reads the scratch fragment, not the journal or JSON decoder again.
+- One continuation cache is retained. Its scope includes the journal path/stamp,
+  query, rendered/source mode, managed-child mode and a digest of all captured
+  display inputs. It is reused only at the expected next cursor. Exhaustion,
+  replacement, cancellation/failure, index eviction or reader shutdown releases
+  it. A generation guard prevents an older search from replacing a newer lease.
+  Captured payloads are hashed, not retained by this lease.
+
+| Renderer/search input | Scope evidence and value used |
+| --- | --- |
+| Planner rows, source text, timeline state, tool state/input/output and native delivery metadata | The captured `TranscriptMessage` values; their complete encoded values enter the display digest. The active branch and journal stamp scope unloaded rows. |
+| View Raw | Sorted `rawReplies`; each timeline part still uses its own completion state through the shared projection. |
+| Fetched arguments | Occurrence key plus full input, truncation flag, byte count and streaming flag; the same document reaches the card model. |
+| Agent display | ID, managed-child/busy/family-waiting flags, child numbers, efforts, costs, availability, coordination entries, child summaries and held-child set all enter the digest. Unloaded rows use that captured presentation. |
+| App-only tool fields excluded from wire coding | Original availability title/reason and all subagent cost-presentation fields are added explicitly to the digest. |
+| Failed work-row text | The original model's summary, outcome and nonempty failure output; fetched arguments replace the body but not that work line. |
+| Receipt ownership and recovery context | Active-branch issuer/latest-receipt links, captured standalone rows, and source/operation presence remain the planner's inputs. Unsupported timelines retain their unsupported status. |
+
+### Same-function sweep and adversarial checks
+
+The 1,000-call baseline also exposed redundant planning of all sibling timeline
+segments for each individual receipt. `round10-timeline-first.log` is **1 passed /
+1 failed**: scope-invalidation checks passed; the new in-flight paging probe took
+**0.910916 s**, failing its 0.75 s bound. The join now receives only its own call's
+segments from a precomputed grouping, including after a captured-row overlay.
+The full issuer still projects its complete canonical plan. Unsupported timelines
+are not filtered into apparently supported ones. The first control reduced the
+paging probe to **0.051105 s** and ten-page search to **3.745 s**.
+
+A summary byte-bound test found another instance of the retention pattern:
+240 graphemes can be many kilobytes. In `round10-regression-control.log`,
+`testSearchSummarySnippetsBoundLongGraphemesAndKeepTheMatch` failed at **16,416**
+and **16,399 bytes** against 4,096. Snippets now have both the existing character
+limit and a 4 KiB UTF-8 limit; an oversized leading grapheme cannot displace the
+matched text. The transcript text and occurrence counts are unchanged.
+
+The incremental matcher was checked against Foundation's whole-string search,
+including Unicode folding, decomposed characters, NUL, overlapping needles,
+multiline boundaries and CR/LF. The first extracted-code probe found **70/2,200**
+differences (`round10-fragment-fuzz-first.log`): a CR at a fragment end must wait
+for the joining LF, and snippet continuation must preserve whole-character
+context. Both were corrected before committing. The control and native corpus
+now compare all 2,200 cases. The standalone probe compiled the exact extracted
+`SearchText` code with Foundation using the workstream's module cache; it did
+not substitute a separate implementation.
+
+Additional coverage checks query/display/journal/restart invalidation, cache
+release, cancellation while spilling, anonymous scratch lifetime, reordered and
+repeated timeline cards, exact cross-card newline matching, full fetched inputs,
+all earlier page splits/reused IDs/orphan ledgers, and saved/live native card
+payloads. Navigation code is unchanged: refreshing results still does not create
+focus or override reader navigation. No new owner decision is required.
+
+### Projection and unanswered-call batching
+
+The stronger 64 MiB receipt fixture exposed a separate same-function gap even
+with retained memory bounded: `round10-payload-paging-first.log` failed at
+**4.351594 s** paging delay, while retaining **1,159,773 bytes**. Decoding had a
+budget, but rendering all receipts within that budget was still synchronous.
+Each receipt projection now yields as well. A scratch fragment replay already
+yields independently of source decoding.
+
+The no-receipt path also bypassed the source-read budget entirely. With an
+explicit unsupported timeline and 10,000 unanswered calls,
+`round10-unanswered-legacy-first.log` failed at **5.755939 s**, against baseline
+paging **0.000455 s + 0.75 s**. The metadata/ownership loop and default fragment
+projection loop now yield every 32 items, including when no receipt exists.
+These are changes in the same dependency function, with separate regressions
+and mutations. No tool is executed by either fixture.
+
+### Separate existing issue recorded, not changed
+
+`packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift:125`: an older
+assistant record without `nativeResponseTimeline`, containing thousands of
+canonical parts, goes through `canonical` → `consume(.replace)` for every part.
+Each consume scans preceding segments repeatedly and rebuilds their part keys.
+This helper file is identical to `dev/next` (`git diff dev/next --` that file is
+empty). It is outside this workstream's assigned files/functions, so it is
+recorded for separate work under the scope rule.
+
+The initial 5,000-call no-receipt fixture hit this existing constructor as well
+as Find's loops: `round10-unanswered-first.log` failed with **36.312958 s** paging
+delay. An extracted, otherwise unchanged copy of that helper source confirms
+quadratic construction independently (`round10-legacy-canonical.log`):
+
+```text
+LEGACY-CANONICAL parts=1000 seconds=1.1148662082850933 segments=1000
+LEGACY-CANONICAL parts=2000 seconds=4.631572958431207 segments=2000
+```
+
+Command: `swift -module-cache-path
+/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/swift-probe-cache
+/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation/round10-legacy-canonical.swift`.
+The generated probe copies `ResponseTimeline.swift` and appends two calls to
+`canonical` over generated `toolArguments` tuples, measuring monotonic time.
+The committed unanswered-call regression supplies a valid explicit unsupported
+timeline so it isolates the new Find batching failure instead of timing this
+separate constructor. The 1,000-call continuation test still exercises ordinary
+legacy canonicalization and bounds its total time generously.
+
+### Mutation and final validation
+
+All **10/10 mutation probes** failed their behavioral regression, and the production sources were restored before the final runs. Each mutation ran only its named method in `TranscriptBugRegressionTests` under the shared lock.
+
+| Mutation (log `round10-mutation-<name>.log`) | Regression | Result |
+| --- | --- | --- |
+| `failure-summary` | `testFailedToolSummariesEqualDisplayedCardsSavedAndLive` | 0 passed / 1 failed; exit 65 |
+| `retained-payloads` | `testWideLegacyIssuerRetainsOnlyBoundedMatchState` | 0 passed / 1 failed; exit 65 |
+| `continuations` | `testFindContinuationsDecodeDependenciesOnceAcrossTenPages` | 0 passed / 1 failed; exit 65 |
+| `scope` | `testContinuationSummariesInvalidateForQueryDisplayAndJournalChanges` | 0 passed / 1 failed; exit 65 |
+| `timeline-neighbours` | `testFindContinuationsDecodeDependenciesOnceAcrossTenPages` | 0 passed / 1 failed; exit 65 |
+| `snippet-bytes` | `testSearchSummarySnippetsBoundLongGraphemesAndKeepTheMatch` | 0 passed / 1 failed; exit 65 |
+| `fragment-crlf` | `testFragmentSearchMatchesFoundationAcrossUnicodeAndLineEndings` | 0 passed / 1 failed; exit 65 |
+| `anonymous-spill` | `testSpilledCardsKeepPlannerOrderWithoutDecodingRepeatedParts` | 0 passed / 1 failed; exit 65 |
+| `receipt-yield` | `testWideLegacyIssuerRetainsOnlyBoundedMatchState` | 0 passed / 1 failed; exit 65 |
+| `unanswered-yield` | `testWideUnansweredIssuerYieldsWithoutReceiptDecodes` | 0 passed / 1 failed; exit 65 |
+
+Selected behavioral mutation evidence:
+
+```text
+failure-summary: XCTAssertEqual failed: ("nil") is not equal to ("Optional(1)")
+retained-payloads: XCTAssertLessThan failed: ("68271443") is not less than ("2097152") - An issuer must retain summaries, never its accumulated receipt payloads
+continuations: XCTAssertLessThanOrEqual failed: ("3029378") is greater than ("308604") - ten continuation pages
+scope: XCTAssertTrue failed - journal
+timeline-neighbours: XCTAssertLessThan failed: ("31.031710083247162") is not less than ("12.0") - Wide dependency planning must remain linear
+snippet-bytes: XCTAssertLessThanOrEqual failed: ("16399") is greater than ("4096")
+fragment-crlf: XCTAssertEqual failed: ("45") is not equal to ("0")
+anonymous-spill: XCTAssertTrue failed - Spilled payloads must have no surviving pathname
+receipt-yield: XCTAssertLessThan failed: ("4.4646690000081435") is not less than ("0.75") - Receipt projection work must yield as well as its source reads
+unanswered-yield: XCTAssertLessThan failed: ("5.387331666657701") is not less than ("0.750345041626133") - Metadata-only and unmatched-card projection loops must also yield
+```
+
+The initial `failure-summary-compile` and `retained-payloads-compile` mutation attempts failed compilation (unused binding and a provably unreachable branch). They are retained as logs but **not counted as mutation proof**. The probes were adjusted to compile, then failed the assertions above. `round10-budget-controls-compile.log` likewise records a deprecated Swift initializer caught by warnings-as-errors before the corrected four-control run passed.
+
+Final focused native runs: **882 passed / 0 failed / 7 opt-in skips**, across **77 classes**. Serial classes ran alone with parallel execution disabled; the remaining classes were grouped. Every run used the workstream build root and held/released its own full-lane lock.
+
+| Text log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round10-regression-final.log` | 105 | 0 | 0 |
+| `round10-affected-final.log` | 617 | 0 | 7 |
+| `round10-timeline-final.log` | 30 | 0 | 0 |
+| `round10-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round10-agent-reader-final.log` | 55 | 0 | 0 |
+| `round10-wire-page-final.log` | 4 | 0 | 0 |
+| `round10-history-edge-timing-final.log` | 2 | 0 | 0 |
+| `round10-history-edit-final.log` | 3 | 0 | 0 |
+| `round10-agent-navigation-final.log` | 7 | 0 | 0 |
+| `round10-inherited-agent-reader-final.log` | 7 | 0 | 0 |
+| `round10-agent-inputs-final.log` | 33 | 0 | 0 |
+
+Final stress measurements and decode evidence (`round10-regression-final.log`):
+
+```text
+CONTINUATION-COST pages=10 decodes=1041 bytes=307517 source=308604
+DEPENDENCY-COST ten continuation pages sourceBytes=308604 decodedBytes=307517 peakBatch=90871 largestRepeat=1
+FRAGMENT-FUZZ comparisons=2200 failures=0
+WIDE-PAYLOAD pageSeconds=0.42220612498931587
+RETAINED-SEARCH bytes=1159773 source=67132798
+DEPENDENCY-COST wide legacy receipts sourceBytes=67132798 decodedBytes=67132647 peakBatch=1048777 largestRepeat=1
+WIDE-TIMELINE pageSeconds=0.004112750058993697
+UNANSWERED-WIDE pageSeconds=0.4506480833515525 baseline=0.00037804164458066225
+```
+
+The seven skips are the existing opt-in long-journal/open-performance fixtures, InlineSkillPill capture, three MarkdownTextSurface captures, and WireContract per-token measurement; the final logs include their skip reasons. No unrelated native test failed. The regression log contains eight existing SQLite fixture-cleanup warnings (temporary directories removed before their readers deinitialize), also eight in `round9-regression-final.log`; these are not new production failures. Every new round-10 journal fixture explicitly releases its reader indexes before directory removal.
+
+Exact final commands (run from this worktree; the lock wrapper records each argument array in the corresponding JSON):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round10-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round10-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round10-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round10-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round10-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round10-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round10-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round10-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round10-agent-navigation-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentNavigationTests
+
+# round10-inherited-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests
+
+# round10-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentEffortTests \
+  -only-testing:PiAppTests/SubagentCostTests \
+  -only-testing:PiAppTests/SubagentDisplayTests \
+  -only-testing:PiAppTests/SubagentMetadataTests
+```
+
+Exact failing-first and mutation commands use the same environment and lock:
+
+```sh
+# round10-failing-first-tests.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindContinuationsDecodeDependenciesOnceAcrossTenPages \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideLegacyIssuerRetainsOnlyBoundedMatchState \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedToolSummariesEqualDisplayedCardsSavedAndLive
+
+# round10-mutation-failure-summary.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedToolSummariesEqualDisplayedCardsSavedAndLive
+
+# round10-mutation-retained-payloads.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideLegacyIssuerRetainsOnlyBoundedMatchState
+
+# round10-mutation-continuations.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindContinuationsDecodeDependenciesOnceAcrossTenPages
+
+# round10-mutation-scope.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testContinuationSummariesInvalidateForQueryDisplayAndJournalChanges
+
+# round10-mutation-timeline-neighbours.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindContinuationsDecodeDependenciesOnceAcrossTenPages
+
+# round10-mutation-snippet-bytes.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testSearchSummarySnippetsBoundLongGraphemesAndKeepTheMatch
+
+# round10-mutation-fragment-crlf.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFragmentSearchMatchesFoundationAcrossUnicodeAndLineEndings
+
+# round10-mutation-anonymous-spill.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testSpilledCardsKeepPlannerOrderWithoutDecodingRepeatedParts
+
+# round10-mutation-receipt-yield.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideLegacyIssuerRetainsOnlyBoundedMatchState
+
+# round10-mutation-unanswered-yield.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideUnansweredIssuerYieldsWithoutReceiptDecodes
+```
+
+Adversarial review compared the new diff with `2c0c59843dacaa6b5314ead656ae4d95ac91ee3f`: checked every dependency decode route, cache/statement lifetime under actor reentrancy, generation and snapshot guards, input-digest parity, output ownership, unsupported/repeated planner fragments, and cleanup on success/cancellation. The same-function gaps found during this review have failing-first and mutation evidence above. The separately recorded legacy `ResponseTimeline.canonical` slowdown is unchanged and remains for its owning workstream.
+
+No helper or wire implementation changed, so full helper and Python wire/concurrent/acceptance runs were not required. No UI layout/appearance changed; existing inspected gallery evidence still applies. No files were added or removed. No new owner decision is required.
+
+Final `git diff --check` passed. No clone folders remain under this workstream's build root; all locks owned by this workstream were released. About 12 GiB remained free after validation. Evidence is in text logs under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`; no named result bundle was requested. No installed app, real preferences/chats, Keychain, live capture or paid provider was used.

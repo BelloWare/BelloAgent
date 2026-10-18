@@ -58,6 +58,9 @@ enum ConversationContent {
             if let tool = results[id] { return payload(tool, receipt: id).output }
             return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
         }
+        func parts(_ id: String, rawReply: Bool = false) -> [TextPart] {
+            textParts(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls)
+        }
         private func payload(_ tool: ToolView, receipt: String) -> (input: String, output: String) {
             let fetched = drawings[receipt].flatMap { fetchedInputs[ToolOccurrence.key($0.messageID, $0.toolCallID)] }
             return toolPayload(tool, fetched: fetched)
@@ -85,29 +88,47 @@ enum ConversationContent {
     }
     /// Presentation belongs to the planner: a persisted system ledger may be
     /// an assistant response, with separate prose, reasoning and card rows.
+    enum TextPart {
+        case text(String)
+        case tool(key: String, value: ToolView, inputOnly: Bool)
+        func text(toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
+            switch self {
+            case .text(let text): return text
+            case .tool(let key, let tool, let inputOnly):
+                return toolInputs[key] ?? toolText(tool, inputOnly: inputOnly, fetched: fetchedInputs[key])
+            }
+        }
+    }
     private static func transcriptText(_ rows: [TranscriptItem], rawReply: Bool = false, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
-        joined(rows.map { row in
+        joined(textParts(rows, rawReply: rawReply, omittingOutputs: omittingOutputs).map { $0.text(toolInputs: toolInputs, fetchedInputs: fetchedInputs) })
+    }
+    /// Defer tool bodies so history search can consume the same planned text
+    /// without collecting every large receipt in a work row into one string.
+    private static func textParts(_ rows: [TranscriptItem], rawReply: Bool, omittingOutputs: Set<String>) -> [TextPart] {
+        func tool(_ tool: ToolView, source: String) -> TextPart {
+            let key = ToolOccurrence.key(source, tool.id)
+            return .tool(key: key, value: tool, inputOnly: omittingOutputs.contains(key))
+        }
+        return rows.flatMap { row -> [TextPart] in
             switch row {
-            case .message(let message): return messageText(message, rawReply: rawReply)
+            case .message(let message): return [.text(messageText(message, rawReply: rawReply))]
             case .block(let block):
                 if let part = block.part, let message = block.message {
-                    return partText(part, message: message, rawReply: rawReply, omittingOutputs: omittingOutputs, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
+                    if !["text", "refusal"].contains(part.part.kind), let call = part.part.callID,
+                       let value = message.tools?.first(where: { $0.id == call }) { return [tool(value, source: message.id)] }
+                    return [.text(partText(part, message: message, rawReply: rawReply))]
                 }
                 switch block.presentation {
-                case .body, .reply: return block.message.map { replyText($0, raw: rawReply) } ?? ""
+                case .body, .reply: return [.text(block.message.map { replyText($0, raw: rawReply) } ?? "")]
                 case .work:
-                    return joined(block.activity.flatMap { message in
-                        [TranscriptMarkdown.renderedText(message.thinking ?? "", style: .reasoning, streaming: message.isStreaming)]
-                            + (message.tools ?? []).map { tool in
-                                if let input = toolInputs[ToolOccurrence.key(message.id, tool.id)] { return input }
-                                let payload = toolPayload(tool, fetched: fetchedInputs[ToolOccurrence.key(message.id, tool.id)])
-                                return omittingOutputs.contains(ToolOccurrence.key(message.id, tool.id)) ? payload.input : joined([payload.input, payload.output])
-                            }
-                    })
-                default: return ""
+                    return block.activity.flatMap { message in
+                        [.text(TranscriptMarkdown.renderedText(message.thinking ?? "", style: .reasoning, streaming: message.isStreaming))]
+                            + (message.tools ?? []).map { tool($0, source: message.id) }
+                    }
+                default: return []
                 }
             }
-        })
+        }
     }
     private static func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
     private static func replyText(_ message: TranscriptMessage, raw: Bool) -> String {
@@ -151,8 +172,8 @@ enum ConversationContent {
         let payload = toolPayload(tool, fetched: fetched)
         return inputOnly ? payload.input : joined([payload.input, payload.output])
     }
-    static func toolText(_ card: TranscriptToolRow.Card, heading: String? = nil) -> String {
-        let payload = toolPayload(card, heading: heading)
+    static func toolText(_ card: TranscriptToolRow.Card, heading: String? = nil, summary: String? = nil) -> String {
+        let payload = toolPayload(card, heading: heading, summary: summary)
         return joined([payload.input, payload.output])
     }
     static func toolPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil) -> (input: String, output: String) {
@@ -161,19 +182,19 @@ enum ConversationContent {
         // draws its path header only when that opener has a file to link.
         // Fetched arguments replace the body; the work line keeps this model.
         let heading = [model.title, model.summary].filter { !$0.isEmpty }.joined(separator: " · ")
-        return toolPayload(TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: model.file != nil), heading: heading)
+        return toolPayload(TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: model.file != nil), heading: heading, summary: tool.output.isEmpty ? nil : model.summary)
     }
-    private static func toolPayload(_ card: TranscriptToolRow.Card, heading: String? = nil) -> (input: String, output: String) {
+    private static func toolPayload(_ card: TranscriptToolRow.Card, heading: String? = nil, summary: String? = nil) -> (input: String, output: String) {
         switch card {
         case .io(let path, let input, let output, _, _): return (joined([path ?? "", input]), output ?? "")
         case .terminal(let command, let output, _): return (command, output)
         case .read(let text, _, let path, _):
             let window = TranscriptReadCardText.window(of: text)
             return (path ?? "", joined([window.lines.joined(separator: "\n"), window.note ?? ""]))
-        case .diff(let request, let path, _, _, _):
+        case .diff(let request, let path, let outcome, _, _):
             let text = request.tooLarge ? joined(request.mode == "edit" ? [request.before, request.after] : [request.after])
                 : request.rows.map(\.text).joined(separator: "\n")
-            return (joined([path ?? "", text]), "")
+            return (joined([path ?? "", text]), outcome == .failed ? summary ?? "" : "")
         case .subagent(let value):
             return (joined([heading ?? value.title, TranscriptMarkdown.renderedText(value.task)]), joined([TranscriptMarkdown.renderedText(value.result), value.error ?? ""]))
         }

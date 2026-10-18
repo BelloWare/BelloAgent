@@ -10,7 +10,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
     private final class SearchDecodeCost: @unchecked Sendable {
         private let lock = NSLock()
         private var decodes: [UInt64: Int] = [:]
-        private var total = 0, batch = 0, peak = 0
+        private var total = 0, batch = 0, peak = 0, retained = 0
         private var announced = false
         var ready: XCTestExpectation?
         func observe(_ event: HistoryReader.SearchDecodeEvent) {
@@ -19,11 +19,12 @@ final class TranscriptBugRegressionTests: XCTestCase {
             case .decoded(let offset, let bytes):
                 decodes[offset, default: 0] += 1; total += bytes; batch += bytes; peak = max(peak, batch)
                 if total >= 10 * 1_048_576, !announced { announced = true; ready?.fulfill() }
+            case .retained(let bytes): retained = max(retained, bytes)
             case .yielded: batch = 0
             }
         }
-        var snapshot: (counts: [UInt64: Int], bytes: Int, peak: Int) {
-            lock.lock(); defer { lock.unlock() }; return (decodes, total, peak)
+        var snapshot: (counts: [UInt64: Int], bytes: Int, peak: Int, retained: Int) {
+            lock.lock(); defer { lock.unlock() }; return (decodes, total, peak, retained)
         }
     }
     private struct WideSearchFixture {
@@ -74,6 +75,293 @@ final class TranscriptBugRegressionTests: XCTestCase {
                 "content": .string("**receiptneedle** \(n)"), "nativeToolStats": .object(["outcome": .string("completed")])], n < 4 ? 4 * 1_048_576 : 0))
         }
         return entries
+    }
+    func testFindContinuationsDecodeDependenciesOnceAcrossTenPages() async throws {
+        var entries = try wideSearchEntries(calls: 1_000)
+        for i in entries.indices { entries[i].2 = 0 }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+        var start = 0, pages = 0, ids: [String] = []
+        let began = ProcessInfo.processInfo.systemUptime
+        repeat {
+            let page = try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: start, renderedAgentProse: true)
+            pages += 1; ids += page.hits.map(\.id)
+            guard let next = page.next else { break }; start = next
+        } while pages < 11
+        print("CONTINUATION-COST pages=\(pages) decodes=\(cost.snapshot.counts.values.reduce(0, +)) bytes=\(cost.snapshot.bytes) source=\(fixture.bytes)")
+        XCTAssertEqual(pages, 10); XCTAssertEqual(ids, (0..<1_000).map { "receipt\($0)" })
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - began, 12, "Wide dependency planning must remain linear")
+        assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "ten continuation pages")
+        await fixture.reader.releaseIndexes()
+    }
+    func testWideLegacyIssuerRetainsOnlyBoundedMatchState() async throws {
+        var entries = try wideSearchEntries(calls: 64)
+        var future = try XCTUnwrap(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(ResponseTimeline())).object)
+        future["version"] = .number(999); entries[0].1["nativeResponseTimeline"] = .object(future)
+        for i in entries.indices {
+            entries[i].2 = 0
+            if entries[i].0.hasPrefix("receipt") { entries[i].1["content"] = .string(String(repeating: "x", count: 1_048_576) + " outputneedle") }
+        }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let cost = SearchDecodeCost(), scratch = SearchOrder()
+        let ready = expectation(description: "First large card projected")
+        let signal = SearchOrder()
+        await fixture.reader.observeSearchDecodes { event in
+            cost.observe(event)
+            if case .retained = event, signal.events.isEmpty { signal.add("ready"); ready.fulfill() }
+            if case .retained = event, ((try? FileManager.default.contentsOfDirectory(atPath: fixture.root.path)) ?? []).contains(where: { $0.hasPrefix("search-inputs-") }) { scratch.add("named payload file") }
+        }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "outputneedle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [ready], timeout: 20)
+        let began = ProcessInfo.processInfo.systemUptime
+        _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+        let elapsed = ProcessInfo.processInfo.systemUptime - began
+        let found = try await search.value
+        print("WIDE-PAYLOAD pageSeconds=\(elapsed)")
+        XCTAssertLessThan(elapsed, 0.75, "Receipt projection work must yield as well as its source reads")
+        XCTAssertTrue(scratch.events.isEmpty, "Transient payloads must be anonymous even before the issuer returns")
+        print("RETAINED-SEARCH bytes=\(cost.snapshot.retained) source=\(fixture.bytes)")
+        XCTAssertEqual(found.hits.first { $0.id == "issuer" }?.count, 64)
+        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 128, "Legacy cards and standalone receipts are both displayed")
+        XCTAssertLessThan(cost.snapshot.retained, 2 * 1_048_576, "An issuer must retain summaries, never its accumulated receipt payloads")
+        assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "wide legacy receipts")
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).contains { $0.hasPrefix("search-inputs-") })
+        await fixture.reader.releaseIndexes()
+    }
+    func testFailedToolSummariesEqualDisplayedCardsSavedAndLive() async throws {
+        let cases: [(String, WireValue)] = [
+            ("edit", .object(["path": .string("fixture.txt"), "oldText": .string("old"), "newText": .string("new")])),
+            ("write", .object(["path": .string("fixture.txt"), "content": .string("new")])),
+            ("bash", .object(["command": .string("fixture-command")]))]
+        for (name, arguments) in cases {
+            let fields = try XCTUnwrap(toolEntry(name, arguments: arguments)["message"]?.object)
+            let fixture = try await searchCostFixture([("reply", fields, 0), ("result", ["role": .string("toolResult"),
+                "toolCallId": .string("call"), "toolName": .string(name), "content": .string("Permission denied\nHidden failure detail"),
+                "nativeToolStats": .object(["outcome": .string("failed")])], 0)])
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let tool = try XCTUnwrap(fixture.messages.first?.tools?.first)
+            let shown = await MainActor.run {
+                let row = TranscriptNativeActionRow(frame: .zero)
+                row.update(tool: tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: { _, _ in })
+                XCTAssertEqual(row.line.content.summary, "Permission denied")
+                let body = Self.cardPayload(tool, includeWorkSummary: false)
+                let shown = name == "bash" ? body : body + "\n" + row.line.content.summary
+                XCTAssertEqual(ConversationContent.toolText(tool), shown, name)
+                XCTAssertEqual(row.searchText, shown, "Native highlight projection \(name)")
+                var empty = tool; empty.output = ""
+                XCTAssertEqual(ConversationContent.toolText(empty), Self.cardPayload(empty), "A failed card without output has no extra error summary")
+                return shown
+            }
+            let live = try await fixture.reader.searchPresented(fixture.messages, query: "", start: 0)
+            XCTAssertEqual(live.hits.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "Live \(name)")
+            for page in [[], [fixture.messages[0]], fixture.messages] {
+                let saved = try await fixture.reader.searchContent(path: fixture.path.path, query: "", start: 0, renderedAgentProse: true, presented: page)
+                XCTAssertEqual(saved.hits.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "Saved \(name) captured=\(page.count)")
+                let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "Permission denied", start: 0, renderedAgentProse: true, presented: page)
+                XCTAssertEqual(found.hits.map(\.id), ["result"], name)
+                XCTAssertEqual(found.hits.first?.count, 1)
+                let hidden = try await fixture.reader.searchContent(path: fixture.path.path, query: "Hidden failure detail", start: 0, renderedAgentProse: true, presented: page)
+                XCTAssertEqual(hidden.hits.count, name == "bash" ? 1 : 0)
+            }
+            await fixture.reader.releaseIndexes()
+        }
+    }
+    func testFragmentSearchEqualsJoinedDisplayText() {
+        let corpus = [["", "", ""], ["alpha", "beta", "gamma"], ["aaa", "aaa", "aaaa"],
+            ["Straße", "STRASSE", "é", "e\u{301}", "🐈cat"], ["a\r", "b\0c", "finish"],
+            [String(repeating: "z", count: 300) + "alpha", "beta", String(repeating: "tail", count: 100)],
+            ["input", "output", "input", "output"], ["abc", "", "def"]]
+        for parts in corpus {
+            let joined = parts.filter { !$0.isEmpty }.joined(separator: "\n")
+            for query in ["", "alpha", "alpha\nbeta", "a\na", "aaa", "\n", "e\u{301}", "é\ne\u{301}", "STRASSE", "🐈cat", "\0", "absent", "input\noutput"] {
+                var search = HistoryReader.SearchText(query)
+                for part in parts { search.append(part) }
+                let count = ConversationContent.occurrences(of: query, in: joined)
+                XCTAssertEqual(search.match.count, query.isEmpty ? 0 : count == 0 ? -1 : count, "\(parts), \(query)")
+                if let range = joined.range(of: query, options: [.caseInsensitive]), !query.isEmpty {
+                    let from = joined.index(range.lowerBound, offsetBy: -60, limitedBy: joined.startIndex) ?? joined.startIndex
+                    XCTAssertEqual(search.match.preview, String(joined[from...].prefix(240)), "\(query)")
+                } else if query.isEmpty { XCTAssertEqual(search.match.preview, String(joined.prefix(240))) }
+                XCTAssertLessThan(search.retainedBytes, 8_192)
+            }
+        }
+    }
+    func testContinuationSummariesInvalidateForQueryDisplayAndJournalChanges() async throws {
+        for change in ["query", "captured", "journal", "restart"] {
+            var entries = try wideSearchEntries(calls: 101)
+            for index in entries.indices { entries[index].2 = 0 }
+            let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let first = try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0, renderedAgentProse: true)
+            let start = try XCTUnwrap(first.next)
+            let tables = await fixture.reader.retainedSearchCacheTables
+            XCTAssertEqual(tables, 3)
+            var page: [TranscriptMessage] = []
+            if change == "captured" {
+                var owner = fixture.messages[0]; owner.tools?[100].output = "changed output"; page = [owner]
+            }
+            if change == "journal" {
+                let message: [String: WireValue] = ["role": .string("toolResult"), "toolCallId": .string("call100"), "toolName": .string("fixture"),
+                    "content": .string("changed output"), "nativeToolStats": .object(["outcome": .string("completed")])]
+                let record: WireValue = .object(["type": .string("message"), "id": .string("replacement"), "parentId": .string("receipt100"), "message": .object(message)])
+                let file = try FileHandle(forWritingTo: fixture.path); try file.seekToEnd()
+                try file.write(contentsOf: JSONEncoder().encode(record)); try file.write(contentsOf: Data([10])); try file.close()
+            }
+            let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+            let last = try await fixture.reader.searchContent(path: fixture.path.path, query: change == "query" ? "absent" : "receiptneedle",
+                start: change == "restart" ? 0 : start, renderedAgentProse: true, presented: page)
+            if change == "restart" { XCTAssertEqual(last.hits.count, 100); XCTAssertGreaterThan(cost.snapshot.bytes, 0) }
+            else { XCTAssertTrue(last.hits.isEmpty, change); XCTAssertNil(last.next) }
+            await fixture.reader.releaseIndexes()
+            let cleared = await fixture.reader.retainedSearchCacheTables
+            XCTAssertEqual(cleared, 0)
+        }
+    }
+    func testWideTimelineJoinDoesNotBlockPagingBetweenBatches() async throws {
+        var entries = try wideSearchEntries(calls: 1_000)
+        for index in entries.indices { entries[index].2 = 0 }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let ready = expectation(description: "A wide issuer started its first receipt")
+        let offset = try XCTUnwrap(fixture.offsets["receipt0"])
+        await fixture.reader.observeSearchDecodes { event in
+            if case .decoded(let at, _) = event, at == offset { ready.fulfill() }
+        }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [ready], timeout: 10)
+        let began = ProcessInfo.processInfo.systemUptime
+        _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+        let elapsed = ProcessInfo.processInfo.systemUptime - began
+        search.cancel(); _ = try? await search.value
+        print("WIDE-TIMELINE pageSeconds=\(elapsed)")
+        XCTAssertLessThan(elapsed, 0.75, "A dependency join must not plan all 1,000 sibling rows for each receipt")
+        await fixture.reader.releaseIndexes()
+    }
+    func testCancelledSpilledSearchReleasesItsFilesAndSummaries() async throws {
+        var entries = try wideSearchEntries(calls: 32)
+        for index in entries.indices where entries[index].0.hasPrefix("receipt") {
+            entries[index].1["content"] = .string(String(repeating: "x", count: 256 * 1_024) + " receiptneedle")
+        }
+        var future = ResponseTimeline(); future.version = 999
+        entries[0].1["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(future))
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let cost = SearchDecodeCost(), ready = expectation(description: "Large receipt read")
+        cost.ready = ready; await fixture.reader.observeSearchDecodes { cost.observe($0) }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [ready], timeout: 10)
+        search.cancel()
+        do { _ = try await search.value; XCTFail("The obsolete query must stop at its next batch") }
+        catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).contains { $0.hasPrefix("search-inputs-") })
+        let tables = await fixture.reader.retainedSearchCacheTables
+        XCTAssertEqual(tables, 0)
+        _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+        await fixture.reader.releaseIndexes()
+    }
+    func testSpilledCardsKeepPlannerOrderWithoutDecodingRepeatedParts() async throws {
+        var entries = try wideSearchEntries(calls: 2)
+        let calls = (0..<2).map { n in WireValue.object(["type": .string("toolCall"), "id": .string("call\(n)"), "name": .string("fixture"),
+            "arguments": .object(["begin": .string("inputneedle\(n)"), "padding": .string(String(repeating: "x", count: 100_000)), "tail": .string("tail\(n)")])]) }
+        entries[0].1["content"] = .array(calls)
+        var timeline = ResponseTimeline()
+        for (ordinal, call) in [1, 0, 1].enumerated() {
+            timeline.consume(.init(attemptID: "attempt", ordinal: ordinal, itemID: "part\(ordinal)", kind: "toolArguments", update: "replace", text: "", callID: "call\(call)", name: "fixture"))
+        }
+        timeline.finish("completed")
+        entries[0].1["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+        for index in entries.indices { entries[index].2 = 0 }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let tools = try XCTUnwrap(fixture.messages.first?.tools)
+        let boundary = String(ConversationContent.toolText(tools[0], inputOnly: true).suffix(24)) + "\n" + String(ConversationContent.toolText(tools[1], inputOnly: true).prefix(24))
+        let expected = ConversationContent.Presentation(fixture.messages).text("issuer")
+        for page in [[], [fixture.messages[0]]] { for query in [boundary, "inputneedle1"] {
+            let cost = SearchDecodeCost(), scratch = SearchOrder()
+            await fixture.reader.observeSearchDecodes { event in
+                cost.observe(event)
+                if case .retained = event, ((try? FileManager.default.contentsOfDirectory(atPath: fixture.root.path)) ?? []).contains(where: { $0.hasPrefix("search-inputs-") }) { scratch.add("named payload file") }
+            }
+            let found = try await fixture.reader.searchContent(path: fixture.path.path, query: query, start: 0, renderedAgentProse: true, presented: page)
+            XCTAssertTrue(scratch.events.isEmpty, "Spilled payloads must have no surviving pathname")
+            XCTAssertEqual(found.hits.map(\.id), ["issuer"])
+            XCTAssertEqual(found.hits.first?.count, ConversationContent.occurrences(of: query, in: expected))
+            XCTAssertEqual(found.hits.first?.count, query == boundary ? 1 : 2)
+            assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "repeated spooled card captured=\(page.count)")
+            XCTAssertLessThan(cost.snapshot.retained, 2 * 1_048_576)
+        } }
+        await fixture.reader.releaseIndexes()
+    }
+    func testSearchSummarySnippetsBoundLongGraphemesAndKeepTheMatch() async throws {
+        let giant = "e" + String(repeating: "\u{301}", count: 8_192)
+        for output in [giant + " receiptneedle", "receiptneedle " + giant] {
+            var entries = try wideSearchEntries(calls: 1)
+            for index in entries.indices { entries[index].2 = 0 }
+            entries[entries.count - 1].1["content"] = .string(output)
+            let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+            for rendered in [false, true] { for query in ["", "receiptneedle"] {
+                let found = try await fixture.reader.searchContent(path: fixture.path.path, query: query, start: 0, renderedAgentProse: rendered)
+                let hit = try XCTUnwrap(found.hits.first { $0.id == "receipt0" })
+                XCTAssertLessThanOrEqual(hit.preview.utf8.count, 4_096)
+                if !query.isEmpty { XCTAssertTrue(hit.preview.contains(query)) }
+            } }
+            await fixture.reader.releaseIndexes()
+        }
+    }
+    func testFragmentSearchMatchesFoundationAcrossUnicodeAndLineEndings() {
+        var seed: UInt64 = 1234567
+        func random(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1; return Int((seed >> 32) % UInt64(n)) }
+        let alphabet = ["a", "A", "ß", "S", "é", "e\u{301}", "\r", "\n", " ", "🐈", "\u{301}"]
+        var failed = 0
+        for example in 0..<200 {
+            let parts = (0..<4).map { _ in (0..<80).map { _ in alphabet[random(alphabet.count)] }.joined() }
+            let text = parts.joined(separator: "\n")
+            let chars = Array(text)
+            var queries = ["a", "aa", "SS", "é", "e\u{301}", "\r", "\n", "\r\n", "🐈", "é\né"]
+            let start = random(chars.count-10)
+            queries.append(String(chars[start..<(start+5)]))
+            for query in queries {
+                var expected = 0, from = text.startIndex
+                var preview = ""
+                while let match = text.range(of: query, options: [.caseInsensitive], range: from..<text.endIndex) {
+                    if expected == 0 {
+                        let begin = text.index(match.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+                        preview = String(text[begin...].prefix(240))
+                    }
+                    expected += 1; from = match.upperBound
+                }
+                var actual = HistoryReader.SearchText(query)
+                for part in parts { actual.append(part) }
+                if actual.match.count != (expected == 0 ? -1 : expected) || actual.match.preview != preview {
+                    failed += 1
+                    if failed < 8 { XCTFail("Unicode example=\(example) query=\(query.debugDescription) counts=\(actual.match.count)/\(expected) previewEqual=\(actual.match.preview == preview)") }
+                }
+            }
+        }
+        XCTAssertEqual(failed, 0)
+        print("FRAGMENT-FUZZ comparisons=2200 failures=\(failed)")
+    }
+    func testWideUnansweredIssuerYieldsWithoutReceiptDecodes() async throws {
+        var entries = Array(try wideSearchEntries(calls: 10_000).prefix(41))
+        entries[0].2 = 0
+        // Isolate Find's loops from the helper's separate legacy canonicalizer.
+        entries[0].1["nativeResponseTimeline"] = .object(["version": .number(999), "segments": .array([]),
+            "omittedEvents": .number(0), "coverage": .string("observed")])
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let baselineStart = ProcessInfo.processInfo.systemUptime
+        _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+        let baseline = ProcessInfo.processInfo.systemUptime - baselineStart
+        let ready = expectation(description: "Unanswered issuer decoded")
+        let offset = try XCTUnwrap(fixture.offsets["issuer"])
+        await fixture.reader.observeSearchDecodes { event in
+            if case .decoded(let at, _) = event, at == offset { ready.fulfill() }
+        }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "inputneedle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [ready], timeout: 10)
+        let began = ProcessInfo.processInfo.systemUptime
+        _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+        let elapsed = ProcessInfo.processInfo.systemUptime - began
+        let found = try await search.value
+        print("UNANSWERED-WIDE pageSeconds=\(elapsed) baseline=\(baseline)")
+        XCTAssertEqual(found.hits.first?.count, 10_000)
+        XCTAssertLessThan(elapsed, baseline + 0.75, "Metadata-only and unmatched-card projection loops must also yield")
+        await fixture.reader.releaseIndexes()
     }
     private func wideSearchFixture() async throws -> WideSearchFixture { try await searchCostFixture(wideSearchEntries()) }
     private func assertBoundedSearch(_ cost: SearchDecodeCost, sourceBytes: Int, name: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -1146,7 +1434,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             }
             guard case .block(let block) = item, block.presentation != .response, block.presentation != .summary else { continue }
             if block.part != nil, let message = block.message, let tool = message.tools?.first {
-                payload[message.id, default: []].append(cardPayload(tool, inputOnly: omittingOutputs.contains(message.id))); continue
+                payload[message.id, default: []].append(Self.cardPayload(tool, inputOnly: omittingOutputs.contains(message.id))); continue
             }
             let disclosure = TranscriptRowDisclosure(work: true,
                 openTools: Set(block.replies.flatMap { message in (message.tools ?? []).map { ToolOccurrence.key(message.id, $0.id) } }),
@@ -1624,19 +1912,24 @@ final class TranscriptBugRegressionTests: XCTestCase {
         }
     }
 
-    @MainActor private func cardPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil, linked: Bool? = nil, rendered: TranscriptNativeCard? = nil, inputOnly: Bool = false) -> String {
+    @MainActor private static func cardPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil, linked: Bool? = nil, rendered: TranscriptNativeCard? = nil, inputOnly: Bool = false, includeWorkSummary: Bool = true) -> String {
         let model = TranscriptToolRow.model(of: tool)
         let value = TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: linked ?? (model.file != nil))
         let card = rendered ?? TranscriptNativeCard.make(value)
         if rendered == nil { card.update(value, link: nil, environment: .init()) }
         card.frame = CGRect(x: 0, y: 0, width: 620, height: card.height(width: 620))
         card.layoutSubtreeIfNeeded()
-        let payload = TranscriptNativeDocument.textUnits(in: card).compactMap { view -> String? in
+        var payload = TranscriptNativeDocument.textUnits(in: card).compactMap { view -> String? in
             if inputOnly, !(card is TranscriptNativeDiffCard), !TranscriptNativeDocument.isToolInput(view) { return nil }
             if let lines = view as? TranscriptCardLines { return lines.lines.map(\.text).joined(separator: "\n") }
             guard let text = view as? NSTextView, text.isSelectable else { return nil }
             return text.string
         }.filter { !$0.isEmpty }.joined(separator: "\n")
+        if case .diff(_, _, .failed, _, _) = value, !tool.output.isEmpty, !inputOnly, includeWorkSummary {
+            let row = TranscriptNativeActionRow(frame: .zero)
+            row.update(tool: tool, open: false, fetched: fetched, environment: .init(), toggle: {}, openFile: nil)
+            payload = [payload, row.line.content.summary].filter { !$0.isEmpty }.joined(separator: "\n")
+        }
         // File paths and the agent's row identity are searchable labels outside
         // the selectable payload; retain them while comparing the actual body.
         switch value {
@@ -1733,7 +2026,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
                 let full = arguments.pretty
                 let document = ToolInputDocument(input: full, truncated: false, bytes: full.utf8.count, streaming: false)
                 try await openFetchedCard(session, pane: pane, message: message, document: document)
-                let shown = cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document)
+                let shown = Self.cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document)
                 let item = try XCTUnwrap(TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil).first { item in
                     if case .block(let block) = item { return block.presentation == .work && block.replies.contains { $0.tools?.isEmpty == false } }; return false
                 })
@@ -1743,7 +2036,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
                     environment: environment, disclosure: .of(item, in: session.disclosure, inputs: session.toolInputs)))
                 row.frame = CGRect(x: 0, y: 0, width: 620, height: row.settle().height); row.layoutSubtreeIfNeeded()
                 let native = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeCard.self, in: row).first)
-                XCTAssertEqual(cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document, rendered: native), shown,
+                XCTAssertEqual(Self.cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document, rendered: native), shown,
                                "The planner row renderer receives the same document: \(mode), timeline=\(timeline), \(name)")
                 let result = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
                 XCTAssertEqual(result.hits.first { $0.id == message.id }?.preview, String(shown.prefix(240)), "\(mode), timeline=\(timeline), \(name)")
@@ -1798,7 +2091,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         let entry = toolEntry("write", arguments: .object(["path": .string("fallback.txt")]))
         let (model, _, _) = try await findFixture(saved: true, content: entry["message"]?.object?["content"])
         let session = try XCTUnwrap(model.selected), tool = try XCTUnwrap(session.presentedMessages.last?.tools?.first)
-        let shown = cardPayload(tool, linked: true)
+        let shown = Self.cardPayload(tool, linked: true)
         XCTAssertTrue(shown.hasPrefix("fallback.txt\n"), "The production pane enables the file header's link")
         let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
         XCTAssertEqual(found.hits.first { $0.id == "reply" }?.preview, shown)
@@ -1834,7 +2127,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             for wire in [false, true] {
                 let message = wire ? try XCTUnwrap(TranscriptMessage.page(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode([call]))).first) : call
                 try await openFetchedCard(session, pane: pane, message: message, document: document)
-                let shown = cardPayload(try XCTUnwrap(message.tools?.first), fetched: document)
+                let shown = Self.cardPayload(try XCTUnwrap(message.tools?.first), fetched: document)
                 let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
                 XCTAssertEqual(found.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "\(name), wire=\(wire)")
                 for query in ["fetched needle", "outputneedle"] {
@@ -1867,7 +2160,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         entries = [entries[0]] + spacers + [.object(receipt), entries[2]]
         let (model, pane, _) = try await findFixture(saved: true, entries: entries)
         let session = try XCTUnwrap(model.selected); session.subagentNumbers = ["child": 3]
-        let source = try XCTUnwrap(session.presentedMessages.first { $0.id == "reply" }), shown = cardPayload(try XCTUnwrap(source.tools?.first))
+        let source = try XCTUnwrap(session.presentedMessages.first { $0.id == "reply" }), shown = Self.cardPayload(try XCTUnwrap(source.tools?.first))
         session.messages = Array(session.messages.suffix(1)); pane.refresh()
         let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
         XCTAssertEqual(found.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown)
@@ -1908,7 +2201,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         for saved in [true, false] {
             let entry = toolEntry("custom_fixture", arguments: .object(["message": .string("visible card value")]))
             let projected = TranscriptMessage.project(id: "reply", message: try XCTUnwrap(entry["message"]?.object))
-            let query = try XCTUnwrap(cardPayload(try XCTUnwrap(projected.tools?.first)).split(separator: "\n").first { $0.contains("visible card value") })
+            let query = try XCTUnwrap(Self.cardPayload(try XCTUnwrap(projected.tools?.first)).split(separator: "\n").first { $0.contains("visible card value") })
                 .trimmingCharacters(in: .whitespaces)
             let (model, pane, window) = try await findFixture(saved: saved, content: saved ? entry["message"]?.object?["content"] : nil)
             if !saved { model.selected?.messages[1] = projected; model.selected?.messages[1].state = "streaming"; pane.refresh() }
@@ -1944,11 +2237,11 @@ final class TranscriptBugRegressionTests: XCTestCase {
             let entry = toolEntry(name, arguments: arguments)
             let saved = TranscriptMessage.project(id: "reply", message: try XCTUnwrap(entry["message"]?.object))
             let tool = try XCTUnwrap(saved.tools?.first)
-            XCTAssertEqual(ConversationContent.transcriptText(entry), cardPayload(tool), "Saved \(name)")
+            XCTAssertEqual(ConversationContent.transcriptText(entry), Self.cardPayload(tool), "Saved \(name)")
             for state in ["running", "completed", "held", "failed", "unknown"] {
                 var live = saved; live.responseTimeline = nil; live.state = "streaming"
                 live.tools?[0].state = state; live.tools?[0].output = output
-                XCTAssertEqual(ConversationContent.transcriptText(live), cardPayload(try XCTUnwrap(live.tools?.first)), "Live \(name), \(state)")
+                XCTAssertEqual(ConversationContent.transcriptText(live), Self.cardPayload(try XCTUnwrap(live.tools?.first)), "Live \(name), \(state)")
             }
         }
         for input in [#"{"message":"complete field","tail":"unfinished"#,
@@ -1956,7 +2249,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
                       #"{"message":"unterminated"#] {
             let tool = ToolView(id: "partial", name: "custom_fixture", state: "running", input: input, output: "", truncated: false, inputTruncated: true)
             let message = TranscriptMessage(id: "reply", role: "assistant", text: "", tools: [tool], state: "streaming")
-            XCTAssertEqual(ConversationContent.transcriptText(message), cardPayload(tool), "Partial input \(input)")
+            XCTAssertEqual(ConversationContent.transcriptText(message), Self.cardPayload(tool), "Partial input \(input)")
         }
     }
 

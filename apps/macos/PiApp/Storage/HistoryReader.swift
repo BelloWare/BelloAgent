@@ -303,7 +303,7 @@ actor HistoryReader {
     private func retainIndex(_ path: String) {
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes {
-            let evicted = recency.removeFirst(); indexes.removeValue(forKey: evicted); searchDigests.removeValue(forKey: evicted)
+            let evicted = recency.removeFirst(); if searchContinuation?.scope.path == evicted { searchContinuation = nil }; indexes.removeValue(forKey: evicted); searchDigests.removeValue(forKey: evicted)
         }
     }
     /// What a page cursor records of the journal it was read from: its
@@ -344,23 +344,25 @@ actor HistoryReader {
     enum SearchReadStage: CaseIterable, Sendable { case captured, indexed, scanned }
     private var searchReadObserver: (@Sendable (SearchReadStage) throws -> Void)?
     func observeSearchReads(_ observer: (@Sendable (SearchReadStage) throws -> Void)?) { searchReadObserver = observer }
-    enum SearchDecodeEvent: Sendable { case decoded(offset: UInt64, bytes: Int), yielded }
+    enum SearchDecodeEvent: Sendable { case decoded(offset: UInt64, bytes: Int), retained(bytes: Int), yielded }
     private var searchDecodeObserver: (@Sendable (SearchDecodeEvent) -> Void)?
     func observeSearchDecodes(_ observer: (@Sendable (SearchDecodeEvent) -> Void)?) { searchDecodeObserver = observer }
     /// Journals whose offset index is currently retained.
     var retainedIndexCount: Int { recency.count }
+    var retainedSearchCacheTables: Int { indexes.values.reduce(0) { $0 + $1.branch.searchCacheTableCount } }
     /// What the retained offset indexes take, together.
     var retainedIndexBytes: Int { indexes.values.reduce(0) { $0 + $1.branch.bytes } }
     /// Lets go of every retained offset index, and with it its file: the app
     /// is quitting.
     func releaseIndexes() {
+        searchGeneration += 1; searchContinuation = nil
         indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll()
         subagentPlanCache.removeAll(); subagentPlanRecency.removeAll()
     }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
     private var indexRecordLimit = 100_000
-    func setIndexRecordLimit(_ value: Int) { indexRecordLimit = max(1, value); indexes.removeAll(); recency.removeAll() }
+    func setIndexRecordLimit(_ value: Int) { searchGeneration += 1; searchContinuation = nil; indexRecordLimit = max(1, value); indexes.removeAll(); recency.removeAll() }
     /// The projection each caller asks for, from one decoded journal record.
     private static func projection(_ value: [String: WireValue], field: String) -> String {
         let message = value["message"]?.object ?? [:]
@@ -404,9 +406,183 @@ actor HistoryReader {
         if ref.presentation, message.responseTimeline?.terminal == nil { message.detail = (message.detail ?? "Operation") + " · no terminal receipt" }
         return message
     }
-    /// Read and decode a bounded run before planning it. Presented rows use
-    /// the reader's captured plan; unloaded records use the same planner over
-    /// this run, with paired tool receipts resolved as on a reopened page.
+    /// Match joined display fragments without building the issuer's combined
+    /// text. Keep only the unmatched boundary and the first displayed snippet.
+    struct SearchText {
+        private let query: String
+        private let overlap: Int
+        private var tail = "", preview = ""
+        private var next = 0, count = 0
+        private var hasText = false, found = false, previewOpen = true
+        init(_ query: String) { self.query = query; overlap = query.decomposedStringWithCanonicalMapping.unicodeScalars.count * 3 }
+        var retainedBytes: Int { tail.utf8.count + preview.utf8.count }
+        private static func previewSource(_ text: String, match: String.Index?) -> Substring {
+            guard let match else { return text[...] }
+            let begin = text.index(match, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+            // One grapheme can contain megabytes of combining marks. Keep the
+            // match visible rather than spending the byte bound on its lead-in.
+            let start = text[begin..<match].utf8.count > 1_024 ? match : begin
+            return text[start...]
+        }
+        static func snippet(_ text: String, match: String.Index? = nil) -> String {
+            var bytes = Array(previewSource(text, match: match).prefix(240).utf8.prefix(4_096))
+            while !bytes.isEmpty, String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        private mutating func fillPreview(_ text: String, match: String.Index? = nil) {
+            preview = Self.snippet(text, match: match)
+            previewOpen = preview.utf8.count == Self.previewSource(text, match: match).utf8.count
+        }
+        private mutating func scan(_ text: String, terminal: Bool) -> String.Index {
+            var from = String.Index(utf16Offset: next, in: text)
+            let pendingCR = !terminal && text.hasSuffix("\r")
+            while let range = text.range(of: query, options: [.caseInsensitive], range: from..<text.endIndex) {
+                // The join's LF can turn a terminal CR into one CRLF grapheme,
+                // which Foundation searches differently from a bare CR.
+                if pendingCR, range.upperBound == text.endIndex { break }
+                if !found { fillPreview(text, match: range.lowerBound); found = true }
+                count += 1; from = range.upperBound
+            }
+            return from
+        }
+        mutating func append(_ part: String) {
+            guard !part.isEmpty else { return }
+            let separator = hasText ? "\n" : ""; hasText = true
+            if query.isEmpty {
+                if previewOpen { fillPreview(preview + separator + part) }
+                return
+            }
+            if found, previewOpen { fillPreview(preview + separator + part) }
+            let text = tail + separator + part
+            let from = scan(text, terminal: false)
+            let context = text.index(text.endIndex, offsetBy: -(query.count * 3 + 60), limitedBy: text.startIndex) ?? text.startIndex
+            let suffix = text.unicodeScalars.index(text.unicodeScalars.endIndex, offsetBy: -overlap, limitedBy: text.unicodeScalars.startIndex) ?? text.startIndex
+            let begin = text[context...].utf8.count <= overlap * 4 + 4_096 ? min(context, suffix) : suffix
+            next = max(0, from.utf16Offset(in: text) - begin.utf16Offset(in: text))
+            tail = String(text[begin...])
+        }
+        var match: HistoryOffsetIndex.SearchCache.Match {
+            var complete = self
+            if !query.isEmpty { _ = complete.scan(tail, terminal: true) }
+            return .init(count: query.isEmpty ? 0 : complete.found ? complete.count : -1, preview: complete.preview)
+        }
+    }
+    /// Planner order can differ from receipt order (and can repeat a card).
+    /// Spill transient card fragments once they exceed 64 KiB. Only offsets
+    /// remain in the issuer; the scratch file is removed before it returns.
+    private final class SearchInputs {
+        private enum Part { case text(String), stored(UInt64, Int) }
+        private var parts: [String: [Part]] = [:]
+        private var file: FileHandle?
+        private var path: URL?
+        private(set) var retainedBytes = 0
+        private let directory: URL
+        init(directory: URL) { self.directory = directory }
+        deinit { try? file?.close(); if let path { try? FileManager.default.removeItem(at: path) } }
+        private func store(_ text: String) throws -> Part {
+            guard let file else { return .text(text) }
+            let offset = try file.seekToEnd(), data = Data(text.utf8)
+            try file.write(contentsOf: data)
+            return .stored(offset, data.count)
+        }
+        func put(_ values: [String], key: String) throws {
+            let values = values.filter { !$0.isEmpty }, size = values.reduce(0) { $0 + $1.utf8.count }
+            if file == nil, retainedBytes + size > 65_536 {
+                var template = Array(directory.appendingPathComponent("search-inputs-XXXXXX").path.utf8CString)
+                let descriptor = mkstemp(&template)
+                guard descriptor >= 0 else { throw StoreError.unreadableRecord }
+                let url = URL(fileURLWithPath: String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self))
+                path = url; file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+                // An anonymous descriptor cannot leave payload copies after a crash.
+                try FileManager.default.removeItem(at: url); path = nil
+                for key in Array(parts.keys) {
+                    parts[key] = try parts[key]?.map { part in
+                        guard case .text(let text) = part else { return part }; return try store(text)
+                    }
+                }
+                retainedBytes = 0
+            }
+            parts[key] = try values.map { try store($0) }
+            if file == nil { retainedBytes += size }
+        }
+        func count(_ key: String) -> Int? { parts[key]?.count }
+        func text(_ key: String, at index: Int) throws -> String {
+            guard let part = parts[key]?[index] else { throw StoreError.unreadableRecord }
+            switch part {
+            case .text(let text): return text
+            case .stored(let offset, let length):
+                guard let file else { throw StoreError.unreadableRecord }
+                try file.seek(toOffset: offset)
+                guard let data = try file.read(upToCount: length), data.count == length, let text = String(data: data, encoding: .utf8) else { throw StoreError.unreadableRecord }
+                return text
+            }
+        }
+    }
+
+    private struct SearchScope: Equatable {
+        var path: String, query: String
+        var stamp: Stamp
+        var rendered: Bool, managed: Bool
+        var display: SHA256.Digest
+    }
+    private struct SearchContinuation {
+        var scope: SearchScope
+        var next: Int
+        var cache: HistoryOffsetIndex.SearchCache
+    }
+    private var searchContinuation: SearchContinuation?
+    private var searchGeneration = 0
+    /// A fingerprint, not a retained copy of the captured cards. Include the
+    /// display-only fields omitted by their wire encoders and agent inputs for
+    /// unloaded rows. Equal queries with different display states never share.
+    private func searchDisplayIdentity(_ messages: [TranscriptMessage], raw: Set<String>, fetched: [String: ToolInputDocument], agents: AgentTranscriptPresentation?) async throws -> SHA256.Digest {
+        var hash = SHA256()
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        func add<T: Encodable>(_ value: T) throws { hash.update(data: try encoder.encode(value)); hash.update(data: Data([10])) }
+        func availability(_ value: OriginalSubagentAvailability?) throws { try add([value?.title, value?.reason]) }
+        func cost(_ value: SubagentCostPresentation?) throws {
+            try add(value?.spentUSD); try add(value?.unreportedRequests); try add([value?.unreportedNote, value?.costAttribution])
+        }
+        try add("rawReplies"); try add(raw.sorted())
+        try add("messages")
+        for message in messages {
+            try add(message)
+            for tool in message.tools ?? [] { try availability(tool.originalSubagentAvailability); try cost(tool.subagentCost) }
+            await Task.yield(); try Task.checkCancellation()
+        }
+        try add("fetchedInputs")
+        for key in fetched.keys.sorted() {
+            let value = fetched[key]!
+            try add(key); try add(value.input); try add([value.truncated, value.streaming]); try add(value.bytes)
+            await Task.yield(); try Task.checkCancellation()
+        }
+        try add("agents"); try add(agents != nil)
+        if let agents {
+            try add(agents.id); try add([agents.isManagedSubagent, agents.busy, agents.familyWaiting]); try add(agents.subagentNumbers)
+            try add(agents.heldAgentChildren.sorted())
+            try add("subagentEfforts")
+            for key in agents.subagentEfforts.keys.sorted() {
+                try add(key); try add(agents.subagentEfforts[key]?.initial); try add(agents.subagentEfforts[key]?.reasoning)
+            }
+            try add("subagentCosts")
+            for key in agents.subagentCosts.keys.sorted() { try add(key); try cost(agents.subagentCosts[key]) }
+            try add("originalSubagentAvailability")
+            for key in agents.originalSubagentAvailability.keys.sorted() { try add(key); try availability(agents.originalSubagentAvailability[key]) }
+            try add("agentCoordination")
+            for key in agents.agentCoordination.keys.sorted() {
+                let value = agents.agentCoordination[key]!
+                try add(key); try add([value.id, value.childID, value.kind, value.author, value.sourceSessionID, value.sourceMessageID,
+                    value.sourceToolCallID, value.recipientID, value.recipientMessageID, value.disposition, value.sourceAttemptID, value.consumingAttemptID])
+                try add(value.turn); try add(value.subagentNumber)
+            }
+            try add("childSummaries")
+            for key in agents.childSummaries.keys.sorted() {
+                try add(key); try add(agents.childSummaries[key]); await Task.yield(); try Task.checkCancellation()
+            }
+        }
+        return hash.finalize()
+    }
+
     private final class SearchPass {
         let branch: HistoryOffsetIndex
         let file: FileHandle
@@ -422,10 +598,10 @@ actor HistoryReader {
         let needle: [UInt8]?
         let observer: (@Sendable (SearchDecodeEvent) -> Void)?
         var bytes = 0, records = 0
-        init(branch: HistoryOffsetIndex, file: FileHandle, current: [TranscriptMessage], rawReplies: Set<String>,
+        init(branch: HistoryOffsetIndex, file: FileHandle, cache: HistoryOffsetIndex.SearchCache, current: [TranscriptMessage], rawReplies: Set<String>,
              fetchedInputs: [String: ToolInputDocument], agents: AgentTranscriptPresentation?, managedTask: String?, query: String,
-             observer: (@Sendable (SearchDecodeEvent) -> Void)?) throws {
-            self.branch = branch; self.file = file; cache = try .init(branch)
+             observer: (@Sendable (SearchDecodeEvent) -> Void)?) {
+            self.branch = branch; self.file = file; self.cache = cache
             let presentation = ConversationContent.Presentation(current, fetchedInputs: fetchedInputs)
             presented = presentation
             captured = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
@@ -434,11 +610,10 @@ actor HistoryReader {
             self.query = query; needle = ConversationContent.asciiNeedle(query); self.observer = observer
         }
         func match(_ text: String, drawing: ContentHit.Drawing? = nil, omitted: Set<String>? = nil) -> HistoryOffsetIndex.SearchCache.Match {
-            if query.isEmpty { return .init(count: 0, preview: String(text.prefix(240))) }
+            if query.isEmpty { return .init(count: 0, preview: SearchText.snippet(text)) }
             if let needle, ConversationContent.excludes(needle, from: text) { return .init(count: -1, preview: "") }
             guard let range = text.range(of: query, options: [.caseInsensitive]) else { return .init(count: -1, preview: "") }
-            let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
-            return .init(count: ConversationContent.occurrences(of: query, in: text), preview: String(text[from...].prefix(240)), drawing: drawing, omittedOutputs: omitted)
+            return .init(count: ConversationContent.occurrences(of: query, in: text), preview: SearchText.snippet(text, match: range.lowerBound), drawing: drawing, omittedOutputs: omitted)
         }
     }
     private func yieldSearch(_ pass: SearchPass) async throws {
@@ -488,15 +663,21 @@ actor HistoryReader {
     /// their match summaries and planner ownership, releasing each large peer
     /// before reading the next. A later primary/receipt never reopens the issuer.
     private func searchIssuer(_ message: TranscriptMessage, ref: Ref, pass: SearchPass) async throws {
-        var inputs: [String: String] = [:], omitted = Set<String>()
+        let inputs = SearchInputs(directory: indexDirectory)
+        var omitted = Set<String>()
         let sourceShown = pass.captured[message.id] == nil || pass.presented.rows[message.id]?.isEmpty != true
         let base = ConversationContent.Presentation(try searchContext(sourceShown ? [message] : [], pass: pass))
         let cards = Set((base.rows[message.id] ?? []).compactMap { row -> String? in
             guard case .block(let block) = row, block.part?.part.kind == "toolArguments", let tool = block.message?.tools?.first else { return nil }
             return tool.id
         })
-        var seen = Set<String>()
+        let segments = message.responseTimeline.flatMap { timeline in
+            timeline.supported ? Dictionary(grouping: timeline.segments, by: { $0.part.callID }) : nil
+        }
+        var seen = Set<String>(), toolIndex = 0
         for tool in message.tools ?? [] where seen.insert(tool.id).inserted {
+            if toolIndex % 32 == 0 { try await yieldSearch(pass) }
+            toolIndex += 1
             let call = tool.id
             let related = try pass.branch.related(to: message.id, calls: [call], result: nil, operation: nil)
             guard let receipt = related.first(where: { $0.resultCall == call }) else {
@@ -513,6 +694,10 @@ actor HistoryReader {
             for index in resolved.indices {
                 if let captured = pass.captured[resolved[index].id] { resolved[index] = captured }
                 else { resolved[index] = pass.agents?.present(resolved[index], firstTask: pass.managedTask) ?? resolved[index] }
+                if resolved[index].id == message.id {
+                    resolved[index].tools = resolved[index].tools?.filter { $0.id == call }
+                    if let segments { resolved[index].responseTimeline?.segments = segments[call] ?? [] }
+                }
             }
             let plan = ConversationContent.Presentation(resolved, fetchedInputs: pass.fetchedInputs)
             let paired = plan.rows[receipt.id]?.isEmpty == true
@@ -521,7 +706,8 @@ actor HistoryReader {
             if let tool = resolved.first(where: { $0.id == message.id })?.tools?.first(where: { $0.id == call }) {
                 let key = ToolOccurrence.key(message.id, call)
                 let payload = ConversationContent.toolPayload(tool, fetched: pass.fetchedInputs[key])
-                inputs[key] = paired ? payload.input : [payload.input, payload.output].filter { !$0.isEmpty }.joined(separator: "\n")
+                try inputs.put(paired ? [payload.input] : [payload.input, payload.output], key: key)
+                pass.observer?(.retained(bytes: inputs.retainedBytes + pass.branch.residentCacheBytes))
                 if paired { receiptText = payload.output }
                 if paired, !payload.output.isEmpty, pass.captured[message.id] != nil, !pass.standalone.contains(receipt.id) { omitted.insert(call) }
             }
@@ -529,8 +715,32 @@ actor HistoryReader {
             let drawing: ContentHit.Drawing? = paired && pass.captured[message.id] != nil && !pass.standalone.contains(receipt.id)
                 ? .init(messageID: message.id, toolCallID: call) : nil
             try pass.cache.store(pass.match(receiptText ?? plan.text(receipt.id, rawReply: pass.rawReplies.contains(receipt.id)), drawing: drawing), at: receipt.offset)
+            // Rendering a receipt can cost more than decoding it. Let a page
+            // in after each projected card, even within a small source batch.
+            try await yieldSearch(pass)
         }
-        try pass.cache.store(pass.match(try searchText(message, pass: pass, toolInputs: inputs), omitted: omitted.isEmpty ? nil : omitted), at: ref.offset)
+        let parts: [ConversationContent.TextPart]
+        if pass.captured[message.id] != nil { parts = pass.presented.parts(message.id, rawReply: pass.rawReplies.contains(message.id)) }
+        else {
+            let context = try searchContext([message], pass: pass).map { pass.agents?.present($0, firstTask: pass.managedTask) ?? $0 }
+            parts = ConversationContent.Presentation(context, fetchedInputs: pass.fetchedInputs).parts(message.id, rawReply: pass.rawReplies.contains(message.id))
+        }
+        var text = SearchText(pass.query)
+        for (partIndex, part) in parts.enumerated() {
+            if partIndex % 32 == 0 { try await yieldSearch(pass) }
+            if case .tool(let key, _, _) = part, let count = inputs.count(key) {
+                for index in 0..<count {
+                    let fragment = try inputs.text(key, at: index)
+                    text.append(fragment)
+                    pass.observer?(.retained(bytes: inputs.retainedBytes + text.retainedBytes + fragment.utf8.count + pass.branch.residentCacheBytes))
+                    // Spilled projections are work too; let a page in between
+                    // card fragments even when all source reads were memoized.
+                    try await yieldSearch(pass)
+                }
+            } else { text.append(part.text(fetchedInputs: pass.fetchedInputs)) }
+        }
+        var match = text.match; match.omittedOutputs = omitted.isEmpty ? nil : omitted
+        try pass.cache.store(match, at: ref.offset)
     }
     private func searchMatch(_ ref: Ref, pass: SearchPass, rendered: Bool) async throws -> HistoryOffsetIndex.SearchCache.Match {
         if let cached = try pass.cache.match(ref.offset) { return cached }
@@ -603,10 +813,13 @@ actor HistoryReader {
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
                        agentPresentation: AgentTranscriptPresentation? = nil) async throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
+        searchGeneration += 1
+        let generation = searchGeneration
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file), branch: HistoryOffsetIndex, prefix: SHA256.Digest?
         var published = false
         defer {
+            if !published, generation == searchGeneration { searchContinuation = nil }
             if !published, !Task.isCancelled {
                 // A page or newer query may have replaced the cached snapshot.
                 if indexes[path]?.stamp == identity { indexes.removeValue(forKey: path) }
@@ -641,8 +854,13 @@ actor HistoryReader {
                 else if try branch.index(of: row.id) != nil { current.append(row) }
             }
         }
-        let pass = try SearchPass(branch: branch, file: file, current: current, rawReplies: rawReplies,
-            fetchedInputs: fetchedInputs, agents: agentPresentation, managedTask: managedChild ? branch.firstUser() : nil,
+        let scope = SearchScope(path: path, query: query, stamp: identity, rendered: renderedAgentProse, managed: managedChild,
+            display: try await searchDisplayIdentity(current, raw: rawReplies, fetched: fetchedInputs, agents: agentPresentation))
+        let cached = searchContinuation
+        let cache = try start > 0 && cached?.next == start && cached?.scope == scope ? cached!.cache : HistoryOffsetIndex.SearchCache(branch)
+        if generation == searchGeneration { searchContinuation = nil }
+        let pass = SearchPass(branch: branch, file: file, cache: cache, current: current, rawReplies: rawReplies,
+            fetchedInputs: fetchedInputs, agents: agentPresentation, managedTask: try managedChild ? branch.firstUser() : nil,
             query: query, observer: searchDecodeObserver)
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
@@ -667,7 +885,7 @@ actor HistoryReader {
             try Task.checkCancellation()
             let row = unsaved[cursor - branch.count], text = pass.presented.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
-            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: SearchText.snippet(text), count: count)) }
             cursor += 1
         }
         try searchReadObserver?(.scanned)
@@ -678,6 +896,9 @@ actor HistoryReader {
             guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
         }
         retainIndex(path); published = true
+        if generation == searchGeneration, cursor < total {
+            searchContinuation = .init(scope: scope, next: cursor, cache: cache)
+        }
         return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity))
     }
     /// An unsent side or a delegated-task placeholder has no journal yet.
@@ -688,7 +909,7 @@ actor HistoryReader {
         while cursor < rows.count && hits.count < 100 {
             let row = rows[cursor], text = presentation.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
-            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: SearchText.snippet(text), count: count)) }
             cursor += 1
         }
         return .init(hits: hits, total: rows.count, next: cursor < rows.count ? cursor : nil, revision: "presented")

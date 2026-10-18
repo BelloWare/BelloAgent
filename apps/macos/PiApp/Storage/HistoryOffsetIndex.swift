@@ -59,7 +59,8 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     /// One query's completed projections and small ownership facts. Payloads
     /// are never retained here. Use the private index file's bounded pager:
     /// macOS SQLite keeps TEMP tables in memory despite temp_store=FILE.
-    /// Each pass drops its tables, also on cancellation or failure.
+    /// Continuation pages share them; completion, replacement, cancellation
+    /// or failure releases the query and drops its tables.
     final class SearchCache {
         struct Match {
             /// -1 is a miss; zero is the empty-query preview.

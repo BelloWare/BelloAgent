@@ -55,6 +55,14 @@
 
 - [x] Wide agent tool rounds normalize each receipt’s own card without repeatedly parsing its siblings’ arguments or stalling history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
+- [x] Find keeps the displayed first error line of failed edit/write cards searchable, with receipt ownership and hidden details preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses bounded dependency summaries across continuation pages of the same query, journal revision and display state; replacement and cancellation release them. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide legacy tool rounds consume ordered card fragments without retaining or joining all receipt bodies; transient spill files are anonymous and close with the issuer. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide receipt joins plan only their own timeline segments, preserving the full issuer’s canonical display order. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields after receipt projection, including large standalone Markdown results, so source-byte budgets also leave time for history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find batches unanswered-call ownership lookups and card projections even when there are no receipt decodes to trigger a yield. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find snippets have a UTF-8 byte bound as well as a character bound, keeping the match visible beside oversized combining-character sequences. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

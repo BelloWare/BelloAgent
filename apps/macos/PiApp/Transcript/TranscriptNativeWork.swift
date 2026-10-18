@@ -398,7 +398,7 @@ import AppKit
     private var cardModel: TranscriptToolRow.Card?
     var searchText: String {
         let heading = [line.content.title, line.content.summary].filter { !$0.isEmpty }.joined(separator: " · ")
-        return cardModel.map { ConversationContent.toolText($0, heading: heading) } ?? ""
+        return cardModel.map { ConversationContent.toolText($0, heading: heading, summary: tool?.output.isEmpty == false ? line.content.summary : nil) } ?? ""
     }
     override var isFlipped: Bool { true }
 
