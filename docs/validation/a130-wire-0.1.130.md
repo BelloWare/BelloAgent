@@ -238,3 +238,163 @@ The 219-test core comprises Hardening 12, HistoryEdge 16, HistoryExtent 25, Host
 Galleries regenerated **16 update-question PNGs** and **40 reader PNGs**. Inspected the single-tool question in light/dark at both 640/920 host widths, plural tools and background work in dark/narrow, and `child-report` in light/dark at 1240×800 and 640×600. Text and actions fit; no new clipping or layout regression. Artifacts remain under `$B/gallery-round2/{update,readers}`. All gallery/focus runs held the shared lock. The lock was released after the final run; no foreign lock was removed. No clone folders remain in this build root.
 
 Final adversarial self-review covered invalid-ID collision/correlation and JSON escaping; every reply/capture writer path; counter entry before awaits and release on failures/stop; helper-owned execution versus retained MCP results; onboarding preflight, barrier races, caller cancellation and physical helper shutdown; epoch changes during initial/reload/edge reads; stable entry and lineage validation; delayed old-task publication; explicit reload destinations; recovery preserving navigation tokens; and confirmation cancel/accept ordering. The extra destination/token assertions caught and corrected two recovery details before the final pass. Permission, capture, vault, tool and durable-data boundaries are unchanged. Preview/import/recover and TraceStore remain untouched. All mutations are restored, no unrelated test failed, and no identified issue remains unresolved in this follow-up scope.
+
+## Round 3 — navigation ownership and mounted reader preservation
+
+The review of `3a3e7ea5` identified two regressions in runtime rollover. Both are confirmed. The generated native fixture reproduced a superseded Latest/targeted reload replacing a newer, already-loaded Inspector destination, and an attached child reader's native selection shrinking from `{6, 11}` to `{6, 0}` when only its runtime epoch changed.
+
+`ConversationPresentation.Reload` now retains the destination together with the navigation token that requested it. Recovery validates that token before restarting; a superseded target is discarded. Ordinary hydration can still recover a visible reader at its newer held anchor. Hosted navigation retirement drops the obsolete reload, and successful/failed completion releases the saved intent. Deferred main-reader hydration carries its token from task creation through publication and cleanup; side recovery validates the captured token before starting.
+
+Runtime rollover advances a separate `readGeneration`. Initial/history/source/edge/position read publication and cleanup use that fence. The mounted `presentationGeneration` remains stable across a background runtime replacement, so the native document retains its selected text, anchor and disclosures. Deliberate selection/reload still creates a new presentation. Runtime retirement still clears abandoned initial loading state and restarts visible reads under their retained intent.
+
+### Failing-first evidence
+
+All round-3 artifacts use `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire`, with text logs under `$B/logs/round3`. Focus-sensitive runs acquire the shared full-lane lock and release only their own lock on exit.
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests/testSupersededReloadCannotInheritANewerReveal \
+  -only-testing:PiAppTests/SubagentReaderTests/testRuntimeReplacementPreservesMountedChildSelection
+```
+
+Before production changes, `native-before.log` reports **2 tests failed, 6 assertions**: Latest and an explicit old target overwrite the newer ordinary-reader destination (four assertions), while rollover changes the child presentation identity and clears its native selection (two assertions). The reload regression also exercises hosted readers. The native selection regression holds an actual `MarkdownTextView` selection in the attached child's pane, an open reasoning fold and a saved scroll anchor. An initial test-only compile error used the SwiftUI wrapper's name instead of the native pane type; it was corrected before collecting behavioral evidence (`native-test-compile.log`).
+
+`testRuntimeReplacementRejectsAnUntrackedRevealRead` additionally holds an uncancelled reveal outside the presentation task handles, retires its runtime, then releases the obsolete page. This guards against merely keeping the native identity stable while allowing retired history to publish. The existing replacement regression still covers initial/reload recovery, lower replacement sequence numbers, retired snapshots and retained cursor rebinding.
+
+### Nearby contract sweep
+
+- Reviewed every `presentationGeneration`/`presentation.generation` use in Workspaces, Tabs and the native transcript. History progress, main/side/original-child loads, reloads, history edges and their cleanup, Source/Find/Home reveals, and position reacquisition now use the independent read fence. Viewport-ready callbacks, native binding, reading scopes, row retention and per-page accounting retain the mounted identity. Snapshot application retains its runtime-epoch fence after asynchronous decoding.
+- Reviewed every reload destination assignment and recovery call. No recovery reconstructs a retired reload's token from current navigation. Superseded explicit destinations are dropped; still-owned runtime recovery keeps its original token. Held-reader hydration preserves the newer anchor and pending draft initialization rather than replaying the discarded destination.
+- Checked hosted hide/close/Back and pane/window movement, main/side recovery, Find and version ownership, position retry/coalescing, and loaded-row reveal fast paths. Existing reader/query/load-ID guards remain in place. Helpers, wire packets, durable history, capture, permission and vault boundaries are unchanged in this round.
+
+### Round-3 wire verification
+
+The helper is unchanged from round 2. The Release helper rebuilt by the native baseline command has SHA-256 `689bf4d91ab569eca26e8dee045591b56fa407a08111d75dcac05180bf1782ee`. These generated-fixture, non-focus helper suites passed while the native lane was occupied and were rerun after the final native checks. The table reports the final run:
+
+```sh
+H="$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$H"
+python3 scripts/test-concurrent-native-host.py "$H"
+python3 scripts/test-native-acceptance.py "$H"
+```
+
+| Suite / log | Passed | Failed | Skipped | Time |
+| --- | ---: | ---: | ---: | ---: |
+| Wire / `test-native-host.log` | 39 | 0 | 0 | 35.630 s |
+| Concurrent / `test-concurrent-native-host.log` | 4 | 0 | 0 | 29.307 s |
+| Acceptance / `test-native-acceptance.log` | 3 | 0 | 0 | 3.498 s |
+
+No helper source or wire format changed in round 3; the full helper suite result remains the round-2 **1033 passed / 7 existing opt-in skips** recorded above.
+
+### Mutation checks
+
+With both fixes applied, the two focused regressions pass (**2/2**, `native-fixed.log`). A combined mutation reassigns a saved reload's token from current navigation and again rotates the mounted presentation on epoch change. The same command then fails **2 tests / 6 assertions** (`native-mutation.log`), reproducing the original destination and native-selection failures.
+
+A separate mutation removes only the runtime read-generation advance:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests/testRuntimeReplacementRejectsAnUntrackedRevealRead
+```
+
+It fails **1 test / 2 assertions** (`native-read-mutation.log`): the uncancelled obsolete reveal returns success and replaces the held row. Both mutation runs compile successfully and fail on behavioral assertions. All mutations were restored before subsequent verification.
+
+### Nearby same-function history rebinding correction
+
+The sweep found an incomplete part of round 2's cursor handoff: `TranscriptReveal.swift` still rejected a helper-to-helper incarnation change in Home/reveal and position reads, even after `session.history` validated the held entry and lineage. A reader browsing an older page could therefore preserve its selection through rollover but fail its next explicit destination with a false “changed outside this window” error. This is a two-condition correction in the same read functions touched by the generation fix; no helper or protocol change is needed.
+
+`testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries` exercises all three paths through the fake wire transport, asserts that the original entry and lineage are sent for validation, and returns the replacement runtime's page. Before the correction it fails **1 test / 9 assertions** (`native-rebind-before.log`): all three paths retain the old page/incarnation and report a source change. The correction matches history paging's existing handoff rule. Different lineages and replacement file incarnations remain rejected.
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests/testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries
+```
+
+The fixed check, uncancelled-read fence and initial/reload recovery together pass **3/3** (`native-rebind-fixed.log`):
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests/testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests/testRuntimeReplacementRejectsAnUntrackedRevealRead \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests/testRuntimeReplacementRestartsVisibleInitialAndReloadReads
+```
+
+Restoring the old two source checks reproduces **1 failed test / 9 assertions** (`native-rebind-mutation.log`). That mutation was restored before the final run. Existing file-replacement, missing-entry and lineage rejection regressions are included in the affected native classes below.
+
+### Final affected native checks and review
+
+The main focused invocation was:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/HistoryEdgeTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/WorkspaceConcurrencyTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/TranscriptQuoteSelectionTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/TranscriptKeptRowsTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests
+```
+
+Serial classes each ran alone:
+
+```sh
+for C in HistoryEdgeTimingTests HistoryEditTests SubagentReaderTests \
+  InheritedSubagentReaderTests SubagentOpeningTests SubagentNavigationTests; do
+  PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+    -only-testing:PiAppTests/"$C"
+done
+TEST_RUNNER_PI_APP_SUB_DISPLAY_GALLERY="$B/gallery-round3/readers" \
+  PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentDisplayGalleryTests
+```
+
+The first aggregate reports **216 passed / 1 failed test** (`native-final.log`, two assertions). `HistoryExtentTests.testANewGenerationCanRecoverWhileThePreviousRecoveryIsPending` directly assigned `presentationGeneration` to simulate retirement of reads. That fixture encoded the old shared identity. It now invokes `adoptSnapshotEpoch` and also asserts that the mounted identity stays unchanged. Production code did not change for this test correction. The entire class was rerun:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryExtentTests
+```
+
+That rerun passes **25/25** (`native-HistoryExtentTests.log`). All other native tests passed their first aggregate run. Final consolidated coverage is **308 distinct tests passed, zero unresolved failures or skips, across 24 classes**. The initial fixture failure remains recorded rather than being hidden by the rerun.
+
+| Class | Final passed |
+| --- | ---: |
+| ForkCloneReaderTests | 1 |
+| FreshPresentationTests | 21 |
+| HistoryEdgeTests | 16 |
+| HistoryEdgeTimingTests | 2 |
+| HistoryEditTests | 3 |
+| HistoryExtentTests | 25 |
+| InheritedSubagentReaderTests | 7 |
+| LaunchSelectionTests | 20 |
+| LongJournalHistoryTests | 1 |
+| MessageVersionTranscriptTests | 8 |
+| SubagentDisplayGalleryTests | 1 |
+| SubagentNavigationTests | 7 |
+| SubagentOpeningTests | 14 |
+| SubagentReaderTests | 57 |
+| TranscriptDisclosureTests | 15 |
+| TranscriptKeptRowsTests | 10 |
+| TranscriptQuoteSelectionTests | 8 |
+| TranscriptRevealTests | 10 |
+| TranscriptSwitchFirstFrameTests | 1 |
+| WorkspaceConcurrencyTests | 8 |
+| WorkspaceFailureTests | 6 |
+| WorkspaceLoadingTests | 13 |
+| WorkspaceRefreshLifecycleTests | 37 |
+| WorkspaceTests | 17 |
+
+The gallery regenerated **40 PNGs**. Inspected `child-report` in light/dark at 1240×800 and 640×600 under `$B/gallery-round3/readers`; no new clipping or overlap. All native/focus runs held the shared lock, and every owned lock was released. No clone folders remain in this build root; no additional DerivedData root was created.
+
+The final adversarial review checked task creation versus execution, original workspace/hosted navigation tokens, stale completion and cleanup ownership, initial-load recovery, unchanged ready/preparing presentations, native selection/disclosure retention, reload-intent lifetime on completion and close, epoch-fenced snapshot decoding, and validated helper handoff versus changed lineages/files. It found and corrected the nearby Home/reveal/position handoff described above. The held uncancelled reveal and extent-recovery tests independently verify that preserving mounted identity does not admit retired reads. `git diff --check` passes. All mutations are restored. No issue remains unresolved in this scope, and no owner product decision is needed.

@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Superseded history reloads cannot reclaim a newer reader destination during recovery. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Background child runtime replacement preserves native text selection, scroll anchors and open folds while fencing obsolete reads. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Home, reveals and history-position reads rebind validated boundaries across same-ID helper runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+
 - [x] Invalid command IDs cannot overflow helper rejection frames. [Validation](docs/validation/a130-wire-0.1.130.md).
 - [x] Runtime replacement restarts visible history loads and preserves their requested destination. [Validation](docs/validation/a130-wire-0.1.130.md).
 - [x] Retained-history paging rebinds stable message boundaries after same-ID runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).

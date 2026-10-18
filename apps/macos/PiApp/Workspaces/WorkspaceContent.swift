@@ -99,15 +99,15 @@ extension WorkspaceModel {
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
         let navigation = transcriptNavigation(id, advancing: true)
-        let generation = view.presentationGeneration
+        let generation = view.presentation.readGeneration
         revealSerial += 1
         let read = revealSerial
         view.revealRead = read; view.revealFailure = nil; view.abandonJump()
         defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
-        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentation.readGeneration == generation, view.revealRead == read else { return }
         page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentation.readGeneration == generation, view.revealRead == read else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
         anchorChanged(view)
@@ -176,15 +176,15 @@ extension WorkspaceModel {
         }
         if historyLookup == nil {
             do {
-                let generation = view.presentationGeneration
+                let generation = view.presentation.readGeneration
                 var window = try await readConversationWindow(item, cursor: nil, around: messageID)
-                guard current(), view.presentationGeneration == generation else { return false }
+                guard current(), view.presentation.readGeneration == generation else { return false }
                 guard window.messages.contains(where: { $0.id == messageID }) else {
                     showMessageDetail(sessionID, messageID: messageID)
                     return true
                 }
                 window.messages = await withAccounting(window.messages, view: view, workspaceID: item.workspaceID)
-                guard current(), view.presentationGeneration == generation else { return false }
+                guard current(), view.presentation.readGeneration == generation else { return false }
                 adoptInitialHistory(window, into: view, around: messageID)
                 view.browsingHistory = true; anchorChanged(view)
                 return true

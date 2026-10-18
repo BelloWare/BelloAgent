@@ -891,8 +891,8 @@ struct TranscriptVersionView: Equatable, Sendable {
             monitoringEpoch = nil; monitoringCursor = nil
             footer.contextStateRevision = nil; footer.contextObservationRevision = nil; footerUpdatedAt = 0
             queueEditHoldRevision = -1; queuePresentedEditRevision = -1
-            presentation.cancel(); finishHistoryPresentation(presentationGeneration)
-            presentation.generation = UUID(); presentationGeneration = presentation.generation
+            presentation.cancel(); finishHistoryPresentation(presentation.readGeneration)
+            presentation.readGeneration = UUID()
             olderPage.loading = false; newerPage.loading = false; loadingEarlier = false
         }
         snapshotEpoch = epoch

@@ -72,12 +72,12 @@ extension WorkspaceModel {
                 try checkNavigation()
                 guard held.lineage == validating.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
             }
-            let display = displays[item.id], generation = display?.presentationGeneration
+            let display = displays[item.id], generation = display?.presentation.readGeneration
             let page = try await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
                                                                      position: around == nil && !start ? position : nil,
                                                                      validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
-                    guard navigation.isCurrent(in: self), let display, display.presentationGeneration == generation, display.historyState == .loading else { return }
+                    guard navigation.isCurrent(in: self), let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
                 }
             })
@@ -177,6 +177,7 @@ extension WorkspaceModel {
     func reloadHistory(_ id: String, around: String? = nil, navigation: TranscriptNavigationToken? = nil) {
         guard let view = displays[id], let item = record(id) else { return }
         let navigation = navigation ?? transcriptNavigation(id, advancing: true)
+        guard navigation.isCurrent(in: self) else { return }
         if !view.draftReady {
             // Retry must also check pending input. A successful history page
             // by itself cannot release a draft whose acceptance read failed.
@@ -192,8 +193,8 @@ extension WorkspaceModel {
             return
         }
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.presentation.reloadTarget = around.map(ConversationPresentation.ReloadTarget.message) ?? .latest
-        let generation = view.presentationGeneration
+        view.presentation.reload = .init(target: around.map(ConversationPresentation.ReloadTarget.message) ?? .latest, navigation: navigation)
+        let generation = view.presentation.readGeneration
         // The reads of the page being replaced end with it: neither boundary
         // is left loading, or failed, behind the cover.
         view.olderPage = .init(); view.newerPage = .init()
@@ -201,15 +202,16 @@ extension WorkspaceModel {
         view.presentation.navigation = Task { [weak self, weak view] in
             guard let self, let view else { return }
             defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
+            guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentation.readGeneration == generation else { return }
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, around: around)
-                guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentationGeneration == generation else { return }
+                guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentation.readGeneration == generation else { return }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-                guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentationGeneration == generation else { return }
+                guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentation.readGeneration == generation else { return }
                 self.adoptInitialHistory(page, into: view, around: around)
                 if self.opened.contains(id) { self.refresh(id) }
             } catch is CancellationError { }
-            catch { if !Task.isCancelled, navigation.isCurrent(in: self), view.presentationGeneration == generation { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false } }
+            catch { if !Task.isCancelled, navigation.isCurrent(in: self), view.presentation.readGeneration == generation { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false } }
         }
     }
     /// `automatic`: the page reading ahead of the reader on its own, which
@@ -251,19 +253,19 @@ extension WorkspaceModel {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
-        let generation = view.presentationGeneration, read = UUID()
+        let generation = view.presentation.readGeneration, read = UUID()
         let navigation = transcriptNavigation(id)
         if newer { view.newerPage.loading = true; view.newerPage.error = nil; view.presentation.newerRead = read }
         else { view.olderPage.loading = true; view.olderPage.error = nil; view.loadingEarlier = true; view.presentation.olderRead = read }
         let task = Task { [weak self, weak view] () -> Bool in
             guard let self, let view else { return false }
-            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentationGeneration == generation }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentation.readGeneration == generation }
             defer {
                 // Only the read the flag belongs to ends it. A read whose page
                 // was replaced under it (and read again since) must not end
                 // the read under way now: its spinner would go, and a second
                 // read of the same page would start.
-                if view.presentationGeneration == generation {
+                if view.presentation.readGeneration == generation {
                     if newer, view.presentation.newerRead == read {
                         view.newerPage.loading = false; view.presentation.newerTask = nil; view.presentation.newerRead = nil
                     } else if !newer, view.presentation.olderRead == read {
@@ -396,14 +398,14 @@ extension WorkspaceModel {
         // Once per generation and timeline: an old recovery cannot suppress
         // the new window's, while a source that does not say stays unsaid.
         let lineage = view.presentation.identity?.lineage
-        let generation = view.presentationGeneration, navigation = transcriptNavigation(id)
+        let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
         let requestKey = generation.uuidString + ":" + (lineage ?? "") + (navigation.reader?.generation.uuidString ?? String(navigation.workspaceRevision))
         guard view.positionsReadFor != requestKey else { return }
         view.positionsReadFor = requestKey
         Task { [weak self, weak view] in
             guard let self, let view else { return }
             @MainActor func current() -> Bool {
-                !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentationGeneration == generation
+                !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentation.readGeneration == generation
                     && view.presentation.identity?.lineage == lineage && view.positionsReadFor == requestKey
                     && view.historyPositions.total == nil
             }

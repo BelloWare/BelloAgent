@@ -20,6 +20,58 @@ import XCTest
 }
 
 final class WorkspaceRefreshLifecycleTests: XCTestCase {
+    @MainActor func testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries() async throws {
+        for operation in ["reveal", "home", "position"] {
+            let f = try await fixture()
+            f.view.historyState = .ready; f.view.draftReady = true; f.view.browsingHistory = true
+            f.view.snapshotEpoch = "old"; f.view.presentation.identity = ("old", "root")
+            f.view.olderPage.cursor = .init(incarnation: "old", lineage: "root", entry: "question")
+            XCTAssertTrue(f.view.adoptSnapshotEpoch("new"))
+            let read = Task {
+                switch operation {
+                case "reveal": _ = await f.model.revealInTranscript(sessionID: f.chat.id, messageID: "destination")
+                case "home": _ = await f.model.revealStartOfChat(sessionID: f.chat.id)
+                default:
+                    f.model.jumpToHistoryPosition(f.chat.id, position: 0, offset: 19)
+                    await f.view.jumpTask?.value
+                }
+            }
+            try await wait { f.commands.frames.contains { $0["method"]?.string == "session.history" } }
+            let command = try XCTUnwrap(f.commands.frames.first { $0["method"]?.string == "session.history" })
+            XCTAssertEqual(command["params"]?.object?["entry"], .string("question"))
+            XCTAssertEqual(command["params"]?.object?["lineage"], .string("root"))
+            try reply(command, on: f.host, result: ["version": .number(2), "incarnation": .string("new"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string("destination"), "role": .string("user"), "text": .string("Requested page")])]),
+                "older": .null, "newer": .null, "start": .number(0), "total": .number(1)])
+            await read.value
+            XCTAssertEqual(f.view.messages.map(\.id), ["destination"], operation)
+            XCTAssertEqual(f.view.presentation.identity?.incarnation, "new", operation)
+            XCTAssertNil(f.view.newerPage.error, operation)
+            try await f.host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testRuntimeReplacementRejectsAnUntrackedRevealRead() async throws {
+        let f = try await fixture(), gate = HistoryReadGate()
+        defer { Task { await gate.release() } }
+        f.view.historyState = .ready; f.view.draftReady = true; f.view.browsingHistory = true
+        f.view.snapshotEpoch = "old"
+        f.model.historyWindowLoader = { _, _, _, _ in
+            await gate.read()
+            return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("old"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string("retired"), "role": .string("user"), "text": .string("Retired page")])]), "older": .null, "newer": .null]))
+        }
+        let read = Task { await f.model.revealInTranscript(sessionID: f.chat.id, messageID: "retired") }
+        try await eventually("The reveal is reading the retired runtime") { await gate.reads == 1 }
+        XCTAssertTrue(f.view.adoptSnapshotEpoch("new"))
+        await gate.release()
+        let revealed = await read.value
+        XCTAssertFalse(revealed, "An uncancelled caller still needs the runtime read fence")
+        XCTAssertEqual(f.view.messages.map(\.id), ["question"])
+        XCTAssertNil(f.view.revealRead)
+        try await f.host.shutdownAndWait()
+    }
+
     @MainActor func testRuntimeReplacementRestartsVisibleInitialAndReloadReads() async throws {
         for reload in [false, true] {
             let f = try await fixture(), gate = HistoryReadGate()
