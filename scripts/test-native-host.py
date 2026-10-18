@@ -12,6 +12,7 @@ import http.client
 import importlib.util
 import json
 import pathlib
+import queue
 import sys
 import tempfile
 import threading
@@ -40,6 +41,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     lock = threading.Lock()
     strict_calls = {}
     strict_cache = set()
+    mcp_arrived = threading.Event()
+    mcp_release = threading.Event()
     def log_message(self, *args):
         pass
     def do_GET(self):
@@ -66,6 +69,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             elif method == 'tools/list':
                 result = {'tools': [{'name': 'echo', 'description': 'Echo', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}}}]}
             else:
+                if body['params']['arguments'].get('text') == 'held-wire-invocation':
+                    self.mcp_arrived.set()
+                    assert self.mcp_release.wait(20), 'MCP fixture barrier timed out'
                 result = {'content': [{'type': 'text', 'text': body['params']['arguments']['text']}]}
             mode = self.headers.get('X-Fixture-MCP-Mode')
             if mode and method == 'tools/list':
@@ -165,8 +171,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             usage = events[-1]['response']['usage'] if self.path.endswith('/responses') else events[-2]['usage']
             if model != 'billing-unknown': usage['cost'] = 0 if model == 'billing-free' else -1 if model == 'billing-invalid' else 0.0123
             if model == 'billing-conflict': usage['response_cost'] = 0.0456
-        if model in ('json','route-json','billing-json'):
+        if model in ('json','route-json','billing-json','large-usage-json'):
             value = events[-1]['response'] if self.path.endswith('/responses') else {'type':'message', 'role':'assistant', 'content':[{'type':'text','text':text}], 'stop_reason':'end_turn', 'usage':{'input_tokens':20,'output_tokens':8}}
+            if model == 'large-usage-json': value['usage']['vendor_details'] = 'v' * 1_100_000
             if effective: value['model'] = effective
             if model == 'billing-json': value['usage']['cost'] = 0.0123
             output = encoded(value); record['response'] = output
@@ -461,6 +468,22 @@ class FixtureContractTests(unittest.TestCase):
 
 
 class NativeIntegration(unittest.TestCase):
+    def test_invalid_oversized_command_identity_is_rejected_without_losing_helper(self):
+        for identity in ['x' * 1_100_000, '\x01' * 200_000]:
+            self.peer.post('runtime.info', command_id=identity)
+            try:
+                reply = self.peer.next_frame(timeout=3)
+            except queue.Empty:
+                self.fail('No rejection frame; helper exit=%s' % self.peer.process.poll())
+            self.assertEqual(reply['kind'], 'reply')
+            self.assertFalse(reply['ok'])
+            self.assertEqual(reply['error']['code'], 'invalid_command')
+            self.assertEqual(reply.get('commandId', ''), '')
+            self.assertIsNone(self.peer.process.poll())
+            self.peer.command('runtime.info')
+        self.assertLessEqual(self.peer.maximum_frame_bytes, 1_048_576)
+        self.assertEqual(self.peer.errors, [])
+
     @classmethod
     def setUpClass(cls):
         cls.server = http.server.ThreadingHTTPServer(('127.0.0.1',0),Fixture)
@@ -1459,6 +1482,56 @@ class NativeIntegration(unittest.TestCase):
         self.open(model='slow',session='independent',path=fork['path'])
         reloaded=self.peer.command('session.snapshot',session='independent')
         self.assertEqual(reloaded['messages'],child['messages'])
+    def test_large_capture_metadata_preserves_both_concurrent_chats(self):
+        self.open(model='slow', session='other', captureMode='persist')
+        self.open(model='large-usage-json', captureMode='persist')
+        self.submit(session='other'); self.submit()
+        for session in ('s', 'other'):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    result = self.peer.command('session.status', {'includeMetrics': False}, session)
+                except Exception:
+                    self.assertIsNone(self.peer.process.poll(), 'Capture killed the project helper')
+                    raise
+                if result['state'] == 'idle': break
+                time.sleep(.01)
+            self.assertEqual(result['state'], 'idle')
+            self.assertGreater(result['assistantMessageCount'], 0)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with self.peer.capture_lock:
+                finished = [p['metadata'] for p in self.peer.captures if p.get('type') == 'finish']
+            if len(finished) == 2: break
+            time.sleep(.01)
+        self.assertEqual(len(finished), 2)
+        large = next(p for p in finished if p['sessionId'] == 's')
+        self.assertEqual(large['usage']['raw']['vendor_details'], 'v' * 1_100_000)
+        self.assertIsNone(self.peer.process.poll())
+        self.assertFalse(self.peer.errors)
+
+    def test_quiescence_waits_for_inspector_execution_and_retention(self):
+        self.open()
+        self.peer.command('mcp.configure', {'config': {'servers': {'held': {'url': self.base+'/mcp'}}}})
+        Fixture.mcp_arrived.clear(); Fixture.mcp_release.clear()
+        call = self.peer.post('mcp.invoke', {'server': 'held', 'tool': 'echo', 'arguments': {'text': 'held-wire-invocation'}}, 's')
+        try:
+            self.assertTrue(Fixture.mcp_arrived.wait(10))
+            busy = self.peer.request('workspace.quiesce')
+            self.assertFalse(busy['ok'], 'A held Inspector call must prevent quiescence')
+            self.peer.command('workspace.resume')
+        finally:
+            Fixture.mcp_release.set()
+        while True:
+            result = self.peer.next_frame(timeout=10)
+            if result.get('commandId') == call: break
+        self.assertTrue(result['ok'])
+        busy = self.peer.request('workspace.quiesce')
+        self.assertFalse(busy['ok'], 'Sending a result is not durable retention')
+        self.peer.command('workspace.resume')
+        self.peer.command('mcp.resultRetained', {'commandId': call, 'retained': True})
+        self.assertTrue(self.peer.command('workspace.quiesce')['quiesced'])
+
     def test_mcp_stdio_and_http_schema_batch_single_invocation(self):
         self.open()
         self.peer.command('mcp.configure',{'config':{'servers':{'stdio':{'command':sys.executable,'args':[str(ROOT/'fixtures/native/mcp-server.py')]},'http':{'url':self.base+'/mcp'}}}})

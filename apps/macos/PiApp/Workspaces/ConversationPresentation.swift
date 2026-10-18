@@ -92,7 +92,15 @@ struct ConversationHistoryPage: Sendable {
 /// Navigation owns these tasks, never the helper's agent/run tasks. The runtime
 /// display and draft stay alive while each visit receives a fresh generation.
 @MainActor final class ConversationPresentation {
+    enum ReloadTarget { case latest, message(String) }
+    struct Reload {
+        var target: ReloadTarget
+        var navigation: TranscriptNavigationToken
+    }
+    var reload: Reload?
     var generation = UUID()
+    /// Runtime reads can retire without replacing the mounted transcript.
+    var readGeneration = UUID()
     var navigation: Task<Void, Never>?
     var olderTask: Task<Bool, Never>?
     var newerTask: Task<Bool, Never>?
@@ -116,7 +124,7 @@ struct ConversationHistoryPage: Sendable {
         secondary?.cancel(); secondary = nil
     }
     func begin() {
-        cancel(); generation = UUID(); identity = nil; partialTurnInput = nil
+        cancel(); generation = UUID(); readGeneration = generation; identity = nil; partialTurnInput = nil; reload = nil
         initializationPending = true
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
     }
@@ -144,12 +152,15 @@ extension SessionDisplay {
     func retireInitialPresentation() {
         guard historyState == .loading else { return }
         beginHistoryPresentation()
-        finishHistoryPresentation(presentationGeneration)
+        finishHistoryPresentation(presentation.readGeneration)
     }
     func finishHistoryPresentation(_ generation: UUID) {
-        guard presentationGeneration == generation else { return }
+        guard presentation.readGeneration == generation else { return }
         presentation.navigation = nil
-        if draftReady, historyState == .preparing || historyState == .ready || historyState == .empty { presentation.initializationPending = false }
+        if draftReady, historyState == .preparing || historyState == .ready || historyState == .empty {
+            presentation.initializationPending = false; presentation.reload = nil
+        }
+        if case .failed = historyState { presentation.reload = nil }
         // A canceled/superseded visit that never adopted a page can be reopened.
         // Preparing already has its page and waits for the viewport instead.
         if historyState == .loading { historyState = .dormant; refreshingCachedRows = false }

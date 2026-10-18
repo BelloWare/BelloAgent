@@ -23,6 +23,54 @@ private final class HostReplies: @unchecked Sendable {
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
 final class HostServiceTests: XCTestCase {
+    func testQuiescenceRejectsSubmissionPreflightAdmission() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let gate = SubmissionPreflightGate(), host = NativeHostService(emit: { _ in })
+            _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+            _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+            await host.holdSubmissionPreflight(at: gate)
+            let sending = Task { try await host.command(method, sessionID: "s", params: ["clientTurnId": "t", "text": "Held before admission", "messageId": "old"]) }
+            try await eventually { await gate.entered }
+            do { _ = try await host.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("Quiescence crossed \(method) preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "session_busy") }
+            _ = try await host.command("turn.stop", sessionID: "s", params: [:])
+            await gate.release()
+            do { _ = try await sending.value; XCTFail("Stop must retire the preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "submission_stopped") }
+            let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
+            XCTAssertEqual(quiet["quiesced"].flag, true)
+            await host.shutdown()
+        }
+    }
+
+    func testQuiescenceRejectsInspectorExecutionAndUnretainedResults() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+        _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+        _ = try await host.command("mcp.configure", sessionID: nil, params: ["config": ["servers": ["fixture": ["command": "/usr/bin/python3", "args": [JSON(repository.appendingPathComponent("fixtures/native/mcp-server.py").path), JSON(root.path)]]]]])
+        let invocation = Task { try await host.command("mcp.invoke", sessionID: "s", params: ["server": "fixture", "tool": "echo", "arguments": ["text": "retained"]], commandID: "invocation") }
+        defer { invocation.cancel(); try? Data().write(to: root.appendingPathComponent("mcp-release")) }
+        try await eventually { FileManager.default.fileExists(atPath: root.appendingPathComponent("mcp-arrived").path) }
+        func refuses() async throws {
+            do { _ = try await host.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("MCP execution/retention must prevent quiescence") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "mcp_busy") }
+            _ = try await host.command("workspace.resume", sessionID: nil, params: [:])
+        }
+        try await refuses()
+        try Data().write(to: root.appendingPathComponent("mcp-release"))
+        let result = try await invocation.value
+        XCTAssertEqual(result["content"].list.first?["text"].text, "retained")
+        try await refuses()
+        _ = try await host.command("mcp.resultRetained", sessionID: nil, params: ["commandId": "invocation", "retained": true])
+        let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
+        XCTAssertEqual(quiet["quiesced"].flag, true)
+        await host.shutdown()
+    }
+
     func testStopDuringSubmissionPreflightRejectsTheOvertakenSend() async throws {
         for method in ["turn.submit", "turn.steer", "turn.edit"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }

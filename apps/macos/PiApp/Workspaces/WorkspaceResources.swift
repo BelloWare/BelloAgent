@@ -19,20 +19,46 @@ extension WorkspaceModel {
         let item = target.flatMap(record)
         let workspaceID = item?.workspaceID ?? selectedWorkspaceID
         guard !installPreparing, let workspace = workspaces.first(where: { $0.id == workspaceID && $0.trusted }) else { throw HostError.failure("Choose a trusted project first") }
+        // Pin before helper startup and keep the pin through durable saving
+        // and the helper's retention acknowledgement, even if the sheet closes.
+        let invoking = method == "mcp.invoke"
+        if invoking { resourceInvocations[workspace.id, default: 0] += 1; cancelIdle(workspaceID: workspace.id); updateHostActivity(workspaceID: workspace.id) }
+        func releaseActivity() {
+            if invoking {
+                let remaining = (resourceInvocations[workspace.id] ?? 1) - 1
+                resourceInvocations[workspace.id] = remaining > 0 ? remaining : nil
+                updateHostActivity(workspaceID: workspace.id)
+            }
+            if let host = hosts[workspace.id] { scheduleIdle(workspaceID: workspace.id, host: host) }
+        }
+        var invocationHost: HostSupervisor?, invocationCommands: [String] = []
+        defer {
+            if let invocationHost, invocationCommands.contains(where: { invocationHost.hasOutstandingCommand($0) }) {
+                // A timeout reports uncertainty to the caller at once, while
+                // the helper still owns the command and its activity pin.
+                let commands = invocationCommands
+                Task { @MainActor in
+                    for id in commands { await invocationHost.waitForCommandSettlement(id) }
+                    releaseActivity()
+                }
+            } else { releaseActivity() }
+        }
         let host = try await host(for: workspace)
-        defer { scheduleIdle(workspaceID: workspace.id, host: host) }
+        if invoking { updateHostActivity(workspaceID: workspace.id) }
         var params = params
         // An unopened session still has a deliberate tool mode. Discovery must
         // not borrow the editing capabilities of another pane or open a run.
         if method == "resources.inspect", let item { params["readOnly"] = .bool(item.toolMode == ChatRecord.readOnlyTools) }
         if method == "mcp.invoke" {
             let commandID = UUID().uuidString, connection = host.connectionID, epoch = host.epoch
+            let retentionID = UUID().uuidString
+            invocationHost = host; invocationCommands = [commandID, retentionID]
             func acknowledge(_ retained: Bool) async throws {
                 // The sheet may have closed after dispatch. Its cancellation
                 // must not strand a completed result in awaitingRetention.
                 try await Task { @MainActor in
                     guard host.connectionID == connection, host.epoch == epoch else { throw HostError.failure("The project helper changed before MCP result retention was acknowledged. Check the invocation's effects before acknowledging it.") }
-                    _ = try await host.request("mcp.resultRetained", params: ["commandId": .string(commandID), "retained": .bool(retained)])
+                    _ = try await host.request("mcp.resultRetained", params: ["commandId": .string(commandID), "retained": .bool(retained)], commandID: retentionID)
                 }.value
             }
             let result: WireValue

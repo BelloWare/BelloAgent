@@ -216,6 +216,7 @@ extension WorkspaceModel {
         // model answers, and ends with its helper like any run.
         let readers = { [unowned self] (id: String) -> Bool in record(id).map { !$0.isUtilityChat } ?? true }
         func underWay() -> Bool {
+            if connectionProbeAdmissions > connectionProbeHosts.count { return true }
             if !hostStarts.isEmpty { return true }
             if displays.values.contains(where: { ($0.loading || $0.resuming) && readers($0.id) }) { return true }
             // Any session being opened, a background request's too: once

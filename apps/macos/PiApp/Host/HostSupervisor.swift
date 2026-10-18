@@ -27,6 +27,7 @@ final class HostSupervisor: ObservableObject {
     // A timed-out caller no longer has a continuation, but its helper task
     // still occupies capacity until a late reply or host loss reconciles it.
     private var outstandingCommands: Set<String> = []
+    private var commandSettlements: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var replyTimeouts: [String: Task<Void, Never>] = [:]
     private struct QueuedRequest {
         let id: String, method: String
@@ -57,6 +58,13 @@ final class HostSupervisor: ObservableObject {
     private let commandSender: (@MainActor ([String: WireValue]) -> Void)?
     private let acknowledgmentTimeout: Duration?
     var queuedCommandCount: Int { queuedRequests.count }
+    func hasOutstandingCommand(_ id: String) -> Bool { outstandingCommands.contains(id) }
+    /// A caller timeout does not end execution. Activity owners wait for the
+    /// physical reply or host loss, even after the caller has received its error.
+    func waitForCommandSettlement(_ id: String) async {
+        guard outstandingCommands.contains(id) else { return }
+        await withCheckedContinuation { commandSettlements[id, default: []].append($0) }
+    }
     /// Test seam: every answered request — what was asked and the result as
     /// the caller received it, display transfers already reassembled. Nil in
     /// the app, where it costs one comparison per reply.
@@ -246,6 +254,8 @@ final class HostSupervisor: ObservableObject {
         for waiter in readyWaiters { waiter.resume(throwing: error) }; readyWaiters.removeAll()
         for reply in replies.values { reply.resume(throwing: error) }; replies.removeAll()
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
+        let settlements = commandSettlements; commandSettlements.removeAll()
+        for waiters in settlements.values { for waiter in waiters { waiter.resume() } }
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
         for timeout in replyTimeouts.values { timeout.cancel() }; replyTimeouts.removeAll()
         // Pipe failure and process exit are independent callbacks for one
@@ -280,7 +290,10 @@ final class HostSupervisor: ObservableObject {
             }
             guard frame["hostEpoch"]?.string == epoch else { return }
             if frame["kind"]?.string == "reply", let id = frame["commandId"]?.string, outstandingCommands.remove(id) != nil {
-                defer { dispatchQueuedRequests() }
+                defer {
+                    for waiter in commandSettlements.removeValue(forKey: id) ?? [] { waiter.resume() }
+                    dispatchQueuedRequests()
+                }
                 replyTimeouts.removeValue(forKey: id)?.cancel()
                 let continuation = replies.removeValue(forKey: id)
                 let read = dispatchedReads.removeValue(forKey: id)

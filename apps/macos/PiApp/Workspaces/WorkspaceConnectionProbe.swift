@@ -17,6 +17,9 @@ extension WorkspaceModel {
     /// opens a chat, loads repository resources, or launches configured tools.
     /// Requests remain attributable to the real workspace in the request report.
     func verifyOnboardingConnection(_ profile: ProfileRecord) async throws {
+        guard !installPreparing, !isShutDown else { throw ConnectionProbeError.cancelled }
+        connectionProbeAdmissions += 1
+        defer { connectionProbeAdmissions -= 1 }
         try await ensureConfiguration()
         guard store != nil, profileChoice == profile.id,
               let workspace = workspaces.first(where: { $0.id == selectedWorkspaceID && $0.trusted }),
@@ -29,10 +32,13 @@ extension WorkspaceModel {
         guard let key = credential["apiKey"]?.string, GatewayModelDiscovery.validKey(key) else {
             throw ConnectionProbeError.failed("Save a valid API key for this gateway before testing.")
         }
+        guard !installPreparing, !isShutDown else { throw ConnectionProbeError.cancelled }
         let sessionID = "connection-test-" + UUID().uuidString
         let directory = root.appendingPathComponent("ConnectionTests/" + sessionID, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let host = HostSupervisor(), archive = traces, runtime = configuration.runtime
+        connectionProbeHosts[sessionID] = host
+        defer { connectionProbeHosts.removeValue(forKey: sessionID) }
         let mode = configuration.capture.defaultMode
         let deadline = Date().addingTimeInterval(30)
         let timeout = Task { @MainActor in
@@ -43,7 +49,7 @@ extension WorkspaceModel {
         func unchanged() async throws {
             let latest: [String: WireValue]
             do { latest = try await credentials(for: profile) } catch { throw ConnectionProbeError.changed }
-            guard profileChoice == profile.id, selectedWorkspaceID == workspace.id,
+            guard !installPreparing, !isShutDown, profileChoice == profile.id, selectedWorkspaceID == workspace.id,
                   workspaces.contains(workspace), !workspaceChangesInFlight.contains(workspace.id),
                   latest == credential else { throw ConnectionProbeError.changed }
         }
@@ -53,6 +59,7 @@ extension WorkspaceModel {
                 try await host.connect(cwd: directory, state: directory.appendingPathComponent("Host"), runtime: runtime,
                                        capture: { try await archive.accept($0, workspace: workspace.id) })
                 try Task.checkCancellation()
+                guard !installPreparing, !isShutDown else { throw ConnectionProbeError.cancelled }
                 _ = try await host.request("workspace.open", params: [
                     "cwd": .string(directory.path), "directory": .string(directory.appendingPathComponent("Sessions").path),
                     "captureProtocol": .number(1), "mcp": .object(["servers": .object([:])])])

@@ -60,7 +60,7 @@ extension WorkspaceModel {
     }
     func inspectResources(_ id: String?) { resourceTargetSessionID = id; showResources = true }
     func updateHostActivity(workspaceID: String) {
-        hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
+        hosts[workspaceID]?.isBusy = resourceInvocations[workspaceID] != nil || sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
     func canOpenSide(_ id: String) -> Bool {
         guard let parent = record(id), !parent.isSubagent, orphanedSideRefusal(id) == nil else { return false }
@@ -393,12 +393,12 @@ extension WorkspaceModel {
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
     func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id, generation = view.presentationGeneration, navigation = transcriptNavigation(child.id)
+        let id = child.id, generation = view.presentation.readGeneration, navigation = transcriptNavigation(child.id)
         let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
             defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
-            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentation.readGeneration == generation }
             do {
                 await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }

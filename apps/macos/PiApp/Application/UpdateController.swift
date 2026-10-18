@@ -56,6 +56,7 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     var pauseActiveWork: () async throws -> Void = {}
     /// How many chats are running, for the question's words.
     var runningChats: () -> Int = { 0 }
+    var runningToolCalls: () -> Int = { 0 }
     /// Test seam: what starts Sparkle's own check. Nil in the app.
     var startCheckForTesting: (() -> Void)?
     /// Set when Sparkle is about to relaunch while work is active: the
@@ -80,10 +81,17 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     /// running chats. True for Pause and Install. A sheet, never a modal
     /// loop: the question must not stop the runs it is asking about.
     private func askToPause(answered: @escaping (Bool) -> Void) {
-        let count = max(1, runningChats())
+        let count = runningChats(), tools = runningToolCalls()
         let alert = NSAlert()
-        alert.messageText = count == 1 ? "Pause the running chat and install?" : "Pause \(count) running chats and install?"
-        alert.informativeText = "They pause as they do when you quit: a reply that was arriving is kept as it is, and a tool call that was cut off is not run again. After the update, each paused chat shows Resume. Side chats that were not kept close; what you typed in them moves to their chats. Cancel installs nothing and leaves the chats running."
+        if count == 0 {
+            alert.messageText = tools == 1 ? "A tool call is still running" : tools > 1 ? "Tool calls are still running" : "Work is still running"
+            alert.informativeText = tools > 0
+                ? "Installing stops active Inspector tool calls. A call that was cut off is not run again; check its effects before trying it again. Cancel installs nothing and leaves the work running."
+                : "Installing stops the active background work, including connection tests. Cancel installs nothing and leaves the work running."
+        } else {
+            alert.messageText = count == 1 ? "Pause the running chat and install?" : "Pause \(count) running chats and install?"
+            alert.informativeText = "They pause as they do when you quit: a reply that was arriving is kept as it is, and a tool call that was cut off is not run again. After the update, each paused chat shows Resume. Side chats that were not kept close; what you typed in them moves to their chats. Cancel installs nothing and leaves the chats running."
+        }
         alert.addButton(withTitle: "Pause and Install")
         alert.addButton(withTitle: "Cancel")
         if !PiQuestion.shared.ask(alert, over: nil, answered: { answered($0 == .alertFirstButtonReturn) }) {

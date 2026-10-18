@@ -445,6 +445,7 @@ public actor MCPManager {
     /// failure until the call returns; a call that never ran needs no recovery.
     private var inFlightRetention: [String: Int] = [:]
     private var failedRetention: Set<String> = []
+    var hasOutstandingInvocations: Bool { inFlight > 0 || !inFlightRetention.isEmpty || !awaitingRetention.isEmpty }
     /// Ends one invocation; `retainedBy` names a result its caller has yet
     /// to keep. The last one to end, with every result kept, clears the
     /// outcome marker unless an outcome is unknown, whichever invocation

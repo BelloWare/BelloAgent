@@ -62,6 +62,8 @@ public actor NativeHostService {
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     private var subagentReaders: Set<String> = []
+    private var inspectorInvocations = 0
+    private var commandAdmissions = 0
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
@@ -185,7 +187,12 @@ public actor NativeHostService {
     }
     /// Refuses a command before it starts: nothing is cached, because the
     /// command identity was never accepted.
-    private func reply(_ id: String,_ result: Result<JSON,AgentError>) { emit(replyFrame(id,result)) }
+    private func reply(_ id: String,_ result: Result<JSON,AgentError>) {
+        // An invalid identity was never admitted. Do not echo or truncate it
+        // into a valid command's identity, even in a rejection frame.
+        let echo = id.utf8.count <= 128 ? id : ""
+        output(Self.boundedReply(epoch: epoch, echo, result, transfer: nil))
+    }
     /// Completes an accepted command: the frame is bounded and emitted. A
     /// command that changes something keeps its reply for an identical retry
     /// of the same identity, which must never run it twice. A read keeps
@@ -369,6 +376,11 @@ public actor NativeHostService {
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
         if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
         guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
+        // Cover preflight awaits until the session owns the work, including
+        // resource discovery, edit preparation and Resume's budget checks.
+        let admission = method == "mcp.invoke" ? 0 : 1
+        commandAdmissions += admission
+        defer { commandAdmissions -= admission }
         if let result=try await changeCommand(method,id:id,session:session,params:params,commandID:commandID,in:workspace) { return result }
         throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
     }
@@ -427,10 +439,16 @@ public actor NativeHostService {
         switch method {
         case "workspace.quiesce":
             quiesced=true
+            guard commandAdmissions == 0 else {
+                quiesced=false; throw AgentError("session_busy", "A command is being admitted; wait before updating")
+            }
             for s in sessions.values { await s.cancelHistoryFill() }
             // A chat whose work is held for Resume is restored paused after
             // the relaunch; nothing sends it while the workspace is quiesced.
             for s in sessions.values { let idle=await s.isIdle, held=await s.isHeldForResume, ephemeral=await s.isEphemeral; if !(idle || held) || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
+            guard inspectorInvocations == 0, !(await mcp.hasOutstandingInvocations) else {
+                quiesced=false; throw AgentError("mcp_busy", "An MCP invocation is executing or awaiting result retention")
+            }
             return ["quiesced":true]
         case "workspace.resume": quiesced=false; return ["resumed":true]
         case "resources.configure":
@@ -459,6 +477,8 @@ public actor NativeHostService {
             return ["acknowledged":true]
         case "connection.test":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            commandAdmissions += 1
+            defer { commandAdmissions -= 1 }
             let id = try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
             // Credentials are supplied by the native vault. No profile file,
             // workspace instruction, skill or MCP connection participates.
@@ -824,6 +844,10 @@ public actor NativeHostService {
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":
+            // Pin admission before the first cross-actor await; the manager
+            // owns the pin from execution through retention after this returns.
+            inspectorInvocations += 1
+            defer { inspectorInvocations -= 1 }
             var args=params; args["action"]="invoke"
             // Sending IPC is not retention. The app acknowledges this command
             // only after the complete result is saved and synced locally.

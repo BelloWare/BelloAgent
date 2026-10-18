@@ -247,6 +247,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var projectSidebarWrites: [String: Task<Void, Never>] = [:]
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
+    @Published var resourceInvocations: [String: Int] = [:]
+    var connectionProbeAdmissions = 0
+    var connectionProbeHosts: [String: HostSupervisor] = [:]
     var budgetOwnerChanges: Set<String> = []
     @Published var installPreparing = false
     @Published var showConversationContent = false
@@ -526,7 +529,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var hasActiveWork: Bool { !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 

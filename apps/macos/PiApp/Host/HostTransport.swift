@@ -21,6 +21,7 @@ final class HostTransport: @unchecked Sendable {
     private let capture: (@Sendable ([String: WireValue]) async throws -> Void)?
     private var captureTask: Task<Void, Never>?
     private var capturePending = false
+    private var capturePackets = CapturePacketReader()
     private var hostEpoch: String?
     private var stopping = false
 
@@ -119,9 +120,19 @@ final class HostTransport: @unchecked Sendable {
     }
     private func receiveCapture(_ frame: [String: WireValue]) {
         guard frame["v"]?.number == 1, frame["hostEpoch"]?.string == hostEpoch,
-              let id = frame["transferId"]?.string, UUID(uuidString: id) != nil, var packet = frame["packet"]?.object else { return }
+              let id = frame["transferId"]?.string, UUID(uuidString: id) != nil else { return }
         let epoch = frame["hostEpoch"] ?? .null
         guard let capture, !capturePending else { acknowledgeCapture(id, epoch: epoch, accepted: false); return }
+        var packet: [String: WireValue]
+        do {
+            guard let complete = try capturePackets.accept(frame) else {
+                acknowledgeCapture(id, epoch: epoch, accepted: true); return
+            }
+            packet = complete
+        } catch {
+            capturePackets = CapturePacketReader()
+            acknowledgeCapture(id, epoch: epoch, accepted: false); return
+        }
         if var metadata = packet["metadata"]?.object { metadata["hostEpoch"] = epoch; packet["metadata"] = .object(metadata) }
         let value = packet; capturePending = true
         captureTask = Task { [self] in
@@ -137,6 +148,7 @@ final class HostTransport: @unchecked Sendable {
         send(["v": .number(1), "kind": .string("capture.ack"), "hostEpoch": epoch, "transferId": .string(id), "accepted": .bool(accepted)])
     }
     private func captureEnded(status: Int32) {
+        capturePackets = CapturePacketReader()
         guard let capture, let epoch = hostEpoch else { receive(.exited(status)); return }
         // Command admission ends now, even if archive work is stalled. The
         // separate .exited below keeps ownership, clear and shutdown behind
@@ -256,4 +268,25 @@ private final class HostPipeWriter: @unchecked Sendable {
         source.cancel()
     }
     deinit { close() }
+}
+
+/// Capture packets stay in memory until complete. Only their final page is
+/// acknowledged by the archive; a prefix is never published as metadata.
+struct CapturePacketReader {
+    private var packetID: String?
+    private var bytes = Data()
+    mutating func accept(_ frame: [String: WireValue]) throws -> [String: WireValue]? {
+        if let packet = frame["packet"]?.object {
+            guard packetID == nil, frame["chunk"] == nil else { throw WireError.invalid }
+            return packet
+        }
+        guard let chunk = frame["chunk"]?.object, let id = chunk["packetId"]?.string, UUID(uuidString: id) != nil,
+              let offset = chunk["offset"]?.nonnegativeInteger, offset == bytes.count,
+              let encoded = chunk["bytes"]?.string, let page = Data(base64Encoded: encoded), !page.isEmpty, page.count <= 32 * 1024,
+              let final = chunk["final"]?.bool, packetID == nil || packetID == id else { throw WireError.invalid }
+        packetID = id; bytes.append(page)
+        guard final else { return nil }
+        defer { packetID = nil; bytes = Data() }
+        return try JSONDecoder().decode([String: WireValue].self, from: bytes)
+    }
 }

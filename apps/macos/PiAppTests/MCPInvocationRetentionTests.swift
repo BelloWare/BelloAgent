@@ -4,7 +4,7 @@ import XCTest
 @MainActor private final class MCPCommands { var frames: [[String: WireValue]] = [] }
 
 @MainActor final class MCPInvocationRetentionTests: XCTestCase {
-    private func fixture() async throws -> (WorkspaceModel, HostSupervisor, MCPCommands, URL) {
+    private func fixture(acknowledgmentTimeout: Duration? = nil) async throws -> (WorkspaceModel, HostSupervisor, MCPCommands, URL) {
         let root = scratchRoot("mcp-retention")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -13,7 +13,7 @@ import XCTest
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         model.workspaces = [project]; model.selectedWorkspaceID = project.id
         model.chats = [ChatRecord(id: "chat", workspaceID: project.id, title: "Chat", path: nil, profileID: "fixture")]
-        let commands = MCPCommands(), host = HostSupervisor(commandSender: { commands.frames.append($0) })
+        let commands = MCPCommands(), host = HostSupervisor(commandSender: { commands.frames.append($0) }, acknowledgmentTimeout: acknowledgmentTimeout)
         try await host.connect(cwd: root, state: model.root.appendingPathComponent("Workspaces/project"))
         model.hosts[project.id] = host; model.boundHostConnections[project.id] = host.connectionID
         return (model, host, commands, model.root.appendingPathComponent("Workspaces/project/MCPResults"))
@@ -65,6 +65,138 @@ import XCTest
         try reply(ack, on: host, result: .object(["acknowledged": .bool(true)]))
         let received = try await request.value
         XCTAssertEqual(WireValue.object(received), result)
+    }
+
+    func testDiscoveryPreservesTheHostsExistingActivityPin() async throws {
+        let (model, host, commands, _) = try await fixture()
+        // Discovery leaves the host's activity state to its existing owner.
+        host.isBusy = true
+        let request = Task { try await model.resourceRequest("mcp.list", sessionID: "chat") }
+        defer { request.cancel() }
+        try await wait { commands.frames.count == 1 }
+        XCTAssertTrue(host.isBusy)
+        try reply(commands.frames[0], on: host, result: .object(["servers": .array([])]))
+        _ = try await request.value
+        XCTAssertTrue(host.isBusy)
+    }
+
+    func testInspectorWorkPinsUpdateAndIdleUntilRetentionAcknowledgement() async throws {
+        let (model, host, commands, _) = try await fixture()
+        model.configuration.runtime.idleGraceSeconds = 0
+        let request = Task { try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object([:])], sessionID: "chat") }
+        defer { request.cancel() }
+        try await wait { commands.frames.count == 1 }
+        XCTAssertTrue(model.hasActiveWork)
+        XCTAssertFalse(model.acquireUpdateBarrier(), "An Inspector invocation is active work")
+        model.releaseUpdateBarrier()
+        // A concurrent chat's completion re-evaluates the project activity.
+        model.updateHostActivity(workspaceID: "project")
+        XCTAssertTrue(host.isBusy)
+        model.scheduleIdle(workspaceID: "project", host: host)
+        try await Task.sleep(for: .milliseconds(80))
+        guard host.isReady else { return XCTFail("Idle shutdown interrupted the Inspector invocation") }
+        try reply(commands.frames[0], on: host, result: .object(["content": .array([])]))
+        try await wait { commands.frames.count == 2 }
+        XCTAssertTrue(model.hasActiveWork, "The saved result still awaits the helper's retention acknowledgement")
+        XCTAssertFalse(model.acquireUpdateBarrier())
+        model.releaseUpdateBarrier()
+        try reply(commands.frames[1], on: host, result: .object(["acknowledged": .bool(true)]))
+        _ = try await request.value
+        XCTAssertFalse(model.hasActiveWork)
+        XCTAssertTrue(model.acquireUpdateBarrier())
+        model.releaseUpdateBarrier()
+    }
+
+    func testTimedOutInvocationPinsActivityUntilItsPhysicalReplyOrHostExit() async throws {
+        for lateReply in [true, false] {
+            let (model, host, commands, _) = try await fixture(acknowledgmentTimeout: .seconds(1))
+            model.configuration.runtime.idleGraceSeconds = 0
+            let request = Task { try await model.resourceRequest("mcp.invoke", sessionID: "chat") }
+            defer { request.cancel() }
+            try await wait { commands.frames.count == 2 }
+            let call = commands.frames[0], ack = commands.frames[1]
+            XCTAssertEqual(ack["params"]?.object?["retained"]?.bool, false)
+            try reply(ack, on: host, result: .object(["acknowledged": .bool(true)]))
+            do { _ = try await request.value; XCTFail("The caller must still receive its timeout") } catch {}
+            XCTAssertTrue(model.hasActiveWork, "A timed-out caller does not end the helper's execution")
+            XCTAssertFalse(model.acquireUpdateBarrier()); model.releaseUpdateBarrier()
+            model.scheduleIdle(workspaceID: "project", host: host)
+            try await Task.sleep(for: .milliseconds(80))
+            guard host.isReady else { return XCTFail("Idle shutdown interrupted a timed-out but outstanding invocation") }
+            if lateReply { try reply(call, on: host, result: .object(["content": .array([])])) }
+            else { try await host.shutdownAndWait() }
+            try await wait { !model.hasActiveWork }
+            XCTAssertTrue(model.acquireUpdateBarrier()); model.releaseUpdateBarrier()
+        }
+    }
+
+    func testTimedOutRetentionAcknowledgementPinsActivityUntilItsPhysicalReply() async throws {
+        let (model, host, commands, folder) = try await fixture(acknowledgmentTimeout: .seconds(1))
+        model.configuration.runtime.idleGraceSeconds = 0
+        let request = Task { try await model.resourceRequest("mcp.invoke", sessionID: "chat") }
+        defer { request.cancel() }
+        try await wait { commands.frames.count == 1 }
+        try reply(commands.frames[0], on: host, result: .object(["content": .array([])]))
+        try await wait { commands.frames.count == 2 }
+        let ack = commands.frames[1]
+        XCTAssertEqual(ack["params"]?.object?["retained"]?.bool, true)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 1)
+        do { _ = try await request.value; XCTFail("The caller must still receive its timeout") } catch {}
+        XCTAssertTrue(model.hasActiveWork)
+        XCTAssertFalse(model.acquireUpdateBarrier()); model.releaseUpdateBarrier()
+        model.scheduleIdle(workspaceID: "project", host: host)
+        try await Task.sleep(for: .milliseconds(80))
+        guard host.isReady else { return XCTFail("Idle shutdown overtook the retention acknowledgement") }
+        try reply(ack, on: host, result: .object(["acknowledged": .bool(true)]))
+        try await wait { !model.hasActiveWork }
+    }
+
+    func testHeldMCPCallSurvivesConcurrentChatCompletionAndIdleGrace() async throws {
+        let setup = try await gatewayWorkspace("mcp-idle-wire", projectID: "mcp-idle-wire")
+        let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
+        registerWorkspaceFixtureTeardown(model, root: setup.root)
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        try await model.reloadConfiguration()
+        model.configuration.runtime.idleGraceSeconds = 10
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: setup.workspace.id, title: "Fixture", profileID: setup.profile.id)
+        model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
+        let view = SessionDisplay(id: chat.id); model.displays[chat.id] = view
+        let host = try await model.open(chat)
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { repository.deleteLastPathComponent() }
+        let server: WireValue = .object(["command": .string("/usr/bin/python3"), "args": .array([.string(repository.appendingPathComponent("fixtures/native/mcp-server.py").path), .string(setup.root.path)]), "timeoutSeconds": .number(60)])
+        _ = try await host.request("mcp.configure", params: ["config": .object(["servers": .object(["fixture": server])])])
+        _ = try await host.request("turn.submit", sessionID: chat.id, params: ["clientTurnId": .string(UUID().uuidString), "text": .string("Concurrent chat")])
+        let request = Task { try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object(["text": .string("Retained result")])], sessionID: chat.id) }
+        defer { request.cancel(); try? Data().write(to: setup.root.appendingPathComponent("mcp-release")) }
+        try await wait("MCP tools/call reached the fixture barrier") { FileManager.default.fileExists(atPath: setup.root.appendingPathComponent("mcp-arrived").path) }
+        XCTAssertFalse(model.acquireUpdateBarrier())
+        model.releaseUpdateBarrier()
+        do { _ = try await host.request("workspace.quiesce"); XCTFail("The helper overlooked MCP execution") }
+        catch HostError.rejected(let code, _) { XCTAssertTrue(["mcp_busy", "session_busy"].contains(code)) }
+        try await eventually("Concurrent chat completed") {
+            let status = try await host.request("session.status", sessionID: chat.id)
+            return status.object?["state"]?.string == "idle"
+        }
+        view.state = "idle"; view.loading = false
+        model.updateHostActivity(workspaceID: setup.workspace.id)
+        model.scheduleIdle(workspaceID: setup.workspace.id, host: host)
+        try await Task.sleep(for: .seconds(11))
+        XCTAssertTrue(host.isReady, "The MCP call outlives the configured 10-second idle grace")
+        try Data().write(to: setup.root.appendingPathComponent("mcp-release"))
+        let result = try await request.value
+        XCTAssertEqual(result["content"]?.array?.first?.object?["text"]?.string, "Retained result")
+        let folder = model.root.appendingPathComponent("Workspaces/\(setup.workspace.id)/MCPResults")
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        let saved = try JSONDecoder().decode(WireValue.self, from: Data(contentsOf: XCTUnwrap(files.first)))
+        XCTAssertEqual(saved.object?["result"], .object(result))
+        let status = try await host.request("mcp.list")
+        XCTAssertEqual(status.object?["outcomeUnknown"]?.bool, false)
+        XCTAssertTrue(model.acquireUpdateBarrier())
+        let quiet = try await host.request("workspace.quiesce")
+        XCTAssertEqual(quiet.object?["quiesced"]?.bool, true)
+        model.releaseUpdateBarrier()
     }
 
     func testAFailedSaveReportsLostRetentionAndNeverAcknowledgesSuccess() async throws {

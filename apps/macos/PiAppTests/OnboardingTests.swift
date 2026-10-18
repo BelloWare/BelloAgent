@@ -2,6 +2,42 @@ import XCTest
 @testable import PiApp
 
 final class OnboardingTests: XCTestCase {
+    @MainActor func testUpdatePauseStopsAndWaitsForTheOnboardingHelper() async throws {
+        let f = try await gatewayWorkspace("onboarding-pause", projectID: "project", gatewayEnvironment: ["PI_APP_UI_FIXTURE_PROBE_BARRIER": "1"])
+        let model = makeWorkspaceModel(stateRoot: f.state, vault: f.vault)
+        defer { model.shutdown() }
+        try await model.reloadConfiguration(); model.profileChoice = f.profile.id; model.selectedWorkspaceID = f.workspace.id
+        let probe = Task { try await model.verifyOnboardingConnection(f.profile) }
+        defer { probe.cancel(); try? Data().write(to: f.root.appendingPathComponent("probe-release")) }
+        try await eventually("The probe is running") { FileManager.default.fileExists(atPath: f.root.appendingPathComponent("probe-arrived").path) }
+        try await model.pauseRunsForUpdate()
+        XCTAssertFalse(model.hasActiveWork)
+        XCTAssertTrue(model.connectionProbeHosts.isEmpty)
+        do { try await probe.value; XCTFail("The paused probe must not report success") } catch { }
+        XCTAssertTrue(model.acquireUpdateBarrier())
+        do { try await model.verifyOnboardingConnection(f.profile); XCTFail("No probe may start behind the update barrier") } catch { }
+        model.releaseUpdateBarrier()
+        await model.store?.close()
+    }
+
+    @MainActor func testOnboardingProbePinsUpdateUntilItsScopedHelperFinishes() async throws {
+        let f = try await gatewayWorkspace("onboarding-update", projectID: "project", gatewayEnvironment: ["PI_APP_UI_FIXTURE_PROBE_BARRIER": "1"])
+        let model = makeWorkspaceModel(stateRoot: f.state, vault: f.vault)
+        defer { model.shutdown() }
+        try await model.reloadConfiguration(); model.profileChoice = f.profile.id; model.selectedWorkspaceID = f.workspace.id
+        let probe = Task { try await model.verifyOnboardingConnection(f.profile) }
+        defer { probe.cancel(); try? Data().write(to: f.root.appendingPathComponent("probe-release")) }
+        try await eventually("The scoped probe reached its loopback barrier") { FileManager.default.fileExists(atPath: f.root.appendingPathComponent("probe-arrived").path) }
+        XCTAssertTrue(model.hasActiveWork)
+        XCTAssertFalse(model.acquireUpdateBarrier(), "A connection test owns a provider request outside the project helper")
+        model.releaseUpdateBarrier()
+        try Data().write(to: f.root.appendingPathComponent("probe-release"))
+        try await probe.value
+        XCTAssertFalse(model.hasActiveWork)
+        XCTAssertTrue(model.acquireUpdateBarrier()); model.releaseUpdateBarrier()
+        await model.store?.close()
+    }
+
     private func scratch() throws -> URL {
         let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("onboarding-\(UUID().uuidString)")
