@@ -463,7 +463,7 @@ extension AgentSession {
         // existing isolated recovery step publishes the final recovered clock,
         // without adding nonisolated initializer reads of actor state.
         defer { costPauseClock.update(pauses:costPauseCount,resumes:costResumeCount,paused:costPaused,stops:stopCount) }
-        try retireTerminalAgentPause(); boundary = context
+        try retireTerminalAgentPause(); boundary = Self.completeBoundary(context)
         costPendingMembership = saved.flatMap { SidePauseIntent($0["costPendingMembership"]) }
         if costPaused || costPendingMembership != nil { rememberSideMembership(paused:costPaused) }
         // Pruning a completed recipient is the recovered fan-out ack. It
