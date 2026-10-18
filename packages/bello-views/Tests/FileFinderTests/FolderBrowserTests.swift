@@ -1,7 +1,40 @@
 import XCTest
 @testable import FileFinder
+import GitProcessSafety
 
 final class FolderBrowserTests: XCTestCase {
+    @MainActor func testTrustedListingsUseGlobalMonitorButNeverLocalMonitor() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try file("README", at: root)
+        try git.run(["init", "-q"], in: root); try git.run(["add", "README"], in: root)
+        for name in ["global", "local"] {
+            try file(".git/\(name)-monitor", at: root, text: "#!/bin/sh\n: > '\(root.path)/\(name)-ran'\nprintf 'token\\000'\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent(".git/\(name)-monitor").path)
+        }
+        let global = root.appendingPathComponent(".git/global-config")
+        try Data("[core]\nfsmonitor = \(root.path)/.git/global-monitor\n".utf8).write(to: global)
+        var env = Self.environment(root); env["GIT_CONFIG_GLOBAL"] = global.path
+        try git.run(["config", "core.fsmonitor", root.path + "/.git/local-monitor"], in: root)
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { $0 == root.path }
+        defer { GitReadProcess.resolveTrust = previous }
+        for operation in ["folder", "quick open"] {
+            if operation == "folder" {
+                let listing = try await FolderDirectory.read(root, relativeTo: root, environment: env)
+                XCTAssertTrue(listing.entries.contains { $0.name == "README" })
+            } else {
+                let listing = try await FileListing.list(root.path, limits: .init(), environment: env)
+                XCTAssertTrue(paths(listing).contains("README"))
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-ran").path), operation)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("local-ran").path), operation)
+            try? FileManager.default.removeItem(at: root.appendingPathComponent("global-ran"))
+        }
+        GitReadProcess.resolveTrust = { _ in false }
+        _ = try await FolderDirectory.read(root, relativeTo: root, environment: env)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-ran").path), "Revoked trust restores confinement")
+    }
+
     func testListingsNeverRunRepositoryFSMonitor() async throws {
         let root = try fixture(), env = Self.environment(root), git = try TestGit(fixture())
         try file("README", at: root)

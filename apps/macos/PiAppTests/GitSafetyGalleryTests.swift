@@ -8,7 +8,7 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
     @MainActor func testGitSafetyScenes() async throws {
         let folder = testEnvironment("PI_APP_GIT_SAFETY_GALLERY").map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        for scene in ["conflict", "amend-target", "amend-checked", "reword-target", "preflight-failure", "stale-target", "commit-box", "checked-files", "untrusted"] {
+        for scene in ["conflict", "amend-target", "amend-checked", "reword-target", "preflight-failure", "stale-target", "commit-box", "checked-files", "untrusted", "http-redirect"] {
             let fixture = try GitSafetyRepository(); defer { fixture.remove() }
             if scene == "conflict" { try fixture.conflict() }
             else {
@@ -21,7 +21,9 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                 try fixture.write("file.txt", scene == "preflight-failure" ? "review this line  \n" : "reviewed content\n")
                 if !["checked-files", "amend-checked", "stale-target"].contains(scene) { try fixture.git(["add", "file.txt"]); try fixture.write("file.txt", "later unstaged work\n") }
             }
-            let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+            let service = scene == "http-redirect" ? GitService(environment: ["PATH": "/usr/bin:/bin", "HOME": fixture.root.path,
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"]) : .shared
+            let controller = GitController(roots: [fixture.root.path], service: service); defer { controller.letGo() }
             try await eventually("read gallery repository") { controller.statusRead && !controller.loading }
             controller.commitMessage = "Keep the reviewed changes together"
             controller.amend = ["amend-target", "amend-checked", "stale-target"].contains(scene)
@@ -38,6 +40,17 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                 await controller.stage(["file.txt"])
                 XCTAssertTrue(controller.notice.contains("Trust"), controller.notice)
             }
+            if scene == "http-redirect" {
+                let receiver = try WebhookReceiver(); defer { receiver.stop() }
+                let address = try await receiver.start()
+                try fixture.git(["config", "protocol.http.allow", "always"])
+                try fixture.git(["config", "remote.origin.url", address + "/old"])
+                try fixture.git(["config", "http.extraHeader", "X-Fixture: synthetic"])
+                try fixture.git(["config", "http.\(address)/old.followRedirects", "true"])
+                receiver.answer([307], location: address + "/renamed")
+                await controller.fetch()
+                XCTAssertTrue(controller.notice.contains("http.extraHeader"), controller.notice)
+            }
             if scene == "stale-target" {
                 let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
                 try fixture.git(["commit", "--allow-empty", "-qm", "A newer target"])
@@ -50,7 +63,7 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                 for size in [NSSize(width: 1180, height: 780), NSSize(width: 920, height: 600), NSSize(width: 700, height: 640), NSSize(width: 310, height: 600)] {
                     window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
                     controller.commitMessage = size.width == 700 ? "Keep the reviewed changes together\n\nOne\nTwo\nThree" : "Keep the reviewed changes together"
-                    if !["stale-target", "untrusted"].contains(scene), let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
+                    if !["stale-target", "untrusted", "http-redirect"].contains(scene), let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
                     panel.refresh(); panel.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     let box = try XCTUnwrap(GitOperationSafetyTests.views(GitCommitBox.self, in: panel).first)
                     box.layoutSubtreeIfNeeded()

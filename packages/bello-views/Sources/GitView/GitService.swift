@@ -183,27 +183,34 @@ public actor GitService {
     }
     /// The environment every git this service runs starts from.
     private let environment: [String: String]
-    public init() { environment = Self.gitEnvironment(from: ProcessInfo.processInfo.environment) }
-    init(environment: [String: String]) { self.environment = environment }
+    private let trusted: Bool?
+    @MainActor public static var resolveTrust: (String) -> Bool {
+        get { GitReadProcess.resolveTrust }
+        set { GitReadProcess.resolveTrust = newValue }
+    }
+    public init() { environment = Self.gitEnvironment(from: ProcessInfo.processInfo.environment); trusted = nil }
+    init(environment: [String: String], trusted: Bool? = nil) { self.environment = environment; self.trusted = trusted }
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
                                             timeout: TimeInterval, handle: RunningProcess,
-                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true) throws -> Output {
+                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true, trusted: Bool = false) throws -> Output {
         let process = Process()
         process.executableURL = executable
         // Every parsed patch, including show and no-index, uses the parser's
         // a/ and b/ names regardless of the reader's display preferences.
-        // HTTP credentials and custom headers belong to the selected remote.
+        let directory = URL(fileURLWithPath: root, isDirectory: true)
+        let transport = gitOptions && !readOnly && ["fetch", "pull", "push"].contains(arguments.first ?? "")
+        let redirects = transport ? try GitConfiguration(in: directory, environment: environment)
+            .redirectOptions(for: arguments[0], in: directory, environment: environment) : (options: [], protected: false)
         let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
-                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false",
-                                "-c", "http.followRedirects=false"] : []) + arguments
+                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + redirects.options + arguments
         // Foundation raises an uncaught Objective-C exception past its own
         // 4096-argument limit, which no `catch` can stop: refuse first.
         guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
         process.arguments = all
-        process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        process.currentDirectoryURL = directory
         process.environment = environment
-        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment) : nil
+        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config") : nil
         defer { confinement?.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
@@ -266,6 +273,10 @@ public actor GitService {
         if let failure { throw GitFailure(message: failure) }
         if handle.isStopped { throw CancellationError() }
         let diagnostics = String(decoding: streams[1], as: UTF8.self)
+        if redirects.protected, process.terminationStatus != 0,
+           diagnostics.range(of: "redirect|error: 30[12378]", options: .regularExpression) != nil {
+            throw GitFailure(message: "Git refused an HTTP redirect because this remote has http.extraHeader configured. Use the final remote URL.")
+        }
         // Git may report success after an optional clean/process filter failed.
         // Do not present unconverted bytes as a successful repository comparison.
         if readOnly, diagnostics.contains("external filter") {
@@ -311,10 +322,11 @@ public actor GitService {
         let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess(), base = self.environment
         await acquireProcess()
         defer { releaseProcess() }
+        let trusted = if let trusted { trusted } else { await GitReadProcess.isTrusted(root) }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
-                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly))) }
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly, trusted: trusted))) }
                     catch { continuation.resume(throwing: error) }
                 }
             }

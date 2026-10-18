@@ -44,8 +44,98 @@ final class GitRepositorySecurityTests: XCTestCase {
         try? FileManager.default.removeItem(at: marker)
     }
 
+    func testGlobalOnlyProgramsDoNotAcquireLocalOverrides() async throws {
+        let global = root.appendingPathComponent(".git/global-only")
+        for (name, tail) in [("glob\u{00e1}l-monitor", "printf 'token\\000'"), ("global-clean", "cat")] {
+            let path = root.appendingPathComponent(".git/" + name)
+            try Data("#!/bin/sh\n: > '\(root.path)/\(name)-ran'\n\(tail)\n".utf8).write(to: path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+        }
+        try Data("[core]\nfsmonitor = \(root.path)/.git/glob\u{00e1}l-monitor\n[filter \"fixture=global\"]\nclean = \(root.path)/.git/global-clean\nrequired = true\n".utf8).write(to: global)
+        try write(".gitattributes", "file.txt filter=fixture=global\n")
+        try write("file.txt", "changed\n")
+        var env = environment; env["GIT_CONFIG_GLOBAL"] = global.path
+        do {
+            let result = try await GitService(environment: env, trusted: true).run(["status", "--porcelain=v2"], in: root.path)
+            XCTAssertEqual(result.status, 0, result.stderr)
+        } catch { XCTFail("User-owned programs need no local override: \(error)") }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("glob\u{00e1}l-monitor-ran").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-clean-ran").path))
+    }
+
+    func testInvalidUTF8CannotRenameAProgramOverride() async throws {
+        try await unrepresentableProgramName(Data("hostile".utf8) + Data([0xff]))
+    }
+    func testEqualsCannotSplitAProgramOverride() async throws {
+        try await unrepresentableProgramName(Data("hostile=shadow".utf8))
+    }
+    func testCanonicallyEquivalentFilterNamesStayByteDistinct() async throws {
+        let filter = try program("unicode-name"), config = root.appendingPathComponent(".git/config")
+        let first = "caf\u{00e9}", second = "cafe\u{0301}"
+        var bytes = try Data(contentsOf: config)
+        bytes += Data("\n[filter \"\(first)\"]\nclean = \(filter)\n[filter \"\(second)\"]\nclean = \(filter)\n".utf8)
+        try bytes.write(to: config)
+        try write(".gitattributes", "file.txt filter=\(first)\nplain.txt filter=\(second)\n")
+        try write("file.txt", "changed\n")
+        do { _ = try await GitService(environment: environment, trusted: true).run(["diff", "--no-ext-diff", "--no-textconv"], in: root.path) }
+        catch { XCTAssertTrue(error.localizedDescription.contains("configuration"), error.localizedDescription) }
+        assertNoProgram("Canonically equivalent filter names")
+    }
+    private func unrepresentableProgramName(_ name: Data) async throws {
+        let filter = try program("invalid-name")
+        let config = root.appendingPathComponent(".git/config")
+        var bytes = try Data(contentsOf: config)
+        bytes += Data("\n[filter \"".utf8) + name + Data("\"]\nclean = \(filter)\n".utf8)
+        try bytes.write(to: config)
+        try (Data("file.txt filter=".utf8) + name + Data("\n".utf8)).write(to: root.appendingPathComponent(".gitattributes"))
+        try write("file.txt", "changed\n")
+        do {
+            _ = try await GitService(environment: environment, trusted: true).run(["diff", "--no-ext-diff", "--no-textconv", "--", "file.txt"], in: root.path)
+            XCTFail("An origin inventory that cannot preserve config keys must fail closed")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("configuration"), error.localizedDescription) }
+        assertNoProgram("Unrepresentable filter name")
+    }
+
+    func testTrustedReadsKeepGlobalFiltersAndRejectLocalPrograms() async throws {
+        let global = root.appendingPathComponent(".git/fixture-global")
+        let allowed = root.appendingPathComponent(".git/global-filter")
+        let marker = root.appendingPathComponent("global-ran")
+        try Data("#!/bin/sh\n: > '\(marker.path)'\nsed 's/^changed$/indexed/'\n".utf8).write(to: allowed)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: allowed.path)
+        try Data("[filter \"lfs\"]\nclean = \(allowed.path)\nsmudge = \(allowed.path)\nrequired = true\n".utf8).write(to: global)
+        var env = environment; env["GIT_CONFIG_GLOBAL"] = global.path
+        let hostile = try program("local-filter"), monitor = try program("local-monitor", tail: "printf 'token\\000'")
+        try write(".git/local-programs", "[filter \"hostile\"]\nclean = \(hostile)\nprocess = \(hostile)\n[filter \"lfs\"]\nclean = \(hostile)\n[core]\nfsmonitor = \(monitor)\nhooksPath = \(root.path)/.git/hooks\n")
+        try git(["config", "includeIf.gitdir:**/\(root.lastPathComponent)/.git.path", "local-programs"])
+        try git(["config", "extensions.worktreeConfig", "true"])
+        try git(["config", "--worktree", "filter.lfs.smudge", hostile])
+        try write(".gitattributes", "file.txt filter=lfs\nplain.txt filter=hostile\n")
+        try write("file.txt", "changed\n")
+        for scope in ["global", "system"] {
+            if scope == "system" {
+                env.removeValue(forKey: "GIT_CONFIG_NOSYSTEM"); env["GIT_CONFIG_SYSTEM"] = global.path; env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+            }
+            let service = GitService(environment: env, trusted: true)
+            for arguments in [["status", "--porcelain=v2"], ["diff", "--no-ext-diff", "--no-textconv", "--", "file.txt"]] {
+                do {
+                    let result = try await service.run(arguments, in: root.path); XCTAssertEqual(result.status, 0, result.stderr)
+                    if arguments.first == "diff" { XCTAssertTrue(result.stdout.isEmpty, "The global conversion must match the indexed bytes") }
+                } catch { XCTFail("Trusted \(scope) filters must work: \(error)") }
+                XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The \(scope) LFS-style clean filter did not run")
+                assertNoProgram(arguments.joined(separator: " "))
+                try? FileManager.default.removeItem(at: marker)
+            }
+        }
+    }
+
     func testReadOnlyQueriesNeverRunRepositoryPrograms() async throws {
-        let service = GitService(environment: environment), path = root.path
+        try await readOnlyQueries(trusted: false)
+    }
+    func testTrustedReadOnlyQueriesNeverRunRepositoryPrograms() async throws {
+        try await readOnlyQueries(trusted: true)
+    }
+    private func readOnlyQueries(trusted: Bool) async throws {
+        let service = GitService(environment: environment, trusted: trusted), path = root.path
         let commits = try await service.log(in: path)
         let commit = try XCTUnwrap(commits.first)
         let monitor = try program("monitor", tail: "printf 'token\\000'")
@@ -134,10 +224,12 @@ final class GitRepositorySecurityTests: XCTestCase {
         try git(["config", "remote.origin.promisor", "true"])
         try git(["config", "remote.origin.url", "ext::" + remote])
         try git(["config", "protocol.ext.allow", "always"])
-        let service = GitService(environment: environment)
-        let result = try await service.run(["cat-file", "blob", oid], in: root.path)
-        XCTAssertNotEqual(result.status, 0)
-        assertNoProgram("Missing-object read")
+        for trusted in [false, true] {
+            let service = GitService(environment: environment, trusted: trusted)
+            let result = try await service.run(["cat-file", "blob", oid], in: root.path)
+            XCTAssertNotEqual(result.status, 0)
+            assertNoProgram("Missing-object read, trusted: \(trusted)")
+        }
     }
 
     func testHistoryNeverRunsRepositorySignatureVerifier() async throws {
@@ -151,10 +243,13 @@ final class GitRepositorySecurityTests: XCTestCase {
         let commits = try await service.log(in: path), commit = try XCTUnwrap(commits.first)
         let verifier = try program("signature-verifier", tail: "exit 1")
         try git(["config", "gpg.program", verifier]); try git(["config", "log.showSignature", "true"])
-        _ = try await service.log(in: path)
-        assertNoProgram("History signature")
-        _ = try await service.commitDetail(in: path, commit: commit)
-        assertNoProgram("Commit signature")
+        for trusted in [false, true] {
+            let service = GitService(environment: environment, trusted: trusted)
+            _ = try await service.log(in: path)
+            assertNoProgram("History signature, trusted: \(trusted)")
+            _ = try await service.commitDetail(in: path, commit: commit)
+            assertNoProgram("Commit signature, trusted: \(trusted)")
+        }
     }
 
     func testExplicitMutationsKeepConfiguredFiltersAndCommitHooks() async throws {
@@ -180,8 +275,15 @@ final class GitRepositorySecurityTests: XCTestCase {
         let monitor = try program("nested-monitor", tail: "printf 'token\\000'")
         try git(["-C", "nested", "config", "core.fsmonitor", monitor])
         try write("nested/tracked.txt", "edit\n")
-        let status = try await GitService(environment: environment).status(in: root.path)
-        XCTAssertTrue(status.entries.contains { $0.path == "nested" && $0.unstaged })
-        assertNoProgram("Submodule status")
+        let filter = try program("nested-filter")
+        try git(["-C", "nested", "config", "filter.nested.clean", filter])
+        try write("nested/.gitattributes", "tracked.txt filter=nested\n")
+        for trusted in [false, true] {
+            do {
+                let status = try await GitService(environment: environment, trusted: trusted).status(in: root.path)
+                XCTAssertTrue(status.entries.contains { $0.path == "nested" && $0.unstaged })
+            } catch { XCTAssertFalse(trusted, "\(error)") }
+            assertNoProgram("Submodule status, trusted: \(trusted)")
+        }
     }
 }

@@ -4,21 +4,30 @@ Workstream `dev/a130-security`, based on `6fc551e1941a7e53a71d5e6e04408ba1ae7d49
 
 ## Fixed instances and policy
 
-1. **SECURITY-BOUNDARIES-1a (P0), folder tree/menu and Quick Open:** FileFinder now passes `-c core.fsmonitor=false` on every Git query. Its `check-ignore` and `ls-files` load repository indexes even when a FileTab has no trusted project. Native reproduction opens an absolute file-tool link outside configured projects and awaits its folder rows.
-2. **SECURITY-BOUNDARIES-1b, Git status/index queries:** GitService's read-only launcher disables fsmonitor as well. This includes the changes panel, ignored-path listing, snapshots, preflight and file blame, including configuration brought in through `includeIf`/`include`.
-3. **SECURITY-BOUNDARIES-1c, executable content filters:** status, working diffs and blame can invoke `filter.<name>.clean`/`process` even with `--no-ext-diff --no-textconv`. Read-only Git now runs under a macOS process sandbox; only the selected system Git and its Git children may execute, no network is allowed, and writes are confined to a per-query private temporary directory and `/dev/null`. Checking configuration before a later Git invocation would leave a race and is deliberately not the security boundary. Git sometimes returns success after an optional filter fails; those diagnostics now fail the query instead of presenting unconverted data as a successful comparison.
-4. **SECURITY-BOUNDARIES-1d, working/staged/untracked diff textconv:** these paths now explicitly pass `--no-textconv`; commit name/stat queries also explicitly disable textconv and external diff. Historical/stash/hunk diff paths already passed these switches. The sandbox still protects against changes to attributes or configuration during a query.
-5. **SECURITY-BOUNDARIES-1e, implicit promisor fetch:** object/history reads in partial clones could invoke a configured remote helper, SSH command or credential helper. All read-only Git processes prohibit network and non-Git executables, and set `GIT_NO_LAZY_FETCH=1` (defence in depth; the sandbox also covers the older Apple Git used here).
-6. **SECURITY-BOUNDARIES-1f, sparse-index folder queries:** even `ls-files` and `check-ignore` can expand a sparse index and fetch a missing tree. Both wrote a remote marker with fsmonitor disabled. FileFinder now uses the same shared `GitProcessSafety` target as GitView; a static command-option fix alone was insufficient.
-7. **SECURITY-BOUNDARIES-1g, untrusted manual writes:** the app previously offered Changes mutations without consulting project trust. A host-supplied admission check now covers both GitController write entry points, including trust revoked after a review. Read-only Changes browsing remains available; already dispatched trusted writes retain their existing lifetime.
-8. **SECURITY-BOUNDARIES-1h, signature verification:** `log.showSignature=true` can invoke repository-configured `gpg.program` during ordinary history and commit-detail reads. The shared launcher disables signature display and confines executable children. A generated commit carrying a dummy signature exercises both read APIs.
-9. **SECURITY-BOUNDARIES-2, completion and test webhooks:** the URLSession delegate refuses every redirect. The original 3xx is a non-transient delivery failure; neither payload nor custom headers reach a redirected endpoint, and the redirect is not retried. Same-origin redirects also require the user to configure the final URL, matching the existing discovery/helper policy.
+The owner decisions below supersede the initial `fc82085a` policies. Earlier evidence is retained under the initial-validation headings; the review follow-up at the end records the new implementation and results.
 
-10. **SECURITY-BOUNDARIES-2b, Git HTTP redirects:** a trusted Fetch still forwarded a configured `http.extraHeader` to a different loopback port before Git rejected the response. GitService now passes `-c http.followRedirects=false` for its Git commands, covering fetch/pull/push and their HTTP exchanges. A native generated-repository test checks all five redirect codes and proves the private header reaches only the configured source.
+1. **SECURITY-BOUNDARIES-1a (P0), folder tree/menu and Quick Open:** outside/untrusted folders retain the confined Git launcher and `core.fsmonitor=false`. Trusted folders use fresh Git scope/origin metadata to override local/worktree programs, preserving global/system fsmonitor.
+2. **SECURITY-BOUNDARIES-1b, Git status/index queries:** the same policy covers Changes, ignored paths, snapshots, preflight and blame. Status/diff inventory initialized submodules so inherited command-line overrides cover their local programs too.
+3. **SECURITY-BOUNDARIES-1c, executable content filters:** trusted reads run without an execution sandbox. Local/worktree clean/smudge/process commands are neutralised; matching user-owned settings are restored from global/system scope. Repository attributes may select global filters, including required conversions. Outside/untrusted reads retain the execution/network/write sandbox and surface failed conversions.
+4. **SECURITY-BOUNDARIES-1d, textconv:** working/staged/untracked/history/stash/hunk diffs and commit statistics retain their no-textconv/no-external-diff switches. Trusted configuration overrides also cover local diff drivers.
+5. **SECURITY-BOUNDARIES-1e, implicit promisor fetch:** every read sets `GIT_NO_LAZY_FETCH=1` and `GIT_ALLOW_PROTOCOL=`; the latter also defeats per-protocol config allowances. Outside/untrusted queries additionally have no network or non-Git executables.
+6. **SECURITY-BOUNDARIES-1f, sparse-index folder queries:** FileFinder uses the same launcher; missing sparse trees cannot start a remote helper. Metadata inventory uses `ls-files --stage --sparse` under confinement.
+7. **SECURITY-BOUNDARIES-1g, untrusted manual writes:** both controller write admissions retain the live trust/root check and existing trust notice, including revocation after review. Already dispatched trusted writes retain their existing lifetime.
+8. **SECURITY-BOUNDARIES-1h, signature verification:** ordinary history/commit details retain disabled signature display. Trusted reads also override local `gpg.program` and `gpg.<format>.program` settings.
+9. **SECURITY-BOUNDARIES-2, webhooks:** all redirects remain refused. Original 3xx responses fail permanently without forwarding payloads/headers or retrying.
+10. **SECURITY-BOUNDARIES-2b, Git redirects and the review P1:** Git follows `initial` redirects for remotes without extra headers. Git resolves effective remote URLs and URL-matched `http.extraHeader`; protected URLs receive `followRedirects=false`, including existing URL-scoped redirect settings. Generic refusal alone was bypassable. A refused redirect reports that `http.extraHeader` requires the final remote URL.
 
-**Rule for user actions:** only explicit mutating Git operations in a trusted project opt out of read-only confinement: Stage/Unstage/Discard, branch switch/create/rename/delete, stash create/apply/pop/drop/store, fetch/pull/push, commit/amend/reword and hunk publication. Their normal hooks, content filters, signing and selected transports remain available; Bello-launched Git HTTP requests refuse redirects. Every preparatory/background read stays confined. Direct post-rewrite execution remains limited to the existing explicit Reword action. The library's host still owns project trust; the change does not grant trust or widen tools.
+### Owner decisions (verbatim)
 
-**Needs owner decision:** Git HTTP redirects now fail, including same-origin redirects; configure the final remote URL. This is the conservative choice because repository/global `http.extraHeader` values otherwise reach a redirected origin. Also, untrusted projects may browse confined Git data but are refused when a write is admitted, with the existing notice area saying to trust the project first. This is the conservative interpretation of the requested trusted-project exception. Also, read-only inspection that needs an executable clean/process filter now fails visibly, rather than running that program or showing a misleading raw comparison. The conservative policy is implemented. Read-only textconv is disabled, so ordinary textual diffs use repository bytes. The macOS `sandbox-exec` boundary is fail-closed if unavailable; this machine validates macOS 14.8. No new entitlement, preference, production bypass, or permission broker is added. Minimum/current macOS packaging compatibility remains for the lead's release gate.
+> 1. Background/read-only Git in TRUSTED projects: programs configured in the user's global or system Git config may run (e.g. Git LFS clean/smudge/process filters, a global fsmonitor), but programs configured inside the repository (local `.git/config`, worktree config, and any include/includeIf files resolved from local config) never run during Bello's background reads. Detect origins with `git config --show-scope --show-origin` (or equivalent) and neutralise local/worktree-scoped program settings with `-c` overrides (filters, fsmonitor, textconv/diff drivers, gpg.program and signature display, sshCommand, credential helpers, pager/editor, remote helpers/lazy fetch). Repository `.gitattributes` choosing a globally configured filter is fine. Keep fsmonitor/lazy-fetch/textconv defences where they do not break this. UNTRUSTED or outside-project folders: fully confined as you implemented (sandbox allowed there). Do NOT sandbox trusted-project reads if that blocks global programs like git-lfs. Test: a trusted LFS-style repo whose global-scope filter runs (fixture global config via GIT_CONFIG_GLOBAL in the test env, never the real ~/.gitconfig) and whose local-scope hostile filter/fsmonitor/hook does not.
+>
+> 2. Git HTTP redirects: follow redirects as Git normally does (`initial`), but refuse redirects (and fail with a clear message) for remotes that have an `http.extraHeader` configured at any scope, including URL-scoped `http.<url>.extraHeader`; when refusing, also override any URL-scoped `http.<url>.followRedirects` (the review finding below). Renamed-repo style same-host redirects without extra headers keep working.
+>
+> 3. Git writes in untrusted projects: refused with the trust notice, as you implemented (keep).
+>
+> Webhooks refusing all redirects: keep.
+
+**Explicit writes:** Stage/Unstage/Discard, branch mutations, stash mutations, fetch/pull/push, commit/amend/reword and hunk publication retain normal hooks, filters, signing and transports after trusted admission. Reword's hook-path query remains a confined data query and returns the actual configured path. Read overrides never reach a later write. No new entitlement, preference, helper capability or production test bypass is added. Minimum/current macOS packaging compatibility remains part of the lead's release gate.
 
 ## Subprocess sweep
 
@@ -27,20 +36,21 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | Launcher / operation | Command(s) | Working directory and trust | Repository-controlled execution paths and disposition |
 | --- | --- | --- | --- |
 | FileFinder tool availability | `/usr/bin/xcode-select -p` | Inherited app directory; no repository lookup | Xcode selection only, no Git config/hook/filter/pager/editor/transport. |
-| FileFinder repository detection | `git rev-parse --show-toplevel` | Arbitrary browsed folder, outside projects allowed; also nested repositories | Reads local/included config; no object/index conversion. fsmonitor disabled at the launcher; shared read-only confinement also applies. |
-| Quick Open recursive listing | `git ls-files -z --cached --others --exclude-standard` | Project folders and nested repositories/submodules; nested repos need not be independently trusted | Index can invoke fsmonitor (fixed). No clean/smudge/process conversion, diff driver, hook or editor is requested. Sparse-index expansion can invoke a promisor transport: now confined. |
-| Folder tree and breadcrumb menus | `git check-ignore -z --stdin`, repository detection | Arbitrary folder reached from a file card, including absent/untrusted project | Index fsmonitor (fixed); ignore decisions are data. No diff/conversion, hooks or editor. Sparse-index missing-tree transport is now confined. Shared FolderDirectory covers both tree and menu. |
+| FileFinder repository detection | `git rev-parse --show-toplevel` | Arbitrary browsed folder, outside projects allowed; also nested repositories | Reads local/included config; no object/index conversion. Local fsmonitor is overridden; global/system fsmonitor is allowed only in trusted folders. Outside/untrusted paths remain confined. |
+| Quick Open recursive listing | `git ls-files -z --cached --others --exclude-standard` | Project folders and nested repositories/submodules; nested repos need not be independently trusted | Index can invoke fsmonitor (fixed). No clean/smudge/process conversion, diff driver, hook or editor is requested. Sparse-index expansion cannot fetch: lazy-fetch/protocol guards apply in both trust states. |
+| Folder tree and breadcrumb menus | `git check-ignore -z --stdin`, repository detection | Arbitrary folder reached from a file card, including absent/untrusted project | Index fsmonitor (fixed); ignore decisions are data. No diff/conversion, hooks or editor. Sparse-index missing-tree transport is disabled in both trust states. Shared FolderDirectory covers both tree and menu. |
 | Non-repository ignore fallback | `git config --path --get core.excludesFile` | Walked folder, outside projects allowed | Reads global/local includes as data; uses configured ignore file without executing programs. |
+| Scope/origin and redirect inventory | `config --null --list --includes --show-scope --show-origin`, a second `--name-only` inventory, `ls-files --stage --sparse -z`, `remote get-url --all [--push]`, `ls-remote --get-url`, `config --get-urlmatch http.extraHeader` | Selected repository and initialized submodules; inventory itself always confined, including trusted projects | Fixed data queries only. No index monitor or transport may execute while identifying config. Scope is inherited through includes; origin/name records must match between inventories. Remote aliases, push URLs, `insteadOf` and URL-specific header matching are resolved by Git. |
 | Git read-only tool resolution | `/usr/bin/xcrun --find git` | `/`, clean environment, once per process | Selects developer Git; no repository-controlled PATH, cwd, `DEVELOPER_DIR`, or config. |
-| Git root/state/index | `rev-parse`, `symbolic-ref`, `status --porcelain=v2`, `ls-files` | Selected project root; public library root can be arbitrary. File blame also uses this service | fsmonitor disabled. Status clean/process filters and submodule Git children are confined. No repository scripts, hooks, network or repository writes. |
+| Git root/state/index | `rev-parse`, `symbolic-ref`, `status --porcelain=v2`, `ls-files` | Selected project root; public library root can be arbitrary. File blame also uses this service | Local/worktree fsmonitor and filters, including submodule programs, are overridden. Global/system programs run only for trusted reads. Optional index locks and implicit Git transports remain disabled. |
 | Git history and branch catalog | `log`, `show`, `for-each-ref`, `rev-list`, `merge-base`, `reflog show`, `branch --list`, `remote`, `worktree list`, `check-ref-format` | Project/repository root | Textconv/external diff disabled for patches/stats; signature display disabled. Missing-object fetch, SSH/credential/remote helpers blocked; pager forced off, no editor. Includes and branch config still read as data. |
-| Changes panel and file history diffs | `diff` (working, cached, no-index), `show` | Project root; no-index untracked path under the same root | External diff/difftool and textconv disabled; clean/process conversions confined and failures surfaced. No smudge requested. All config/includes remain behind the process boundary. |
+| Changes panel and file history diffs | `diff` (working, cached, no-index), `show` | Project root; no-index untracked path under the same root | External diff/difftool and textconv disabled; trusted global/system clean/process conversions remain available; local/worktree commands are overridden. Outside/untrusted conversions remain confined. No smudge requested. |
 | File viewer blame | `blame --no-textconv --contents -`, `log`, `rev-parse` | The file's repository; outside configured projects can be viewed | Content filters, fsmonitor and missing objects covered. No file bytes are handed to helper/model by this path. |
-| Stash inspection | `stash list`, `diff`, `show`, `ls-tree`, `rev-parse`, `config --get extensions.refStorage` | Project root | Internal Git child for `stash list` allowed; configured external programs are not. Textconv/external diff disabled; implicit remote access blocked. |
-| Commit preview and hunk review | status/index reads; `diff --check`, `check-attr`, `cat-file`, `ls-tree`; raw `diff --no-index` in private scratch | Project root or generated temporary patch directory | No commit hooks during preflight. Filters/driver/fsmonitor/lazy-fetch confined. Hunk content-attribute refusal is retained. Raw diff uses isolated config and no external driver/textconv. |
+| Stash inspection | `stash list`, `diff`, `show`, `ls-tree`, `rev-parse`, `config --get extensions.refStorage` | Project root | Internal Git child for `stash list` is allowed; local program settings are overridden in trusted reads, and outside/untrusted reads stay confined. Textconv/external diff disabled; implicit remote access blocked. |
+| Commit preview and hunk review | status/index reads; `diff --check`, `check-attr`, `cat-file`, `ls-tree`; raw `diff --no-index` in private scratch | Project root or generated temporary patch directory | No commit hooks during preflight. Filters/driver/fsmonitor use the trust/scope policy; implicit fetch is disabled. Hunk content-attribute refusal is retained. Raw diff uses isolated config and no external driver/textconv. |
 | Watchers, Files and folder menus | FSEvents/vnode callbacks -> launchers above; GitWatcher reads `.git`/`commondir` metadata directly | Watched repository/file roots; folder browser may be outside projects | No additional subprocess launcher. Refresh queries inherit the same policy. |
-| Reword identity and configuration reads | `var GIT_COMMITTER_IDENT`, `config --get commit.gpgSign`, `config --path --get core.hooksPath`, `rev-parse --git-path hooks` | Project/repository root, before an explicit trusted write | Identity, signing choice and hook path are data reads, still confined. Only the later admitted mutation may execute the configured signer/hook. |
-| Explicit Git mutations | `add`, `restore`, `reset`, `rm`, `clean`, `switch`, `branch -m/-d/-D`, mutating `stash`, `fetch`, `pull`, `push`, `commit`, reword plumbing (`read-tree`, `write-tree`, `interpret-trailers`, `commit-tree`, `update-ref`, `hook run`), hunk `hash-object -w --no-filters`/`update-index` | Trusted project chosen through existing UI | Normal fsmonitor, hooks/core.hooksPath, clean/smudge/process, SSH/credential/remote helpers, signing and includes retained where Git uses them. Git HTTP redirects are disabled; no automatic/background mutation is newly authorized. |
+| Reword identity and configuration reads | `var GIT_COMMITTER_IDENT`, `config --get commit.gpgSign`, `config --path --get core.hooksPath`, `rev-parse --git-path hooks` | Project/repository root, before an explicit trusted write | Hook/signing configuration is read as data under confinement; identity reads follow the same trust/scope policy. Only the later admitted mutation may execute the configured signer/hook. |
+| Explicit Git mutations | `add`, `restore`, `reset`, `rm`, `clean`, `switch`, `branch -m/-d/-D`, mutating `stash`, `fetch`, `pull`, `push`, `commit`, reword plumbing (`read-tree`, `write-tree`, `interpret-trailers`, `commit-tree`, `update-ref`, `hook run`), hunk `hash-object -w --no-filters`/`update-index` | Trusted project chosen through existing UI | Normal fsmonitor, hooks/core.hooksPath, clean/smudge/process, SSH/credential/remote helpers, signing and includes retained where Git uses them. Git HTTP redirects use `initial` unless effective extra headers require refusal; no automatic/background mutation is newly authorized. |
 | Reword post-rewrite | Resolved `core.hooksPath/post-rewrite`, argv `amend`, stdin old/new hashes | Explicit Reword in trusted project | Existing intentional hook execution retained; hook path read itself is confined. |
 | App helper launcher | Bundled `pi-native-host` via HostTransport | Trusted project/session cwd, or a generated temporary directory for ConnectionProbe | Fixed app helper, no repository-selected executable. Context/read/find/grep tools use native filesystem code, no hidden Git subprocess. |
 | Terminal | Configured login shell via `forkpty`/`execve` | Selected workspace path; TerminalRegistry itself does not check project trust | Intentional shell execution through the terminal UI; login-shell configuration and user commands may invoke Git with normal config. Not a Bello background/read-only query. |
@@ -57,12 +67,12 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | ProviderClient (main/side/subagent/title/summary/compaction) | POST model requests, messages/tool context/images, Authorization and configured headers | Existing HTTPStream delegate rejects all redirects; pooled tasks explicitly set that delegate | New HTTPRedirectTests covers pooled and unpooled streams across all five redirect codes, preserving original status and zero sink requests. |
 | ConnectionProbe | Synthetic model probe with configured credentials | Uses ProviderClient/HTTPStream above | Same transport coverage; no separate networking launcher. |
 | MCP HTTP | JSON-RPC POST initialize/list/invoke/notifications/server replies; configured headers and MCP session/protocol headers | Existing unpooled HTTPStream delegate refuses redirects | New HTTPRedirectTests exercises real MCPManager setup for 307 and 308 across two ports; no RPC/header reaches sink. |
-| Explicit Git fetch/pull/push | Git protocol body, credential-helper results, configured HTTP headers | `http.followRedirects=false` on every GitService command; read-only Git also has no network access | `GitRepositoryPermissionTests.testGitFetchNeverForwardsPrivateHeadersAcrossOrigins`: two ports, 301/302/303/307/308, real system Git, zero sink requests. |
+| Explicit Git fetch/pull/push | Git protocol body, credential-helper results, configured HTTP headers | Per-URL refusal when effective extra headers exist; otherwise `initial`. Existing URL-scoped redirect overrides are neutralised too. Git read transports are disabled. | `GitRepositoryPermissionTests.testGitFetchNeverForwardsPrivateHeadersAcrossOrigins`: two ports, 301/302/303/307/308, real system Git, zero sink requests. Review tests add URL-scoped overrides, all config scopes and a successful same-host rename. |
 | Update checks outside Sparkle | None found | Sparkle owns the appcast update path; no separate app/helper HTTP updater | Source enumeration of URLRequest/URLSession/HTTPStream and launch sites. |
 
 No other production HTTP client was found in these targets. Browser/external-link opening and intentionally configured stdio MCP/bash processes are separate user-authorized execution surfaces, not another internal HTTP transport.
 
-## Regression and mutation evidence
+## Initial regression and mutation evidence (`fc82085a`)
 
 Text logs are in the build root's `logs/`; no named result bundle was requested. All test commands use this workstream's build root. Initial fixture compile corrections (optional URL/async XCTest autoclosure) were corrected before counting regression failures. Interrupted mixed-lane build attempts are not counted as validation; serial-lane classes are rerun individually.
 
@@ -92,7 +102,7 @@ The signature follow-up reruns the entire six-case GitRepositorySecurityTests cl
 
 An intermediate full views run exposed the optional-filter fallback described in 1c; the final launcher now refuses that fallback. The first complete views run executed 321 cases (3 opt-in skips) and failed 7 assertions in 2 existing stash-race tests: their synthetic competing writes called the now-read-only `branchCommand`. Those two setup writes now explicitly use `readOnly: false`; the loss-prevention assertions are unchanged (`views-first-full.log`). The native cancellation fixture `GitOperationSafetyTests.testEditingTheDraftCancelsAnInFlightPreflightRead` also expected an executable content filter to start; the confined launcher correctly prevented that marker. Its wait now occupies the existing process queue with explicit synthetic commands, then checks draft-edit invalidation and unchanged file/index/HEAD; production confinement stays enabled. The initial run failed one assertion at line 291, recorded in `native-file-git-final.log`; the whole class is rerun after this test-only adaptation. Initial fixture-only corrections included updating the model's live `workspaces` array for trust changes and deferring scratch removal until SQLite teardown. Interrupted build/test attempts are not counted as final passes.
 
-## Validation commands
+## Initial validation commands (`fc82085a`)
 
 All commands run from this worktree. `B` below is `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`. The native focus/gallery runs hold `/Users/admin/Library/Caches/BelloSwiftWork/full-lane.lock`, write an identifying owner, and release it in `finally`, including on failure. Serial-lane classes run alone; no named xcresult bundle is requested. Xcode's ordinary temporary result directories are not the evidence; the text logs are.
 
@@ -168,7 +178,7 @@ Each native command first runs `PI_BUILD_ROOT="$B" python3 scripts/build-bundle.
 
 The gallery passes **1/1** and writes **104 PNGs** under `$B/gallery`. The new `untrusted` scene is captured at 1180×780, 920×600, 700×640 and 310×600 in light/dark appearances. Inspected the new scene at 1180×780 and 310×600 in both themes: the trust notice is readable, with the existing narrow ellipsis and full-text tooltip (`GitPanel.swift:663`); the controls and list remain in their established layout.
 
-## Adversarial self-review
+## Initial adversarial self-review (`fc82085a`)
 
 - Enumerated every production process constructor, exec/fork path, URLSession/URLRequest constructor, HTTPStream caller, and every GitService/FinderProcess call. The tables distinguish automatic reads from explicit shell/MCP/tool capabilities and trusted Git mutations. Source inventories are `source-boundary-sweep.txt` and `git-callsite-sweep.txt`.
 - Tried configuration indirection, nested repository children, optional clean and process filters, textconv, missing blobs and sparse trees. Static config scanning cannot close a concurrent config/attributes replacement race; execution/network/write restrictions are inherited by Git children instead. Git's allowed executable paths are resolved from a clean `/`-cwd system-tool lookup, never a repository PATH or `DEVELOPER_DIR`.
@@ -177,13 +187,13 @@ The gallery passes **1/1** and writes **104 PNGs** under `$B/gallery`. The new `
 - Checked URLSession and Git HTTP redirect handling, all redirect codes, POST preservation, custom headers, same-origin redirects, pooled task delegates, MCP initialization, and retry classification. Refusal occurs before a redirected request; original 3xx is not retried as a transient delivery failure.
 - Checked cancellation/deadlines, output caps, scratch cleanup, native file boundaries and the existing blame refusal. The test-only shell aliases used for drain/cancellation/timing probes and synthetic competing stash writers now explicitly opt into execution; no production bypass or environment switch was introduced.
 
-The policy choices requiring owner confirmation are called out above. The lead still owns integration, separate read-only review, and the merged full release gate. No unrelated product fix is included.
+The owner has resolved the initial policy questions as quoted above. The lead owns integration, separate read-only review and the merged full release gate. No unrelated product fix is included.
 
-## Unrelated validation failure
+## Initial unrelated validation failure
 
 The final native selection hit `FilePreviewRefreshTests.testSiblingNotificationsLetTheActivePreviewPublish` at `apps/macos/PiAppTests/FilePreviewRefreshTests.swift:25`: after repeated sibling-folder notifications and release of the first image decode, the queued metadata recheck did not enter its test gate within 10 seconds (one failed case, two assertions). The preview-refresh test and production preview implementation are unchanged on this branch, and this image-only path does not invoke Git. Evidence: `native-file-git-final.log`. The unchanged class passes **2/2 in isolation** (`native-FilePreviewRefreshTests.log`). This is consistent with a fixture-order dependency: `WorkspaceModel.swift:557` installs a weak-model `FileTab.resolveProject` closure whose fallback is `.removed`, whereas this standalone fixture expects a nil project to mean `.none`. That cause is an inference, not a fix on this branch; the combined-run failure remains for the lead to triage. The production preview behavior and assertion are unchanged.
 
-## Final validation counts
+## Initial final validation counts (`fc82085a`)
 
 | Suite / final selection | Passed | Skipped | Failed | Text evidence |
 | --- | ---: | ---: | ---: | --- |
@@ -242,3 +252,172 @@ The first combined native selection executed 214 cases: **210 passed, 2 skipped,
 | WebhookTests | 18 | 0 | `native-http-after.log` |
 
 All mutation edits were restored, `git diff --check` is clean, and generated project metadata includes the new native regression class. Both owned full-lane runs released their lock in `finally`; no other owner’s lock was removed. No cloned test-host directories remain in this build root.
+
+
+## Review follow-up: owner policies and URL-scoped redirect P1
+
+The review P1 is confirmed. The previous generic `-c http.followRedirects=false` was overridden by matching URL-scoped config. The new two-server regression failed for all five redirect codes, and the previous blanket refusal also broke the positive same-host rename test: **2 tests, 11 failed assertions/errors** (`review-http-before.log`). The initial trusted-filter test failed **2 assertions in 1 test** because its fixture global filter could not run (`review-trusted-before.log`). The owner’s untrusted-write and webhook policies already matched the implementation; their admission/delegate logic remains unchanged and their native classes are rerun.
+
+Trusted reads now resolve current project trust at admission, read Git scope/origin metadata afresh, and override local/worktree program settings (including local includes and initialized submodules). A global/system clean filter actually transforms fixture working bytes back into the indexed representation; status/diff complete and the diff is empty, while local filter/fsmonitor/hook markers remain absent. Global fsmonitor also runs through real folder and Quick Open listings, then stops being eligible when trust is revoked. Fixture configuration is supplied through `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`, never the real user config. Optional locks, implicit Git transports, textconv and automatic signature display remain disabled. Trusted Git can locate normal Homebrew-installed programs such as git-lfs; outside/untrusted reads retain the original sandbox.
+
+HTTP transport inventories both generic and URL-scoped settings, including included/worktree settings and initialized submodule repositories. Git expands remote URLs (including non-origin defaults, push URLs, literal branch remotes and `insteadOf`); URL-matched extra headers determine refusal. HTTP schemes are recognised case-insensitively, and Git's `helper::address` form is checked using the address passed to the helper. Every existing matching URL-scoped redirect setting is overridden, and protected remote URLs receive an explicit refusal. Unrelated header scopes do not disable an ordinary remote’s redirects. A real empty-repository fetch succeeds through a same-host rename redirect. All 301/302/303/307/308 private-header cases are refused with the clear `http.extraHeader` message. This follows Git’s [scope and URL matching rules](https://git-scm.com/docs/git-config).
+
+### Nearby inventory issues found and fixed before publishing
+
+| Separate instance | Failing-first evidence | Fix and oracle |
+| --- | --- | --- |
+| 1i: invalid UTF-8 filter name | `review-utf8-before.log`: 1 test, 2 failures; the marker program ran | Reject lossy configuration decoding before a trusted command can start. |
+| 1j: `=` in a local filter name | `review-equals-before.log`: 1 test, 2 failures; `-c` split at the wrong separator and the marker ran | Reject local program keys that cannot be represented as safe command-line overrides. Global-only settings need no override. |
+| 1k: canonically equivalent Unicode filter names | `review-unicode-before.log`: 1 test, 1 failure; one filter was left executable | Preserve byte-distinct names in inventory sets; refuse safety arguments macOS Foundation would normalise. |
+| 2c: canonically equivalent Unicode remote names | `review-http-unicode-before.log`: 1 test, 1 failure; the other origin received a request | Preserve remote/URL keys as bytes and reject lookups/overrides Foundation cannot pass unchanged, before sending headers. Both remote selections are exercised. |
+| 2d: mixed-case HTTP URL schemes | `review-http-forms-before.log`: `HTTP` and `hTtP` each reached the other origin (4 failed assertions) | Recognise the HTTP scheme case-insensitively before querying effective headers. |
+| 2e: explicit transport-helper addresses | The same log: `http::http`, `https::http` and `ftp::http` each reached the other origin (6 failed assertions) | Check the HTTP address passed to the helper, rather than treating its transport prefix as the URL scheme. |
+
+The initial Unicode-remote fixture used Process to create its names, which normalised both to the same name. It was corrected to write two distinct config byte sequences directly; both actual remote selections are now checked. The standalone generated-argument probe (`review-argv-unicode.log`) confirms that this Mac’s Foundation decomposes both argv and environment text. Configuration that cannot be checked or overridden faithfully now fails with a configuration error; it never falls through to an unprotected command. Global programs themselves remain user-authorised code, not sandboxed code.
+
+The final compatibility probe exposed an overly broad version of the encoding guard: a global-only filter named `fixture=global` and a Unicode global fsmonitor path were refused (**1 test, 3 failures**, `review-global-only-before.log`). Only local/worktree program keys now acquire overrides or their encoding restrictions. In particular, the inventory probe’s command-scoped fsmonitor guard is not mistaken for a local program. The global filter and monitor both execute successfully with their original config bytes (**1/1**, `review-global-only-restored.log`); the expanded focused selection passes **33/33** (`review-global-only-fixed.log`).
+
+### Follow-up mutations
+
+| Mutation | Expected failing result | Text log |
+| --- | --- | --- |
+| Confine trusted reads again | 2 tests / 10 assertions: global/system conversion and global monitor no longer work | `review-global-mutation.log` |
+| Remove local/worktree program overrides | 3 tests / 21 assertions: hostile programs execute, including included config | `review-local-mutation.log` |
+| Remove both lazy-fetch and protocol guards | 1 test / 1 assertion: missing-object read starts fixture remote | `review-lazy-mutation.log` |
+| Retain only generic redirect refusal | 3 tests / 16 assertions: URL-scoped settings forward private headers | `review-url-mutation.log` |
+| Restore the pre-byte-check inventory | 4 tests / 6 assertions: all four inventory edge cases reproduce | `review-bytes-mutation.log` |
+| Replace ordinary `initial` redirects with blanket refusal | 1 test / 1 error: same-host rename fetch fails | `review-rename-mutation.log` |
+| Treat command-scoped probe settings as local programs | 1 test / 3 assertions: the global-only monitor/filter fixture fails | `review-global-scope-mutation.log` |
+| Apply override-key restrictions to global-only settings | 1 test / 3 assertions: the global-only monitor/filter fixture fails | `review-global-key-mutation.log` |
+| Recognise only plain lowercase HTTP URLs again | 1 test / 10 assertions: five alternate URL forms reach the other origin | `review-http-forms-mutation.log` |
+
+Removing just the protocol guard did not break the missing-object test because the independent lazy-fetch guard still protected it (`review-lazy-single-guard-mutation.log`). Removing both reproduced execution. Every mutation was restored in `finally`. The byte-check restoration passes **32/32** (`review-final-restored.log`), the redirect compatibility restoration passes **4/4** (`review-http-restored.log`), and the global-only restoration passes **1/1**. Intermediate full package runs passed **325 tests, skipped 3** before the byte checks (`review-views-before-byte-guards.log`) and **329 tests, skipped 3** before the final global-only correction (`review-views-before-global-compat.log`); final affected validation is recorded below.
+
+The URL-form sweep ran after a complete package pass of **330 tests, 3 skipped** (`review-views-before-url-forms.log`). Its new regression then failed **10 assertions in 1 test**, passed with the fix, and reproduced all **10 assertions** under mutation. The restored entire HTTP redirect class passes **5/5** (`review-http-forms-fixed.log`, `review-http-forms-restored.log`). The complete package is rerun after that final change; the native permission/webhook selection is also repeated after the final production change.
+
+The first gallery run completed all 112 captures but failed one assertion in the new HTTP scene: the shared `GitSafetyRepository` fixture sets `protocol.allow=never`, so its fetch never reached the loopback endpoint (`review-native-GitSafetyGalleryTests-before-fixture.log`). The scene now permits HTTP only in that generated repository, whose sole remote is the generated loopback server. No production protocol allowance changed. The complete gallery class is rerun; the original failure is not counted as a pass.
+
+### Follow-up adversarial self-review
+
+- Re-enumerated both Git launchers and their callers; no helper or other HTTP production source changed. Fresh inventories are `review-source-boundary-sweep.txt` and `review-git-callsite-sweep.txt`. The added inventory commands are listed separately in the subprocess table. Explicit writes retain their prior hooks, and pure configuration reads still return actual hook paths for Reword.
+- Exercised local, worktree, global and system scopes; local includeIf/include chains; two same-named global/local filter settings; nested submodule monitors and filters; required global conversion; and trust revocation. The trusted policy is the owner-requested per-invocation origin/override policy; the untrusted policy remains an execution sandbox. No cache of program authority was introduced.
+- Checked every dynamic config/remote key for lossy decoding, delimiter confusion and Unicode equality/argument normalisation. Inventory records use an independent name-only pass to validate record boundaries and detect changed metadata. The four new edge-case regressions fail before execution/network when representation is unsafe.
+- Swept redirect handling for generic/URL-scoped headers and redirect settings, non-origin and literal defaults, rewritten URLs, push URLs and initialized submodule config. All Git transport entry points share the policy; webhook refusal and its permanent-failure classification are unchanged.
+- The final URL-form sweep confirmed two additional omissions with the real system Git and two loopback servers: mixed-case schemes and explicit helper prefixes. All five forms reached the sink before the fix; they now receive the same URL-matched header policy as ordinary HTTP remotes.
+- Configuration probes have bounded output/deadlines and run under confinement. The final argv cap includes program overrides. Generated scratch data is removed after use. The root’s global/system settings are the only source of programs restored over local/worktree settings.
+- Checked that safety-key encoding restrictions apply only where an override or lookup is required. Global-only names/paths remain in Git’s original configuration, and the explicit compatibility fixture executes both programs. The normal-redirect positive test has no URL-specific redirect setting that could conceal a broken generic default.
+
+### Follow-up commands and final results
+
+All commands use `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`. Native commands hold the shared lock only while each run owns it, with cleanup on failure. Serial-lane classes run individually. The prior preview-order failure remains recorded above; its class runs alone here. No helper or wire source changed in this follow-up, so their unchanged full-suite/wire/concurrent/acceptance evidence is the initial record above.
+
+Each package regression/mutation uses `swift test --package-path packages/bello-views --scratch-path "$B/views-tests" --filter '<selection>'`. Exact selections, paired with the results above:
+
+| Check | Selection |
+| --- | --- |
+| Initial trusted-filter regression | `GitRepositorySecurityTests/testTrustedReadsKeepGlobalFiltersAndRejectLocalPrograms` |
+| Global-program mutation | `GitRepositorySecurityTests/testTrustedReadsKeepGlobalFiltersAndRejectLocalPrograms\|FolderBrowserTests/testTrustedListingsUseGlobalMonitorButNeverLocalMonitor` |
+| Local-program mutation | `GitRepositorySecurityTests/testTrustedReadsKeepGlobalFiltersAndRejectLocalPrograms\|GitRepositorySecurityTests/testTrustedReadOnlyQueriesNeverRunRepositoryPrograms\|FolderBrowserTests/testTrustedListingsUseGlobalMonitorButNeverLocalMonitor` |
+| Both lazy-fetch checks | `GitRepositorySecurityTests/testObjectReadsNeverStartPromisorRemotePrograms` |
+| Redirect regression, generic-only mutation and restoration | `GitHTTPRedirectTests` |
+| Byte-safety mutation | `GitRepositorySecurityTests/testInvalidUTF8CannotRenameAProgramOverride\|GitRepositorySecurityTests/testEqualsCannotSplitAProgramOverride\|GitRepositorySecurityTests/testCanonicallyEquivalentFilterNamesStayByteDistinct\|GitHTTPRedirectTests/testCanonicallyEquivalentRemoteNamesBothProtectTheirHeaders` |
+| Each byte-safety failing-first run | The corresponding single test from the preceding selection |
+| Normal-redirect mutation | `GitHTTPRedirectTests/testGitFetchKeepsSameHostRedirectsWithoutPrivateHeaders` |
+| Global-only regression, both mutations and restoration | `GitRepositorySecurityTests/testGlobalOnlyProgramsDoNotAcquireLocalOverrides` |
+| Alternate HTTP URL forms, regression and mutation | `GitHTTPRedirectTests/testAlternativeHTTPURLFormsNeverForwardPrivateHeaders` |
+
+```sh
+xcodegen generate --quiet
+swift test --package-path packages/bello-views --scratch-path "$B/views-tests" --filter 'GitRepositorySecurityTests|GitHTTPRedirectTests|FolderBrowserTests'
+swift test --package-path packages/bello-views --scratch-path "$B/views-tests"
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitRepositoryPermissionTests \
+  -only-testing:PiAppTests/WebhookTests \
+  -only-testing:PiAppTests/WebhookExchangeTests
+```
+
+The remaining native selections are:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileBlameTests \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FilePageReadTests \
+  -only-testing:PiAppTests/FileReviewStateTests \
+  -only-testing:PiAppTests/GitBranchesInteractionTests \
+  -only-testing:PiAppTests/GitChangelistReadTests \
+  -only-testing:PiAppTests/GitCommitBrowsingTests \
+  -only-testing:PiAppTests/GitConfirmationSheetTests \
+  -only-testing:PiAppTests/GitDiscardQuestionTests \
+  -only-testing:PiAppTests/GitHistoryFilterTests \
+  -only-testing:PiAppTests/GitHunkReviewTests \
+  -only-testing:PiAppTests/GitIntegratedHistoryTests \
+  -only-testing:PiAppTests/GitPanelAuditTests \
+  -only-testing:PiAppTests/GitPanelDiffCaptureTests \
+  -only-testing:PiAppTests/GitPanelLayoutTests \
+  -only-testing:PiAppTests/GitPanelRedrawTests \
+  -only-testing:PiAppTests/GitPanelShownTests \
+  -only-testing:PiAppTests/GitPanelWidthTests \
+  -only-testing:PiAppTests/GitPathBoundaryTests \
+  -only-testing:PiAppTests/GitRenameTests \
+  -only-testing:PiAppTests/GitToolTests \
+  -only-testing:PiAppTests/QuickOpenPlacementTests \
+  -only-testing:PiAppTests/ChangesTabTests
+for C in FilePreviewRefreshTests GitOperationSafetyTests FileFolderTests FileFindTabTests QuickOpenTests GitWorkingTreeWatcherTests GitPanelTimingTests CrashAuditRegressionTests GitRepositorySwitchTests ChangesTabFrameTests GitDiffTableTests GitPanelNarrowParityTests; do
+  PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO "-only-testing:PiAppTests/$C"
+done
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY="$B/review-gallery" PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+| Follow-up suite | Passed | Skipped | Failed | Text evidence |
+| --- | ---: | ---: | ---: | --- |
+| Full bello-views (334 executed) | 331 | 3 | 0 | `review-views-full.log` |
+| Native: latest results of all 40 affected classes (358 executed) | 356 | 2 | 0 | Class table below; repeated classes counted once |
+
+The package skips are the three opt-in large-directory benchmarks. Native skips are the opt-in real-repository browsing measurement and separate diff-pane capture. The changed safety gallery is enabled and passes **1/1**, included in the native total. Its **112 PNGs** are under `$B/review-gallery`. Inspected `http-redirect-{light,dark}-{1180x780,310x600}.png`: the red refusal notice is visible in both themes and widths, with the existing toolbar ellipsis and full-text tooltip (`apps/macos/PiApp/Git/GitPanel.swift:663`); controls retain their existing geometry. No production layout change was made.
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `review-native-ChangesTabFrameTests.log` |
+| ChangesTabTests | 8 | 0 | `review-native-file-git.log` |
+| CrashAuditRegressionTests | 12 | 0 | `review-native-CrashAuditRegressionTests.log` |
+| FileBlameTests | 10 | 0 | `review-native-file-git.log` |
+| FileFindTabTests | 16 | 0 | `review-native-FileFindTabTests.log` |
+| FileFolderTests | 20 | 0 | `review-native-FileFolderTests.log` |
+| FileHiddenReadTests | 5 | 0 | `review-native-file-git.log` |
+| FilePageReadTests | 3 | 0 | `review-native-file-git.log` |
+| FilePreviewRefreshTests | 2 | 0 | `review-native-FilePreviewRefreshTests.log` |
+| FileReviewStateTests | 20 | 0 | `review-native-file-git.log` |
+| FileTabTests | 16 | 0 | `review-native-file-git.log` |
+| GitBranchesInteractionTests | 20 | 0 | `review-native-file-git.log` |
+| GitChangelistReadTests | 2 | 0 | `review-native-file-git.log` |
+| GitCommitBrowsingTests | 3 | 1 | `review-native-file-git.log` |
+| GitConfirmationSheetTests | 7 | 0 | `review-native-file-git.log` |
+| GitDiffTableTests | 19 | 0 | `review-native-GitDiffTableTests.log` |
+| GitDiscardQuestionTests | 2 | 0 | `review-native-file-git.log` |
+| GitHistoryFilterTests | 14 | 0 | `review-native-file-git.log` |
+| GitHunkReviewTests | 9 | 0 | `review-native-file-git.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `review-native-file-git.log` |
+| GitOperationSafetyTests | 12 | 0 | `review-native-GitOperationSafetyTests.log` |
+| GitPanelAuditTests | 8 | 0 | `review-native-file-git.log` |
+| GitPanelDiffCaptureTests | 0 | 1 | `review-native-file-git.log` |
+| GitPanelLayoutTests | 4 | 0 | `review-native-file-git.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `review-native-GitPanelNarrowParityTests.log` |
+| GitPanelRedrawTests | 4 | 0 | `review-native-file-git.log` |
+| GitPanelShownTests | 13 | 0 | `review-native-file-git.log` |
+| GitPanelTimingTests | 4 | 0 | `review-native-GitPanelTimingTests.log` |
+| GitPanelWidthTests | 3 | 0 | `review-native-file-git.log` |
+| GitPathBoundaryTests | 5 | 0 | `review-native-file-git.log` |
+| GitRenameTests | 6 | 0 | `review-native-file-git.log` |
+| GitRepositoryPermissionTests | 4 | 0 | `review-native-boundaries.log` |
+| GitRepositorySwitchTests | 17 | 0 | `review-native-GitRepositorySwitchTests.log` |
+| GitSafetyGalleryTests | 1 | 0 | `review-native-GitSafetyGalleryTests.log` |
+| GitToolTests | 5 | 0 | `review-native-file-git.log` |
+| GitWorkingTreeWatcherTests | 16 | 0 | `review-native-GitWorkingTreeWatcherTests.log` |
+| QuickOpenPlacementTests | 1 | 0 | `review-native-file-git.log` |
+| QuickOpenTests | 17 | 0 | `review-native-QuickOpenTests.log` |
+| WebhookExchangeTests | 5 | 0 | `review-native-boundaries.log` |
+| WebhookTests | 18 | 0 | `review-native-boundaries.log` |
+
+All mutations were restored. Final diff checks pass. Every owned native/focus run released the shared lock in `finally`; no other workstream's lock was removed, and no cloned test-host directories remain in this build root. The requested security findings and owner-policy changes are resolved. The initial unrelated combined-run preview timeout remains documented above for integration review; its unchanged class again passes 2/2 alone.

@@ -3,6 +3,35 @@ import XCTest
 @testable import GitView
 
 final class GitRepositoryPermissionTests: XCTestCase {
+    @MainActor func testReadProgramsUseTheCurrentProjectsTrust() async throws {
+        let root = scratchRoot("git-read-trust"), repo = root.appendingPathComponent("repo"), marker = root.appendingPathComponent("ran")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let global = root.appendingPathComponent("global"), program = root.appendingPathComponent("filter")
+        try Data("#!/bin/sh\n: > '\(marker.path)'\ncat\n".utf8).write(to: program)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        try Data("[filter \"fixture\"]\nclean = \(program.path)\n".utf8).write(to: global)
+        let env = ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_GLOBAL": global.path, "GIT_CONFIG_NOSYSTEM": "1"]
+        let service = GitService(environment: env)
+        _ = try await service.run(["init", "-q", "--template="], in: repo.path, readOnly: false)
+        try Data("before\n".utf8).write(to: repo.appendingPathComponent("file.txt"))
+        _ = try await service.run(["add", "file.txt"], in: repo.path, readOnly: false)
+        try Data("file.txt filter=fixture\n".utf8).write(to: repo.appendingPathComponent(".gitattributes"))
+        try Data("after!\n".utf8).write(to: repo.appendingPathComponent("file.txt"))
+        var config = VaultConfiguration(); config.workspaces = [WorkspaceRecord(id: "fixture", path: repo.path, trusted: true)]
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        XCTAssertFalse(GitService.resolveTrust(root.path), "The surrounding folder is outside this project")
+        _ = try await service.run(["status", "--porcelain=v2"], in: repo.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        try FileManager.default.removeItem(at: marker)
+        model.workspaces[0].trusted = false
+        do { _ = try await service.run(["status", "--porcelain=v2"], in: repo.path) }
+        catch { XCTAssertTrue(error.localizedDescription.contains("repository programs"), error.localizedDescription) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Revoking trust must confine the next read")
+    }
+
     @MainActor func testGitFetchNeverForwardsPrivateHeadersAcrossOrigins() async throws {
         let root = scratchRoot("git-http-redirect")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -22,13 +51,35 @@ final class GitRepositoryPermissionTests: XCTestCase {
             let source = try WebhookReceiver(); defer { source.stop() }
             let address = try await source.start()
             try git(["config", "remote.origin.url", address + "/repo"])
+            try git(["config", "http.\(address)/repo.followRedirects", code == 307 ? "initial" : "true"])
             source.answer([code], location: other + "/collect"); destination.answer([])
             do { try await service.fetch(in: root.path); XCTFail("The configured endpoint redirected") }
-            catch { }
+            catch { XCTAssertTrue(error.localizedDescription.contains("http.extraHeader"), error.localizedDescription) }
             XCTAssertEqual(source.requests.count, 1)
             XCTAssertTrue(try XCTUnwrap(source.requests.first).head.lowercased().contains("x-fixture-secret: synthetic-git-header"))
             XCTAssertEqual(destination.requests.count, 0, "Git forwarded a private header after HTTP \(code)")
         }
+    }
+
+    @MainActor func testGitFetchKeepsSameHostRedirectsWithoutPrivateHeaders() async throws {
+        let root = scratchRoot("git-http-ordinary-redirect")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let receiver = try WebhookReceiver(); defer { receiver.stop() }
+        let address = try await receiver.start()
+        let environment = ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"]
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.currentDirectoryURL = root; process.environment = environment; process.arguments = ["init", "-q", "--template="]
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        let service = GitService(environment: environment)
+        _ = try await service.run(["config", "remote.origin.url", address + "/old"], in: root.path, readOnly: false)
+        _ = try await service.run(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], in: root.path, readOnly: false)
+        // An empty smart-HTTP advertisement is sufficient for a real fetch.
+        receiver.answer([301, 200], location: address + "/renamed/info/refs?service=git-upload-pack",
+                        responseBody: "001e# service=git-upload-pack\n00000000", contentType: "application/x-git-upload-pack-advertisement")
+        try await service.fetch(in: root.path)
+        XCTAssertEqual(receiver.requests.count, 2)
+        XCTAssertTrue(receiver.requests.last?.head.contains("/renamed/info/refs") == true)
     }
 
     @MainActor func testOnlyATrustedProjectsExplicitWritesCanRunRepositoryHooks() async throws {

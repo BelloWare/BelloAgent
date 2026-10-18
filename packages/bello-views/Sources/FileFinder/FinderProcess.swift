@@ -35,11 +35,12 @@ enum FinderProcess {
     static func git(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval = 60,
                     environment: [String: String] = FinderProcess.environment, input: Data? = nil) async throws -> Output {
         let handle = Running()
+        let trusted = await GitReadProcess.isTrusted(directory)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
                 queue.async {
                     do { continuation.resume(returning: try execute(arguments, in: directory, limit: limit, timeout: timeout,
-                                                                    environment: environment, input: input, handle: handle)) }
+                                                                    environment: environment, input: input, handle: handle, trusted: trusted)) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -72,16 +73,14 @@ enum FinderProcess {
     }
 
     private static func execute(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval,
-                                environment: [String: String], input: Data?, handle: Running) throws -> Output {
+                                environment: [String: String], input: Data?, handle: Running, trusted: Bool) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        // Listings can browse outside trusted projects. Loading an index must
-        // never start its repository's fsmonitor hook (including via includes).
-        process.arguments = ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false"] + arguments
+        process.arguments = ["-c", "core.quotepath=off"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         // A sparse index can load a missing tree and invoke a promisor remote,
-        // even for ls-files/check-ignore. Confinement covers that path too.
-        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment)
+        // even for ls-files/check-ignore. The shared read policy covers that too.
+        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment, trusted: trusted && arguments.first != "config")
         defer { confinement.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
