@@ -4,6 +4,13 @@
 
 ## 0.1.130
 
+- [x] Quota eviction seeks completed captures with retained chunks, skipping bodyless history. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body retention seeks overdue captures by timestamp, skipping unexpired requests and writers. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body-retention deadlines read the first eligible capture without materializing every reference. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Metric-retention deadlines use the completed-metrics index, skipping older running requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Capture cleanup selects and deletes orphan chunks through an index, skipping retained chunks. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Quota bookkeeping updates cached totals after cleanup instead of recounting every stored chunk. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+
 - [x] Metric retention seeks through an ordered index, avoiding repeated scans and sorts on large overdue archives. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
 - [x] Clearing captures pages large chats atomically, preserving every body if a later capture is busy. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
 - [x] Quota eviction pages oldest captures through an index and stops as soon as space is available, even beyond 100,000 requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).

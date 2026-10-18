@@ -313,6 +313,87 @@ final class PayloadArchiveTests: XCTestCase {
         try await archive.close()
     }
 
+    func testQuotaCleanupDoesNotRescanRetainedChunksOrRecountThemAfterEviction() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = ArchiveTestClock(), archive = PayloadArchive(root: folder, now: { clock.read() })
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+        let old = try await save(archive, bytes: fixture(2048))
+        let running = UUID().uuidString
+        try await archive.begin(metadata(id: running, session: "running"), workspace: "workspace")
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"))
+        try db.transaction {
+            try db.execute("""
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<200000)
+            INSERT INTO chunks(scope,id,length,bytes,storage)
+            SELECT printf('%064d',0),printf('%064d',i),1,1,'plaintext-v2' FROM n
+            """)
+            try db.execute("INSERT INTO refs(attempt,kind,ordinal,scope,chunk,offset,length) SELECT ?,'request',CAST(id AS INTEGER),scope,id,0,1 FROM chunks WHERE scope=printf('%064d',0)", [.text(running)])
+        }
+        try await archive.configure(quota: 200_000 + 2048 + 512, bodyRetention: 86400, metricRetention: 86400)
+        clock.advance(1)
+        _ = try await save(archive, bytes: fixture(512)) // Seeds totals once, before the measured eviction.
+        let before = try await archive.virtualMachineSteps(), freshBytes = fixture(1024)
+        let fresh = try await save(archive, bytes: freshBytes)
+        let work = try await archive.virtualMachineSteps() - before
+        print("PERF quota cleanup beside 200,000 retained chunks: \(work) VM steps")
+        XCTAssertLessThan(work, 20_000, "Evicting one capture must neither scan nor recount unrelated retained chunks")
+        let expired = try await archive.metadata(attempt: old), complete = try await archive.completeBody(attemptID: fresh, body: "request")
+        XCTAssertEqual(expired["request"]?.object?["state"]?.string, "expired")
+        XCTAssertEqual(complete, freshBytes)
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM refs WHERE attempt=?", [.text(running)]).first?["n"]?.number, 200_000)
+        try await archive.close()
+    }
+
+    func testExportLeaseChecksStayScopedInBothArchiveShapes() async throws {
+        for sparse in [false, true] {
+            let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+            let latch = ExportLatch(), archive = PayloadArchive(root: folder, exportDidReadPage: { await latch.pause() })
+            try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+            let template = "00000000-0000-0000-0000-000000000000", bytes = fixture(128)
+            let mode = sparse ? "off" : "persist"
+            try await archive.begin(metadata(id: template, mode: mode), workspace: "workspace")
+            if !sparse { try await archive.append(attempt: template, kind: "request", offset: 0, bytes: bytes) }
+            try await archive.finish(metadata(id: template, mode: mode, outcome: "completed", observed: sparse ? 0 : bytes.count))
+            try seedRetentionAttempts(folder, template: template, count: sparse ? 199_999 : 100_001)
+            let target = sparse ? try await save(archive, bytes: bytes) : template
+            let export = Task { try await archive.exportRetained(sessionID: "session", attemptID: target, destination: folder) }
+            for _ in 0..<100 where !(await latch.entered) { try await Task.sleep(for: .milliseconds(10)) }
+            let entered = await latch.entered; XCTAssertTrue(entered)
+            let before = try await archive.virtualMachineSteps()
+            do {
+                _ = try await archive.exportRetained(sessionID: "session", attemptID: target, destination: folder)
+                XCTFail("A duplicate export must not acquire the same lease")
+            } catch CaptureFailure.busy { }
+            let work = try await archive.virtualMachineSteps() - before
+            print("WORK export lease admission/\(sparse ? "sparse" : "dense"): \(work) VM steps")
+            XCTAssertLessThan(work, 500)
+            await latch.release()
+            let exported = try await export.value
+            XCTAssertEqual(try Data(contentsOf: exported.appendingPathComponent("request.bin")), bytes)
+            try await archive.close()
+        }
+    }
+
+    func testCleanupChecksActualReferencesBeforeDeletingChunkFiles() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        var archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+        let bytes = fixture(128), id = try await save(archive, bytes: bytes)
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"))
+        // Fault injection: an eligibility projection must not override actual
+        // references when authorizing deletion of an irreplaceable body file.
+        try db.execute("UPDATE chunks SET has_refs=0")
+        for reopen in [false, true] {
+            if reopen { try await archive.close(); archive = PayloadArchive(root: folder) }
+            do {
+                try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+                let retained = try await archive.completeBody(attemptID: id, body: "request")
+                XCTAssertEqual(retained, bytes)
+            } catch { XCTFail("Referenced bytes must survive a stale eligibility flag, reopen=\(reopen): \(error)") }
+        }
+        try await archive.close()
+    }
+
     /// "Copy raw request/response" used to walk the paged compatibility API,
     /// which re-reads the attempt's metadata blob and rescans all of its chunk
     /// references for every 32 KiB page. Whole-body reads walk the manifest once.

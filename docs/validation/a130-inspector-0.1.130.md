@@ -1348,3 +1348,360 @@ were cancelled only while waiting for another owner's lock so independent data
 checks could proceed; no native runs overlapped in this build root. No installed
 app or real user data was opened. All five assigned items are fixed, with no
 remaining finding or owner decision.
+
+## Round 6 maintenance query review
+
+Baseline: `c70b3e41851dc655882495a3f1bec7f66a0b012c` on
+`dev/a130-inspector`. No merge or fast-forward was performed. This section
+supersedes the earlier claim that bounded pages alone established efficient
+quota/body maintenance: those measurements missed mostly-ineligible archives.
+All fixtures below are generated, use the assigned build root, and exercise the
+macOS SQLite library through `CaptureDatabase`. No helper or wire behavior,
+capture policy, permission, vault, or user data boundary changed.
+
+### Findings and failing-first evidence
+
+Both review findings are **confirmed and fixed**. The initial query test shared
+the unchanged production SQL constants with the archive, then executed every
+page, including the final empty page. Its first run failed before the fixes:
+
+```text
+WORK bodies/sparse: 1400057 VM steps, 1 eligible, 2 pages
+XCTAssertLessThan failed: ("1400057") is not less than ("1050")
+WORK quota/sparse: 3600072 VM steps, 1 eligible, 2 pages
+XCTAssertLessThan failed: ("3600072") is not less than ("1050")
+```
+
+Test: `CaptureMaintenanceQueryTests.testEveryMaintenanceSelectorSeeksEligibleRowsInBothArchiveShapes`.
+The allowance is `50 * eligible + 1,000` VM steps, independent of the number
+of ineligible rows. Dense fixtures contain **100,002 eligible attempts**;
+sparse fixtures contain **200,000 ineligible attempts plus one eligible**.
+Dense timestamps deliberately differ from UUID order. Sparse variants cover
+future captures, already-expired metrics, bodyless tombstones, and running
+requests. A query must return every eligible row without sorting or exceeding
+the work allowance. The metric-retention and session-clear selectors already
+passed both shapes; their membership and ordering are unchanged.
+
+- **Quota:** candidates now come from a partial `(wall,id)` index of completed
+  attempts that still have references. Permanent tombstones are absent from
+  the index. Oldest-first order, bounded batches, lease exclusion and immediate
+  stopping when enough physical space is available are preserved.
+- **Body retention:** the same eligibility index is bounded by the retention
+  cutoff and paged by `(wall,id)`. Future rows and writers are excluded without
+  walking UUID order. The cursor still advances past leased candidates.
+
+Logs: `round6-failing-first.log` (3 tests, 4 assertion failures),
+`round6-first-fixed.log` (44 tests passed at that checkpoint). The four initial
+failures include the additional body-deadline regression below.
+
+### Nearby sweep and adversarial findings
+
+The requested end-to-end maintenance rule also exposed three adjacent scans:
+
+1. **Body deadline:** `MIN(wall)` materialized all referenced attempt IDs before
+   taking the minimum. `testRetentionDeadlinesSeekTheFirstEligibleRowInBothArchiveShapes`
+   failed at **1,700,056 / 3,400,039 steps** (dense/sparse), against **100**.
+   It now seeks the first eligible row of the same body-retention index.
+2. **Garbage collection:** cleanup after retention, clear and quota eviction
+   scanned retained chunks to find an orphan. The new
+   `testGarbageCollectionSeeksOnlyUnreferencedChunksInBothArchiveShapes` failed
+   at **3,600,063 steps**, against **1,050**, with 200,000 referenced chunks
+   and one orphan (`round6-garbage-failing-first.log`, 1 test / 1 failure).
+   Both batch selection and deletion now use a partial `(scope,id)` index of
+   unreferenced chunks. The test records their plans and work separately for
+   both shapes; foreign-key checks remain indexed by `refs_chunk`.
+3. **Quota recount:** cleanup discarded warm chunk totals, causing another
+   archive-wide sum after each eviction. The end-to-end
+   `PayloadArchiveTests.testQuotaCleanupDoesNotRescanRetainedChunksOrRecountThemAfterEviction`
+   failed at **9,001,827 steps**, against **20,000**. It retains 200,000 chunks
+   belonging to a running request and makes room for one completed capture.
+   Cleanup now adjusts warm totals only after each batch's database deletion
+   succeeds; cold totals are still seeded once on demand. The same test passes
+   at **2,148 steps** after the final reference verification, with exact new bytes and all running references intact.
+   Log: `round6-quota-cleanup-failing-first.log` (1 test / 1 failure).
+
+The condition review then found a fourth sparse case: the metric deadline's
+`MIN(wall)` selected the covering dashboard index, whose prefix includes
+running attempts. A native SQLite probe with 200,000 older running rows and
+one completed row measured **800,020 steps**; explicitly seeking the existing
+`attempts_expiring_metrics` partial index measured **19**. Probe SQL and output:
+`round6-deadline-probe.sql` / `.log`. The native deadline regression reproduced **800,021 steps**, against **100**,
+with those running rows; the fixed query takes **20** in every shape.
+`round6-self-review-failing-first.log` records this failure; the fixed run is
+`round6-self-review-fixed.log` (7 tests passed).
+
+A second adversarial check fault-injected a stale chunk eligibility flag into
+the draft migration implementation. The original refs still pointed to the
+chunk, but relying solely on the flag removed its file before SQLite rejected
+the row deletion. `testCleanupChecksActualReferencesBeforeDeletingChunkFiles`
+failed both live/reopen cases with SQLite foreign-key error 787 (the same
+failing-first log has 2 tests / 3 failed assertions in total). Cleanup now
+checks `NOT EXISTS` on actual references **within the partial-index candidate
+set**, for both selection and deletion. This retains the original data-safety
+check without returning to a scan over all chunks. The fixed test verifies
+exact body bytes before and after reopening. Cached deletion totals are also
+validated before file removal, avoiding unchecked subtraction or overflow on
+damaged counters.
+
+### Migration and reference integrity
+
+The additive migration is one transaction and leaves archive format version 6
+compatible with existing explicit-column writers. It adds `has_refs` flags to
+attempts and chunks, backfills existing references once, then creates partial
+indexes and reference insert/delete/move triggers. Every eligibility change
+commits or rolls back with its reference change; there is no asynchronous
+projection or new capture state exposed to the Inspector.
+
+`testReferenceEligibilityMigrationIsIdempotentAndTransactional` restores the
+pre-change schema around **100,002 retained attempts**, runs the migration
+_twice_, and verifies the preserved references and flags. The second run costs
+**391 VM steps**, including schema inspection, with no archive backfill. The
+test also checks multiple references, shared chunks, moved references, cascaded
+body deletion and rollback. Existing encrypted-archive migration, interruption,
+retention, clear, quota and failed-cleanup tests exercise the same hooks.
+
+Export leases remain an actor-isolated `Set<String>`, so membership checks have
+no SQL plan or archive scan. The actual admission reads are primary-key
+attempt/body lookups; their shared production SQL is measured below.
+`PayloadArchiveTests.testExportLeaseChecksStayScopedInBothArchiveShapes` also
+holds an actual export in each large fixture, verifies a duplicate is rejected
+as `busy`, then releases the lease and verifies exact exported bytes. Admission
+costs **105 / 104 VM steps** (dense/sparse). The existing 100,002-attempt leased
+sweep still verifies that retention passes the lease, preserves its bytes and
+metrics, then expires it after release. Clear's late-lease/writer rollback and
+quota's shared-chunk/lease/early-stop tests remain in the focused rerun.
+
+### Adversarial condition review
+
+The review covered the new diff against the branch baseline, including every
+new SQL predicate and Swift branch. It found the metric-deadline plan described
+above; it also required measuring the cleanup deletion separately from its
+selection, checking warm quota totals, and exercising actual duplicate-export
+admission. Those checks are included, rather than relying on result counts or
+an unpopulated query plan.
+
+| Changed condition or boundary | States taking the other path; intended result |
+| --- | --- |
+| Missing `has_refs` column | An older archive gets one transactional backfill. An already-migrated archive skips it; interrupted migration rolls back and can retry. No repeated migration scans. |
+| Partial body index: `has_refs=1 AND outcome!='running'` | Off/memory/bodyless/purged/expired captures and running writers are absent. Completed, failed, cancelled or interrupted captures with refs remain eligible exactly as with the old `EXISTS` predicate. Empty captured bodies had no refs before and still have none. |
+| Reference-insert `has_refs=0` guards | First refs activate an attempt/chunk; additional refs leave an already-eligible row unchanged. New chunk and reference publication share one transaction, so cleanup cannot see the intermediate orphan. |
+| Reference-delete `NOT EXISTS` guards | Only the final ref retires an attempt or makes a chunk collectible. A sibling/shared reference keeps the chunk. Deletes, moves, cascades and rollback use indexed identity lookups and update eligibility atomically. |
+| Body `(wall,id)` cursor plus cutoff | Overdue completed captures are visited in time/id order; future captures are outside the range. Timestamp ties, UUIDs out of timestamp order, negative times and multiple batches remain ordered. Advancing before lease checks preserves progress across leased candidates. |
+| Metric deadline's explicit completed-metrics index | Older running rows can no longer be examined before the completed minimum. Expired metrics remain excluded; body retention is independent of metric retention. |
+| Partial orphan index and bounded delete range | Referenced chunks never enter either selector or delete range. Actual refs are rechecked on indexed candidates, so stale flags cannot authorize file deletion. Orphans are still removed file-first, row-second. A failed file batch retains its DB rows for retry; previously completed batches stay committed. |
+| Warm chunk totals | Cold totals remain lazy. Warm totals are checked for nonnegative, bounded subtraction before deleting files and adjusted only after successful batch deletion, including earlier batches before a later failure. They are not discarded and rescanned after every eviction. New chunk publication still increments totals; close/reopen still resets the cache. |
+| Existing lease/writer checks around new selectors | Membership is unchanged. Streaming/running writes are excluded; paused or idle completed captures retain the same policy. Export cancellation releases the lease and invalidates the deadline. A leased overdue row can cause the existing one-second retry, which now seeks eligible rows directly. |
+| Per-session clear | All matching attempts still receive purged descriptors, including Off/memory and already-bodyless rows. A later busy capture rolls back the entire clear. Other physical sessions, metrics and message links are untouched. |
+| Export metadata SQL constants | Only declaration placement changed. Valid UUID, session, completion, lease, hash and cancellation checks remain intact; helper/archive handoff routing is untouched. |
+| Concurrent sibling work and restart | Synchronous actor transactions cannot interleave another capture's reference or cache update. Dashboard readers see committed snapshots. The workspace lock still owns migration. Restart's running-to-interrupted update automatically changes index membership; interrupted cleanup resumes through the orphan index. |
+
+No product decision or owner-approved UX change was needed. All fixtures are
+local and generated; no installed app, real preferences/chats, Keychain access,
+live capture or paid-provider calls were used. The added indexes change access
+paths, not retention deadlines, quota policy, or the capture permission boundary.
+
+### Plans and VM-step regression matrix
+
+The committed query tests execute the archive's actual SQL constants. Every
+plan below was recorded for **both** populated shapes; no temporary ordering
+tree is permitted. Dense page measurements include all 100,002 eligible rows
+and the final empty page, with no deletions to make later seeks easier.
+Sparse pages include 200,000 ineligible rows, the one eligible row, and the
+final empty page. Garbage tests measure actual deletion separately and assert
+that only the expected retained chunks remain.
+
+| Query | Dense VM steps | Sparse VM steps | Recorded `EXPLAIN QUERY PLAN` access path in both shapes |
+| --- | ---: | ---: | --- |
+| Metric-retention pages | 1,601,837 | 71; expired/running variants 69 | `SEARCH attempts USING INDEX attempts_expiring_metrics (metrics_retained=? AND (wall,id)>(?,?) AND wall<?)` |
+| Body-retention pages | 1,601,640 | 69; bodyless/running variants 67 | `SEARCH attempts USING INDEX attempts_retaining_bodies ((wall,id)>(?,?) AND wall<?)` |
+| Quota candidates | 1,500,851 | 59, including running variant | `SEARCH attempts USING INDEX attempts_retaining_bodies ((wall,id)>(?,?))` |
+| Per-session clear pages | 502,967 | 37 | `SEARCH attempts USING COVERING INDEX attempts_session (session=? AND id>?)` |
+| Export attempt metadata | 7,000,140 for 100,002 identity reads | 70 for one identity | `SEARCH attempts USING INDEX sqlite_autoindex_attempts_1 (id=?)` |
+| Export body metadata | 2,300,045 for 100,002 identity reads | 22 for one identity | `SEARCH bodies USING INDEX sqlite_autoindex_bodies_1 (attempt=?)` |
+| Body deadline | 18 | 18 for future/running/bodyless variants | `SEARCH attempts USING INDEX attempts_retaining_bodies` |
+| Metric deadline | 20 | 20 for future/running/expired variants | `SEARCH attempts USING INDEX attempts_expiring_metrics (metrics_retained=?)` |
+| Orphan-chunk pages | 2,501,865 | 58 | `SEARCH chunks USING INDEX chunks_unreferenced ((scope,id)>(?,?))`; correlated safety check uses covering `refs_chunk (scope=? AND chunk=?)` |
+| Orphan-chunk batch deletion | 5,403,863 | 77 | `SEARCH chunks USING INDEX chunks_unreferenced ((scope,id)>(?,?) AND (scope,id)<(?,?))`; safety and FK checks use covering `refs_chunk (scope=? AND chunk=?)` |
+
+Page allowances are `50 * eligible + 1,000`; orphan deletion is
+`80 * eligible + 1,000`. Deadline queries must stay below 100 steps and each
+export identity read below 100. Actual duplicate-export admission is measured
+separately at 105/104 steps with a 500-step allowance. In-memory lease checks
+are `Set.contains` calls, not a SQL query over the archive. Per-attempt
+retention updates, reference/event deletion and body-state changes continue to
+use primary keys; existing whole-operation regressions include their work.
+The one-time cold chunk-total seed includes all chunks because all are needed
+for physical usage; subsequent maintenance adjusts the warm total instead of
+repeating that aggregate.
+
+Full plans and counters are in `round6-self-review-fixed.log` and the final
+focused data log. The additive migration's indexes lead with the predicate's
+constant key where needed (`metrics_retained`, `session`), followed by the
+cursor; partial indexes exclude writers/bodyless attempts or referenced
+chunks before cursor traversal.
+
+### Mutation checks
+
+All **15 mutations were caught**, each by its selected native regression, and
+restored before the final focused runs. These were actual source mutations and
+native rebuilds, not alternate SQL copies in the test. Dense query tests stop
+once their work allowance is exceeded so a deliberately quadratic mutation
+cannot run indefinitely.
+
+| Mutation | Regression/result |
+| --- | --- |
+| Restore quota's completed-attempt `EXISTS` selector | Selector matrix fails: sparse tombstones cost 3,600,043 steps before the final empty page. |
+| Force body retention into UUID order | Selector matrix fails: 5,388,603 steps after only 9,728 dense rows; sparse cases also fail. |
+| Remove the metric-retention index | Selector matrix fails its work/sort checks. |
+| Remove the session/id clear index | Selector matrix fails: 5,985,711 steps after only 3,072 dense rows. |
+| Restore the body deadline's materialized ID list | Deadline test fails at 1,700,056 / 3,400,039 steps. |
+| Restore orphan selection over all chunks | Garbage test fails the sparse work bound. |
+| Restore orphan deletion over all chunks | Garbage deletion fails at 5,200,074 sparse steps, against 1,080. |
+| Discard warm totals after cleanup | End-to-end quota test fails at 802,144 steps, against 20,000. |
+| Make export attempt identity nonseekable (`id||''`) | Export lookup test fails the per-identity work bound in both shapes. |
+| Make export body identity nonseekable (`attempt||''`) | Export lookup test fails the per-identity work bound in both shapes. |
+| Skip migration backfill | Migration test finds 0 eligible attempts instead of 100,002 and an unreferenced flag on the retained chunk. |
+| Disable attempt retirement on reference deletion | Migration/transaction test fails last-ref, move and cascade assertions. |
+| Restore the metric deadline's unrestricted planner choice | Deadline test fails at 800,021 steps beside older running rows. |
+| Force metric batches through the dashboard index while keeping the deadline fixed | Selector matrix again fails dense work/sort checks and the sparse running case at 1,000,052 steps. |
+| Remove actual-reference verification from orphan selection | Stale-projection test fails exact readable-body checks before and after reopen. |
+
+Commands for every mutation used the assigned build root and the exact selected
+test printed by `round6-mutations.py` or `round6-self-review-mutations.py`:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/<Class>/<test>
+```
+
+Drivers, their summaries, and individual text logs are under the build root:
+`round6-mutations-summary.log`, `round6-self-review-mutations-summary.log`, and
+`round6-mutation-<name>.log`. Each expected failing invocation exited 65; both
+mutation drivers exited 0 after verifying and restoring every case. The
+metric-index-removal check predates the explicit deadline index hint; the later
+forced-dashboard check measures the final batch query independently of that
+hint.
+
+### Final focused validation
+
+Final result: **365/365 tests passed, zero failures or skips**, across 33
+classes: **170** archive/report/accounting/model tests and **195** window,
+Inspector, captured-body and related tests. Every serial-lane class ran alone.
+There were no unrelated test failures. No source changed after these final
+runs; subsequent edits only completed this record and the release notes.
+
+All commands ran from the assigned worktree. Build root and exact final driver
+invocations:
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector
+bash "$B/round6-final-data.sh" > "$B/round6-final-data.log" 2>&1
+bash "$B/run-locked.sh" python3 "$B/round6-final-ui.py" > "$B/round6-final-ui-summary.log" 2>&1
+```
+
+The data driver expands to:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector
+scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/CaptureMaintenanceQueryTests \
+ -only-testing:PiAppTests/PayloadArchiveTests \
+ -only-testing:PiAppTests/CaptureGarbageCollectionTests \
+ -only-testing:PiAppTests/TraceArchiveTests \
+ -only-testing:PiAppTests/DashboardTests \
+ -only-testing:PiAppTests/GatewayAccountingTests \
+ -only-testing:PiAppTests/MenuBarMetricsTests \
+ -only-testing:PiAppTests/InspectorIndexTests \
+ -only-testing:PiAppTests/InspectorRequestModelTests \
+ -only-testing:PiAppTests/CaptureMacIntegrationTests \
+ -only-testing:PiAppTests/SubagentCaptureTests \
+ -only-testing:PiAppTests/ReportWorkerPerformanceTests \
+ -only-testing:PiAppTests/AccountingScaleTests \
+ -only-testing:PiAppTests/InspectorDocumentCacheTests
+```
+
+| Data class | Passed / failed |
+| --- | ---: |
+| `AccountingScaleTests` | 3 / 0 |
+| `CaptureGarbageCollectionTests` | 2 / 0 |
+| `CaptureMacIntegrationTests` | 2 / 0 |
+| `CaptureMaintenanceQueryTests` | 5 / 0 |
+| `DashboardTests` | 19 / 0 |
+| `GatewayAccountingTests` | 25 / 0 |
+| `InspectorDocumentCacheTests` | 3 / 0 |
+| `InspectorIndexTests` | 11 / 0 |
+| `InspectorRequestModelTests` | 9 / 0 |
+| `MenuBarMetricsTests` | 29 / 0 |
+| `PayloadArchiveTests` | 39 / 0 |
+| `ReportWorkerPerformanceTests` | 4 / 0 |
+| `SubagentCaptureTests` | 12 / 0 |
+| `TraceArchiveTests` | 7 / 0 |
+
+The UI driver holds the shared full-lane lock for the actual run, releases it
+on exit, and invokes the following command separately for every class in the
+table. It sets the gallery environment only on `InspectorStorageTests` and
+`CapturedBodyTests`, respectively:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/<class-from-table>
+# InspectorStorageTests additionally receives:
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$B/round6-gallery"
+# CapturedBodyTests additionally receives:
+TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT="$B/round6-body-gallery"
+```
+
+| UI/serial class (one invocation each) | Passed / failed |
+| --- | ---: |
+| `CaptureDrainTests` | 6 / 0 |
+| `CapturedBodyTests` | 22 / 0 |
+| `InspectorEntryPointTests` | 7 / 0 |
+| `InspectorExpandInPlaceTests` | 8 / 0 |
+| `InspectorExpandPerformanceTests` | 2 / 0 |
+| `InspectorFollowTests` | 2 / 0 |
+| `InspectorFrameTests` | 2 / 0 |
+| `InspectorNativeControlTests` | 12 / 0 |
+| `InspectorNativeParityTests` | 7 / 0 |
+| `InspectorOverviewDocumentGeometryTests` | 1 / 0 |
+| `InspectorPerformanceTests` | 2 / 0 |
+| `InspectorStorageTests` | 33 / 0 |
+| `InspectorSummaryRequestTests` | 5 / 0 |
+| `InspectorWindowControlTests` | 1 / 0 |
+| `ReportPageTests` | 33 / 0 |
+| `SessionTimingTests` | 26 / 0 |
+| `SubagentInspectorTests` | 7 / 0 |
+| `SubagentSteeringInspectorTests` | 6 / 0 |
+| `TurnAccountingTests` | 13 / 0 |
+
+Individual UI logs are `round6-final-<Class>.log`. The wrapper released our
+lock before another workstream acquired it; no other owner's lock was changed.
+All **44 Inspector storage PNGs** and **2 captured-body JPEGs** were regenerated
+and inspected, including light/dark Raw scenes at 1000, 700 and 485-point pane
+widths, plus 700-point minimum Inspector windows. Raw part menus, search, Copy
+and capture actions remain visible; purged bodies disable Copy, and memory and
+persisted event pages remain populated. No UI code changed in this round.
+
+Text logs are the evidence; no named result bundle was requested. The generated
+Xcode project includes the new query-test file (`xcodegen generate --quiet`
+was run). Helper/wire/concurrent/acceptance suites were not required because no
+helper code, wire protocol or helper behavior changed; the native harness still
+staged the Release helper and the generated loopback capture integration passed.
+The lead retains the full merged release gate.
+
+Final maintenance-operation measurements from the restored code:
+
+- Clear 100,002 attempts: **25,603,623 VM steps, one commit**.
+- Body retention with a protected export: **27,302,804 steps**.
+- Metric retention of 100,002 Off attempts: **23,903,165 steps**; subsequent
+  capture and reopened dashboard reads succeed.
+- Quota eviction through 513 of 100,002 candidates: **156,275 steps**, preserving
+  the lease and stopping once space exists.
+- Quota cleanup beside 200,000 retained chunks: **2,148 steps**.
+
+No assigned finding is rejected or unresolved. The self-review additions are
+fixed and covered above. No merge, release, tag, shared-branch push or history
+rewrite was performed.
+
+Cleanup: no clone directories remained under this workstream's build root;
+no additional DerivedData root was created. `git diff --check` passed.
