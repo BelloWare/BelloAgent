@@ -75,9 +75,9 @@ public enum GitBranchCheckoutResult: Sendable {
 extension GitService {
     // Reads stay local even in a partial clone. No diff driver or textconv is
     // allowed to turn a read-only preview into arbitrary executable work.
-    func branchCommand(_ arguments: [String], in root: String, input: Data? = nil) async throws -> Output {
+    func branchCommand(_ arguments: [String], in root: String, input: Data? = nil, readOnly: Bool = true) async throws -> Output {
         let output = try await run(arguments, in: root,
-                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"], input: input)
+                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"], input: input, readOnly: readOnly)
         guard output.status == 0 else { throw GitFailure(message: output.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Git could not complete this action (exit \(output.status))." : output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
         return output
@@ -149,7 +149,7 @@ extension GitService {
             guard branch.remote == nil else { throw GitFailure(message: "Choose a name for the new tracking branch.") }
             arguments += ["--", branch.name]
         }
-        let output = try await run(arguments, in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
+        let output = try await run(arguments, in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"], readOnly: false)
         guard output.status == 0 else {
             let reason = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             // Native switch's refusal is authoritative. Recovery is an offer,
@@ -178,7 +178,7 @@ extension GitService {
         guard branch.remote == nil else { throw GitFailure(message: "Only local branches can be renamed.") }
         let name = try await branchName(name, in: root)
         try await requireBranch(branch, in: root)
-        _ = try await branchCommand(["branch", "-m", "--", branch.name, name], in: root)
+        _ = try await branchCommand(["branch", "-m", "--", branch.name, name], in: root, readOnly: false)
         return "refs/heads/" + name
     }
 
@@ -228,7 +228,7 @@ extension GitService {
         // bisect in detached worktrees and removes the branch configuration.
         // Only the separately confirmed unmerged case may use -D.
         let force = review.unmergedCount > 0 && allowUnmerged
-        _ = try await branchCommand(["branch", force ? "-D" : "-d", "--", review.branch.name], in: root)
+        _ = try await branchCommand(["branch", force ? "-D" : "-d", "--", review.branch.name], in: root, readOnly: false)
         return "Deleted branch \(review.branch.name)."
     }
 

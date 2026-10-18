@@ -4,6 +4,17 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1a: Folder trees, breadcrumb menus and Quick Open disable repository fsmonitor programs, including outside trusted projects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1b: Background Git status/index reads disable fsmonitor, including in nested repositories. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1c: Read-only Git confines executable filters and surfaces blocked conversions; explicit mutating actions retain normal hooks. Needs owner decision: filtered-file reads fail closed. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1d: Working, staged and untracked diffs disable textconv; commit statistics disable executable diff conversion. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1e: Read-only object/history queries cannot start remote programs or contact a promisor remote. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1f: Sparse-index folder and Quick Open listings cannot execute a promisor remote while expanding missing trees. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1g: Changes rechecks project trust before admitting a Git write; safe reading remains available. Needs owner decision: untrusted writes are refused. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1h: History and commit-detail reads disable repository-configured signature verifiers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2: Webhook redirects fail at the configured endpoint without forwarding payloads or custom headers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2b: Bello-launched Git refuses HTTP redirects that forward private headers. Needs owner decision: configure the final remote URL. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

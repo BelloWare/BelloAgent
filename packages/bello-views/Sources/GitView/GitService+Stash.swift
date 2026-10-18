@@ -56,7 +56,7 @@ extension GitService {
         if keepIndex { arguments.append("--keep-index") }
         let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !message.isEmpty { arguments += ["--message", message] }
-        return try await branchCommand(arguments, in: root).text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await branchCommand(arguments, in: root, readOnly: false).text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func stashFiles(_ stash: GitStashRecord, in root: String) async throws -> [GitStashFile] {
@@ -91,7 +91,7 @@ extension GitService {
         try validStashOID(stash)
         // Apply the immutable commit, never a moving stash@{n}. A failed apply
         // (conflicts included) does not even attempt removal.
-        let output = try await run(["stash", "apply", "--index", stash.oid], in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
+        let output = try await run(["stash", "apply", "--index", stash.oid], in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"], readOnly: false)
         let detail = [output.text, output.stderr].filter { !$0.isEmpty }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard output.status == 0 else { return GitStashApplyResult(applied: false, removed: false, message: "Git could not apply the stash cleanly. The stash was kept.\n" + detail) }
         guard pop else { return GitStashApplyResult(applied: true, removed: false, message: "Stash applied; the stash was kept.\n" + detail) }
@@ -130,7 +130,7 @@ extension GitService {
         }
         try Task.checkCancellation()
         try await afterVerification?()
-        let dropped = try await branchCommand(["stash", "drop", "--", stash.selector], in: root)
+        let dropped = try await branchCommand(["stash", "drop", "--", stash.selector], in: root, readOnly: false)
         try await afterPublication?()
         try await confirmDropped(stash, reviewedLog: reviewedLog, output: dropped, directory: directory, in: root)
     }
@@ -153,7 +153,7 @@ extension GitService {
             throw GitFailure(message: "The stash list changed while the stash was being removed, so Git's removal could not be matched to the stash you chose. Refresh the list and check it.")
         }
         let subject = try? await branchCommand(["show", "-s", "--format=%s", reported], in: root).text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let restored = try? await branchCommand(["stash", "store", "-m", subject?.isEmpty == false ? subject! : "Restored stash", "--", reported], in: root)
+        let restored = try? await branchCommand(["stash", "store", "-m", subject?.isEmpty == false ? subject! : "Restored stash", "--", reported], in: root, readOnly: false)
         guard restored != nil else {
             throw GitFailure(message: "Another stash was saved while this one was being removed, and Git removed that one (\(reported)) instead. It could not be stored again; recover it in the terminal with `git stash store \(reported)`. The stash you chose was kept.")
         }

@@ -111,6 +111,9 @@ import AppKit
     /// and says neither "Not a git repository" nor "No changes".
     public var statusRead: Bool { repository.read }
     @Published public private(set) var notice = ""
+    /// The host owns project trust. Recheck it when admitting each write,
+    /// including actions whose review began before trust changed.
+    public var mayWrite: () -> Bool = { true }
     @Published public var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
     @Published public private(set) var diff: [GitDiffFile] = []
     /// The Changes diff is being read for the reader. A read nobody asked for
@@ -738,6 +741,7 @@ import AppKit
     /// Runs one write. A second write asked for while one runs is refused, not
     /// queued: a double click commits once.
     private func perform(_ what: String, _ work: () async throws -> Void) async {
+        guard mayWrite() else { notice = "Trust this project before changing its repository."; return }
         guard !busy else { return }
         busy = true; notice = ""
         defer { busy = false; drainMissedChange() }
@@ -756,6 +760,7 @@ import AppKit
     /// through navigation, but its result is only published to its repository.
     public func performRepositoryWrite<T: Sendable>(repository identity: RepositoryIdentity,
         operation: @Sendable (String) async throws -> T) async throws -> T {
+        guard mayWrite() else { throw GitFailure(message: "Trust this project before changing its repository.") }
         guard acceptsRepository(identity), !busy else { throw GitFailure(message: "The repository changed or another Git operation is running. Try again.") }
         busy = true
         defer { busy = false; drainMissedChange() }

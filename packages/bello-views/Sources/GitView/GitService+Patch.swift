@@ -15,9 +15,9 @@ public struct GitPatchReview: Sendable {
 }
 
 extension GitService {
-    func patchCommand(_ arguments: [String], in root: String, index: String? = nil) async throws -> Output {
+    func patchCommand(_ arguments: [String], in root: String, index: String? = nil, readOnly: Bool = true) async throws -> Output {
         let output = try await run(["-c", "core.fsmonitor=false"] + arguments, in: root,
-                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"].merging(index.map { ["GIT_INDEX_FILE": $0] } ?? [:]) { $1 })
+                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"].merging(index.map { ["GIT_INDEX_FILE": $0] } ?? [:]) { $1 }, readOnly: readOnly)
         guard output.status == 0 else {
             throw GitFailure(message: output.stderr.isEmpty ? "Git could not read or update this hunk." : output.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -138,8 +138,8 @@ extension GitService {
         let blobFile = URL(fileURLWithPath: privateIndex.path + ".blob")
         defer { try? FileManager.default.removeItem(at: blobFile) }
         try GitPrivateIndex.write(result, to: blobFile.path)
-        let oid = try await patchCommand(["hash-object", "-w", "--no-filters", "--", blobFile.path], in: review.root).text.trimmingCharacters(in: .newlines)
-        _ = try await patchCommand(["-c", "core.splitIndex=false", "update-index", "--cacheinfo", review.patch.mode, oid, review.path], in: review.root, index: privateIndex.path)
+        let oid = try await patchCommand(["hash-object", "-w", "--no-filters", "--", blobFile.path], in: review.root, readOnly: false).text.trimmingCharacters(in: .newlines)
+        _ = try await patchCommand(["-c", "core.splitIndex=false", "update-index", "--cacheinfo", review.patch.mode, oid, review.path], in: review.root, index: privateIndex.path, readOnly: false)
         let next = try GitIndexSnapshot.read(at: privateIndex.path)
         guard try await patchCommand(["rev-parse", "HEAD"], in: review.root).text.trimmingCharacters(in: .newlines) == head else {
             throw GitFailure(message: "HEAD changed during this action. Refresh and review it again.")

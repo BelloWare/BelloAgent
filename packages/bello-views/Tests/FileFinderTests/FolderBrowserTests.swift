@@ -2,6 +2,57 @@ import XCTest
 @testable import FileFinder
 
 final class FolderBrowserTests: XCTestCase {
+    func testListingsNeverRunRepositoryFSMonitor() async throws {
+        let root = try fixture(), env = Self.environment(root), git = try TestGit(fixture())
+        try file("README", at: root)
+        for arguments in [["init", "-q"], ["add", "README"]] {
+            try git.run(arguments, in: root)
+        }
+        let marker = root.appendingPathComponent("ran"), hook = root.appendingPathComponent("monitor")
+        try file("monitor", at: root, text: "#!/bin/sh\n: > '\(marker.path)'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try git.run(["config", "core.fsmonitor", hook.path], in: root)
+        for boundary in [root, root.deletingLastPathComponent()] {
+            let listing = try await FolderDirectory.read(root, relativeTo: boundary, environment: env)
+            XCTAssertTrue(listing.entries.contains { $0.name == "README" })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Folder listing, project boundary: \(String(describing: boundary))")
+            try? FileManager.default.removeItem(at: marker)
+        }
+        let listing = try await FileListing.list(root.path, limits: .init(), environment: env)
+        XCTAssertTrue((0..<listing.count).contains { String(decoding: listing.path($0), as: UTF8.self) == "README" })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Quick Open listing")
+    }
+
+    func testSparseIndexListingsNeverStartPromisorRemotePrograms() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try folder("kept", at: root); try folder("omitted", at: root)
+        try file("kept/README", at: root); try file("omitted/hidden", at: root)
+        try git.run(["init", "-q"], in: root); try git.run(["add", "."], in: root)
+        try git.run(["-c", "commit.gpgsign=false", "commit", "-qm", "Sparse fixture"], in: root)
+        let oid = String(decoding: try git.run(["rev-parse", "HEAD:omitted"], in: root), as: UTF8.self).trimmingCharacters(in: .newlines)
+        try git.run(["sparse-checkout", "init", "--cone", "--sparse-index"], in: root)
+        try git.run(["sparse-checkout", "set", "kept"], in: root)
+        let marker = root.appendingPathComponent("ran"), remote = root.appendingPathComponent(".git/remote")
+        try file(".git/remote", at: root, text: "#!/bin/sh\n: > '\(marker.path)'\nexit 1\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: remote.path)
+        for (key, value) in [("extensions.partialClone", "origin"), ("remote.origin.promisor", "true"),
+                             ("remote.origin.url", "ext::" + remote.path), ("protocol.ext.allow", "always")] {
+            try git.run(["config", key, value], in: root)
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".git/objects/" + oid.prefix(2) + "/" + oid.dropFirst(2)))
+        for operation in ["folder", "quick open"] {
+            if operation == "folder" {
+                let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+                XCTAssertTrue(listing.entries.contains { $0.name == "kept" })
+            } else {
+                let listing = try await FileListing.list(root.path, limits: .init(), environment: git.environment)
+                XCTAssertTrue(paths(listing).contains("kept/README"))
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), operation)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
     func testBreadcrumbsRespectProjectBoundaryAndHome() {
         let home = URL(fileURLWithPath: "/fixture/home")
         let root = home.appendingPathComponent("Project")
@@ -143,8 +194,9 @@ final class FolderBrowserTests: XCTestCase {
         try file(".gitignore", at: root, text: "ignored/\n*.log\n")
         try file("tracked.log", at: root); try file("untracked.log", at: root); try file("ignored/a.txt", at: root)
         let env = Self.environment(root)
-        _ = try await FinderProcess.git(["init", "-q"], in: root.path, limit: 4096, environment: env)
-        _ = try await FinderProcess.git(["add", "-f", "tracked.log"], in: root.path, limit: 4096, environment: env)
+        let git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        try git.run(["add", "-f", "tracked.log"], in: root)
         let listing = try await FolderDirectory.read(root, relativeTo: root, environment: env)
         XCTAssertFalse(try XCTUnwrap(listing.entries.first { $0.name == "tracked.log" }).isDimmed)
         XCTAssertTrue(try XCTUnwrap(listing.entries.first { $0.name == "untracked.log" }).isDimmed)

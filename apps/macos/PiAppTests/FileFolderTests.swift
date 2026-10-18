@@ -5,6 +5,37 @@ import FileFinder
 
 // Window-backed pointer and scroll checks run alone.
 final class FileFolderTests: XCTestCase, SerialTestLane {
+    @MainActor func testOutsideProjectFolderDoesNotExecuteRepositoryMonitor() async throws {
+        let (model, _) = try await fixture(), root = try directory()
+        let marker = root.appendingPathComponent("ran"), hook = root.appendingPathComponent("monitor")
+        for arguments in [["init", "-q"], ["add", "Sources/a.txt"]] {
+            let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = arguments; process.currentDirectoryURL = root
+            process.environment = ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"]
+            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        }
+        try Data("#!/bin/sh\n: > '\(marker.path)'\nprintf 'token\\000'\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        let config = root.appendingPathComponent(".git/config")
+        let data = try Data(contentsOf: config) + Data("\n[core]\n\tfsmonitor = \(hook.path)\n".utf8)
+        try data.write(to: config)
+        let tab = try XCTUnwrap(model.openFile(fromChat: "fixture", path: root.appendingPathComponent("Sources/a.txt").path, lines: nil))
+        XCTAssertNil(tab.projectID); XCTAssertNil(tab.folders.projectRoot)
+        tab.folders.setShown(true)
+        try await until { tab.folders.browser.rows.contains { $0.url == tab.url } }
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        try? FileManager.default.removeItem(at: marker)
+        let folder = tab.url.deletingLastPathComponent()
+        let crumb = try XCTUnwrap(FileBreadcrumb.path(to: tab.url, project: nil).dropLast().last)
+        let menu = FileFolderMenu(crumb: crumb, projectRoot: nil, open: { _ in }, showTree: { _ in })
+        defer { menu.browser.stop() }
+        try await until { menu.browser.snapshot(folder) != nil }
+        XCTAssertTrue(menu.browser.snapshot(folder)?.entries.contains { $0.url == tab.url } == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "The breadcrumb menu has the same boundary")
+    }
+
     @MainActor func testFileHeaderOffersFolderToggleAndClickableAncestors() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("file-folder-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

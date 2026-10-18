@@ -12,7 +12,7 @@ final class GitStashTests: XCTestCase {
         let service = f.service, root = f.path
         do {
             try await service.dropReviewedStash(list[0], in: root, beforeVerification: {
-                _ = try await service.branchCommand(["stash", "store", "-m", "Arrived after review", list[1].oid], in: root)
+                _ = try await service.branchCommand(["stash", "store", "-m", "Arrived after review", list[1].oid], in: root, readOnly: false)
             })
             XCTFail("A selector that moved after the fingerprint read must be refused")
         } catch { XCTAssertTrue(error.localizedDescription.contains("stash list changed")) }
@@ -36,7 +36,7 @@ final class GitStashTests: XCTestCase {
             do {
                 try await service.dropReviewedStash(reviewed, in: root, afterVerification: {
                     try Data("concurrent\n".utf8).write(to: file)
-                    _ = try await service.branchCommand(["stash", "push", "-m", "Concurrent unreviewed stash"], in: root)
+                    _ = try await service.branchCommand(["stash", "push", "-m", "Concurrent unreviewed stash"], in: root, readOnly: false)
                 })
                 XCTFail("A drop that removed another stash must refuse (position \(position))")
             } catch { XCTAssertTrue(error.localizedDescription.contains("was kept"), error.localizedDescription) }

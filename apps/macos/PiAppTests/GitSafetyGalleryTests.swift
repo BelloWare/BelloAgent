@@ -8,7 +8,7 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
     @MainActor func testGitSafetyScenes() async throws {
         let folder = testEnvironment("PI_APP_GIT_SAFETY_GALLERY").map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        for scene in ["conflict", "amend-target", "amend-checked", "reword-target", "preflight-failure", "stale-target", "commit-box", "checked-files"] {
+        for scene in ["conflict", "amend-target", "amend-checked", "reword-target", "preflight-failure", "stale-target", "commit-box", "checked-files", "untrusted"] {
             let fixture = try GitSafetyRepository(); defer { fixture.remove() }
             if scene == "conflict" { try fixture.conflict() }
             else {
@@ -33,6 +33,11 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
             let window = host(panel)
             defer { place.cancelQuestion(); window.close() }
             try await eventually("show gallery panel") { controller.isShown && !controller.loading && !controller.diffLoading }
+            if scene == "untrusted" {
+                controller.mayWrite = { false }
+                await controller.stage(["file.txt"])
+                XCTAssertTrue(controller.notice.contains("Trust"), controller.notice)
+            }
             if scene == "stale-target" {
                 let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
                 try fixture.git(["commit", "--allow-empty", "-qm", "A newer target"])
@@ -45,7 +50,7 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                 for size in [NSSize(width: 1180, height: 780), NSSize(width: 920, height: 600), NSSize(width: 700, height: 640), NSSize(width: 310, height: 600)] {
                     window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
                     controller.commitMessage = size.width == 700 ? "Keep the reviewed changes together\n\nOne\nTwo\nThree" : "Keep the reviewed changes together"
-                    if scene != "stale-target", let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
+                    if !["stale-target", "untrusted"].contains(scene), let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
                     panel.refresh(); panel.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     let box = try XCTUnwrap(GitOperationSafetyTests.views(GitCommitBox.self, in: panel).first)
                     box.layoutSubtreeIfNeeded()

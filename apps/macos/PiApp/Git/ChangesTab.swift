@@ -73,6 +73,10 @@ import GitView
     var controller: GitController {
         if let madeController { return madeController }
         let controller = GitController(roots: roots)
+        controller.mayWrite = { [weak self] in
+            guard let self else { return false }
+            return FileTab.resolveProject(self.projectID).isTrusted && Self.resolveProject(self.projectID)?.roots == self.roots
+        }
         madeController = controller
         return controller
     }

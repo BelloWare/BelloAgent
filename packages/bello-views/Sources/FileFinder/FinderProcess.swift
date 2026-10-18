@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 // The git commands a listing runs (`FileListing`): on a queue of their own,
 // where a blocking wait costs no Swift thread; both pipes drained so neither
@@ -74,9 +75,14 @@ enum FinderProcess {
                                 environment: [String: String], input: Data?, handle: Running) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-c", "core.quotepath=off"] + arguments
+        // Listings can browse outside trusted projects. Loading an index must
+        // never start its repository's fsmonitor hook (including via includes).
+        process.arguments = ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
-        process.environment = environment
+        // A sparse index can load a missing tree and invoke a promisor remote,
+        // even for ls-files/check-ignore. Confinement covers that path too.
+        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment)
+        defer { confinement.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
         let stdin = input == nil ? nil : Pipe()

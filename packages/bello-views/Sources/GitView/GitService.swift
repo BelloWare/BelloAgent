@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import GitProcessSafety
 
 /// One line of `git status --porcelain=v2`: a tracked change, rename or
 /// untracked file. Index and worktree states are git's single-letter codes.
@@ -187,19 +188,23 @@ public actor GitService {
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
                                             timeout: TimeInterval, handle: RunningProcess,
-                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true) throws -> Output {
+                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true) throws -> Output {
         let process = Process()
         process.executableURL = executable
         // Every parsed patch, including show and no-index, uses the parser's
         // a/ and b/ names regardless of the reader's display preferences.
+        // HTTP credentials and custom headers belong to the selected remote.
         let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
-                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + arguments
+                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false",
+                                "-c", "http.followRedirects=false"] : []) + arguments
         // Foundation raises an uncaught Objective-C exception past its own
         // 4096-argument limit, which no `catch` can stop: refuse first.
         guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
         process.arguments = all
         process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
         process.environment = environment
+        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment) : nil
+        defer { confinement?.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
         // A hook that reads its input (post-rewrite) is handed it on stdin;
@@ -260,7 +265,13 @@ public actor GitService {
         process.waitUntilExit()
         if let failure { throw GitFailure(message: failure) }
         if handle.isStopped { throw CancellationError() }
-        return Output(stdout: streams[0], stderr: String(decoding: streams[1], as: UTF8.self), status: process.terminationStatus)
+        let diagnostics = String(decoding: streams[1], as: UTF8.self)
+        // Git may report success after an optional clean/process filter failed.
+        // Do not present unconverted bytes as a successful repository comparison.
+        if readOnly, diagnostics.contains("external filter") {
+            throw GitFailure(message: "Git's content filter could turn this file into other lines. Read-only queries cannot run repository programs.")
+        }
+        return Output(stdout: streams[0], stderr: diagnostics, status: process.terminationStatus)
     }
 
     /// Git's own threads. Waiting for a process is a blocking call, and a
@@ -295,7 +306,7 @@ public actor GitService {
     /// background thread, so a large patch is parsed before it crosses back and
     /// never as text on the main thread.
     private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
-                                       environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil,
+                                       environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil, readOnly: Bool = true,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
         let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess(), base = self.environment
         await acquireProcess()
@@ -303,7 +314,7 @@ public actor GitService {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
-                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions))) }
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly))) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -344,12 +355,12 @@ public actor GitService {
     /// Runs one git command per batch of paths, stopping at the first failure.
     private func runBatched(_ prefix: [String], paths: [String], in root: String, _ what: String) async throws {
         for batch in Self.batches(of: Self.literal(paths), prefix: prefix) {
-            _ = try require(await run(prefix + batch, in: root), what)
+            _ = try require(await run(prefix + batch, in: root, readOnly: false), what)
         }
     }
 
-    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil) async throws -> Output {
-        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input) { $0 }
+    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil, readOnly: Bool = true) async throws -> Output {
+        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input, readOnly: readOnly) { $0 }
     }
 
     private func require(_ output: Output, _ what: String) throws -> Output {
@@ -464,8 +475,8 @@ public actor GitService {
     /// The message, the changed paths and their line counts. Both reads are
     /// cheap and run together: neither asks git to produce any patch text.
     func commitDetail(in root: String, commit: GitCommit) async throws -> GitCommitDetail {
-        async let named = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
-        async let counted = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let named = run(["-c", "log.showRoot=true", "show", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let counted = run(["-c", "log.showRoot=true", "show", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
         let names = try require(await named, "Reading the commit")
         let numbers = try? require(await counted, "Reading the commit stats")
         let (message, files) = Self.parseMessageAndNameStatus(names.stdout)
@@ -530,9 +541,9 @@ public actor GitService {
     /// nothing to match against and reports the whole file as added.
     func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
         var arguments: [String]
-        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "--no-textconv", "-U3", "--", "/dev/null", path] }
         else {
-            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "-U3", "--find-renames"]
+            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "-U3", "--find-renames"]
             if staged { arguments.append("--cached") }
             if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }
@@ -578,12 +589,12 @@ public actor GitService {
         return output.text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
     func checkout(_ branch: String, in root: String) async throws {
-        _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root), "Switching branch")
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root, readOnly: false), "Switching branch")
     }
     func createBranch(_ name: String, in root: String) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.contains(" ") else { throw GitFailure(message: "Enter a branch name without spaces.") }
-        _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root), "Creating the branch")
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root, readOnly: false), "Creating the branch")
     }
     func stashes(in root: String) async throws -> [GitStashEntry] {
         let output = try require(await run(["stash", "list", "--format=%gd%x00%s"], in: root), "Listing stashes")
@@ -597,14 +608,14 @@ public actor GitService {
         var arguments = ["stash", "push", "--include-untracked"]
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { arguments += ["-m", trimmed] }
-        _ = try require(await run(arguments, in: root), "Stashing")
+        _ = try require(await run(arguments, in: root, readOnly: false), "Stashing")
     }
     func stashPop(_ name: String? = nil, in root: String) async throws {
-        _ = try require(await run(["stash", "pop"] + (name.map { [$0] } ?? []), in: root), "Applying the stash")
+        _ = try require(await run(["stash", "pop"] + (name.map { [$0] } ?? []), in: root, readOnly: false), "Applying the stash")
     }
-    func fetch(in root: String) async throws { _ = try require(await run(["fetch", "--prune"], in: root, timeout: 120), "Fetching") }
-    func pull(in root: String) async throws { _ = try require(await run(["pull", "--ff-only"], in: root, timeout: 180), "Pulling") }
-    func push(in root: String) async throws { _ = try require(await run(["push"], in: root, timeout: 180), "Pushing") }
+    func fetch(in root: String) async throws { _ = try require(await run(["fetch", "--prune"], in: root, timeout: 120, readOnly: false), "Fetching") }
+    func pull(in root: String) async throws { _ = try require(await run(["pull", "--ff-only"], in: root, timeout: 180, readOnly: false), "Pulling") }
+    func push(in root: String) async throws { _ = try require(await run(["push"], in: root, timeout: 180, readOnly: false), "Pushing") }
     func headMessage(in root: String) async throws -> String {
         try require(await run(["log", "-1", "--format=%B"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -677,8 +688,8 @@ public actor GitService {
             return
         }
         for batch in Self.batches(of: Self.literal(paths), prefix: ["restore", "--staged", "--"]) {
-            let output = try await run(["restore", "--staged", "--"] + batch, in: root)
-            if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root), "Unstaging") }
+            let output = try await run(["restore", "--staged", "--"] + batch, in: root, readOnly: false)
+            if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root, readOnly: false), "Unstaging") }
         }
     }
     /// Commits exactly one scope, optionally amending HEAD:
@@ -732,7 +743,7 @@ public actor GitService {
         // Git's hook/index behaviour. Recheck after preparation, immediately
         // before dispatch; external Git can still race after this check.
         if let target { try await validateCommitTarget(target, in: root) }
-        let committed = try await run(arguments, in: root)
+        let committed = try await run(arguments, in: root, readOnly: false)
         // Git refuses a commit that would change nothing with its status on
         // stdout and nothing on stderr, which read as "git exit 1".
         if committed.status != 0, ["nothing to commit", "nothing added to commit", "no changes added to commit"].contains(where: committed.text.contains) {
@@ -845,27 +856,27 @@ public actor GitService {
         // one lands there, never in the reader's index.
         let index = scratch.appendingPathComponent("index").path
         let hookEnvironment = ["GIT_INDEX_FILE": index, "GIT_EDITOR": ":"]
-        _ = try require(await run(["read-tree", tree], in: root, environment: hookEnvironment), "Preparing the reword")
+        _ = try require(await run(["read-tree", tree], in: root, environment: hookEnvironment, readOnly: false), "Preparing the reword")
         let worktree = try await worktreeSnapshot(in: root)
 
-        _ = try require(await run(["hook", "run", "--ignore-missing", "pre-commit"], in: root, timeout: 120, environment: hookEnvironment), "The pre-commit hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "pre-commit"], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The pre-commit hook")
         let messageFile = scratch.appendingPathComponent("COMMIT_EDITMSG")
         try Data(Self.cleanedMessage(message).utf8).write(to: messageFile)
         if signOff {
             let identity = try require(await run(["var", "GIT_COMMITTER_IDENT"], in: root), "Reading sign-off identity").text
             guard let end = identity.lastIndex(of: ">") else { throw GitFailure(message: "The sign-off identity could not be read.") }
             _ = try require(await run(["interpret-trailers", "--in-place", "--if-exists=addIfDifferent", "--trailer",
-                                       "Signed-off-by: " + identity[...end], messageFile.path], in: root), "Adding sign-off")
+                                       "Signed-off-by: " + identity[...end], messageFile.path], in: root, readOnly: false), "Adding sign-off")
         }
         // As git commit --amend -m calls it: a message given, amending HEAD.
-        _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment), "The prepare-commit-msg hook")
-        _ = try require(await run(["hook", "run", "--ignore-missing", "commit-msg", "--", messageFile.path], in: root, timeout: 120, environment: hookEnvironment), "The commit-msg hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The prepare-commit-msg hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "commit-msg", "--", messageFile.path], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The commit-msg hook")
         // The working tree first: a hook that wrote files and staged them
         // has done both, and the reader is told about the files on disk.
         guard try await worktreeSnapshot(in: root) == worktree else {
             throw GitFailure(message: "A hook changed files in the working tree, so the last commit was not reworded. Check what it changed.")
         }
-        let after = try require(await run(["write-tree"], in: root, environment: hookEnvironment), "Preparing the reword").text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let after = try require(await run(["write-tree"], in: root, environment: hookEnvironment, readOnly: false), "Preparing the reword").text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard after == tree else { throw GitFailure(message: "A hook changed the commit's files, so the last commit was not reworded.") }
         let finalMessage = Self.cleanedMessage(String(decoding: try Data(contentsOf: messageFile), as: UTF8.self))
         guard !finalMessage.isEmpty else { throw GitFailure(message: "The commit message is empty after the commit hooks.") }
@@ -884,7 +895,7 @@ public actor GitService {
         }
         commitTree += ["-F", messageFile.path]
         let authorEnvironment = ["GIT_AUTHOR_NAME": author[0], "GIT_AUTHOR_EMAIL": author[1], "GIT_AUTHOR_DATE": author[2]]
-        let created = try require(await run(commitTree, in: root, timeout: 120, environment: authorEnvironment), "Rewording").text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let created = try require(await run(commitTree, in: root, timeout: 120, environment: authorEnvironment, readOnly: false), "Rewording").text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Hooks can take their time: HEAD must still be on the same branch,
         // with no operation begun, before anything moves.
@@ -897,11 +908,11 @@ public actor GitService {
         // it names together, and moves that branch (or a detached HEAD) only
         // from the commit read above. Whatever HEAD names at that instant is
         // what moves; a branch HEAD has left is never rewritten behind it.
-        let moved = try await run(["update-ref", "-m", reflog, "HEAD", created, head], in: root)
+        let moved = try await run(["update-ref", "-m", reflog, "HEAD", created, head], in: root, readOnly: false)
         guard moved.status == 0 else { throw GitFailure(message: "The last commit changed while rewording, so it was not reworded.") }
 
         // As after git commit --amend; their failures do not undo the commit.
-        _ = try? await run(["hook", "run", "--ignore-missing", "post-commit"], in: root, timeout: 120, environment: ["GIT_EDITOR": ":"])
+        _ = try? await run(["hook", "run", "--ignore-missing", "post-commit"], in: root, timeout: 120, environment: ["GIT_EDITOR": ":"], readOnly: false)
         try? await runPostRewrite(in: root, old: head, new: created)
         return String(created.prefix(7))
     }
@@ -1020,6 +1031,6 @@ public actor GitService {
         }
         let hook = (folder as NSString).appendingPathComponent("post-rewrite")
         guard FileManager.default.isExecutableFile(atPath: hook) else { return }
-        _ = try await detached(["amend"], in: root, timeout: 120, input: Data("\(old) \(new)\n".utf8), executable: URL(fileURLWithPath: hook)) { $0 }
+        _ = try await detached(["amend"], in: root, timeout: 120, input: Data("\(old) \(new)\n".utf8), executable: URL(fileURLWithPath: hook), readOnly: false) { $0 }
     }
 }

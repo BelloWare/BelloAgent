@@ -311,6 +311,7 @@
 		3B390BD03B10DC590A1C9793 /* SubagentTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC43692E59CC76E043F2D137 /* SubagentTypes.swift */; };
 		3BBA08DCCCD751182EE73FD4 /* RetryPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22743C175AE0A0E370367805 /* RetryPreferences.swift */; };
 		3C08754543B5A5D486A6CE53 /* GitPanelShownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57AA0BF8A4AA94A2E68F8E04 /* GitPanelShownTests.swift */; };
+		3C869B87E2E109D0D3089216 /* GitRepositoryPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D2688712E90ED0B803A2951 /* GitRepositoryPermissionTests.swift */; };
 		3C9E3F5F55F388B6110B7052 /* ConversationPageVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0944E27BFD1B316113BA8006 /* ConversationPageVisibility.swift */; };
 		3CD2BD8E294863172AF891B2 /* CostLimitNoticeRowReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1587502DF09F4235F0DBEE06 /* CostLimitNoticeRowReference.swift */; };
 		3CE1F733F621B5152A7CBFF4 /* TranscriptTurnFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89ACA95D3B7FE4CF35B30E8A /* TranscriptTurnFold.swift */; };
@@ -1484,6 +1485,7 @@
 		1C74A9284B04CE58F3DC809B /* SubagentEffort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentEffort.swift; sourceTree = "<group>"; };
 		1CCA9BDEFD0628EC36A2FFA8 /* PayloadSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadSearch.swift; sourceTree = "<group>"; };
 		1CE9253F98C28A3640C29995 /* HistoryReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryReader.swift; sourceTree = "<group>"; };
+		1D2688712E90ED0B803A2951 /* GitRepositoryPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryPermissionTests.swift; sourceTree = "<group>"; };
 		1DAA440D6CA5DB91207C7839 /* WorkspaceSubagentDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSubagentDiscovery.swift; sourceTree = "<group>"; };
 		1E38C76AA87A8BC822B863C9 /* TranscriptActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptActions.swift; sourceTree = "<group>"; };
 		1E3909BD78682FF3B5DE76C4 /* WebhookTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebhookTests.swift; sourceTree = "<group>"; };
@@ -3138,6 +3140,7 @@
 				E86247FE907C1D3BC28BDA20 /* GitPanelTimingTests.swift */,
 				C5D348C6F24205B1E6976BBE /* GitPanelWidthTests.swift */,
 				CC58688E7993531145577BA2 /* GitPathBoundaryTests.swift */,
+				1D2688712E90ED0B803A2951 /* GitRepositoryPermissionTests.swift */,
 				66D62C866063CBFE8702B77B /* GitRepositorySwitchTests.swift */,
 				45FCBBA32C4CC234B9C8E69E /* GitSafetyGalleryTests.swift */,
 				A449AC1393CB92C1F6935E92 /* GitToolTests.swift */,
@@ -4658,6 +4661,7 @@
 				FA22064523E353C75AFF8B9B /* GitPanelTimingTests.swift in Sources */,
 				B59FE7AA52BC9C958056022F /* GitPanelWidthTests.swift in Sources */,
 				4C829674F5E3BCAFB1C7DDAF /* GitPathBoundaryTests.swift in Sources */,
+				3C869B87E2E109D0D3089216 /* GitRepositoryPermissionTests.swift in Sources */,
 				28EBF6D5D88BE43D6EC15119 /* GitRepositorySwitchTests.swift in Sources */,
 				F73E004C916CF836B02FA6C2 /* GitSafetyGalleryTests.swift in Sources */,
 				B1FE1B4B2424379F4A9AD91E /* GitToolTests.swift in Sources */,
