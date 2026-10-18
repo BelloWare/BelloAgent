@@ -29,6 +29,7 @@ final class SidebarSearchTypingTests: XCTestCase, SerialTestLane {
         let view = WorkspaceSidebarView(model: model)
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 700); view.layoutSubtreeIfNeeded()
         let search = model.sidebarSearch
+        search.setScope(.fullChats)
 
         let watchdog = MainThreadWatchdog(limit: 5, abortOnStall: false); watchdog.start(); defer { watchdog.stop() }
         var keystrokes: [Double] = []
@@ -53,7 +54,7 @@ final class SidebarSearchTypingTests: XCTestCase, SerialTestLane {
 
         // Against the built index, with every query slowed to 300 ms on its own thread.
         search.reader.delay = 0.3
-        view.setFilter(""); view.settle()
+        view.setFilter(""); search.setScope(.fullChats); view.settle()
         let answered = search.answeredQueries
         try await type("quartzfeather retry")
         await search.settleQuery(); view.settle()
@@ -89,6 +90,7 @@ final class SidebarSearchTypingTests: XCTestCase, SerialTestLane {
         let view = WorkspaceSidebarView(model: model)
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 700); view.layoutSubtreeIfNeeded()
         let search = model.sidebarSearch
+        search.setScope(.fullChats)
         await search.reconcileNow()
         view.setFilter("lantern"); view.settle()
         await search.settleQuery(); view.settle()

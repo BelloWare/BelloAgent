@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
 - [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
 - [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.
