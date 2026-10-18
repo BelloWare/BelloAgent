@@ -43,6 +43,62 @@ private actor HeldRetryClient: ModelClient {
 }
 
 final class RetryTests: XCTestCase {
+    func testRetryRejectsAnUnloadedSessionBeforeProviderOrToolWork() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = FlakyClient(failures: [AgentError("provider_http", "Provider returned HTTP 401. Fixture rejection.")], replies: [toolReply(["write"]), answer("untracked")])
+        let tools = RecordingTools()
+        let session = try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),autoCompaction:false)
+        _ = try await session.submit(Submission(commandID:"c",turnID:"t",text:"work"),steer:false)
+        try await eventually { !(await session.isRunning) }
+        let unloaded = await session.unloadIfIdle(); XCTAssertTrue(unloaded)
+        do { try await session.retryRun(); XCTFail("An unloaded runtime must reject Retry") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "session_closed") }
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests, calls = await tools.calls
+        XCTAssertEqual(requests, 1); XCTAssertTrue(calls.isEmpty)
+        await session.close()
+    }
+
+    func testQueueResumeRejectsClosedRuntimeWithQueuedWork() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = ScriptClient([answer("first"),toolReply(["first"]),answer("untracked")],holdFirst:true), tools = RecordingTools()
+        let s = try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),autoCompaction:false)
+        _ = try await s.submit(Submission(commandID:"c1",turnID:"t1",text:"first"),steer:false)
+        try await eventually { await client.count == 1 }
+        _ = try await s.submit(Submission(commandID:"c2",turnID:"t2",text:"queued"),steer:false)
+        await s.close()
+        do { try await s.resumeQueue(); XCTFail("A closed runtime must not resume queued work") }
+        catch let error as AgentError { XCTAssertEqual(error.code,"session_closed") }
+        await client.release(); try await eventually { !(await s.isRunning) }
+        let requests = await client.count, calls = await tools.calls
+        XCTAssertEqual(requests,1); XCTAssertTrue(calls.isEmpty)
+        await s.close()
+    }
+
+    func testHostRetryCannotOvertakeUnloadBeforeRegistryRemoval() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = FlakyClient(failures:[AgentError("provider_http", "Provider returned HTTP 401. Fixture rejection.")], replies:[])
+        let saved = try await session(client, root:root)
+        _ = try await saved.submit(Submission(commandID:"c",turnID:"t",text:"work"),steer:false)
+        try await eventually { !(await saved.isRunning) }
+        let path = await saved.path; await saved.close()
+        let host = NativeHostService(emit: { _ in }), gate = RetryUnloadGate()
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.appendingPathComponent("state").path)])
+        _ = try await host.command("retry.configure",sessionID:nil,params:["enabled":false,"maxRetries":0,"baseDelayMs":1])
+        _ = try await host.command("session.open",sessionID:"s",params:["profile":try fixtureProfile().raw,"apiKey":"fixture","path":path.map { JSON($0) } ?? .null])
+        let runtime = await host.loadedSession("s")
+        await host.holdUnload(at:gate)
+        let closing = Task { try await host.command("session.close",sessionID:"s",params:[:]) }
+        try await eventually { await gate.entered }
+        do { _ = try await host.command("turn.retry",sessionID:"s",params:[:]); XCTFail("Concurrent Retry was accepted after unload") }
+        catch let error as AgentError { XCTAssertEqual(error.code,"session_closed") }
+        await gate.release(); _ = try await closing.value
+        if let runtime { await runtime.stop(); try await eventually { !(await runtime.isRunning) } }
+        let captures = try await host.command("debug.list",sessionID:"s",params:[:])
+        XCTAssertEqual(captures["total"].int,0,"No provider dispatch after the writer is released")
+        await host.shutdown()
+    }
+
     func testStoppedRequestKeepsModelTimeAcrossReopen() async throws { try await failedModelTime(stopped: true) }
     func testNonretryableRequestKeepsModelTimeAcrossReopen() async throws { try await failedModelTime(stopped: false) }
     private func failedModelTime(stopped: Bool) async throws {
@@ -59,10 +115,12 @@ final class RetryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(measured,100)
         XCTAssertEqual(state["turnMetrics"]["modelMs"].double,measured,"Every request outcome counts exactly once")
         XCTAssertEqual(state["turnMetrics"]["sessionModelMs"].double,measured)
+        XCTAssertEqual(state["taskPresentation"]["recent"].list.last?["modelMs"].double, measured)
         let saved = await session.path, path = try XCTUnwrap(saved); await session.close()
         let reopened = try AgentSession(id:"timed",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:path)
         let restored = await reopened.snapshot()
         XCTAssertEqual(restored["turnMetrics"]["sessionModelMs"].double,measured)
+        XCTAssertEqual(restored["taskPresentation"]["recent"].list.last?["modelMs"].double, measured)
         await reopened.close()
     }
 
@@ -228,10 +286,15 @@ final class RetryTests: XCTestCase {
         let measured = await session.modelRequestsMs
         XCTAssertEqual(turnMs, measured, "Successful retries count each attempt once")
         XCTAssertEqual(state["turnMetrics"]["sessionModelMs"].double, measured)
+        XCTAssertEqual(state["taskPresentation"]["recent"].list.last?["modelMs"].double, measured)
         print("PERF model-time-with-retry replyModelMs=\(replyMs) turnModelMs=\(turnMs)")
         XCTAssertLessThan(replyMs, 500, "the reply's model time is its own request, not the back-off before it")
         XCTAssertLessThan(turnMs, 500, "the turn's model time sums its requests, not the waits between them")
-        await session.close()
+        let path = await session.path; await session.close()
+        let reopened = try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),resumePath:path,autoCompaction:false)
+        let restored = await reopened.snapshot()
+        XCTAssertEqual(restored["taskPresentation"]["recent"].list.last?["modelMs"].double, measured)
+        await reopened.close()
     }
 
     func testRetryPolicy() {
@@ -272,4 +335,14 @@ final class RetryTests: XCTestCase {
         XCTAssertEqual(restored[1]["modelMs"].double, modelMs)
         await reopened.close()
     }
+}
+
+private actor RetryUnloadGate {
+    var entered = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    func wait() async { entered = true; await withCheckedContinuation { waiter = $0 } }
+    func release() { waiter?.resume(); waiter = nil }
+}
+private extension NativeHostService {
+    func holdUnload(at gate: RetryUnloadGate) { afterSessionUnload = { await gate.wait() } }
 }

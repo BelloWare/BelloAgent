@@ -25,7 +25,6 @@ extension AgentSession {
             task.assistantID = message.id
             task.replies += 1
             task.issuedCalls += message.content.filter { $0["type"].text == "toolCall" }.count
-            task.modelMs += message.modelMs ?? 0
         }
         if message.role == "toolResult" { task.toolMs += message.toolStats?["durationMs"].double ?? 0 }
         activeTaskPresentation = task

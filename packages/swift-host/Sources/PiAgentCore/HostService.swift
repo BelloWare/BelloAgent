@@ -76,6 +76,9 @@ public actor NativeHostService {
     var beforeSubmissionPreflight: (@Sendable () async -> Void)?
     /// Test seam for a slow disk mirror while unrelated commands arrive.
     var beforeChildCostMirror: (@Sendable () -> Void)?
+    /// Test seams for overlapping unload and slow journal disk work.
+    var afterSessionUnload: (@Sendable () async -> Void)?
+    var beforeJournalDiskWork: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -520,8 +523,12 @@ public actor NativeHostService {
                 guard sessions[id] == nil, slimming[id] == nil else { throw AgentError("session_busy", "Close this chat before moving it to another connection") }
                 return try await Task.detached(priority:.userInitiated) { try Self.rebind(url:url, id:id, directory:directory, to:target, from:previous, check:check) }.value
             }
-        case "session.portable.preview", "session.import.inspect": return try portable(params)
-        case "session.recover": return try recoverCopy(params)
+        case "session.portable.preview", "session.import.inspect":
+            let before = beforeJournalDiskWork
+            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.portable(params) }.value
+        case "session.recover":
+            let before = beforeJournalDiskWork
+            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.recoverCopy(params,directory:directory) }.value
         case "journal.slim":
             // A chat's journal without the run-state records that repeated its
             // receipts (`JournalSlimming`), for a chat not open here.
@@ -827,6 +834,7 @@ public actor NativeHostService {
                 // including tool/queue phases with no dispatched model request.
                 if await hasBudgetDependents(id) { throw AgentError("session_busy", "Wait for managed work and close loaded side sessions before unloading their budget owner") }
                 guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                await afterSessionUnload?()
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
                 return ["accepted":true]
             }
@@ -953,8 +961,7 @@ public actor NativeHostService {
         if before != target.binding, var stored=journal.resumedFrom { stored.rebinds=journal.rebinds.map(\.check); try? stored.write(for:url) }
         return ["rebound":JSON(before != target.binding)]
     }
-    private func recoverCopy(_ params:JSON) throws -> JSON {
-        guard let directory else { throw AgentError("workspace_closed","Open the project before recovering a chat") }
+    private static func recoverCopy(_ params:JSON, directory:URL) throws -> JSON {
         let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))
         guard within(source,sessions) else { throw AgentError("invalid_path","Only this project's own chats can be recovered") }
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
@@ -1005,7 +1012,7 @@ public actor NativeHostService {
         try? PartialReplyLog.carry(from:source,to:destination,shift:shift)
         return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(count),"omittedBytes":JSON(Double(reader.omittedBytes))]
     }
-    private func portable(_ params:JSON) throws -> JSON {
+    private static func portable(_ params:JSON) throws -> JSON {
         let file=canonical(try required(params["path"],"session path"))
         let reader=try JournalRecordReader(file,allowIncompleteTail:true,hash:true)
         guard let header=try reader.next(), header["type"].text=="session" else { throw AgentError("invalid_history","Expected session header") }

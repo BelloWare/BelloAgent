@@ -62,6 +62,7 @@ extension AgentSession {
         // AgentError, so no catch below would see it).
         defer {
             turnModelMs += modelRequestsMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelRequestsMs)
+            activeTaskPresentation?.modelMs += modelRequestsMs
             retryInfo = .null
         }
         while true {

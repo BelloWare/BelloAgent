@@ -337,39 +337,80 @@ private struct FileToolContext: Sendable {
         let elsewhere=roots.dropFirst().map { canonical($0.appendingPathComponent(text).path) }.filter { FileManager.default.fileExists(atPath:$0.path) }
         return elsewhere.count == 1 ? elsewhere[0] : primary
     }
+    /// Scan UTF-8 in bounded chunks, retaining only the requested preview.
+    /// Counting the remainder keeps the existing total-lines hint exact.
+    private func readFile(_ url: URL, params: JSON, cancellation: BlockingWorkCancellation) throws -> JSON {
+        let fd = open(url.path,O_RDONLY|O_NONBLOCK|O_CLOEXEC)
+        guard fd >= 0 else { throw AgentError("file_unavailable","Cannot open \(url.path)") }
+        let file = FileHandle(fileDescriptor:fd,closeOnDealloc:true); defer { try? file.close() }
+        var info = stat()
+        guard fstat(fd,&info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), info.st_size >= 0 else { throw AgentError("not_regular_file","Only regular files can be read") }
+        // A growing log cannot extend this scan indefinitely.
+        var remaining = Int(info.st_size)
+        var data = try file.read(upToCount:min(4100,remaining)) ?? Data()
+        remaining -= data.count
+        if let mimeType=PiImage.sniff(data) {
+            guard info.st_size <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
+            data.append(try file.read(upToCount:16 * 1024 * 1024 + 1 - data.count) ?? Data())
+            guard data.count <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
+            try cancellation.checkCancellation()
+            switch PiImage.process(data, mimeType:mimeType) {
+            case .success(let image):
+                let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")
+                return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false,"stats":["path":JSON(url.path)]]
+            case .failure(let failure):
+                var result=resultText("Read image file [\(mimeType)]\n"+failure.message)
+                result["stats"]=["path":JSON(url.path)]
+                return result
+            }
+        }
+        let offset = try boundedInt(params["offset"],fallback:1,maximum:10_000_000), count = try boundedInt(params["limit"],fallback:2000,maximum:10_000)
+        guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
+        var line = 1, viewerLine = 1, previousCR = false, selected = Data(), selectedBytes = 0
+        var firstShown: Int?, lastShown = 1, tail = Data()
+        while !data.isEmpty {
+            try cancellation.checkCancellation()
+            // A chunk can end inside one UTF-8 scalar; validate complete
+            // scalars now and carry at most three bytes into the next chunk.
+            tail.append(data)
+            var complete = tail.count
+            if let start = tail.lastIndex(where: { $0 & 0xC0 != 0x80 }) {
+                let lead = tail[start], length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1
+                if tail.count - start < length { complete = start }
+            }
+            guard String(data:tail.prefix(complete),encoding:.utf8) != nil else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
+            tail = Data(tail.dropFirst(complete))
+            for byte in data {
+                if previousCR && byte != 10 { viewerLine += 1 }
+                if line >= offset && line < offset + count && !(byte == 10 && line == offset + count - 1) {
+                    selectedBytes = min(32769,selectedBytes + 1)
+                    if selected.count < 32768 {
+                        if firstShown == nil { firstShown = viewerLine }
+                        lastShown = viewerLine; selected.append(byte)
+                    }
+                }
+                if byte == 10 { line += 1; viewerLine += 1 }
+                previousCR = byte == 13
+            }
+            data = remaining > 0 ? try file.read(upToCount:min(64 * 1024,remaining)) ?? Data() : Data()
+            remaining -= data.count
+        }
+        guard tail.isEmpty else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
+        let text = preview(String(decoding:selected,as:UTF8.self),bytes:32768)
+        var result = resultText(text + (offset - 1 + count < line || text.utf8.count < selectedBytes ? "\n[Truncated. \(line) total lines; read another range.]" : ""))
+        result["stats"] = ["path":JSON(url.path)]
+        if let firstShown {
+            if selectedBytes == selected.count, selected.last == 10 { lastShown += 1 }
+            result["stats"]["line"] = JSON(firstShown); result["stats"]["lastLine"] = JSON(lastShown)
+        }
+        return result
+    }
     func invoke(_ call: ToolCall, cancellation: BlockingWorkCancellation) throws -> JSON {
         try cancellation.checkCancellation()
         let p = call.arguments
         switch call.name {
         case "read":
-            let file=try path(p["path"],existing:true), data=try readBounded(file,maximum:16 * 1024 * 1024)
-            try cancellation.checkCancellation()
-            // Pi's read tool: an image file comes back as an image, processed as
-            // pi processes it, with pi's note and hints.
-            if let mimeType=PiImage.sniff(data) {
-                switch PiImage.process(data, mimeType:mimeType) {
-                case .success(let image):
-                    let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")
-                    return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false,"stats":["path":JSON(file.path)]]
-                case .failure(let failure):
-                    var result=resultText("Read image file [\(mimeType)]\n"+failure.message)
-                    result["stats"]=["path":JSON(file.path)]
-                    return result
-                }
-            }
-            guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
-            let offset=try boundedInt(p["offset"],fallback:1,maximum:10_000_000), count=try boundedInt(p["limit"],fallback:2000,maximum:10_000)
-            guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
-            let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
-            var result=resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
-            // The file read, resolved as it was read (another root's, say), and
-            // the lines it returned as the app's viewer counts them: for the
-            // app alone.
-            result["stats"]=["path":JSON(file.path)]
-            if let shown=ViewerLines.read(text,lines:lines,offset:offset,count:count,bound:32768) {
-                result["stats"]["line"]=JSON(shown.lowerBound); result["stats"]["lastLine"]=JSON(shown.upperBound)
-            }
-            return result
+            return try readFile(try path(p["path"],existing:true),params:p,cancellation:cancellation)
         case "ls":
             let directory=try path(p["path"],optional:true,existing:true), limit=try boundedInt(p["limit"],fallback:200,maximum:2000)
             let all=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:[.isDirectoryKey]).sorted(by:{$0.lastPathComponent < $1.lastPathComponent})

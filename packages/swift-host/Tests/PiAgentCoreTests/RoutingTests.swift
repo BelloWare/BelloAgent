@@ -4,7 +4,7 @@ import XCTest
 final class RoutingTests: XCTestCase {
     func testConfiguredHeaderMatchingSchemaKeysKeepsPinnedReplayAfterReopen() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        for region in ["status", "us", "effectiveModel"] { for mode in ["off", "memory", "persist"] {
+        for region in ["status", "us", "effectiveModel", "reported"] { for mode in ["off", "memory", "persist"] {
             var raw = try fixtureProfile().raw
             raw["headers"] = ["X-Region": JSON(region)]
             raw["routing"] = ["replayPolicy": "pinned", "expectedModel": "actual-a", "replayContract": "Gateway fixes compatible upstream"]

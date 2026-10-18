@@ -4,6 +4,46 @@ import XCTest
 /// The built-in tools: what they return to the model, and what happens to a
 /// command that outlives its deadline while a child still holds the pipes.
 final class NativeToolTests: XCTestCase {
+    func testRetainedTwentyMiBShellLogCanBeReadInSmallPages() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let outputs = root.appendingPathComponent("out"), tools = NativeTools(cwd:root,outputs:outputs,mcp:MCPManager(cwd:root))
+        let shell = try await tools.invoke(ToolCall(id:"large",name:"bash",arguments:["command":"/usr/bin/awk 'BEGIN { for (i=1; i<=1048576; i++) printf \"%019d\\n\", i }'","timeout":30]),readOnly:false)
+        XCTAssertFalse(shell["isError"].flag ?? true)
+        let log = try XCTUnwrap(FileManager.default.contentsOfDirectory(at:outputs,includingPropertiesForKeys:nil).first { $0.pathExtension == "log" })
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath:log.path)[.size] as? Int,20 * 1024 * 1024)
+        XCTAssertTrue(shell["content"].list.first?["text"].text?.contains("Use read with offset/limit") == true)
+        for offset in [1, 1_048_557] {
+            do {
+                let page = try await tools.invoke(ToolCall(id:"page",name:"read",arguments:["path":JSON(log.path),"offset":JSON(offset),"limit":20]),readOnly:true)
+                let expected = (offset..<(offset+20)).map { String(format:"%019d",$0) }.joined(separator:"\n")
+                XCTAssertTrue(page["content"].list.first?["text"].text?.hasPrefix(expected) == true)
+                XCTAssertEqual(page["stats"]["line"].int,offset); XCTAssertEqual(page["stats"]["lastLine"].int,offset+19)
+            } catch { XCTFail("Page \(offset) failed: \(error)") }
+        }
+    }
+
+    func testStreamedTextPagesKeepExistingUTF8AndViewerLineSemantics() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root)), file = root.appendingPathComponent("text.txt")
+        let texts = ["", "a\nb\n", "a\rb\nc\rd", "a\r\nb\r\nc", String(repeating:"x",count:4099)+"🙂\nend", String(repeating:"x",count:32767)+"🙂\nend", String(repeating:"x",count:69635)+"🙂\r\nend"]
+        for text in texts {
+            try Data(text.utf8).write(to:file)
+            for offset in [1,2,4] { for count in [1,2,2000] {
+                let page = try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":JSON(file.path),"offset":JSON(offset),"limit":JSON(count)]),readOnly:true)
+                let lines = text.components(separatedBy:"\n"), selected = lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded = preview(selected,bytes:32768)
+                let expected = bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : "")
+                XCTAssertEqual(page["content"].list.first?["text"].text,expected)
+                let shown = ViewerLines.read(text,lines:lines,offset:offset,count:count,bound:32768)
+                XCTAssertEqual(page["stats"]["line"].int,shown?.lowerBound); XCTAssertEqual(page["stats"]["lastLine"].int,shown?.upperBound)
+            } }
+        }
+        for bytes in [Data([0x61,0x0a,0xff]), Data(repeating:0x61,count:69635)+Data([0xf0,0x9f,0x99])] {
+            try bytes.write(to:file)
+            do { _ = try await tools.invoke(ToolCall(id:"binary",name:"read",arguments:["path":JSON(file.path),"limit":1]),readOnly:true); XCTFail("Invalid UTF-8 outside or after the page must still fail") }
+            catch let error as AgentError { XCTAssertEqual(error.code,"binary_file") }
+        }
+    }
+
     func testSessionOwnsShortShellAndOversizedToolOutputsBeforeRecordingResults() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let outputs = root.appendingPathComponent("tool-output"), profile = try fixtureProfile()

@@ -8,6 +8,158 @@ private actor CredentialPackets {
 }
 
 final class CredentialCaptureTests: XCTestCase {
+    func testRoutingFixedValuesAndKeysSurviveMatchingCredentials() async throws {
+        let base = RoutingIdentity(profile:try fixtureProfile()).json
+        let labels = Array(base.map.keys) + ["reported", "unreported", "incomplete", "conflict", "model", "deployment", "group", "ask", "portable", "pinned", "header:x-litellm-model-name", "header:x-litellm-model-group", "body.model", base["boundary"].text!]
+        for key in labels { for mode in ["off", "memory", "persist"] {
+            var raw = try fixtureProfile().raw; raw["headers"] = ["X-Region":JSON(key)]
+            let profile = try Profile(raw), traces = TraceStore()
+            _ = try await traces.command("debug.mode",session:"s",params:["mode":JSON(mode)])
+            let id = await traces.begin(session:"s",turn:"t",profile:profile,purpose:"turn",body:Data(),headers:["X-Region":key])
+            let headers = ["x-litellm-model-name":"actual-a", "x-litellm-model-group":"group-a"]
+            var identity = RoutingIdentity(profile:profile); identity.head(headers,excluding:{$0.contains(key)})
+            await traces.head(id,status:200,headers:headers)
+            let expected = identity.json, actual = await traces.identity(id)
+            for field in ["status", "replayPolicy", "boundary", "omittedEvidence"] { XCTAssertEqual(actual[field],expected[field],"\(key), \(mode), \(field)") }
+            XCTAssertEqual(Set(actual.map.keys),Set(expected.map.keys))
+            for (a,b) in zip(actual["evidence"].list,expected["evidence"].list) {
+                XCTAssertEqual(a["kind"],b["kind"],key); XCTAssertEqual(a["source"],b["source"],key)
+                XCTAssertEqual(Set(a.map.keys),Set(b.map.keys),key)
+            }
+            await traces.finish(id,outcome:"completed",modelOutcome:"completed")
+        } }
+    }
+
+    func testEveryFixedMetadataLabelSurvivesAnEqualConfiguredCredential() async throws {
+        func literals(_ value: JSON) -> Set<String> {
+            if let text = value.text { return [text] }
+            return Set(value.map.keys).union(value.map.values.reduce(into:Set<String>()) { $0.formUnion(literals($1)) }).union(value.list.reduce(into:Set<String>()) { $0.formUnion(literals($1)) })
+        }
+        func fixedIdentity(_ value: JSON) -> JSON {
+            var fixed = value.removing(["requestedAlias", "effectiveModel", "reportedModels", "contractReference"])
+            fixed["evidence"] = .array(value["evidence"].list.map { $0.removing(["value"]) })
+            return fixed
+        }
+        for policy in ["ask", "portable", "pinned"] {
+            var raw = try fixtureProfile().raw
+            raw["routing"] = ["replayPolicy":JSON(policy),"expectedModel":"actual-a","replayContract":"fixture", "reference":"fixture", "deploymentHeader":"x-fixture-deployment"]
+            let profile = try Profile(raw)
+            var examples: [RoutingIdentity] = [RoutingIdentity(profile:profile)]
+            var reported = RoutingIdentity(profile:profile)
+            reported.head(["x-litellm-model-name":"actual-a", "x-litellm-model-group":"actual-b", "x-fixture-deployment":"actual-c"])
+            examples.append(reported)
+            var conflict = reported; conflict.body(["model":"actual-d","router_model_name":"actual-e"],streaming:false); examples.append(conflict)
+            var incomplete = reported; incomplete.head(["x-litellm-model-name":"\n"]); examples.append(incomplete)
+            for type in ["response.created", "response.in_progress", "response.completed", "response.incomplete", "response.failed"] {
+                var streamed = RoutingIdentity(profile:profile); streamed.body(["type":JSON(type),"response":["model":"actual-a","router_model_name":"actual-b"]],streaming:true); examples.append(streamed)
+            }
+            for identity in examples {
+                // A configured provenance string is data; fixed sources and
+                // every kind/status/policy/key are protocol.
+                var fixed = fixedIdentity(identity.json)
+                fixed["evidence"] = .array(fixed["evidence"].list.map { item in item["source"].text == "header:x-fixture-deployment" ? item.removing(["source"]) : item })
+                for key in literals(fixed) {
+                    let credentials = CaptureCredentials(headers:["X-Region":key],configuredNames:["X-Region"])
+                    var actual = fixedIdentity(identity.captured(credentials))
+                    actual["evidence"] = .array(actual["evidence"].list.enumerated().map { index, item in identity.json["evidence"].list[index]["source"].text == "header:x-fixture-deployment" ? item.removing(["source"]) : item })
+                    XCTAssertEqual(actual,fixed,key)
+                }
+            }
+        }
+        let types = ["object", "array", "string", "number", "integer", "boolean", "null"]
+        var inputs: [JSON] = ["message", "function_call", "function_call_output", "reasoning"].map { ["type":JSON($0)] }
+        inputs += ["system", "developer", "user", "assistant"].map { ["role":JSON($0)] }
+        inputs += ["input_text", "output_text", "input_image", "summary_text", "refusal"].map { ["content":[["type":JSON($0),"detail":"auto"]]] }
+        inputs += [["status":"completed","phase":"commentary"],["status":"completed","phase":"final_answer"]]
+        var definitions: [JSON] = types.map { ["type":"function","parameters":["type":JSON($0)]] }
+        definitions.append(["type":"function","parameters":["type":["string","null"]]])
+        let request: JSON = ["input":.array(inputs),"tools":.array(definitions),"reasoning":["summary":"auto"],"include":["reasoning.encrypted_content"]]
+        for key in literals(request) {
+            let credentials = CaptureCredentials(headers:["X-Region":key],configuredNames:["X-Region"])
+            XCTAssertEqual(credentials.requestMetadata(request),request,key)
+        }
+        let grant = SubagentModelGrant(model:"configured-model-secret"), profile = try fixtureProfile()
+        let delegated = SubagentSteeringContract.definitions(child:false,models:[grant],profile:profile,connectionSupportsReasoning:true) + SubagentSteeringContract.definitions(child:true,connectionSupportsReasoning:true) + [SubagentSpec.definition(models:[grant])]
+        let helperBody = try ProviderClient.requestBody(profile:profile,messages:[],instructions:"",tools:delegated,sessionID:"s")
+        for key in literals(helperBody["tools"]).subtracting([grant.model]) {
+            let credentials = CaptureCredentials(headers:["X-Region":key],configuredNames:["X-Region"])
+            func expected(_ value: JSON) -> JSON {
+                if value.text == grant.model { return JSON(credentials.metadataText(grant.model)) }
+                if case .array(let values) = value { return .array(values.map(expected)) }
+                if value.isObject { return .object(value.map.mapValues(expected)) }
+                return value
+            }
+            XCTAssertEqual(credentials.requestMetadata(helperBody,definitions:delegated)["tools"],expected(helperBody["tools"]),key)
+        }
+        let configuredCredential = CaptureCredentials(headers:["X-Region":grant.model],configuredNames:["X-Region"])
+        for tool in configuredCredential.requestMetadata(helperBody,definitions:delegated)["tools"].list where ["subagent", "subagent_start"].contains(tool["name"].text ?? "") {
+            XCTAssertEqual(tool["parameters"]["properties"]["model"]["enum"],[JSON(CaptureCredentials.fingerprint(grant.model))])
+        }
+        var overridden = helperBody
+        overridden["tools"] = .array(helperBody["tools"].list.map { tool in var value = tool; value["configurationEcho"] = JSON(grant.model); return value })
+        for tool in configuredCredential.requestMetadata(overridden,definitions:delegated)["tools"].list {
+            XCTAssertEqual(tool["configurationEcho"].text,CaptureCredentials.fingerprint(grant.model),"Additional configuration fields are not helper-owned")
+        }
+        let configuredSchema: JSON = ["tools":[["type":"function","name":"configured-function","description":"Configured schema","parameters":["type":"object","properties":.object([grant.model:["type":"string"]])]]]]
+        let maskedSchema = configuredCredential.requestMetadata(configuredSchema,definitions:delegated)["tools"].list[0]["parameters"]
+        XCTAssertEqual(Set(maskedSchema["properties"].map.keys),[CaptureCredentials.fingerprint(grant.model)],"Configuration-controlled schema names remain data")
+        XCTAssertEqual(maskedSchema["type"].text,"object")
+        for scope in ["global", "project", "approved additional"] { for state in ["included", "truncated"] {
+            let source: JSON = ["scope":JSON(scope),"state":JSON(state),"reason":"Selected by Codex precedence","hash":JSON(sha256(Data("fixture".utf8))),"bytes":7,"includedBytes":7,"truncated":false]
+            for key in literals(source) {
+                let credentials = CaptureCredentials(headers:["X-Region":key],configuredNames:["X-Region"])
+                XCTAssertEqual(credentials.resourceMetadata(source),source,key)
+            }
+        } }
+        let operation: JSON = ["kind":"execution", "phase":"planning", "reason":"manual", "recovery":["failure":"contextOverflow"], "outputAllowanceSource":"local-reserve-only"]
+        var gateway = GatewayTelemetry(profile:try fixtureProfile())
+        gateway.head(["content-type":"application/json","x-litellm-response-cost":"0.5","x-litellm-response-cost-input":"0.2"],excluding:{_ in false})
+        gateway.body(["usage":["cost":0.5]],streaming:false,excluding:{_ in false})
+        let usage = UsageObservation.normalized(["input_tokens":2,"output_tokens":1,"input_tokens_details":["cached_tokens":5]],api:"openai-responses")
+        let fixedUsage = usage.removing(["raw"]), fixedGateway = gateway.json
+        let labels = literals(operation).union(literals(fixedUsage)).union(literals(fixedGateway)).union(["invalid","conflict","unreported","hit","miss","cancelled","failed","completed","summary-generation-cap","threshold","context-rejection"])
+        for key in labels { for mode in ["off", "memory", "persist"] {
+            var raw = try fixtureProfile().raw; raw["headers"] = ["X-Region":JSON(key)]
+            let traces = TraceStore()
+            _ = try await traces.command("debug.mode",session:"s",params:["mode":JSON(mode)])
+            let id = await traces.begin(session:"s",turn:"t",profile:try Profile(raw),purpose:"turn",body:Data(),headers:["X-Region":key])
+            await traces.head(id,status:200,headers:["content-type":"application/json","x-litellm-response-cost":"0.5","x-litellm-response-cost-input":"0.2"])
+            await traces.reported(id,value:["usage":["cost":0.5]],streaming:false)
+            await traces.usage(id,usage); await traces.operation(id,operation)
+            let metadata = await traces.latest("s")
+            XCTAssertEqual(metadata["operation"],operation,key); XCTAssertEqual(metadata["usage"].removing(["raw"]),fixedUsage,key); XCTAssertEqual(metadata["gateway"],fixedGateway,key)
+            await traces.finish(id,outcome:"completed",modelOutcome:"completed")
+        } }
+        for status in ["reported", "unreported", "invalid", "conflict", "hit", "miss", "overflow", "execution", "planning", "completed", "failed", "cancelled", "manual", "threshold", "context-rejection", "summary-generation-cap"] {
+            var raw = try fixtureProfile().raw
+            raw["headers"] = ["X-Region":JSON(status)]; raw["routing"] = ["reference":"fixture","cacheHeader":"x-cache"]
+            let profile = try Profile(raw), traces = TraceStore()
+            let id = await traces.begin(session:"statuses",turn:"t",profile:profile,purpose:"turn",body:Data(),headers:["X-Region":status])
+            var headers = ["content-type":"application/json"]
+            if status == "reported" || status == "conflict" { headers["x-litellm-response-cost"] = "0.5" }
+            if status == "invalid" { headers["x-litellm-response-cost"] = "oops"; headers["x-cache"] = "oops" }
+            if status == "hit" || status == "conflict" { headers["x-cache"] = "HIT" }
+            if status == "miss" { headers["x-cache"] = "MISS" }
+            await traces.head(id,status:200,headers:headers)
+            if status == "conflict" {
+                await traces.head(id,status:200,headers:["content-type":"application/json","x-cache":"MISS"])
+                await traces.reported(id,value:["usage":["cost":0.6]],streaming:false)
+            }
+            let normalized = UsageObservation.normalized(["input_tokens":9_223_372_036_854_774_784,"cache_read_input_tokens":4096,"output_tokens":1],api:"anthropic-messages")
+            await traces.usage(id,normalized)
+            for phase in ["planning", "completed", "failed", "cancelled"] {
+                let operation: JSON = ["kind":"execution","phase":JSON(phase),"reason":JSON(["manual", "threshold", "context-rejection"].contains(status) ? status : "context-rejection"),"outputAllowanceSource":"summary-generation-cap"]
+                await traces.operation(id,operation)
+                let actual = await traces.latest("statuses")
+                XCTAssertEqual(actual["operation"],operation)
+                XCTAssertEqual(actual["usage"].removing(["raw"]),normalized.removing(["raw"]))
+                if ["reported", "unreported", "invalid", "conflict"].contains(status) { XCTAssertEqual(actual["gateway"]["cost"]["status"].text,status) }
+                if ["hit", "miss", "invalid", "conflict", "unreported"].contains(status) { XCTAssertEqual(actual["gateway"]["cache"]["status"].text,status) }
+            }
+            await traces.finish(id,outcome:"completed",modelOutcome:"completed")
+        }
+    }
+
     func testConfiguredHeaderMatchingUsageSchemaPreservesNormalizedAccounting() async throws {
         for key in ["status", "input", "output", "raw", "reported", "unreported", "invalid", "us"] {
             let raw: JSON = ["input_tokens": 12, "output_tokens": 3, "output_tokens_details": ["reasoning_tokens": -1], "diagnostic": .array([.object([key: JSON(key)])])]

@@ -324,3 +324,140 @@ git diff --check
 Full helper total: **1,034 executed, 1,027 passed, 7 skipped, 0 failed**. The seven skips remain the existing opt-in checks: one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. There were no unrelated failures. All four mutations failed as intended before restoration. `results.json` retains exact runner commands and elapsed times; `git diff --check` passed.
 
 No round-2 finding remains unresolved. The lead retains review, merge and full native-gate responsibility. This correction adds no files or UI changes and created no DerivedData, clone folders or xcresult bundles.
+
+## Round 2 hunt
+
+Base: `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1` (the merged worktree supplied for this hunt). Changes stay on `dev/a130-helper`. Evidence: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/round2-hunt/`; all generated data, scripted clients and loopback traffic. No installed app, real user data, credentials, preferences, Keychain or paid calls. No files were added to the project and no UI layout changed.
+
+### Findings and failing-first evidence
+
+All six hunt findings and the separately assigned host-actor disk issue were confirmed. None was rejected.
+
+| Finding | Reproduction and pre-fix evidence | Minimal correction / nearby sweep |
+| --- | --- | --- |
+| **helper-sessions-3 — confirmed + fixed** | `RetryTests.testRetryRejectsAnUnloadedSessionBeforeProviderOrToolWork`: fail a scripted request, unload successfully, Retry. Before the fix: `An unloaded runtime must reject Retry`; provider requests **3 instead of 1**, and the recording tool ran (`initial-failing-first.log`). `testHostRetryCannotOvertakeUnloadBeforeRegistryRemoval` holds the close path after unload but before registry removal: `Concurrent Retry was accepted after unload` (`host-retry-failing-first.log`). | Check `closed` before Retry changes state or launches. Existing managed-session authority check retains precedence. Submission, Continue, configuration and compaction already reject closed sessions. A separate real instance in `resumeQueue()` is described below. |
+| **helper-sessions-4 — confirmed + fixed** | Extended `testStoppedRequestKeepsModelTimeAcrossReopen`, `testNonretryableRequestKeepsModelTimeAcrossReopen`, and `testModelTimeCountsRequestsNotTheBackoffBetweenThem`. Stop/failure: task `modelMs` **0 vs ~111 ms**, live and after reopen. Automatic retry counted only the winning request. These three tests produced five baseline assertions (`initial-failing-first.log`); retry now also checks its reopened task receipt. | Add the already-measured request-attempt total when `completeWithRetries` settles on every outcome. Remove the separate assistant-row addition, preventing successful-attempt double counting. Backoff remains excluded. No other task model-time accumulator was found. |
+| **helper-sessions-5 — confirmed + fixed** | Extended `ToolOutcomeTests.testAnImageOnlyResultReachesTheModelAsPiSendsIt`. Live output was `[image/png result, 3000 bytes]`; reopened output was empty (`second-failing-first-complete.log`). | Reconstructed cards prefer `displayText ?? text`. This covers both the in-memory history index and paged result pairing; text-only/legacy results retain their fallback. Model-facing image content is unchanged. No other result-card reconstruction used the wrong field. |
+| **HELPER-AGENTS-IO-1 — confirmed + fixed** | `RequestContextTests.testOutputRoomClampsBeforeSubtractingAnEnormousUsage` and `PiContextSessionTests.testMalformedUsageSnapshotAndReopenRemainSafe` each terminate with **signal 5, Swift runtime failure: arithmetic overflow**, at `PiContext.outputRoom` (`output-room-failing-first.log`, `usage-session-failing-first.log`). Profile 2048/128 and total `9223372036854774784`, as reported. `testInvalidRawCountsCannotOverrideNormalizedUsage` also reproduces invalid cached/read-write counts: raw baselines override validated components (three assertions). | Check remaining room before subtraction. Build Pi-shaped usage from validated components, retaining raw observations only as evidence. Invalid totals fall back to valid parts; the reproduced reply now anchors **2** tokens and snapshots/reopens safely. Nearby arithmetic already uses checked addition or bounded profile fields. An existing test deliberately preferred an inconsistent raw total; its expected value changes from 70,500 to the validated 70,000, as explicitly requested in this hunt. |
+| **HELPER-AGENTS-IO-2 — confirmed + fixed** | Added `reported` to `RoutingTests.testConfiguredHeaderMatchingSchemaKeysKeepsPinnedReplayAfterReopen`. Off, memory and persist each fingerprinted `status`, producing **12 assertions including 6 `opaque_route_changed` throws**, immediately and after journal reopen (`initial-failing-first.log`). The wider routing/preview sweep produced **48 assertions** (`metadata-sweep-failing-first-complete.log`). | `RoutingIdentity.captured` masks only observed/configured strings. Fixed keys, status/policy/kind values, boundary text and fixed provenance survive. The same method serves identity, monitoring and archive metadata. The nearby preview/source/tool-schema cases and complete fixed-value inventory are below. |
+| **HELPER-AGENTS-IO-3 — confirmed + fixed** | `NativeToolTests.testRetainedTwentyMiBShellLogCanBeReadInSmallPages` runs generated `awk` output: **20 MiB, 1,048,576 short UTF-8 lines**. Both offset 1 and offset 1,048,557 with limit 20 threw `file_too_large` (`second-failing-first-complete.log`). | Text reads stream bounded chunks and retain at most the existing 32 KiB preview, rather than loading a whole file before paging. The scan still counts total lines and validates UTF-8. Image reads retain their 16 MiB bound and existing processing. Read-only callers can page the retained log. Other bounded reads are whole-resource/edit/image reads, not advertised log paging. |
+| **Host portable/inspect/recover disk work — confirmed + fixed** | `HostServiceTests.testPortablePreviewAndRecoveryDoNotBlockAnotherChatsSnapshot` creates a **12,000-message journal** and holds each disk path with a barrier. All three sibling snapshot expectations timed out at **1 second** before the fix (`second-failing-first-complete.log`). | Portable preview, import inspection and recovery run in detached workers, capturing only immutable parameters and the authorized directory. The original validation, atomic no-overwrite recovery link, incomplete-tail handling and source checks stay in the worker. Existing open/rebind/mirror paths already detach blocking disk work. |
+
+Additional confirmed nearby instance: **closed queue resume**. `RetryTests.testQueueResumeRejectsClosedRuntimeWithQueuedWork` closes a running session with a queued message, then calls Resume Queue. Before the fix it accepted the resume, made **3 provider requests instead of 1**, and invoked a tool (`queue-resume-failing-first.log`, three assertions). The same closed guard now rejects this before state changes. Ordinary unload requires empty queues, but `close()` legitimately preserves queued work for a future reopened runtime.
+
+Baseline test corrections are retained, not concealed: the first image assertion mistakenly expected base64 length 4,000 rather than decoded length 3,000; the corrected baseline still failed on the reopened card. The first host Retry fixture omitted required retry settings; the corrected host fixture reproduced acceptance after unload. A shadowed, already-unwrapped directory caused an intermediate worker compile error, and the first inventory fixture exceeded Swift's expression type-checking limit; both were corrected before executing their tests. None is counted as a product reproduction.
+
+### Credential sanitizer inventory and additional regressions
+
+`testRoutingFixedValuesAndKeysSurviveMatchingCredentials` checks routing schema/values in all three capture modes. `testEveryFixedMetadataLabelSurvivesAnEqualConfiguredCredential` recursively enumerates the fixed strings and keys in representative structures and sets the configured header equal to each. It covers every routing status and policy, fixed JSON/SSE source label, model/group/deployment kinds, source provenance labels, request discriminators, schema types, native and parent/child/legacy delegation tool definitions, normalized accounting and operation metadata. `testHelperToolSchemasKeepTheirNamesLabelsAndDescriptions` enumerates every string/key in the actual native/MCP wrapper tool definitions through a real context preview.
+
+| Sanitized structure | Helper-owned fields/values preserved | Data still sanitized |
+| --- | --- | --- |
+| Routing identity | All schema keys; `status` = `reported`, `unreported`, `incomplete`, `conflict`; `replayPolicy` = `ask`, `portable`, `pinned`; evidence `kind` = `model`, `group`, `deployment`; numeric omitted-evidence count; fixed boundary explanation. Fixed sources: `header:x-litellm-model-name`, `header:x-litellm-model-group`, `body.model`, `body.router_model_name`, and `response.created` / `response.in_progress` / `response.completed` / `response.incomplete` / `response.failed` + `.response.model` / `.response.router_model_name`. Legacy Messages source labels are unreachable for new requests, which Profile rejects. | Requested alias, effective/reported models, contract reference, evidence values, and provenance strings assembled from configured header names. Credential exclusion at ingestion remains active. |
+| Normalized usage | `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, `total`, `inputIncludingCache`, `status`, `raw` keys; `reported`, `unreported`, `invalid`, `overflow` accounting statuses; all numbers/nulls. | Only `usage.raw` recursively masks arbitrary provider keys and string values. It contains no helper-generated labels. |
+| Gateway accounting | Cost/cache/component keys; `reported`, `unreported`, `invalid`, `conflict`, `hit`, `miss`; component names (`input`, `output`, `reasoning`, `toolUsage`, `classifier`, `original`, `discount`, `margin`); fixed cost-header/body/SSE provenance and boundary explanation; numeric observations. | Configured cache-source provenance. Provider cost/call-ID/version/cache strings retain their existing ingestion validation and credential exclusion. No generic whole-gateway sanitizer is introduced. |
+| Context source records | `scope` = `global`, `project`, `approved additional`; `state` = `included`, `truncated`; reason `Selected by Codex precedence`; hash, byte counts, truncation flag and schema keys. | Source `path` and included instruction `text`. |
+| Prepared request protocol | Schema keys; input `type` = `message`, `function_call`, `function_call_output`, `reasoning`, `input_text`, `output_text`, `input_image`, `summary_text`, `refusal`; roles `system`, `developer`, `user`, `assistant`; status `completed`; phases `commentary`, `final_answer`; image detail / summary `auto`; include `reasoning.encrypted_content`; function-definition type `function`; JSON Schema types `object`, `array`, `string`, `number`, `integer`, `boolean`, `null`, including type unions. | Model/configuration fields, free-form instructions and message/tool payloads, provider IDs/opaque content, unknown protocol values and configuration-supplied request fields. The live provider request is never modified. |
+| Helper tool definitions | Exact frozen helper definition name, description and schema: native read/list/find/grep/write/edit/bash; MCP wrapper; parent steering controls, child report, and legacy subagent wrapper. The inventory walks their property names, required names, enums, descriptions, defaults and composition branches instead of maintaining a duplicate string list. | Offered model names in `properties.model.enum`, including conditional composition variants. A request-body override must match the actual helper name/description/schema to use this preservation path. Additional override fields remain masked; changed schemas use the ordinary provider/configuration-data sanitizer. |
+| Operation/outer capture metadata | Existing operation kinds, phases, reasons, allowance-source labels, request/outcome/capture-mode labels, schema keys, counts and timestamps pass through unchanged. They never enter the recursive credential sanitizer. | Existing provider-error handling masks provider text before it reaches error metadata. No new whole-operation sanitizer is added. |
+| HTTP dictionaries, SSE event name, requested model | HTTP names and event names are transport/provider/configuration dictionaries and strings, not helper routing/accounting schemas. Existing framing, error/omission notices, offsets and counts remain intact. | Header names/values, SSE event type and configured requested model retain existing masking. Event ID and retry data remain in the byte-masked response, not an unfiltered metadata copy. |
+
+The sweep confirmed context source/preview corruption as well as routing corruption. `ContextPreviewTests.testPreviewProtocolAndSourceLabelsSurviveMatchingCredentials` failed on 12 fixed fields before the fix and still requires an equal credential in free text to be fingerprinted. `testHelperToolSchemasKeepTheirNamesLabelsAndDescriptions` initially failed 15 assertions. The inventory caught a type-union omission (two assertions, `metadata-inventory-first-complete.log`), which is fixed.
+
+Adversarial testing of the new definition-preservation path also caught overly broad trust of extra request-body fields. `tool-override-failing-first.log` records six assertions where an added `configurationEcho` survived. The final path restores only the matched helper fields from the actual definition; extra fields and configured model enums are explicitly tested for masking. This was corrected before the final validation run.
+
+The final inventory expansion also exercises actual invalid/conflicting gateway states, overflow usage, operation phases/reasons, and a configured schema property name equal to the credential. Restoring the old unmasked schema-key behavior fails the latter assertion (`mutation-configured-schema-keys.log`); helper-owned schema keys still pass unchanged. This expansion changes tests only, after the full-suite binary was built, and is rerun as the complete credential-capture class after the mutation is restored.
+
+### Adversarial review of every changed condition
+
+Reviewed the complete new production diff against the supplied base, including the nearby fixes, not just the original reported lines.
+
+| Changed condition / operation | States now taking a different path; intended result |
+| --- | --- |
+| Retry closed guard | A closed ordinary runtime throws `session_closed` before changing submission, retry flags or launching. Open idle/error/paused/busy and cost-paused paths retain their original checks. Managed-session authority rejection retains precedence. The host unload barrier proves a retained stale actor reference is insufficient authority. |
+| Queue Resume closed guard | Closed runtimes reject even with durable queued messages. Open queues, held edits and cost pauses retain their existing behavior. Future work belongs to the reopened runtime and its journal. |
+| Task model-duration settlement / removed row addition | Failed, stopped, retried and overflow-recovery request durations now enter the active task once. Successful requests are no longer counted again when their row is appended. Backoff adds nothing. Automatic compaction contributes measured requests to its active task; utility/manual work without an active task creates none. Tool timing and row-level winning-request duration are unchanged. |
+| Tool result display fallback | A persisted `displayText` now supplies card output (including explicitly empty display text); absent values keep `text`. Both cached and paged results use this same reconstruction. Held calls without results keep their existing held-card path. |
+| Raw usage object present | Uses validated normalized components, not rejected raw values. Valid readings preserve Pi's cache accounting; absent/invalid totals use valid parts, invalid cache components contribute zero, checked summation still rejects overflow. Raw evidence stays available. Without raw, the previous normalized-only path is unchanged. |
+| Output room | Unknown/nonpositive windows still return `Int.max`. Windows no larger than safety reserve, or request counts at/above remaining room, return one before subtraction. Smaller nonnegative counts retain their old result. Defensive negative inputs clamp to zero; counters only produce nonnegative inputs. Saved extreme counts can no longer trap this calculation. |
+| Routing nullable identity / selected data fields | Absent identity remains null. Fixed fields bypass text matching; only actual data fields enter it. A provenance string is sanitized only when it matches a configured metadata-header source; built-in header/body/SSE sources stay fixed. These changes apply identically to identity, monitoring, snapshots and persisted capture. |
+| Source path/text presence | Only present path/text fields are sanitized; fixed labels, hash and counters are retained. Missing optional text remains absent. No resource authority, selection or contents on disk change. |
+| Preview recognized item discriminator | Only known role/type/status/phase/detail values retain their literal spelling. Unknown values still follow credential matching. Arrays in content/output/summary recurse; string payloads still mask. Other fields keep existing sanitization. |
+| Preview function definition match | Exact helper name, description and schema restore only their helper fields; extra fields remain sanitized. Nonfunction/unknown/changed definitions remain data. Only configured model enums are masked within matched helper schemas, recursively through composition branches. Definitions offered to the actual model never change. |
+| Preview schema node / enum / collection | Known scalar and union type values are preserved. Object property/definition dictionaries and schema combinators recurse only when their JSON shape matches; unknown/string payloads keep masking. Rewritten keys are confined to provider/configuration-supplied schema dictionaries, not matched helper definitions or fixed JSON Schema vocabulary. |
+| Preview include/summary | Only the exact fixed encrypted-reasoning include and `auto` summary token bypass masking. Other configuration values keep their prior treatment. |
+| File open / regular-file check | Keeps nonblocking open, regular-file-only checks and descriptor cleanup. It no longer rejects large text just for total size. Negative/invalid file size is refused. Captured initial size bounds the scan so an append cannot extend it indefinitely. |
+| Image detection and bound | The same first 4,100-byte sniffer chooses image handling. Images still reject above 16 MiB and use the same processing/hints. Text uses streaming. Invalid text-page arguments are now rejected before scanning the rest of a nonimage file; image argument behavior remains unchanged. |
+| UTF-8 chunk boundary | Complete scalars validate immediately; at most three trailing bytes carry into the next chunk. Invalid bytes anywhere in the scanned file, or an incomplete final scalar, still reject `binary_file`, even outside the requested page. Cancellation is checked each chunk. |
+| Text selection / retention | Only the requested LF line interval enters the existing 32 KiB output bound; the final separator of a bounded line selection is excluded. All scanned lines still count toward the existing hint. CR, LF, CRLF, trailing empty lines, offsets beyond EOF and byte cuts retain viewer statistics, checked against the prior algorithm. |
+| Text truncation / final shown line | A later line or byte-bound cut still emits the total-lines hint. A complete selection ending in LF includes the trailing empty viewer line; a byte cut ends on the line it cut. Empty selections have no line range. |
+| Detached journal operations | Admitted preview/import/recover calls suspend the host while immutable captured inputs perform disk work. Unrelated snapshots/Stop can proceed. Existing destination no-overwrite link and source integrity checks still decide success. There is no late session-registry mutation. Concurrent recoveries cannot replace an existing destination. |
+| Test seams | Nil in production. The async unload seam exposes the exact post-unload/pre-removal race; the synchronous disk seam runs inside the disk worker. Neither grants permissions or enables a production path. |
+
+State sweep: streaming and ordinary replies, idle/paused/cost-held sessions, Off/memory/persist capture, restart, terminal failure/cancellation and concurrent siblings were checked against these conditions. Capture credentials stay immutable per trace; no global masking state was added. Original journal/capture data are not rewritten or migrated. Preserved historical zero task totals are not retroactively invented. No additional unresolved product issue was found in this new diff.
+
+### Round 2 hunt validation
+
+The final production diff was reviewed against fetched `origin/dev/next` at the supplied base and compared byte-for-byte with the source diff used for validation. The lead retains merge and full native-gate responsibility.
+
+All **17** final mutations failed as intended; the scripts restore each source file in `finally` before continuing. `mutation-results.json` and `inventory-final-results.json` retain the exact per-test commands and exit codes.
+
+| Mutation / log suffix | Failing checks |
+| --- | --- |
+| `mutation-retry-closed.log` | Executed 2 tests, with 4 failures (0 unexpected) |
+| `mutation-queue-closed.log` | Executed 1 test, with 3 failures (0 unexpected) |
+| `mutation-task-attempt-time.log` | Executed 3 tests, with 6 failures (0 unexpected) |
+| `mutation-task-double-count.log` | Executed 1 test, with 2 failures (0 unexpected) |
+| `mutation-tool-image-display.log` | Executed 1 test, with 1 failure (0 unexpected) |
+| `mutation-output-room.log` | Arithmetic trap (signal 5) |
+| `mutation-raw-usage.log` | Executed 2 tests, with 5 failures (0 unexpected) |
+| `mutation-routing-enums.log` | Executed 1 test, with 12 failures (6 unexpected) |
+| `mutation-preview-enums.log` | Executed 1 test, with 9 failures (0 unexpected) |
+| `mutation-source-labels.log` | Executed 1 test, with 3 failures (0 unexpected) |
+| `mutation-schema-union.log` | Executed 1 test, with 2 failures (0 unexpected) |
+| `mutation-large-log-pages.log` | Executed 1 test, with 2 failures (0 unexpected) |
+| `mutation-host-disk-workers.log` | Executed 1 test, with 3 failures (0 unexpected) |
+| `mutation-helper-definitions.log` | Executed 1 test, with 12 failures (0 unexpected) |
+| `mutation-helper-model-enums.log` | Executed 1 test, with 4 failures (0 unexpected) |
+| `mutation-helper-extra-fields.log` | Executed 1 test, with 7 failures (0 unexpected) |
+| `mutation-configured-schema-keys.log` | Executed 1 test, with 1 failure (0 unexpected) |
+
+Commands (serial, from this worktree):
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+export PI_BUILD_ROOT="$BUILD" SWIFT_BACKTRACE='enable=yes,interactive=no,threads=all'
+# Baseline runner: the reproduction filters are recorded in baselines.log / hunt-baselines.py.
+python3 "$BUILD/hunt-baselines.py"
+# Each mutation rebuilds its exact targeted tests; expected failures are required.
+python3 "$BUILD/hunt-mutations.py"
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter '^PiAgentCoreTests.(CredentialCaptureTests|CaptureTraceTests|CaptureConcurrencyTests|CaptureDrainTests|TraceBufferPerformanceTests|GatewayTelemetryTests|RoutingTests|ProviderStreamErrorTests|ProviderStreamingTests|ProviderMediaTypeTests|HTTPIngressTests|ContextPreviewTests|ContextScopeTests|DecodeSpanTests|CostLimitTests|RetryTests|RetryRecoveryTests|ToolOutcomeTests|TaskPresentationTests|NativeToolTests|PiReadImageTests|ToolLineTests|RequestContextTests|PiContextSessionTests|HostServiceTests|SessionRecoverTests|HostDispatchTests|BlockingWorkTests|SessionSettlementTests|ContinueRunTests|CompactionTaskRegressionTests|TitleTaskTests)/'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+PI_BUILD_ROOT="$BUILD" python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+# Final test-only inventory expansion (production source unchanged):
+# Runs the class, mutates the schema-key sanitizer, restores it, and runs the class again.
+python3 "$BUILD/hunt-final-inventory.py"
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter CredentialCaptureTests
+git diff --check
+```
+
+
+| Suite / log | Result | Duration |
+| --- | --- | ---: |
+| Capture and affected classes, `capture.log` | 220 passed, 0 failed | 55.309 s |
+| Isolated streaming-cost class, `helper-cost.log` | 5 passed, 0 failed | 3.963 s |
+| Remaining full helper suite, `helper.log` | 1,042 executed: 1,035 passed, 7 skipped, 0 failed | 439.240 s |
+| Release bundle, `bundle.log` | passed | 107.077 s |
+| Release wire, `wire.log` | 36 passed, 0 failed | 34.273 s |
+| Release concurrent, `concurrent.log` | 4 passed, 0 failed | 24.998 s |
+| Release acceptance, `acceptance.log` | 3 passed, 0 failed | 3.498 s |
+| Final expanded credential class after restoration, `inventory-final.log` | 21 passed, 0 failed | 2.507 s |
+
+Full helper total: **1,047 executed, 1,040 passed, 7 skipped, 0 failed**. The seven existing opt-in skips are one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. No unrelated test failed. Release compilation retains existing Swift 6 actor-initializer warnings in unchanged `Sessions.swift`; the build succeeded. All 17 mutations failed as expected before restoration. The final expanded credential class passed before and after its additional mutation; production source remains identical to the source exercised by the full helper and Release wire suites.
+
+`results.json` and `inventory-final-results.json` preserve exact commands, exit codes and elapsed runner times. `git diff --check` passed. No DerivedData or xcresult bundles were created, and no test clone folders remain in this workstream's build root (about 572 MiB). There is no unresolved finding or owner decision from this hunt. Review, merge and the full native gate remain with the lead.
