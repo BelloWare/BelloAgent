@@ -23,6 +23,23 @@
 - [x] TOOLING-CONFIG-1: Failed compaction scenarios account for spending before disposal; unknown spending stops further live dispatch and stays unknown in reports.
 - [x] TOOLING-CONFIG-2: Transcript performance and soak runs return failure if any test invocation fails.
 - [x] TOOLING-CONFIG-3: Transcript performance runs make product/output paths absolute without trimming whitespace and reject directory setup failures.
+- [x] Quota eviction seeks completed captures with retained chunks, skipping bodyless history. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body retention seeks overdue captures by timestamp, skipping unexpired requests and writers. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body-retention deadlines read the first eligible capture without materializing every reference. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Metric-retention deadlines use the completed-metrics index, skipping older running requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Capture cleanup selects and deletes orphan chunks through an index, skipping retained chunks. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Quota bookkeeping updates cached totals after cleanup instead of recounting every stored chunk. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+
+- [x] Metric retention seeks through an ordered index, avoiding repeated scans and sorts on large overdue archives. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Clearing captures pages large chats atomically, preserving every body if a later capture is busy. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Quota eviction pages oldest captures through an index and stops as soon as space is available, even beyond 100,000 requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Inspector export and Events recheck changed or pruned helper captures and retry confirmed archive handoffs. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Raw Events describes body retention without the removed event-count caps. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+
+- [x] Retention sweeps page overdue captures, keeping Reports and durable capture recording available beyond 100,000 expired requests while respecting export leases. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed Session memory captures export their retained bytes and show helper-held Events; reads follow the acknowledged payload handoff to the archive. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed capture-Off requests show their remaining helper-held Events without inventing retained bodies. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Inspector exports keep the original request's physical session when selection changes in the destination chooser. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).
