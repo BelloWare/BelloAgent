@@ -12,6 +12,7 @@ Load it by path (scripts/ is not on the import path of every runner):
 
     spec = importlib.util.spec_from_file_location('native_host_client', pathlib.Path(__file__).with_name('native_host_client.py'))
 """
+import base64
 import json
 import queue
 import subprocess
@@ -38,6 +39,9 @@ class HostPeer:
         self.write_lock = threading.Lock()
         self.errors = []
         self.epoch = None
+        self.maximum_frame_bytes = 0
+        self._capture_packet = None
+        self._capture_bytes = bytearray()
         self._ensure_ascii = ensure_ascii
         self._capture = capture or (lambda frame: True)
         self._stall, self._stall_every = stall, stall_every
@@ -50,6 +54,8 @@ class HostPeer:
             count = 0
             for line in self.process.stdout:
                 count += 1
+                self.maximum_frame_bytes = max(self.maximum_frame_bytes, len(line) - 1)
+                assert len(line) - 1 <= 1_048_576, "Helper frame exceeded 1 MiB"
                 if self._stall and count % self._stall_every == 0:
                     time.sleep(self._stall)
                 try:
@@ -59,7 +65,25 @@ class HostPeer:
                         continue
                     raise
                 if frame.get('kind') == 'capture':
-                    accepted = self._capture(frame)
+                    if 'chunk' in frame:
+                        chunk = frame['chunk']
+                        if self._capture_packet is None:
+                            assert chunk['offset'] == 0
+                            self._capture_packet = chunk['packetId']
+                        assert chunk['packetId'] == self._capture_packet
+                        assert chunk['offset'] == len(self._capture_bytes)
+                        data = base64.b64decode(chunk['bytes'], validate=True)
+                        assert 0 < len(data) <= 32 * 1024
+                        self._capture_bytes.extend(data)
+                        accepted = True
+                        if chunk['final']:
+                            frame['packet'] = json.loads(self._capture_bytes)
+                            self._capture_packet = None
+                            self._capture_bytes.clear()
+                            accepted = self._capture(frame)
+                    else:
+                        assert self._capture_packet is None
+                        accepted = self._capture(frame)
                     if accepted is not None:
                         self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'],
                                    'transferId': frame['transferId'], 'accepted': accepted})

@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] WIRE-CONTRACT-1: Oversized capture metadata uses acknowledged chunks and arrives complete without stopping other chats. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-2: Inspector MCP execution and result retention block app/helper update quiescence, including late IPC replies. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] CONCURRENCY-LIFECYCLE-2: Inspector MCP work pins the project helper through its durable-result acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-3: Attached child readers accept lower sequence numbers from a new runtime and reject retired snapshots. [Validation](docs/validation/a130-wire-0.1.130.md).
+
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

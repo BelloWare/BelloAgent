@@ -64,6 +64,30 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         return value
     }
 
+    @MainActor func testReplacementRuntimeAcceptsLowerSequenceAndRejectsRetiredSnapshots() async throws {
+        let f = try await fixture()
+        f.view.historyState = .ready
+        func value(_ epoch: String, _ sequence: Double, _ text: String) -> [String: WireValue] {
+            var value = streamed(sequence: sequence, answer: text)
+            value["monitoring"] = .object(["epoch": .string(epoch)])
+            value["historyIncarnation"] = .string(epoch)
+            value["displayRevision"] = .string("\(epoch):\(Int(sequence))")
+            value["state"] = .string("idle"); value["runStatus"] = .string("idle")
+            return value
+        }
+        try await exchange(f, value("first-child-turn", 500, "First reply"))
+        XCTAssertEqual(f.view.lastSequence, 500)
+        try await exchange(f, value("second-child-turn", 1, "Follow-up starts"))
+        XCTAssertEqual(f.view.lastSequence, 1)
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up starts")
+        try await exchange(f, value("second-child-turn", 3, "Follow-up complete"))
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up complete")
+        try await exchange(f, value("first-child-turn", 501, "Retired reply"))
+        XCTAssertEqual(f.view.lastSequence, 3)
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up complete")
+        try await f.host.shutdownAndWait()
+    }
+
     @MainActor private func showNoticeSnapshot(_ f: RefreshFixture, preflight: String?, state: String = "paused") async throws {
         let index = f.commands.frames.count
         f.model.refresh(f.chat.id)

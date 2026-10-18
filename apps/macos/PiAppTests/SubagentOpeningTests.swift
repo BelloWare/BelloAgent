@@ -318,8 +318,8 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(model.opened.contains(target.sessionID), "A new explicit open can attach normally")
     }
 
-    @MainActor private func fixture(ancestor: Bool = false, background: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
-        let setup = try await gatewayWorkspace("subagent-opening", projectID: "subagent-opening")
+    @MainActor private func fixture(ancestor: Bool = false, background: Bool = false, manyChildEvents: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
+        let setup = try await gatewayWorkspace("subagent-opening", projectID: "subagent-opening", gatewayEnvironment: manyChildEvents ? ["PI_APP_UI_FIXTURE_CHILD_DELTAS": "1"] : [:])
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
         model.automaticContextOperation = { _, _ in throw CancellationError() }
         addTeardownBlock { @MainActor in
@@ -344,6 +344,30 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         XCTAssertNil(model.error, "Discovery after the child starts: " + model.chats.map { "\($0.id): \($0.path ?? "no path")" }.joined(separator: "\n"))
         let child = try XCTUnwrap(model.chats.first { $0.isSubagent })
         return (setup, model, host, parent, SubagentTarget(try XCTUnwrap(child.delegation)))
+    }
+
+    @MainActor func testAttachedChildReaderShowsAShortFollowupFromAReplacementRuntime() async throws {
+        let (setup, model, host, parent, target) = try await fixture(manyChildEvents: true)
+        await model.openSubagent(target)
+        let view = try XCTUnwrap(model.displays[target.sessionID])
+        try Data().write(to: setup.root.appendingPathComponent("release-child"))
+        try await waitForParent(parent.id, host: host)
+        try await eventually("The first child reply never settled") { !view.busy && view.messages.last?.text.contains("Unicode:") == true }
+        let firstSequence = view.lastSequence, firstEpoch = view.monitoringEpoch
+        XCTAssertGreaterThan(firstSequence, 50)
+        _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text": .string("wire follow-up " + target.sessionID), "clientTurnId": .string(UUID().uuidString)])
+        defer { try? Data().write(to: setup.root.appendingPathComponent("release-followup")) }
+        try await eventually("The second child turn never reached its first snapshot", timeout: .seconds(15)) {
+            view.messages.last?.text == "Follow-up starts."
+        }
+        XCTAssertNotEqual(view.monitoringEpoch, firstEpoch)
+        XCTAssertLessThan(view.lastSequence, firstSequence)
+        XCTAssertTrue(model.opened.contains(target.sessionID))
+        try Data().write(to: setup.root.appendingPathComponent("release-followup"))
+        try await eventually("The second child reply never settled", timeout: .seconds(15)) {
+            !view.busy && view.messages.last?.text == "Follow-up starts. Follow-up complete."
+        }
+        try await waitForParent(parent.id, host: host)
     }
 
     @MainActor func testCardOpeningInheritsCaptureAndKeepsTheLiveChildAttached() async throws {

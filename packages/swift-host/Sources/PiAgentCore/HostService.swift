@@ -62,6 +62,7 @@ public actor NativeHostService {
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     private var subagentReaders: Set<String> = []
+    private var inspectorInvocations = 0
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
@@ -407,6 +408,9 @@ public actor NativeHostService {
             // A chat whose work is held for Resume is restored paused after
             // the relaunch; nothing sends it while the workspace is quiesced.
             for s in sessions.values { let idle=await s.isIdle, held=await s.isHeldForResume, ephemeral=await s.isEphemeral; if !(idle || held) || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
+            guard inspectorInvocations == 0, !(await mcp.hasOutstandingInvocations) else {
+                quiesced=false; throw AgentError("mcp_busy", "An MCP invocation is executing or awaiting result retention")
+            }
             return ["quiesced":true]
         case "workspace.resume": quiesced=false; return ["resumed":true]
         case "resources.configure":
@@ -796,6 +800,10 @@ public actor NativeHostService {
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":
+            // Pin admission before the first cross-actor await; the manager
+            // owns the pin from execution through retention after this returns.
+            inspectorInvocations += 1
+            defer { inspectorInvocations -= 1 }
             var args=params; args["action"]="invoke"
             // Sending IPC is not retention. The app acknowledges this command
             // only after the complete result is saved and synced locally.

@@ -60,7 +60,7 @@ extension WorkspaceModel {
     }
     func inspectResources(_ id: String?) { resourceTargetSessionID = id; showResources = true }
     func updateHostActivity(workspaceID: String) {
-        hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
+        hosts[workspaceID]?.isBusy = resourceInvocations[workspaceID] != nil || sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
     func canOpenSide(_ id: String) -> Bool {
         guard let parent = record(id), !parent.isSubagent, orphanedSideRefusal(id) == nil else { return false }

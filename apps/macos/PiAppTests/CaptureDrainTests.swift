@@ -25,6 +25,9 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
     @MainActor func testSlowConsumerArchivesEveryQueuedByteBeforeGracefulExit() async throws {
         try await shutdownFixture(pastDeadline: false)
     }
+    @MainActor func testLargeMetadataReachesTheArchiveWithoutTruncation() async throws {
+        try await shutdownFixture(pastDeadline: false, largeMetadata: true)
+    }
     @MainActor func testDeadlineLeavesAnInterruptedPartialBodyBeforeReportingExit() async throws {
         try await shutdownFixture(pastDeadline: true)
     }
@@ -34,12 +37,13 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
     @MainActor func testKilledHelperStopsAcceptingCommandsBeforeCaptureFinalization() async throws {
         try await shutdownFixture(pastDeadline: false, crashDuringCapture: true)
     }
-    @MainActor private func shutdownFixture(pastDeadline: Bool, clearDuringStop: Bool = false, crashDuringCapture: Bool = false) async throws {
+    @MainActor private func shutdownFixture(pastDeadline: Bool, clearDuringStop: Bool = false, crashDuringCapture: Bool = false, largeMetadata: Bool = false) async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("capture-drain-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { if !clearDuringStop { try? FileManager.default.removeItem(at: root) } }
         let script = root.appendingPathComponent("gateway.py")
-        try Self.gateway.write(to: script, atomically: true, encoding: .utf8)
+        let source = largeMetadata ? Self.gateway.replacingOccurrences(of: "body = b''.join", with: "frames[-1]['response']['usage']['vendor_details'] = 'v' * 1_100_000\n        body = b''.join") : Self.gateway
+        try source.write(to: script, atomically: true, encoding: .utf8)
         let gateway = Process()
         gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); gateway.arguments = ["-u", script.path, root.path]
         gateway.standardOutput = FileHandle.nullDevice; gateway.standardError = FileHandle.nullDevice
@@ -112,6 +116,7 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
             XCTAssertLessThan(elapsed, 6, "The existing shutdown wait remains bounded")
         } else {
             XCTAssertEqual(metadata["outcome"]?.string, "completed")
+            if largeMetadata { XCTAssertEqual(metadata["usage"]?.object?["raw"]?.object?["vendor_details"]?.string, String(repeating: "v", count: 1_100_000)) }
             for body in ["request", "response"] {
                 XCTAssertEqual(metadata[body]?.object?["state"]?.string, "complete")
                 let actual = try await archive.completeBody(attemptID: id, body: body)
