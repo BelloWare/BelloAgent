@@ -4,6 +4,14 @@
 
 ## 0.1.130
 
+- [x] GIT-FILES-5: Resizing a fullscreen terminal program preserves the hidden shell's lines, scrollback and cursor. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-hunt).
+- [x] GIT-FILES-6: Normal and alternate terminal screens keep separate saved cursor positions and attributes.
+- [x] Terminal cursor-save sweep: Reset clears saved modes and character sets in both screens.
+- [x] Terminal cursor-save sweep: Returning from a fullscreen program restores pending line wrap while preserving the existing resize behavior.
+- [x] GIT-FILES-7: File syntax waits for complete lines before caching tokens, preserving first-line colours after a slow open.
+- [x] TOOLING-CONFIG-1: Failed compaction scenarios account for spending before disposal; unknown spending stops further live dispatch and stays unknown in reports.
+- [x] TOOLING-CONFIG-2: Transcript performance and soak runs return failure if any test invocation fails.
+- [x] TOOLING-CONFIG-3: Transcript performance runs make product/output paths absolute without trimming whitespace and reject directory setup failures.
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

@@ -156,7 +156,9 @@ actor FileSyntaxReader {
     }
 
     func colors(line: Int, piece: Range<Int>, text: String) -> [FileTextColorRun] {
-        guard !suspended else { return [] }
+        // Even the initial empty line can grow without changing generation.
+        // Cache tokens only once the line's text is final.
+        guard !suspended, source.isLineFinal(line) else { return [] }
         if generation != source.generation { generation = source.generation; reader.cancel(); reader = FileSyntaxReader(); cache = [:]; pending = [] }
         clock &+= 1
         if var cached = cache[line] {
