@@ -784,7 +784,7 @@ revision. The fixtures now use the same version for simulated local writes or lo
 revision. Assertions and limits were retained. Recovery, bookkeeping and durability passed in
 `first-defaults-and-fixtures.log`; the full affected classes are rerun below.
 
-Nearby issue left outside this draft-content fix: the anchor write at `apps/macos/PiApp/Workspaces/WorkspaceDrafts.swift:164`
+Nearby issue left outside this draft-content fix: the anchor write at `apps/macos/PiApp/Workspaces/WorkspaceDrafts.swift:174`
 still has last-writer-wins semantics. A second instance's loaded reading position can supersede
 another instance's newer reading position when it quits. It does not overwrite draft content.
 
