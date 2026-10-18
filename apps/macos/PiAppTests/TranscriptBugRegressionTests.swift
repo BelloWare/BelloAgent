@@ -7,6 +7,265 @@ final class TranscriptBugRegressionTests: XCTestCase {
     static let before = "header\n…[truncated, 12 more bytes]\nold tail"
     static let after = "header\n…[truncated, 12 more bytes]\nnew tail"
 
+    private final class SearchDecodeCost: @unchecked Sendable {
+        private let lock = NSLock()
+        private var decodes: [UInt64: Int] = [:]
+        private var total = 0, batch = 0, peak = 0
+        private var announced = false
+        var ready: XCTestExpectation?
+        func observe(_ event: HistoryReader.SearchDecodeEvent) {
+            lock.lock(); defer { lock.unlock() }
+            switch event {
+            case .decoded(let offset, let bytes):
+                decodes[offset, default: 0] += 1; total += bytes; batch += bytes; peak = max(peak, batch)
+                if total >= 10 * 1_048_576, !announced { announced = true; ready?.fulfill() }
+            case .yielded: batch = 0
+            }
+        }
+        var snapshot: (counts: [UInt64: Int], bytes: Int, peak: Int) {
+            lock.lock(); defer { lock.unlock() }; return (decodes, total, peak)
+        }
+    }
+    private struct WideSearchFixture {
+        var root: URL, path: URL
+        var reader: HistoryReader
+        var messages: [TranscriptMessage]
+        var offsets: [String: UInt64]
+        var bytes: Int
+    }
+    private func searchCostFixture(_ entries: [(String, [String: WireValue], Int)]) async throws -> WideSearchFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wide-search-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("fixture.jsonl"), reader = HistoryReader(indexDirectory: root)
+        var data = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
+        var messages: [TranscriptMessage] = [], results: [String: ToolResultRecord] = [:], offsets: [String: UInt64] = [:], parent: WireValue = .null
+        func add(_ id: String, _ message: [String: WireValue], padding: Int = 0) throws {
+            offsets[id] = UInt64(data.count)
+            var row: [String: WireValue] = ["type": .string("message"), "id": .string(id), "parentId": parent, "message": .object(message)]
+            // Generated opaque provider metadata makes the journal decode large
+            // without measuring Markdown layout or using a real provider trace.
+            if padding > 0 { row["providerTrace"] = .string(String(repeating: "x", count: padding)) }
+            data.append(try JSONEncoder().encode(WireValue.object(row))); data.append(10); parent = .string(id)
+            messages.append(.project(id: id, message: message))
+            if let result = ToolResultRecord.of(message) { results[id] = result.record }
+        }
+        for (id, message, padding) in entries { try add(id, message, padding: padding) }
+        try data.write(to: path)
+        _ = try await reader.read(path: path.path, whole: true)
+        return .init(root: root, path: path, reader: reader, messages: TranscriptMessage.resolvingToolResults(messages, results: results), offsets: offsets, bytes: data.count)
+    }
+    private func wideSearchEntries(prefix: String = "", calls: Int = 64, orphan: Bool = false) throws -> [(String, [String: WireValue], Int)] {
+        var issuer: [String: WireValue] = ["role": .string(orphan ? "system" : "assistant"), "content": .array((0..<calls).map { n in
+            .object(["type": .string("toolCall"), "id": .string("call\(n)"), "name": .string("fixture"), "arguments": .object(["item": .string("inputneedle \(n)")])])
+        })]
+        if orphan {
+            issuer["nativeKind"] = .string("requestLedger"); issuer["nativePresentationSourceID"] = .string("missing")
+            var timeline = ResponseTimeline()
+            for n in 0..<calls {
+                timeline.consume(.init(attemptID: "attempt", ordinal: n, itemID: "item\(n)", kind: "toolArguments", update: "replace",
+                    text: "", callID: "call\(n)", name: "fixture"))
+            }
+            issuer["nativeResponseTimeline"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+        }
+        var entries: [(String, [String: WireValue], Int)] = [(prefix + "issuer", issuer, 8 * 1_048_576)]
+        for n in 0..<40 { entries.append((prefix + "spacer\(n)", ["role": .string("system"), "nativeKind": .string("notice"), "content": .string("Spacer \(n)")], 0)) }
+        for n in 0..<calls {
+            entries.append((prefix + "receipt\(n)", ["role": .string("toolResult"), "toolCallId": .string("call\(n)"), "toolName": .string("fixture"),
+                "content": .string("**receiptneedle** \(n)"), "nativeToolStats": .object(["outcome": .string("completed")])], n < 4 ? 4 * 1_048_576 : 0))
+        }
+        return entries
+    }
+    private func wideSearchFixture() async throws -> WideSearchFixture { try await searchCostFixture(wideSearchEntries()) }
+    private func assertBoundedSearch(_ cost: SearchDecodeCost, sourceBytes: Int, name: String, file: StaticString = #filePath, line: UInt = #line) {
+        let measured = cost.snapshot
+        print("DEPENDENCY-COST \(name) sourceBytes=\(sourceBytes) decodedBytes=\(measured.bytes) peakBatch=\(measured.peak) largestRepeat=\(measured.counts.values.max() ?? 0)")
+        XCTAssertTrue(measured.counts.values.allSatisfy { $0 == 1 }, name, file: file, line: line)
+        XCTAssertLessThanOrEqual(measured.bytes, sourceBytes, name, file: file, line: line)
+        XCTAssertLessThanOrEqual(measured.peak, HistoryReader.searchRunBytes, name, file: file, line: line)
+    }
+    func testReusedWideIssuersAndOrphanLedgersShareOnceOnlyDecodes() async throws {
+        for orphan in [false, true] {
+            let entries = try wideSearchEntries(prefix: "first-", calls: 32, orphan: orphan) + wideSearchEntries(prefix: "second-", calls: 32, orphan: orphan)
+            let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+            for page in [[], [fixture.messages[0]], Array(fixture.messages.suffix(32)), fixture.messages] {
+                for start in [0, 41, 114] {
+                    let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+                    let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: start,
+                        renderedAgentProse: true, presented: page)
+                    let expected = fixture.messages.enumerated().filter { $0.offset >= start && $0.element.id.contains("receipt") }.map { $0.element.id }
+                    XCTAssertEqual(found.hits.map(\.id), expected); XCTAssertNil(found.next)
+                    assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "reused orphan=\(orphan) page=\(page.count) start=\(start)")
+                }
+            }
+        }
+    }
+    func testRecoveryPresenceDependenciesDoNotDecodeLargePeerBodies() async throws {
+        var entries: [(String, [String: WireValue], Int)] = [("accepted", ["role": .string("assistant"), "content": .string("Accepted response")], 8 * 1_048_576)]
+        for n in 0..<64 {
+            var ledger = try recoveryLedger(terminal: "completed")
+            ledger["nativePresentationSourceID"] = .string(n == 63 ? "missing" : "accepted")
+            entries.append(("ledger\(n)", ledger, 0))
+        }
+        for n in 0..<65 {
+            entries.append(("operation\(n)", ["role": .string("system"), "nativeKind": .string("execution"),
+                "nativeOperationID": .string("shared-operation"), "nativeDetail": .string("operationneedle"), "content": .string("")], n == 0 ? 8 * 1_048_576 : 0))
+        }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for page in [[], Array(fixture.messages.suffix(65)), fixture.messages] {
+            let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+            let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "operationneedle", start: 0,
+                renderedAgentProse: true, presented: page)
+            XCTAssertEqual(found.hits.count, 65); XCTAssertNil(found.next)
+            assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "operation/source presence page=\(page.count)")
+            let orphan = try await fixture.reader.searchContent(path: fixture.path.path, query: "gamma delta", start: 0,
+                renderedAgentProse: true, presented: page)
+            XCTAssertEqual(orphan.hits.map(\.id), ["ledger63"])
+        }
+    }
+    func testManyToolStartsReuseTheirLargeIssuersProjection() async throws {
+        var entries = try wideSearchEntries()
+        for n in 0..<64 {
+            var timeline = ResponseTimeline()
+            timeline.consume(.init(attemptID: "attempt", ordinal: n, itemID: "start\(n)", kind: "toolArguments", update: "replace",
+                text: "startneedle", callID: "call\(n)", name: "fixture"))
+            let encoded = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+            entries.insert(("start\(n)", ["role": .string("system"), "nativeKind": .string("execution"),
+                "nativeDetail": .string("Started tool"), "nativeResponseTimeline": encoded, "content": .string("")], 0), at: 41 + n)
+        }
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for start in [0, 41] {
+            let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+            let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "startneedle", start: start, renderedAgentProse: true)
+            XCTAssertTrue(found.hits.isEmpty); XCTAssertNil(found.next)
+            XCTAssertEqual(cost.snapshot.counts[fixture.offsets["issuer"]!], 1)
+            assertBoundedSearch(cost, sourceBytes: fixture.bytes, name: "tool starts start=\(start)")
+        }
+    }
+    func testSearchMatchCachesStayIsolatedAndReleaseAfterUse() throws {
+        let index = try HistoryOffsetIndex()
+        try index.finish()
+        XCTAssertEqual(index.searchCacheTableCount, 0)
+        let first = try HistoryOffsetIndex.SearchCache(index)
+        let preview = "prefix\0suffix 🐈", call = "reuse\0call"
+        try first.store(.init(count: 2, preview: preview, drawing: .init(messageID: "reply", toolCallID: call), omittedOutputs: [call]), at: 42)
+        try first.store(.init(card: true, paired: true), call: call, at: 42)
+        do {
+            let second = try HistoryOffsetIndex.SearchCache(index)
+            XCTAssertNil(try second.match(42)); XCTAssertNil(try second.call(call, at: 42))
+            // Enough summaries to spill beyond the 512 KiB SQLite page cache.
+            for n in 0..<50_000 { try second.store(.init(count: 1, preview: String(repeating: "x", count: 240)), at: UInt64(n)) }
+            XCTAssertEqual(try second.match(0)?.count, 1); XCTAssertEqual(try second.match(49_999)?.count, 1)
+            XCTAssertEqual(try first.match(42)?.preview, preview)
+            withExtendedLifetime((first, second)) { XCTAssertEqual(index.searchCacheTableCount, 6) }
+            print("SEARCH-CACHE summaries=50000 residentBytes=\(index.residentCacheBytes)")
+            XCTAssertGreaterThan(index.residentCacheBytes, 0)
+            XCTAssertLessThan(index.residentCacheBytes, 2 * 1_048_576, "The private index pager stays bounded after spilling 50,000 match summaries")
+        }
+        withExtendedLifetime(first) { XCTAssertEqual(index.searchCacheTableCount, 3) }
+        let third = try HistoryOffsetIndex.SearchCache(index)
+        XCTAssertNil(try third.match(42))
+        withExtendedLifetime((first, third)) { XCTAssertEqual(index.searchCacheTableCount, 6) }
+        let held = try XCTUnwrap(first.match(42))
+        XCTAssertEqual(held.count, 2); XCTAssertEqual(held.preview, preview)
+        XCTAssertEqual(held.drawing?.toolCallID, call); XCTAssertEqual(held.omittedOutputs, [call])
+        XCTAssertTrue(try XCTUnwrap(first.call(call, at: 42)).paired)
+        XCTAssertNil(try first.call(call, at: 43), "Reused IDs belong to a record offset, never every issuer with that ID")
+    }
+    func testSourceSearchUsesTheSameByteBudgetAndOversizedRecordsRunAlone() async throws {
+        let fixture = try await searchCostFixture((0..<3).map { ("large\($0)", ["role": WireValue.string("user"), "content": .string("needle")], 20 * 1_048_576) })
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for rendered in [false, true] {
+            let cost = SearchDecodeCost(); await fixture.reader.observeSearchDecodes { cost.observe($0) }
+            let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "needle", start: 0, renderedAgentProse: rendered)
+            XCTAssertEqual(found.hits.count, 3)
+            let measured = cost.snapshot
+            XCTAssertEqual(measured.counts.count, 3); XCTAssertTrue(measured.counts.values.allSatisfy { $0 == 1 })
+            XCTAssertLessThanOrEqual(measured.bytes, fixture.bytes)
+            XCTAssertLessThan(measured.peak, 21 * 1_048_576, "An oversized record cannot share a batch with even one neighbour")
+        }
+    }
+    func testWideToolSearchDecodesEachRecordOnceAndYieldsItsWholeBudget() async throws {
+        let fixture = try await wideSearchFixture(); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let cost = SearchDecodeCost(), order = SearchOrder()
+        let ready = expectation(description: "The search has decoded enough work to test its next budget boundary")
+        cost.ready = ready
+        await fixture.reader.observeSearchDecodes { cost.observe($0) }
+        await fixture.reader.observeSearchReads { if $0 == .scanned { order.add("search") } }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0, renderedAgentProse: true) }
+        await fulfillment(of: [ready], timeout: 30)
+        var elapsed = 0.0, pages = 0
+        repeat {
+            let began = ProcessInfo.processInfo.systemUptime
+            let page = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+            elapsed = max(elapsed, ProcessInfo.processInfo.systemUptime - began); pages += 1
+            XCTAssertTrue(page.messages.contains { $0.id == "receipt63" })
+            order.add("page")
+            await Task.yield()
+        } while !order.events.contains("search")
+        let found = try await search.value, measured = cost.snapshot
+        print("WIDE-SEARCH sourceBytes=\(fixture.bytes) decodedBytes=\(measured.bytes) peakBatch=\(measured.peak) issuerDecodes=\(measured.counts[fixture.offsets["issuer"]!, default: 0]) pageSeconds=\(elapsed) order=\(order.events)")
+        XCTAssertEqual(found.hits.count, 64); XCTAssertNil(found.next)
+        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 64)
+        XCTAssertEqual(measured.counts[fixture.offsets["issuer"]!], 1, "A wide round must decode its 8 MiB issuer once")
+        XCTAssertTrue(measured.counts.values.allSatisfy { $0 == 1 }, "Primary and dependency reads share the same once-per-pass cache")
+        XCTAssertLessThanOrEqual(measured.bytes, fixture.bytes)
+        XCTAssertLessThanOrEqual(measured.peak, HistoryReader.searchRunBytes, "Dependencies consume the same 16 MiB budget as primary records")
+        XCTAssertEqual(order.events.first, "page"); XCTAssertGreaterThan(pages, 1)
+        XCTAssertLessThan(elapsed, 0.75, "Paging must run at the budget boundary inside a wide tool round")
+    }
+    func testWideAgentArgumentsDoNotRepeatAcrossNeighbourProjections() async throws {
+        var entries = try wideSearchEntries(), issuer = entries[0].1
+        var calls = try XCTUnwrap(issuer["content"]?.array)
+        for n in calls.indices {
+            var call = try XCTUnwrap(calls[n].object)
+            call["name"] = .string("subagent_start")
+            var input: [String: WireValue] = ["task": .string("Task \(n)")]
+            if n == 0 { input["extra"] = .string(String(repeating: "x", count: 28 * 1_048_576)) }
+            call["arguments"] = .object(input); calls[n] = .object(call)
+        }
+        issuer["content"] = .array(calls); entries[0] = ("issuer", issuer, 0)
+        let fixture = try await searchCostFixture(entries); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let agents = AgentTranscriptPresentation(id: "parent", isManagedSubagent: false, busy: false, familyWaiting: false,
+            subagentNumbers: [:], subagentEfforts: [:], subagentCosts: [:], originalSubagentAvailability: [:],
+            agentCoordination: [:], childSummaries: [:], heldAgentChildren: [])
+        let ready = expectation(description: "The large agent issuer has started"), cost = SearchDecodeCost(), order = SearchOrder()
+        cost.ready = ready
+        await fixture.reader.observeSearchDecodes { cost.observe($0) }
+        await fixture.reader.observeSearchReads { if $0 == .scanned { order.add("search") } }
+        let search = Task { try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0,
+            renderedAgentProse: true, agentPresentation: agents) }
+        await fulfillment(of: [ready], timeout: 30)
+        var elapsed = 0.0, pages = 0
+        repeat {
+            let began = ProcessInfo.processInfo.systemUptime
+            _ = try await fixture.reader.read(path: fixture.path.path, position: fixture.messages.count - 1)
+            elapsed = max(elapsed, ProcessInfo.processInfo.systemUptime - began); pages += 1
+            order.add("page"); await Task.yield()
+        } while !order.events.contains("search")
+        let found = try await search.value
+        print("AGENT-DEPENDENCIES decodedBytes=\(cost.snapshot.bytes) pageSeconds=\(elapsed) pages=\(pages)")
+        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 64)
+        XCTAssertTrue(cost.snapshot.counts.values.allSatisfy { $0 == 1 })
+        XCTAssertLessThanOrEqual(cost.snapshot.bytes, fixture.bytes)
+        XCTAssertLessThan(elapsed, 0.75, "A receipt must not reproject every sibling's large agent arguments")
+        XCTAssertEqual(order.events.first, "page"); XCTAssertGreaterThan(pages, 1)
+    }
+    func testCapturedWideToolPagesShareTheSearchDecodeBudget() async throws {
+        let fixture = try await wideSearchFixture(); defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for page in [[fixture.messages[0]], Array(fixture.messages.suffix(64)), fixture.messages] {
+            let cost = SearchDecodeCost()
+            await fixture.reader.observeSearchDecodes { cost.observe($0) }
+            let found = try await fixture.reader.searchContent(path: fixture.path.path, query: "receiptneedle", start: 0,
+                renderedAgentProse: true, presented: page)
+            let measured = cost.snapshot
+            print("CAPTURED-WIDE rows=\(page.count) sourceBytes=\(fixture.bytes) decodedBytes=\(measured.bytes) peakBatch=\(measured.peak)")
+            XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 64)
+            XCTAssertNil(found.next)
+            XCTAssertTrue(measured.counts.values.allSatisfy { $0 == 1 }, "Captured and unloaded dependencies must share one cache: page=\(page.count)")
+            XCTAssertLessThanOrEqual(measured.bytes, fixture.bytes)
+            XCTAssertLessThanOrEqual(measured.peak, HistoryReader.searchRunBytes)
+        }
+    }
 
     @MainActor func testNumberedFenceKeepsHeadingCopyBoundaries() throws {
         let setup = "# Setup\n\n1. ```sh\n   # comment\n   echo ok\n   ```\n\n"
@@ -104,6 +363,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             if stage == .indexed { indexed.fulfill() }
             if stage == .scanned { order.add("search") }
         }
+        let cost = SearchDecodeCost(); await reader.observeSearchDecodes { cost.observe($0) }
         let search = Task { try await reader.searchContent(path: path.path, query: "absent needle", start: 0, renderedAgentProse: true) }
         await fulfillment(of: [indexed], timeout: 10)
         let start = ProcessInfo.processInfo.systemUptime
@@ -116,6 +376,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.5, "A warm page must not wait for Find's 5,000-record window")
         XCTAssertTrue(page.messages.contains { $0.id == "call4000" })
         XCTAssertTrue(result.hits.isEmpty); XCTAssertEqual(result.next, 5_000)
+        assertBoundedSearch(cost, sourceBytes: bytes.count, name: "5000 reused-ID pairs")
         let cachedBytes = await reader.retainedIndexBytes
         let cancelling = expectation(description: "The superseded query has its index")
         await reader.observeSearchReads { if $0 == .indexed { cancelling.fulfill() } }
@@ -1159,8 +1420,10 @@ final class TranscriptBugRegressionTests: XCTestCase {
         for lower in 0...rows.count { for upper in lower...rows.count {
             let shown = nativePageSearchText(rows, page: Array(rows[lower..<upper]), pairs: [("first-reply", "first-result"), ("second-reply", "second-result")])
             for query in ["firstoutput", "secondoutput", "staleoutput", "sharedneedle", "**firstoutput**"] {
+                let cost = SearchDecodeCost(); await model.history.observeSearchDecodes { cost.observe($0) }
                 let found = try await model.history.searchContent(path: path, query: query, start: 0,
                     renderedAgentProse: true, presented: Array(rows[lower..<upper]))
+                assertBoundedSearch(cost, sourceBytes: try Data(contentsOf: URL(fileURLWithPath: path)).count, name: "all-splits \(lower)..<\(upper) \(query)")
                 XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, ConversationContent.occurrences(of: query, in: shown),
                     "page=\(lower)..<\(upper), query=\(query)")
                 if query == "firstoutput" || query == "secondoutput" {

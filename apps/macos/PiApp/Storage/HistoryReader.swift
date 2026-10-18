@@ -344,6 +344,9 @@ actor HistoryReader {
     enum SearchReadStage: CaseIterable, Sendable { case captured, indexed, scanned }
     private var searchReadObserver: (@Sendable (SearchReadStage) throws -> Void)?
     func observeSearchReads(_ observer: (@Sendable (SearchReadStage) throws -> Void)?) { searchReadObserver = observer }
+    enum SearchDecodeEvent: Sendable { case decoded(offset: UInt64, bytes: Int), yielded }
+    private var searchDecodeObserver: (@Sendable (SearchDecodeEvent) -> Void)?
+    func observeSearchDecodes(_ observer: (@Sendable (SearchDecodeEvent) -> Void)?) { searchDecodeObserver = observer }
     /// Journals whose offset index is currently retained.
     var retainedIndexCount: Int { recency.count }
     /// What the retained offset indexes take, together.
@@ -382,7 +385,7 @@ actor HistoryReader {
                           changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
         return HistoryRevision(path: path, stamp: revision(stamp))
     }
-    /// The primary record bytes decoded in one search run; indexed peers are transient.
+    /// All source bytes decoded between search yields, including dependencies.
     static let searchRunBytes = 16 * 1_048_576
     /// Search and reopened pages decode the same retained presentation,
     /// including adopted checkpoints and unfinished operations.
@@ -404,114 +407,163 @@ actor HistoryReader {
     /// Read and decode a bounded run before planning it. Presented rows use
     /// the reader's captured plan; unloaded records use the same planner over
     /// this run, with paired tool receipts resolved as on a reopened page.
-    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedTask: String?,
-                          presented: ConversationContent.Presentation, rawReplies: Set<String>, agentPresentation: AgentTranscriptPresentation?) throws -> [(ref: Ref, text: Result<String, Error>)] {
-        var refs: [Ref] = [], records: [Result<Data, Error>?] = []
-        refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
-        for position in range {
-            let ref = try branch.at(position)
-            refs.append(ref)
-            if ref.type == "branch" || presented.rows[ref.id] != nil { records.append(nil); continue }
-            decodedRecords += 1
-            do {
-                try file.seek(toOffset: ref.offset)
-                guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
-                records.append(.success(bytes))
-            } catch { records.append(.failure(error)) }
+    private final class SearchPass {
+        let branch: HistoryOffsetIndex
+        let file: FileHandle
+        let cache: HistoryOffsetIndex.SearchCache
+        let presented: ConversationContent.Presentation
+        let captured: [String: TranscriptMessage]
+        let standalone: Set<String>
+        let rawReplies: Set<String>
+        let fetchedInputs: [String: ToolInputDocument]
+        let agents: AgentTranscriptPresentation?
+        let managedTask: String?
+        let query: String
+        let needle: [UInt8]?
+        let observer: (@Sendable (SearchDecodeEvent) -> Void)?
+        var bytes = 0, records = 0
+        init(branch: HistoryOffsetIndex, file: FileHandle, current: [TranscriptMessage], rawReplies: Set<String>,
+             fetchedInputs: [String: ToolInputDocument], agents: AgentTranscriptPresentation?, managedTask: String?, query: String,
+             observer: (@Sendable (SearchDecodeEvent) -> Void)?) throws {
+            self.branch = branch; self.file = file; cache = try .init(branch)
+            let presentation = ConversationContent.Presentation(current, fetchedInputs: fetchedInputs)
+            presented = presentation
+            captured = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            standalone = Set(current.filter { ($0.role == "tool" || $0.kind == "toolResult") && presentation.rows[$0.id]?.isEmpty == false }.map(\.id))
+            self.rawReplies = rawReplies; self.fetchedInputs = fetchedInputs; self.agents = agents; self.managedTask = managedTask
+            self.query = query; needle = ConversationContent.asciiNeedle(query); self.observer = observer
         }
-        var decoded = [Result<[String: WireValue], Error>?](repeating: nil, count: refs.count)
-        let read = records
-        decoded.withUnsafeMutableBufferPointer { buffer in
-            nonisolated(unsafe) let output = buffer
-            DispatchQueue.concurrentPerform(iterations: read.count) { index in
-                output[index] = read[index].map { bytes in bytes.flatMap { data in
-                    Result { try JSONDecoder().decode(WireValue.self, from: data).object ?? [:] }
-                } }
+        func match(_ text: String, drawing: ContentHit.Drawing? = nil, omitted: Set<String>? = nil) -> HistoryOffsetIndex.SearchCache.Match {
+            if query.isEmpty { return .init(count: 0, preview: String(text.prefix(240))) }
+            if let needle, ConversationContent.excludes(needle, from: text) { return .init(count: -1, preview: "") }
+            guard let range = text.range(of: query, options: [.caseInsensitive]) else { return .init(count: -1, preview: "") }
+            let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+            return .init(count: ConversationContent.occurrences(of: query, in: text), preview: String(text[from...].prefix(240)), drawing: drawing, omittedOutputs: omitted)
+        }
+    }
+    private func yieldSearch(_ pass: SearchPass) async throws {
+        pass.observer?(.yielded); pass.bytes = 0; pass.records = 0
+        await Task.yield()
+        try Task.checkCancellation()
+    }
+    /// Every source decode, including look-ahead peers and captured receipts,
+    /// spends the same budget. One oversized record runs alone.
+    private func searchRecord(_ ref: Ref, pass: SearchPass) async throws -> [String: WireValue] {
+        if pass.records >= 32 || (pass.bytes > 0 && pass.bytes + ref.length > Self.searchRunBytes) { try await yieldSearch(pass) }
+        try Task.checkCancellation()
+        try pass.file.seek(toOffset: ref.offset)
+        guard let bytes = try pass.file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
+        pass.bytes += bytes.count; pass.records += 1; decodedRecords += 1
+        pass.observer?(.decoded(offset: ref.offset, bytes: bytes.count))
+        let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
+        if pass.bytes >= Self.searchRunBytes || pass.records >= 32 { try await yieldSearch(pass) }
+        return record
+    }
+    /// The planner only needs a source's presence to hide its ledger, or an
+    /// operation's presence to hide its checkpoint. Do not decode their bodies.
+    private func searchContext(_ messages: [TranscriptMessage], pass: SearchPass) throws -> [TranscriptMessage] {
+        var context = messages
+        for message in messages where pass.captured[message.id] == nil {
+            if let source = message.presentationSourceID, !context.contains(where: { $0.id == source }), try pass.branch.index(of: source) != nil {
+                context.append(.init(id: source, role: "system", text: ""))
             }
-        }
-        var messages: [TranscriptMessage] = [], results: [String: ToolResultRecord] = [:]
-        if renderedAgentProse {
-            for (index, ref) in refs.enumerated() where presented.rows[ref.id] == nil {
-                if ref.type == "branch" { messages.append(Self.displayedMessage([:], ref: ref)); continue }
-                guard case .success(let record)? = decoded[index] else { continue }
-                messages.append(Self.displayedMessage(record, ref: ref))
-                if let result = ToolResultRecord.of(record["message"]?.object ?? [:]) { results[ref.id] = result.record }
-            }
-        }
-        let sources = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        var contextual: [String: String] = [:]
-        for message in messages {
-            try Task.checkCancellation()
-            let call = message.toolCallID ?? (message.kind == "execution" ? TaskTranscriptPlan.startedCall(message) : nil)
-            let related = try branch.related(to: message.id, calls: (message.tools ?? []).map(\.id), result: call, operation: message.operationID)
-            let source = try message.presentationSourceID.flatMap { try branch.index(of: $0) == nil ? nil : $0 }
-            guard related.contains(where: { sources[$0.id] == nil }) || source.map({ sources[$0] == nil }) == true else { continue }
-            // Context is transient per source, not retained for the whole search.
-            // A source's exact indexed peer is read directly, without rescanning
-            // history or moving either the reader or the search cursor.
-            var context = [message], receipts: [String: ToolResultRecord] = [:], toolInputs: [String: String] = [:]
-            if let result = results[message.id] { receipts[message.id] = result }
-            for ref in related {
-                try Task.checkCancellation()
-                if let value = sources[ref.id] {
-                    context.append(value); receipts[ref.id] = results[ref.id]; continue
-                }
-                if message.kind == "compaction", let operation = ref.operationID {
-                    context.append(.init(id: ref.id, role: "system", text: "", kind: "execution", operationID: operation)); continue
-                }
-                try file.seek(toOffset: ref.offset)
-                guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
-                decodedRecords += 1
-                let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
-                let peer = Self.displayedMessage(record, ref: ref), result = ToolResultRecord.of(record["message"]?.object ?? [:])
-                if let result, message.tools?.contains(where: { $0.id == result.call }) == true {
-                    // A call searches its input; its receipt searches output.
-                    // Release each distant output after deriving that input,
-                    // rather than retaining every result of a wide tool round.
-                    let resolved = TranscriptMessage.resolvingToolResults([message, peer], results: [peer.id: result.record])
-                    let paired = ConversationContent.Presentation(resolved).rows[peer.id]?.isEmpty == true
-                    let source = resolved.first.map { agentPresentation?.presentAgentState($0) ?? $0 }
-                    if let tool = source?.tools?.first(where: { $0.id == result.call }) {
-                        toolInputs[ToolOccurrence.key(message.id, tool.id)] = ConversationContent.toolText(tool, inputOnly: paired)
-                    }
-                } else {
-                    context.append(peer)
-                    if let result { receipts[ref.id] = result.record }
+            if message.kind == "compaction", let operation = message.operationID {
+                for peer in try pass.branch.related(to: message.id, calls: [], result: nil, operation: operation) where !context.contains(where: { $0.id == peer.id }) {
+                    context.append(.init(id: peer.id, role: "system", text: "", kind: "execution", operationID: operation))
                 }
             }
-            let linkedSources = context.compactMap(\.presentationSourceID)
-            for source in linkedSources where !context.contains(where: { $0.id == source }) {
-                if try branch.index(of: source) != nil { context.append(.init(id: source, role: "system", text: "")) }
-            }
-            let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
-            context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
-            let normalized = TranscriptMessage.resolvingToolResults(context, results: receipts).map { agentPresentation?.present($0, firstTask: managedTask) ?? $0 }
-            let projection = ConversationContent.Presentation(normalized)
-            contextual[message.id] = projection.text(message.id, rawReply: rawReplies.contains(message.id), toolInputs: toolInputs)
         }
-        let normalized = TranscriptMessage.resolvingToolResults(messages, results: results).map { agentPresentation?.present($0, firstTask: managedTask) ?? $0 }
-        let plan = ConversationContent.Presentation(normalized)
-        var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
-        let values = decoded, references = refs, overrides = contextual
-        texts.withUnsafeMutableBufferPointer { buffer in
-            nonisolated(unsafe) let output = buffer
-            DispatchQueue.concurrentPerform(iterations: values.count) { index in
-                let ref = references[index]
-                if renderedAgentProse, presented.rows[ref.id] != nil {
-                    output[index] = .success(presented.text(ref.id, rawReply: rawReplies.contains(ref.id))); return
-                }
-                if case .failure(let error)? = values[index] { output[index] = .failure(error); return }
-                if renderedAgentProse {
-                    if let text = overrides[ref.id] { output[index] = .success(text); return }
-                    if agentPresentation == nil, managedTask == ref.id, let message = sources[ref.id], message.role == "user",
-                       message.nativeAgentDelivery == nil, message.kind != "agent_message" {
-                        output[index] = .success(TranscriptMarkdown.renderedText(message.text))
-                    } else { output[index] = .success(plan.text(ref.id, rawReply: rawReplies.contains(ref.id))) }
-                } else if ref.type == "branch" { output[index] = .success("## Edit\n\n" + Self.branchText + "\n\n") }
-                else if case .success(let record)? = values[index] { output[index] = .success(ConversationContent.text(record)) }
+        let positions = try Dictionary(context.map { ($0.id, try pass.branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
+        return context.sorted { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
+    }
+    private func searchText(_ message: TranscriptMessage, pass: SearchPass, toolInputs: [String: String] = [:]) throws -> String {
+        if pass.captured[message.id] != nil { return pass.presented.text(message.id, rawReply: pass.rawReplies.contains(message.id), toolInputs: toolInputs) }
+        if pass.agents == nil, pass.managedTask == message.id, message.role == "user", message.nativeAgentDelivery == nil, message.kind != "agent_message" {
+            return TranscriptMarkdown.renderedText(message.text)
+        }
+        let context = try searchContext([message], pass: pass).map { pass.agents?.present($0, firstTask: pass.managedTask) ?? $0 }
+        return ConversationContent.Presentation(context, fetchedInputs: pass.fetchedInputs).text(message.id, rawReply: pass.rawReplies.contains(message.id), toolInputs: toolInputs)
+    }
+    /// Finish an issuer and each of its latest receipts together. Cache only
+    /// their match summaries and planner ownership, releasing each large peer
+    /// before reading the next. A later primary/receipt never reopens the issuer.
+    private func searchIssuer(_ message: TranscriptMessage, ref: Ref, pass: SearchPass) async throws {
+        var inputs: [String: String] = [:], omitted = Set<String>()
+        let sourceShown = pass.captured[message.id] == nil || pass.presented.rows[message.id]?.isEmpty != true
+        let base = ConversationContent.Presentation(try searchContext(sourceShown ? [message] : [], pass: pass))
+        let cards = Set((base.rows[message.id] ?? []).compactMap { row -> String? in
+            guard case .block(let block) = row, block.part?.part.kind == "toolArguments", let tool = block.message?.tools?.first else { return nil }
+            return tool.id
+        })
+        var seen = Set<String>()
+        for tool in message.tools ?? [] where seen.insert(tool.id).inserted {
+            let call = tool.id
+            let related = try pass.branch.related(to: message.id, calls: [call], result: nil, operation: nil)
+            guard let receipt = related.first(where: { $0.resultCall == call }) else {
+                try pass.cache.store(.init(card: cards.contains(call), paired: false), call: call, at: ref.offset); continue
+            }
+            let record = try await searchRecord(receipt, pass: pass)
+            let peer = pass.captured[receipt.id] ?? Self.displayedMessage(record, ref: receipt)
+            let result = ToolResultRecord.of(record["message"]?.object ?? [:])
+            // This join renders one card. Do not normalize every sibling's
+            // agent arguments again for each receipt in a wide round.
+            var owner = message; owner.tools = [tool]
+            let context = try searchContext((sourceShown ? [owner] : []) + [peer], pass: pass)
+            var resolved = TranscriptMessage.resolvingToolResults(context, results: result.map { [receipt.id: $0.record] } ?? [:])
+            for index in resolved.indices {
+                if let captured = pass.captured[resolved[index].id] { resolved[index] = captured }
+                else { resolved[index] = pass.agents?.present(resolved[index], firstTask: pass.managedTask) ?? resolved[index] }
+            }
+            let plan = ConversationContent.Presentation(resolved, fetchedInputs: pass.fetchedInputs)
+            let paired = plan.rows[receipt.id]?.isEmpty == true
+            try pass.cache.store(.init(card: cards.contains(call), paired: paired), call: call, at: ref.offset)
+            var receiptText: String?
+            if let tool = resolved.first(where: { $0.id == message.id })?.tools?.first(where: { $0.id == call }) {
+                let key = ToolOccurrence.key(message.id, call)
+                let payload = ConversationContent.toolPayload(tool, fetched: pass.fetchedInputs[key])
+                inputs[key] = paired ? payload.input : [payload.input, payload.output].filter { !$0.isEmpty }.joined(separator: "\n")
+                if paired { receiptText = payload.output }
+                if paired, !payload.output.isEmpty, pass.captured[message.id] != nil, !pass.standalone.contains(receipt.id) { omitted.insert(call) }
+            }
+            if pass.standalone.contains(receipt.id) { receiptText = pass.presented.text(receipt.id, rawReply: pass.rawReplies.contains(receipt.id)) }
+            let drawing: ContentHit.Drawing? = paired && pass.captured[message.id] != nil && !pass.standalone.contains(receipt.id)
+                ? .init(messageID: message.id, toolCallID: call) : nil
+            try pass.cache.store(pass.match(receiptText ?? plan.text(receipt.id, rawReply: pass.rawReplies.contains(receipt.id)), drawing: drawing), at: receipt.offset)
+        }
+        try pass.cache.store(pass.match(try searchText(message, pass: pass, toolInputs: inputs), omitted: omitted.isEmpty ? nil : omitted), at: ref.offset)
+    }
+    private func searchMatch(_ ref: Ref, pass: SearchPass, rendered: Bool) async throws -> HistoryOffsetIndex.SearchCache.Match {
+        if let cached = try pass.cache.match(ref.offset) { return cached }
+        // Resolve an issuer first, before decoding its receipt as a primary.
+        // The issuer's pass will memoize that receipt's projection as well.
+        if rendered, let call = ref.resultCall,
+           let issuer = try pass.branch.related(to: ref.id, calls: [], result: call, operation: nil).first(where: { $0.calls?.contains(call) == true }) {
+            _ = try await searchMatch(issuer, pass: pass, rendered: true)
+            if let cached = try pass.cache.match(ref.offset) { return cached }
+            if let ownership = try pass.cache.call(call, at: issuer.offset), ownership.paired, !pass.standalone.contains(ref.id) {
+                let empty = pass.match(""); try pass.cache.store(empty, at: ref.offset); return empty
             }
         }
-        return zip(refs, texts).map { ($0, $1) }
+        let record = ref.type == "branch" || (rendered && pass.captured[ref.id] != nil)
+            ? [:] : try await searchRecord(ref, pass: pass)
+        if !rendered {
+            let text = ref.type == "branch" ? "## Edit\n\n" + Self.branchText + "\n\n" : ConversationContent.text(record)
+            let match = pass.match(text); try pass.cache.store(match, at: ref.offset); return match
+        }
+        let message = pass.captured[ref.id] ?? Self.displayedMessage(record, ref: ref)
+        if message.tools?.isEmpty == false {
+            try await searchIssuer(message, ref: ref, pass: pass)
+            guard let match = try pass.cache.match(ref.offset) else { throw StoreError.unreadableRecord }
+            return match
+        }
+        if message.kind == "execution", let call = TaskTranscriptPlan.startedCall(message),
+           let issuer = try pass.branch.related(to: message.id, calls: [], result: call, operation: nil).first(where: { $0.calls?.contains(call) == true }) {
+            _ = try await searchMatch(issuer, pass: pass, rendered: true)
+            if try pass.cache.call(call, at: issuer.offset)?.card == true {
+                let empty = pass.match(""); try pass.cache.store(empty, at: ref.offset); return empty
+            }
+        }
+        let match = pass.match(try searchText(message, pass: pass)); try pass.cache.store(match, at: ref.offset); return match
     }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
         if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
@@ -546,57 +598,6 @@ actor HistoryReader {
         let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
-    }
-    /// Tool output has one retained owner even when the captured page holds
-    /// only the completed card or only its receipt. Join each call separately
-    /// so a wide tool round does not retain all its unloaded outputs at once.
-    private func searchPresentation(_ current: [TranscriptMessage], branch: HistoryOffsetIndex, file: FileHandle,
-                                    fetchedInputs: [String: ToolInputDocument], agentPresentation: AgentTranscriptPresentation?) throws -> ConversationContent.Presentation {
-        var presentation = ConversationContent.Presentation(current, fetchedInputs: fetchedInputs)
-        let captured = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        let standalone = Set(current.filter {
-            ($0.role == "tool" || $0.kind == "toolResult") && presentation.rows[$0.id]?.isEmpty == false
-        }.map(\.id))
-        for row in current {
-            let resultCall = row.role == "tool" || row.kind == "toolResult" ? row.toolCallID : nil
-            let calls = resultCall.map { [$0] } ?? (row.tools ?? []).map(\.id)
-            for call in Set(calls) {
-                try Task.checkCancellation()
-                guard let source = try branch.ref(row.id), try branch.index(of: row.id) != nil else { continue }
-                let related = try branch.related(to: row.id, calls: resultCall == nil ? [call] : [], result: resultCall, operation: nil)
-                guard !related.isEmpty else { continue }
-                var context: [TranscriptMessage] = [], receipts: [String: ToolResultRecord] = [:]
-                for ref in [source] + related {
-                    try Task.checkCancellation()
-                    if let value = captured[ref.id], ref.resultCall == nil {
-                        // A superseded ledger has no card in this snapshot.
-                        if presentation.rows[ref.id]?.isEmpty != true { context.append(value) }
-                        continue
-                    }
-                    try file.seek(toOffset: ref.offset)
-                    guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
-                    decodedRecords += 1
-                    let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
-                    let message = captured[ref.id] ?? Self.displayedMessage(record, ref: ref)
-                    context.append(message)
-                    if let result = ToolResultRecord.of(record["message"]?.object ?? [:]) { receipts[ref.id] = result.record }
-                    if captured[ref.id] == nil, let accepted = message.presentationSourceID, try branch.index(of: accepted) != nil {
-                        context.append(.init(id: accepted, role: "system", text: ""))
-                    }
-                }
-                let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
-                context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
-                var resolved = TranscriptMessage.resolvingToolResults(context, results: receipts).map { agentPresentation?.presentAgentState($0) ?? $0 }
-                for index in resolved.indices {
-                    if let value = captured[resolved[index].id] { resolved[index].tools = value.tools }
-                }
-                let paired = ConversationContent.Presentation(resolved, fetchedInputs: fetchedInputs)
-                // A receipt drawn as its own row keeps that row's Markdown;
-                // a captured card keeps its state even if disk has advanced.
-                presentation.adoptToolOutputs(paired, receipts: Set(receipts.keys).subtracting(standalone))
-            }
-        }
-        return presentation
     }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
@@ -640,55 +641,31 @@ actor HistoryReader {
                 else if try branch.index(of: row.id) != nil { current.append(row) }
             }
         }
-        let presentation = try searchPresentation(current, branch: branch, file: file, fetchedInputs: fetchedInputs, agentPresentation: agentPresentation)
-        let managedTask = managedChild ? try branch.firstUser() : nil
+        let pass = try SearchPass(branch: branch, file: file, current: current, rawReplies: rawReplies,
+            fetchedInputs: fetchedInputs, agents: agentPresentation, managedTask: managedChild ? branch.firstUser() : nil,
+            query: query, observer: searchDecodeObserver)
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
         // conversation before answering. Stop after a bounded window and let the
         // caller continue from `next`, exactly as a full page of hits does.
         let limit = min(total, min(start, total) + 5_000)
         var hits: [ContentHit] = [], cursor = min(start, total)
-        // Records are read in order and decoded a run at a time on every
-        // core: decoding is nearly all a search costs. Plan each bounded
-        // run together, then take its projected hits in order from
-        // the run as before. A run starts small, so a query that fills its
-        // hundred hits early decodes little past them, and grows.
-        var run = 32
-        let needle = ConversationContent.asciiNeedle(query)
+        try await yieldSearch(pass)
         while cursor < min(limit, branch.count) && hits.count < 100 {
-            // The file and immutable branch are this search's snapshot. Let
-            // a reader page between bounded runs instead of waiting for Find.
-            await Task.yield()
-            try Task.checkCancellation()
-            // A run holds source bytes and their decoded/projected forms,
-            // so it is bounded by bytes as well as by count.
-            var end = cursor, bytes = 0
-            while end < min(branch.count, min(limit, cursor + run)) {
-                let length = try branch.at(end).length
-                // A record larger than a run is a run of its own.
-                guard end == cursor || bytes + length <= Self.searchRunBytes else { break }
-                bytes += length; end += 1
+            let ref = try branch.at(cursor)
+            let match = try await searchMatch(ref, pass: pass, rendered: renderedAgentProse)
+            if match.count >= 0 {
+                hits.append(.init(id: ref.id, position: cursor + 1, preview: match.preview,
+                    count: query.isEmpty ? nil : match.count, drawing: match.drawing, omittedOutputs: match.omittedOutputs))
             }
-            run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, presented: presentation, rawReplies: rawReplies, agentPresentation: agentPresentation)
-            for (offset, decoded) in texts.enumerated() where hits.count < 100 {
-                let ref = decoded.ref, text = try decoded.text.get()
-                let position = cursor + offset
-                if query.isEmpty { hits.append(.init(id: ref.id, position: position + 1, preview: String(text.prefix(240)))) }
-                else if let needle, ConversationContent.excludes(needle, from: text) { }
-                else if let range = text.range(of: query, options: [.caseInsensitive]) {
-                    let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
-                    hits.append(.init(id: ref.id, position: position + 1, preview: String(text[from...].prefix(240)),
-                                      count: ConversationContent.occurrences(of: query, in: text), drawing: presentation.drawings[ref.id],
-                                      omittedOutputs: presentation.omittedOutputs(ref.id)))
-                }
-                if hits.count == 100 { cursor = position + 1; break }
-                if offset == texts.count - 1 { cursor = end }
-            }
+            cursor += 1
+            // Cached rows also yield: a wide round may have already projected
+            // thousands of receipts while processing its issuer.
+            if (cursor - start) % 32 == 0 { try await yieldSearch(pass) }
         }
         while cursor >= branch.count && cursor < limit && hits.count < 100 {
             try Task.checkCancellation()
-            let row = unsaved[cursor - branch.count], text = presentation.text(row.id, rawReply: rawReplies.contains(row.id))
+            let row = unsaved[cursor - branch.count], text = pass.presented.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1

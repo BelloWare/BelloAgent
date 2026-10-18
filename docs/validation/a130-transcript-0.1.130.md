@@ -3130,3 +3130,393 @@ no named result bundle was requested. No installed app, real chats/preferences,
 Keychain, paid provider or live capture was used. There is no unresolved product
 or owner decision; the desktop-dependent receipt test remains the validation
 limit described above.
+
+## Round 9 — shared search decode budget and once-per-record projections
+
+**Confirmed and fixed.** Baseline: `28e1092beb13297d3d8a843b16abc1f74ac40dc3`.
+Work remained on `dev/a130-transcript` in this worktree and used only
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript` for builds and
+evidence. The new fixtures are generated JSONL with opaque generated provider
+metadata; they contain no captured provider traffic or user data.
+
+### Failing-first evidence
+
+Added a search-only observer immediately before each journal JSON decode and at
+actual batch yields. It counts record offsets, source bytes, and the largest
+sum of bytes between yields; paging's separate reads do not enter these counts.
+The original three search read paths were instrumented before changing behavior.
+
+`round9-failing-first.log`: **0 passed / 2 failed**, exit 65.
+
+- `testWideToolSearchDecodesEachRecordOnceAndYieldsItsWholeBudget`: one 8 MiB
+  issuer, 40 intervening records and 64 receipts; four receipts also carry 4 MiB
+  of generated metadata. A **25,190,196-byte** file decoded **579,221,824 bytes**,
+  including the issuer **65 times**. The largest batch decoded **516,265,016
+  bytes**, against the **16,777,216-byte** budget. Output counts were correct;
+  the work/budget assertions failed.
+- `testCapturedWideToolPagesShareTheSearchDecodeBudget`: issuer-only,
+  receipts-only, and fully captured pages all violated the budget. The
+  receipts-only case decoded **579,221,824 bytes**, with **554,031,779 bytes**
+  before yielding. Fully captured rows decoded **33,581,126 bytes**, including
+  duplicate receipt reads.
+
+Strengthened the paging part to keep requesting pages until search completed,
+so a fast initial page cannot hide a later stalled batch.
+`round9-paging-first.log`: **0 passed / 1 failed**, exit 65:
+
+```text
+WIDE-SEARCH sourceBytes=25190196 decodedBytes=579221824
+peakBatch=516265016 issuerDecodes=65 pageSeconds=1.0875807499978691
+XCTAssertEqual failed: Optional(65) is not equal to Optional(1)
+XCTAssertLessThanOrEqual failed: 516265016 is greater than 16777216
+XCTAssertLessThan failed: 1.0875807499978691 is not less than 0.75
+```
+
+### Implementation and dependency sweep
+
+A `SearchPass` now owns the captured snapshot, planner presentation, input
+values, query, budget and match cache. All journal record decoding goes through
+`searchRecord`: yield before the next record would exceed 16 MiB, after reaching
+that limit, or after 32 records. A single oversized record runs alone. Traversal
+also yields every 32 primary positions, including cache hits. The source/export
+search uses the same decoder and budget, preserving its existing source text.
+
+An issuer and its latest receipts are projected together, one peer at a time.
+The cache retains only match count/preview, drawing/omission metadata and small
+card-ownership facts, keyed by **record offset** (and call ID within that offset).
+It retains no decoded record or full body. Receipts and tool-start dependencies
+reuse the completed issuer result, including when the search cursor starts
+inside a round. Reused provider IDs cannot alias separate issuer offsets. A
+superseded receipt uses the issuer's cached planner ownership without rereading
+its discarded body.
+
+The cache uses unique tables in the existing private, mode-0600, rebuildable
+index file and its bounded SQLite pager. Tables are dropped on completion,
+early return, cancellation or failure. Freed pages remain reusable until the
+index's existing eviction/quit cleanup removes the file. No journal is changed.
+This avoids both an unbounded dictionary of large projections and an LRU that
+would reread an evicted issuer. A pass is one captured `searchContent` page;
+a later page captures its own display/revision as required by the existing
+append-safe search contract.
+
+Separate same-pattern findings confirmed in the sweep:
+
+| Pattern | Before-fix evidence | Resolution / coverage |
+| --- | --- | --- |
+| Captured call/receipt overlay separately reread peers | 579.2 MB decoded from the 25.2 MB fixture; fully captured receipts read twice | Shares the pass cache/budget; issuer-only, receipt-only and complete overlays |
+| Many tool-start records reread one large issuer | `testManyToolStartsReuseTheirLargeIssuersProjection`: 1,133,285,925 bytes decoded; issuer **129** times | Cached planner card ownership; both beginning-of-history and inside-round cursors |
+| Shared operation IDs reread the first large operation body | `testRecoveryPresenceDependenciesDoNotDecodeLargePeerBodies`: 302,060,159 bytes from 16,840,353 bytes; largest repeat **35**, largest batch 285,226,782 bytes | Only a checkpoint needs its operation's presence; indexed synthetic planner anchor, no peer-body read |
+| Reused wide issuer IDs and orphan ledgers repeat dependencies | `testReusedWideIssuersAndOrphanLedgersShareOnceOnlyDecodes`: repeat/byte/batch failures for saved and partial/full captured pages | Two 32-call rounds reuse all call IDs; assistant and orphan-ledger variants; 4 overlays × 3 start positions each |
+| Page boundaries revisit source or receipt | Byte/offset checks added to `testEveryPageSplitKeepsReusedCallsAndLatestReceiptsSeparate` fail on the original implementation | Every contiguous page of the reused-ID/stale-receipt fixture, preserving existing native occurrence comparisons |
+
+For these expanded fixtures, restored the instrumented pre-fix reader and ran
+`round9-shapes-baseline.log`: **0 passed / 4 failed**, exit 65. Restored the fix
+before continuing. Presence-only presentation-source links already avoided
+reading their bodies; the new implementation preserves that property. The
+recovery fixture includes 63 suppressed ledgers plus one genuinely orphaned
+ledger, whose displayed prose remains searchable.
+
+### Adversarial review and cache pressure
+
+The first cache design used SQLite TEMP tables with a 512 KiB cache request.
+A direct probe of the Mac's actual SQLite library showed that TEMP pages remained
+resident. Strengthened `testSearchMatchCachesStayIsolatedAndReleaseAfterUse`
+from 5,000 to **50,000** 240-character summaries before fixing that design:
+`round9-cache-memory-first.log`, **0 passed / 1 failed**:
+
+```text
+SEARCH-CACHE summaries=50000 residentBytes=13750016
+XCTAssertLessThan failed: 13750016 is not less than 2097152
+```
+
+The private index's file-backed pager uses **667,904 resident bytes** for the
+same 50,000 summaries (`round9-cache-memory-control.log`, **3/0/0**). The test
+also verifies independent simultaneous caches, exact embedded-NUL/Unicode
+previews and call IDs, offset-scoped ownership, and table disposal. Temporary
+tables are deliberately not used for these match summaries.
+
+Reviewed the new search paths against the earlier renderer-input table and
+projection corpus. No separate Markdown/card presentation was introduced:
+
+| Search/dependency input | Projection / decoding rule |
+| --- | --- |
+| Unloaded primary row | One `searchRecord` call, then the existing `displayedMessage` and normalized planner |
+| Issuer reached through a receipt or start record | Same offset cache as primary traversal; projected once, then reused |
+| Latest receipt, including a captured receipt | One `searchRecord` call for its recorded result metadata; captured row and captured tool values remain authoritative |
+| Ordinary captured row | Captured planner rows, raw disclosure and fetched arguments; no journal body decode |
+| Captured completed card with an off-page receipt | Same joined planner and native `toolPayload`; input stays with issuer, output with receipt, drawing metadata still points to the loaded card |
+| Superseded receipt | Cached issuer ownership; standalone captured receipts retain their displayed Markdown |
+| Tool-start execution | Own primary decode plus cached issuer card-presence fact; no issuer reread |
+| Ledger's accepted source | Indexed active-branch presence only; captured orphan presentation remains the captured planner's decision |
+| Compaction's operation | Indexed operation presence only, preserving the planner's suppression rule |
+| Shared-operation execution | Its own displayed row; no unrelated operation-body dependency |
+| Fetched inputs / agent state | Same captured occurrence-keyed documents and agent presentation; captured tool values are not re-normalized over the display's values |
+| Source/export search | Same byte-budgeted decoder, original `ConversationContent.text` projection |
+
+Reviewed cache lifetime across actor yields, simultaneous searches, cancellation,
+index replacement, snapshot validation and early pagination. File handles and
+immutable branches remain pass-owned. Existing append/rewrite/truncation checks,
+abandoned-row handling, source-copy guards, Find focus and reader navigation are
+unchanged. Matched previews remain limited to the existing 240-character
+representation; full issuer/receipt bodies never enter the match cache.
+
+Added an oversized-record test (three 20 MiB records, source and rendered search)
+and byte/once-only checks to the existing **5,000 reused-ID pairs** paging test.
+Single-record decoding remains indivisible: the bound is 16 MiB or that one
+larger record, never that record plus a neighbour. Index construction and the
+existing snapshot hash are separate from journal payload decoding.
+
+### Mutation checks
+
+All six mutations were applied separately, run against the compiled test host,
+and restored before the final runs. Each returned **0 passed / 1 failed**, exit
+65, with assertion failures (not build failures).
+
+| Log | Mutation | Failing assertion |
+| --- | --- | --- |
+| `round9-mutation-memo.log` | Remove completed-offset cache returns | Issuer 65 times; 1,637,027,293 decoded bytes exceeds the 25,190,196-byte file |
+| `round9-mutation-receipt.log` | Do not memoize receipt match results | 0 output hits instead of 64 |
+| `round9-mutation-budget.log` | Remove the pre-decode byte-budget check | Peak 16,783,448 exceeds 16,777,216 bytes |
+| `round9-mutation-yield.log` | Remove `await Task.yield()` | Search completes before the queued page; only one page served |
+| `round9-mutation-memory.log` | Return summaries to SQLite TEMP tables | 13,750,016 resident bytes exceeds the generous 2 MiB assertion |
+| `round9-mutation-cache-dispose.log` | Remove cache-table disposal | 6 retained tables instead of 3; then 9 instead of 6 |
+
+The no-yield mutation retains correct byte accounting, but still fails the
+actual paging-order assertions. Thus the regression does not merely trust a
+reported budget event as proof that the reader was served.
+
+All commands below run in the worktree, with the shared full-lane lock held by
+`validation/run-round3-case.py`, which records its owner/PID and releases only
+its own lock in `finally`. `run-round9-mutations.py` restores source files in
+`finally`; `run-round9-completion.py` also restores the memory mutation. Logs
+are under the build root's `validation` directory. Exact native commands:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round9-failing-first.log — instrumented original reader, 0/2
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideToolSearchDecodesEachRecordOnceAndYieldsItsWholeBudget \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedWideToolPagesShareTheSearchDecodeBudget
+
+# round9-paging-first.log — original reader with repeated paging, 0/1
+# Also the exact command for mutation-{memo,receipt,budget,yield}, each 0/1
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideToolSearchDecodesEachRecordOnceAndYieldsItsWholeBudget
+
+# round9-shapes-baseline.log — original reader restored, 0/4
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testReusedWideIssuersAndOrphanLedgersShareOnceOnlyDecodes \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRecoveryPresenceDependenciesDoNotDecodeLargePeerBodies \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testManyToolStartsReuseTheirLargeIssuersProjection \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testEveryPageSplitKeepsReusedCallsAndLatestReceiptsSeparate
+
+# round9-cache-memory-first.log and mutation-{memory,cache-dispose}, each 0/1
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSearchMatchCachesStayIsolatedAndReleaseAfterUse
+
+# round9-cache-memory-control.log — final file-backed cache, 3/0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testSearchMatchCachesStayIsolatedAndReleaseAfterUse \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideToolSearchDecodesEachRecordOnceAndYieldsItsWholeBudget \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testPagingCanFinishWhileFindScansReusedCalls
+```
+
+### Final sweep: large agent arguments in sibling joins
+
+The initial broad run passed **870/0/7**, but the final code audit found another
+same-function instance: `searchIssuer` normalized the issuer's entire tool list
+for each receipt. `AgentTranscriptPresentation.presentAgentState` constructs
+`SubagentToolView` for every control tool, parsing its input/output JSON. Thus
+journal memoization alone did not bound repeated sibling argument processing.
+
+`testWideAgentArgumentsDoNotRepeatAcrossNeighbourProjections` uses 64 agent calls,
+one with a generated large extra argument member and a short displayed task.
+The first 16 MiB experiment passed the generous 750 ms paging bound at 655 ms,
+so it is not failing-first evidence. A 32 MiB member plus its record envelope
+exceeded the existing reader record limit: the fixture was rejected as
+`unreadableRecord` during setup (`round9-agent-work-first-large.log`, 0/1). No
+production limit was raised. A **valid 28 MiB** member reproduced the stall:
+
+```text
+# round9-agent-work-first-bounded.log — 0 passed / 1 failed, exit 65
+AGENT-DEPENDENCIES decodedBytes=46161557 pageSeconds=1.0019883333006874 pages=8
+XCTAssertLessThan failed: 1.0019883333006874 is not less than 0.75
+```
+
+The receipt join now supplies only that receipt's own `ToolView` to agent
+normalization. Its values are identical to the native card's inputs; sibling
+cards are irrelevant to the join. The complete source still uses its full
+canonical planner rows, with the individually computed card payloads. Captured
+rows still restore the exact captured values. The control passes at **216 ms**
+(`round9-agent-work-control.log`, **1/0/0**) with identical occurrence and source
+byte counts. This fixes the repeated sibling processing without changing any
+card presentation.
+
+Mutation `round9-mutation-agent-siblings.log` restores the full sibling list in
+that join. The same test fails its actual paging bound again. This is the
+**seventh** independent mutation; the six cache/budget mutations above remain
+applicable. Exact command for failing-first, control and mutation:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testWideAgentArgumentsDoNotRepeatAcrossNeighbourProjections
+```
+
+Reran all affected classes after this final source change. The earlier broad
+logs are retained as `round9-*-before-agent.log`; final totals below count only
+the last run of each class, not repeated controls or expected failures.
+
+### Final validation
+
+**871 passed / 0 failed / 7 skipped across 77 classes.** All seven mutations failed as expected. No unexpected failure remains in the final runs.
+
+| Text log | Class/suite | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| `round9-regression-final.log` | TranscriptBugRegressionTests | 94 | 0 | 0 |
+| `round9-affected-final.log` | 64 affected history/Find/rendering/workspace classes | 617 | 0 | 7 |
+| `round9-timeline-final.log` | TranscriptNativeTimelineBehaviourTests | 30 | 0 | 0 |
+| `round9-agent-markdown-final.log` | SubagentMarkdownTests | 19 | 0 | 0 |
+| `round9-agent-reader-final.log` | SubagentReaderTests | 55 | 0 | 0 |
+| `round9-wire-page-final.log` | TranscriptWirePageTests | 4 | 0 | 0 |
+| `round9-history-edge-timing-final.log` | HistoryEdgeTimingTests | 2 | 0 | 0 |
+| `round9-history-edit-final.log` | HistoryEditTests | 3 | 0 | 0 |
+| `round9-agent-inputs-final.log` | 6 agent input/navigation classes | 47 | 0 | 0 |
+
+Final measurements from `round9-regression-final.log`:
+
+```text
+CAPTURED-WIDE rows=1 sourceBytes=25190196 decodedBytes=16795651 peakBatch=12583581
+CAPTURED-WIDE rows=64 sourceBytes=25190196 decodedBytes=25190045 peakBatch=12589588
+CAPTURED-WIDE rows=105 sourceBytes=25190196 decodedBytes=16790563 peakBatch=12583581
+FIND-PAGING pairs=5000 page-seconds=0.010944916633889079 order=["page", "search"]
+REUSED-DEPENDENCIES pairs=5000 lookups=5000 seconds=0.31084991665557027
+SEARCH-CACHE summaries=50000 residentBytes=667904
+AGENT-DEPENDENCIES decodedBytes=46161557 pageSeconds=0.2109563749982044 pages=8
+WIDE-SEARCH sourceBytes=25190196 decodedBytes=25190045 peakBatch=12589588 issuerDecodes=1 pageSeconds=0.09787470835726708 order=["page", "page", "page", "page", "page", "page", "search", "page"]
+```
+
+The seven skips are existing opt-in measurements/captures; none is an ordinary failing assertion:
+
+- `HistoryIndexFilesTests.testTheIndexOfALongChat`: Set PI_PERF_HISTORY_JOURNAL to measure a long chat's index.
+- `HistoryReaderOpenPerformanceTests.testIndexingAKeptJournal`: Set PI_PERF_OPEN_JOURNAL to measure indexing a long chat.
+- `InlineSkillPillTests.testCaptureSkillPillLooks`: Set PI_APP_UI_SCREENSHOT_ROOT to render the skill pill captures.
+- `MarkdownTextSurfaceTests.testMeasureLinePitches`: A measurement, run on request
+- `MarkdownTextSurfaceTests.testMeasureTokenCostOnOpenLists`: A measurement, run on request
+- `MarkdownTextSurfaceTests.testRenderSampleForReview`: Set PI_MARKDOWN_SNAPSHOT_DIR to render
+- `WireContractTests.testPerTokenSnapshotWithSeventyFinishedTurns`: Set PI_PERF_WIRE=1 to measure the per-token snapshot with 70 finished turns
+
+Exact final commands, each run inside the same shared-lock wrapper:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round9-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round9-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round9-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round9-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round9-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round9-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round9-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round9-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round9-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentNavigationTests \
+  -only-testing:PiAppTests/SubagentEffortTests \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests \
+  -only-testing:PiAppTests/SubagentCostTests \
+  -only-testing:PiAppTests/SubagentDisplayTests \
+  -only-testing:PiAppTests/SubagentMetadataTests
+```
+
+No helper or wire implementation changed; the full helper and Python wire/concurrent/acceptance gates were not required for this app-only fix. No UI layout or appearance changed in round 9; the inspected round-8 galleries remain the UI evidence. No source files were added or removed, so project regeneration was unnecessary. There is no unresolved product decision or unfixed round-9 finding.
+
+The final `git diff --check` passed. No clone folders remain under this build root, and no shared lock remains owned by this workstream. The rejected oversized experiment fixture was removed; 12.01 GiB remained free. Evidence is in text logs; no named result bundle was requested. No installed app, real preferences/chats, Keychain, live capture or paid provider was used. `scripts/test-lanes.py list` classifies `TranscriptBugRegressionTests` as serial (pasteboard, timing), so the new timing assertions also run alone in the lead’s full gate.

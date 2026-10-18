@@ -54,17 +54,6 @@ enum ConversationContent {
                 drawings[message.id] = .init(messageID: source, toolCallID: call)
             }
         }
-        /// A captured page can cut between a card and its retained receipt.
-        /// Adopt only their output ownership from the joined plan; unrelated
-        /// captured rows keep the presentation the reader actually saw.
-        mutating func adoptToolOutputs(_ context: Presentation, receipts: Set<String>) {
-            outputCalls.formUnion(context.outputCalls)
-            for id in receipts {
-                rows[id] = context.rows[id] ?? []
-                results[id] = context.results[id]
-                drawings[id] = context.drawings[id]
-            }
-        }
         func text(_ id: String, rawReply: Bool = false, toolInputs: [String: String] = [:]) -> String {
             if let tool = results[id] { return payload(tool, receipt: id).output }
             return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
@@ -166,7 +155,7 @@ enum ConversationContent {
         let payload = toolPayload(card, heading: heading)
         return joined([payload.input, payload.output])
     }
-    private static func toolPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil) -> (input: String, output: String) {
+    static func toolPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil) -> (input: String, output: String) {
         let model = TranscriptToolRow.model(of: tool)
         // Conversation panes always enable the file opener. The I/O fallback
         // draws its path header only when that opener has a file to link.

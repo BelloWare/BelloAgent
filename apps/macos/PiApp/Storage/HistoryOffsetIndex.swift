@@ -56,6 +56,59 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         guard status == SQLITE_ROW || status == SQLITE_DONE else { throw StoreError.unreadableRecord }
         return status == SQLITE_ROW
     }
+    /// One query's completed projections and small ownership facts. Payloads
+    /// are never retained here. Use the private index file's bounded pager:
+    /// macOS SQLite keeps TEMP tables in memory despite temp_store=FILE.
+    /// Each pass drops its tables, also on cancellation or failure.
+    final class SearchCache {
+        struct Match {
+            /// -1 is a miss; zero is the empty-query preview.
+            var count: Int
+            var preview: String
+            var drawing: ContentHit.Drawing? = nil
+            var omittedOutputs: Set<String>? = nil
+        }
+        struct Call { var card: Bool; var paired: Bool }
+        private let index: HistoryOffsetIndex
+        private let name = "search_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        init(_ index: HistoryOffsetIndex) throws {
+            self.index = index
+            do { try index.execute("CREATE TABLE \(name)(offset INTEGER PRIMARY KEY, count INTEGER, preview TEXT, drawing INTEGER, message TEXT, call TEXT); CREATE TABLE \(name)_calls(offset INTEGER, call TEXT, card INTEGER, paired INTEGER, PRIMARY KEY(offset,call)); CREATE TABLE \(name)_omitted(offset INTEGER, call TEXT, PRIMARY KEY(offset,call))") }
+            catch { clear(); throw error }
+        }
+        deinit { clear() }
+        private func clear() { try? index.execute("DROP TABLE IF EXISTS \(name); DROP TABLE IF EXISTS \(name)_calls; DROP TABLE IF EXISTS \(name)_omitted") }
+        private func text(_ statement: OpaquePointer, _ column: Int32) -> String {
+            guard let bytes = sqlite3_column_text(statement, column) else { return "" }
+            return String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(statement, column))), as: UTF8.self)
+        }
+        func match(_ offset: UInt64) throws -> Match? {
+            let statement = try index.query("SELECT count,preview,drawing,message,call FROM \(name) WHERE offset=\(offset)")
+            defer { sqlite3_finalize(statement) }
+            guard try index.next(statement) else { return nil }
+            let drawing: ContentHit.Drawing? = sqlite3_column_int(statement, 2) == 0 ? nil : .init(messageID: text(statement, 3), toolCallID: text(statement, 4))
+            let omitted = try index.query("SELECT call FROM \(name)_omitted WHERE offset=\(offset)")
+            defer { sqlite3_finalize(omitted) }
+            var calls = Set<String>()
+            while try index.next(omitted) { calls.insert(text(omitted, 0)) }
+            return .init(count: Int(sqlite3_column_int64(statement, 0)), preview: text(statement, 1), drawing: drawing, omittedOutputs: calls.isEmpty ? nil : calls)
+        }
+        func store(_ value: Match, at offset: UInt64) throws {
+            try index.done(index.query("INSERT OR REPLACE INTO \(name) VALUES(\(offset),\(value.count),?,\(value.drawing == nil ? 0 : 1),?,?)",
+                strings: [value.preview, value.drawing?.messageID ?? "", value.drawing?.toolCallID ?? ""]))
+            for call in value.omittedOutputs ?? [] { try index.done(index.query("INSERT OR IGNORE INTO \(name)_omitted VALUES(\(offset),?)", strings: [call])) }
+        }
+        func call(_ call: String, at offset: UInt64) throws -> Call? {
+            let statement = try index.query("SELECT card,paired FROM \(name)_calls WHERE offset=\(offset) AND call=?", strings: [call])
+            defer { sqlite3_finalize(statement) }
+            guard try index.next(statement) else { return nil }
+            return .init(card: sqlite3_column_int(statement, 0) != 0, paired: sqlite3_column_int(statement, 1) != 0)
+        }
+        func store(_ value: Call, call: String, at offset: UInt64) throws {
+            try index.done(index.query("INSERT OR REPLACE INTO \(name)_calls VALUES(\(offset),?,\(value.card ? 1 : 0),\(value.paired ? 1 : 0))", strings: [call]))
+        }
+    }
+
     func insert(_ ref: HistoryOffset) throws {
         try done(query("INSERT INTO refs VALUES(?,?)", strings: [ref.id], data: JSONEncoder().encode(ref)))
         if ref.calls?.isEmpty == false || ref.resultCall != nil || ref.operationID != nil { try replaceLinks(ref) }
@@ -176,6 +229,13 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     }
     /// Test seam: the database's size, on disk or held.
     var bytes: Int { ((try? scalar("PRAGMA page_count")) ?? 0) * ((try? scalar("PRAGMA page_size")) ?? 0) }
+    /// Test seams for per-search spill and cleanup, including cancellation.
+    var searchCacheTableCount: Int { (try? scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'search_%'")) ?? 0 }
+    var residentCacheBytes: Int {
+        var used: Int32 = 0, high: Int32 = 0
+        sqlite3_db_status(db, SQLITE_DBSTATUS_CACHE_USED, &used, &high, 0)
+        return Int(used)
+    }
     func timelineIDs() throws -> [String] {
         let statement = try query("SELECT id FROM visible ORDER BY n"); defer { sqlite3_finalize(statement) }
         var ids: [String] = []
