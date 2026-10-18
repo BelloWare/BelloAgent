@@ -127,6 +127,93 @@ final class PayloadArchiveTests: XCTestCase {
         try await archive.close()
     }
 
+    private func seedRetentionAttempts(_ folder: URL, template: String, count: Int) throws {
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"))
+        try db.transaction {
+            try db.execute("""
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
+            INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,outcome,wall,updated,metadata,dispatch)
+            SELECT printf('00000000-0000-0000-0000-%012d',i),session,workspace,turn,purpose,api,alias,outcome,wall,updated,
+                   CAST(json_set(metadata,'$.attemptId',printf('00000000-0000-0000-0000-%012d',i)) AS BLOB),dispatch
+            FROM n,attempts WHERE id=?
+            """, [.integer(Int64(count)), .text(template)])
+            try db.execute("""
+            INSERT INTO bodies(attempt,kind,state,reason,observed,length,digest,storage)
+            SELECT a.id,b.kind,b.state,b.reason,b.observed,b.length,b.digest,b.storage
+            FROM attempts a,bodies b WHERE b.attempt=? AND a.id!=?
+            """, [.text(template), .text(template)])
+            try db.execute("""
+            INSERT INTO refs(attempt,kind,ordinal,scope,chunk,offset,length)
+            SELECT a.id,r.kind,r.ordinal,r.scope,r.chunk,r.offset,r.length
+            FROM attempts a,refs r WHERE r.attempt=? AND a.id!=?
+            """, [.text(template), .text(template)])
+        }
+    }
+
+    func testShorteningMetricRetentionExpiresMoreThanOneHundredThousandOffRequests() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = ArchiveTestClock(), archive = PayloadArchive(root: folder, now: { clock.read() })
+        try await archive.configure(quota: nil, bodyRetention: 90 * 86400, metricRetention: 90 * 86400)
+        let id = "00000000-0000-0000-0000-000000000000"
+        var old = metadata(id: id, mode: "off", outcome: "completed")
+        old["timingVersion"] = .number(2); old["timings"] = .object(["dispatch": .number(1)])
+        try await archive.begin(old, workspace: "workspace"); try await archive.finish(old)
+        try seedRetentionAttempts(folder, template: id, count: 100_001)
+        clock.advance(2 * 86400)
+        do { try await archive.configure(quota: nil, bodyRetention: 90 * 86400, metricRetention: 86400) }
+        catch { XCTFail("Shortening retention for 100,002 Off requests failed: \(error)"); try await archive.close(); return }
+        let expired = await archive.metricExpirations
+        XCTAssertEqual(expired, 100_002)
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"), readOnly: true)
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE metrics_retained=1").first?["n"]?.number, 0)
+        var next = metadata(mode: "off", outcome: "completed")
+        next["timingVersion"] = .number(2); next["timings"] = .object(["dispatch": .number(1)])
+        try await archive.begin(next, workspace: "workspace"); try await archive.finish(next)
+        try await archive.close()
+        let reopened = PayloadArchive(root: folder, now: { clock.read() })
+        try await reopened.configure(quota: nil, bodyRetention: 90 * 86400, metricRetention: 86400)
+        let report = try await reopened.dashboard(DashboardFilter(from: Date(timeIntervalSince1970: 0), until: clock.read().addingTimeInterval(1)))
+        XCTAssertEqual(report.requests.map(\.id), [next["attemptId"]!.string!])
+        let rows = try await reopened.inspectorRows(sessionID: "session", workspaceID: "workspace")
+        XCTAssertTrue(rows.rows.contains { $0.id == next["attemptId"]?.string })
+        try await reopened.close()
+    }
+
+    func testLargeBodyAndMetricRetentionSweepsAdvancePastExportLeases() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let latch = ExportLatch(), clock = ArchiveTestClock()
+        let archive = PayloadArchive(root: folder, now: { clock.read() }, exportDidReadPage: { await latch.pause() })
+        try await archive.configure(quota: nil, bodyRetention: 90 * 86400, metricRetention: 90 * 86400)
+        let id = "00000000-0000-0000-0000-000000000000", bytes = Data("generated retention body".utf8)
+        try await archive.begin(metadata(id: id), workspace: "workspace")
+        try await archive.append(attempt: id, kind: "request", offset: 0, bytes: bytes)
+        try await archive.finish(metadata(id: id, outcome: "completed", observed: bytes.count))
+        try seedRetentionAttempts(folder, template: id, count: 100_001)
+        let export = Task { try await archive.exportRetained(sessionID: "session", attemptID: id, destination: folder) }
+        for _ in 0..<100 where !(await latch.entered) { try await Task.sleep(for: .milliseconds(10)) }
+        let entered = await latch.entered; XCTAssertTrue(entered)
+        clock.advance(2 * 86400)
+        do { try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400) }
+        catch {
+            XCTFail("The retention sweep must pass a leased first ID and expire 100,001 later captures: \(error)")
+            await latch.release(); _ = try await export.value; try await archive.close(); return
+        }
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"), readOnly: true)
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM refs").first?["n"]?.number, 1)
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE metrics_retained=1").first?["n"]?.number, 1)
+        let leased = try await archive.metadata(attempt: id)
+        XCTAssertEqual(leased["request"]?.object?["state"]?.string, "complete")
+        XCTAssertEqual(leased["metricsRetained"]?.bool, true)
+        await latch.release()
+        let saved = try await export.value
+        XCTAssertEqual(try Data(contentsOf: saved.appendingPathComponent("request.bin")), bytes)
+        try await archive.reconcile()
+        let expired = await archive.metricExpirations, largest = await archive.largestMaintenanceBatch
+        XCTAssertEqual(expired, 100_002); XCTAssertLessThanOrEqual(largest, PayloadArchive.maintenanceBatch)
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM refs").first?["n"]?.number, 0)
+        try await archive.close()
+    }
+
     /// "Copy raw request/response" used to walk the paged compatibility API,
     /// which re-reads the attempt's metadata blob and rescans all of its chunk
     /// references for every 32 KiB page. Whole-body reads walk the manifest once.

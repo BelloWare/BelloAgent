@@ -687,3 +687,314 @@ were not rerun for this app-only follow-up. All data was generated; no installed
 app, real preferences/chats/credentials, Keychain, live capture or paid provider
 was used. Only the workstream branch is committed/pushed; the lead owns the merge
 and merged full gate.
+
+
+## Round 2 hunt
+
+Baseline: `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1` (the earlier
+Inspector branch merged into `origin/dev/next`), continuing on
+`dev/a130-inspector`. All commands below run from this worktree with
+`B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector`.
+Only generated captures, temporary databases, an in-memory vault and generated
+helper replies are used. No installed app, real preferences, real credentials,
+real chats, Keychain, live capture or paid provider is involved.
+
+### INSPECTOR-STORAGE-1 — confirmed and fixed
+
+Both retention queries materialised every eligible ID through `CaptureDatabase.rows`.
+Its 100,001-row result bound rejects row 100,002 before either loop can process
+anything. Capture Off still creates durable metadata rows and can reach this
+limit without retaining a body. The fix pages both queries in ID order, at
+most `PayloadArchive.maintenanceBatch` (512) rows each, inside the existing
+single transaction. The cursor advances to the last *queried* ID, including
+leased IDs. Body eligibility uses an indexed existence lookup of references;
+expiry predicates, lease protection, tombstones and reconciliation scheduling
+are unchanged.
+
+Regression tests in `PayloadArchiveTests`:
+
+- `testShorteningMetricRetentionExpiresMoreThanOneHundredThousandOffRequests`
+  seeds 100,002 completed Off attempts within 90-day retention, advances two
+  days, shortens metric retention to one day, verifies all old metrics expire,
+  accepts a new completed attempt, reopens, and reads both dashboard and
+  Inspector rows.
+- `testLargeBodyAndMetricRetentionSweepsAdvancePastExportLeases` seeds 100,002
+  completed captures sharing generated body bytes, holds an export lease on
+  the first ID, and shortens both retention windows. All later bodies/metrics
+  expire while that export remains exact. Releasing the lease expires the
+  deferred record on the next sweep. No maintenance batch exceeds 512 rows.
+
+Failing first, before production edits (`hunt2-retention-before.log`):
+
+```text
+The retention sweep must pass a leased first ID and expire 100,001 later captures: quota
+Shortening retention for 100,002 Off requests failed: quota
+Executed 2 tests, with 2 failures (0 unexpected)
+```
+
+The same two tests pass after the fix (`hunt2-retention-fixed.log`): 2/2,
+0 failures, 42.042 seconds including fixture creation, export, reopening and
+report reads. Two earlier compile attempts only corrected missing `profileID`
+and `await` in the new Inspector fixture; their logs are
+`hunt2-before-compile.log` and `hunt2-before-compile2.log`, not failing-first
+evidence.
+
+Mutation checks (`hunt2-retention-mutations.py`, source restored after each):
+
+| Mutation | Regression | Result |
+| --- | --- | --- |
+| Restore the unbounded metric query | 100,002 Off attempts | Failed with `quota` (1 assertion) |
+| Restore the unbounded body query | Large leased sweep | Failed with `quota` (1 assertion) |
+| Remove the metric lease exclusion | Large leased sweep | Failed: leased metrics were expired |
+
+Logs: `hunt2-mutation-retention-{metrics,bodies,lease}.log`; all three mutations
+were caught. The existing single-commit, independent retention and lease tests
+are included in the final full class run below.
+
+
+### INSPECTOR-STORAGE-2 — confirmed and fixed
+
+A completed durable index row is not evidence that its payloads are durable.
+`TraceStore.saved` deliberately keeps memory bodies and event indices in the
+helper; only an acknowledged persist-mode handoff sets `savedToLog` and releases
+those buffers. Raw now checks that ownership signal for Events and retained-byte
+export. The completed archive row still supplies request identity/metrics.
+No helper protocol, retention policy, masking rule, or body-view state changes.
+
+`InspectorStorageTests.checkCompletedCaptureActions` finishes an actual generated
+archive attempt, merges its completed row with a live row, uses the real Raw
+Events page and capture-menu export action, and checks both exact binary files
+and 128-entry event pages. A test-only `HostSupervisor.commandSender` supplies
+generated debug replies matching `TraceStore`'s memory/persist/Off contracts;
+the built helper only performs its isolated startup handshake. Every debug
+command must name physical session `child`, even though the Inspector belongs
+to `parent`. Export confirmations and destination selection use existing test
+seams, then the production exporter performs its normal file writes and checks.
+
+Failing first (`hunt2-inspector-before.log`, before the routing change):
+
+```text
+testCompletedMemoryCaptureExportsBodiesAndReadsHelperEvents:
+  total Optional(0.0) is not equal to Optional(260.0)
+  The helper's retained Events must have a second page
+  false is not equal to true - memory request export availability
+  false is not equal to true - memory response export availability
+testCompletedOffCaptureReadsHelperEventsWithoutInventingBodies:
+  total Optional(0.0) is not equal to Optional(260.0)
+  The helper's retained Events must have a second page
+```
+
+The full log also contains the expected event-array mismatches: memory failed
+five assertions and Off failed three. The persisted control fixture initially
+sent a generated request as one packet larger than 32 KiB and threw `sequence`;
+that fixture was corrected to use the existing 32 KiB packet contract. It is
+not a product finding and is not counted as a reproduced regression.
+
+The first routing fix passed memory, Off, persisted, expired-metadata and
+stopped-helper cases. Its adversarial audit reproduced three timing failures
+(`hunt2-inspector-routing-and-audit-before.log`: 8 tests, 5 passed, 3 expected
+failures, 0 unexpected):
+
+| Regression | Failing-first evidence | Correction |
+| --- | --- | --- |
+| `testEventsFollowTheArchiveHandoffDuringTheRead` | `failed - the Events page` | An explicit `capture_saved` reply switches this read to the archive |
+| `testExportFollowsTheArchiveHandoffDuringTheRead` | `failed - the export manifest` | The exporter removes its incomplete staging directory, then reads the acknowledged archive |
+| `testMemoryExportKeepsItsSessionWhenSelectionChangesInTheChooser` | `failed - the export manifest` | Capture the original row's physical session before presenting the chooser |
+
+After those corrections the entire `InspectorStorageTests` class passed 25/25
+with both gallery methods enabled (`hunt2-inspector-fixed.log`). Subsequent
+source-lookup failure checks and the final full-class results are recorded below.
+
+Nearby instances fixed separately:
+
+- Completed capture-Off requests retain event indices for their latest helper
+  attempt (`TraceStore.saved` does not set `savedToLog` for Off). Those Events
+  now come from the helper; export still produces no invented body files.
+- A persist-mode request may have finished its payload handoff while its index
+  row is still live. The same ownership check selects the archive in that
+  direction too; the two explicit handoff tests cover a handoff during reading.
+- Switching to a sibling while a retained-byte export chooser is open no longer
+  changes the selected export's physical session. Event reads also keep the
+  captured row's session across the asynchronous ownership check.
+
+Other nearby findings left unchanged under the shared scope rule:
+
+- `PayloadArchive.swift:640` (`clear(sessionID:)`): 100,002 attempts in one chat
+  still exceed `CaptureDatabase.rows` before clear can purge any capture.
+- `PayloadArchive.swift:666` (`reserve(_:)`): more than 100,001 completed attempts
+  with references still exceed that reader's result bound before quota eviction
+  can free space. This is the separate quota-eviction selector, not retention.
+- `PayloadArchive.swift:511` (`eventIndices`): the boundary description still
+  claims the removed 4,096-per-request/100,000-global event caps. The existing
+  `testTheLogKeepsWhatUsedToBeCapped` stores 5,000 event indices.
+
+These are static findings from their unbounded SQL/text and the existing row
+reader/cap regression, not claims of additional runtime fixes. No owner product
+decision is needed for either assigned finding.
+
+### Adversarial review of the new diff
+
+The review compared only this round's changes with `origin/dev/next` at
+`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`. Besides the two handoff races and
+chooser/session race above, it found that swallowing an ownership-query error
+could recreate the successful empty memory export. Two more regressions were
+run before correcting that path (`hunt2-inspector-probe-before.log`):
+
+```text
+testMemoryExportDoesNotClaimSuccessWhenOwnershipLookupFails:
+  XCTAssertFalse failed - A failed ownership query cannot publish a successful empty memory export
+  XCTAssertTrue failed
+testPersistedExportRemainsReadableWhenOwnershipLookupFails passed
+Executed 2 tests, with 2 failures (0 unexpected)
+```
+
+A ready helper's unknown lookup error now surfaces unless the archive actually
+has a readable body. A confirmed `capture_unavailable`, an absent/stopped helper,
+and readable persisted data preserve the existing archive fallback. The full
+27-test storage class then passed with galleries enabled and is rerun after
+mutation restoration in the final matrix below.
+
+Every changed production condition and the newly selected states were checked:
+
+| Condition/change | States taking the new path; intended result |
+| --- | --- |
+| Retention `id > after`, ordered `LIMIT 512` | Large eligible sets now continue across batches instead of hitting the reader quota. Valid IDs are nonempty UUIDs, so the initial empty cursor omits none. ID order changes no expiry policy. |
+| Empty batch terminates each loop; advance before lease checks | A fully leased batch still advances; nonleased records behind it expire. Body and metric cursors restart independently. The large leased regression checks both selectors. |
+| Body-reference `EXISTS` replaces `IN` | The same non-null attempt references qualify, using indexed per-attempt lookup without repeatedly materialising all references. No new body state qualifies. |
+| Existing age, outcome and metric-retained predicates | Unchanged: running/streaming rows stay excluded; completed, cancelled, failed and interrupted rows expire by their original age. Idle or paused agent state does not alter archive eligibility. Independent body/metric retention and credential annotations survive. |
+| Existing lease exclusions inside the new loops | Unchanged: an in-progress export keeps its bodies and metrics; releasing it schedules reconciliation again. The actor's synchronous transaction cannot interleave a sibling begin/finish during a sweep. Reopening and subsequent durable recording are exercised. |
+| Live `savedToLog` replaces index provenance for Events/export | Completed memory and latest Off events use helper storage despite `.log`; a persist handoff can select the archive while the index still says `.live`. Unsaved persist remains in helper storage. Expired metric metadata no longer needs to reveal the original capture mode. |
+| No workspace or stopped/missing host | Historical row/cached-descriptor fallback remains; no helper is started. Persisted bytes stay readable after shutdown. Missing memory bytes are not recreated. |
+| Cached fallback requires the same request ID | Selecting a sibling cannot lend its `savedToLog` descriptor to the original row. The original row still supplies the physical session; a legacy row without one uses the Inspector scope as before. |
+| Readable archived request **or** response after a failed source query | Persisted complete/partial/interrupted/truncated bodies remain exportable if the helper fails. A credential-omitted request does not hide a readable response. Normal archive publish/finish supplies the digest for retained prefixes; exporters still verify their bytes. |
+| Explicit `capture_unavailable` versus another ready-helper error | Confirmed clearing/pruning/restart absence keeps the existing fallback. Unknown failures with no readable durable body now fail visibly, preventing a false successful memory export. The generated memory/persist failure tests check both sides. |
+| Explicit `capture_saved` during Events/body reading | Only this acknowledged handoff retries in the archive. Other read/export errors remain errors; incomplete live-export staging is removed by the existing exporter. Both races have failing-first tests. |
+| Cancellation checks around the new awaits | Cancelled page tasks stop before publishing or falling back. Existing page-key and task-cancellation guards remain. Streaming refresh, idle, pause and cancellation do not reset Raw format, pagination, or loaded partial bodies. Existing Off Links and memory-completion regressions still pass. |
+| Captured physical session for asynchronous actions | Navigating to a concurrent sibling in the chooser no longer redirects the original export. Event reads also use the captured row. Existing consent, destination checks, capture boundaries and session authorization remain in force. |
+
+No helper behavior, wire schema, quota policy, UI layout or production capture
+path was enabled or changed. The audit's additional fixes are within the two
+changed Raw action functions/source selector; unrelated archive selectors are
+listed above instead of being folded into this workstream.
+
+Inspector mutation checks (`hunt2-inspector-mutations.py`, production source
+restored after each run):
+
+| Mutation | Regression(s) | Result |
+| --- | --- | --- |
+| Restore archive-row Events routing | Completed memory and Off | 2 tests, 6 assertion failures |
+| Restore archive-row export routing | Completed memory | 1 test, 2 assertion failures: both body files absent |
+| Disable the Events `capture_saved` fallback | Events handoff | 1 test, 1 failure: Events page unavailable |
+| Disable the export `capture_saved` fallback | Export handoff | 1 test, 1 failure: no export manifest |
+| Read mutable `request.sessionID` after the chooser | Selection changes in chooser | 1 test, 1 failure: no export manifest |
+| Treat unknown ownership errors as archive success | Memory ownership-query failure | 1 test, 2 assertion failures: empty successful export and no error notice |
+
+All six variants failed for their intended assertion, with zero unexpected
+failures. Logs: `hunt2-mutation-inspector-{events-source,export-source,
+events-handoff,export-handoff,export-session,probe-error}.log`; summaries are
+`hunt2-inspector-mutations-summary.log` and
+`hunt2-inspector-mutations-remaining-summary.log`. Together with retention:
+**9 mutation variants caught, 10 test executions, 17 assertion failures,
+0 unexpected failures**. The compile-only session-mutation attempt below is
+excluded from those counts.
+
+### Commands and final validation
+
+The retention failing-first/fixed command (logs `hunt2-retention-before.log`
+and `hunt2-retention-fixed.log`):
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh \
+  -only-testing:PiAppTests/PayloadArchiveTests/testShorteningMetricRetentionExpiresMoreThanOneHundredThousandOffRequests \
+  -only-testing:PiAppTests/PayloadArchiveTests/testLargeBodyAndMetricRetentionSweepsAdvancePastExportLeases
+```
+
+The final archive/report/model command (`hunt2-final-data.log`):
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh \
+  -only-testing:PiAppTests/PayloadArchiveTests \
+  -only-testing:PiAppTests/CaptureGarbageCollectionTests \
+  -only-testing:PiAppTests/TraceArchiveTests \
+  -only-testing:PiAppTests/DashboardTests \
+  -only-testing:PiAppTests/GatewayAccountingTests \
+  -only-testing:PiAppTests/MenuBarMetricsTests \
+  -only-testing:PiAppTests/InspectorIndexTests \
+  -only-testing:PiAppTests/InspectorRequestModelTests
+```
+
+That run passed **135/135**, with zero failures or skips (85.414 seconds):
+
+| Class | Passed | Failed / skipped |
+| --- | ---: | ---: |
+| PayloadArchiveTests | 33 | 0 / 0 |
+| CaptureGarbageCollectionTests | 2 | 0 / 0 |
+| TraceArchiveTests | 7 | 0 / 0 |
+| DashboardTests | 19 | 0 / 0 |
+| GatewayAccountingTests | 25 | 0 / 0 |
+| MenuBarMetricsTests | 29 | 0 / 0 |
+| InspectorIndexTests | 11 | 0 / 0 |
+| InspectorRequestModelTests | 9 | 0 / 0 |
+
+`$B/run-ui.sh` acquires the shared `full-lane.lock` with atomic `mkdir`, writes
+the workstream owner, exports this build root and calls `scripts/test-macos.sh "$@"`;
+its EXIT trap releases only its own lock. All Inspector window, gallery and
+mutation runs use that wrapper. Classes marked `SerialTestLane` run alone.
+The final UI commands are:
+
+```sh
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$B/hunt2-gallery" \
+  "$B/run-ui.sh" -only-testing:PiAppTests/InspectorStorageTests
+"$B/run-ui.sh" -only-testing:PiAppTests/InspectorNativeControlTests
+"$B/run-ui.sh" -only-testing:PiAppTests/InspectorNativeParityTests
+"$B/run-ui.sh" -only-testing:PiAppTests/SubagentInspectorTests
+"$B/run-ui.sh" -only-testing:PiAppTests/SessionTimingTests
+"$B/run-ui.sh" -only-testing:PiAppTests/TurnAccountingTests
+```
+
+All six final UI runs passed **92/92**, with zero failures or skips:
+
+| Class | Passed | Failed / skipped | Test time (seconds) |
+| --- | ---: | ---: | ---: |
+| InspectorStorageTests (galleries enabled) | 27 | 0 / 0 | 10.935 |
+| InspectorNativeControlTests | 12 | 0 / 0 | 5.462 |
+| InspectorNativeParityTests | 7 | 0 / 0 | 35.970 |
+| SubagentInspectorTests | 7 | 0 / 0 | 1.528 |
+| SessionTimingTests | 26 | 0 / 0 | 116.342 |
+| TurnAccountingTests | 13 | 0 / 0 | 15.928 |
+
+Combined final validation: **227/227 tests in 14 classes**, zero failures and
+zero skips. Failing-first runs, mutation runs and intermediate passing controls
+are recorded separately above and are not added to this total.
+
+Logs are `hunt2-final-{inspector-gallery,inspector-controls,inspector-parity,
+subagent-inspector,session-timing,turn-accounting}.log`. Text logs are the
+evidence; no named `.xcresult` bundle was requested. No helper source or wire
+behavior changed, so helper, wire, concurrent and native acceptance suites were
+not rerun in this workstream; the lead runs the merged full gate.
+
+Gallery output: `$B/hunt2-gallery`, 38 PNGs, all inspected through ten contact
+sheets. The six new memory Events/export scenes cover light/dark at 1000, 700
+and 485-point content width (the minimum window's request pane). They show the
+second event page, its pager, Copy/menu controls and export result. The existing
+32 request/response, masked headers, purged-body and tiny-cost scenes were also
+regenerated. The new fixture initially captured a transparent standalone Raw
+view; it now wraps that view in the same opaque `FillView(.piContent)` used by
+the host. This is a screenshot-fixture correction, not a production layout change.
+
+Harness corrections are retained rather than counted as product failures:
+
+- `hunt2-data-aborted-scheduler.log`: a duplicate own build was started while an
+  earlier queued UI run acquired the lock. The new own build was immediately
+  stopped before any test began. No other workstream process or lock was touched.
+  Subsequent data and UI runs completed serially in this build root.
+- `hunt2-mutation-inspector-export-session-compile.log`: the first session
+  mutation left the now-unused local `sessionID`, and warnings-as-errors stopped
+  compilation. The corrected mutation removes that unused declaration and is
+  rerun; a compile failure is not counted as a caught mutation.
+
+Final cleanup/checks: no clone directories remain under this workstream's build
+root, no extra DerivedData copy was made, and `git diff --check` passes. All
+owned full-lane locks were released. The only unresolved items are the separate
+clear/quota selectors and stale Events-limit description listed above; both
+assigned findings and the audit's related action races are fixed.

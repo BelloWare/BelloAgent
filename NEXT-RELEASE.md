@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Retention sweeps page overdue captures, keeping Reports and durable capture recording available beyond 100,000 expired requests while respecting export leases. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed Session memory captures export their retained bytes and show helper-held Events; reads follow the acknowledged payload handoff to the archive. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed capture-Off requests show their remaining helper-held Events without inventing retained bodies. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Inspector exports keep the original request's physical session when selection changes in the destination chooser. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

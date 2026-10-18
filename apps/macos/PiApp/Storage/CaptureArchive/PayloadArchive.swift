@@ -677,32 +677,48 @@ actor PayloadArchive {
         // One commit for the whole sweep. Each eviction and each expiry used to
         // be its own transaction, which under synchronous=FULL is one fsync per
         // row: an overdue sweep of a large archive froze the app for minutes.
-        // Ids first, bodies per row, so the expiring set is never materialised
-        // with its metadata blobs at once.
+        // Page ids in key order, advancing past export leases as well as
+        // expired rows. Neither retention query materialises the overdue set.
         try db.transaction {
-        for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND wall<? AND id IN (SELECT attempt FROM refs)", [.real(time - bodyRetention)]) {
-            let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
-        }
-        for expiring in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND metrics_retained=1 AND wall<?", [.real(time - metricRetention)]) {
-            let id = try archiveText(expiring, "id")
-            guard !leases.contains(id) else { continue }
-            let row = try record(id)
-            // Keep the relationship after metrics expire. Old chat messages
-            // resolve to an explicit tombstone, never an invented HTTP body.
-            var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(try archiveText(row, "session")), "turnId": .string(try archiveText(row, "turn")), "purpose": .string(try archiveText(row, "purpose")), "api": .string(try archiveText(row, "api")), "requestedModel": .string(try archiveText(row, "alias")), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
-            // These describe the retained body, not request telemetry. Keep
-            // credential transformations visible for the body's own lifetime.
-            if let data = row["metadata"]?.data {
-                let previous = try JSONDecoder().decode([String: WireValue].self, from: data)
-                tombstone["requestScope"] = previous["requestScope"]
-                for kind in ["request", "response"] {
-                    let annotations = (previous[kind]?.object ?? [:]).filter { ["captureBytes", "credentialRedactions", "byteExact", "transformations"].contains($0.key) }
-                    if !annotations.isEmpty { tombstone[kind] = .object(annotations) }
+            var after = ""
+            while true {
+                let batch = try db.rows("SELECT id FROM attempts WHERE id>? AND outcome!='running' AND wall<? AND EXISTS (SELECT 1 FROM refs WHERE attempt=attempts.id) ORDER BY id LIMIT ?",
+                                        [.text(after), .real(time - bodyRetention), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last else { break }
+                after = try archiveText(last, "id")
+                for row in batch {
+                    let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
                 }
             }
-            try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
-            metricExpirations += 1
-        }
+            after = ""
+            while true {
+                let batch = try db.rows("SELECT id FROM attempts WHERE id>? AND outcome!='running' AND metrics_retained=1 AND wall<? ORDER BY id LIMIT ?",
+                                        [.text(after), .real(time - metricRetention), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last else { break }
+                after = try archiveText(last, "id")
+                for expiring in batch {
+                    let id = try archiveText(expiring, "id")
+                    guard !leases.contains(id) else { continue }
+                    let row = try record(id)
+                    // Keep the relationship after metrics expire. Old chat messages
+                    // resolve to an explicit tombstone, never an invented HTTP body.
+                    var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(try archiveText(row, "session")), "turnId": .string(try archiveText(row, "turn")), "purpose": .string(try archiveText(row, "purpose")), "api": .string(try archiveText(row, "api")), "requestedModel": .string(try archiveText(row, "alias")), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
+                    // These describe the retained body, not request telemetry. Keep
+                    // credential transformations visible for the body's own lifetime.
+                    if let data = row["metadata"]?.data {
+                        let previous = try JSONDecoder().decode([String: WireValue].self, from: data)
+                        tombstone["requestScope"] = previous["requestScope"]
+                        for kind in ["request", "response"] {
+                            let annotations = (previous[kind]?.object ?? [:]).filter { ["captureBytes", "credentialRedactions", "byteExact", "transformations"].contains($0.key) }
+                            if !annotations.isEmpty { tombstone[kind] = .object(annotations) }
+                        }
+                    }
+                    try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
+                    metricExpirations += 1
+                }
+            }
         }
         try collectGarbage()
         let nextBody = try db.rows("SELECT MIN(wall) AS wall FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs)").first?["wall"]?.double.map { $0 + bodyRetention }
