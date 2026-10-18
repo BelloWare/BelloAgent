@@ -9,8 +9,10 @@ proves nothing. The gateway, the summary prompt parser and the configuration
 are checked without a helper.
 """
 import argparse
+import contextlib
 import http.client
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -18,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/live-compaction-e2e.py"
@@ -94,6 +96,145 @@ class FixtureRunTests(unittest.TestCase):
             self.assertTrue(stopped and all(row["reasoningTokens"] == 8_192 for row in stopped))
         # The refusal sends no summary, so the cap cannot touch it.
         self.assertTrue(scenarios["too-large"]["passed"], scenarios["too-large"]["checks"])
+
+
+class SpendingFailureTests(unittest.TestCase):
+    """Only fakes: no helper process, credentials, network or provider calls."""
+    def failed_run(self, first, *, recovered=None):
+        with tempfile.TemporaryDirectory(prefix="pi-spend-fake-") as folder:
+            cfg = harness.Config(mode="live", out=pathlib.Path(folder), api_key="fake-key", helper="fake-helper",
+                                 base_url="https://unused.invalid", model="fake-model", window=128_000, limit=128_000,
+                                 window_source="fake", limit_source="fake", thinking="high", max_cost=1.0,
+                                 summary_limit=None, stamp="fake", keep=False,
+                                 scenarios=[first] + [name for name in harness.SCENARIOS if name != first])
+            sessions = []
+
+            class FakeSession:
+                wait = harness.Session.wait
+
+                def __init__(self, run, name, history, workspace=None):
+                    self.run, self.cfg, self.name = run, run.cfg, name
+                    self.budget = run.budget()
+                    self.opened, self.path, self.id = {"context": {"tokens": 96_000}}, None, "fake-session"
+                    self.watched, self.polls, self.closed = set(), 0, False
+                    self.helper = Mock()
+                    sessions.append(self)
+
+                def submit(self, text):
+                    return "fake-turn"
+
+                def listed(self):
+                    return [{"attemptId": "billed", "purpose": "compaction", "outcome": "completed", "status": 200,
+                             "gateway": {"cost": {"status": "reported", "usd": 0.80}}}]
+
+                def status(self):
+                    if self.closed:
+                        raise AssertionError("spending must be counted before disposal")
+                    self.polls += 1
+                    if self.polls == 1:
+                        return {"state": "running", "cost": {"spentUSD": 0.80, "reportedRequests": 1, "unreportedRequests": 0}}
+                    if self.polls > 2 and recovered is not None:
+                        return recovered
+                    raise harness.Failure("fake helper died after a billed response")
+
+                def close(self):
+                    self.closed = True
+
+            history = Mock(messages=[])
+            history.grow.return_value = history
+            history.tail_tokens.return_value = 200_000
+            # Exercise the real scenario loop, polling and report writer. Every
+            # boundary that could launch a helper or reach a network is blocked.
+            with patch.object(harness, "load_config", return_value=cfg), \
+                 patch.object(harness, "Corpus"), patch.object(harness, "History", return_value=history), \
+                 patch.object(harness, "Session", FakeSession), \
+                 patch.object(harness, "Helper", side_effect=AssertionError("no real helper")), \
+                 patch("socket.socket", side_effect=AssertionError("no network")), \
+                 patch.object(harness.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+                code = harness.main([])
+            self.assertEqual(code, 1)
+            self.assertTrue(all(session.closed for session in sessions))
+            return json.loads((cfg.out / "report.json").read_text()), sessions
+
+    def test_helper_failure_stops_later_dispatch_and_reports_unknown_spending(self):
+        for name in harness.SCENARIOS:
+            with self.subTest(scenario=name):
+                report, sessions = self.failed_run(name)
+                self.assertEqual([session.name for session in sessions], [name])
+                self.assertLessEqual(sessions[0].run.budget(), 0)
+                self.assertIsNone(report["scenarios"][0]["cost"]["spentUSD"])
+                self.assertIsNone(report["costUSD"], "unknown spending must not be reported as zero")
+
+    def test_recoverable_spending_is_counted_before_failed_scenario_disposal(self):
+        recovered = {"state": "idle", "cost": {"spentUSD": 0.80, "reportedRequests": 1, "unreportedRequests": 0}}
+        for name in harness.SCENARIOS:
+            with self.subTest(scenario=name):
+                report, sessions = self.failed_run(name, recovered=recovered)
+                self.assertEqual(report["scenarios"][0]["cost"].get("spentUSD"), 0.80)
+                self.assertEqual(report["costUSD"], 0.80)
+                self.assertEqual(sessions[0].run.spent, 0.80)
+                self.assertTrue(all(session.budget < 1.0 for session in sessions[1:]))
+
+    def test_a_still_running_or_missing_cost_status_cannot_restore_the_budget(self):
+        for recovered in [{"state": "running", "cost": {"spentUSD": 0.80, "unreportedRequests": 0}}, {"state": "idle"},
+                          [], "invalid status", {"state": "idle", "cost": ["invalid cost"]},
+                          *({"state": "idle", "cost": {"spentUSD": value, "unreportedRequests": 0}}
+                            for value in [False, "0", -1, float("nan"), 10 ** 400]),
+                          *({"state": "idle", "cost": {"spentUSD": 0.0, "unreportedRequests": value}}
+                            for value in [None, False, "0", -1])]:
+            with self.subTest(status=recovered):
+                report, sessions = self.failed_run("compact-now", recovered=recovered)
+                self.assertEqual(len(sessions), 1)
+                self.assertIsNone(report["costUSD"])
+
+    def test_unknown_spending_never_passes_a_cost_check_or_prints_a_zero_total(self):
+        for recovered in [None, {"state": "idle", "cost": {"spentUSD": 0.0, "unreportedRequests": 1}}]:
+            with self.subTest(status=recovered):
+                run = Mock(spent=0.0, unreported=0, dearest=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
+                session = Mock()
+                if recovered is None:
+                    session.status.side_effect = harness.Failure("fake helper died")
+                else:
+                    session.status.return_value = recovered
+                result = harness.Result("fake", "fake")
+                harness.count_spend(run, session, result)
+                harness.cost_check(result, run)
+                self.assertFalse(result.passed)
+                self.assertIn("run total unknown", result.checks[0]["detail"])
+
+    def test_unreported_requests_in_recovered_status_stop_later_dispatch(self):
+        recovered = {"state": "idle", "cost": {"spentUSD": 0.10, "reportedRequests": 1, "unreportedRequests": 1}}
+        report, sessions = self.failed_run("compact-now", recovered=recovered)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(report["scenarios"][0]["cost"]["completedWithoutCost"], 1)
+        self.assertFalse(report["scenarios"][0]["cost"]["spendKnown"])
+        self.assertIsNone(report["costUSD"])
+        self.assertEqual(report["knownCostUSD"], 0.10)
+
+    def test_a_broken_helper_pipe_does_not_prevent_disposal(self):
+        session = harness.Session.__new__(harness.Session)
+        session.id = "fake-session"
+        session.helper = Mock()
+        session.helper.command.side_effect = BrokenPipeError("fake closed pipe")
+        session.close()
+        session.helper.close.assert_called_once_with()
+
+    def test_completed_spending_is_counted_once_with_the_original_request_reserve(self):
+        for spent, requests in [(0.0, []), (0.30, [{"costUSD": 0.10, "costUnreported": False},
+                                                 {"costUSD": 0.20, "costUnreported": False}])]:
+            with self.subTest(spent=spent):
+                run = Mock(spent=0.0, unreported=0, dearest=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
+                session = Mock()
+                session.status.return_value = {"state": "idle", "cost": {"spentUSD": spent, "unreportedRequests": 0}}
+                result = harness.Result("fake", "fake")
+                result.requests = requests
+                harness.count_spend(run, session, result)
+                harness.count_spend(run, session, result)
+                harness.cost_check(result, run)
+                self.assertTrue(result.passed)
+                self.assertEqual(run.spent, spent)
+                self.assertAlmostEqual(harness.Run.budget(run), 1.0 if spent == 0 else 0.50)
+                session.status.assert_called_once_with()
 
 
 def summary_request(limit, effort="high"):

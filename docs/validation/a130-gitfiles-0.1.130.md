@@ -835,3 +835,605 @@ scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/File
 # proportional-split-tabs-and-files.log
 scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabPaneTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/SmoothPaneAndKeyboardTests
 ```
+
+## Round 2 hunt
+
+Work starts from merged `6fc551e1` on `dev/a130-gitfiles`, in the same
+worktree and build root. The earlier split fixes are already in that base.
+All six assigned findings are confirmed. No helper implementation, wire
+contract, project trust, permission, capture, vault, or production path changes.
+
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/round2-*`.
+Native runs use the isolated test host and this workstream's existing
+`native-tests` directory, with text logs. Each native run, including the
+galleries, acquires the shared full-lane lock and releases only its own lock
+in `finally`. Serial-lane classes run alone. The installed app was never opened.
+
+### Findings and failing-first evidence
+
+**GIT-FILES-5 — confirmed and fixed.**
+`testResizingTheAlternateScreenPreservesTheHiddenShellAndCursor` feeds the
+reported 10×4 sequence and shrinks to two rows while mode 1049 is active.
+Before the fix (`round2-terminal-before.log`):
+
+```text
+XCTAssertEqual failed: (["one", "two"]) is not equal to (["three", "four"])
+XCTAssertEqual failed: ([]) is not equal to (["one", "two"])
+```
+
+The hidden normal screen now uses the same row-resize routine as the visible
+normal screen: discard blank rows below the cursor first, archive displaced
+top rows, and restore history when growing. Wrap boundaries and history
+accounting travel with the cells. Its active and saved cursors move with the
+rows before clamping to the new bounds. Alternate-screen rows never enter
+normal scrollback.
+
+Nearby sweep: `testHiddenNormalResizeMatchesVisibleResizeIncludingHistoryAndWraps`
+compares visible and hidden resizing across modes 47/1047/1049, shrink/grow
+sequences, blank tails, existing history, styled text, wide characters and
+soft wraps. The old code failed the comparison; together with the mode-47
+save test, `round2-terminal-sweep-before.log` records 2 failing tests and
+61 failed assertions. This covers the hidden growth path as well as shrinking.
+
+**GIT-FILES-6 — confirmed and fixed.**
+`testAlternateCursorSavesDoNotOverwriteTheNormalCursor` runs the exact
+reported sequence, plus the equivalent CSI `s` and DEC mode 1048 saves.
+`testAlternateCursorSavesDoNotOverwriteTheNormalAttributes` checks normal
+foreground/bold attributes and autowrap after an alternate save. Before fixing:
+
+```text
+XCTAssertEqual failed: (["maiX", "", ""]) is not equal to (["main", "X", ""])
+XCTAssertEqual failed: (TerminalCursor(x: 4, y: 0)) is not equal to (TerminalCursor(x: 1, y: 1))
+XCTAssertFalse failed                 # normal autowrap was overwritten
+```
+
+The three original terminal regressions produced 11 failed assertions.
+Saved cursor position, style, origin, autowrap, pending wrap and character
+sets now belong to each screen. Mode 1049 saves before entering and restores
+after leaving the alternate screen, so its normal save cannot be overwritten
+there. CSI `s`/`u` retain their existing position-only semantics.
+This matches the per-screen save/restore storage in
+[xterm's cursor implementation](https://raw.githubusercontent.com/ThomasDickey/xterm-snapshots/master/cursor.c).
+
+Nearby sweep: `testEachScreenKeepsItsSavedCursorAcrossMode47Switches` failed
+both position and foreground assertions before the fix. It now checks that
+both screens retain their own saves across repeated mode-47 entries.
+The resize matrix also checks that the normal saved row follows history
+restoration, rather than jumping back to its pre-growth coordinate.
+
+Separate, trivial same-function sweep fix: `reset()` used to clear saved
+position/style while retaining saved origin, autowrap, pending wrap and
+character sets. `testResetClearsSavedCursorModesAndCharsetsOnBothScreens`
+saves nondefault modes and DEC graphics on both screens, feeds RIS (`ESC c`),
+then restores each save. `round2-terminal-reset-before.log` has 1 failing test
+and 6 failed assertions: autowrap stayed off, origin stayed on, and `q` drew
+as `─` in each screen. Reset now creates fresh saved states for both screens.
+
+Separate same-function sweep fix: `switchScreen` unconditionally cleared
+pending wrap after restoring it. `testLeavingTheAlternateScreenRestoresTheNormalsPendingWrap`
+fills a four-column normal line with `main`, enters/leaves 1049, then prints
+`X`, with no alternate save and with each supported save form. It failed all
+8 assertions: `maiX` instead of `main` / `X`. The before log is
+`round2-terminal-wrap-before.log` (the other 68 tests in that run passed).
+1049 now preserves pending wrap when the grid was not resized. A companion
+comparison, `testAlternateResizeKeepsTheNormalScreensExistingWrapBehavior`,
+caught 8 assertions where simply preserving wrap would change existing resize
+behavior. The hidden grid records whether a real resize occurred; actual
+resizes still clear pending wrap exactly as a visible normal resize does,
+including resizing away and back. A no-op resize preserves the saved wrap.
+Evidence: `round2-terminal-resized-wrap-before.log`.
+
+**GIT-FILES-7 — confirmed and fixed.**
+`testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine` holds `Options.beforeOpen`,
+mounts and paints the actual `FileTab`, verifies its syntax callback was
+invoked, and lets the initial syntax task settle before releasing the reader.
+After `.ready`, it checks keyword and number ranges and colours for
+`let value = 1\n`. The nearby growing-line case uses four-byte chunks and
+holds the second chunk in `testPaintingAGrowingLineDoesNotCacheItsPartialTokens`.
+Both failed before fixing (`round2-syntax-before.log`, 2 tests, 6 assertions):
+
+```text
+XCTAssertTrue failed - syntax fixture did not finish
+XCTAssertEqual failed: ([]) is not equal to ([{0, 3}, {12, 1}])
+```
+
+Syntax work now starts only for `isLineFinal` lines. Completed lines remain
+cached across indexing arrivals; provisional lines cannot install stale
+tokens even though indexing leaves the document generation unchanged.
+The bounded reader, checkpoints, suspension and generation checks are unchanged.
+
+**TOOLING-CONFIG-1 — confirmed and fixed, tested only with fakes.**
+`SpendingFailureTests` exercises the real scenario loop, polling and report
+writer in process with fake sessions, histories and corpus. `Helper` and
+`socket.socket` are patched to fail if reached; no live CLI, real helper,
+credential, user data or provider call runs in these tests.
+The fake polling sequence observes a billed $0.80 response and then loses the
+helper. All three scenario entry points are covered. Before fixing
+(`round2-spending-before.log`, 4 tests, 9 failing subtests):
+
+```text
+AssertionError: Lists differ: ['compact-now', 'mid-run', 'too-large'] != ['compact-now']
+AssertionError: None != 0.8             # failed scenario had no cost record
+AssertionError: 3 != 1                 # later scenarios still dispatched
+```
+
+Each scenario keeps ownership through exception accounting and closes in
+`finally`. A settled, numeric, finite, non-negative cost is counted once before
+disposal. If request collection failed, its whole recovered spend supplies a
+conservative request-size reserve. Missing, invalid or still-running accounting
+sets a sticky unknown-spend flag: the budget becomes zero, further live
+scenarios stop, and the JSON total is `null` with a separately labelled known
+subtotal. Text reports say `unknown`, including the cost-check detail.
+Recovered helper unreported-request counts also stop further dispatch, even
+when request collection never completed; their total is also unknown while
+the reported subtotal is retained. Successful accounting keeps the
+previous whole-run budget and largest-request reserve.
+
+Nearby sweep covers all three early-close paths, failure during final status
+accounting, unknown/invalid costs, and a broken pipe during session disposal.
+The broken-pipe test failed with `BrokenPipeError: fake closed pipe` before
+adding `OSError` to that close handler. Two review regressions caught Python's
+`False` being accepted as a numeric zero and a cost-check detail printing a zero
+run total for unknown spend; both were fixed before final validation. A third
+report check rejects treating the recovered reported subtotal as the whole
+total when other requests have no price.
+Malformed status/cost objects, overflowed numbers and invalid/missing request
+counters also fail closed. The expanded regression initially failed 8 subtests
+(`round2-spending-malformed-before.log`); these accounting failures now mark
+spending unknown rather than escaping accounting and leaving the budget intact.
+
+**TOOLING-CONFIG-2 — confirmed and fixed.**
+`PerformanceWrapperTests.test_an_earlier_failed_invocation_is_not_masked_by_later_success`
+uses a fake `xcodebuild` that returns 65 once, then zero. Before fixing:
+
+```text
+AssertionError: 0 == 0
+exit 65 Executed 1 tests
+exit 0 Executed 1 tests
+done
+```
+
+The wrapper retains the first nonzero status while still running later rounds,
+and exits with it. The same check covers a failing soak followed by successful
+`soakdraw`, including its temporary `ROUNDS=1` override. Successful runs still
+return zero. Generated `.xctestrun` products pass the real test-host isolation
+validator; the fake command never launches a native test or app.
+
+**TOOLING-CONFIG-3 — confirmed and fixed.**
+`test_relative_output_runs_tests_and_writes_logs_directly_in_that_folder`
+invokes the wrapper from a temporary working directory with `results`.
+Before fixing, the fake command was never invoked:
+
+```text
+AssertionError: False is not true
+results/baseline-1.log: No such file or directory
+```
+
+Both derived-data and output paths are resolved before changing directory;
+creation and navigation failures terminate immediately. Nearby regressions
+also reproduced relative derived-data failure and a non-directory output
+returning zero. The original wrapper suite had 4 failures out of 5 tests;
+the sixth test adds soak status coverage. Spaces in generated paths are covered.
+Self-review added a seventh regression for an output directory ending in a
+newline, with a separate sibling log containing a sentinel. The initial
+`$(pwd)` normalization trimmed that newline and overwrote the sibling's
+generated log (`round2-perf-whitespace-before.log`). Prefixing relative paths
+with the shell's absolute working directory preserves their bytes and avoids
+that regression; the target log now appears in the requested directory only.
+
+### Round 2 mutation checks and focused validation
+
+All mutations are temporary and restored in `finally`; failures must contain
+the named XCTest assertion failures or unittest failure summary, not merely a
+build failure. The final focused runs use the restored fixes.
+
+| Finding | Mutation | Result / text log |
+| --- | --- | --- |
+| GIT-FILES-5 | Replace hidden row resizing with the old prefix fit | Both regressions fail, 59 assertions; `round2-terminal-resize-mutation.log` |
+| GIT-FILES-5 sweep | Remove the hidden normal saved-cursor row adjustment | Resize matrix fails 3 cursor assertions; `round2-terminal-cursor-resize-mutation.log` |
+| GIT-FILES-6 | Make both screens use saved-cursor slot zero | All 3 cursor/attribute/mode-47 tests fail, 13 assertions; `round2-terminal-cursor-save-mutation.log` |
+| GIT-FILES-6 Reset sweep | Restore position/style-only Reset | Test fails 6 assertions; `round2-terminal-reset-mutation.log` |
+| GIT-FILES-6 pending-wrap sweep | Restore the unconditional pending-wrap clear | Test fails 8 assertions; `round2-terminal-wrap-mutation.log` |
+| GIT-FILES-6 resize preservation | Forget that the hidden grid was resized | Test fails 8 assertions; `round2-terminal-resized-wrap-mutation.log` |
+| GIT-FILES-7 | Remove the final-line guard | Both opening/growing tests fail, 6 assertions; `round2-syntax-mutation.log` |
+| TOOLING-CONFIG-1 | Remove exception accounting, unknown-spend blocking, status/counter validation, settled-state requirement, fallback reserve, pipe handling or unknown-total reporting | All 13 final mutations rejected; `round2-spending-final-*-mutation.log` |
+| TOOLING-CONFIG-2 | Force final exit zero | Baseline and soak regressions both fail; `round2-perf-final-exit-mutation.log` |
+| TOOLING-CONFIG-3 | Remove output/product path normalization; reintroduce newline-trimming normalization | Each targeted regression fails; `round2-perf-final-{output,products,whitespace}-mutation.log` |
+
+The native failing-first selectors were:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+
+# round2-terminal-before.log: 3 tests fail, 11 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testResizingTheAlternateScreenPreservesTheHiddenShellAndCursor \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateCursorSavesDoNotOverwriteTheNormalCursor \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateCursorSavesDoNotOverwriteTheNormalAttributes
+
+# round2-terminal-sweep-before.log: 2 tests fail, 61 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testHiddenNormalResizeMatchesVisibleResizeIncludingHistoryAndWraps \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testEachScreenKeepsItsSavedCursorAcrossMode47Switches
+
+# round2-syntax-before.log: 2 tests fail, 6 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileSyntaxTests/testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine \
+  -only-testing:PiAppTests/FileSyntaxTests/testPaintingAGrowingLineDoesNotCacheItsPartialTokens
+
+# round2-terminal-reset-before.log: 1 test fails, 6 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testResetClearsSavedCursorModesAndCharsetsOnBothScreens
+
+# round2-terminal-resized-wrap-before.log: 1 test fails, 8 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateResizeKeepsTheNormalScreensExistingWrapBehavior
+```
+
+The pending-wrap regression first failed in the full terminal command below:
+`round2-terminal-wrap-before.log` has 69 tests, 68 passed and that one failed
+with 8 assertions. Its mutation runs only
+`TerminalEmulatorTests/testLeavingTheAlternateScreenRestoresTheNormalsPendingWrap`.
+
+Mutation commands use the same selectors named in the table; the full exact
+invocations are also retained in `evidence/split-commands.txt` and
+`evidence/round2-final-commands.txt`. Each Python mutation log starts with its
+exact unittest command. The original tooling failures used:
+
+```sh
+python3 -m unittest scripts.tests.test_live_compaction_e2e.SpendingFailureTests -v
+python3 -m unittest scripts.tests.test_perf_transcript -v
+```
+
+Final focused commands (same worktree/build root, lock held per native run):
+
+```sh
+# round2-terminal-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests \
+  -only-testing:PiAppTests/TerminalSoftWrapTests \
+  -only-testing:PiAppTests/TerminalViewportTests \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests \
+  -only-testing:PiAppTests/TerminalHistoryDrawingTests \
+  -only-testing:PiAppTests/TerminalCursorAlignmentTests \
+  -only-testing:PiAppTests/TerminalPreciseScrollTests \
+  -only-testing:PiAppTests/TerminalInverseTests
+
+# round2-terminal-panel.log (serial lane, alone)
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelSerialTests
+
+# round2-terminal-audit.log (existing normal-resize/history coverage)
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelAuditTests
+
+# round2-file-views.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FileTextViewTests
+
+# round2-syntax-gallery-final.log (serial lane, alone)
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+
+# round2-terminal-gallery-final.log
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalCaptureTests
+
+# round2-tooling-final.log: 18 tests pass, no skips
+python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e.SpendingFailureTests \
+  scripts.tests.test_live_compaction_e2e.SummaryPromptTests \
+  scripts.tests.test_live_compaction_e2e.ConfigurationTests \
+  scripts.tests.test_perf_transcript -v
+
+bash -n scripts/perf-transcript.sh
+xcodegen generate --quiet
+git diff --check
+```
+
+Final counts (all restored fixes, no unexpected failures):
+
+| Suite / class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| TerminalEmulatorTests | 25 | 0 | 0 |
+| TerminalSoftWrapTests | 11 | 0 | 0 |
+| TerminalViewportTests | 7 | 0 | 0 |
+| TerminalSelectionScrollTests | 4 | 0 | 0 |
+| TerminalHistoryDrawingTests | 4 | 0 | 0 |
+| TerminalCursorAlignmentTests | 14 | 0 | 0 |
+| TerminalPreciseScrollTests | 4 | 0 | 0 |
+| TerminalInverseTests | 1 | 0 | 0 |
+| TerminalPanelSerialTests | 18 | 0 | 0 |
+| TerminalPanelAuditTests | 8 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FileTabTests | 16 | 0 | 0 |
+| FileTextViewTests | 45 | 0 | 0 |
+| FileSyntaxTests, gallery enabled | 14 | 0 | 0 |
+| TerminalCaptureTests, Round 2 gallery enabled | 1 | 1 | 0 |
+| SpendingFailureTests, fakes only | 7 | 0 | 0 |
+| SummaryPromptTests | 2 | 0 | 0 |
+| ConfigurationTests | 2 | 0 | 0 |
+| PerformanceWrapperTests, fake xcodebuild | 7 | 0 | 0 |
+
+Native aggregate: **177 passed, 1 skipped, 0 failed**. The skipped test is the
+separate legacy terminal capture, whose `PI_APP_UI_SCREENSHOT_ROOT` opt-in is
+unset; the new generated-byte gallery passed. Tooling aggregate: **18 passed,
+0 skipped, 0 failed**. All 24 final targeted mutation runs failed their
+regression assertions as intended; none was accepted on a build failure.
+
+The harness's real-helper fixture class and live CLI were not run: this
+finding was explicitly restricted to fakes/stubs. The helper and wire
+implementation did not change, so full helper and wire/concurrent/acceptance
+lanes are not required for this diff. Python compile checks and Bash syntax
+checks pass. Xcodegen leaves the project unchanged. No extra DerivedData or
+clone folders were created; the existing build root is reused.
+
+### Round 2 galleries and adversarial self-review
+
+Generated and visually inspected all eight PNGs in
+`$PI_BUILD_ROOT/evidence/round2-gallery`, holding the shared full-lane lock
+through each capture run:
+
+- `syntax-{light,dark}-{800,420}.png`: the initially held file now shows the
+  first-line keyword and number colours after loading, in both appearances
+  and at the narrow width. The file controls remain visible.
+- `terminal-restored-{light,dark}-{760,360}.png`: after alternate-screen
+  resizing, `three` and green `four!` are visible with the cursor after `!`.
+  Normal attributes survive the alternate red save. The assertions also
+  verify `one` and `two` remain in scrollback.
+
+One unassigned renderer issue is recorded, not changed: in all syntax captures,
+the plain `value =` following `let` inherits the keyword's purple, although
+the regression verifies that colour runs cover only `let` and `1`.
+`packages/bello-views/Sources/FileView/FileTextView.swift:248–251` leaves plain
+runs using foreground-from-context while assigning explicit token colours;
+`:777–791` sets the context foreground once before drawing the mixed line.
+This is the likely cause of the colour bleed. That renderer and the completed
+line's colour runs are unchanged by this fix. No separate baseline native
+experiment was run for this out-of-scope observation.
+
+Adversarial self-review covers the new diff from `6fc551e1`, including every
+changed production condition:
+
+| Condition / state change | States now handled differently; intended result |
+| --- | --- |
+| Saved-cursor screen index | Alternate saves/restores use their own slot. Normal saves, position-only CSI saves, and mode-47 live-style behavior retain their existing semantics. Mode 1049 switches back to normal before restoring. |
+| Hidden-screen resize branch | A saved normal grid now runs the existing cursor-aware row algorithm. The active grid's shrink/grow/blank-tail conditions are unchanged; only the hidden normal grid newly accesses normal history. |
+| `normal` history checks | The active screen gets the same `!alternateScreen` value as before. Hidden normal rows archive/restore; alternate rows still cannot enter scrollback. Limits and byte/cell accounting use the existing history routines. |
+| Cursor bounds after hidden row movement | A displaced saved row can now become negative; it is clamped to zero, and the saved 1049 row shifts with restored history. Ordinary nonnegative active saves keep their prior bounds. |
+| Reset of saved states | Previously saved nondefault modes/character sets now return to initial defaults on RIS, in both screens. This is the separately tested trivial same-function sweep fix. |
+| Pending wrap after screen restoration | Only a cursor-restoring exit with no actual grid resize retains the saved pending wrap. Entry, non-restoring exit and any real resize keep the old clearing behavior; no-op resizing does not change it. The resize flag resets on entry and RIS, and survives a resize away and back. |
+| Syntax final-line guard | Initial empty and growing provisional lines defer syntax work. Finished lines, empty final lines, suspension, generation changes and completed-line cache reuse retain their existing paths. |
+| Accounting recovery and validation | Missing/dead/malformed replies, running snapshots, invalid prices or missing/invalid unreported counters mark spend unknown. Settled numeric zero and positive costs with valid counters remain accepted. Ordinary recovery exceptions cannot escape without closing the budget. |
+| Failed-scenario ownership | Every constructed scenario session is counted before exceptional disposal. Constructors do not dispatch model requests. Successful scenarios still account in `run_scenario`, once. |
+| Request reserve fallback | Collected requests retain the previous largest-request calculation. A failed collection with recovered spending reserves the whole scenario amount conservatively. |
+| Unreported aggregation and budget/loop checks | Missing request collection can no longer conceal the helper's unreported counter. Unknown or unreported spending blocks dispatch; fully reported spending keeps the prior budget calculation. |
+| Cost-check and report conditions | Unknown/unpriced totals cannot pass the cost check or print zero; JSON totals are null and reported subtotals remain labelled separately. Successful fully priced reports remain numeric. |
+| Session-close exception handling | A broken helper pipe no longer prevents process disposal. Other session and helper ownership remains unchanged. |
+| Absolute-path checks | Only relative arguments gain the current-directory prefix. Absolute paths and all path whitespace retain their bytes; mkdir/cd failures stop the wrapper. The real test-host guard still runs before any test command. |
+| Performance failure accumulation | The first nonzero invocation status survives later successes, across rounds and soak functions. All-success runs still exit zero and later rounds still execute after failure. |
+
+The review added regressions for Reset state, pending wrap and its resize
+interaction, malformed accounting, explicit unknown totals and output-path
+newline preservation, and checked each fix with mutation. No unresolved
+assigned finding or owner product decision remains. The separate renderer
+colour-bleed observation above remains unassigned.
+
+## Round 2 review — selection coordinates and plain syntax ink
+
+Base: `8cb055b9`, still on `dev/a130-gitfiles`. No merge or fast-forward to
+`dev/next`. Build root and evidence remain this workstream's own. Only generated
+VT bytes and file fixtures are used; no installed app, real preferences,
+Keychain, live capture, real credentials or provider calls. All native and
+package UI test runs, including captures, hold the shared full-lane lock and
+release only their own lock. The helper and wire are unchanged.
+
+### Confirmations, fixes and nearby sweep
+
+**Review finding — confirmed and fixed.**
+`TerminalSelectionScrollTests.testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth`
+selects two alternate rows (`ALT` / `NEXT`) above a full four-row hidden normal
+screen, then shrinks to two and grows back. It checks all three screen modes
+47/1047/1049, both view-driven resizing and direct emulator resizing followed by
+refresh, and a one-line history limit that forces eviction. Before the fix,
+`round2-review-before.log` records 36 failed selection assertions:
+
+```text
+XCTAssertEqual failed: (Optional("")) is not equal to (Optional("ALT\nNEXT"))
+# after growing with capped history:
+XCTAssertEqual failed: (Optional("ALT")) is not equal to (Optional("ALT\nNEXT"))
+```
+
+Selection endpoints now move by the change in the alternate screen's absolute
+origin: `trimmedLines + scrollback.count`. Both `fitGrid()` and `refresh()`
+apply that shift before adopting the new origin, so a subsequent refresh does
+not apply it twice. Normal-screen selections retain their absolute history
+coordinates. Screen switches and history clearing retain their existing
+selection invalidation.
+
+Nearby sweep found the same coordinate issue in the active drag anchor.
+`testAnAlternateDragAnchorFollowsHiddenHistory` begins at column 3 of `ALTword`,
+resizes while dragging, then extends and shortens the selection. The focused
+before run (`round2-review-anchor-before.log`, one failure) returned `ALTwor`
+instead of `wor`. The anchor now moves with both endpoints. The history-cap
+variant also proves that checking only `scrollback.count` misses movement
+when old history is evicted. `testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing`
+is an unchanged-behaviour control and passed before fixing.
+
+**Syntax colour bleed — confirmed and fixed.** This resolves the previously
+unassigned renderer observation in the Round 2 hunt section.
+`FileTextViewTests.testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances`
+paints `let value = 1` in light, dark, then light again using the same view.
+Before fixing, all three captures had zero pixels matching the plain text
+colour in `value =` (`round2-review-before.log`):
+
+```text
+XCTAssertGreaterThan failed: (0) is not greater than (5)
+- plain value = must use plain ink in NSAppearanceNameAqua
+- plain value = must use plain ink in NSAppearanceNameDarkAqua
+```
+
+`testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid` also found plain
+CoreText runs still using foreground-from-context. It covers short lines,
+multiple pieces and the long-line grid (13, 3,000 and 70,000 UTF-16 units),
+including pieces with no coloured tokens. Mixed syntax lines now assign the
+host's plain text colour to the whole piece before applying token colours.
+Files without a syntax callback keep the existing context-colour path and
+appearance-independent layout reuse. Existing syntax appearance invalidation
+rebuilds mixed lines when the theme changes.
+
+Nearby sweep: the gutter's context-colour runs have one colour per draw and
+no mixed syntax tokens, so they do not have this bug. The shared piece builder
+handles ordinary and grid pieces; the regression checks both. Style changes
+already replace metrics and layouts, so the new plain colour follows the
+host's style without a new invalidation rule.
+
+### Mutation and focused evidence
+
+The before run selected the three new terminal tests and the two new file
+rendering tests: 5 tests, 3 failed, 67 assertion failures; the normal-selection
+control and the initial zero-column drag variant passed. The strengthened
+nonzero-column drag test then failed alone before any production fix.
+Test setup also corrected a CoreFoundation cast rejected by the compiler and
+then read the AppKit foreground attribute key from CoreText's retained
+attributes (the wrong key produced 14 test-assertion failures). Those setup
+logs are retained as `round2-review-test-build-error.log` and
+`round2-review-attribute-key-error.log`; the pixel oracle was unchanged.
+
+The immediate fixed run passed all 9 selected tests. Six temporary mutations
+were then rejected by the named regression assertions, not by build failures;
+each source was restored in `finally` before the final runs:
+
+| Mutation | Failed tests / assertions | Log under `evidence/` |
+| --- | --- | --- |
+| Remove the post-resize rebase | 1 / 18 | `round2-review-mutation-fit.log` |
+| Remove the refresh rebase | 1 / 18 | `round2-review-mutation-refresh.log` |
+| Do not rebase the drag anchor | 1 / 1 | `round2-review-mutation-anchor.log` |
+| Ignore trimmed history in the origin | 1 / 24 | `round2-review-mutation-trimmed.log` |
+| Rebase normal selections as well | 1 / 2 | `round2-review-mutation-normal.log` |
+| Restore context ink for plain runs, with explicit token ink only | 2 / 31 | `round2-review-mutation-ink.log` |
+
+Every native invocation below uses:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+# Each invocation acquires/releases the shared full-lane lock.
+```
+
+Before / immediate-after selectors and exact mutation commands are in
+`evidence/split-commands.txt`; final commands, including gallery variables and
+the package scratch directory, are in `evidence/round2-review-commands.txt`.
+The initial failing command was:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing \
+  -only-testing:PiAppTests/FileTextViewTests/testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances \
+  -only-testing:PiAppTests/FileTextViewTests/testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid
+
+# Nonzero-column drag, before fixing:
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory
+```
+
+Final commands (serial-lane classes are separate):
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests \
+  -only-testing:PiAppTests/TerminalViewportTests \
+  -only-testing:PiAppTests/TerminalSoftWrapTests \
+  -only-testing:PiAppTests/TerminalHistoryDrawingTests \
+  -only-testing:PiAppTests/TerminalCursorAlignmentTests \
+  -only-testing:PiAppTests/TerminalPreciseScrollTests \
+  -only-testing:PiAppTests/TerminalInverseTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelSerialTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelAuditTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileTextViewTests \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FileFindTabTests \
+  -only-testing:PiAppTests/FilePageReadTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalCaptureTests
+swift build --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" --build-tests
+CFFIXED_USER_HOME="$PI_BUILD_ROOT/views-test-home" swift test \
+  --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" \
+  --filter 'FileTextStyleTests|FileFindTests|FileDocumentTests'
+xcodegen generate --quiet
+git diff --check
+```
+
+Final restored-source counts:
+
+| Run / class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| TerminalEmulatorTests | 25 | 0 | 0 |
+| TerminalSelectionScrollTests | 7 | 0 | 0 |
+| TerminalViewportTests | 7 | 0 | 0 |
+| TerminalSoftWrapTests | 11 | 0 | 0 |
+| TerminalHistoryDrawingTests | 4 | 0 | 0 |
+| TerminalCursorAlignmentTests | 14 | 0 | 0 |
+| TerminalPreciseScrollTests | 4 | 0 | 0 |
+| TerminalInverseTests | 1 | 0 | 0 |
+| TerminalPanelSerialTests | 18 | 0 | 0 |
+| TerminalPanelAuditTests | 8 | 0 | 0 |
+| FileTextViewTests | 47 | 0 | 0 |
+| FileTabTests | 16 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FilePageReadTests | 3 | 0 | 0 |
+| FileSyntaxTests, gallery enabled | 14 | 0 | 0 |
+| TerminalCaptureTests, generated-byte gallery enabled | 1 | 1 | 0 |
+| Package FileDocumentTests | 35 | 0 | 0 |
+| Package FileFindTests | 14 | 0 | 0 |
+| Package FileTextStyleTests | 3 | 0 | 0 |
+
+Native: **201 passed, 1 skipped, 0 failed**. BelloViews package: **52 passed,
+0 skipped, 0 failed**. The skip is the separate legacy terminal-capture opt-in;
+the new captures all ran. Text logs are `round2-review-{terminal,panel,audit,files}-final.log`,
+`round2-review-{syntax,terminal}-gallery.log` and `round2-review-views-final.log`.
+No final unrelated test failures. Package build, `xcodegen generate --quiet`
+and `git diff --check` pass; the generated project is unchanged. No clone
+folders remain and no extra DerivedData copy was created. The package uses
+`views-verify` under this build root. No helper or wire code changed, so the
+full helper/wire/concurrent/acceptance lanes were not needed.
+
+### Galleries and adversarial self-review
+
+Regenerated and visually inspected all 12 images under
+`$PI_BUILD_ROOT/evidence/round2-review-gallery`, with the lock held for captures:
+
+- `syntax-{light,dark}-{800,420}.png`: `let` stays purple, `1` stays blue, and
+  `value =` now draws in the host's plain text colour at both widths. The old
+  purple bleed is gone in both appearances.
+- `terminal-selected-{light,dark}-{760,360}.png`: both selected alternate rows
+  remain highlighted after shrinking, matching the asserted `ALT\nNEXT` copy
+  text. Text contrasts with the selection background at both widths.
+- `terminal-restored-{light,dark}-{760,360}.png`: the earlier restoration
+  scene still shows `three`, green `four!`, and the cursor after `!`.
+
+Image hashes are retained in `evidence/round2-review-gallery-inspected-hashes.json`.
+
+Every changed production condition and coordinate update was reviewed:
+
+| Change | States affected and preservation check |
+| --- | --- |
+| Alternate-screen guard in selection rebasing | Only alternate selections move with hidden history; normal selections keep absolute coordinates, covered by the normal control and guard mutation. |
+| Origin delta includes trimmed history | Growing gives a negative shift; shrinking gives a positive shift even at a full history cap. No movement gives zero. Both endpoints and the active anchor receive the same shift. |
+| Rebase after resize, before updating `producedLines` | View-driven resizing applies the change immediately; refresh sees the adopted origin and cannot double-shift. |
+| Rebase in refresh after clear/switch handling | Direct emulator resizing is covered. Clear/switch handling first removes old selections and anchors, so they cannot migrate between screens. |
+| `syntax != nil` piece branch | Mixed pieces receive explicit default ink, even when a piece has no tokens. Syntax-free files retain context-colour reuse. Empty pieces remain valid zero-length attributed strings. |
+| Existing token range guard | Unchanged: only valid ranges override the default ink. Glyph metrics, source reads, selection, paging and line-piece bounds are unchanged. |
+| Existing style/appearance invalidation | Host style changes rebuild metrics/layouts. Theme changes rebuild syntax layouts; the light→dark→light pixel test covers reuse across appearances. |
+
+The complete new diff from `8cb055b9` was reviewed adversarially, including the
+test oracles and the six mutations above. Both assigned items are confirmed
+and fixed. No unresolved finding or owner decision remains in this follow-up.

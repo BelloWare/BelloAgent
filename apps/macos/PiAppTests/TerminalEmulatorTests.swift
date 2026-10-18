@@ -170,6 +170,108 @@ final class TerminalEmulatorTests: XCTestCase {
         XCTAssertEqual(terminal.rows, 3); XCTAssertEqual(terminal.columns, 6)
     }
 
+    func testResizingTheAlternateScreenPreservesTheHiddenShellAndCursor() {
+        let terminal = emulator(10, 4)
+        terminal.feed("one\r\ntwo\r\nthree\r\nfour")
+        terminal.feed("\u{1b}[?1049h")
+        terminal.resize(columns: 10, rows: 2)
+        terminal.feed("\u{1b}[?1049l")
+        XCTAssertEqual(rows(terminal), ["three", "four"])
+        XCTAssertEqual(terminal.scrollback.map(\.text), ["one", "two"])
+        XCTAssertEqual(terminal.cursor, TerminalCursor(x: 4, y: 1))
+    }
+
+    func testAlternateCursorSavesDoNotOverwriteTheNormalCursor() {
+        for save in ["\u{1b}7", "\u{1b}[s", "\u{1b}[?1048h"] {
+            let terminal = emulator(12, 3)
+            terminal.feed("main\r\n")
+            terminal.feed("\u{1b}[?1049h\u{1b}[HALT" + save + "\u{1b}[?1049lX")
+            XCTAssertEqual(rows(terminal), ["main", "X", ""], save.debugDescription)
+            XCTAssertEqual(terminal.cursor, TerminalCursor(x: 1, y: 1), save.debugDescription)
+        }
+    }
+
+    func testAlternateCursorSavesDoNotOverwriteTheNormalAttributes() {
+        let terminal = emulator(12, 3)
+        terminal.feed("\u{1b}[31;1m\u{1b}[?7lmain\r\n")
+        let normal = terminal.style
+        terminal.feed("\u{1b}[?1049h\u{1b}[H\u{1b}[0;44m\u{1b}[?7hALT\u{1b}7")
+        terminal.feed("\u{1b}[?1049lX")
+        XCTAssertEqual(terminal.style, normal)
+        XCTAssertFalse(terminal.autowrap)
+        XCTAssertEqual(terminal.screen[1][0].style, normal)
+    }
+
+    func testLeavingTheAlternateScreenRestoresTheNormalsPendingWrap() {
+        for save in ["", "\u{1b}7", "\u{1b}[s", "\u{1b}[?1048h"] {
+            let terminal = emulator(4, 3)
+            terminal.feed("main\u{1b}[?1049h\u{1b}[HALT" + save + "\u{1b}[?1049lX")
+            XCTAssertEqual(rows(terminal), ["main", "X", ""], save.debugDescription)
+            XCTAssertEqual(terminal.cursor, TerminalCursor(x: 1, y: 1), save.debugDescription)
+        }
+    }
+
+    func testAlternateResizeKeepsTheNormalScreensExistingWrapBehavior() {
+        for sizes in [[(4, 3)], [(8, 3)], [(4, 2)], [(3, 3)], [(8, 3), (4, 3)]] {
+            let visible = emulator(4, 3), hidden = emulator(4, 3)
+            visible.feed("main"); hidden.feed("main\u{1b}[?1049h")
+            for (columns, rows) in sizes {
+                visible.resize(columns: columns, rows: rows)
+                hidden.resize(columns: columns, rows: rows)
+            }
+            hidden.feed("\u{1b}[?1049l")
+            visible.feed("X"); hidden.feed("X")
+            XCTAssertEqual(hidden.screen, visible.screen, "\(sizes)")
+            XCTAssertEqual(hidden.cursor, visible.cursor, "\(sizes)")
+        }
+    }
+
+    func testHiddenNormalResizeMatchesVisibleResizeIncludingHistoryAndWraps() {
+        for mode in [47, 1047, 1049] {
+            for text in ["one\r\ntwo", "one\r\ntwo\r\nthree\r\nfour", "\u{1b}[31mabcdefghijklmnop\r\n中文\r\ntail\r\nend"] {
+                for sizes in [[(6, 2)], [(14, 6)], [(6, 2), (14, 6), (10, 3)]] {
+                    let visible = emulator(10, 4), hidden = emulator(10, 4)
+                    visible.feed(text); hidden.feed(text)
+                    hidden.feed("\u{1b}[?\(mode)h\u{1b}[HALT")
+                    for (columns, rows) in sizes {
+                        visible.resize(columns: columns, rows: rows)
+                        hidden.resize(columns: columns, rows: rows)
+                    }
+                    hidden.feed("\u{1b}[?\(mode)l")
+                    XCTAssertEqual(hidden.screen, visible.screen, "mode \(mode), \(sizes)")
+                    XCTAssertEqual(hidden.screenWrapColumns, visible.screenWrapColumns)
+                    XCTAssertEqual(hidden.scrollback.map(\.cells), visible.scrollback.map(\.cells))
+                    XCTAssertEqual(hidden.scrollback.map(\.wrappedAt), visible.scrollback.map(\.wrappedAt))
+                    XCTAssertEqual(hidden.cursor, visible.cursor)
+                }
+            }
+        }
+    }
+
+    func testEachScreenKeepsItsSavedCursorAcrossMode47Switches() {
+        let terminal = emulator(12, 4)
+        terminal.feed("\u{1b}[2;2H\u{1b}[31m\u{1b}7\u{1b}[?47h")
+        terminal.feed("\u{1b}[3;3H\u{1b}[32m\u{1b}7\u{1b}[?47l\u{1b}8")
+        XCTAssertEqual(terminal.cursor, TerminalCursor(x: 1, y: 1))
+        XCTAssertEqual(terminal.style.foreground, .indexed(1))
+        terminal.feed("\u{1b}[H\u{1b}[34m\u{1b}7\u{1b}[?47h\u{1b}8")
+        XCTAssertEqual(terminal.cursor, TerminalCursor(x: 2, y: 2))
+        XCTAssertEqual(terminal.style.foreground, .indexed(2))
+    }
+
+    func testResetClearsSavedCursorModesAndCharsetsOnBothScreens() {
+        let terminal = emulator(12, 4)
+        let save = "\u{1b}(0\u{1b}[?7l\u{1b}[?6h\u{1b}7"
+        terminal.feed(save + "\u{1b}[?47h" + save + "\u{1b}c")
+        for alternate in [false, true] {
+            if alternate { terminal.feed("\u{1b}[?47h") }
+            terminal.feed("\u{1b}8q")
+            XCTAssertTrue(terminal.autowrap, "reset clears the saved wrap mode")
+            XCTAssertFalse(terminal.originMode, "reset clears the saved origin mode")
+            XCTAssertEqual(terminal.text(ofRow: 0), "q", "reset clears the saved DEC graphics charset")
+        }
+    }
+
     /// The history keeps lines as text and style runs, not as one cell per
     /// column. What comes back must be exactly what left the screen.
     func testAHistoryLineComesBackExactlyAsItLeftTheScreen() {

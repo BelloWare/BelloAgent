@@ -5,6 +5,50 @@ import AppKit
 /// Opt-in visual evidence for the terminal: a real shell in the app's own
 /// terminal view, captured in both appearances next to the gallery captures.
 final class TerminalCaptureTests: XCTestCase {
+    @MainActor func testRestoredShellAfterAlternateResizeGallery() async throws {
+        guard let root = testEnvironment("PI_ROUND2_GITFILES_GALLERY") else { throw XCTSkip("Set PI_ROUND2_GITFILES_GALLERY to capture") }
+        let folder = URL(fileURLWithPath: root)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width in [760, 360] {
+                let terminal = TerminalEmulator()
+                // Only generated VT bytes; no shell or user files.
+                let terminalView = TerminalView(emulator: terminal)
+                let height = terminal.cellPixelSize.height
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Double(width), height: 16 + 4 * height), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance)
+                window.contentView = terminalView; window.makeKeyAndOrderFront(nil)
+                defer { window.contentView = nil; window.close() }
+                terminalView.layoutSubtreeIfNeeded()
+                XCTAssertEqual(terminal.rows, 4)
+                terminal.feed("one\r\ntwo\r\nthree\r\n\u{1b}[32mfour")
+                terminal.feed("\u{1b}[?1049h\u{1b}[H\u{1b}[31mALT\u{1b}7")
+                window.setContentSize(NSSize(width: Double(width), height: 16 + 2 * height))
+                terminalView.layoutSubtreeIfNeeded()
+                terminal.feed("\u{1b}[?1049l!")
+                terminalView.refresh()
+                XCTAssertEqual(terminal.screenText, "three\nfour!")
+                XCTAssertEqual(terminal.scrollback.map(\.text), ["one", "two"])
+                try await Task.sleep(for: .milliseconds(150))
+                let bitmap = try XCTUnwrap(terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds))
+                terminalView.cacheDisplay(in: terminalView.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: folder.appendingPathComponent("terminal-restored-\(name)-\(width).png"))
+                window.setContentSize(NSSize(width: Double(width), height: 16 + 4 * height))
+                terminalView.layoutSubtreeIfNeeded()
+                terminal.feed("\u{1b}[?1049h\u{1b}[H\u{1b}[0m\u{1b}[?25lALT\r\nNEXT")
+                terminalView.refresh(); terminalView.selectAll(nil)
+                window.setContentSize(NSSize(width: Double(width), height: 16 + 2 * height))
+                terminalView.layoutSubtreeIfNeeded(); terminalView.refresh()
+                XCTAssertEqual(terminalView.selectedText, "ALT\nNEXT")
+                let selected = try XCTUnwrap(terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds))
+                terminalView.cacheDisplay(in: terminalView.bounds, to: selected)
+                try XCTUnwrap(selected.representation(using: .png, properties: [:]))
+                    .write(to: folder.appendingPathComponent("terminal-selected-\(name)-\(width).png"))
+            }
+        }
+    }
+
     @MainActor func testCaptureTerminalInBothAppearances() async throws {
         guard let root = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else { throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to capture the terminal") }
         let folder = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent("screenshots")
