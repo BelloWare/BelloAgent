@@ -442,6 +442,7 @@ struct ComposerEditMeasurement {
         let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
         guard let storage = destination.storage else { destination.reject?("Desktop image storage is unavailable. Attach an image file instead."); return true }
         let importing = destination.beginImport()
+        guard importing.isCurrent() else { importing.finish(); return true }
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
         // milliseconds. Only the bytes are taken here; the rest happens off

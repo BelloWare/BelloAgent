@@ -106,6 +106,30 @@ final class WindowLifecycleTests: XCTestCase, SerialTestLane {
         try await model.traces.close(); await model.store?.close()
     }
 
+    @MainActor func testQuitRechecksImagesStartedWhileTheStopQuestionIsOpen() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(root); defer { model.shutdown() }
+        let view = SessionDisplay(id: "chat"); view.state = "running"; view.selectionMetadataLoaded = true
+        model.displays[view.id] = view
+        let (window, restore) = onlyWindow(); defer { restore() }
+        let lifecycle = ApplicationLifecycle(); lifecycle.model = model
+        var answers: [Bool] = []; lifecycle.answerTermination = { answers.append($0) }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await settle { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let importing = model.beginImageImport(sessionID: view.id); defer { importing.finish() }
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await settle { !answers.isEmpty }
+        XCTAssertEqual(answers, [false])
+        XCTAssertFalse(model.isShutDown); XCTAssertFalse(model.installPreparing)
+        XCTAssertTrue(importing.isCurrent())
+        importing.finish(); view.state = "idle"
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await settle { answers.contains(true) }
+        XCTAssertEqual(answers, [false, true])
+        try await model.traces.close(); await model.store?.close()
+    }
+
     /// With nothing running, quit goes straight to saving and answers only
     /// once every draft and preference has actually landed.
     @MainActor func testQuittingWithNothingRunningFlushesTheDraftBeforeAnswering() async throws {

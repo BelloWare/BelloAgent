@@ -194,6 +194,7 @@ extension WorkspaceModel {
                     if let self, self.hosts[item.workspaceID] === host, host.connectionID == connection {
                         self.retireBudgetRead(id)
                         self.opened.remove(id); self.budgetDependencySessions.remove(id); self.releasedHelperSessions.remove(id)
+                        self.sessionProfileRevisions.removeValue(forKey: id); self.sessionConfigurations[id]?.task.cancel()
                         unloaded = true
                     }
                 } catch { /* A busy runtime remains loaded, including its tool mode. */ }
@@ -208,6 +209,7 @@ extension WorkspaceModel {
         retireBudgetRead(id)
         if record(id) == nil { budgetStates.removeValue(forKey:id) }
         opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
+        sessionProfileRevisions.removeValue(forKey: id); sessionConfigurations[id]?.task.cancel()
         releaseUnusedBudgetSessions()
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {
@@ -261,7 +263,10 @@ extension WorkspaceModel {
                   sideBudgetParent(owner).flatMap({ record($0) }) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
             _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
-        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady { idleTasks[item.workspaceID]?.cancel(); accepted = true; return host }
+        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
+            if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
+            idleTasks[item.workspaceID]?.cancel(); accepted = true; return host
+        }
         if isEphemeral(item.id) { throw HostError.failure("This unkept side lost its host. Open a new side from the parent; nothing was replayed.") }
         // Preserve the opening contract used by connection switching. A caller
         // waiting behind a switch pins its budget but has not begun this open.
@@ -317,6 +322,12 @@ extension WorkspaceModel {
                     try await withConnectionOpen(item, lease: lease, host: host) {
                         try await reconcileJournal(item.id, host: host, profile: profile)
                         let initial = try await host.request("session.open", sessionID: item.id, params: params)
+                        // A prior open may have created this runtime before
+                        // capture/path setup failed. session.open then returns
+                        // that same runtime without applying its new arguments.
+                        if sessionProfileRevisions[item.id]?.connection != host.connectionID {
+                            sessionProfileRevisions[item.id] = (host.connectionID, profile.revision)
+                        }
                         budgetState(for:item.id).limitSent = costLimit(for:item.id)
                         observeCost(initial.object ?? [:],sessionID:item.id)
                         // Previewing a fresh chat allocates a native journal too. Persist
@@ -349,6 +360,7 @@ extension WorkspaceModel {
                         displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
                         displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
+                        if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
                     }
                 }
                 sessionOpenings[item.id] = (token, task)

@@ -448,6 +448,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// close or connection switch, before session opening itself begins.
     var budgetOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// The profile revision acknowledged by each runtime, including a queued
+    /// change for its next turn. Credential updates share one writer per chat.
+    var sessionProfileRevisions: [String: (connection: UUID?, revision: String)] = [:]
+    var sessionConfigurations: [String: (token: UUID, task: Task<Void, Error>)] = [:]
     /// Runtimes opened solely to supply a saved side's budget, and explicit
     /// display releases that the helper may have refused while a side pinned it.
     var budgetDependencySessions: Set<String> = []
@@ -497,6 +501,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var journalSlimming: Task<Void, Never>?
     var pastedImageCleanup: Task<Void, Never>?
     var attachmentImports = 0
+    var attachmentInspect: @Sendable (URL) throws -> AttachmentRecord = AttachmentRecord.inspect
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []

@@ -14,6 +14,11 @@
 - [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-5: Replacement keys reach opening/loaded chats, new sides and forks, and retried opens before later work uses their runtime. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-WORKSPACE-6: Switching sides cannot discard a first send or an unfinished image import; publication rechecks ownership after opening the parent. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] A late side-publication callback preserves the saved sibling's focus and boundary after navigation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-2: Quit refuses while images import, updates defer, and shutdown blocks new imports; Quit's confirmation rechecks imports before flushing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-3: Restart Terminal uses the relocated project folder while preserving terminal identity, name and generation checks. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
 - [x] GIT-FILES-1: Git preserves project-path whitespace, so Discard cannot target a trimmed sibling repository. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
 - [x] GIT-FILES-2: Image/PDF previews finish active reads during sibling-folder activity, then recheck queued changes.
 - [x] GIT-FILES-3: Identical normal and inverse terminal glyphs keep distinct cached foreground colours.

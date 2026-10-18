@@ -188,10 +188,12 @@ extension WorkspaceModel {
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
         try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
         let host = try await open(parent); host.isBusy = true
-        sides[parentID]?.pending = false
         let result: [String: WireValue]
         var written = false
         do {
+            guard sides[parentID]?.id == id, displays[id] === view else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
+            sides[parentID]?.pending = false
+            sessionProfileRevisions[id] = sessionProfileRevisions[parentID] ?? profiles.first(where: { $0.id == info.profileID }).map { (host.connectionID, $0.revision) }
             // Sides share the main chat’s budget.
             result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
             written = true
@@ -218,8 +220,10 @@ extension WorkspaceModel {
         let initial = try await host.request("session.status", sessionID: id)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
-        sides[parentID]?.boundary = result["side"]?.object ?? [:]; opened.insert(id); view.captureAvailable = true
-        if selectedID == parentID { focusedSessionID = id }
+        if sides[parentID]?.id == id { sides[parentID]?.boundary = result["side"]?.object ?? [:] }
+        opened.insert(id); view.captureAvailable = true
+        try await reconcileSessionProfile(saved, host: host)
+        if selectedID == parentID, sides[parentID]?.id == id { focusedSessionID = id }
         updateHostActivity(workspaceID: info.workspaceID); refresh(id)
     }
     /// Drops a side that never sent a message, moving its whole unsent draft
@@ -229,6 +233,9 @@ extension WorkspaceModel {
     @discardableResult
     func discardPendingSide(_ info: SideRecord) async -> Bool {
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
+        guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0 else {
+            error = "Wait for the current side to finish opening or adding images before switching."; return false
+        }
         if discardPendingSideNow(info) { return true }
         let view = displays[info.id]
         view?.loading = true
@@ -239,6 +246,8 @@ extension WorkspaceModel {
             return false
         }
         view?.loading = false
+        // An image can start arriving while the parent's stored draft is read.
+        guard (view?.imageImports ?? 0) == 0 else { return false }
         if sides[info.parentID]?.id == info.id { removePendingSide(info) }
         return true
     }
@@ -246,7 +255,7 @@ extension WorkspaceModel {
     func discardPendingSideNow(_ info: SideRecord) -> Bool {
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
         // A draft on its way to the parent's saved draft is not done yet.
-        guard sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
+        guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0, sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
         removePendingSide(info); return true
     }
     private func removePendingSide(_ info: SideRecord) {
@@ -645,6 +654,7 @@ extension WorkspaceModel {
         var params: [String: WireValue] = ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]
         if let atMessageID { params["atMessageId"] = .string(atMessageID) }
         let result: [String: WireValue]
+        sessionProfileRevisions[id] = sessionProfileRevisions[parentID] ?? profiles.first(where: { $0.id == parent.profileID }).map { (host.connectionID, $0.revision) }
         do { result = try await host.request("session.fork", sessionID: parentID, params: params).object ?? [:] }
         catch {
             // Refused before a file was written (a reply whose tools still
@@ -661,6 +671,7 @@ extension WorkspaceModel {
         let initial = try await host.request("session.status", sessionID: id)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
+        try await reconcileSessionProfile(fork, host: host)
         refresh(id)
         return fork
     }

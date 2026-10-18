@@ -76,6 +76,13 @@ extension WorkspaceModel {
     /// listing every chat under a "Retained chats" placeholder.
     func applyConfiguration(_ saved: VaultConfiguration) {
         let costLimit = configuration.defaultChatCostLimit, retry = configuration.retrySettings
+        // A runtime not created by open (a kept side or fork) must also be
+        // fenced while the saved replacement is reaching the helper.
+        for id in opened {
+            guard let item = record(id), let before = profiles.first(where: { $0.id == item.profileID }),
+                  let after = saved.profiles.first(where: { $0.profile.id == item.profileID }), before.revision != after.profile.revision else { continue }
+            if sessionProfileRevisions[id] == nil { sessionProfileRevisions[id] = (hosts[item.workspaceID]?.connectionID, before.revision) }
+        }
         configuration = saved; configurationLoaded = true
         profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
         // The tabs come back once the projects they were opened in are known.
@@ -239,13 +246,8 @@ extension WorkspaceModel {
             let sideSessions = sides.values.filter { $0.profileID == profile.id }.map { ($0.id, $0.workspaceID) }
             for (id, workspaceID) in affected.map({ ($0.id, $0.workspaceID) }) + sideSessions where opened.contains(id) {
                 guard let host = hosts[workspaceID], host.isReady else { continue }
-                var wire = connection.profile.wire.object ?? [:]
-                wire["headers"] = .object(connection.headers.mapValues(WireValue.string))
                 do {
-                    let result = try await host.request("session.configure", sessionID: id, params: ["profile": .object(wire), "apiKey": .string(connection.apiKey)])
-                    if result.object?["applied"]?.bool == false {
-                        displays[id]?.notice = "Settings saved. This run keeps the connection settings it started with; the next turn uses the new ones."
-                    }
+                    if let item = record(id) { try await reconcileSessionProfile(item, host: host) }
                 } catch {
                     // A helper without the command: an idle session reopens with the new settings on its next turn.
                     if displays[id]?.hasWork != true {
@@ -256,6 +258,49 @@ extension WorkspaceModel {
             }
         }
         profileChoice = profile.id
+    }
+    /// Opening and saving share the same configuration writer. A save during
+    /// an acknowledgement is reconciled again before this runtime is reused.
+    func reconcileSessionProfile(_ item: ChatRecord, host: HostSupervisor) async throws {
+        let lease = try connectionLease(for: item), connection = host.connectionID
+        while true {
+            try Task.checkCancellation()
+            guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
+            try requireConnection(lease)
+            guard let profile = profiles.first(where: { $0.id == item.profileID }) else { throw connectionUnavailable }
+            if let pending = sessionConfigurations[item.id] {
+                try await pending.task.value
+                if sessionConfigurations[item.id]?.token == pending.token { sessionConfigurations.removeValue(forKey: item.id) }
+                continue
+            }
+            guard let configured = sessionProfileRevisions[item.id], configured.connection != connection || configured.revision != profile.revision else { return }
+            let token = UUID()
+            let task = Task { [self] in
+                let credential: [String: WireValue]
+                do { credential = try await credentials(for: profile) }
+                catch {
+                    if profiles.first(where: { $0.id == item.profileID })?.revision != profile.revision { return }
+                    throw error
+                }
+                try Task.checkCancellation()
+                guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
+                try requireConnection(lease)
+                guard profiles.first(where: { $0.id == item.profileID })?.revision == profile.revision else { return }
+                var wire = profile.wire.object ?? [:]
+                wire["headers"] = credential["headers"]
+                let result = try await host.request("session.configure", sessionID: item.id, params: ["profile": .object(wire), "apiKey": credential["apiKey"] ?? .string("")])
+                try Task.checkCancellation()
+                guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
+                try requireConnection(lease)
+                sessionProfileRevisions[item.id] = (connection, profile.revision)
+                if result.object?["applied"]?.bool == false {
+                    displays[item.id]?.notice = "Settings saved. This run keeps the connection settings it started with; the next turn uses the new ones."
+                }
+            }
+            sessionConfigurations[item.id] = (token, task)
+            defer { if sessionConfigurations[item.id]?.token == token { sessionConfigurations.removeValue(forKey: item.id) } }
+            try await task.value
+        }
     }
     /// Removes a connection and its key. Its chats keep their history and ask
     /// for another connection; a run still going under it is stopped and its

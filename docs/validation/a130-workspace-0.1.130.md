@@ -322,3 +322,369 @@ Per-class counts:
 | `WorkspaceTests` | 17 | 0 |
 
 Final checks: `git diff --check` passes and `xcodegen generate --quiet` reproduces the committed project byte-for-byte. No test clone folders remained. Automatic result bundles were removed from this workstream's build root; text logs remain in `evidence/`. No unresolved assigned finding or test failure remains. Lead review, merge and the full gate remain outside this workstream.
+
+## Round 2 hunt
+
+Base: `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`, after the first branch was
+merged and this worktree fast-forwarded. Same branch, worktree and build root as
+above. Round 2 text logs are in `build-a130-workspace/evidence/round2/`.
+All fixtures use generated keys, images, journals, directories and memory vaults.
+The shell test uses only its scratch project. No installed app, real preferences,
+real chats, Keychain, live capture or paid provider was used.
+
+### APP-WORKSPACE-5 — confirmed and fixed
+
+`WorkspaceRaceTests.testOpeningReconcilesReplacementCredentialsBeforeSendingAgain`
+holds `session.open` with generated key A, saves B plus a generated header, then
+releases opening and sends again. Before the fix, both configuration assertions
+read nil instead of B, and `Replacement credentials must reach the runtime before
+its next turn` fails. `testOpeningRepeatsConfigurationWhenAnotherSaveIntervenes`
+also fails: opening sends no replacement configuration at all.
+
+The runtime's acknowledged profile revision is now tracked. Opening and saving
+share one configuration operation per session, read credentials through the
+existing vault boundary, and repeat when another saved revision intervenes.
+An already loaded runtime waits for an outstanding update before reuse. Queued
+configuration (`applied: false`) remains the helper's existing next-turn policy;
+this does not change an active run's settings. Managed read-only readers do not
+gain a new configuration command from opening.
+
+Nearby confirmed instances: `testNewSideReconcilesCredentialsSavedDuringPublication`
+and `testNewForkReconcilesCredentialsSavedDuringPublication` both read nil instead
+of B before the fix. New sides and forks retain the parent revision they inherit
+and reconcile their own runtime before returning to their caller.
+
+### APP-WORKSPACE-6 — confirmed and fixed
+
+`WorkspaceRaceTests.testSiblingNavigationCannotDiscardAPublishingSide` holds the
+parent open while the side submits, then calls `openFromSidebar` for a saved
+sibling. Before: `Publishing side must remain reachable` fails, the shown side
+becomes the sibling, the original side receives zero submits instead of one, and
+its durable chat row is absent. `testDirectDiscardCannotRemoveAPublishingSide`
+reproduces the same loss through both discard entry points.
+
+Both discard paths now refuse a loading side. `publishPendingSide` rechecks side
+and display ownership after the parent open, before changing pending state or
+issuing `side.open`. `testSidePublicationRechecksOwnershipAfterParentOpening`
+previously created an obsolete helper side and changed the replacement's pending
+state to false; its assertions check both effects.
+
+Nearby confirmed image-import instance:
+`testPendingSideWithAnImageImportCannotBeDiscarded` previously removed the display
+while an import was outstanding. The same discard guards cover this work too.
+
+### APP-UI-2 — confirmed and fixed
+
+`ImportLifecycleTests.testQuitRefusesAnImageStillBeingInspectedThenFlushesIt` uses
+a valid generated PNG and a semaphore inside the actual detached inspection path.
+The only production change before the baseline was an injectable inspection
+closure defaulting to `AttachmentRecord.inspect`; it changes no behavior.
+Before the fix, Quit returns `terminateLater` instead of `terminateCancel`, begins
+shutdown, loses the attachment (`[]` instead of the image path), and triggers
+`Quit approved termination before the import finished`.
+
+Conservative choice, explicitly allowed by this hunt: Quit refuses while an image
+is being added and asks the reader to quit again when it finishes. A second check
+covers an import started while the stop-and-quit question was open. Successful
+Quit still flushes the completed attachment before approving termination. New
+file and clipboard imports are refused once the shutdown/update barrier begins.
+No new dialog, control, layout or gallery scene was introduced.
+
+Nearby confirmed update instance:
+`testUpdateBarrierRefusesAnOutstandingImageImport` previously acquired the barrier
+while the import was outstanding. Update admission now requires zero imports.
+`testShutdownBarrierBlocksNewFileAndClipboardImports` also failed before: imports
+were registered during the barrier and after shutdown, and a file attached during
+the barrier. Existing send/import limits and draft destination checks remain.
+
+### APP-UI-3 — confirmed and fixed
+
+`TerminalSessionsTests.testRestartUsesRelocatedProjectFolder` starts a shell in
+scratch A, exits it, moves A to B and calls `requestEnding(.restart, …)` with the
+same workspace ID and current B path. Before, the replacement's directory still
+names A and its shell cannot report B. Restart now receives the current workspace
+path while retaining ID, ordinal, custom name and generation validation. The test
+also checks the actual shell's `$PWD` and refuses a second stale-generation click.
+
+The baseline's missing-folder shell produced the directory assertion, a working-
+directory timeout and the timeout's thrown error (one unexpected failure). The
+test now returns after a wrong-directory assertion and reads the shell's `$PWD`
+from a generated scratch file, normalizing macOS's temporary-directory symlink; this keeps mutation evidence focused on the wrong
+path and still checks `$PWD` on the corrected path.
+
+### Baseline and follow-up evidence
+
+The initial unfixed run (`failing-first.log`, exit 65) executed 32 tests: 20 passed
+and all 12 new tests failed (36 assertions/errors, including the terminal timeout
+above). By class: WorkspaceRaceTests 20 passed/8 failed; ImportLifecycleTests
+0 passed/3 failed; TerminalSessionsTests 0 passed/1 failed.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/ImportLifecycleTests \
+  -only-testing:PiAppTests/TerminalSessionsTests/testRestartUsesRelocatedProjectFolder
+```
+
+The next run (`fixed.log`) passed the original new regression cases except for
+a terminal-fixture timeout comparing rendered `$PWD` text. The directory property
+was already correct. The shell check now reads a generated scratch file and
+compares resolved paths, avoiding terminal wrapping and macOS's `/var` versus
+`/private/var` spelling. That corrected test passes in `fixed-all.log` and
+`fixed-final.log`; the full terminal class is rerun below.
+
+That run also reproduced two additional same-function side races (five assertions):
+
+- `testPendingSideImportStartedDuringDraftTransferRemainsReachable`: an import
+  begun during the parent's saved-draft read lost its display. Discard now checks
+  imports again after that await, retaining the side while its earlier text has
+  safely reached the parent.
+- `testSidePublicationDoesNotTakeFocusBackFromASavedSibling`: after durable side
+  registration, switching to T was allowed, but the late S callback overwrote
+  T's boundary and focused S. Boundary/focus publication now requires that S is
+  still the side shown. S still completes exactly one send and remains saved.
+
+The self-review also caught a failed-opening retry: a helper runtime can exist
+before capture setup fails, and another `session.open` returns that runtime
+without applying new credentials. `testRetryAfterCaptureSetupFailureReconcilesTheExistingRuntime`
+reproduced nil instead of B in `fixed-all.log`. The other 36 tests passed. That
+fixture initially put its rejection description in the wrong wire field, adding
+one assertion about the description; it now uses the helper's `result.code` and
+`result.message`. The missing configuration assertion independently reproduced
+the bug. Runtime stamps now include the helper connection and preserve the prior
+revision on a same-runtime retry; successful unload clears the stamp and cancels
+its old writer. `fixed-final.log` passes all 37 tests with zero skips or failures.
+
+The loaded-runtime guard has a held-configuration test too:
+`testLoadedRuntimeWaitsForReplacementConfiguration`. The positive control
+`testStopDoesNotWaitForCredentialReconciliation` confirms that Stop still dispatches
+while that acknowledgement is held.
+
+### Adversarial review of changed conditions
+
+| Condition | Newly handled state and intended effect |
+| --- | --- |
+| Saved target is looked up again | A deleted record is skipped; a connection change uses the current record/lease. The workspace of an opened chat cannot change (`pendingProjectBlocker` requires a never-opened pending chat), so the captured workspace host remains the correct boundary. |
+| Saved profile revision differs | Seed an unstamped loaded runtime with its previous revision before publishing saved preferences; unrelated profiles and route forks remain unchanged. |
+| Cached runtime is independent | Reconcile before reuse; managed read-only readers retain their existing owner-policy boundary. |
+| Same helper already has a revision after a failed open | Preserve it and reconcile, instead of trusting new open arguments that the helper ignores. A new helper connection gets its own initial stamp; a confirmed unload retires the old stamp/writer. |
+| Same-session configuration exists | Join its acknowledgement instead of issuing an overlapping older writer; remove only the completed token, then recheck the latest revision. |
+| Acknowledged stamp is absent/matching/different | Absent, or matching helper connection and revision, requires no update; app creation paths stamp the inherited/opened revision, and saves seed previously unstamped loaded sessions. A different helper connection or revision reads the vault and configures. |
+| Revision changes during credential read | Discard the obsolete read and loop; an unrelated vault failure still propagates. No credentials are taken from an unrelated connection. |
+| Cancellation, shutdown, host-connection change or invalid lease | Refuse before configuration or before recording its acknowledgement. Reopening cannot treat an obsolete reply as current. |
+| `applied == false` | Preserve the existing notice and helper next-turn policy; Stop still uses its direct host path and is covered while configuration is held. |
+| Pending side is loading or importing | Both discard entry points refuse; ready empty/drafted sides retain their normal transfer behavior. |
+| Side/display ownership changed during parent open | Clean the unpublished intent/draft and refuse before `side.open`; never mutate the replacement. |
+| An import starts during draft transfer | Keep its side display after the saved parent write, so its destination survives. |
+| Another saved side is shown after registration | Finish and retain the originating side, but do not overwrite the shown side's boundary or focus. |
+| Import count is nonzero at Quit or after its confirmation | Refuse shutdown. Retry after completion uses the unchanged final draft flush. |
+| Import count is nonzero at update admission | Do not acquire the barrier; existing work/update behavior is otherwise unchanged. |
+| Shutdown/update barrier or shutdown has begun | Reject new import registration; file inspection and clipboard conversion do not start with an invalid ticket. Normal imports keep edit-generation/destination and size/count validation. |
+| Restart receives a current directory | Use the workspace captured by the restart request. Internal callers without a replacement directory retain the old path. ID/generation checks and Cancel behavior are unchanged. |
+
+No owner decision is pending: retaining active input and refusing Quit until image
+inspection finishes follow the conservative options explicitly authorized in the
+hunt. No helper implementation or wire schema changed. Existing native Stop,
+connection deletion/reassignment, capture policy, trust, tool and vault checks
+remain in place. No view geometry or styling changed; gallery regeneration is
+not applicable to these state/dispatch fixes.
+
+### Final Round 2 validation
+
+All **552 affected native tests passed**, with **0 failures** and
+**0 skips**. This is the final source after every mutation was restored.
+The Release-helper checks also passed: **36 wire**, **4 concurrent** and **3
+acceptance** tests. `packages/swift-host` is unchanged, so the full helper unit
+suite was not required. The lead's merged full gate remains separate.
+
+The model-only regressions and state batch use unmounted fixtures and hidden
+PTYs, without app-focus changes. The window mutation and the uninterrupted focus
+validation batch hold the shared full-lane lock; every serial class runs in its
+own command. The lock is released in `finally`, including failure. The two
+interrupted queue waits never acquired it. No other workstream's lock was removed.
+
+| Focused group | Passed | Failed | Skipped | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| final-state | 247 | 0 | 0 | `final-state.log` |
+| final-ui | 123 | 0 | 0 | `final-ui.log` |
+| final-window-lifecycle | 4 | 0 | 0 | `final-window-lifecycle.log` |
+| final-lifecycle-helper | 11 | 0 | 0 | `final-lifecycle-helper.log` |
+| final-subagent-opening | 13 | 0 | 0 | `final-subagent-opening.log` |
+| final-subagent-reader | 55 | 0 | 0 | `final-subagent-reader.log` |
+| final-conversation | 81 | 0 | 0 | `final-conversation.log` |
+| final-terminal-serial | 18 | 0 | 0 | `final-terminal-serial.log` |
+
+Mutation checks (all compile and fail assertions; every mutation is restored):
+
+| Mutation | Passed | Expected failed tests | Evidence |
+| --- | ---: | ---: | --- |
+| mutation-credentials | 0 | 4 | `mutation-credentials.log` |
+| mutation-open-retry | 0 | 1 | `mutation-open-retry.log` |
+| mutation-cached-profile | 0 | 1 | `mutation-cached-profile.log` |
+| mutation-side | 0 | 6 | `mutation-side.log` |
+| mutation-imports | 0 | 3 | `mutation-imports.log` |
+| mutation-terminal | 0 | 1 | `mutation-terminal.log` |
+| mutation-quit-confirmation | 0 | 1 | `mutation-quit-confirmation.log` |
+
+Per finding: APP-WORKSPACE-5 is detected by the credentials (4 failed), failed-open
+retry (1 failed), and cached-runtime (1 failed) mutations. APP-WORKSPACE-6 and its
+nearby instances are detected by all 6 side-mutation tests. APP-UI-2 is detected
+by the 3 import-mutation tests and the 1 late-confirmation mutation. APP-UI-3 is
+detected by the terminal mutation (1 failed). `mutations.json` records the exact
+substitutions, test names and exit codes; `mutation-sources.json` retains the
+corrected source used to restore each case.
+
+Exact focused commands (using the exported `PI_BUILD_ROOT` above):
+
+```sh
+# final-state
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/WorkspaceConcurrencyTests \
+  -only-testing:PiAppTests/ConfigurationVaultTests \
+  -only-testing:PiAppTests/SettingsSaveTests \
+  -only-testing:PiAppTests/ConnectionSettingsFlowTests \
+  -only-testing:PiAppTests/CatalogSourceTests \
+  -only-testing:PiAppTests/CostLimitOpeningTests \
+  -only-testing:PiAppTests/CostLimitTests \
+  -only-testing:PiAppTests/KeychainSettingsTimeoutTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/SideBudgetIntegrationTests \
+  -only-testing:PiAppTests/ConversationFamilyTests \
+  -only-testing:PiAppTests/ImportLifecycleTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/HardeningTests
+
+# final-ui
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/OnboardingTests \
+  -only-testing:PiAppTests/ConnectionSwitchJournalTests \
+  -only-testing:PiAppTests/SettingsUnsavedTests \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/SidebarSideClickTests \
+  -only-testing:PiAppTests/TerminalSessionsTests \
+  -only-testing:PiAppTests/TerminalPanelAuditTests
+
+# final-window-lifecycle
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WindowLifecycleTests
+
+# final-lifecycle-helper
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+
+# final-subagent-opening
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentOpeningTests
+
+# final-subagent-reader
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# final-conversation
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationPaneTests
+
+# final-terminal-serial
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalPanelSerialTests
+
+python3 scripts/test-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+Each mutation used the same focused command with these exact selectors:
+
+```sh
+# mutation-credentials
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testOpeningReconcilesReplacementCredentialsBeforeSendingAgain \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testOpeningRepeatsConfigurationWhenAnotherSaveIntervenes \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testNewSideReconcilesCredentialsSavedDuringPublication \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testNewForkReconcilesCredentialsSavedDuringPublication
+
+# mutation-open-retry
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testRetryAfterCaptureSetupFailureReconcilesTheExistingRuntime
+
+# mutation-cached-profile
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testLoadedRuntimeWaitsForReplacementConfiguration
+
+# mutation-side
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testSiblingNavigationCannotDiscardAPublishingSide \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testDirectDiscardCannotRemoveAPublishingSide \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testSidePublicationRechecksOwnershipAfterParentOpening \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testPendingSideWithAnImageImportCannotBeDiscarded \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testPendingSideImportStartedDuringDraftTransferRemainsReachable \
+  -only-testing:PiAppTests/WorkspaceRaceTests/testSidePublicationDoesNotTakeFocusBackFromASavedSibling
+
+# mutation-imports
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ImportLifecycleTests
+
+# mutation-terminal
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSessionsTests/testRestartUsesRelocatedProjectFolder
+
+# mutation-quit-confirmation
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WindowLifecycleTests/testQuitRechecksImagesStartedWhileTheStopQuestionIsOpen
+
+```
+
+Per-class final counts:
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `CatalogSourceTests` | 9 | 0 | 0 |
+| `ComposerAttachmentDestinationTests` | 2 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ConfigurationVaultTests` | 14 | 0 | 0 |
+| `ConnectionSettingsFlowTests` | 6 | 0 | 0 |
+| `ConnectionSwitchJournalTests` | 6 | 0 | 0 |
+| `ConversationFamilyTests` | 22 | 0 | 0 |
+| `ConversationPaneTests` | 81 | 0 | 0 |
+| `CostLimitOpeningTests` | 1 | 0 | 0 |
+| `CostLimitTests` | 13 | 0 | 0 |
+| `ForkFromReplyTests` | 5 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `ImportLifecycleTests` | 3 | 0 | 0 |
+| `KeychainSettingsTimeoutTests` | 13 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `OnboardingTests` | 20 | 0 | 0 |
+| `PastedAttachmentTests` | 8 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SettingsSaveTests` | 15 | 0 | 0 |
+| `SettingsUnsavedTests` | 24 | 0 | 0 |
+| `SideBudgetIntegrationTests` | 18 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `SubagentOpeningTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TerminalPanelAuditTests` | 8 | 0 | 0 |
+| `TerminalPanelSerialTests` | 18 | 0 | 0 |
+| `TerminalSessionsTests` | 14 | 0 | 0 |
+| `WindowLifecycleTests` | 4 | 0 | 0 |
+| `WorkspaceConcurrencyTests` | 8 | 0 | 0 |
+| `WorkspaceRaceTests` | 33 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+
+Final checks: every mutation source matches its corrected snapshot; `xcodegen generate --quiet` reproduces the project byte-for-byte; `git diff --check` passes. No clone folders remained. Automatic result bundles were removed from this build root and text logs were retained. No assigned finding, observed nearby instance or test failure remains unresolved. Lead review, merge and the full merged gate remain outside this branch.
