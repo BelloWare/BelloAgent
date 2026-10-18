@@ -3,6 +3,78 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDeletionTests: XCTestCase {
+    @MainActor func testFailedAndCancelledSweepsDoNotStrandLaterCleanup() async throws {
+        let root = scratchRoot("cancelled-output-recycling"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        let store = try XCTUnwrap(model.store), members = [SessionDeletionRecord(id:"deleted",ownerID:"deleted",workspaceID:"pane-project",path:nil)]
+        try await store.beginFamilyDeletion(members,repairCompleted:true)
+        try await store.rememberDeletedToolOutputOwners(members)
+        let folder = try ToolOutputOwnership.directory(root:model.subagentDirectory("pane-project").appendingPathComponent("tool-output"),sessionID:"deleted",create:true)
+        try Data("unreferenced".utf8).write(to:folder.appendingPathComponent("result.log"))
+        let gate = AsyncGate(); var passes = 0
+        model.familyFileRecycler = { files in
+            passes += 1
+            if passes == 1 { await gate.wait(); throw StoreError.unavailable }
+            for file in files { try FileManager.default.removeItem(at:file) }
+        }
+        let first = Task { try await model.recycleUnreferencedToolOutputs() }
+        for _ in 0..<500 where passes == 0 { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertEqual(passes,1)
+        let running = model.toolOutputRecycling?.id
+        let cancelled = Task { try await model.recycleUnreferencedToolOutputs() }
+        for _ in 0..<500 where model.toolOutputRecycling?.id == running { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertNotEqual(model.toolOutputRecycling?.id,running)
+        cancelled.cancel()
+        let last = Task { try await model.recycleUnreferencedToolOutputs() }
+        await gate.open()
+        do { try await first.value; XCTFail("The failing recycler must report its error") }
+        catch { XCTAssertEqual(error as? StoreError,.unavailable) }
+        do { try await cancelled.value; XCTFail("A cancelled sweep must not recycle") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        try await last.value
+        XCTAssertEqual(passes,2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:folder.path))
+        XCTAssertNil(model.toolOutputRecycling)
+    }
+
+    @MainActor func testOverlappingWorkspaceDeletionsSerializeSharedOutputRecycling() async throws {
+        let root = scratchRoot("overlapping-output-recycling"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+        let store = try XCTUnwrap(model.store)
+        let first = [SessionDeletionRecord(id:"deleted-a",ownerID:"deleted-a",workspaceID:"pane-project",path:nil,repairCompleted:true)]
+        let second = [SessionDeletionRecord(id:"deleted-b",ownerID:"deleted-b",workspaceID:"other-project",path:nil,repairCompleted:true)]
+        for members in [first,second] {
+            try await store.beginFamilyDeletion(members,repairCompleted:true)
+            try await store.rememberDeletedToolOutputOwners(members)
+            let folder = try ToolOutputOwnership.directory(root:model.subagentDirectory(members[0].workspaceID).appendingPathComponent("tool-output"),sessionID:members[0].id,create:true)
+            try Data("unreferenced".utf8).write(to:folder.appendingPathComponent("result.log"))
+        }
+        let gate = AsyncGate()
+        var recycling = 0, peak = 0, entered = false, secondReady = false
+        model.familyDeletionStep = { if $0 == "files:deleted-b" { secondReady = true } }
+        model.familyFileRecycler = { files in
+            recycling += 1; peak = max(peak,recycling)
+            defer { recycling -= 1 }
+            if !entered { entered = true; await gate.wait() }
+            for file in files { try FileManager.default.removeItem(at:file) }
+        }
+        let a = Task { try await model.finishFamilyDeletion(first) }
+        for _ in 0..<500 where !entered { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertTrue(entered,"First sweep never reached recycling")
+        let b = Task { try await model.finishFamilyDeletion(second) }
+        for _ in 0..<500 where !secondReady { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertTrue(secondReady,"Second deletion never reached its sweep")
+        try await Task.sleep(for:.milliseconds(300))
+        await gate.open()
+        for task in [a,b] {
+            do { try await task.value } catch { XCTFail("Overlapping deletion failed: \(error)") }
+        }
+        XCTAssertEqual(peak,1,"Only one global inventory/recycle pass may be in flight")
+        let pending = try await store.pendingFamilyDeletions()
+        XCTAssertTrue(pending.isEmpty,"Both deletions must retire their durable intents")
+    }
+
     @MainActor func testDeletingSourceKeepsCloneAndCopyForksFullToolOutputUntilLastReference() async throws {
         let bench = try await LifecycleHelperTests.Bench("fork-output-ownership")
         addTeardownBlock { @MainActor in await bench.close() }
@@ -84,14 +156,14 @@ final class SubagentDeletionTests: XCTestCase {
         try await store.beginFamilyDeletion(members,repairCompleted:true)
         try await store.remove(kind:SessionDeletionRecord.kind,id:"original")
         model.familyFileRecycler = { files in for file in files { try FileManager.default.removeItem(at:file) } }
-        await model.resumeFamilyDeletions()
+        try await model.recycleUnreferencedToolOutputs()
         XCTAssertTrue(outputs.allSatisfy { FileManager.default.fileExists(atPath:$0.path) },"An older unscoped tombstone cannot claim output")
         try await store.rememberDeletedToolOutputOwners(members)
         do {
             try await store.rememberDeletedToolOutputOwners([SessionDeletionRecord(id:"original",ownerID:"original",workspaceID:"other-project",path:nil)])
             XCTFail("Deletion authority cannot be moved to another project")
         } catch { XCTAssertEqual(error as? StoreError,.invalidRecord) }
-        await model.resumeFamilyDeletions()
+        try await model.recycleUnreferencedToolOutputs()
         XCTAssertNil(model.error)
         XCTAssertTrue(outputs.prefix(4).allSatisfy { FileManager.default.fileExists(atPath:$0.path) })
         XCTAssertFalse(FileManager.default.fileExists(atPath:outputs[4].path))
@@ -99,14 +171,14 @@ final class SubagentDeletionTests: XCTestCase {
         try FileManager.default.removeItem(at:side)
         try await store.remove(kind:"chat",id:chat.id)
         try await store.remove(kind:"draft",id:"unsent")
-        await model.resumeFamilyDeletions()
+        try await model.recycleUnreferencedToolOutputs()
         XCTAssertNil(model.error)
         XCTAssertTrue(FileManager.default.fileExists(atPath:outputs[3].path),"Displaced live drafts are references too")
         XCTAssertTrue(outputs.prefix(3).allSatisfy { !FileManager.default.fileExists(atPath:$0.path) })
         XCTAssertTrue(FileManager.default.fileExists(atPath:imported.path),"Unregistering an imported original never deletes it")
         live.draftBeforeQueueEdit = nil
         try await store.remove(kind:"future:original",id:"original")
-        await model.resumeFamilyDeletions()
+        try await model.recycleUnreferencedToolOutputs()
         XCTAssertNil(model.error); XCTAssertFalse(FileManager.default.fileExists(atPath:owner.path))
     }
 

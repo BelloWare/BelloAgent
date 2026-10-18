@@ -255,7 +255,6 @@ extension WorkspaceModel {
         guard let store else { return }
         do {
             let intents = try await store.pendingFamilyDeletions()
-            if intents.isEmpty { try await recycleUnreferencedToolOutputs() }
             for members in Dictionary(grouping: intents, by: \.ownerID).values { try await finishFamilyDeletion(members) }
         } catch { self.error = "Family deletion is incomplete and will be retried. " + error.localizedDescription }
     }
@@ -263,7 +262,30 @@ extension WorkspaceModel {
     /// Physical owners may have been deleted before their last fork. Their
     /// tombstones persist, and surviving journals/drafts retain the bytes.
     /// Nothing is copied, and only explicitly deleted owners can be reclaimed.
-    private func recycleUnreferencedToolOutputs() async throws {
+    func scheduleToolOutputCleanup() {
+        guard toolOutputCleanup == nil, !isShutDown else { return }
+        toolOutputCleanup = Task(priority: .utility) { [weak self] in
+            // Opportunistic collection cannot hold up the remembered reader.
+            // Failure retains the files for a later deletion or launch.
+            try? await self?.recycleUnreferencedToolOutputs()
+        }
+    }
+
+    func recycleUnreferencedToolOutputs() async throws {
+        let previous = toolOutputRecycling?.task, id = UUID()
+        let task = Task { [self] in
+            // The inventory is global across projects. Hold its place through
+            // asynchronous recycling, then let the next caller scan afresh.
+            if let previous { _ = await previous.result }
+            try Task.checkCancellation()
+            try await sweepUnreferencedToolOutputs()
+        }
+        toolOutputRecycling = (id, task)
+        defer { if toolOutputRecycling?.id == id { toolOutputRecycling = nil } }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private func sweepUnreferencedToolOutputs() async throws {
         guard let store else { return }
         let owners = try await store.deletedToolOutputOwners()
         guard !owners.isEmpty else { return }
@@ -312,7 +334,7 @@ extension WorkspaceModel {
         return journal
     }
 
-    private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
+    func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
         guard let record = members.first(where: { $0.id == owner }),

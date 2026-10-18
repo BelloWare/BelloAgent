@@ -141,15 +141,31 @@ extension WorkspaceModel {
         guard let workspaceID = selectedWorkspaceID else { pickWorkspace(); return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before importing."; return }
         if !questions.chooseOne(message: "Open a Pi JSONL session read-only. The original file will remain unchanged.", directories: false, { [weak self] url in
-            self?.importChat(from: url, workspaceID: workspaceID, store: store)
+            Task { await self?.importChat(from: url, workspaceID: workspaceID, store: store) }
         }) { error = PiQuestion.busyNotice }
     }
-    private func importChat(from url: URL, workspaceID: String, store: MetadataStore) {
-        Task { do {
+    func importChat(from url: URL, workspaceID: String, store: MetadataStore) async {
+        do {
+            if let existing = try await store.nativeChat(forJournal: url, root: root) {
+                guard existing.workspaceID == workspaceID else {
+                    error = "This chat belongs to another project. Open it there."; return
+                }
+                if let index = chats.firstIndex(where: { $0.id == existing.id }) { chats[index].path = chats[index].path ?? existing.path }
+                else { chats.insert(existing, at: 0) }
+                await select(existing.id); return
+            }
+            let owned = root.appendingPathComponent("Workspaces")
+            var relationship = FileManager.URLRelationship.other
+            if FileManager.default.fileExists(atPath: owned.path) {
+                try FileManager.default.getRelationship(&relationship, ofDirectoryAt: owned, toItemAt: url.resolvingSymlinksInPath())
+            }
+            guard relationship == .other else {
+                error = "This saved chat could not be found. Import was refused."; return
+            }
             let page = try await history.read(path: url.path)
             let item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: url.deletingPathExtension().lastPathComponent, path: url.path, profileID: profileChoice, imported: true)
             try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0); await select(item.id); selected?.notice = page.notice ?? "Imported original · Read-only. No historical HTTP capture is available."
-        } catch { self.error = "Import could not be read. The original was preserved." } }
+        } catch { self.error = "Import could not be read. The original was preserved." }
     }
     /// Makes a new chat from every complete record of one whose last record
     /// was cut off while it was written (a power loss, a full disk). The

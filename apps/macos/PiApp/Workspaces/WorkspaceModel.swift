@@ -47,6 +47,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
+    var toolOutputRecycling: (id: UUID, task: Task<Void, Error>)?
+    var toolOutputCleanup: Task<Void, Never>?
     var familyDeletionStep: ((String) throws -> Void)?
     var deletionTombstoneRead: ((String) async throws -> String?)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]

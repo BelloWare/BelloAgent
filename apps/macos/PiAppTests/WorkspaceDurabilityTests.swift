@@ -2,6 +2,61 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceDurabilityTests: XCTestCase {
+    @MainActor func testImportingOwnedJournalSelectsExistingChatAndRefusesAnotherProject() async throws {
+        let root = try scratch(), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        model.automaticContextOperation = { _,_ in throw CancellationError() }
+        let store = try XCTUnwrap(model.store)
+        _ = try SubagentDiscoveryTests.family(model)
+        let original = model.chats[0], path = URL(fileURLWithPath:try XCTUnwrap(original.path))
+        try await store.putChats(model.chats)
+        let count = model.chats.count
+        // The owner can be outside the sidebar window. A symlink is the same
+        // native journal, not a new imported original.
+        model.chats.removeFirst()
+        let alias = root.appendingPathComponent("alias.jsonl")
+        try FileManager.default.createSymbolicLink(at:alias,withDestinationURL:path)
+        await model.importChat(from:alias,workspaceID:original.workspaceID,store:store)
+        XCTAssertEqual(model.selectedID,original.id)
+        XCTAssertEqual(model.chats.count,count)
+        XCTAssertFalse(model.chats.contains { $0.imported },"Never register an alias to app-owned data")
+        let hardLink = root.appendingPathComponent("hard-link.jsonl")
+        try FileManager.default.linkItem(at:path,to:hardLink)
+        var unnamed = original; unnamed.path = nil
+        try await store.put(unnamed,kind:"chat",id:original.id)
+        if let index = model.chats.firstIndex(where: { $0.id == original.id }) { model.chats[index].path = nil }
+        await model.importChat(from:hardLink,workspaceID:original.workspaceID,store:store)
+        XCTAssertEqual(model.selectedID,original.id)
+        XCTAssertEqual(model.record(original.id)?.path.map { URL(fileURLWithPath:$0).lastPathComponent },path.lastPathComponent)
+        XCTAssertEqual(model.chats.count,count)
+        model.error = nil
+        await model.importChat(from:path,workspaceID:"another-project",store:store)
+        XCTAssertEqual(model.chats.count,count)
+        XCTAssertTrue(model.error?.contains("another project") == true,model.error ?? "No refusal notice")
+        let saved = try await store.loadChats()
+        XCTAssertEqual(saved.count,count)
+        XCTAssertFalse(saved.contains { $0.imported })
+        // An unlisted native file is still app-owned; do not register an alias
+        // merely because its desktop metadata is absent.
+        try await store.remove(kind:"chat",id:original.id); model.chats.removeAll { $0.id == original.id }
+        model.error = nil
+        await model.importChat(from:path,workspaceID:original.workspaceID,store:store)
+        XCTAssertFalse(model.chats.contains { $0.imported })
+        XCTAssertNotNil(model.error)
+        let caseAlias = URL(fileURLWithPath:path.path.replacingOccurrences(of:"/Workspaces/",with:"/WORKSPACES/"))
+        if FileManager.default.fileExists(atPath:caseAlias.path) {
+            await model.importChat(from:caseAlias,workspaceID:original.workspaceID,store:store)
+            XCTAssertFalse(model.chats.contains { $0.imported },"Filesystem spelling cannot bypass native ownership")
+        }
+        let external = root.appendingPathComponent("external-copy.jsonl")
+        try FileManager.default.copyItem(at:path,to:external)
+        model.error = nil
+        await model.importChat(from:external,workspaceID:original.workspaceID,store:store)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.chats.first { $0.imported }?.path,external.path,"An independent external file remains importable")
+        XCTAssertEqual(try Data(contentsOf:external),try Data(contentsOf:path))
+    }
+
     private func scratch() throws -> URL {
         let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("workspace-durability-" + UUID().uuidString)

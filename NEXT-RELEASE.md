@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] Concurrent deletions serialize shared tool-output recycling, preserving both deletion receipts. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-review-follow-up).
+- [x] Opportunistic retained-output cleanup runs after the remembered chat is restored.
+- [x] Import selects an existing native chat instead of registering an alias; another project's journal is refused with a notice.
+- [x] Recovery refuses a source deleted or replaced before publication and withdraws a copy if deletion wins during publication.
+
 - [x] Deleting a chat preserves full tool output referenced by surviving forks, sides and saved drafts, then reclaims it after the last reference is removed. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-compat-2--shared-retained-tool-output-ownership).
 
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).

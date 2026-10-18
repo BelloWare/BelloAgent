@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
 
@@ -299,6 +300,24 @@ actor MetadataStore {
         }
         guard step == SQLITE_DONE else { throw StoreError.unavailable }
         return (records, present)
+    }
+
+    /// Import selects an existing native owner, including one outside the
+    /// sidebar window. Physical identity also recognizes hard-linked aliases.
+    func nativeChat(forJournal url: URL, root: URL) throws -> ChatRecord? {
+        let source = url.resolvingSymlinksInPath()
+        var sourceInfo = stat()
+        guard lstat(source.path, &sourceInfo) == 0, sourceInfo.st_mode & S_IFMT == S_IFREG else { throw StoreError.unreadableRecord }
+        var found: ChatRecord?
+        for chat in try durableChatGraph().records.values where !chat.imported {
+            let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
+            let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+            var info = stat()
+            guard candidate.path == source.path || (lstat(candidate.path, &info) == 0 && info.st_dev == sourceInfo.st_dev && info.st_ino == sourceInfo.st_ino) else { continue }
+            guard found == nil else { throw StoreError.invalidRecord }
+            var named = chat; named.path = path; found = named
+        }
+        return found
     }
 
     /// Loaded sides and managed children retain their actual budget ancestry

@@ -55,6 +55,7 @@ extension WorkspaceModel {
         titleGenerationTasks.removeAll()
         journalSlimming?.cancel()
         pastedImageCleanup?.cancel()
+        toolOutputCleanup?.cancel()
         sidebarSearchStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()

@@ -589,3 +589,109 @@ The Release bundle succeeded (61.88 s compiler time / 63.488 s runner time). Exi
 `helper-mutations.json`, `helper-results.json`, `native-scoped-results.json` and `wire-results.json` preserve exact commands/statuses/times. Only this build root was used (one native DerivedData tree, about 1.3 GiB; helper debug/release trees about 425/100 MiB). No native clone directories or generated task fixture folders remain. The early fixture crash left one synthetic gateway; its exact PID, command and fixture cwd were verified before terminating it and removing that fixture. No named result bundles were requested; text logs are the evidence. Review, merge and the full native gate remain with the lead.
 
 Unresolved scope notes are the text-only export decision, imported-original alias behavior, and the unverified overlapping-recovery scenario above. The assigned clone/copy-fork deletion regression is fixed, including last-reference reclamation after reopening.
+
+## Persistence review follow-up
+
+Continued from `941dcfab` on `dev/a130-helper`, without merging or fast-forwarding. All four requested items are **confirmed and fixed**. The import decision below supersedes the earlier native-journal alias limitation; the recovery race is now reproduced rather than speculative. Text-only exports retain the earlier **needs owner decision** note.
+
+### Findings and failing-first evidence
+
+Evidence directory: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/persistence-review/`. Fixtures use generated journals, scratch storage, MemoryVault and loopback services. The initial app changes only made the import/deletion entry points awaitable/testable; ownership and cleanup behavior remained original for `native-failing-first.log`. The recovery barrier likewise precedes the fix.
+
+| Item | Reproduction and failing-first excerpt | Fix and mutation |
+| --- | --- | --- |
+| Overlapping global recycling | `SubagentDeletionTests.testOverlappingWorkspaceDeletionsSerializeSharedOutputRecycling` holds the first recycler while a second workspace finishes its journal phase. **1 test, 3 failures:** `“deleted-b” couldn’t be removed`, peak recyclers `2` instead of `1`, and pending deletion intents remain. | Queue the entire inventory/reference-check/recycle pass across awaits. Every waiter scans afresh after its predecessor settles. Removing the predecessor wait produces the same **3 failures** in `mutation-sweep-serialization.log`. |
+| Startup cleanup on the restore critical path | `LaunchSelectionTests.testRetainedOutputCleanupWaitsUntilRememberedChatIsRestored` holds recycling of a completed tombstone's unreferenced log. **1 test, 3 failures:** `Orphan collection must not block launch`, selected chat `nil` instead of `b2`, and restore cannot finish while collection is held. | Empty-intent replay does no opportunistic work. Schedule it beside pasted-image cleanup after remembered selection/restoration; cancel it during shutdown. Reinstating the awaited empty-intent cleanup produces the same **3 failures** in `mutation-launch-cleanup.log`. Pending deletion recovery still completes before reopening. |
+| Native-journal import alias | `WorkspaceDurabilityTests.testImportingOwnedJournalSelectsExistingChatAndRefusesAnotherProject` imports a native owner's symlink and hard link, including an owner outside the loaded sidebar and a record with no saved path. It then tries another project and an unregistered native path/case alias. **1 test, 12 failures:** selected ID is a new UUID instead of `chat-parent`, imported duplicates are saved, and another project receives no refusal. | Search all durable native records by canonical path or device/inode, select the existing same-project owner, and refuse another project. An app-owned path without a recoverable record is refused; filesystem directory relationship handles aliases/case spelling. Removing these guards reproduces **12 failures**; removing physical-identity matching produces **8 failures** (`mutation-import-alias.log`, `mutation-import-physical-alias.log`). An independent external copy with the same journal header remains importable and byte-for-byte unchanged. |
+| Recovery publishing after source deletion | `SessionRecoverTests.testRecoveryRefusesSourceRemovedOrReplacedBeforePublication` pauses a completed copy, moves the source to fixture Trash, and separately replaces it with identical bytes under a different inode. **1 test, 4 failures:** `Recovery published after its source was deleted` / `replaced`, with a published destination in both cases. | Check the source path's regular-file type, device, inode and size against the still-open reader immediately before publication. Check again after linking and withdraw the new destination if deletion/replacement won between those operations. Bypassing the path check reproduces **4 failures** (`mutation-recovery-identity.log`). Staging files are removed on refusal. |
+
+The combined native failing-first run executed **3 tests with 18 intended assertion failures**. All four focused native regressions, including the added queue-failure/cancellation test, pass after restoring every mutation. `testFailedAndCancelledSweepsDoNotStrandLaterCleanup` puts a cancelled waiter behind a held, failing recycler and verifies the subsequent pass still collects the orphan, without recycling in the cancelled pass or retaining the queue tail.
+
+### Decisions, nearby sweep and adversarial review
+
+The original durable-reference ownership approach remains: one physical output file, retained while surviving journals or drafts reference it. The fixes serialize collection rather than duplicate logs or disregard missing-file errors. This keeps retryable deletion failures meaningful. Only collection is queued; distinct families' journal removal and unrelated host commands do not acquire this queue.
+
+Owner decision applied: importing an app-owned native journal opens its existing chat, including an existing managed/background reader through its normal selection path. It never creates another ChatRecord for that native file. Another project gets an explicit notice. Missing/unlisted native metadata cannot justify a new alias: such a file is refused with a clear notice. The lookup has no sidebar/list cap, recognizes symlinks and hard links, and supplies the default native path for an unnamed record. Existing external imported originals retain their read-only behavior. This does not migrate aliases already registered by older builds.
+
+Reviewed the new production diff condition by condition, including idle/streaming/paused survivors, restart, cancellation, concurrent sibling work and Off/memory/persistent capture:
+
+| Changed condition / decision | States and intended behavior |
+| --- | --- |
+| Empty versus nonempty deletion intents | Empty means no awaited sweep during launch. Nonempty still repairs and completes durable deletions before selection; each collection goes through the same queue. |
+| `archiveOpen`, cleanup task nil, shutdown flag | Only a live model with an opened archive schedules its one opportunistic launch pass. Repeated scheduling and shutdown do not create work. Cleanup errors retain files silently; actual deletion errors still retain/report the intent. |
+| Existing queued predecessor | A second workspace or opportunistic pass waits through asynchronous recycling, including an unsuccessful predecessor, then inventories current state. A first pass starts immediately. The mutation demonstrates why actor isolation alone was insufficient. |
+| Cancellation and queue-tail identity | A cancelled pass cannot enter the scan/recycler. Cancelling a waiter does not cancel its predecessor. An older caller cannot clear a newer tail; the last completed caller clears it. The generated failure/cancellation test verifies progress afterward. |
+| Source regular-file check during import | Missing/unreadable/nonregular files cannot be registered. Regular external files retain ordinary import behavior. This lookup runs on MetadataStore's actor, not the main actor. |
+| Native versus imported records; default versus stored path | Only native records can be selected as owners. Existing imported metadata does not become writable native authority. An unnamed native record resolves to its own default journal, not the chooser's alias path. Deleted records are excluded by the existing complete durable graph query. |
+| Canonical path or device/inode match; duplicate owner | Canonical aliases and physical hard links identify one owner; unrelated copies, even with the same header ID, do not. Two native owners for one file refuse rather than choose nondeterministically. |
+| Same project; listed versus unlisted owner | Same project selects that ID; an omitted sidebar row is added to the in-memory list without another durable record. A listed row only fills an absent path. Another project refuses before creating anything. |
+| App-owned directory exists; filesystem relationship | Fresh storage without a Workspaces directory permits an external import. A native path under existing app storage without a known owner refuses, including case aliases; an independent outside file remains eligible. No lexical prefix assumption grants an alias. |
+| Recovery descriptor and path identity | The old size check still applies. Missing path, symlink/nonregular replacement, different device/inode or changed size now refuse with `session_damaged`. An unchanged regular source continues normally, including incomplete-tail recovery and preserved tool-output references. |
+| Post-link check and rollback | If deletion/replacement wins during publication, withdraw the newly linked copy and fail. Once a valid copy is published, surviving-journal inventories can see its references. No existing destination is overwritten. |
+| Nullable recovery test callback | Only the generated test installs the barrier; ordinary requests have no callback. Disk work remains detached, so another chat's snapshot remains responsive. |
+| Existing permission/capture/run-state boundaries | No tool execution, vault access, capture policy or model admission is added. Streaming/paused/idle surviving references use the existing conservative scan/stamp checks. Closed/running-family deletion gates, restart tombstones, fork/side runtime gates and capture Off/memory/persist behavior remain in place. |
+
+Self-review specifically checked hard-link and case aliases, metadata outside the sidebar window, unnamed records, cancelled queued work, failed predecessors and the check/link interval. Those cases are covered by the final implementation/tests. Normal deletion, pending-intent replay, earlier-deletion retry and launch cleanup all converge on the serialized pass. Pasted-image cleanup and journal-slimming scheduling already run after restoration; pasted-image unlinking has no asynchronous recycler gap. Fork and side publication still share the runtime gate with `session.forget`; native import no longer creates an independent alias. Portable preview/import inspection publish text, not a native journal; text-only portability remains the earlier owner-decision boundary.
+
+**Separate pre-existing bug found by the nearby sweep (not changed under the scope rule):** `packages/swift-host/Sources/PiAgentCore/JournalSlimming.swift:120` can rename its prepared copy back over a source deleted during `discard(kept)`. `HostService.swift` registers `slimming[id]`, but `session.forget` does not wait for it. The generated `testDeletionDuringDiscardMustNotRepublishSource` uses the existing discard seam to remove the source and retained hard link; slimming reports success and recreates the source. `slimming-deletion-probe.log`: **1 test, 2 failures**, `Deleting the source must win over background slimming` and `Slimming republished the deleted source`. The function predates these commits and is outside the assigned recovery function. The probe was removed from the test source after recording it; the unchanged `JournalSlimmingTests` then passed **8/8**. Reproduction body is retained in `slimming-deletion-probe.swift.txt`:
+
+```swift
+func testDeletionDuringDiscardMustNotRepublishSource() async throws {
+    let fixture = try chat(), path = try await journal(fixture, turns: 2)
+    try rewriteWhole(path)
+    let source = URL(fileURLWithPath: path)
+    let result = try JournalSlimming.slim(url: source, id: "slim", minimumSaving: 0, discard: { kept in
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.removeItem(at: kept)
+    })
+    XCTAssertFalse(result.slimmed)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+}
+```
+
+### Final validation
+
+All commands ran from this worktree with `BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper`. `native-mutations.json`, `native-final-results.json`, `notice-results.json`, `helper-results.json` and `wire-results.json` record exact selections, exit statuses and durations.
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter 'SessionRecoverTests|HostServiceTests|NativeToolTests|JournalStreamingTests|ForkCloneTests'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter LongJournalTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter JournalSlimmingTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/BudgetOwnerUnloadTests -only-testing:PiAppTests/SideBudgetIntegrationTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/PastedAttachmentTests -only-testing:PiAppTests/ForkCloneReaderTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/ConversationPaneTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceDurabilityTests
+TEST_RUNNER_PI_APP_CHAT_DELETION_GALLERY="$BUILD/logs/persistence-review/gallery" PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChatDeletionGalleryTests
+# test-macos.sh builds/stages this Release helper via python3 scripts/build-bundle.py.
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+git diff --check
+```
+
+The affected helper filter executes HostServiceTests **7**, SessionRecoverTests **3**, NativeToolTests **18**, and ForkCloneTests **14** (one opt-in skip); there is no class named JournalStreamingTests, so the separate LongJournalTests run covers the actual cursor/large-history class.
+
+| Final suite / log | Executed | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: | ---: |
+| Affected helper, `helper-affected.log` | 42 | 41 | 1 | 0 |
+| Large-journal recovery/cursor, `helper-long-journals.log` | 5 | 5 | 0 | 0 |
+| Existing slimming class after probe restoration, `helper-slimming-restored.log` | 8 | 8 | 0 | 0 |
+| Isolated streaming cost, `helper-cost.log` | 5 | 5 | 0 | 0 |
+| Remaining full helper, `helper-full.log` | 1,046 | 1,039 | 7 | 0 |
+| Native affected classes, `native-affected.log` | 178 | 178 | 0 | 0 |
+| Serial lifecycle, `native-lifecycle.log` | 11 | 11 | 0 | 0 |
+| Final notice-copy rerun, `native-import-final.log` | 8 | 8 | 0 | 0 |
+| Final light/dark/narrow galleries, `native-gallery-final.log` | 2 | 2 | 0 | 0 |
+| Release wire, `wire.log` | 36 | 36 | 0 | 0 |
+| Release concurrent, `concurrent.log` | 4 | 4 | 0 | 0 |
+| Release acceptance, `acceptance.log` | 3 | 3 | 0 | 0 |
+
+Full helper total: **1,051 executed, 1,044 passed, 7 skipped, 0 failed**. The same seven opt-in benchmark skips listed above remain. Native affected breakdown: BudgetOwnerUnload **7**, ConversationPane **81**, FamilyDeletion **10**, ForkCloneReader **1**, LaunchSelection **21**, MetadataDurability **10**, PastedAttachment **8**, SideBudgetIntegration **18**, SubagentDeletion **14**, WorkspaceDurability **8**.
+
+The final native coverage comprises **191 distinct passing tests**, with the 8-test import class rerun after shortening the notices. Lifecycle ran alone, including native recovery and recovered-side scenarios. Gallery ran alone with its environment enabled: **24 PNGs** regenerated (16 existing deletion scenes plus 8 import-refusal scenes). All eight changed notice images were inspected in light/dark at 720 and 320 points. The initial narrow captures truncated the longer notices; self-review shortened only their wording, then reran WorkspaceDurabilityTests **8/8** and ChatDeletionGalleryTests **2/2**. Final images show the complete refusal and next step, with visible Copy/Dismiss controls. Initial captures remain in `gallery-before-copy-review/`; final captures are in `gallery/`.
+
+The native fixture bring-up first caught two test-only compile mistakes (`waitFor` scope and a redundant `try`); both were corrected before the failing-first run. One earlier Release build rejected a source timestamp change during a mutation build (`native-build-overlap.log`); it was rerun after restoration. These were build/setup failures, not regression evidence. The final native failing-first log contains actual executed assertion failures. Subsequent builds/mutations were kept sequential. No unrelated final-suite failure has occurred.
+
+The three headless native regressions and their mutation runs create no windows or activation calls; they used the permitted focused lane after checking the test host's launch guard. Full affected native tests, LifecycleHelperTests alone, and gallery capture took the shared full-lane lock and released only their own lock. No installed app, real preferences, reader data, Keychain, live capture, paid endpoint or named result bundle was used. Source matched the adversarial-review diff after mutation restoration; the subsequent two notice strings received the visual review/reruns above. One own DerivedData tree was used (1.4 GiB); helper debug/release trees were 427/100 MiB. No native clone directories remain. `git diff --check` passed. Only `dev/a130-helper` is committed/pushed; the lead owns merge and the full gate.
