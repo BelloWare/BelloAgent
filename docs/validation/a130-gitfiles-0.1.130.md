@@ -1219,3 +1219,221 @@ interaction, malformed accounting, explicit unknown totals and output-path
 newline preservation, and checked each fix with mutation. No unresolved
 assigned finding or owner product decision remains. The separate renderer
 colour-bleed observation above remains unassigned.
+
+## Round 2 review — selection coordinates and plain syntax ink
+
+Base: `8cb055b9`, still on `dev/a130-gitfiles`. No merge or fast-forward to
+`dev/next`. Build root and evidence remain this workstream's own. Only generated
+VT bytes and file fixtures are used; no installed app, real preferences,
+Keychain, live capture, real credentials or provider calls. All native and
+package UI test runs, including captures, hold the shared full-lane lock and
+release only their own lock. The helper and wire are unchanged.
+
+### Confirmations, fixes and nearby sweep
+
+**Review finding — confirmed and fixed.**
+`TerminalSelectionScrollTests.testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth`
+selects two alternate rows (`ALT` / `NEXT`) above a full four-row hidden normal
+screen, then shrinks to two and grows back. It checks all three screen modes
+47/1047/1049, both view-driven resizing and direct emulator resizing followed by
+refresh, and a one-line history limit that forces eviction. Before the fix,
+`round2-review-before.log` records 36 failed selection assertions:
+
+```text
+XCTAssertEqual failed: (Optional("")) is not equal to (Optional("ALT\nNEXT"))
+# after growing with capped history:
+XCTAssertEqual failed: (Optional("ALT")) is not equal to (Optional("ALT\nNEXT"))
+```
+
+Selection endpoints now move by the change in the alternate screen's absolute
+origin: `trimmedLines + scrollback.count`. Both `fitGrid()` and `refresh()`
+apply that shift before adopting the new origin, so a subsequent refresh does
+not apply it twice. Normal-screen selections retain their absolute history
+coordinates. Screen switches and history clearing retain their existing
+selection invalidation.
+
+Nearby sweep found the same coordinate issue in the active drag anchor.
+`testAnAlternateDragAnchorFollowsHiddenHistory` begins at column 3 of `ALTword`,
+resizes while dragging, then extends and shortens the selection. The focused
+before run (`round2-review-anchor-before.log`, one failure) returned `ALTwor`
+instead of `wor`. The anchor now moves with both endpoints. The history-cap
+variant also proves that checking only `scrollback.count` misses movement
+when old history is evicted. `testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing`
+is an unchanged-behaviour control and passed before fixing.
+
+**Syntax colour bleed — confirmed and fixed.** This resolves the previously
+unassigned renderer observation in the Round 2 hunt section.
+`FileTextViewTests.testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances`
+paints `let value = 1` in light, dark, then light again using the same view.
+Before fixing, all three captures had zero pixels matching the plain text
+colour in `value =` (`round2-review-before.log`):
+
+```text
+XCTAssertGreaterThan failed: (0) is not greater than (5)
+- plain value = must use plain ink in NSAppearanceNameAqua
+- plain value = must use plain ink in NSAppearanceNameDarkAqua
+```
+
+`testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid` also found plain
+CoreText runs still using foreground-from-context. It covers short lines,
+multiple pieces and the long-line grid (13, 3,000 and 70,000 UTF-16 units),
+including pieces with no coloured tokens. Mixed syntax lines now assign the
+host's plain text colour to the whole piece before applying token colours.
+Files without a syntax callback keep the existing context-colour path and
+appearance-independent layout reuse. Existing syntax appearance invalidation
+rebuilds mixed lines when the theme changes.
+
+Nearby sweep: the gutter's context-colour runs have one colour per draw and
+no mixed syntax tokens, so they do not have this bug. The shared piece builder
+handles ordinary and grid pieces; the regression checks both. Style changes
+already replace metrics and layouts, so the new plain colour follows the
+host's style without a new invalidation rule.
+
+### Mutation and focused evidence
+
+The before run selected the three new terminal tests and the two new file
+rendering tests: 5 tests, 3 failed, 67 assertion failures; the normal-selection
+control and the initial zero-column drag variant passed. The strengthened
+nonzero-column drag test then failed alone before any production fix.
+Test setup also corrected a CoreFoundation cast rejected by the compiler and
+then read the AppKit foreground attribute key from CoreText's retained
+attributes (the wrong key produced 14 test-assertion failures). Those setup
+logs are retained as `round2-review-test-build-error.log` and
+`round2-review-attribute-key-error.log`; the pixel oracle was unchanged.
+
+The immediate fixed run passed all 9 selected tests. Six temporary mutations
+were then rejected by the named regression assertions, not by build failures;
+each source was restored in `finally` before the final runs:
+
+| Mutation | Failed tests / assertions | Log under `evidence/` |
+| --- | --- | --- |
+| Remove the post-resize rebase | 1 / 18 | `round2-review-mutation-fit.log` |
+| Remove the refresh rebase | 1 / 18 | `round2-review-mutation-refresh.log` |
+| Do not rebase the drag anchor | 1 / 1 | `round2-review-mutation-anchor.log` |
+| Ignore trimmed history in the origin | 1 / 24 | `round2-review-mutation-trimmed.log` |
+| Rebase normal selections as well | 1 / 2 | `round2-review-mutation-normal.log` |
+| Restore context ink for plain runs, with explicit token ink only | 2 / 31 | `round2-review-mutation-ink.log` |
+
+Every native invocation below uses:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+# Each invocation acquires/releases the shared full-lane lock.
+```
+
+Before / immediate-after selectors and exact mutation commands are in
+`evidence/split-commands.txt`; final commands, including gallery variables and
+the package scratch directory, are in `evidence/round2-review-commands.txt`.
+The initial failing command was:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing \
+  -only-testing:PiAppTests/FileTextViewTests/testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances \
+  -only-testing:PiAppTests/FileTextViewTests/testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid
+
+# Nonzero-column drag, before fixing:
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory
+```
+
+Final commands (serial-lane classes are separate):
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests \
+  -only-testing:PiAppTests/TerminalViewportTests \
+  -only-testing:PiAppTests/TerminalSoftWrapTests \
+  -only-testing:PiAppTests/TerminalHistoryDrawingTests \
+  -only-testing:PiAppTests/TerminalCursorAlignmentTests \
+  -only-testing:PiAppTests/TerminalPreciseScrollTests \
+  -only-testing:PiAppTests/TerminalInverseTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelSerialTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelAuditTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileTextViewTests \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FileFindTabTests \
+  -only-testing:PiAppTests/FilePageReadTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalCaptureTests
+swift build --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" --build-tests
+CFFIXED_USER_HOME="$PI_BUILD_ROOT/views-test-home" swift test \
+  --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" \
+  --filter 'FileTextStyleTests|FileFindTests|FileDocumentTests'
+xcodegen generate --quiet
+git diff --check
+```
+
+Final restored-source counts:
+
+| Run / class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| TerminalEmulatorTests | 25 | 0 | 0 |
+| TerminalSelectionScrollTests | 7 | 0 | 0 |
+| TerminalViewportTests | 7 | 0 | 0 |
+| TerminalSoftWrapTests | 11 | 0 | 0 |
+| TerminalHistoryDrawingTests | 4 | 0 | 0 |
+| TerminalCursorAlignmentTests | 14 | 0 | 0 |
+| TerminalPreciseScrollTests | 4 | 0 | 0 |
+| TerminalInverseTests | 1 | 0 | 0 |
+| TerminalPanelSerialTests | 18 | 0 | 0 |
+| TerminalPanelAuditTests | 8 | 0 | 0 |
+| FileTextViewTests | 47 | 0 | 0 |
+| FileTabTests | 16 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FilePageReadTests | 3 | 0 | 0 |
+| FileSyntaxTests, gallery enabled | 14 | 0 | 0 |
+| TerminalCaptureTests, generated-byte gallery enabled | 1 | 1 | 0 |
+| Package FileDocumentTests | 35 | 0 | 0 |
+| Package FileFindTests | 14 | 0 | 0 |
+| Package FileTextStyleTests | 3 | 0 | 0 |
+
+Native: **201 passed, 1 skipped, 0 failed**. BelloViews package: **52 passed,
+0 skipped, 0 failed**. The skip is the separate legacy terminal-capture opt-in;
+the new captures all ran. Text logs are `round2-review-{terminal,panel,audit,files}-final.log`,
+`round2-review-{syntax,terminal}-gallery.log` and `round2-review-views-final.log`.
+No final unrelated test failures. Package build, `xcodegen generate --quiet`
+and `git diff --check` pass; the generated project is unchanged. No clone
+folders remain and no extra DerivedData copy was created. The package uses
+`views-verify` under this build root. No helper or wire code changed, so the
+full helper/wire/concurrent/acceptance lanes were not needed.
+
+### Galleries and adversarial self-review
+
+Regenerated and visually inspected all 12 images under
+`$PI_BUILD_ROOT/evidence/round2-review-gallery`, with the lock held for captures:
+
+- `syntax-{light,dark}-{800,420}.png`: `let` stays purple, `1` stays blue, and
+  `value =` now draws in the host's plain text colour at both widths. The old
+  purple bleed is gone in both appearances.
+- `terminal-selected-{light,dark}-{760,360}.png`: both selected alternate rows
+  remain highlighted after shrinking, matching the asserted `ALT\nNEXT` copy
+  text. Text contrasts with the selection background at both widths.
+- `terminal-restored-{light,dark}-{760,360}.png`: the earlier restoration
+  scene still shows `three`, green `four!`, and the cursor after `!`.
+
+Image hashes are retained in `evidence/round2-review-gallery-inspected-hashes.json`.
+
+Every changed production condition and coordinate update was reviewed:
+
+| Change | States affected and preservation check |
+| --- | --- |
+| Alternate-screen guard in selection rebasing | Only alternate selections move with hidden history; normal selections keep absolute coordinates, covered by the normal control and guard mutation. |
+| Origin delta includes trimmed history | Growing gives a negative shift; shrinking gives a positive shift even at a full history cap. No movement gives zero. Both endpoints and the active anchor receive the same shift. |
+| Rebase after resize, before updating `producedLines` | View-driven resizing applies the change immediately; refresh sees the adopted origin and cannot double-shift. |
+| Rebase in refresh after clear/switch handling | Direct emulator resizing is covered. Clear/switch handling first removes old selections and anchors, so they cannot migrate between screens. |
+| `syntax != nil` piece branch | Mixed pieces receive explicit default ink, even when a piece has no tokens. Syntax-free files retain context-colour reuse. Empty pieces remain valid zero-length attributed strings. |
+| Existing token range guard | Unchanged: only valid ranges override the default ink. Glyph metrics, source reads, selection, paging and line-piece bounds are unchanged. |
+| Existing style/appearance invalidation | Host style changes rebuild metrics/layouts. Theme changes rebuild syntax layouts; the light→dark→light pixel test covers reuse across appearances. |
+
+The complete new diff from `8cb055b9` was reviewed adversarially, including the
+test oracles and the six mutations above. Both assigned items are confirmed
+and fixed. No unresolved finding or owner decision remains in this follow-up.

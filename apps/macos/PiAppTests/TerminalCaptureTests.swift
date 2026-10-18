@@ -34,6 +34,17 @@ final class TerminalCaptureTests: XCTestCase {
                 terminalView.cacheDisplay(in: terminalView.bounds, to: bitmap)
                 try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                     .write(to: folder.appendingPathComponent("terminal-restored-\(name)-\(width).png"))
+                window.setContentSize(NSSize(width: Double(width), height: 16 + 4 * height))
+                terminalView.layoutSubtreeIfNeeded()
+                terminal.feed("\u{1b}[?1049h\u{1b}[H\u{1b}[0m\u{1b}[?25lALT\r\nNEXT")
+                terminalView.refresh(); terminalView.selectAll(nil)
+                window.setContentSize(NSSize(width: Double(width), height: 16 + 2 * height))
+                terminalView.layoutSubtreeIfNeeded(); terminalView.refresh()
+                XCTAssertEqual(terminalView.selectedText, "ALT\nNEXT")
+                let selected = try XCTUnwrap(terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds))
+                terminalView.cacheDisplay(in: terminalView.bounds, to: selected)
+                try XCTUnwrap(selected.representation(using: .png, properties: [:]))
+                    .write(to: folder.appendingPathComponent("terminal-selected-\(name)-\(width).png"))
             }
         }
     }

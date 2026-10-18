@@ -73,6 +73,7 @@ struct FileTextMetrics {
 
     let font: NSFont
     let numbersFont: NSFont
+    let textColor: NSColor
     let lineHeight: CGFloat
     /// The width of one character of the font.
     let advance: CGFloat
@@ -84,7 +85,7 @@ struct FileTextMetrics {
     var tabInterval: CGFloat { advance * Self.tabSpaces }
 
     init(_ style: FileTextStyle) {
-        font = style.font; numbersFont = style.lineNumberFont; lineHeight = style.lineHeight
+        font = style.font; numbersFont = style.lineNumberFont; textColor = style.text; lineHeight = style.lineHeight
         func width(_ font: NSFont) -> CGFloat {
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0", attributes: [.font: font]))
             return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -246,8 +247,13 @@ public struct FileTextStyle {
     private func set(_ range: Range<Int>, x: CGFloat) -> Piece? {
         guard let text = read(range) else { return nil }
         let attributed = NSMutableAttributedString(string: text, attributes: metrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid))
+        if syntax != nil {
+            // A token changes CoreText's context ink, so mixed lines need explicit plain ink too.
+            let whole = NSRange(location: 0, length: attributed.length)
+            attributed.removeAttribute(NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String), range: whole)
+            attributed.addAttribute(.foregroundColor, value: metrics.textColor, range: whole)
+        }
         for run in syntax?(index, range, text) ?? [] where run.range.location >= 0 && NSMaxRange(run.range) <= attributed.length {
-            attributed.removeAttribute(NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String), range: run.range)
             attributed.addAttribute(.foregroundColor, value: run.color, range: run.range)
         }
         let line = CTLineCreateWithAttributedString(attributed)

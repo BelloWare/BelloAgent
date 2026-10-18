@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import ApplicationServices
+import CoreText
 @testable import PiApp
 @testable import FileView
 
@@ -12,6 +13,66 @@ import ApplicationServices
 /// Mac text view; copy; and the text VoiceOver reads, asked for through the
 /// accessibility interface VoiceOver itself uses.
 final class FileTextViewTests: XCTestCase {
+    @MainActor func testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances() throws {
+        let fixture = fixture(FileTextLines("let value = 1")), view = fixture.text
+        view.syntax = { _, _, _ in [FileTextColorRun(range: NSRange(location: 0, length: 3), color: TranscriptNSPalette.keyword),
+                                    FileTextColorRun(range: NSRange(location: 12, length: 1), color: TranscriptNSPalette.number)] }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua, .aqua] {
+            fixture.window.appearance = NSAppearance(named: appearance)
+            fixture.draw()
+            let rect = view.visibleRect
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(rect.width), pixelsHigh: Int(rect.height),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32))
+            bitmap.size = rect.size
+            var expected = NSColor.black
+            view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                expected = view.style.text.usingColorSpace(.deviceRGB)!
+                view.cacheDisplay(in: rect, to: bitmap)
+            }
+            let start = view.point(of: FileTextPosition(line: 0, column: 4))
+            let end = view.point(of: FileTextPosition(line: 0, column: 11))
+            var plainPixels = 0
+            for y in Int(start.y)..<Int(start.y + view.lineHeight) { for x in Int(start.x)..<Int(end.x) {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                let distance = abs(color.redComponent - expected.redComponent) + abs(color.greenComponent - expected.greenComponent) + abs(color.blueComponent - expected.blueComponent)
+                if color.alphaComponent > 0.9, distance < 0.08 { plainPixels += 1 }
+            } }
+            XCTAssertGreaterThan(plainPixels, 5, "plain value = must use plain ink in \(appearance.rawValue)")
+        }
+    }
+
+    @MainActor func testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid() throws {
+        for length in [13, 3_000, 70_000] {
+            let source = FileTextLines("let value = 1" + String(repeating: " ", count: length - 13))
+            let fixture = fixture(source), view = fixture.text
+            view.syntax = { _, range, _ in
+                range.lowerBound == 0 ? [FileTextColorRun(range: NSRange(location: 0, length: 3), color: TranscriptNSPalette.keyword)] : []
+            }
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                fixture.window.appearance = NSAppearance(named: appearance)
+                var runs: [CTRun] = []
+                view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    let pieces = view.layout(0)!.pieces(from: 0, to: 2_100 * view.metrics.advance)
+                    runs = pieces.flatMap { CTLineGetGlyphRuns($0.line) as! [CTRun] }
+                }
+                let plain = runs.filter { CTRunGetStringRange($0).location != 0 || CTRunGetStringRange($0).length > 3 }
+                XCTAssertFalse(plain.isEmpty)
+                for run in plain {
+                    let attributes = CTRunGetAttributes(run) as NSDictionary
+                    XCTAssertNotEqual(attributes[kCTForegroundColorFromContextAttributeName] as? Bool, true,
+                                      "plain runs must not inherit token ink: length=\(length), \(appearance.rawValue)")
+                    let color = attributes[NSAttributedString.Key.foregroundColor.rawValue] as? NSColor
+                    XCTAssertNotNil(color)
+                    if let color {
+                        view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                            XCTAssertEqual(color.usingColorSpace(.sRGB), view.style.text.usingColorSpace(.sRGB))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @MainActor func testOffscreenSyntaxArrivalDoesNotDirtyTheVisibleText() throws {
         let fixture = fixture(GeneratedLines(2_000)), view = fixture.text
         fixture.scroll.contentView.scroll(to: NSPoint(x: 0, y: view.top(ofLine: 1_000)))

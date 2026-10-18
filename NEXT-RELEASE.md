@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Alternate-screen selections and active drag anchors follow hidden normal-history movement during resize, including history eviction. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-review--selection-coordinates-and-plain-syntax-ink).
+- [x] Syntax-coloured file lines draw intervening plain text in the host's text colour, including long-line pieces and theme changes.
 - [x] GIT-FILES-5: Resizing a fullscreen terminal program preserves the hidden shell's lines, scrollback and cursor. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-hunt).
 - [x] GIT-FILES-6: Normal and alternate terminal screens keep separate saved cursor positions and attributes.
 - [x] Terminal cursor-save sweep: Reset clears saved modes and character sets in both screens.
