@@ -502,6 +502,7 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         try "{\"type\":\"session\",\"version\":3,\"id\":\"chat-child\"}\n{\"type\":\"message\",\"id\":\"matching\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"Distinctive search phrase\"}}\n".write(to: path, atomically: true, encoding: .utf8)
         model.chats[1].path = path.path
         await model.sidebarSearch.reconcileNow()
+        model.sidebarSearch.setScope(.fullChats)
         model.sidebarSearch.setQuery("Distinctive search")
         try await eventually("The generated child journal is indexed") { model.sidebarSearchHit("chat-child") != nil }
         let tab = try await open("chat-child", in: model)

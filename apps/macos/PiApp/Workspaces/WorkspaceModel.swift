@@ -70,7 +70,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var visibleReplyGraceOverride: Duration?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
+    @Published var profiles: [ProfileRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
