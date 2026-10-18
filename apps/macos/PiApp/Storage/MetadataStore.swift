@@ -665,6 +665,68 @@ actor MetadataStore {
         if kind == "draft" { noteDraftWrite(id, false) }
     }
     func close() { attempted = true; connection?.close(); connection = nil }
+    /// Remember the validated workspace before any journal is removed. A
+    /// session ID alone cannot authorize removing another project's output.
+    func rememberDeletedToolOutputOwners(_ members: [SessionDeletionRecord]) throws {
+        try transaction {
+            for member in members {
+                guard try get(String.self, kind: "session-deleted", id: member.id) == member.ownerID else { throw StoreError.invalidRecord }
+                let saved = try get(String.self, kind: "tool-output-deleted-workspace", id: member.id)
+                guard saved == nil || saved == member.workspaceID else { throw StoreError.invalidRecord }
+                if saved == nil { try put(member.workspaceID, kind: "tool-output-deleted-workspace", id: member.id) }
+            }
+        }
+    }
+    /// Only scoped, permanent deletion authority is eligible. Old tombstones
+    /// without a known workspace cannot safely claim any output directory.
+    func deletedToolOutputOwners() throws -> [String: Set<String>] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        let sql = "SELECT s.id,s.value,d.value FROM records s JOIN records d ON d.id=s.id AND d.kind='session-deleted' WHERE s.kind='tool-output-deleted-workspace'"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var owners: [String: Set<String>] = [:], result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let bytes = sqlite3_column_blob(statement, 1), let tombstone = sqlite3_column_blob(statement, 2) else { throw StoreError.invalidRecord }
+            let workspace = try JSONDecoder().decode(String.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 1))))
+            let owner = try JSONDecoder().decode(String.self, from: Data(bytes: tombstone, count: Int(sqlite3_column_bytes(statement, 2))))
+            guard !workspace.isEmpty, !owner.isEmpty else { throw StoreError.invalidRecord }
+            owners[workspace, default: []].insert(String(cString: id)); result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        return owners
+    }
+    /// Drafts/handoffs can reference a log before they have a journal. Include
+    /// imported original paths and unlisted saved chats, across all projects.
+    func toolOutputReferences(root: URL, candidates: Set<String>, deleted: Set<String>) throws
+        -> (token: PastedImageReferenceToken, journals: Set<URL>, keys: Set<String>) {
+        let database = try ready(), token = try pastedImageReferenceToken()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT kind,id,value FROM records", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var journals: Set<URL> = [], keys: Set<String> = [], result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            guard let kind = sqlite3_column_text(statement, 0), let identity = sqlite3_column_text(statement, 1), let bytes = sqlite3_column_blob(statement, 2) else { throw StoreError.invalidRecord }
+            let name = String(cString: kind), id = String(cString: identity)
+            defer { result = sqlite3_step(statement) }
+            let owned = ["chat", "draft", "handoff", "side-keep"].contains(name) && deleted.contains(id)
+            let command = (name.hasPrefix("pending:") || name.hasPrefix("receipt:")) && deleted.contains(String(name.dropFirst(8)))
+            if owned || command { continue }
+            let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 2)))
+            let chat: ChatRecord?
+            if name == "chat" { chat = try JSONDecoder().decode(ChatRecord.self, from: data) }
+            else if name == "side-keep" || name == SideKeepIntent.retainedKind { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
+            else { chat = nil }
+            if let chat, deleted.contains(chat.id) { continue }
+            keys.formUnion(try ToolOutputOwnership.references(in: data, candidates: candidates))
+            if let chat {
+                let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
+                if chat.path != nil || FileManager.default.fileExists(atPath: path) { journals.insert(URL(fileURLWithPath: path)) }
+            }
+        }
+        guard result == SQLITE_DONE, try pastedImageReferenceToken() == token else { throw StoreError.staleRevision }
+        return (token, journals, keys)
+    }
     /// All rows, with no listing cap or forgiving decode: an unlisted draft
     /// or chat is still a reference. Raw bytes also cover displaced drafts
     /// and pending records from newer versions whose fields we do not know.

@@ -255,8 +255,49 @@ extension WorkspaceModel {
         guard let store else { return }
         do {
             let intents = try await store.pendingFamilyDeletions()
+            if intents.isEmpty { try await recycleUnreferencedToolOutputs() }
             for members in Dictionary(grouping: intents, by: \.ownerID).values { try await finishFamilyDeletion(members) }
         } catch { self.error = "Family deletion is incomplete and will be retried. " + error.localizedDescription }
+    }
+
+    /// Physical owners may have been deleted before their last fork. Their
+    /// tombstones persist, and surviving journals/drafts retain the bytes.
+    /// Nothing is copied, and only explicitly deleted owners can be reclaimed.
+    private func recycleUnreferencedToolOutputs() async throws {
+        guard let store else { return }
+        let owners = try await store.deletedToolOutputOwners()
+        guard !owners.isEmpty else { return }
+        let deleted = Set(owners.values.flatMap { $0 })
+        let root = self.root
+        let listing = Task.detached(priority: .utility) { try ToolOutputOwnership.inventory(appRoot: root, deleted: owners) }
+        let inventory = try await withTaskCancellationHandler { try await listing.value } onCancel: { listing.cancel() }
+        guard !inventory.folders.isEmpty else { return }
+        let candidates = inventory.keys
+        let metadata = try await store.toolOutputReferences(root: root, candidates: candidates, deleted: deleted)
+        let scan = Task.detached(priority: .utility) {
+            try ToolOutputOwnership.references(in: inventory.journals.union(metadata.journals), candidates: candidates)
+        }
+        let references = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
+        // A writer/import that changed the reference set wins. The tombstone
+        // leaves these files eligible for the next deletion/relaunch sweep.
+        let unchanged = await Task.detached(priority: .utility) { inventory.unchanged && references.unchanged }.value
+        guard unchanged, try await store.pastedImageReferencesUnchanged(metadata.token) else { return }
+        var kept = references.keys.union(metadata.keys)
+        for view in displays.values where !deleted.contains(view.id) {
+            kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.savedDraft), candidates: candidates))
+            for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
+                kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(draft), candidates: candidates))
+            }
+        }
+        try Task.checkCancellation()
+        let files = inventory.recyclable(keeping: kept)
+        guard !files.isEmpty else { return }
+        if let familyFileRecycler { try await familyFileRecycler(files) }
+        else {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                NSWorkspace.shared.recycle(files) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
+            }
+        }
     }
 
     private func familyDeletionJournal(_ member: SessionDeletionRecord) throws -> URL? {
@@ -294,6 +335,7 @@ extension WorkspaceModel {
             guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
             _ = try familyDeletionJournal(member)
         }
+        try await store.rememberDeletedToolOutputOwners(members)
         func rank(_ member: SessionDeletionRecord) -> Int { member.id == owner ? 0 : member.sideDepth ?? 129 }
         for member in members.sorted(by: { (rank($0), $0.id) < (rank($1), $1.id) }) {
             guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
@@ -306,15 +348,8 @@ extension WorkspaceModel {
                 let names: [String]
                 do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
                 catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { names = [] }
-                var files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".origin" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
+                let files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".origin" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
                     .sorted().map { directory.appendingPathComponent($0) }
-                let outputs = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: member.id)
-                // Use throwing inspection: an I/O failure must retain the intent.
-                do {
-                    let values = try outputs.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-                    guard values.isDirectory == true, values.isSymbolicLink != true else { throw StoreError.invalidRecord }
-                    files.append(outputs)
-                } catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { }
                 if !files.isEmpty {
                     if let familyFileRecycler { try await familyFileRecycler(files) }
                     else {
@@ -326,6 +361,7 @@ extension WorkspaceModel {
             }
             try familyDeletionStep?("files:" + member.id)
         }
+        try await recycleUnreferencedToolOutputs()
         // Keep the owner's retry entry/repair proof until child metadata and
         // intents are gone too. Retrying never needs a deleted child journal.
         for member in members.sorted(by: { (rank($0), $0.id) > (rank($1), $1.id) }) {

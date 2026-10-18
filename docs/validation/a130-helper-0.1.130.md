@@ -461,3 +461,131 @@ git diff --check
 Full helper total: **1,047 executed, 1,040 passed, 7 skipped, 0 failed**. The seven existing opt-in skips are one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. No unrelated test failed. Release compilation retains existing Swift 6 actor-initializer warnings in unchanged `Sessions.swift`; the build succeeded. All 17 mutations failed as expected before restoration. The final expanded credential class passed before and after its additional mutation; production source remains identical to the source exercised by the full helper and Release wire suites.
 
 `results.json` and `inventory-final-results.json` preserve exact commands, exit codes and elapsed runner times. `git diff --check` passed. No DerivedData or xcresult bundles were created, and no test clone folders remain in this workstream's build root (about 572 MiB). There is no unresolved finding or owner decision from this hunt. Review, merge and the full native gate remain with the lead.
+
+## PERSISTENCE-COMPAT-2 — shared retained tool-output ownership
+
+Confirmed and fixed; final validation passed. Worktree/branch: `wt-a130-helper` / `dev/a130-helper`; supplied and fetched base `33e2cdc8` (`origin/dev/next`). Text evidence: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/persistence-compat-2/`. All fixtures are generated; the native test uses the packaged test helper and loopback gateway, MemoryVault and isolated app data. No installed app, user data, real preferences, Keychain or paid provider is used.
+
+Regression: `SubagentDeletionTests.testDeletingSourceKeepsCloneAndCopyForksFullToolOutputUntilLastReference` runs a real bash tool producing 5,000 lines and a sentinel beyond its 32 KiB preview. The short fork identity exercises byte cloning; the longer identity forces the copy fallback. It checks their distinct copied row shapes, deletes the source through `deleteSubagentFamily`, reads each journal's full-output reference, deletes one fork, relaunches, then deletes the last fork and checks reclamation.
+
+Before any production edit, `native-failing-first.log` recorded both missing files:
+
+```text
+fork lost its full output after source deletion: ... Code=260 ... no such file
+copy-fork-with-an-identity-longer-than-the-source-uuid lost its full output after source deletion: ... Code=260 ... no such file
+XCTAssertTrue failed - The other fork still references the original bytes
+Executed 1 test, with 5 failures (0 unexpected)
+```
+
+Three of those were the product failures above; two were fixture assertions comparing path spellings through a shortened display row. The fixture now reads the saved JSONL result and follows its actual advertised path, accepting macOS's `/var` and `/private/var` aliases. Earlier fixture bring-up failures (throwing assertion placement, copy-row slice and normalized transcript role) are not counted as bug evidence. A repeat using the corrected fixture and the original deletion source, plus the actual fix mutation, is recorded below.
+
+Decision: use existing complete journals and saved/live drafts as durable references, rather than copying log contents on each fork. Every log still has one physical owner/path and one physical file. Clone/copy journal bytes and offsets remain unchanged; no per-fork output copies or journal migration is introduced. Each deleted owner gains one small, durable `tool-output-deleted-workspace` metadata record beside its permanent `session-deleted` tombstone. The validated workspace is recorded transactionally before removing journals; both records are required for later reclamation. Old pending deletion manifests acquire this scope when they resume; completed legacy tombstones without workspace evidence leave files untouched. Deleting an owner removes unreferenced files but preserves files referenced by any remaining journal/metadata draft; deleting the last referrer or relaunching revisits tombstoned owners. Only the app's own `Workspaces/*/Sessions/tool-output/<deleted-id>` is eligible. Old flat UUID files and unknown filenames remain untouched. Invalid/unreadable/changing reference evidence defers cleanup, without producing extra copies.
+
+Sweep:
+
+- Bash `.log` (up to 64 MiB) and oversized non-bash/MCP `.txt` (up to 16 MiB): same defect, shared ownership covers both. Read-only `read` pages remain usable. Short/crash-left output with no references is reclaimed normally.
+- Clone, copy fallback, reply fork, kept side and published recovered copies: their complete journal bodies contain inherited paths, including old branches. All native journals are scanned, including unlisted files and other workspaces. No dependence on the current transcript page or active context.
+- Portable handoff: copied text may contain output paths before a new journal exists. Metadata drafts, handoff and pending/displaced draft structures plus live drafts retain these files.
+- Registered imported external JSONL: metadata supplies its exact journal path. It keeps referenced native logs while registered. Removing an import preserves its external source; unregistered external originals are outside app ownership.
+- Accepted user images and MCP/read image results: bytes are in message image blocks; fork/side/copy replays those bytes. Native input retains original attachment paths for editing. Clipboard images use global PastedImages reference cleanup, not per-source deletion; project/selected images remain external files that deletion never removes.
+- Resource/skill source paths, cwd, file-tool paths: source deletion never removes project/configuration files. Resource/skill snapshots retain the selected bytes. No permissions broadened.
+- Captures: attempts/lineage are logical references, not owned body paths in a chat clone. Clearing source capture/retention intentionally can remove old HTTP bodies; HTTP archives are not needed for model replay. Explicit exported capture artifacts contain their own body bytes. No capture policy/ownership change here.
+- Journal checkpoint/origin/promotion/stream sidecars: owned by each journal; a completed fork has its own journal and replay checkpoint, so removing the source's derived files does not remove the copied conversation.
+- Needs owner decision: conversation Export is explicitly Markdown text, not a bundle. External exports (`apps/macos/PiApp/Inspector/ConversationContentView.swift:174`) can contain a now-stale full-output path after all registered references are gone. Preserve current text-only behavior; bundling resources needs separate scope/retention/UX policy.
+- Separate pre-existing alias limitation: importing the exact original native journal path registers a read-only reference, not a copy. Deleting that source can remove the imported alias's journal itself (`apps/macos/PiApp/Workspaces/WorkspaceChatLifecycle.swift:147`; `WorkspaceSubagentDeletion.swift:351`). Import remains a reference to the selected original; changing it to copying requires an owner decision.
+
+### Adversarial self-review
+
+The review found and corrected an additional **workspace-scope error**. The first implementation selected tombstoned session IDs across all projects. An unlisted journal in another project can have the same ID, and its short output need not have a path in its result. Extending `testDeleteFindsAnUnregisteredChildAndPreventsRediscoveryAndStaleWrites` failed before the correction (`native-scope-failing-first.log`, 1 test / 1 failure):
+
+```text
+XCTAssertTrue failed - A matching session ID in another project is not deletion authority
+```
+
+The final implementation records the workspace from the validated deletion manifest and selects only that workspace's physical owner directory. A conflicting rescope is rejected, and an old unscoped tombstone authorizes no reclamation. The regression passes with the fix and fails again when the workspace lookup is replaced by a match in any workspace (`mutation-workspace-deletion-scope.log`).
+
+The review also narrowed deleted-record exclusion to known chat/command metadata, so an unknown record whose kind/ID resembles a deleted chat still retains its references. The synthetic `future:original` row exercises this. A first helper check exposed an overly strict Foundation URL equality check between `/var` and `/private/var`; directory traversal now checks each enumerated component with `lstat`, retaining symlink rejection without rejecting legitimate macOS aliases. This and fixture-only URL comparisons were corrected before final validation.
+
+| Changed condition / operation | States that change path; intended behavior |
+| --- | --- |
+| Remember workspace before file removal | A validated pending deletion persists its scope before removing any journal. Matching existing scope is idempotent; a different scope or missing/wrong tombstone throws. Ordinary opens, live owners and imports do not write deletion authority. |
+| Read scoped deletion owners | Only a workspace marker joined to a permanent tombstone grants authority; missing/legacy markers retain files. Complete SQLite queries have no chat-list cap. Corrupt values and database failures retain the deletion intent. |
+| Inventory workspace/owner selection | Only the recorded workspace and owner ID are eligible, including an owner deleted before its last fork. Equal IDs elsewhere are not authority. Live owners and older flat output files remain outside cleanup. |
+| Missing/invalid directory | ENOENT means there is nothing there; I/O failure or a symlink/non-directory rejects cleanup. Every child is traversed from the app root; no metadata path supplies a deletion destination. |
+| Output entry kind/name | Regular `.log`/`.txt` files may be reclaimed; unknown names are retained. A symlink/nonregular entry rejects the inventory. No output contents are copied or rewritten. |
+| Reference matching | Decode each JSON record before matching paths, preserving slash/Unicode escape equivalents. Strings, keys, arrays and old branches all count. Case/suffix collisions may conservatively retain an extra file; they cannot authorize removing a file outside the scoped inventory. |
+| Bounded journal scan | Each read stops at the initial file size, using 64 KiB chunks and at most one 32 MiB JSONL record. Empty lines are tolerated. Oversized, malformed, missing, unreadable or changing journals keep all candidate files; cancellation throws instead of returning deletion proof. |
+| Descriptor/identity checks | `O_NOFOLLOW` and regular-file checks prevent following a journal symlink/FIFO. Device/inode checks fence replacement between inspection and open; size/mtime/ctime checks invalidate modified or replaced files. |
+| All references found | Scanning can stop only when every candidate file is already retained. Remaining unread journals cannot make any of those files eligible for removal. |
+| Metadata ownership exclusion | Only known deleted chat/draft/handoff/side-keep rows and their command namespaces are ignored. Retained side-keep rows use their decoded chat identity. Unknown/future rows remain references. Explicit imported paths are scanned even when missing; absent default paths for unsent chats are not invented. |
+| Recheck after suspension | Journal and directory stamps detect writes/replacements/newly published files; the SQLite token detects changed drafts/imports/metadata. An obsolete scan defers output cleanup. Disk scans/rechecks run off the main actor. |
+| Live drafts | After the async scan, surviving displays' saved and displaced edit/queue drafts add references before recycling. Deleted members' draft state does not retain their discarded output. |
+| Recycle selection | Referenced files remain readable at their original paths. Only unused files are recycled within a shared directory; an entirely unreferenced directory is recycled whole. Unknown files prevent whole-directory recycling. |
+| Startup / incomplete deletion | With no pending intent, startup still revisits scoped tombstoned owners. During a deletion, journal/capture cleanup precedes reference scanning; metadata/intents clear afterward. Interrupted cleanup retains durable authority and can retry without a deleted source journal. |
+| Capture / runtime state | Off/memory/persist capture, permission grants, tool policy and accounting are untouched. Existing unload/runtime gates still prevent a source fork/side publication from escaping normal deletion. Streaming/paused/idle survivors are read from durable journals, and changes defer cleanup. Cancellation before recycling preserves files. Concurrent unrelated work receives no new global gate. |
+
+Additional scope boundary from the code sweep: `packages/swift-host/Sources/PiAgentCore/HostService.swift:529` dispatches recovery off the host actor, and `recoverCopy` (line 1008) checks its already-open descriptor's size before publication; `JournalRecordReader.checkUnchanged` (line 115) does not check whether the source path still exists. An overlapping recovery that already opened a journal may therefore publish after source deletion; its hidden staging file is not a published chat in the reference inventory. This concurrency scenario was **not reproduced here** and is a separate follow-up to investigate, not a claim that the new tests cover pending recovery. Completed, published recovered copies are covered by the journal scan. The native fork and copy-fork paths in this finding share the existing runtime gate with deletion and are both exercised.
+
+### Regression and mutation evidence
+
+| Evidence | Result |
+| --- | --- |
+| Corrected fixture with original deletion source, `native-corrected-original-deleter.log` | 1 test, 3 intended failures: both fork paths lose the advertised file, and the remaining fork cannot retain it. |
+| Final scoped fix, `native-scoped-fixed.log` | 12 deletion tests passed. |
+| Remove reference protection, `mutation-final-unconditional-output-deletion.log` | 1 test, 3 intended failures; source bytes restored afterward. |
+| Remove restart reclamation, `mutation-native-relaunch-reclamation.log` | 1 test, 3 intended failures; restored. |
+| Scan raw JSON instead of decoded strings, `mutation-undecoded-journal-paths.log` | 18 tests, 3 failures (one is the now-missing file read throwing); restored. |
+| Ignore directory publication stamps, `mutation-directory-publication-check.log` | 18 tests, 1 intended failure; restored. |
+| Drop workspace restriction, `mutation-workspace-deletion-scope.log` | 1 test, 1 intended failure; restored. |
+| Helper class after restoration, `helper-mutations-restored.log` | 18 tests passed. |
+
+`testToolOutputReferencesKeepOnlySharedFilesAndReleaseTheLastReference` covers both retained shell logs and oversized MCP/tool text, JSON escape equivalents across read chunks, historical side records, unused-file cleanup and real read-only `read` paging of the sentinel. `testToolOutputReferencesFailClosedAndDetectConcurrentPublication` covers torn/missing journals, replacement/publication and cancellation. `testToolOutputInventoryRejectsSymlinksAndKeepsUnknownFiles` verifies boundaries. `testOutputRetentionIncludesUnlistedSidesImportedHistoryAndUnsentDrafts` covers other projects, registered external originals, saved/live displaced drafts, unknown metadata, legacy unscoped tombstones, conflicting scope and last-reference cleanup without a pending deletion intent.
+
+### Final validation
+
+Commands, from this worktree (all native runs held the shared full-lane lock with guaranteed release; no focus/gallery operation ran outside it):
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+export PI_BUILD_ROOT="$BUILD"
+# The scripts record exact mutation commands, exit codes and runner durations.
+python3 "$BUILD/persistence-helper-mutations.py"
+python3 "$BUILD/persistence-native-checks.py"
+python3 "$BUILD/persistence-native-final.py"
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter NativeToolTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter '^PiAgentCoreTests.(NativeToolTests|ToolOutcomeTests|ToolRecordingFailureTests|ForkCloneTests|ForkPointTests|ForkReplayHandoffTests|SubagentForkTests|JournalCloneTests|SessionRecoverTests|HostServiceTests|PiReadImageTests)/'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/BudgetOwnerUnloadTests \
+  -only-testing:PiAppTests/SideBudgetIntegrationTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests
+python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+git diff --check
+```
+
+| Final suite / log | Executed | Passed | Skipped | Failed | Test duration |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Helper affected classes, `helper-affected.log` | 77 | 76 | 1 | 0 | 17.346 s |
+| Isolated streaming-cost class, `helper-cost.log` | 5 | 5 | 0 | 0 | 3.681 s |
+| Remaining full helper, `helper-full.log` | 1,045 | 1,038 | 7 | 0 | 384.895 s |
+| Native affected classes, `native-final-scoped.log` | 66 | 66 | 0 | 0 | 17.092 s |
+| Release wire, `wire.log` | 36 | 36 | 0 | 0 | 33.168 s |
+| Release concurrent, `concurrent.log` | 4 | 4 | 0 | 0 | 25.955 s |
+| Release acceptance, `acceptance.log` | 3 | 3 | 0 | 0 | 3.537 s |
+
+Full helper total: **1,050 executed, 1,043 passed, 7 skipped, 0 failed**. The opt-in skips remain one each in `ForkCloneTests`, `ForkPerformanceTests`, and `HistoryReadCancellationTests`, plus four in `SessionOpenPerformanceTests`. Native breakdown: `SubagentDeletionTests` **12/12**, `FamilyDeletionTests` **10/10**, `BudgetOwnerUnloadTests` **7/7**, `SideBudgetIntegrationTests` **18/18**, `MetadataDurabilityTests` **10/10**, `PastedAttachmentTests` **8/8**, `ForkCloneReaderTests` **1/1**. `LifecycleHelperTests` itself was not mixed into a parallel lane; the new regression reuses its fixture without opening a window. No UI presentation changed, so no gallery scene was required.
+
+The Release bundle succeeded (61.88 s compiler time / 63.488 s runner time). Existing Swift 6 actor-initializer warnings in unchanged `Sessions.swift` remain; there were no unrelated test failures. Every intentional mutation failed and was restored. Final production source matches the reviewed patch byte-for-byte, and `git diff --check` passed. The full helper and native suites were rerun after the workspace-scope correction, not just the new tests.
+
+`helper-mutations.json`, `helper-results.json`, `native-scoped-results.json` and `wire-results.json` preserve exact commands/statuses/times. Only this build root was used (one native DerivedData tree, about 1.3 GiB; helper debug/release trees about 425/100 MiB). No native clone directories or generated task fixture folders remain. The early fixture crash left one synthetic gateway; its exact PID, command and fixture cwd were verified before terminating it and removing that fixture. No named result bundles were requested; text logs are the evidence. Review, merge and the full native gate remain with the lead.
+
+Unresolved scope notes are the text-only export decision, imported-original alias behavior, and the unverified overlapping-recovery scenario above. The assigned clone/copy-fork deletion regression is fixed, including last-reference reclamation after reopening.

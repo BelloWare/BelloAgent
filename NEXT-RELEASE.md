@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Deleting a chat preserves full tool output referenced by surviving forks, sides and saved drafts, then reclaims it after the last reference is removed. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-compat-2--shared-retained-tool-output-ownership).
+
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
 - [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
 - [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.
