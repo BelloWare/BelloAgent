@@ -267,7 +267,12 @@ extension WorkspaceModel {
         toolOutputCleanup = Task(priority: .utility) { [weak self] in
             // Opportunistic collection cannot hold up the remembered reader.
             // Failure retains the files for a later deletion or launch.
-            try? await self?.recycleUnreferencedToolOutputs()
+            guard let self else { return }
+            defer {
+                self.toolOutputCleanup = nil
+                if self.toolOutputCollectionDeferred, self.toolOutputProducers.isEmpty { self.scheduleToolOutputCleanup() }
+            }
+            try? await self.recycleUnreferencedToolOutputs()
         }
     }
 
@@ -281,11 +286,17 @@ extension WorkspaceModel {
             try await sweepUnreferencedToolOutputs()
         }
         toolOutputRecycling = (id, task)
-        defer { if toolOutputRecycling?.id == id { toolOutputRecycling = nil } }
+        defer {
+            if toolOutputRecycling?.id == id { toolOutputRecycling = nil }
+            if toolOutputCollectionDeferred, toolOutputProducers.isEmpty { scheduleToolOutputCleanup() }
+        }
         try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     private func sweepUnreferencedToolOutputs() async throws {
+        let producerRevision = toolOutputProducerRevision
+        guard !deferToolOutputCollection(since: producerRevision) else { return }
+        toolOutputCollectionDeferred = false
         guard let store else { return }
         let owners = try await store.deletedToolOutputOwners()
         guard !owners.isEmpty else { return }
@@ -300,10 +311,12 @@ extension WorkspaceModel {
             try ToolOutputOwnership.references(in: inventory.journals.union(metadata.journals), candidates: candidates)
         }
         let references = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
+        await toolOutputReferenceScanStep?()
         // A writer/import that changed the reference set wins. The tombstone
         // leaves these files eligible for the next deletion/relaunch sweep.
         let unchanged = await Task.detached(priority: .utility) { inventory.unchanged && references.unchanged }.value
         guard unchanged, try await store.pastedImageReferencesUnchanged(metadata.token) else { return }
+        guard !deferToolOutputCollection(since: producerRevision) else { return }
         var kept = references.keys.union(metadata.keys)
         for view in displays.values where !deleted.contains(view.id) {
             kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.savedDraft), candidates: candidates))
@@ -388,7 +401,8 @@ extension WorkspaceModel {
         // intents are gone too. Retrying never needs a deleted child journal.
         for member in members.sorted(by: { (rank($0), $0.id) > (rank($1), $1.id) }) {
             forgetReadState(member.id); forgetRunHold(member.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            try await store.removeDeletedSideKeep(member)
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
             contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id); subagentEfforts.removeValue(forKey: member.id)

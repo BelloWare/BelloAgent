@@ -537,7 +537,8 @@ public actor NativeHostService {
             let url=canonical(try required(params["path"],"journal path"))
             guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals are slimmed") }
             guard sessions[id] == nil, slimming[id] == nil else { return JournalSlimming.Outcome(reason:"session-open").json }
-            let task=Task.detached(priority:.utility) { try JournalSlimming.slim(url:url,id:id) }
+            let before = beforeJournalDiskWork
+            let task=Task.detached(priority:.utility) { before?(); return try JournalSlimming.slim(url:url,id:id) }
             slimming[id]=task
             defer { slimming[id]=nil }
             return try await task.value.json
@@ -566,6 +567,9 @@ public actor NativeHostService {
                 return ["accepted":true,"released":.array(released)]
             }
         case "session.forget":
+            // Deletion may remove the journal as soon as this acknowledges.
+            // Wait outside the runtime gate so unrelated chats stay available.
+            if let slim=slimming[id] { _=await slim.result }
             try await withRuntimeGate {
                 let family = try await loadedBudgetFamily(id,directory:directory)
                 // Preflight the whole family before detaching any writer.

@@ -242,12 +242,20 @@ import AppKit
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
         guard let url = await PiQuestion.shared.save(panel) else { return }
         do { try Data(request.metadataText.utf8).write(to: url, options: .atomic); notice = "" } catch { notice = error.localizedDescription }
     }
 
     private func exportBodies(_ row: InspectorRequestRow) async {
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
         guard await PiQuestion.shared.confirm("Export sensitive retained body bytes?", "This exports request.bin, response.bin and a manifest of their completeness and hashes, including every retained byte and any secret in them. Prefixes and expired captures are labeled. Nothing is sent again.") else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.message = "Choose where to put a new trace folder."
@@ -266,6 +274,10 @@ import AppKit
     /// Replaces a literal the reader names with [REDACTED] in the view on
     /// screen, shows the result, then saves it with a manifest that says so.
     private func exportRedacted(_ row: InspectorRequestRow) async {
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
         guard let copySource else { return }
         let ask = NSAlert(); ask.messageText = "Which literal should be redacted?"
         ask.informativeText = "Every occurrence is replaced with [REDACTED] in a copy of the view on screen. This is not a secret detector."

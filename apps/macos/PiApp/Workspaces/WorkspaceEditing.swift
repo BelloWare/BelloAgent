@@ -60,9 +60,12 @@ extension WorkspaceModel {
         let focusOrigin = focusedSessionID ?? selectedID
         let focus = QueueEditFocus(self, view)
         view.editGeneration = generation; view.editPreparing = true; view.editNotice = "Loading the complete original input…"
+        let outputUse = beginToolOutputUse(.messageEdit)
         Task {
+            defer { finishToolOutputUse(outputUse) }
             defer { if view.editGeneration == generation { view.editPreparing = false } }
             do {
+                try await prepareToolOutputUse(outputUse)
                 let result: [String: WireValue]
                 if let editTargetRead { result = try await editTargetRead(sessionID, messageID) }
                 else if let host = hosts[item.workspaceID], opened.contains(sessionID) {
@@ -157,7 +160,9 @@ extension WorkspaceModel {
         let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true
+        let outputUse = beginToolOutputUse(.messageEdit)
         Task {
+            defer { finishToolOutputUse(outputUse) }
             defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false, helperAccepted = false
             // As in `send`: only this resend's own "queued" is ever undone, and
@@ -165,6 +170,7 @@ extension WorkspaceModel {
             var shown: (state: RunState, replaced: RunState)?
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             do {
+                try await prepareToolOutputUse(outputUse)
                 let connection = Result { try connectionLease(for: item) }
                 if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
                 let lease = try connection.get()

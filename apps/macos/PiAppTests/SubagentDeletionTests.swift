@@ -3,6 +3,89 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDeletionTests: XCTestCase {
+    @MainActor func testSideDraftTransferKeepsOutputWhileParentIsUnloaded() async throws {
+        let root = scratchRoot("transferring-output"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let store = try XCTUnwrap(model.store)
+        let members = [SessionDeletionRecord(id:"deleted",ownerID:"deleted",workspaceID:"pane-project",path:nil,repairCompleted:true)]
+        try await store.beginFamilyDeletion(members,repairCompleted:true)
+        try await store.rememberDeletedToolOutputOwners(members)
+        let folder = try ToolOutputOwnership.directory(root:model.subagentDirectory("pane-project").appendingPathComponent("tool-output"),sessionID:"deleted",create:true)
+        let output = folder.appendingPathComponent("result.log")
+        try Data("SURVIVING-DRAFT-OUTPUT".utf8).write(to:output)
+        let info = SideRecord(id:"moving-side",parentID:"chat-parent",workspaceID:"pane-project",profileID:"fixture",title:"Side",pending:true)
+        let side = SessionDisplay(id:info.id); side.draft = output.path
+        model.sides[info.parentID] = info; model.displays[info.id] = side
+        model.displays.removeValue(forKey:info.parentID)
+        let gate = AsyncGate(); var transferring = false
+        model.sideDraftTransferStep = { transferring = true; await gate.wait() }
+        model.familyFileRecycler = { for file in $0 { try FileManager.default.removeItem(at:file) } }
+        let moving = Task { try await model.moveSideDraft(info) }
+        for _ in 0..<500 where !transferring { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertTrue(transferring); XCTAssertTrue(side.draft.isEmpty)
+        try await model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath:output.path),"The transfer owns the draft after its composer is cleared")
+        await gate.open(); try await moving.value
+        let saved = try await store.get(DraftRecord.self,kind:"draft",id:info.parentID)
+        XCTAssertEqual(saved?.text,output.path)
+        try await model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath:output.path))
+    }
+
+    @MainActor func testRetainedExternalCopySurvivesAnotherCopyWithSameIDBeingDeleted() async throws {
+        let root = scratchRoot("retained-copy-output"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+        let store = try XCTUnwrap(model.store)
+        let folder = try ToolOutputOwnership.directory(root:model.subagentDirectory("pane-project").appendingPathComponent("tool-output"),sessionID:"deleted",create:true)
+        let output = folder.appendingPathComponent("result.log")
+        try Data("RETAINED-COPY-OUTPUT".utf8).write(to:output)
+        let external = root.appendingPathComponent("retained-copy.jsonl")
+        var row = try JSONEncoder().encode(["text":output.path]); row.append(10); try row.write(to:external)
+        let retained = ChatRecord(id:"deleted",workspaceID:"another-project",title:"Independent copy",path:external.path,profileID:"fixture")
+        try await store.put(SideKeepIntent(chat:retained),kind:"side-keep",id:retained.id)
+        try await store.dismissSideKeep(retained)
+        let pendingOutput = folder.appendingPathComponent("pending.log"), pendingCopy = root.appendingPathComponent("pending-copy.jsonl")
+        try Data("PENDING-COPY-OUTPUT".utf8).write(to:pendingOutput)
+        var pendingRow = try JSONEncoder().encode(["text":pendingOutput.path]); pendingRow.append(10); try pendingRow.write(to:pendingCopy)
+        var pending = retained; pending.path = pendingCopy.path
+        try await store.put(SideKeepIntent(chat:pending),kind:"side-keep",id:pending.id)
+        let members = [SessionDeletionRecord(id:"deleted",ownerID:"deleted",workspaceID:"pane-project",path:nil,repairCompleted:true)]
+        try await store.beginFamilyDeletion(members,repairCompleted:true)
+        try await store.rememberDeletedToolOutputOwners(members)
+        model.familyFileRecycler = { for file in $0 { try FileManager.default.removeItem(at:file) } }
+        try await model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath:output.path),"A tombstone for a chat ID does not delete independently retained copies")
+        XCTAssertTrue(FileManager.default.fileExists(atPath:pendingOutput.path),"A pending keep also owns its particular copy")
+        XCTAssertEqual(try Data(contentsOf:external),row)
+        try await model.finishFamilyDeletion(members)
+        try await model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath:pendingOutput.path),"Finishing deletion must not drop a different pending copy's ownership")
+        let copies = try await store.list(SideKeepIntent.self,kind:SideKeepIntent.retainedKind)
+        XCTAssertTrue(copies.contains { $0.chat == pending },"The independent pending copy must transfer to durable retained ownership")
+    }
+
+    @MainActor func testDeletingMatchingPendingCopyReleasesItsOutput() async throws {
+        let root = scratchRoot("matching-pending-output"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+        let store = try XCTUnwrap(model.store), sessions = try model.subagentDirectory("pane-project")
+        let folder = try ToolOutputOwnership.directory(root:sessions.appendingPathComponent("tool-output"),sessionID:"deleted",create:true)
+        let output = folder.appendingPathComponent("result.log"), journal = sessions.appendingPathComponent("deleted.jsonl")
+        try Data("DELETED-COPY-OUTPUT".utf8).write(to:output)
+        var row = try JSONEncoder().encode(["text":output.path]); row.append(10); try row.write(to:journal)
+        let pending = ChatRecord(id:"deleted",workspaceID:"pane-project",title:"Deleted copy",path:journal.path,profileID:"fixture")
+        try await store.put(SideKeepIntent(chat:pending),kind:"side-keep",id:pending.id)
+        let members = [SessionDeletionRecord(id:pending.id,ownerID:pending.id,workspaceID:pending.workspaceID,path:pending.path,repairCompleted:true)]
+        try await store.beginFamilyDeletion(members,repairCompleted:true)
+        model.familyFileRecycler = { for file in $0 { try FileManager.default.removeItem(at:file) } }
+        try await model.finishFamilyDeletion(members)
+        try await model.recycleUnreferencedToolOutputs()
+        XCTAssertFalse(FileManager.default.fileExists(atPath:output.path))
+        let copies = try await store.list(SideKeepIntent.self,kind:SideKeepIntent.retainedKind)
+        XCTAssertFalse(copies.contains { $0.chat == pending },"The exact deleted journal has no surviving reference")
+    }
+
     @MainActor func testFailedAndCancelledSweepsDoNotStrandLaterCleanup() async throws {
         let root = scratchRoot("cancelled-output-recycling"), model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model,root:root)

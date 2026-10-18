@@ -695,3 +695,193 @@ The final native coverage comprises **191 distinct passing tests**, with the 8-t
 The native fixture bring-up first caught two test-only compile mistakes (`waitFor` scope and a redundant `try`); both were corrected before the failing-first run. One earlier Release build rejected a source timestamp change during a mutation build (`native-build-overlap.log`); it was rerun after restoration. These were build/setup failures, not regression evidence. The final native failing-first log contains actual executed assertion failures. Subsequent builds/mutations were kept sequential. No unrelated final-suite failure has occurred.
 
 The three headless native regressions and their mutation runs create no windows or activation calls; they used the permitted focused lane after checking the test host's launch guard. Full affected native tests, LifecycleHelperTests alone, and gallery capture took the shared full-lane lock and released only their own lock. No installed app, real preferences, reader data, Keychain, live capture, paid endpoint or named result bundle was used. Source matched the adversarial-review diff after mutation restoration; the subsequent two notice strings received the visual review/reruns above. One own DerivedData tree was used (1.4 GiB); helper debug/release trees were 427/100 MiB. No native clone directories remain. `git diff --check` passed. Only `dev/a130-helper` is committed/pushed; the lead owns merge and the full gate.
+
+## Round 6 review — transient output ownership and deletion
+
+Continued from `4edba932` on `dev/a130-helper`; no merge, rebase or fast-forward. All three review findings and the previously recorded slimming/deletion race are **confirmed and fixed**. This section supersedes the earlier unresolved slimming note. Fixtures use isolated metadata, generated journals/output and loopback helpers only.
+
+### Findings and regression evidence
+
+| Finding | Reproduction against the previous implementation | Fix and mutation evidence |
+| --- | --- | --- |
+| In-flight side draft transfer | `SubagentDeletionTests.testSideDraftTransferKeepsOutputWhileParentIsUnloaded` stops after the side composer is cleared and before the unloaded parent's metadata read. Collection removes the only output file. `native-before.txt`: **2 failed assertions**, including `The transfer owns the draft after its composer is cleared`. | Register the transfer before it can clear its old holder; retain the registration through save/rollback. `mutation-producer-registry.txt` restores collection without producer fencing: the side test fails with the same **2 assertions**. |
+| Independently retained copies | `SubagentDeletionTests.testRetainedExternalCopySurvivesAnotherCopyWithSameIDBeingDeleted` dismisses an external copy's keep intent, then tombstones another copy with that ID. The original implementation removes its output. `native-before.txt`: **1 failed assertion**, `A tombstone for a chat ID does not delete independently retained copies`. | Keep and dismissed-retention rows own their particular journal paths, irrespective of a same-ID tombstone. The nearby pending-keep case is included too. Restoring decoded-ID exclusion gives **2 failed assertions**, one for each copy (`mutation-retained-copy-id.txt`). |
+| Unlisted native side ancestry | `WorkspaceDurabilityTests.testImportingUnlistedArchivedSideRetainsBudgetAncestorsBeforeSelection` imports an archived native side whose parent is stored but unlisted. `import-before.txt`: **3 failed assertions**: missing parent, false `deletionNeedsAncestorRepair`, and the side incorrectly owning its budget. No helper is running. | Retain the ancestor chain before inserting/selecting the owner, and re-read ownership if the chat generation changed during that await. Omitting ancestor loading reproduces all **3 failures** (`mutation-import-ancestors.txt`). |
+| Slimming resurrects a deleted source | The retained `JournalSlimmingTests.testDeletionDuringDiscardMustNotRepublishSource` probe is now permanent. `slimming-before.txt`: **1 test, 2 failures**, `Deleting the source must win over background slimming` and `Slimming republished the deleted source`. `HostServiceTests.testForgetWaitsForSlimmingWithoutBlockingAnotherChat` also fails first: **1 failure**, `Deletion cannot proceed while slimming can still publish` (`forget-before.txt`). | Forget awaits that ID's existing slimming task outside the runtime gate. Slimming rechecks the source's file identity after discard and atomically exchanges existing names; an absent destination cannot be recreated in the check/publication interval. Reverting publication to the old rename reproduces **2 failures**; removing the forget wait reproduces **1** (`mutation-slimming-publication.txt`, `mutation-forget-wait.txt`). `testReplacementDuringDiscardMustNotBeOverwritten` also preserves a replacement source and removes prepared leftovers. Removing only the source identity check fails both assertions (`mutation-slimming-source-identity.txt`); restored helper classes pass **18/18** (`helper-final-restored.txt`). |
+
+The first import fixture omitted its generated Sessions directory; that setup error is recorded in `native-before.txt` and is **not** regression evidence. After fixing the fixture, `import-before.txt` shows the three actual assertions above. The initial fixed focused run passed **8/8** (`native-focused-final.txt`).
+
+### Producer rule and sweep
+
+The collector and reference producers share one MainActor registry across projects. Registration is synchronous and precedes removing a previous holder or scheduling a transferring task. A producer waits for the already queued collection task before reading/publishing; collection never waits on producers, so there is no producer/collector wait cycle. An active producer conservatively retains **all** candidate output, including references in bytes not decoded yet. Collection checks both membership and a generation before scanning and again immediately before handing files to the asynchronous recycler. The serialized collector remains held until that recycler returns. A later producer cannot pass its admission wait during that interval.
+
+The last producer schedules a fresh deferred collection after publication/rollback. Cancellation and errors release registrations using `defer`; sheet work releases only after its reader returns and its completion is either delivered or rejected. A file is still stored once under its physical owner. There is no fork/draft duplication or permanent in-memory pin; after restart, surviving journals, draft/command metadata and path-specific keep/retained records are the durable owners. A pending recovery whose source is deleted cannot publish after restart because recovery still checks that source before and after linking its copy.
+
+`ToolOutputProducerTests.testEveryReferenceProducerRegistersBeforeItsFirstSuspension` invokes the real entry point for **each of 19 producer kinds** (the editable sheet registers synchronously for its lifetime), holds it, removes its prior display holder, races collection, and verifies both retained bytes and release on cancellation. `testEveryProducerWaitsThroughAnAlreadySubmittedRecycle` tests all 19 in the opposite order, holding the actual asynchronous recycle callback. The original 18-kind wait mutation produces **36 failed assertions** (`mutation-producer-recycle-wait.txt`). Producer inventory:
+
+| Registered producer | Entry points / lifetime |
+| --- | --- |
+| Side draft transfer | `moveSideDraft`, including ordinary text and the draft displaced by a queued edit; through parent save or restoration to the side. |
+| Debounced draft write | `draftChanged`; captured `savedDraft` through revision reservation, debounce, write or cancellation. |
+| Draft flush | `flushDrafts`; through pending write/recovery settlement and all retained draft writes. |
+| Draft recovery | `recoverDraft`; through intent withdrawal and merged draft publication. |
+| Draft materialization | `materializeChat`; through the pending chat and its initial saved draft. |
+| Submission | `send`; registration precedes `acceptSubmission` clearing the composer; through acknowledgement or failed-send recovery. |
+| Historical message edit | `editMessage` and `sendEdit`; through reading/replacing the full input and restoring the displaced draft. |
+| Queued edit | `queueEditRequest`; covers Begin/Save/Cancel/Remove/status/reorder. The editor/recovery record remains a holder until its acknowledged replacement; deferred draft persistence has its own registration. |
+| Side publication | `openSide`'s asynchronous publication/rollback and `publishPendingSide`; includes the initial draft and inherited model boundary. |
+| Editable side handoff | `SideHandoffView`; the editable summary owns its references until Cancel, publication, window removal or deallocation. Copy/Insert/Replace wait behind any recycle already in progress, and a dismissed sheet cannot publish afterward. |
+| Side close | `closeSide`; through helper keep/close, intent registration and final draft save. |
+| Keep request | `performKeepSide`; through writing the durable keep intent and helper reply. A deferred Keep When Finished continues to be owned by that durable intent. |
+| Keep registration | `registerKeptSide`; through identity validation and the transaction transferring ownership from intent to chat/draft/receipt. |
+| Keep dismissal | `dismissSideKeep`; through the transaction replacing the pending intent with its path-specific retained row. |
+| Fork | `createFork`; covers whole/reply forks, clone/copy publication, intent registration and acknowledgement. |
+| Recovery publication | `recoverCopy`; from operation acceptance through helper publication, metadata save and selection. |
+| Portable handoff | `portableHandoff`; through preview, confirmation and atomic chat/draft/provenance commit. |
+| Journal import | `importChat(from:)`; through native-owner selection or external-journal registration. |
+| Export/copy | Conversation copy/export plus Inspector metadata, retained-body and redacted-view export; through reads, save/clipboard completion, cancellation or failure. |
+
+Additional race tests:
+
+- Self-review found that an editable **Bring Back** sheet is itself a holder outside `displays`, even though its final transfer is synchronous. `testEditableSideHandoffRetainsOutputUntilDismissed` fails first with **1 assertion**, `The editable handoff is a reference even before it reaches a composer` (`handoff-before.txt`). It now retains the file until dismissal. `testSideHandoffWaitsForRecyclingAndDismissalCancelsPendingInsertion` also checks a queued insertion and cancellation while recycling. The full producer class passed **7/7** after this fix (`handoff-fixed.txt`). Removing its lifetime registration fails **1 assertion**; bypassing its recycle wait fails **3**; allowing publication after dismissal fails **1** (`mutation-handoff-registration.txt`, `mutation-handoff-recycle-wait.txt`, `mutation-handoff-dismissed-publication.txt`).
+
+- `testDisplacedAndQueuedDraftWritesRemainReferencesWithoutTheirDisplay`: both edit variants survive collection while their snapshot is only in a pending write, then remain readable through the committed draft. Disabling the registry loses both variants (**4 assertions**).
+- `testProducerArrivingDuringReferenceScanPreventsRecycleUntilPublication`: a recovery producer registers after inventory/scan but before recycling. Removing only the final producer check loses the file (**2 assertions**, `mutation-producer-final-fence.txt`). The released producer publishes its reference, which the fresh scan then retains.
+- `testCancelledExportScopeRetainsOutputUntilItsReaderActuallyReturns`: cancelling a sheet does not release an uncancellable in-flight reader prematurely; it releases once the result is discarded. Skipping finalization on cancellation leaves the pin and output stranded (**2 assertions**, `mutation-cancelled-producer-release.txt`).
+
+Self-review extended the retained-copy fixture through `finishFamilyDeletion` and a second collection. This confirmed another instance of ID-only deletion: the metadata cleanup removed a different pending keep, even though collection had preserved its file. `pending-deletion-before.txt` fails **2 assertions**, `Finishing deletion must not drop a different pending copy's ownership` and `The independent pending copy must transfer to durable retained ownership`. Deletion now atomically converts unmatched pending keeps into path-specific retained rows before removing their registration intent. Only an exact, non-nil path in the same workspace proves that the pending copy was the deleted journal. The existing retained-copy test and `testDeletingMatchingPendingCopyReleasesItsOutput` pass **2/2** (`pending-deletion-fixed.txt`); the matching case confirms that ordinary deletion still permits output reclamation. Removing just that durable transfer reproduces **2 failed assertions** (`mutation-pending-deletion-ownership.txt`); the original source was restored before final class validation.
+
+The initial registry mutation yields **27 failed assertions across 6 executed tests**, including the original 18 producer entry points, the transfer, displaced/queued drafts, cancelled export and late publication. These tests run without activating a window or invoking real Trash; their recycler removes only generated fixture paths. The pre-existing clone/copy fork-through-normal-deletion regression remains in the full `SubagentDeletionTests` run.
+
+Other holders examined: synchronous `moveSideDraftHere`/`absorb`, `finishEdit`, `finishQueuedEdit`, `finishRecord`, `openQuotedSide`, the final `bringBack` transfer and lost-side replacement move references between live holders without yielding; their asynchronous draft writes register separately. Metadata transactions transfer pending commands and keep/retained records atomically. Active tool producers have live physical owners and cannot pass family deletion's running-work preflight. Published native journals (including unlisted sides/forks), external imports and retained copies remain in the existing strict inventory. Pasted images/attachments still use their separate reference scanner and synchronous unlink admission; capture payloads retain their existing archive ownership. Completed standalone text exports/clipboard contents remain the earlier **needs owner decision** boundary; this change protects export work in flight and surviving app chats, without creating a new permanent external-export registry.
+
+### Adversarial self-review
+
+Reviewed the entire new diff against `4edba932`, including every added/changed branch and every added suspension:
+
+| Changed condition / suspension | States newly taking the other branch; intended result |
+| --- | --- |
+| Producer present at scan admission or changed since inventory | Locally held transfer/save/publication now defers collection; no producer and unchanged generation still scans normally. This applies equally to streaming, idle and paused chats and all Off/memory/persist capture modes. |
+| Existing serialized collection at producer admission | A producer arriving during scanning/recycling waits for that entire task chain, including failed/cancelled predecessors. Without a predecessor it proceeds immediately. Concurrent sibling/project work has the same reference protection. |
+| Last producer + deferred collection | Completion, failure and cancellation now schedule a fresh scan once the registry is empty. Other active producers continue to retain output. Shutdown still forbids scheduling; a missing store clears the deferral instead of spinning. |
+| Sheet inactive/cancelled/stale generation | `PayloadTaskScope.finally` runs even when no task is admitted or no completion can be delivered. Existing callers have a no-op finalizer; exports release only after asynchronous work finishes. Normal completion publishes before release. |
+| Editable handoff use / existing recycle / retained identity after await | Opening/mounting the editor now retains locally edited paths. Cancel, detach and deallocation release them. With no preceding recycle, Copy/Insert/Replace remain synchronous; otherwise they wait, use the captured text, and require the same still-open handoff before publishing. Closing during that wait cancels the publication. |
+| Tombstoned ID on pending/dismissed keep | These specific copies now remain references. Ordinary deleted chat/draft/handoff/command rows retain their existing exclusion. Missing/damaged retained copies fail closed rather than proving their output unreferenced. |
+| Pending keep at deletion completion | No intent remains a no-op. An exact non-nil journal path in the same workspace is still removed. A different workspace/path or unknown path now transfers to retained ownership in the same transaction, so there is no unregistered interval and no automatic re-registration of a deleted ID. |
+| Native import owner and workspace | Same-project native owners load missing ancestors before exposure; wrong-project owners retain their refusal. Fork provenance does not become budget ancestry; missing/tombstoned ancestors retain existing orphan behavior. Archived imports need no helper. |
+| Chat generation changes / owner deleting during ancestor read | Re-read the owner or refuse stale exposure; do not resurrect an entry deleted while ancestry was loading. Stable owned imports select the same chat; external imports keep their existing behavior. |
+| Forget with an existing slimming task | Wait for success or failure before allowing deletion, outside the runtime gate. Unrelated snapshots still answer; no slimming task keeps the previous path. Running/paused session admission rules remain unchanged. |
+| Source identity after discard; atomic exchange failure | Deleted/replaced sources are not overwritten. Existing unchanged source publishes normally. A missing destination at the exchange returns `source-changed`; other filesystem failures preserve the error/cleanup path. Restart cannot recover a journal recreated by slimming. |
+
+Self-review found the independently editable Bring Back sheet, two additional transfer entry points (materialization and saved-side close), both the collector and deletion-completion variants of pending-keep ID exclusion, the need to revalidate native import after ancestor loading, and cancellation cleanup for export completion scopes; all are covered above. It also moved the new materialization wait **after** reserving its existing project/save ownership, and the draft-recovery wait **before** rechecking acceptance. Thus new awaits cannot reopen the first-send project-choice race or withdraw a submission accepted while waiting. No provider, permission, vault, capture policy or wire schema was changed.
+
+### Validation commands and final results
+
+Evidence directory: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/persistence-producers/`. Exact selected-class commands are also saved in the `native-*-results.json` files. Mutation commands and selections are in `producers-native-mutations.py`, `producers-helper-mutations.py`, `producers-handoff-mutations.py`, `producers-pending-mutation.py` and `producers-replacement-mutation.py` under the same build root. All helper/native builds use only this workstream's root.
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter JournalSlimmingTests.testDeletionDuringDiscardMustNotRepublishSource
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter JournalSlimmingTests.testReplacementDuringDiscardMustNotBeOverwritten
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter HostServiceTests.testForgetWaitsForSlimmingWithoutBlockingAnotherChat
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter 'JournalSlimmingTests|HostServiceTests'
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/SubagentDeletionTests/testSideDraftTransferKeepsOutputWhileParentIsUnloaded -only-testing:PiAppTests/SubagentDeletionTests/testRetainedExternalCopySurvivesAnotherCopyWithSameIDBeingDeleted -only-testing:PiAppTests/WorkspaceDurabilityTests/testImportingUnlistedArchivedSideRetainsBudgetAncestorsBeforeSelection
+PI_BUILD_ROOT="$BUILD" python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+```
+
+Helper validation completed with **1,054 executed: 1,047 passed, 7 skipped, 0 failed**. `StreamingCostTests` ran alone (**5/5**); the remaining suite ran **1,049 tests: 1,042 passed and 7 skipped** (`helper-streaming.txt`, `helper-full.txt`). The existing opt-in benchmark skips are ForkClone (1), ForkPerformance (1), HistoryReadCancellation (1) and SessionOpenPerformance (4). The final source-identity mutation was restored and both affected helper classes rerun: HostService **8/8**, JournalSlimming **10/10**. The Release helper passed wire **36/36**, concurrent **4/4** and acceptance **3/3** (`wire.txt`, `concurrent.txt`, `acceptance.txt`).
+
+The final headless native run passed **114/114**, including the seven producer tests with all 19 kinds, all 16 deletion tests before adding the matching-copy control and the archived native-side ancestry fixture.
+
+Final native coverage is **467 distinct tests executed: 466 passed, 1 skipped, 0 failed** across 40 classes. After the deletion-completion fix, seven affected classes reran **80/80**, including all **17** SubagentDeletion tests; the corrected SideKeep gallery reran **2/2**. Repeated checks are not double-counted.
+
+| Native run | Passed / skipped / failed |
+| --- | --- |
+| `native-headless.txt` | 114 / 0 / 0 |
+| `native-affected.txt` | 178 / 0 / 0 |
+| `native-LifecycleHelperTests.txt` | 11 / 0 / 0 |
+| `native-QueueEditInteractionTests.txt` | 17 / 0 / 0 |
+| `native-PayloadNativeControlTests.txt` | 22 / 0 / 0 |
+| `native-PayloadNativeParityTests.txt` | 7 / 0 / 0 |
+| `native-InspectorNativeControlTests.txt` | 12 / 0 / 0 |
+| `native-InspectorNativeParityTests.txt` | 7 / 0 / 0 |
+| `native-InspectorStorageTests.txt` | 15 / 2 / 0 |
+| `native-ShellParityTests.txt` | 15 / 0 / 0 |
+| `native-deletion-gallery.txt` | 2 / 0 / 0 |
+| `native-submission-races.txt` | 61 / 1 / 0 |
+| `native-retention-final.txt` | 80 / 0 / 0 |
+| `native-side-handoff-gallery-final.txt` | 2 / 0 / 0 |
+| `native-inspector-gallery-final.txt` | 17 / 0 / 0 |
+
+Exact native commands (each serial class and gallery was a separate invocation; focus-sensitive invocations held the shared lock through completion):
+
+```sh
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/HistoricalEditBookkeepingTests \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/JournalSlimmingTriggerTests \
+  -only-testing:PiAppTests/BudgetOwnerUnloadTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/SideBudgetIntegrationTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/HistoricalEditFocusTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/PayloadSearchTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/ConversationPaneTests \
+  -only-testing:PiAppTests/PastedAttachmentTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/PayloadNativeControlTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/PayloadNativeParityTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InspectorNativeControlTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InspectorNativeParityTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InspectorStorageTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ShellParityTests
+PI_BUILD_ROOT="$BUILD" TEST_RUNNER_PI_APP_CHAT_DELETION_GALLERY="$BUILD/logs/persistence-producers/gallery" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChatDeletionGalleryTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerSubmissionTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/AutomaticContextTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests
+PI_BUILD_ROOT="$BUILD" TEST_RUNNER_PI_APP_SIDE_KEEP_GALLERY="$BUILD/logs/persistence-producers/side-handoff-gallery" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepGalleryTests
+PI_BUILD_ROOT="$BUILD" TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$BUILD/logs/persistence-producers/inspector-gallery" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InspectorStorageTests
+```
+
+Gallery validation regenerated **70 PNGs**: 24 deletion/import scenes, 14 side-keep/handoff scenes and 32 Inspector storage/toolbar scenes. Inspected all four changed Bring Back scenes in light/dark at 720 and 520 points: summary text wraps, the full output path remains readable, and Copy/Replace/Insert/Cancel remain visible and inside the sheet. Their final SHA-256 hashes match the inspected images. Inspector storage ran again with its gallery environment enabled (**17/17**), replacing its initial two opt-in skips; inspected request/response toolbars in light/dark at 1000 and 485 points. `ShellParityTests` also passed **15/15**, including the existing handoff reference comparison.
+
+The first new handoff gallery reused a notice-specific assertion requiring `accessibilityLabel()`, giving **16 assertion failures in 1 of 2 tests** (`native-side-handoff-gallery.txt`). These existing PiKit text buttons inherit their accessible names through `NSButton.accessibilityTitle()`. The checker now accepts either accessibility naming API; the corrected class passes **2/2** (`native-side-handoff-gallery-final.txt`). No production layout or accessibility code changed for this fixture correction. All other final native runs passed on their first execution.
+
+The final reviewed Swift sources matched their recorded hashes after every mutation was restored and after validation. `git diff --check` passed. The generated project includes the new producer source and regression class (`xcodegen generate --quiet`). One own native build tree (1.4 GiB), one debug helper tree (428 MiB) and one Release helper tree (100 MiB) were used; no clone directories remain. Focused headless regressions did not change app focus. All focus/parity/gallery runs used the shared lane lock and released only their own lock. No installed app, real preferences/chats/Keychain, live capture, paid provider or named result bundle was used.
+
+The remaining native skip is `ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer`: this test host has no Conversation menu. It is recorded in `native-submission-races.txt`, and no installed application was launched to bypass that isolation.
+
+The earlier completed-external-export ownership question remains **needs owner decision**; in-flight exports are protected here. No new unresolved issue remains in this review scope. Only `dev/a130-helper` is committed/pushed; no merge or fast-forward was performed.

@@ -69,6 +69,8 @@ extension WorkspaceModel {
     /// archive, connection change or helper session needs it.
     func materializeChat(_ id: String) async throws {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
+        let outputUse = beginToolOutputUse(.draftMaterialization)
+        defer { finishToolOutputUse(outputUse) }
         // A first use owns the project even if its write fails and the chat
         // becomes eligible again. Never revive a choice made before that use.
         pendingChatProjectChoices[id] = nil
@@ -78,6 +80,7 @@ extension WorkspaceModel {
             let remaining = pendingChatSaveCounts[id, default: 1] - 1
             pendingChatSaveCounts[id] = remaining > 0 ? remaining : nil
         }
+        try await prepareToolOutputUse(outputUse)
         try await store.put(item, kind: "chat", id: id)
         PerformanceProbe.shared.count("pendingChatCreationWrites")
         // Navigation can discard a still-empty placeholder while this actor
@@ -145,11 +148,24 @@ extension WorkspaceModel {
         }) { error = PiQuestion.busyNotice }
     }
     func importChat(from url: URL, workspaceID: String, store: MetadataStore) async {
+        let outputUse = beginToolOutputUse(.importChat)
+        defer { finishToolOutputUse(outputUse) }
         do {
-            if let existing = try await store.nativeChat(forJournal: url, root: root) {
+            try await prepareToolOutputUse(outputUse)
+            var owner: ChatRecord?
+            while true {
+                let revision = chatsRevision
+                owner = try await store.nativeChat(forJournal: url, root: root)
+                if let owner, owner.workspaceID == workspaceID { try await retainBudgetAncestors(for: owner) }
+                // Ancestor loading yields. Re-read ownership after deletion or
+                // registration changes, rather than exposing a stale native row.
+                if revision == chatsRevision { break }
+            }
+            if let existing = owner {
                 guard existing.workspaceID == workspaceID else {
                     error = "This chat belongs to another project. Open it there."; return
                 }
+                guard !deletingFamilies.contains(existing.id) else { throw StoreError.staleRevision }
                 if let index = chats.firstIndex(where: { $0.id == existing.id }) { chats[index].path = chats[index].path ?? existing.path }
                 else { chats.insert(existing, at: 0) }
                 await select(existing.id); return
@@ -174,7 +190,9 @@ extension WorkspaceModel {
     func recoverCopy(_ id: String) {
         guard let item = record(id), let source = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }) else { error = "This chat has no saved file to recover."; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        Task { do {
+        let outputUse = beginToolOutputUse(.recovery)
+        Task { defer { finishToolOutputUse(outputUse) }; do {
+            try await prepareToolOutputUse(outputUse)
             // Asked before anything is created or a helper is started, and as
             // a sheet, so the chats behind it keep running.
             switch await questions.confirm(Self.recoveredCopy, about: item.id) {
@@ -194,7 +212,9 @@ extension WorkspaceModel {
         guard let item = chat, let path = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }), requestProfiles.contains(where: { $0.id == profileChoice }) else { error = "Choose a source history and a Responses connection"; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
         let profileID = profileChoice
-        Task { do {
+        let outputUse = beginToolOutputUse(.handoff)
+        Task { defer { finishToolOutputUse(outputUse) }; do {
+            try await prepareToolOutputUse(outputUse)
             let host = try await host(for: workspace)
             let value = try await host.request("session.portable.preview", params: ["path": .string(path)]).object ?? [:]
             guard let text = value["draft"]?.string else { throw StoreError.invalidRecord }

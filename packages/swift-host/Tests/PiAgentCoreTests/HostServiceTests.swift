@@ -23,6 +23,36 @@ private final class HostReplies: @unchecked Sendable {
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
 final class HostServiceTests: XCTestCase {
+    func testForgetWaitsForSlimmingWithoutBlockingAnotherChat() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path,cwd:root,profile:profile)
+        let host = NativeHostService(emit:{ _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        _ = try await host.command("session.open",sessionID:"quick",params:["profile":profile.raw,"apiKey":"fixture"])
+        let entered = expectation(description:"slimming disk entered"), gate = JournalDiskGate()
+        defer { gate.open() }
+        await host.holdJournalDiskWork { entered.fulfill(); gate.wait() }
+        let slimming = Task { try await host.command("journal.slim",sessionID:nil,params:["sessionId":"long","path":JSON(path.path)]) }
+        await fulfillment(of:[entered],timeout:3)
+        let forgotten = SubmissionPreflightGate()
+        let deletion = Task {
+            _ = try await host.command("session.forget",sessionID:"long",params:["descendantsDeleted":true,"ancestorsRepaired":true])
+            await forgotten.wait()
+        }
+        let snapshot = try await host.command("session.snapshot",sessionID:"quick",params:[:])
+        XCTAssertEqual(snapshot["state"].text,"idle")
+        try await Task.sleep(for:.milliseconds(200))
+        let premature = await forgotten.entered
+        XCTAssertFalse(premature,"Deletion cannot proceed while slimming can still publish")
+        gate.open(); _ = try await slimming.value
+        try await eventually { await forgotten.entered }
+        try FileManager.default.removeItem(at:path)
+        await forgotten.release(); try await deletion.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
+        await host.shutdown()
+    }
+
     func testStopDuringSubmissionPreflightRejectsTheOvertakenSend() async throws {
         for method in ["turn.submit", "turn.steer", "turn.edit"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }

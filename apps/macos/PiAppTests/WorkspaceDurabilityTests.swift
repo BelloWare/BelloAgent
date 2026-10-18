@@ -2,6 +2,27 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceDurabilityTests: XCTestCase {
+    @MainActor func testImportingUnlistedArchivedSideRetainsBudgetAncestorsBeforeSelection() async throws {
+        let root = try scratch(), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        model.automaticContextOperation = { _,_ in throw CancellationError() }
+        let store = try XCTUnwrap(model.store), directory = try model.subagentDirectory("pane-project")
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        let parent = ChatRecord(id:"unlisted-parent",workspaceID:"pane-project",title:"Parent",path:directory.appendingPathComponent("unlisted-parent.jsonl").path,profileID:"fixture")
+        let side = ChatRecord(id:"unlisted-side",workspaceID:parent.workspaceID,title:"Archived side",path:directory.appendingPathComponent("side_unlisted-side.jsonl").path,profileID:parent.profileID,archivedAt:Date(),parentSessionID:parent.id)
+        for chat in [parent,side] {
+            try SideKeepRecoveryTests.journal(id:chat.id).write(to:URL(fileURLWithPath:try XCTUnwrap(chat.path)))
+            try await store.put(chat,kind:"chat",id:chat.id)
+        }
+        XCTAssertNil(model.record(parent.id)); XCTAssertNil(model.record(side.id))
+        await model.importChat(from:URL(fileURLWithPath:try XCTUnwrap(side.path)),workspaceID:side.workspaceID,store:store)
+        XCTAssertEqual(model.selectedID,side.id)
+        XCTAssertEqual(model.record(parent.id)?.id,parent.id,"Import must retain out-of-window ancestors before exposing the side")
+        XCTAssertTrue(model.deletionNeedsAncestorRepair(side),"Deleting the archived side must repair spend into its surviving parent")
+        XCTAssertEqual(model.budgetOwner(for:side).id,parent.id)
+        XCTAssertTrue(model.hosts.isEmpty,"An archived import must not require a running helper to discover ancestry")
+    }
+
     @MainActor func testImportingOwnedJournalSelectsExistingChatAndRefusesAnotherProject() async throws {
         let root = try scratch(), model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model,root:root)

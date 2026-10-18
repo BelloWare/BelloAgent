@@ -728,7 +728,7 @@ actor MetadataStore {
             guard let kind = sqlite3_column_text(statement, 0), let identity = sqlite3_column_text(statement, 1), let bytes = sqlite3_column_blob(statement, 2) else { throw StoreError.invalidRecord }
             let name = String(cString: kind), id = String(cString: identity)
             defer { result = sqlite3_step(statement) }
-            let owned = ["chat", "draft", "handoff", "side-keep"].contains(name) && deleted.contains(id)
+            let owned = ["chat", "draft", "handoff"].contains(name) && deleted.contains(id)
             let command = (name.hasPrefix("pending:") || name.hasPrefix("receipt:")) && deleted.contains(String(name.dropFirst(8)))
             if owned || command { continue }
             let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 2)))
@@ -736,7 +736,8 @@ actor MetadataStore {
             if name == "chat" { chat = try JSONDecoder().decode(ChatRecord.self, from: data) }
             else if name == "side-keep" || name == SideKeepIntent.retainedKind { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
             else { chat = nil }
-            if let chat, deleted.contains(chat.id) { continue }
+            // Keep/retained intents own a specific copy, not just a chat ID.
+            // A different journal with that ID may have been deleted.
             keys.formUnion(try ToolOutputOwnership.references(in: data, candidates: candidates))
             if let chat {
                 let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
@@ -896,6 +897,17 @@ actor MetadataStore {
             guard current.chat == expected else { throw StoreError.staleRevision }
             try put(current, kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(current.chat))
             try remove(kind: "side-keep", id: expected.id)
+        }
+    }
+    func removeDeletedSideKeep(_ member: SessionDeletionRecord) throws {
+        try transaction {
+            guard let pending = try get(SideKeepIntent.self, kind: "side-keep", id: member.id) else { return }
+            let sameJournal = pending.chat.workspaceID == member.workspaceID
+                && pending.chat.path != nil && pending.chat.path == member.path
+            // The deleted ID cannot retire a different or unidentified copy.
+            // Transfer its durable ownership before withdrawing registration.
+            if !sameJournal { try put(pending, kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(pending.chat)) }
+            try remove(kind: "side-keep", id: member.id)
         }
     }
     /// A handoff must never reappear as an empty chat after a partial write.

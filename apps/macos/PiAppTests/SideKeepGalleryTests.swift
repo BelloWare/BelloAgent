@@ -4,6 +4,30 @@ import XCTest
 
 /// Generated metadata and transcripts only; never launches an installed app.
 final class SideKeepGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testEditableToolOutputHandoffScenes() async throws {
+        guard let path = testEnvironment("PI_APP_SIDE_KEEP_GALLERY") else { throw XCTSkip("Set PI_APP_SIDE_KEEP_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath:path)
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let model = makeWorkspaceModel(stateRoot:folder.appendingPathComponent("handoff-fixture-" + UUID().uuidString))
+        let session = SessionDisplay(id:"handoff")
+        session.messages = [.init(id:"answer",role:"assistant",text:"The generated output contains the remaining validation details.\n\nFull output: /Generated/Sessions/tool-output/source/result.log\n\nReview the result before sending this summary to the parent.")]
+        let window = NSWindow(contentRect:CGRect(origin:.zero,size:SideHandoffView.size),styleMask:[],backing:.buffered,defer:false)
+        window.isReleasedWhenClosed = false
+        defer { window.close(); model.shutdown() }
+        for (theme, appearance) in [("light",NSAppearance.Name.aqua),("dark",.darkAqua)] {
+            for width in [720,520] {
+                let view = SideHandoffView(model:model,session:session,dismiss:{})
+                window.contentView = view; window.appearance = NSAppearance(named:appearance)
+                window.setContentSize(NSSize(width:width,height:480)); window.orderFront(nil)
+                view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                try checkControls(view)
+                XCTAssertTrue(view.insert.isEnabled); XCTAssertTrue(view.replace.isEnabled)
+                try capture(view,to:folder.appendingPathComponent("handoff-\(theme)-\(width).png"))
+                view.cancel.onPress?()
+            }
+        }
+    }
+
     @MainActor func testCombinedNoticeAndDismissConfirmation() async throws {
         guard let path = testEnvironment("PI_APP_SIDE_KEEP_GALLERY") else { throw XCTSkip("Set PI_APP_SIDE_KEEP_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)
@@ -56,7 +80,7 @@ final class SideKeepGalleryTests: XCTestCase, SerialTestLane {
         for button in ConversationPaneTests.views(PiKit.Button.self, in: view) {
             let box = button.convert(button.bounds, to: view)
             XCTAssertGreaterThanOrEqual(box.minX, 0); XCTAssertLessThanOrEqual(box.maxX, view.bounds.width + 1)
-            XCTAssertFalse((button.accessibilityLabel() ?? "").isEmpty)
+            XCTAssertFalse((button.accessibilityLabel() ?? button.accessibilityTitle() ?? "").isEmpty)
         }
     }
     @MainActor private func capture(_ view: NSView, to path: URL) throws {

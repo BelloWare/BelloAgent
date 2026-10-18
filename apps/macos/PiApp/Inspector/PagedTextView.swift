@@ -16,10 +16,12 @@ import AppKit
     }
     @discardableResult
     func run<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async throws -> Value,
+                             finally: @escaping @MainActor @Sendable () -> Void = {},
                              completion: @escaping @MainActor @Sendable (Result<Value, Error>) -> Void) -> Task<Void, Never>? {
-        guard isActive else { return nil }
+        guard isActive else { finally(); return nil }
         let id = UUID(), current = generation
         let task = Task { [weak self] in
+            defer { finally() }
             let outcome: Result<Value, Error>
             do { try Task.checkCancellation(); let value = try await operation(); try Task.checkCancellation(); outcome = .success(value) }
             catch { outcome = .failure(error) }
