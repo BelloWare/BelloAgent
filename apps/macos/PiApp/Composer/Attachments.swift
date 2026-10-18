@@ -221,6 +221,6 @@ extension WorkspaceModel {
     private var pastedImageCleanupIsSafe: Bool {
         !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&
             draftWrites.tasks.isEmpty && draftWrites.recoveries.isEmpty && sideDraftTransfers.isEmpty && hostStarts.isEmpty && sessionOpenings.isEmpty &&
-            !sides.values.contains(where: \.keeping)
+            !sides.values.contains(where: \.keeping) && !displays.values.contains(where: { $0.draftVersion.hasUnsavedConflict })
     }
 }

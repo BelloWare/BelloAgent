@@ -33,6 +33,23 @@ import XCTest
         _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
     }
 
+    func testHelperLossKeepsTheDurableConflictCopy() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let store = try XCTUnwrap(model.store)
+        view.draftVersion = try await store.draftVersion(id: view.id)
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: view.id, text: "Other instance's draft"), kind: "draft", id: view.id)
+        view.draft = "Losing input before helper exit"; model.draftChanged(view)
+        await model.draftWrites.tasks[view.id]?.value
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        let copies = try await other.list(DraftRecord.self, kind: "draft-conflict:" + view.id)
+        XCTAssertTrue(copies.contains(where: { $0.text == "Losing input before helper exit" }))
+        XCTAssertTrue(model.displays[view.id] === view)
+        await other.close()
+    }
+
     func testOldOpeningCleanupCannotCloseTheReplacementHelpersRuntime() async throws {
         let (model, view, wire) = try await fixture()
         try await bindLossHandling(model, wire)

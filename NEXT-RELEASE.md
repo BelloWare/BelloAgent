@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Conflicting drafts are saved durably before release, recoverable after reopening, and pinned across navigation, side transfer, quit/update and helper loss if saving fails. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Reading positions use loaded-revision checks for scrolling, side close and quit; stale instances cannot overwrite or resurrect newer positions. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Rejected submissions keep their captured input as well as the remaining draft when another instance wins a draft conflict. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+
 - [x] Update pausing preserves admitted clipboard images by refusing until imports finish. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
 - [x] WIRE-CONTRACT-4: Model picks, saved defaults and edit overrides follow the helper's 200 UTF-8 byte limit. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
 - [x] PERSISTENCE-COMPAT-1: Unchanged drafts do not overwrite another instance's saves; conflicting edits keep both copies and refuse the flush. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).

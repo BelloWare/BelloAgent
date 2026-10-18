@@ -14,7 +14,7 @@ enum StoreError: Error, Equatable, LocalizedError {
         case .unavailable: "Desktop storage is unavailable."
         case .invalidRecord: "The desktop record could not be saved."
         case .staleRevision: "A newer version of this desktop record has already been saved."
-        case .draftConflict: "Another app instance saved this draft. Its saved copy and your composer were kept. Copy your unsaved input before closing this instance."
+        case .draftConflict: "Another app instance saved this draft. Both copies are saved. Reopen this chat to recover a conflicting draft."
         case .unreadableRecord: "This conversation file could not be read. Its bytes were left untouched."
         case .missingJournal(let path): "The conversation file is no longer at \(path). Nothing was written in its place."
         }
@@ -68,9 +68,27 @@ final class DraftWriteEvents: @unchecked Sendable {
 final class DraftVersion: @unchecked Sendable {
     private let lock = NSLock()
     private var value: (draft: DraftRecord?, revision: Int64?)
+    private var conflicts: [DraftRecord] = []
     init(draft: DraftRecord? = nil, revision: Int64? = nil) { value = (draft, revision) }
     var snapshot: (draft: DraftRecord?, revision: Int64?) { lock.withLock { value } }
+    var unsavedConflicts: [DraftRecord] { lock.withLock { conflicts } }
+    var hasUnsavedConflict: Bool { lock.withLock { !conflicts.isEmpty } }
+    fileprivate func conflicted(_ draft: DraftRecord) { lock.withLock { if !conflicts.contains(draft) { conflicts.append(draft) } } }
+    fileprivate func preserved(_ draft: DraftRecord) { lock.withLock { conflicts.removeAll { $0 == draft } } }
     fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision) } }
+}
+
+final class AnchorVersion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (anchor: TranscriptAnchor?, revision: Int64?)
+    init(anchor: TranscriptAnchor? = nil, revision: Int64? = nil) { value = (anchor, revision) }
+    var snapshot: (anchor: TranscriptAnchor?, revision: Int64?) { lock.withLock { value } }
+    fileprivate func committed(_ anchor: TranscriptAnchor?, revision: Int64) { lock.withLock { value = (anchor, revision) } }
+}
+
+struct SavedDraftConflict: Sendable, Identifiable, Equatable {
+    let id: String
+    let draft: DraftRecord
 }
 
 actor MetadataStore {
@@ -80,13 +98,14 @@ actor MetadataStore {
     /// This is desktop input storage, independent of request capture.
     static let inputRecordByteLimit = 8 * 1024 * 1024
     private static func recordByteLimit(_ kind: String) -> Int {
-        kind == "draft" || kind.hasPrefix("pending:") ? inputRecordByteLimit : 524_288
+        kind == "draft" || kind.hasPrefix("draft-conflict:") || kind.hasPrefix("pending:") ? inputRecordByteLimit : 524_288
     }
     nonisolated let draftWrites = DraftWriteEvents()
     /// Draft writes so far, and those of a transaction not yet committed.
     private var draftSequence = 0
     private var transactionDrafts: [(String, Bool)]?
     private var transactionDraftVersions: [(DraftVersion, DraftRecord, Int64)] = []
+    private var transactionConflicts: [DraftVersion] = []
     private func noteDraftWrite(_ id: String, _ holdsDraft: Bool) {
         if transactionDrafts != nil { transactionDrafts?.append((id, holdsDraft)); return }
         draftSequence += 1; draftWrites.send(id, holdsDraft, draftSequence)
@@ -193,10 +212,13 @@ actor MetadataStore {
         let previous = version.snapshot
         // An unchanged stale composer owns no write, even at Quit. Normalize
         // optional empty arrays used by older drafts before comparing them.
-        guard !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
+        guard version.hasUnsavedConflict || !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
         func save() throws {
             let current = try draftVersion(id: draft.id).snapshot
-            guard current.revision == previous.revision else { throw StoreError.draftConflict }
+            guard !version.hasUnsavedConflict, current.revision == previous.revision else {
+                version.conflicted(draft); transactionConflicts.append(version)
+                throw StoreError.draftConflict
+            }
             let next = try revision ?? reserveRevision(kind: "draft", id: draft.id)
             try put(draft, kind: "draft", id: draft.id, revision: next)
             transactionDraftVersions.append((version, draft, next))
@@ -219,6 +241,84 @@ actor MetadataStore {
         guard size <= Self.inputRecordByteLimit, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
         let draft = try JSONDecoder().decode(DraftRecord.self, from: Data(bytes: bytes, count: size))
         return DraftVersion(draft: draft, revision: sqlite3_column_int64(statement, 1))
+    }
+    /// Complete draft copies, separate from the winning draft and never
+    /// pruned. Raw attachment references participate in the existing sweep.
+    func draftConflicts(id: String) throws -> [SavedDraftConflict] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT id,value FROM records WHERE kind=? ORDER BY revision DESC,id", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, "draft-conflict:" + id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        var copies: [SavedDraftConflict] = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let size = Int(sqlite3_column_bytes(statement, 1))
+            guard size <= Self.inputRecordByteLimit, let key = sqlite3_column_text(statement, 0), let bytes = sqlite3_column_blob(statement, 1) else { throw StoreError.invalidRecord }
+            copies.append(.init(id: String(cString: key), draft: try JSONDecoder().decode(DraftRecord.self, from: Data(bytes: bytes, count: size))))
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        return copies
+    }
+    func preserveDraftConflicts(_ version: DraftVersion) throws {
+        for draft in version.unsavedConflicts { try preserveConflict(draft); version.preserved(draft) }
+    }
+    private func preserveConflict(_ draft: DraftRecord) throws {
+        guard try !draftConflicts(id: draft.id).contains(where: { $0.draft.hasSameContents(as: draft) }) else { return }
+        try put(draft, kind: "draft-conflict:" + draft.id, id: UUID().uuidString)
+    }
+    /// An explicit choice from the recovery banner. Preserve the current
+    /// saved and live copies before replacing either; nothing is submitted.
+    func restoreConflict(_ conflict: SavedDraftConflict, replacing live: DraftRecord, version: DraftVersion) throws {
+        let pending = version.unsavedConflicts
+        try transaction {
+            for draft in pending { try preserveConflict(draft) }
+            guard live.id == conflict.draft.id,
+                  try get(DraftRecord.self, kind: "draft-conflict:" + live.id, id: conflict.id) == conflict.draft else { throw StoreError.staleRevision }
+            if let saved = try get(DraftRecord.self, kind: "draft", id: live.id), !saved.hasSameContents(as: conflict.draft) { try preserveConflict(saved) }
+            if !live.hasSameContents(as: conflict.draft) { try preserveConflict(live) }
+            let revision = try reserveRevision(kind: "draft", id: live.id)
+            try put(conflict.draft, kind: "draft", id: live.id, revision: revision)
+            transactionDraftVersions.append((version, conflict.draft, revision))
+            try remove(kind: "draft-conflict:" + live.id, id: conflict.id)
+        }
+        for draft in pending { version.preserved(draft) }
+    }
+    func anchorVersion(id: String) throws -> AnchorVersion {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT kind,value,revision FROM records WHERE kind IN ('anchor','anchor-deleted') AND id=? ORDER BY revision DESC LIMIT 1", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE { return AnchorVersion() }
+        guard result == SQLITE_ROW, let kind = sqlite3_column_text(statement, 0) else { throw StoreError.unavailable }
+        let revision = sqlite3_column_int64(statement, 2)
+        if String(cString: kind) == "anchor-deleted" { return AnchorVersion(revision: revision) }
+        let size = Int(sqlite3_column_bytes(statement, 1))
+        guard size <= Self.recordByteLimit("anchor"), let bytes = sqlite3_column_blob(statement, 1) else { throw StoreError.invalidRecord }
+        return AnchorVersion(anchor: try JSONDecoder().decode(TranscriptAnchor.self, from: Data(bytes: bytes, count: size)), revision: revision)
+    }
+    func putAnchor(_ anchor: TranscriptAnchor?, id: String, version: AnchorVersion) throws {
+        let previous = version.snapshot
+        guard anchor != previous.anchor else { return }
+        let revision: Int64? = try transaction {
+            guard try anchorVersion(id: id).snapshot.revision == previous.revision else { return nil }
+            guard (previous.revision ?? 0) < Int64.max else { throw StoreError.invalidRecord }
+            let next = max(try reserveRevision(kind: "anchor", id: id), (previous.revision ?? 0) + 1)
+            if let anchor {
+                try put(anchor, kind: "anchor", id: id, revision: next)
+                try remove(kind: "anchor-deleted", id: id)
+            } else {
+                // Keep a revision for absence: an old missing-row baseline
+                // cannot resurrect a position after another instance clears it.
+                try put(next, kind: "anchor-deleted", id: id, revision: next)
+                try remove(kind: "anchor", id: id)
+            }
+            return next
+        }
+        if let revision { version.committed(anchor, revision: revision) }
     }
     /// Update only the cost choice from the latest durable chat. The revision
     /// also protects it from unrelated writes holding an older chat copy.
@@ -617,7 +717,16 @@ actor MetadataStore {
             transactionDraftVersions.removeAll()
             flushTransactionDrafts()
             return result
-        } catch { transactionDraftVersions.removeAll(); transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch {
+            transactionDraftVersions.removeAll(); transactionDrafts = nil
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            let conflicts = transactionConflicts; transactionConflicts.removeAll()
+            // The rejected operation must roll back, but its losing input
+            // must commit before the error can release its caller/display.
+            // A failed preservation keeps the version pinned for a retry.
+            for version in conflicts { try preserveDraftConflicts(version) }
+            throw error
+        }
     }
 
     /// Just enough of every chat to decide membership: id, project, group and
@@ -696,6 +805,8 @@ actor MetadataStore {
         var draft: DraftRecord?
         var draftVersion: DraftVersion?
         var anchor: TranscriptAnchor?
+        var anchorVersion: AnchorVersion?
+        var conflicts: [SavedDraftConflict] = []
         var recovered: [CommandIntent] = []
     }
     func selectionMetadata(id: String, draft wantsDraft: Bool, anchor wantsAnchor: Bool) throws -> SelectionMetadata {
@@ -704,7 +815,11 @@ actor MetadataStore {
             let version = try draftVersion(id: id)
             value.draft = version.snapshot.draft; value.draftVersion = version
         }
-        if wantsAnchor { value.anchor = try get(TranscriptAnchor.self, kind: "anchor", id: id) }
+        if wantsAnchor {
+            let version = try anchorVersion(id: id)
+            value.anchor = version.snapshot.anchor; value.anchorVersion = version
+        }
+        value.conflicts = try draftConflicts(id: id)
         value.recovered = try list(CommandIntent.self, kind: "pending:" + id)
         return value
     }
@@ -776,7 +891,13 @@ actor MetadataStore {
     /// or neither is, so the text is never in neither place.
     func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
         try transaction {
-            if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
+            do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) } }
+            catch StoreError.draftConflict {
+                // Its intent will roll back too. Keep the input that already
+                // left the composer, as well as the remaining draft.
+                draftVersion?.conflicted(DraftRecord(id: intent.sessionID, text: intent.text, attachments: intent.attachments, skills: intent.skills))
+                throw StoreError.draftConflict
+            }
             try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
         }
     }

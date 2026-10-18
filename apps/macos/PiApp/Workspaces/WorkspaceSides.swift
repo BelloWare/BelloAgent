@@ -155,6 +155,7 @@ extension WorkspaceModel {
                 // lets a side the host did publish be recovered on restart.
                 // Only this side: a lost host may already have put another
                 // in its place holding what was typed here.
+                guard !view.draftVersion.hasUnsavedConflict else { self.error = error.localizedDescription; return }
                 let replaced = sides[parentID].map { $0.id != id } ?? false
                 if !replaced { sides.removeValue(forKey: parentID) }
                 displays.removeValue(forKey: id)
@@ -252,12 +253,13 @@ extension WorkspaceModel {
         }
         view?.loading = false
         // An image can start arriving while the parent's stored draft is read.
-        guard (view?.imageImports ?? 0) == 0 else { return false }
+        guard (view?.imageImports ?? 0) == 0, view?.draftVersion.hasUnsavedConflict != true else { return false }
         if sides[info.parentID]?.id == info.id { removePendingSide(info) }
         return true
     }
     /// The same, at once, when nothing has to be read first: true when done.
     func discardPendingSideNow(_ info: SideRecord) -> Bool {
+        guard displays[info.id]?.draftVersion.hasUnsavedConflict != true else { error = StoreError.unavailable.localizedDescription; return false }
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
         // A draft on its way to the parent's saved draft is not done yet.
         guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0, sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
@@ -284,6 +286,11 @@ extension WorkspaceModel {
             // One move of a side's draft at a time: another waits, then sees
             // what that one left in the side (all of it, if it failed).
             while let running = sideDraftTransfers[info.id] { await running.task.value }
+            if side.draftVersion.hasUnsavedConflict {
+                guard let store else { throw StoreError.unavailable }
+                try await store.preserveDraftConflicts(side.draftVersion)
+                continue
+            }
             if moveSideDraftHere(info, from: side) { return }
             guard let store else { throw StoreError.unavailable }
             let moving = Self.unsentDraft(of: side, to: info.parentID)
@@ -331,6 +338,7 @@ extension WorkspaceModel {
     func moveSideDraftHere(_ info: SideRecord, from shown: SessionDisplay? = nil) -> Bool {
         guard draftWrites.recoveries[info.parentID] == nil else { return false }
         guard let side = shown ?? displays[info.id] else { return true }
+        guard !side.draftVersion.hasUnsavedConflict else { return false }
         let moving = Self.unsentDraft(of: side, to: info.parentID)
         guard !moving.isBlank else { return true }
         guard let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) else { return false }
@@ -419,12 +427,14 @@ extension WorkspaceModel {
                 await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }
                 let oldDraft = view.savedDraft
-                let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
+                let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded)
                 guard current() else { return }
+                view.draftConflicts = metadata?.conflicts ?? []
                 if !view.selectionMetadataLoaded {
                     if let version = metadata?.draftVersion { view.draftVersion = version }
                     if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
                        view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
+                    if let version = metadata?.anchorVersion { view.anchorVersion = version }
                     if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
                     view.selectionMetadataLoaded = true
                 }
@@ -617,7 +627,8 @@ extension WorkspaceModel {
             // yet: writing its empty composer would erase the one on disk.
             if view.selectionMetadataLoaded {
                 try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion)
-                if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
+                await view.anchorWrite?.value
+                try await store.putAnchor(view.scrollAnchor, id: id, version: view.anchorVersion)
             }
             view.presentation.cancel()
             // Another side may have opened on this chat during the awaits
@@ -692,6 +703,8 @@ extension WorkspaceModel {
     func discardLostSides(workspaceID: String) {
         // A draft side has nothing on the helper to lose: it stays, with its text.
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
+            // Failed conflict-copy writes still own their original display.
+            guard displays[info.id]?.draftVersion.hasUnsavedConflict != true else { continue }
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
             sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)

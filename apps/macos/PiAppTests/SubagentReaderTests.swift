@@ -1002,6 +1002,14 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         let (model, _) = try fixture()
         let original = try XCTUnwrap(model.record("chat-child"))
         let kept = try await open(original.id, in: model)
+        let store = try XCTUnwrap(model.store)
+        let conflict = SessionDisplay(id: "conflicted-chat"); conflict.used = .distantPast
+        model.chats.append(ChatRecord(id: conflict.id, workspaceID: original.workspaceID, title: "Conflict", profileID: original.profileID))
+        model.displays[conflict.id] = conflict
+        conflict.draftVersion = try await store.draftVersion(id: conflict.id)
+        try await store.put(DraftRecord(id: conflict.id, text: "Other instance's draft"), kind: "draft", id: conflict.id)
+        conflict.draft = "Retained while child readers close"
+        try? await store.put(conflict.savedDraft, kind: "draft", id: conflict.id, draftVersion: conflict.draftVersion)
         model.displays["chat-side"]?.runState = .running
         for index in 0..<14 {
             var child = original; child.id = "child-\(index)"; child.delegation?.childSessionID = child.id
@@ -1013,6 +1021,9 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
             model.tabs.close(tab)
         }
         XCTAssertLessThanOrEqual(model.displays.count, 8)
+        XCTAssertTrue(model.displays[conflict.id] === conflict)
+        let copies = try await store.draftConflicts(id: conflict.id)
+        XCTAssertTrue(copies.contains(where: { $0.draft.text == conflict.draft }))
         XCTAssertNotNil(model.displays["chat-parent"]); XCTAssertNotNil(model.displays["chat-side"])
         XCTAssertNotNil(model.displays[kept.key]); XCTAssertTrue(model.subagentTab(kept.key) === kept)
     }

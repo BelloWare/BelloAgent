@@ -722,6 +722,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pinnedHistoryIDs: Set<String> = [] { didSet { if pinnedHistoryIDs != oldValue { heldChanges.send() } } }
     let heldChanges = PassthroughSubject<Void, Never>()
     var scrollAnchor: TranscriptAnchor?
+    var anchorVersion = AnchorVersion()
+    var anchorWrite: Task<Void, Never>?
     @Published var viewportRequest = 0
     /// Whether the newest `viewportRequest` opens the chat — its first page
     /// read in, or its rows shown again on a revisit — rather than taking
@@ -863,7 +865,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pageRows: PageRows { PageRows(count: messages.count, first: messages.first?.id, last: messages.last?.id) }
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
+    var hasUnsavedDraft: Bool {
+        draftVersion.hasUnsavedConflict || !savedDraft.hasSameContents(as: draftVersion.snapshot.draft ?? DraftRecord(id: id, text: ""))
+    }
     var draftVersion = DraftVersion()
+    @Published var draftConflicts: [SavedDraftConflict] = []
     var selectionMetadataLoaded = false
     /// This window is detached from the helper's live tail (a newer gap,
     /// source load or explicit retained-message inspection). Earlier rows

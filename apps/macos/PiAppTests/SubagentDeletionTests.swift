@@ -15,6 +15,11 @@ final class SubagentDeletionTests: XCTestCase {
             try FileManager.default.moveItem(at: old, to: journal); model.chats[0].path = journal.path
             let parent = model.chats[0], store = try XCTUnwrap(model.store)
             try await store.putChats(model.chats)
+            let version = try await store.draftVersion(id: parent.id)
+            try await store.put(DraftRecord(id: parent.id, text: "Winning input"), kind: "draft", id: parent.id)
+            try? await store.put(DraftRecord(id: parent.id, text: "Conflicting input"), kind: "draft", id: parent.id, draftVersion: version)
+            let conflicts = try await store.draftConflicts(id: parent.id)
+            XCTAssertEqual(conflicts.count, 1)
             try await store.put(SideKeepRegistration(expected: parent, path: parent.path), kind: SideKeepRegistration.kind, id: parent.id)
             let files = [journal, family.path] + [".meta", ".stream"].map { URL(fileURLWithPath: journal.path + $0) }
             for file in files.dropFirst(2) { try Data("fixture".utf8).write(to: file) }
@@ -22,6 +27,8 @@ final class SubagentDeletionTests: XCTestCase {
             do { try await model.deleteSubagentFamily(parent) } catch { XCTFail("\(prefix) deletion failed: \(error)"); continue }
             XCTAssertTrue(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
             XCTAssertNil(model.record(parent.id))
+            let deletedConflicts = try await store.draftConflicts(id: parent.id)
+            XCTAssertTrue(deletedConflicts.isEmpty, "Explicit family deletion includes its saved draft copies")
             let pending = try await store.pendingFamilyDeletions()
             XCTAssertTrue(pending.isEmpty)
             let receipt = try await store.get(SideKeepRegistration.self, kind: SideKeepRegistration.kind, id: parent.id)

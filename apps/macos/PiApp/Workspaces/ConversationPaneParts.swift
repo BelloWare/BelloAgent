@@ -157,15 +157,16 @@ import QuartzCore
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
-    func update(_ intents: [CommandIntent], model: WorkspaceModel) {
-        let ids = intents.map(\.id)
+    func update(_ intents: [CommandIntent], conflicts: [SavedDraftConflict] = [], model: WorkspaceModel) {
+        let ids = intents.map(\.id) + conflicts.map { "conflict:" + $0.id }
         guard ids != shownIDs else { return }
         shownIDs = ids
-        var items: [ShellItem] = [.view(ShellStack(.horizontal, spacing: 6, [
+        var items: [ShellItem] = []
+        if !intents.isEmpty { items.append(.view(ShellStack(.horizontal, spacing: 6, [
             .view(shellBodySymbol("exclamationmark.triangle.fill", color: .piWarning)),
             .view(shellLine("Interrupted submissions", font: PiKit.Font.heading, color: .labelColor)),
             .view(shellLine("· Nothing was resent", font: PiKit.Font.caption, color: .piInkSecondary)),
-        ]))]
+        ]))) }
         for intent in intents {
             items.append(.view(ShellStack(.horizontal, spacing: 8, [
                 .view(shellLine(intent.text, font: PiKit.Font.body, color: .labelColor), .flexible),
@@ -173,6 +174,16 @@ import QuartzCore
                 .view(PiKit.Button("Insert in Draft", style: .secondary, compact: true) { model.recoverDraft(intent, insert: true) }),
                 .view(PiKit.Button("Dismiss", style: .ghost) { model.recoverDraft(intent, insert: false) }),
             ]), .fill))
+        }
+        if !conflicts.isEmpty {
+            items.append(.view(shellLine("Conflicting drafts", font: PiKit.Font.heading, color: .labelColor)))
+            items.append(.view(shellLine("Both copies saved", font: PiKit.Font.caption, color: .piInkSecondary)))
+            for conflict in conflicts {
+                items.append(.view(ShellStack(.vertical, spacing: PiSpacing.sm, [
+                    .view(shellLine(conflict.draft.text.isEmpty ? "Saved draft with attachments or an edit" : conflict.draft.text, font: PiKit.Font.body, color: .labelColor), .fill),
+                    .view(PiKit.Button("Restore Draft", style: .secondary, compact: true) { model.restoreConflictedDraft(conflict) }),
+                ]), .fill))
+            }
         }
         stack.items = items
         box.content = stack

@@ -967,3 +967,224 @@ not a claimed performance improvement from this patch. Full measurements are in 
 Final housekeeping: `git diff --check` passed; `xcodegen generate --quiet` reproduced the
 project byte-for-byte. No clone folders remained, the automatic native result bundle was
 removed, and text logs were retained. Every acquired full-lane lock was released.
+
+
+## Round 4 — durable conflict copies and reading positions
+
+Scope: the P1 review of Round 3's draft conflict handling, plus the recorded
+cross-instance reading-position overwrite. Both findings are **confirmed and fixed**.
+All work remains on `dev/a130-workspace`; no merge or dev/next fast-forward.
+Evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round4/`.
+Generated databases, memory vaults, generated PNGs and scripted helper replies only.
+
+### P1 — losing drafts must survive every display release
+
+The review was correct. A rejected `putDraft` left the complete losing draft only
+in a display. The original cache eviction had no unsaved/conflict guard. The first
+run (`failing-first.log`) executed 16 tests: 9 failed, with 12 failing assertions.
+It reproduced the missing durable copy at detection, after eviction and navigation,
+and through close, quit/update refusal and transaction rollback. Representative output:
+
+```text
+testConflictIsDurableAtDetectionAndAfterDisplayEviction:
+XCTAssertTrue failed - The losing draft must already be durable
+testConflictCopyWriteFailurePinsTheDisplayDuringNavigation:
+XCTAssertTrue failed - Failed conflict preservation must pin its only remaining copy
+```
+
+`MetadataStore` now records complete `DraftRecord` conflict copies under
+`draft-conflict:<chat id>` before returning a conflict. This includes images,
+skills, displaced message-edit drafts, queued edits and submission-review markers.
+The failed transaction rolls back first; its conflict copies then commit separately
+with SQLite's existing WAL/FULL durability. Thus preserving input cannot accidentally
+commit a rejected submission, side registration or recovery operation. Identical
+retries reuse a copy; distinct losing edits are retained without automatic pruning.
+A failed copy write remains attached to the shared `DraftVersion` and pins its display.
+
+Ordinary eviction also pins a changed draft while its conflict check is still
+waiting, covering the interval before the store detects the conflict. Saved conflict
+copies load on reopening the chat. The Pi recovery banner offers **Restore Draft**;
+that explicit action saves both the latest database draft and the live composer
+before restoring the chosen copy in one transaction. It does not submit input.
+The existing refusal to flush a still-conflicting composer remains conservative.
+
+### Display-release inventory and tests
+
+Each required path is exercised with a conflicted draft. `DraftConcurrencyTests`
+names below omit the common class prefix.
+
+| Release path | Protection and regression |
+| --- | --- |
+| Eight-display eviction (`WorkspaceSelection.releaseUnreadDisplays`) | `testConflictIsDurableAtDetectionAndAfterDisplayEviction` checks the independent durable copy before and after eviction; `testAChangedDraftStaysPinnedWhileItsConflictCheckIsWaiting` holds the store before comparison; `testConflictCopyWriteFailurePinsTheDisplayDuringNavigation` injects SQLite write failure and asserts the original display remains. |
+| Chat switch / sidebar selection (`select` → eviction) | `testChatSwitchPreservesTheConflictCopy` navigates away and back; the failed-copy test also switches after filling the cache. |
+| Saved side Close (`closeSide`) | `testSideClosePreservesTheConflictCopy` retains the complete copy through the existing close refusal. |
+| Pending side Close/replacement (`discardPendingSideNow`, `discardPendingSide`, `moveSideDraft`) | Failed-copy navigation test covers both sync and async discard. `testPendingSideConflictMustBeSavedBeforeQuitOrUpdate` also retries Close after storage recovers. Outstanding conflict snapshots commit before any side text is consumed or moved. |
+| Main-window Close (`WindowActivityGuard`) | `WindowLifecycleTests.testClosingTheLastWindowKeepsAConflictedDraftDurable` closes the last fixture window and checks the independent database copy; window closing retains the workspace model. |
+| Quit (`ApplicationLifecycle.beginShutdown`) | `testQuitPreservesTheConflictCopyBeforeAnswering` checks durability before the existing refusal. Failed-copy and pending-side tests assert termination is refused when preservation fails. |
+| Update (`prepareForInstall`, side transfer and flush) | `testUpdatePreservesTheConflictCopyBeforeRefusing` checks the saved copy; failed-copy and pending-side tests assert the barrier cannot pass while a conflict snapshot is only in memory. |
+| Helper loss (`onLoss` / `discardLostSides`) | `WorkspaceRaceTests.testHelperLossKeepsTheDurableConflictCopy` delivers actual scripted supervisor loss. Failed-copy navigation test checks that an unkept side with an unsaved conflict remains mounted. |
+| Empty pending-chat removal (`discardPendingChat`) | Failed-copy navigation test verifies direct discard cannot remove a pinned conflict. `isPendingEmpty` also refuses it. Normal never-written placeholders cannot acquire cross-instance draft revisions; these guards cover a detected conflict regardless of provenance. |
+| Explicit Delete Chat / family deletion | Failed-copy navigation test refuses Delete before preservation. `SubagentDeletionTests.testSavedForkAndKeptSideFamiliesDeleteTheirJournalsAndSidecars` verifies a durable conflict exists before authorized deletion and is removed with the other drafts. This preserves the owner's existing Delete semantics. |
+| Sub-agent tab close / original-reader close | Both feed the same `releaseUnreadDisplays` guard; managed child displays have no composer/draft. `SubagentReaderTests.testClosingChildrenAppliesTheDisplayBudgetAndKeepsOpenAndRunningReaders` now closes readers over a conflicted ordinary draft and verifies its pin and durable copy. `InheritedSubagentReaderTests` also covers the original-reader route through the same unconditional close implementation. |
+| New-chat project replacement / generated-title display cleanup | Project replacement accepts only a never-materialized, never-opened pending chat and copies its current text/images; materialization removes pending status before draft persistence can conflict. Title displays use fresh utility IDs and have no human composer. Neither can hold a cross-instance conflicting draft in the product. Existing pending-project and utility behavior is unchanged. |
+| Direct `shutdown` / model destruction | The app reaches shutdown only after its quit/update flush; direct shutdown does not remove displays. Conflict copies already committed are independent of the model/store lifetime; the cold-display recovery test discards all old displays before loading them. |
+
+### Nearby patterns and adversarial corrections
+
+- **Rejected submission input:** preserving only the draft left in the composer
+  missed input already captured by `recordSubmission`. The new
+  `testRejectedSubmissionPreservesItsInputAsWellAsTheRemainingDraft` failed first
+  in `supplement-first.log` (63 tests, one failure):
+  `The rejected submission's input must be durable too`. The same rollback path
+  now preserves that input and its images/skills as well; no pending command commits.
+- **Explicit deletion cleanup:** saved conflict copies must follow an authorized
+  Delete. The strengthened deletion fixture first failed twice (fork and side)
+  in `release-sweep-first.log`: `Explicit family deletion includes its saved draft copies`.
+  Both imported-chat and family cleanup now remove the conflict records and the
+  new anchor deletion marker. Failed preservation still refuses release.
+- **Pasted-image cleanup:** persisted copies are covered by the existing complete
+  metadata-reference scan. Failed copies need a separate pin. The generated PNG
+  in `testFailedConflictCopyDefersPastedImageCleanup` was deleted before the fix
+  (`image-retention-first.log`, one test/one failure):
+  `A conflict awaiting its durable copy still owns its image`.
+  Cleanup now defers while any display holds an uncommitted conflict snapshot.
+- **Pending-side shutdown ordering:** a failed older conflict snapshot could be
+  left behind while newer side text moved to the parent. The new pending-side
+  test failed first with nine assertions in `pending-side-conflict-first.log`,
+  including `Quit must not drop an uncommitted conflict snapshot` (`[true]` vs
+  `[false]`) and `Do not consume the side before its conflict copy is durable`.
+  `moveSideDraft` now preserves outstanding conflict copies before consuming input;
+  Close retries preservation once storage recovers. Synchronous transfer refuses
+  a still-pinned copy.
+
+Additional regressions cover cold recovery of the full edit/review payload, retry
+deduplication, retaining distinct later edits, rollback without an intent, and an
+old-generation pasted PNG retained solely by its saved conflict copy.
+
+### Reading-position compare-and-swap
+
+Confirmed separately: `testUnchangedStaleQuitDoesNotOverwriteANewerReadingPosition`
+failed before the fix with saved anchor `old/3` instead of `new/42`;
+`testChangedStaleReadingPositionCannotOverwriteAnotherInstancesSave` also failed.
+Both are in `failing-first.log`.
+
+Each display now carries the anchor and revision loaded together by one SELECT.
+`putAnchor` compares and writes inside `BEGIN IMMEDIATE`, skips unchanged anchors,
+and leaves a newer instance's position untouched on mismatch. Ordinary scroll
+writes, quit/update flush and saved-side Close all use this path. Local writes
+settle in order before the final flush. Clearing a position retains an
+`anchor-deleted` revision, so an old missing-row baseline cannot resurrect it.
+The marker is separate from the existing anchor value, preserving its old shape.
+It is removed when a new anchor is saved or the chat is explicitly deleted.
+
+Tests additionally cover changed-stale writes, created-then-cleared positions,
+stale quit after a clear, local ordering, and saved-side Close. A stale display
+keeps its local viewport but cannot publish a position over the newer revision;
+a new display load acquires the current baseline.
+
+### Adversarial condition review
+
+- The draft comparison still skips unchanged snapshots. Only a real external
+  revision mismatch or an outstanding failed conflict copy enters preservation;
+  ordinary successful local saves and old local debounce rejection keep their behavior.
+- Conflict persistence runs after rollback and before throwing, with no actor
+  suspension between detection, rollback and save. Failed copies stay in the
+  version until each save succeeds; successful saves do not advance the losing
+  draft's canonical revision.
+- Eviction now rejects unsaved input, outstanding conflict snapshots and queued
+  draft writes. Clean idle displays still follow the eight-display policy. Running,
+  loading, imported-image and open-side/sub-agent pins remain intact.
+- Pending side discard and helper loss retain a failed conflict's original display.
+  Side transfer awaits preservation before consuming any text. Once storage recovers,
+  async Close can save the old copy and continue the normal parent transfer.
+- Quit/update retain their existing conflict refusal. They now also refuse an
+  ephemeral side whose earlier snapshot cannot be saved; the latest side text is
+  not mistaken for preservation of that older snapshot.
+- Explicit conflict restoration is the only new way to replace the primary draft.
+  It verifies the chosen saved copy, preserves the latest saved and live contents
+  atomically, blocks concurrent composer mutations with the existing recovery gate,
+  participates in quit's recovery-task wait, and never submits or grants tools.
+- Image cleanup changes only when a conflict copy is uncommitted. Saved copies are
+  ordinary durable references; current-image protection and deleted-chat cleanup
+  retain their existing rules.
+- Anchor equality skips writes, including unchanged absence. Changed anchors require
+  the exact loaded/committed revision, including a deletion marker. A conflict does
+  not silently rebase the stale display and let a later quit overwrite the winner.
+  Local versions advance only after commit, and side Close waits for queued writes.
+- Deletion refuses unsaved conflict copies but still deletes saved drafts after the
+  existing explicit confirmation. No new prompt or helper behavior was introduced.
+
+### Final Round 4 validation
+
+**572 native tests passed, 0 failed, 1 skipped**, across 42 affected classes (latest run per class).
+
+The sole skip was `SessionReadFocusTests.testTheChatBeingReadNeverFlashesUnreadWhenItsRunFinishes`: the locked fixture could not provide its own key, unoccluded window. Its other test passed; every newly added conflict/anchor regression ran and passed. The lead can repeat that focus test on an interactive desktop.
+
+Two mutation runs detected **24 failing regression-test executions**: 13 with conflict-copy persistence removed, and 11 with pin/transfer guards, submission-input preservation, anchor checks and explicit-deletion cleanup broken. Both were xcodebuild test failures (65), not build failures. All mutations were restored before final validation.
+
+Gallery: **16 PNGs generated and inspected**, covering the changed conflict error and recovery banner, plus the retained model/import error scenes, in light/dark at 760 pt and 300 pt. No helper or wire implementation changed, so the helper and wire/concurrent/acceptance suites were not rerun in this round.
+
+The UI/focus batch, each serial class alone, and gallery generation held the shared full-lane lock. Model-only classes used the same workstream build root without that lock. Two initially mixed selections were interrupted before their focus-changing classes ran and rescheduled into the locked batch (`interrupted-mixed-selection.log`, `interrupted-update-selection.log`); their partial results are excluded. The lock waiter was also stopped once while another workstream owned the lock so the final model batch could run; no UI test or owned lock was active at that point.
+
+Exact final commands (also retained as `.command` files beside each text log):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/ComposerImportSubmissionTests -only-testing:PiAppTests/PastedAttachmentTests -only-testing:PiAppTests/QueuedAttachmentLimitTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/SessionReadStateTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/SubagentOrganizationTests -only-testing:PiAppTests/HistoryExtentTests -only-testing:PiAppTests/ImportLifecycleTests -only-testing:PiAppTests/ComposerAttachmentDestinationTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/TranscriptKeptRowsTests -only-testing:PiAppTests/HistoryEdgeTests -only-testing:PiAppTests/UpdatePauseTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryEdgeTimingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryEditTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionReadFocusTests
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round4/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+| Native class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `ComposerAttachmentDestinationTests` | 2 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ConversationPaneTests` | 81 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 27 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoryEdgeTests` | 16 | 0 | 0 |
+| `HistoryEdgeTimingTests` | 2 | 0 | 0 |
+| `HistoryEditTests` | 3 | 0 | 0 |
+| `HistoryExtentTests` | 25 | 0 | 0 |
+| `ImportLifecycleTests` | 4 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 7 | 0 | 0 |
+| `LaunchSelectionTests` | 20 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `PastedAttachmentTests` | 8 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SessionReadFocusTests` | 1 | 0 | 1 |
+| `SessionReadStateTests` | 16 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 10 | 0 | 0 |
+| `SubagentOrganizationTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TranscriptKeptRowsTests` | 10 | 0 | 0 |
+| `UpdatePauseTests` | 7 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 39 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+| `WorkspaceValidationGalleryTests` | 1 | 0 | 0 |
+
+`xcodegen generate --quiet` reproduced the project unchanged; `git diff --check` passed. No installed app, real preferences/chats/Keychain, paid provider or live capture was used. Automatic result bundles and any test clones under this workstream's build root were removed; text logs and generated gallery images remain. Every acquired lane lock was released. Both assigned findings, including the previously documented reading-position issue, are resolved; no unrelated test failure remains.

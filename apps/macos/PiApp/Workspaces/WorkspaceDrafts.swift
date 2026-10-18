@@ -1,7 +1,7 @@
 import Foundation
 
 // Unsent text and reading position, written behind the typing rather than
-// during it. A draft write is debounced per chat and the last write wins;
+// during it. Draft writes are debounced per chat, with loaded revisions;
 // `flushDrafts()` is what quit and update wait for.
 
 /// The model's debounced draft writes.
@@ -25,14 +25,15 @@ extension WorkspaceModel {
     func reconcileSubmissionDraft(_ item: ChatRecord, view: SessionDisplay, current: () -> Bool) async throws -> Bool {
         guard let store else { throw StoreError.unavailable }
         if item.isSubagent {
-            let metadata = try await store.selectionMetadata(id: view.id, draft: false, anchor: view.scrollAnchor == nil)
+            let metadata = try await store.selectionMetadata(id: view.id, draft: false, anchor: !view.selectionMetadataLoaded)
             guard current() else { return false }
+            if let version = metadata.anchorVersion { view.anchorVersion = version }
             if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
             view.selectionMetadataLoaded = true; view.draftReady = false
             return true
         }
         let wantsMetadata = !view.selectionMetadataLoaded, draftAtStart = view.savedDraft
-        let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata && view.scrollAnchor == nil)
+        let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata)
         guard current() else { return false }
         if wantsMetadata {
             if let version = metadata.draftVersion { view.draftVersion = version }
@@ -40,9 +41,11 @@ extension WorkspaceModel {
                view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
                 view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
             }
+            if let version = metadata.anchorVersion { view.anchorVersion = version }
             if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
             view.selectionMetadataLoaded = true
         }
+        view.draftConflicts = metadata.conflicts
         let recovered = try await recoverableIntents(metadata.recovered, for: item, view: view)
         guard current() else { return false }
         view.recovered = recovered; view.uncertain = !recovered.isEmpty
@@ -136,6 +139,9 @@ extension WorkspaceModel {
             catch is CancellationError { }
             catch StoreError.staleRevision { /* A newer send, flush or edit already saved this draft. */ }
             catch {
+                if error as? StoreError == .draftConflict, let copies = try? await store?.draftConflicts(id: view.id) {
+                    view.draftConflicts = copies
+                }
                 // A full disk fails every debounce tick; report it once, not per keystroke.
                 guard !draftWrites.failed else { return }
                 draftWrites.failed = true; self.error = "Draft could not be saved. \(error.localizedDescription)"
@@ -157,6 +163,7 @@ extension WorkspaceModel {
         guard !retained.isEmpty else { return }
         guard let store else { throw StoreError.unavailable }
         for view in retained {
+            await view.anchorWrite?.value
             // A chat that never sent has no record yet. Writing its draft under
             // that id alone left text nothing would ever list again; skipping it
             // silently threw away what the user had typed. Give the text a chat.
@@ -171,7 +178,7 @@ extension WorkspaceModel {
                 continue
             }
             if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion) }
-            if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: view.id) }
+            try await store.putAnchor(view.scrollAnchor, id: view.id, version: view.anchorVersion)
         }
     }
     /// Quit and update end every side that was never saved, and a side's
@@ -191,9 +198,33 @@ extension WorkspaceModel {
         // re-enter (`TranscriptPage.reportPendingAnchor`).
         DispatchQueue.main.async { [weak self, weak view] in if let self, let view { self.releaseHeldWindow(view) } }
         guard !isEphemeral(view.id) else { return }
-        let anchor = view.scrollAnchor
-        Task { if let anchor { try? await store?.put(anchor, kind: "anchor", id: view.id) }
-            else { try? await store?.remove(kind: "anchor", id: view.id) } }
+        let anchor = view.scrollAnchor, previous = view.anchorWrite
+        view.anchorWrite = Task {
+            await previous?.value
+            try? await store?.putAnchor(anchor, id: view.id, version: view.anchorVersion)
+        }
+    }
+    func restoreConflictedDraft(_ conflict: SavedDraftConflict) {
+        guard !isShutDown, !installPreparing, let item = record(conflict.draft.id), !item.isSubagent, !item.imported,
+              let view = displays[conflict.draft.id], !view.loading, !view.hasWork,
+              view.queueEditingID == nil, !view.editPreparing, draftWrites.recoveries[view.id] == nil else { return }
+        view.loading = true
+        draftWrites.recoveries[view.id] = Task {
+            defer { view.loading = false; view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }
+            let previous = draftWrites.tasks[view.id]; previous?.cancel(); await previous?.value
+            do {
+                guard let store else { throw StoreError.unavailable }
+                view.recoveringDraft = true
+                let live = view.savedDraft
+                try await store.restoreConflict(conflict, replacing: live, version: view.draftVersion)
+                // Typing is disabled while this explicit recovery commits.
+                view.restoreDraft(conflict.draft)
+                view.unreconciledQueuedEdit = conflict.draft.queuedEdit
+                if let queued = conflict.draft.queuedEdit { await reconcileQueuedEdit(view, queued) }
+                view.draftConflicts = try await store.draftConflicts(id: view.id)
+                focusComposer(view.id)
+            } catch { self.error = "The conflicting draft could not be restored. Its saved copy was kept. \(error.localizedDescription)" }
+        }
     }
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
         // The banner sits in the pane of the chat the submission belongs to,

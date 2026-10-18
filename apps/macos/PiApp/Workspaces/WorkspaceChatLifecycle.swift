@@ -99,7 +99,7 @@ extension WorkspaceModel {
     }
     /// Drops a pending chat that never received a message. Nothing was written.
     func discardPendingChat(_ id: String) {
-        guard pendingChatIDs.remove(id) != nil else { return }
+        guard displays[id]?.draftVersion.hasUnsavedConflict != true, pendingChatIDs.remove(id) != nil else { return }
         chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); helperSessionDidUnload(id)
         forgetOpened(id)
         if selectedID == id { selectedID = nil; selected = nil }
@@ -110,7 +110,7 @@ extension WorkspaceModel {
         guard let view = displays[id] else { return true }
         // A first message on its way has left the composer empty; the chat
         // is anything but empty. An image being imported also owns this draft.
-        return !view.loading && view.sendingRows.isEmpty && view.imageImports == 0
+        return !view.draftVersion.hasUnsavedConflict && !view.loading && view.sendingRows.isEmpty && view.imageImports == 0
             && view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && view.attachments.isEmpty && view.skills.isEmpty
     }
     func createOnboardingChat() async throws {
@@ -205,6 +205,7 @@ extension WorkspaceModel {
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
         guard let id, let item = record(id), !item.isSubagent else { return }
+        guard displays[id]?.draftVersion.hasUnsavedConflict != true else { error = "Save the conflicting draft before deleting this chat."; return }
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
@@ -249,6 +250,7 @@ extension WorkspaceModel {
                 if !Set(skipped).isSubset(of: announced) { error = "“\(item.title)” was deleted. " + skipped.joined(separator: " ") }
                 return
             }
+            guard displays[item.id]?.draftVersion.hasUnsavedConflict != true else { throw StoreError.unavailable }
             if let host = hosts[item.workspaceID] {
                 if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
                 else { try await host.settleCaptureIfStopping() }
@@ -257,8 +259,9 @@ extension WorkspaceModel {
             try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
+            for kind in ["chat", "draft", "anchor", "anchor-deleted", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)
+            try await store.removeAll(kind: "draft-conflict:\(item.id)")
             try await store.removeAll(kind: "receipt:\(item.id)")
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }
             pendingIntentsChanged(item.id)

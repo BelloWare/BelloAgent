@@ -31,5 +31,17 @@ final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
                 }
             }
         }
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                let banner = RecoveredBannerView()
+                banner.update([], conflicts: [.init(id: "copy", draft: DraftRecord(id: "chat", text: "A conflicting draft with a saved image and an edited message."))], model: model)
+                banner.appearance = NSAppearance(named: appearance)
+                banner.frame = CGRect(x: 0, y: 0, width: width, height: banner.height(forWidth: width))
+                banner.layoutSubtreeIfNeeded(); banner.displayIfNeeded()
+                let image = try XCTUnwrap(banner.bitmapImageRepForCachingDisplay(in: banner.bounds))
+                banner.cacheDisplay(in: banner.bounds, to: image)
+                try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("conflict-recovery-\(theme)-\(Int(width)).png"))
+            }
+        }
     }
 }
