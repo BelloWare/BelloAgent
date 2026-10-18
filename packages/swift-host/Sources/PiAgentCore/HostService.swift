@@ -79,6 +79,7 @@ public actor NativeHostService {
     /// Test seams for overlapping unload and slow journal disk work.
     var afterSessionUnload: (@Sendable () async -> Void)?
     var beforeJournalDiskWork: (@Sendable () -> Void)?
+    var beforeChildTerminalMirror: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -259,6 +260,9 @@ public actor NativeHostService {
                 }, openSteering: { [weak self] environment, plan in
                     guard let self else { throw AgentError("workspace_closed", "Helper closed") }
                     return try await self.openAgentChild(environment,plan)
+                }, retireSteering: { [weak self] parent, plan, turn in
+                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                    try await self.retireAgentChild(parent:parent,plan:plan,turn:turn)
                 })
             }
             if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
@@ -298,6 +302,23 @@ public actor NativeHostService {
             do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
             catch { await child.close(); throw error }
             return child
+        }
+    }
+    private func retireAgentChild(parent: AgentSession, plan: SubagentPlan, turn: AgentChildTurn) async throws {
+        try await withRuntimeGate {
+            guard sessions[parent.id] === parent else { throw AgentError("subagent_scope", "The parent runtime changed") }
+            if let child = sessions[turn.childID] {
+                guard await child.subagents.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
+                try await child.saveAgentTerminal(turn)
+            } else {
+                let directory = parent.directory, beforeMirror = beforeChildTerminalMirror
+                // Cold reconciliation scans the whole journal. Keep its writer
+                // gated while other chats' commands continue on this actor.
+                try await Task.detached(priority:.userInitiated) {
+                    beforeMirror?()
+                    try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:directory)
+                }.value
+            }
         }
     }
     private func releaseSubagent(_ child: AgentSession) async {

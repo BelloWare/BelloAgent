@@ -101,10 +101,12 @@ enum AgentFamilyRecovery {
             }
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
-                if costPaused, !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
+                if costPaused, !(state.family!.run?.heldChildren.contains(childID) ?? false),
+                   !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
                     // Paused at the family's cost limit: the turn is held for
                     // Resume, not interrupted. A run cut off mid-pause keeps
-                    // its place in the queue; its child mirror agrees.
+                    // its place in the queue; its child mirror agrees. A
+                    // durable reader Stop instead recovers a terminal outcome.
                     var held = original; held.status = .queued; held.result = nil
                     if held != original { try write(JournalRecordKind.agentTurnState,held) }
                     if let mirror = childState.family?.turns[original.id], mirror != held {
@@ -152,8 +154,12 @@ enum AgentFamilyRecovery {
                 }
             }
             // Steering for a held turn stays pending; it is delivered after Resume.
-            for var message in state.family!.pending(author:"parent") where message.childID == childID && !(costPaused && state.family!.latest(childID)?.status.terminal == false) {
-                message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
+            for var message in state.family!.messages.values.sorted(by: { $0.sequence < $1.sequence }) where message.author == "parent" && message.childID == childID &&
+                (message.disposition == "pending" || message.disposition == "not_delivered_interrupted") {
+                if message.disposition == "pending" {
+                    if costPaused, state.family!.turns[AgentTurnTarget(childID:childID,turn:message.turn).id]?.status.terminal == false { continue }
+                    message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
+                }
                 let notice = AgentFamilyMessage(id:"undelivered:" + message.id,sequence:state.family!.sequence + 1,childID:childID,turn:message.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(message.id) is retained but was not delivered before interruption.",task:message.task,epoch:message.epoch,replyTo:message.id)
                 if state.family!.messages[notice.id] == nil { try write(JournalRecordKind.agentMessage,notice) }
             }
@@ -168,6 +174,29 @@ enum AgentFamilyRecovery {
             }
         }
         if var run = state.family!.run, !run.closed { run.closed = true; try write(JournalRecordKind.familyRun,run) }
+    }
+    /// A parked Stop has no live runner. The host calls this only when no
+    /// retained writer exists, under its runtime gate. A subsequent reader
+    /// retires pause/tool state from this terminal authority during restore.
+    static func mirrorTerminal(_ turn: AgentChildTurn, plan: SubagentPlan, directory: URL) throws {
+        let id = try identity(JSON(turn.childID)), url = directory.appendingPathComponent(id + ".jsonl")
+        guard FileManager.default.fileExists(atPath:url.path) else { return }
+        try SessionJournal.verifyManagedChild(url:url,id:id)
+        let journal = try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false)
+        let reader = try JournalRecordReader(url)
+        var state = SubagentJournalState()
+        while let row = try reader.next() { try state.consume(row,sessionID:id) }
+        guard state.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
+        try journal.promoteToSteering(managedChild:true)
+        func write(_ kind: String, _ value: AgentChildTurn) throws {
+            let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(plan.origin.link.budgetOwnerSessionID),"data":try subagentJSON(value)]
+            try state.consume(row,sessionID:id); try journal.append(row,flush:true)
+        }
+        if let saved = state.family?.turns[turn.id], !saved.status.terminal {
+            var queued = turn; queued.status = .queued; queued.result = nil
+            for step in queued.mirrorSteps(from:saved) where step != saved { try write(JournalRecordKind.agentTurnState,step) }
+        }
+        if state.family?.turns[turn.id] != turn { try write(JournalRecordKind.agentTerminal,turn) }
     }
     static func deliveryDigest(_ delivery: AgentDelivery) -> String { sha256(Data(JSON.array([textBlock(delivery.payload.encoded())]).encoded().utf8)) }
 }

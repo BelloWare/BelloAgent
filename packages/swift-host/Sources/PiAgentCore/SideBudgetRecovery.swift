@@ -11,6 +11,55 @@ enum SideBudgetRecovery {
     static func parentExists(_ id: String, directory: URL) throws -> Bool {
         try journalURL(id,directory:directory) != nil
     }
+    /// Run-state and family metadata only; no side conversation is copied
+    /// into its owner. Read the prefix present on open: an ancestor may
+    /// already have resumed and be appending beyond that prefix.
+    static func pauseState(_ file: URL, id: String) throws -> (state: JSON, hasWork: Bool) {
+        let reader = try JournalRecordReader(file)
+        var state: JSON = .null, children = SubagentJournalState()
+        while reader.completeBytes < reader.size, let row = try reader.next() {
+            if row["customType"].text == JournalRecordKind.state { state = row["data"] }
+            if row["type"].text == "branch", !row["nativeState"].isNull { state = row["nativeState"] }
+            if row["type"].text == "custom" { try children.consume(row,sessionID:id) }
+        }
+        return (state, hasPauseWork(state,family:children.family))
+    }
+    static func hasPauseWork(_ state: JSON, family: AgentFamilyState?) -> Bool {
+        state["costPaused"].flag == true || state["active"].flag == true ||
+        !state["queue"].list.isEmpty || !state["steering"].list.isEmpty || !state["delivering"].isNull ||
+        family?.turns.values.contains { !$0.status.terminal } == true
+    }
+    /// Compute the pause projection from replay values before assigning it
+    /// to the runtime. No actor-isolated initializer state escapes in filters.
+    static func pause(_ saved: JSON, id: String, parent: JSON, family: AgentFamilyState?, sides: Set<String>, directory: URL) throws -> (paused: Bool, members: [String], pending: [String]) {
+        var paused = saved["costPaused"].flag == true
+        var members = saved["costPausedMembers"].list.compactMap(\.text)
+        let pending = try saved["costPendingSidePauses"].list.compactMap(\.text).filter { side in
+            guard sides.contains(side), let file = try journalURL(side,directory:directory) else { return false }
+            return try pauseState(file,id:side).hasWork
+        }
+        for side in pending where !members.contains(side) { members.append(side) }
+        let ancestor = parent["relationship"].text != "fork" ? parent["parentSessionId"].text : nil
+        if !pending.isEmpty {
+            let hasParent = try ancestor.map { try parentExists($0,directory:directory) } ?? false
+            if !hasParent || hasPauseWork(saved,family:family) { paused = true }
+        }
+        if !paused, let ancestor, hasPauseWork(saved,family:family),
+           try inheritsPendingPause(id:id,parent:ancestor,directory:directory) { paused = true }
+        return (paused,members,pending)
+    }
+    /// The root may already have accepted Resume before this side opens:
+    /// its membership remains until the side takes that Resume itself.
+    static func inheritsPendingPause(id: String, parent: String?, directory: URL) throws -> Bool {
+        var next = parent, seen: Set<String> = [id]
+        while let ancestor = next, seen.insert(ancestor).inserted, seen.count <= 128 {
+            guard let file = try journalURL(ancestor,directory:directory) else { return false }
+            let saved = try pauseState(file,id:ancestor).state
+            if (saved["costPendingSidePauses"].list + saved["costPausedMembers"].list).contains(JSON(id)) { return true }
+            next = try readOrigin(file)?.parent
+        }
+        return false
+    }
     static func journalURL(_ id: String, directory: URL) throws -> URL? {
         let id = try identity(JSON(id))
         for name in [id, "side_" + id, "fork_" + id] {

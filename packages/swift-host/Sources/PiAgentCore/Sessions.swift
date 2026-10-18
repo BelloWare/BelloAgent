@@ -74,7 +74,8 @@ public actor AgentSession {
     /// sequence and display revision of the snapshot that carried it.
     var presentedTasks: TaskPresentationProjection?
     var presentedTasksGeneration: UInt64 = 0
-    var runTask: Task<Void,Never>?, state: SessionState = .idle, runStatus: RunStatus = .idle, errorMessage: String?, queuePaused=false, stopCount=0
+    var runTask: Task<Void,Never>?, state: SessionState = .idle, runStatus: RunStatus = .idle, errorMessage: String?, queuePaused=false
+    var stopCount=0 { didSet { costPauseClock.update(stops:stopCount) } }
     /// The code of the error that ended the last run, when it failed: the app
     /// draws a `cost_limit` stop as a notice with a way to raise the limit.
     var errorCode: String?
@@ -103,10 +104,19 @@ public actor AgentSession {
     var sideBudgetMembers: [String: [String]] = [:]
     /// Each side's pause callback: given the pause's reason and the Resume
     /// count it was issued under (`costResumeCount`).
-    var sideBudgetStops: [String: @Sendable (AgentError, Int) async -> Void] = [:]
+    var sideBudgetStops: [String: @Sendable (AgentError, SidePausePublication) async -> Void] = [:]
+    var sideBudgetPauseClocks: [String: CostPauseClock] = [:]
+    var costMemberGenerations: [String: CostPauseGeneration] = [:]
+    nonisolated let costPauseClock = CostPauseClock()
+    var lastCostHalt: CostPauseGeneration?
+    let costResumeWake = AgentWakeSignal()
+    var beforeSidePausePublication: (@Sendable () async -> Void)?
+    var beforeSidePauseForget: (@Sendable () async -> Void)?
+    var beforeSidePauseAcknowledgment: (@Sendable () async -> Void)?
+    var beforeSidePauseRetirement: (@Sendable () async -> Void)?
     /// Advances with each accepted Resume of a pause: a side pause issued
     /// before it is not applied after it.
-    var costResumeCount = 0
+    var costResumeCount = 0 { didSet { costPauseClock.update(resumes:costResumeCount) } }
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
@@ -116,9 +126,14 @@ public actor AgentSession {
     /// Work here stopped at the family's cost limit and waits for Resume
     /// (`pauseAtCostLimit`). Durable in the run state; raising the limit
     /// alone never clears it.
-    var costPaused = false
+    var costPaused = false { didSet { costPauseClock.update(paused:costPaused) } }
     /// A root's sides that paused with it, handed to the app by Resume.
     var costPausedMembers: [String] = []
+    /// Side callbacks not yet acknowledged. Saved with the issuing pause;
+    /// recovery checks their journals before deciding which sides held work.
+    var costPendingSidePauses: [String] = []
+    /// Sender-owned membership intent; removed only after the root saves it.
+    var costPendingMembership: SidePauseIntent?
     /// Set by a Resume of a paused family: the run resumes the parked
     /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
     /// own to continue waits for them instead of asking the model.
@@ -127,9 +142,10 @@ public actor AgentSession {
     /// paused work (parked turns). Saved as the pause itself: a helper that
     /// ends in between reopens paused, and the next Resume does it again.
     var costResumePending = false
+    var costResumeGeneration: CostPauseGeneration?
     var familyWaitResume = false
     /// Advances with each cost-limit pause; a Resume covers the pauses so far.
-    var costPauseCount = 0
+    var costPauseCount = 0 { didSet { costPauseClock.update(pauses:costPauseCount) } }
     /// Tool calls of a completed reply the pause held before any started:
     /// they run first on Resume, before another model request. Durable.
     var costPendingCalls: [String] = []
@@ -413,11 +429,13 @@ public actor AgentSession {
             try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":data], flush:true)
             try accounting.consume(kind:JournalRecordKind.cost,data:data,spend:&spend); spendTracked = true
         }
+        var recoveredSideIDs = Set<String>()
         if resumePath != nil, subagents.origin == nil {
             let family = try SideBudgetRecovery.savedFamily(owner:id,directory:directory)
             // Recovery imports nested ledgers before their runtimes bind. The
             // same validated persisted origins authorize those cold mirrors.
             sideBudgetMembers = Dictionary(uniqueKeysWithValues:family.map { ($0.origin.id,$0.parents) })
+            recoveredSideIDs = Set(family.map { $0.origin.id })
             for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory, family:family) {
                 guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { continue }
                 record.data["accountingRevision"] = JSON(accounting.revision + 1)
@@ -517,8 +535,10 @@ public actor AgentSession {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
             }
-            costPaused = saved["costPaused"].flag == true
-            costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
+            let recoveredPause = try SideBudgetRecovery.pause(saved,id:id,parent:replayed.parentInfo,
+                family:replayed.subagents.family,sides:recoveredSideIDs,directory:directory)
+            costPaused = recoveredPause.paused; costPausedMembers = recoveredPause.members
+            costPendingSidePauses = recoveredPause.pending
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             costPendingCompaction = saved["costPendingCompaction"].flag == true
             costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
@@ -604,7 +624,7 @@ public actor AgentSession {
             }
         }
         boundary=Array(context.prefix(unfinished ?? context.count)); state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
-        dropMissingPausedMembers()
+        try dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }
@@ -670,7 +690,7 @@ public actor AgentSession {
         // instead of cancelling them. The coordinator stops their runs.
         // A paused family's children are held by their coordinator, not
         // cancelled; Stop (or close) stops their runs (`pause(halt:)`).
-        if costPaused, !isSubagent, let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
+        if costPaused || costResumePending, !isSubagent, let coordinator = agentCoordinator { let generation = pauseGeneration; Task { await coordinator.pause(owner:self,generation:generation,halt:true) } }
         else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its
@@ -686,9 +706,16 @@ public actor AgentSession {
         (isIdle || isSubagent && costPaused && runTask == nil && steering.isEmpty) && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
         (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true || costPaused)
     }
-    public func unloadIfIdle() -> Bool {
+    public func unloadIfIdle() async -> Bool {
+        if closed { return !ephemeral && journal == nil }
         guard canUnload else { return false }
-        cancelHistoryLoads(); closed=true; journal=nil
+        // Close admission before the await. A kept sender cannot retire its
+        // clock while a legitimate membership change still needs that clock.
+        withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
+        guard await drainSidePauseChanges() else {
+            withCostPauseFence { closed = false; costPauseClock.acceptMessages(true) }; return false
+        }
+        cancelHistoryLoads(); costPauseClock.retire(); journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch
             Task { await coordinator.release(owner: owner, runtimeID: runtimeID) }
@@ -696,14 +723,26 @@ public actor AgentSession {
         return true
     }
     public func close() async {
-        cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
+        cancelHistoryLoads(); stop(); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
-        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:costPauseCount,halt:true) }
+        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
         // An unkept side ends with its runtime: nothing of it waits for the
         // family's Resume any more.
-        if ephemeral, let root = sideBudgetParents.last { await root.forgetPausedMember(id) }
-        journal=nil
+        if ephemeral, !sideBudgetParents.isEmpty {
+            // Retire prior publications before crossing actors. A terminal
+            // retirement belongs to this closing runtime, even if the root
+            // accepts another Resume while the message is in flight.
+            costResumeCount &+= 1; costPauseClock.beginClosing()
+            let generation = pauseGeneration
+            await beforeSidePauseRetirement?()
+            for ancestor in sideBudgetParents.reversed() { await ancestor.forgetClosedSide(id,generation:generation) }
+        }
+        // Shutdown may encounter an unavailable root writer. The sender's
+        // durable intent remains for cold recovery; no clock revives on open.
+        if !ephemeral { _ = await drainSidePauseChanges() }
+        costPauseClock.retire(); journal=nil
     }
 }
