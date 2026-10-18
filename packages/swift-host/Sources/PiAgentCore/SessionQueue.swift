@@ -139,6 +139,7 @@ extension AgentSession {
         steeringMode=steering; followUpMode=followUp; try persistState(); event("queue.changed")
     }
     public func resumeQueue() throws {
+        guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
         // Only the run's Resume (`run.continue`) ends a cost-limit pause: it
@@ -163,6 +164,7 @@ extension AgentSession {
     /// arrived but is never replayed. Queued follow-ups go on after the turn.
     public func retryRun(overrides: JSON = [:]) throws {
         try requireIndependentSession()
+        guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard !costPaused else { throw Self.costPausedResumeError }
         guard state == .error || state == .paused, let last=history.last(where: { $0.replayEligible }), last.role != "assistant" else {

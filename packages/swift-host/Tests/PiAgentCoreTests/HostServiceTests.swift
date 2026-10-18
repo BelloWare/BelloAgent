@@ -141,6 +141,30 @@ final class HostServiceTests: XCTestCase {
         try journal.append(["type": "custom", "customType": "pi-app.native.state.v1", "data": ["active": false, "queue": [], "steering": [], "commands": [], "queuePaused": false]], flush: true)
     }
 
+    func testPortablePreviewAndRecoveryDoNotBlockAnotherChatsSnapshot() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path,cwd:root,profile:profile)
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        _ = try await host.command("session.open",sessionID:"quick",params:["profile":profile.raw,"apiKey":"fixture"])
+        for method in ["session.portable.preview", "session.import.inspect", "session.recover"] {
+            let entered = expectation(description:method + " disk entered"), answered = expectation(description:method + " sibling snapshot")
+            let gate = JournalDiskGate(); defer { gate.open() }
+            await host.holdJournalDiskWork { entered.fulfill(); gate.wait() }
+            let work = Task { try await host.command(method,sessionID:nil,params:["path":JSON(path.path),"newSessionId":"recovered"]) }
+            await fulfillment(of:[entered],timeout:2)
+            let snapshot = Task { let value = try await host.command("session.snapshot",sessionID:"quick",params:["includeMessages":false]); answered.fulfill(); return value }
+            await fulfillment(of:[answered],timeout:1)
+            gate.open()
+            let result = try await work.value, other = try await snapshot.value
+            XCTAssertEqual(other["state"].text,"idle")
+            if method == "session.recover" { XCTAssertGreaterThan(result["records"].int ?? 0,12_000) }
+            else { XCTAssertTrue(result["text"].text?.contains("Message 11999") == true) }
+        }
+        await host.shutdown()
+    }
+
     func testOpeningALongChatDoesNotHoldUpTheOthers() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), profile = try fixtureProfile()
@@ -277,4 +301,13 @@ private actor SubmissionPreflightGate {
 
 private extension NativeHostService {
     func holdSubmissionPreflight(at gate: SubmissionPreflightGate) { beforeSubmissionPreflight = { await gate.wait() } }
+}
+
+private final class JournalDiskGate: @unchecked Sendable {
+    private let release = DispatchSemaphore(value:0)
+    func wait() { _ = release.wait(timeout:.now() + 10) }
+    func open() { release.signal() }
+}
+private extension NativeHostService {
+    func holdJournalDiskWork(_ action: @escaping @Sendable () -> Void) { beforeJournalDiskWork = action }
 }

@@ -91,7 +91,14 @@ final class ToolOutcomeTests: XCTestCase {
         let output = try XCTUnwrap(body["input"].list.first { $0["type"].text == "function_call_output" }?["output"])
         XCTAssertEqual(output, "(tool image omitted: model does not support images)")
         XCTAssertFalse(body.encoded().contains(String(image.prefix(64))))
-        await session.close()
+        let live = await session.snapshot()
+        let liveOutput = live["messages"].list.flatMap { $0["tools"].list }.first?["output"].text
+        XCTAssertEqual(liveOutput, "[image/png result, 3000 bytes]")
+        let path = await session.path; await session.close()
+        let reopened = try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:ImageTools(data:image),traces:TraceStore(),resumePath:path,autoCompaction:false)
+        let restored = await reopened.snapshot()
+        XCTAssertEqual(restored["messages"].list.flatMap { $0["tools"].list }.first?["output"].text, liveOutput)
+        await reopened.close()
     }
 }
 

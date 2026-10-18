@@ -4,6 +4,14 @@
 
 ## 0.1.130
 
+- [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
+- [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
+- [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.
+- [x] Reopened image-result tool cards retain their saved image descriptions.
+- [x] Malformed token usage cannot overflow context output-room calculations; rejected raw counts no longer override validated usage.
+- [x] Credential masking preserves routing enums and helper-owned preview/source/tool schemas while masking configured and provider data.
+- [x] Retained large bash logs support bounded text paging, including from read-only sides.
+- [x] Portable preview, import inspection and recovery scan journals off the host actor so unrelated chats remain responsive.
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).

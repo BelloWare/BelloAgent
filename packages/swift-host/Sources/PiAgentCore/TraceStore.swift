@@ -115,11 +115,11 @@ public actor TraceStore {
         t.identity?.body(value,streaming:streaming,excluding: credentials.contains)
         t.gateway?.body(value,streaming:streaming,excluding: credentials.contains)
     }
-    public func identity(_ id:String) -> JSON { guard let t = traces[id] else { return .null }; return t.credentials.metadata(t.identity?.json ?? .null) }
+    public func identity(_ id:String) -> JSON { guard let t = traces[id] else { return .null }; return t.identity?.captured(t.credentials) ?? .null }
     /// Only checked numerical/identity metadata crosses the popup boundary.
     func monitoring(_ id: String) -> JSON {
         guard let t = traces[id] else { return [:] }
-        let identity = t.credentials.metadata(t.identity?.json ?? .null), gateway = t.gateway?.json ?? .null
+        let identity = t.identity?.captured(t.credentials) ?? .null, gateway = t.gateway?.json ?? .null
         // `outcome` leaves "running" once the attempt has ended: its cost is
         // final then, and the session adds it to the chat's spend.
         return ["identity":["status":identity["status"], "effectiveModel":identity["effectiveModel"]],
@@ -434,7 +434,7 @@ public actor TraceStore {
         if let source=gateway["cache"]["source"].text { gateway["cache"]["source"]=JSON(t.credentials.metadataText(source)) }
         var value:JSON = ["requestScope":t.scope.flatMap { try? subagentJSON($0) } ?? .null,"attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":gateway,"operation":t.operation,
-         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
+         "identity":t.identity?.captured(t.credentials) ?? .null,"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEventCount),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,

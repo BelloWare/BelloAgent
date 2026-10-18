@@ -148,7 +148,7 @@ extension AgentSession {
             let result: ChatMessage
             if let results { guard let found = results[id] else { continue }; result = found }
             else { guard let index = toolHistory.results[message.id]?[id], history.indices.contains(index) else { continue }; result = history[index] }
-            let output = result.text
+            let output = result.displayText ?? result.text
             // The recorded outcome decides the card, as it did live: unknown
             // after an interruption, cancelled when the call never ran. Old
             // journals have no outcome or execution clock; they keep their
