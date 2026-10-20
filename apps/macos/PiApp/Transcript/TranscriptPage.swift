@@ -297,10 +297,10 @@ struct ContentGeometry: Equatable {
         // SwiftUI's next update, the rows took their new content there and
         // their geometry a run-loop turn later, and a frame drew one in the
         // other's place.
-        session.disclosure.spanningChange = { [weak self] in
+        session.disclosure.spanningChange = { [weak self] part in
             guard let self else { return }
             self.republish()
-            (self.scrollView?.documentView as? TranscriptNativeDocument)?.spanningDisclosureChanged()
+            (self.scrollView?.documentView as? TranscriptNativeDocument)?.spanningDisclosureChanged(animate: part.kind != .toolLines)
         }
         session.visibleMessageIDs = { [weak self] in self?.visibleMessageIDs() ?? [] }
         reset()

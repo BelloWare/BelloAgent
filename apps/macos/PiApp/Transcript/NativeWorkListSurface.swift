@@ -13,7 +13,7 @@ private struct NativeWorkListItem: Equatable {
 /// replaces a card's view.
 @MainActor private final class WorkListToggleRelay {
     var current: (String) -> Void = { _ in }
-    var expand: ((String) -> Void)?
+    var expand: ((String, Bool) -> Void)?
     var actions = TranscriptActions()
     var openFile: ((String, ClosedRange<Int>?) -> Void)?
 }
@@ -67,7 +67,7 @@ private struct NativeWorkListItem: Equatable {
                     toggle: { [weak relay] in relay?.current(id) },
                     openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) },
                     actions: .forwarding { [weak relay] in relay?.actions },
-                    expanded: item.expanded, toggleExpanded: { [weak relay] in relay?.expand?(id) })
+                    expanded: item.expanded, setExpanded: { [weak relay] in relay?.expand?(id, $0) })
     }
     func measure(width: CGFloat) -> CGFloat {
         if let cached = sizes.last(where: { $0.width == width }) { return cached.height }
@@ -136,9 +136,9 @@ private struct NativeWorkListItem: Equatable {
 
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument],
                 toggle: @escaping (String) -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil, environment: TranscriptRowEnvironment, actions: TranscriptActions = .init(),
-                expandedTools: Set<String>? = nil, toggleExpanded: ((String) -> Void)? = nil) {
+                expandedTools: Set<String>? = nil, setExpanded: ((String, Bool) -> Void)? = nil) {
         relay.current = toggle
-        relay.expand = toggleExpanded
+        relay.expand = setExpanded
         relay.actions = actions
         relay.openFile = openFile
         // A changed environment changes every card, including the closed ones

@@ -7,6 +7,155 @@ final class TranscriptBugRegressionTests: XCTestCase {
     static let before = "header\n…[truncated, 12 more bytes]\nold tail"
     static let after = "header\n…[truncated, 12 more bytes]\nnew tail"
 
+    @MainActor private func checkFailedDiffNavigation(_ name: String, calls: Int = 1) async throws {
+        let arguments: WireValue = name == "write"
+            ? .object(["path": .string("fixture.txt"), "content": .string("inputneedle new")])
+            : .object(["path": .string("fixture.txt"), "oldText": .string("inputneedle old"), "newText": .string("inputneedle new")])
+        let call = (0..<calls).map { n in WireValue.object(["type": .string("toolCall"), "id": .string("call\(n)"), "name": .string(name), "arguments": arguments]) }
+        var entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null,
+            "message": .object(["role": .string("assistant"), "content": .array(call)])])]
+        for n in 0..<calls {
+            entries.append(.object(["type": .string("message"), "id": .string("receipt\(n)"), "parentId": .string(n == 0 ? "reply" : "receipt\(n - 1)"),
+                "message": .object(["role": .string("toolResult"), "toolCallId": .string("call\(n)"), "toolName": .string(name),
+                    "content": .string("Permission denied"), "nativeToolStats": .object(["outcome": .string("failed")])])]))
+        }
+        let (model, pane, window) = try await findFixture(saved: true, entries: entries)
+        let session = try XCTUnwrap(model.selected), messages = session.presentedMessages
+        for page in [[messages[0]], messages] {
+            pane.closeFind(focusing: false); session.messages = page; pane.refresh()
+            pane.showFind(); pane.find.setQuery("inputneedle")
+            try await eventually("Failed \(name) input projection finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+            let count = calls * (name == "write" ? 1 : 2)
+            XCTAssertEqual(pane.find.matches.count, count, "The projection retains every displayed diff input")
+            XCTAssertEqual(Set(pane.find.matches.map(\.messageID)), ["reply"])
+            for index in 0..<count {
+                if pane.find.current != index { pane.find.step(index - (pane.find.current ?? 0)) }
+                try await eventually("Failed \(name) input occurrence \(index) is focusable") {
+                    pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    return !pane.document.focusPending && pane.document.focusText != nil
+                }
+                XCTAssertEqual(pane.find.current, index, "Rendered reconciliation must not discard an input occurrence")
+                let text = try XCTUnwrap(pane.document.focusText), range = pane.document.focusRange
+                XCTAssertEqual((text.string as NSString).substring(with: range), "inputneedle")
+                let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+                XCTAssertNotNil(manager.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil))
+                var rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+                rect.origin.x += text.textContainerOrigin.x; rect.origin.y += text.textContainerOrigin.y
+                let point = CGPoint(x: rect.midX, y: rect.midY), clip = pane.scrollView.contentView
+                XCTAssertTrue(clip.bounds.contains(text.convert(point, to: clip)), "The focused input is visible in the transcript")
+                if let inner = text.enclosingScrollView, inner !== pane.scrollView {
+                    XCTAssertTrue(inner.contentView.bounds.contains(text.convert(point, to: inner.contentView)), "The focused input is visible inside the card")
+                }
+                XCTAssertEqual(pane.document.highlights.focus?.omittedOutputs, Set((0..<calls).map { "call\($0)" }), "This exercises receipt-owned failures")
+            }
+        }
+    }
+    @MainActor func testFailedEditInputsRemainFocusableWithCapturedReply() async throws {
+        for large in [false, true] {
+            let request = TranscriptActivity.EditRequest(before: "old input", after: "new input", mode: "edit",
+                rows: large ? [] : [.init(kind: .removed, text: "old input"), .init(kind: .added, text: "new input")],
+                hiddenRows: 0, complete: true, tooLarge: large, lines: large ? 9_000 : 2)
+            let model = TranscriptToolRow.Card.diff(request, path: nil, outcome: .failed, added: nil, removed: nil)
+            let card = TranscriptNativeCard.make(model); card.update(model, link: nil, environment: .init())
+            if large { try XCTUnwrap(ConversationPaneTests.views(NSButton.self, in: card).first { $0.bezelStyle == .disclosure }).performClick(nil) }
+            card.frame.size = CGSize(width: 620, height: card.height(width: 620)); card.layoutSubtreeIfNeeded()
+            let units = TranscriptNativeDocument.textUnits(in: card)
+            XCTAssertFalse(units.isEmpty)
+            for unit in units {
+                let text = (unit as? NSTextView)?.string ?? ""
+                let input = unit is TranscriptCardLines || text == "old input" || text == "new input"
+                XCTAssertEqual(TranscriptNativeDocument.isToolInput(unit), input, "Only requested diff content is input: \(text)")
+            }
+        }
+        try await checkFailedDiffNavigation("edit")
+    }
+    @MainActor func testFailedWriteInputsRemainFocusableWithCapturedReply() async throws { try await checkFailedDiffNavigation("write") }
+    @MainActor func testFailedMultiEditInputsRemainFocusableWithCapturedReply() async throws { try await checkFailedDiffNavigation("edit", calls: 2) }
+
+    static func repeatedCards(_ name: String) -> TranscriptMessage {
+        var timeline = ResponseTimeline()
+        for (ordinal, call) in ["A", "B", "A"].enumerated() {
+            timeline.consume(.init(attemptID: "fixture", ordinal: ordinal, itemID: "part\(ordinal)", kind: "toolArguments", update: "replace", text: "", callID: call, name: name))
+        }
+        timeline.finish("completed")
+        let lines = (1...20).map { "Line \($0)" }.joined(separator: "\n")
+        let arguments: WireValue = name == "read" ? .object(["path": .string("fixture.txt")])
+            : .object(["path": .string("fixture.txt"), "oldText": .string("old"), "newText": .string(lines)])
+        let tools = ["A", "B"].map { ToolView(id: $0, name: name, state: "completed", input: ToolInputDisplay.encoded(arguments), output: name == "read" ? lines : "Done", durationMs: 10, truncated: false) }
+        var message = TranscriptMessage(id: "reply", role: "assistant", text: "", tools: tools, state: "complete")
+        message.responseTimeline = timeline
+        return message
+    }
+    @MainActor private func checkRepeatedCardExpansion(_ name: String) async throws {
+        let (model, pane, window) = try await findFixture(saved: true)
+        let session = try XCTUnwrap(model.selected)
+        session.messages = [Self.repeatedCards(name)]
+        for case .block(let block) in TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil) where block.presentation == .work {
+            session.disclosure.setOpen(true, .work(block.key))
+        }
+        for call in ["A", "B"] { session.disclosure.setOpen(true, .tool(ToolOccurrence.key("reply", call))) }
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); pane.document.finishDisclosureMotion()
+        let rows = pane.document.rows(drawing: "reply").filter { if case .block(let block) = $0.item { return block.presentation == .work }; return false }
+        XCTAssertEqual(rows.count, 3)
+        func cards() throws -> [TranscriptNativeCard] {
+            try rows.map { row in
+                row.prepareToDraw(); row.frame.size = row.measure(width: pane.document.bounds.width); row.layoutForViewport()
+                return try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeCard.self, in: row).first)
+            }
+        }
+        func expanded(_ card: TranscriptNativeCard) -> Bool { (card as? TranscriptNativeReadCard)?.expanded ?? (card as? TranscriptNativeDiffCard)?.expanded ?? false }
+        func press(_ card: TranscriptNativeCard) throws {
+            XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptCardMoreLines.self, in: card).first).accessibilityPerformPress())
+        }
+        let initial = try cards(), key = TranscriptDisclosure.Part.toolLines(ToolOccurrence.key("reply", "A"))
+        try press(initial[0])
+        XCTAssertTrue(session.disclosure.isOpen(key))
+        XCTAssertTrue(expanded(initial[2]), "The already mounted sibling must adopt expansion in the same pass")
+        XCTAssertFalse(expanded(initial[1]), "Another occurrence keeps its own state")
+        let open = try cards()
+        XCTAssertEqual(open.map(expanded), [true, false, true])
+        try press(open[2])
+        XCTAssertFalse(session.disclosure.isOpen(key), "The sibling now displays Less Lines and explicitly collapses both")
+        XCTAssertFalse(expanded(open[0]))
+        // A pending card action may carry the displayed state from before a
+        // sibling changed. Asking to expand an already-open occurrence is idempotent.
+        session.disclosure.setOpen(true, key)
+        let stale = try cards()[2]; stale.restoreExpansion(false)
+        try press(stale)
+        XCTAssertTrue(session.disclosure.isOpen(key), "An expand action must never toggle an already-true stored value")
+        pane.refresh()
+        for row in rows {
+            try await eventually("Repeated \(name) card geometry settles") {
+                row.frame.size = row.measure(width: pane.document.bounds.width); row.layoutForViewport(); window.displayIfNeeded()
+                return !row.needsMountedValidation
+            }
+            window.makeFirstResponder(nil); row.releaseHost(); XCTAssertFalse(row.isHosted)
+        }
+        let remounted = try cards()
+        XCTAssertEqual(remounted.map(expanded), [true, false, true])
+        for row in rows { XCTAssertEqual(row.measure(width: pane.document.bounds.width).height, row.hostedFittingHeight, accuracy: 1) }
+        session.disclosure.setOpen(false, key)
+        XCTAssertFalse(expanded(remounted[0])); XCTAssertFalse(expanded(remounted[2]))
+        // Find opens the same inner disclosure without a button click. Visiting
+        // both copies must not undo the first copy's expansion either.
+        pane.showFind(); pane.find.setQuery("Line 10")
+        try await eventually("Repeated card Find finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.count, 3)
+        for index in 0..<3 {
+            if pane.find.current != index { pane.find.step(index - (pane.find.current ?? 0)) }
+            try await eventually("Repeated card occurrence \(index) focuses") {
+                pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                return !pane.document.focusPending && pane.document.focusText != nil
+            }
+            let text = try XCTUnwrap(pane.document.focusText)
+            XCTAssertEqual((text.string as NSString).substring(with: pane.document.focusRange), "Line 10")
+            XCTAssertTrue(session.disclosure.isOpen(key))
+            XCTAssertTrue(expanded(try cards()[0])); XCTAssertTrue(expanded(try cards()[2]))
+        }
+    }
+    @MainActor func testRepeatedReadCardsShareExpansion() async throws { try await checkRepeatedCardExpansion("read") }
+    @MainActor func testRepeatedDiffCardsShareExpansion() async throws { try await checkRepeatedCardExpansion("edit") }
+
     private final class SearchDecodeCost: @unchecked Sendable {
         private let lock = NSLock()
         private var decodes: [UInt64: Int] = [:]

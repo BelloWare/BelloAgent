@@ -63,6 +63,9 @@
 - [x] Find batches unanswered-call ownership lookups and card projections even when there are no receipt decodes to trigger a yield. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find snippets have a UTF-8 byte bound as well as a character bound, keeping the match visible beside oversized combining-character sequences. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
+- [x] Find preserves and focuses failed edit/write diff inputs when their error summaries belong to separate receipts. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Repeated read/diff cards share the occurrence’s stored expansion value through clicks, Find, refresh and remount, without adding fold animation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

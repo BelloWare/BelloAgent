@@ -20,7 +20,7 @@ import AppKit
         var fetched: ToolInputDocument? = nil
         var toggleCard: () -> Void = {}
         var cardExpanded: Bool? = nil
-        var toggleCardExpanded: (() -> Void)? = nil
+        var setCardExpanded: ((Bool) -> Void)? = nil
         var raw = false
         /// The row's way to switch the reply to its source; nil where no
         /// conversation disclosure is reachable.
@@ -87,7 +87,7 @@ import AppKit
             }()
             action.update(tool: model.card!, open: model.cardOpen, fetched: model.fetched, environment: model.environment,
                           toggle: model.toggleCard, openFile: model.actions.openFile, actions: model.actions,
-                          expanded: model.cardExpanded, toggleExpanded: model.toggleCardExpanded)
+                          expanded: model.cardExpanded, setExpanded: model.setCardExpanded)
         case .work:
             configureWork(row, model)
         }
@@ -234,7 +234,7 @@ import AppKit
     required init?(coder: NSCoder) { nil }
     override func configure() {
         guard let (block, segment, message) = Self.parts(of: inputs.item) else { return }
-        let disclosure = inputs.disclosure, toggle = inputs.toggle
+        let disclosure = inputs.disclosure, toggle = inputs.toggle, setOpen = inputs.setOpen
         // A card's fold is keyed by the reply that made the call.
         let card = (message.tools ?? []).first
         let key = card.map { ToolOccurrence.key(message.id, $0.id) }
@@ -245,7 +245,7 @@ import AppKit
             open: disclosure.work && !disclosure.responseFolded, toggle: { toggle(.work(block.key)) },
             card: card, cardOpen: key.map { disclosure.openTools.contains($0) && !disclosure.responseFolded } ?? false,
             fetched: key.flatMap { disclosure.toolInputs[$0] }, toggleCard: { if let key { toggle(.tool(key)) } },
-            cardExpanded: key.map { disclosure.expandedTools.contains($0) }, toggleCardExpanded: { if let key { toggle(.toolLines(key)) } },
+            cardExpanded: key.map { disclosure.expandedTools.contains($0) }, setCardExpanded: { if let key { setOpen(.toolLines(key), $0) } },
             raw: disclosure.raw, toggleRow: toggle, fold: fold, environment: inputs.environment))
         // The words are their own element (the reply's); a work row's line is.
         setAccessibilityElement(false)

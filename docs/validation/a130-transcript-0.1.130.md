@@ -3908,3 +3908,255 @@ Adversarial review compared the new diff with `2c0c59843dacaa6b5314ead656ae4d95a
 No helper or wire implementation changed, so full helper and Python wire/concurrent/acceptance runs were not required. No UI layout/appearance changed; existing inspected gallery evidence still applies. No files were added or removed. No new owner decision is required.
 
 Final `git diff --check` passed. No clone folders remain under this workstream's build root; all locks owned by this workstream were released. About 12 GiB remained free after validation. Evidence is in text logs under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`; no named result bundle was requested. No installed app, real preferences/chats, Keychain, live capture or paid provider was used.
+
+
+## Round 11 — focusable diff inputs and shared card expansion
+
+Reviewed against pushed commit `bca9e23921373e63204cff1b47ca3ea3d0a56faa` on 2026-10-20. Both reported findings are confirmed. The five new tests were added and run before changing production code: **0 passed / 5 failed / 0 skipped**, exit 65, `round11-failing-first.log`.
+
+| Finding | Regression and failing-first evidence | Change |
+| --- | --- | --- |
+| **Confirmed + fixed:** failed edit/write inputs filtered as receipt-owned output | `testFailedEditInputsRemainFocusableWithCapturedReply`, `testFailedWriteInputsRemainFocusableWithCapturedReply`, `testFailedMultiEditInputsRemainFocusableWithCapturedReply`: search returned the expected input counts, then `Failed edit input occurrence 0 is focusable` (and write/multi-edit equivalents) timed out. Native classification also returned `false` for `old input` / `new input`. | Classify native diff lines and Before/After source views as requested input before applying receipt-output ownership. Status banners and counters remain outside the input payload. |
+| **Confirmed + fixed:** repeated timeline cards disagree about expansion | `testRepeatedReadCardsShareExpansion`, `testRepeatedDiffCardsShareExpansion`: `[true, false, false]` instead of `[true, false, true]`, followed by `An expand action must never toggle an already-true stored value`. | Cards emit the expanded value they display; the occurrence disclosure stores that value and republishes all sibling rows in the same pass. Inner expansion keeps its existing immediate resize rather than starting an outer fold animation. |
+
+The navigation corpus mounts failed edit, write and two-edit-call replies with either just their captured issuer or the complete saved group. Every reported `inputneedle` occurrence must retain its ordinal and resolve to native text with a focused highlight. It asserts the receipt-owned output exclusions are present, so passing cannot result from accidentally searching those outputs twice. “Multi-edit” here means two distinct `edit` calls in one response, matching the supported tool schema.
+
+The expansion corpus renders A/B/A argument segments for both read and diff cards. It checks synchronous sibling updates, isolation of B, collapse through the second card, a stale expand action while the stored value is already true, direct disclosure changes, refresh, host eviction/remount and exact cached-versus-fitting heights. It also navigates all three Find occurrences through the same expansion path.
+
+### Display semantics and state audit
+
+| Displayed content/state | Native classification or source of truth |
+| --- | --- |
+| Generic I/O input / output | The native `Tool input` section is input; the output section remains receipt-owned. |
+| Terminal command / output | The command is input; the capped terminal output remains output. |
+| Read body and note | Output; this change does not reassign their receipt ownership. |
+| Diff rows, including the expanded scrolling body | Input (`TranscriptCardLines` in a diff card). |
+| Full Before/After fallback | Input (`TranscriptCardSource`); regression checks both actual source text views. |
+| Diff status banner and counters | Presentation chrome, not requested diff input; the classification fixture rejects treating the whole card as input. |
+| Sub-agent task / result | Existing `TranscriptAgentMarkdown.isToolInput` marks the task and keeps result/error output separate. |
+| Inner read/diff expansion | `TranscriptDisclosure.toolLines(ToolOccurrence.key(reply, call))` is authoritative. Timeline, small legacy activity and virtual legacy work lists all pass its value into the card and send an explicit Boolean back. `.toolLines` republishes sibling rows without a new fold animation. |
+
+Nearby pattern sweep: updated both legacy activity paths (ordinary and virtual work lists) to pass explicit expansion values, as well as timeline cards. Find-driven expansion uses those same callbacks. Before/After source views are covered alongside ordinary and capped diff lines. No blind `.toolLines` toggle remains in a card callback.
+
+### Positive controls and mutation evidence
+
+The first positive-control build (`round11-fixed.log`) caught an omitted `setOpen` parameter in the inner legacy work adapter; no tests ran. After wiring that adapter, `round11-fixed-native.log` passed **7 / 0 / 0**: the five new regressions plus `testExpandedReadAndDiffSurviveHostEviction` and `testMoreLinesKeepsItsExistingResizeBehavior`.
+
+Each mutation compiled, ran its target tests and failed with exit 65. The script restored the fixed source after each run, including on failure.
+
+| Log | Mutation | Passed / failed / skipped |
+| --- | --- | --- |
+| `round11-mutation-diff-input.log` | Remove diff-line input classification | 0 / 3 / 0 |
+| `round11-mutation-diff-source.log` | Remove Before/After input classification | 0 / 1 / 0 |
+| `round11-mutation-diff-chrome.log` | Treat every diff descendant, including status text, as input | 0 / 1 / 0 |
+| `round11-mutation-siblings.log` | Remove `.toolLines` from spanning disclosure changes | 0 / 2 / 0 |
+| `round11-mutation-explicit-expansion.log` | Blindly toggle the store instead of setting the displayed value | 0 / 2 / 0 |
+
+`TranscriptBugGalleryTests` passed **6 / 0 / 0**, regenerating 21 images in `build-a130-transcript/validation/round11-gallery`. Inspected `repeated-read-{light,dark,narrow}.png`, `repeated-edit-{light,dark,narrow}.png` and `expanded-read-{light,dark,narrow}.png`. The second A card is expanded, B remains capped, controls remain inside the 360-point rows, the expanded diff keeps its scrolling body, and the remounted read is immediately followed by the next reply without a stale-height gap. The gallery run held the shared lock.
+
+Adversarial self-review of the diff from `bca9e239` checked both ownership filters in `resolveFocus`, the native text-unit types for ordinary/scrolled/Before/After diffs, all expansion emitters and callback adapters, occurrence scoping, idempotent stale actions, sibling invalidation, retained row/work-list measurements, and the non-animated resize path. The display classification check deliberately rejects treating banners as requested input. The mounted navigation checks require a visible focused range inside both the transcript and any inner card scroll. No additional production change or owner decision was needed.
+
+The full regression class passed **110 / 0 / 0**. Its seven `vnode unlinked while in use` SQLite warnings came from the previously recorded generated wide-search fixture cleanup: the same older cases emitted eight warnings in `round10-regression-final.log`. No new case emitted that warning, and none caused a test failure. The separately recorded helper `ResponseTimeline.canonical` slowdown remains unchanged and outside this workstream.
+
+### Final focused validation
+
+Native focused runs: **952 passed / 0 failed / 7 skipped** across 84 classes. Gallery: **6 passed / 0 failed / 0 skipped**. All final runs used the fixed source.
+
+| Text log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round11-regression-final.log` | 110 | 0 | 0 |
+| `round11-affected-final.log` | 672 | 0 | 7 |
+| `round11-timeline-final.log` | 30 | 0 | 0 |
+| `round11-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round11-agent-reader-final.log` | 55 | 0 | 0 |
+| `round11-wire-page-final.log` | 4 | 0 | 0 |
+| `round11-history-edge-timing-final.log` | 2 | 0 | 0 |
+| `round11-history-edit-final.log` | 3 | 0 | 0 |
+| `round11-agent-navigation-final.log` | 7 | 0 | 0 |
+| `round11-inherited-agent-reader-final.log` | 7 | 0 | 0 |
+| `round11-agent-inputs-final.log` | 33 | 0 | 0 |
+| `round11-plain-copy-final.log` | 3 | 0 | 0 |
+| `round11-view-update-final.log` | 7 | 0 | 0 |
+| `round11-gallery-final.log` | 6 | 0 | 0 |
+
+The seven skips are existing opt-in journal benchmarks (`PI_PERF_HISTORY_JOURNAL`, `PI_PERF_OPEN_JOURNAL`), skill-pill and Markdown captures (`PI_APP_UI_SCREENSHOT_ROOT`, `PI_MARKDOWN_SNAPSHOT_DIR`), two on-request Markdown measurements and `PI_PERF_WIRE`. The changed gallery class ran with its environment variable set and had no skips.
+
+All commands below ran from this worktree, with `PI_BUILD_ROOT` set as shown. `run-round11-case.py` acquired the shared full-lane lock before each native run and released only its own lock in `finally`; serial classes ran alone. Evidence is text logs and their parsed JSON counts in the build root's `validation` folder. No named result bundle was requested.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round11-failing-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedEditInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedWriteInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedMultiEditInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedReadCardsShareExpansion \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedDiffCardsShareExpansion
+
+# round11-fixed-native.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedEditInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedWriteInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedMultiEditInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedReadCardsShareExpansion \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedDiffCardsShareExpansion \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testExpandedReadAndDiffSurviveHostEviction \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testMoreLinesKeepsItsExistingResizeBehavior
+
+# round11-mutation-diff-input.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedEditInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedWriteInputsRemainFocusableWithCapturedReply \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedMultiEditInputsRemainFocusableWithCapturedReply
+
+# round11-mutation-diff-source.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedEditInputsRemainFocusableWithCapturedReply
+
+# round11-mutation-diff-chrome.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFailedEditInputsRemainFocusableWithCapturedReply
+
+# round11-mutation-siblings.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedReadCardsShareExpansion \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedDiffCardsShareExpansion
+
+# round11-mutation-explicit-expansion.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedReadCardsShareExpansion \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testRepeatedDiffCardsShareExpansion
+
+# round11-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round11-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests \
+  -only-testing:PiAppTests/NativeWorkListViewportTests \
+  -only-testing:PiAppTests/TranscriptTurnFoldTests \
+  -only-testing:PiAppTests/TranscriptFrameBudgetTests \
+  -only-testing:PiAppTests/TranscriptGeometryCacheTests \
+  -only-testing:PiAppTests/TranscriptKeptRowsTests
+
+# round11-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round11-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round11-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round11-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round11-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round11-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round11-agent-navigation-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentNavigationTests
+
+# round11-inherited-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests
+
+# round11-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentEffortTests \
+  -only-testing:PiAppTests/SubagentCostTests \
+  -only-testing:PiAppTests/SubagentDisplayTests \
+  -only-testing:PiAppTests/SubagentMetadataTests
+
+# round11-plain-copy-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PlainTextCopyTests
+
+# round11-view-update-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ViewUpdateSideEffectTests
+
+# round11-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/round11-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+No helper or wire implementation changed, so the full helper and Python wire/concurrent/acceptance suites were not required. No files were added or removed. Only generated fixtures, isolated test-host windows and the in-memory vault were used; no installed app, real preferences/chats, Keychain, live capture or paid provider was used. There is no new owner decision or unresolved assigned finding.
+
+Final `git diff --check` passed after removing a generated trailing blank line. No clone directories remain under this workstream’s build root; its native runs released their locks. Approximately 13 GiB remained free after validation.

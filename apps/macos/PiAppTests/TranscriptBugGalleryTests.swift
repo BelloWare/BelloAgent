@@ -3,6 +3,47 @@ import XCTest
 @testable import PiApp
 
 final class TranscriptBugGalleryTests: XCTestCase {
+    @MainActor func testRepeatedCardExpansionGallery() async throws {
+        guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for tool in ["read", "edit"] {
+            for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(760)), ("dark", .darkAqua, 760), ("narrow", .aqua, 360)] {
+                let session = SessionDisplay(id: "repeated-card-gallery")
+                session.messages = [TranscriptBugRegressionTests.repeatedCards(tool)]
+                let page = TranscriptPage(); page.state = "idle"; page.bind(session)
+                for case .block(let block) in page.snapshot?.items ?? [] where block.presentation == .work {
+                    session.disclosure.setOpen(true, .work(block.key))
+                }
+                for call in ["A", "B"] { session.disclosure.setOpen(true, .tool(ToolOccurrence.key("reply", call))) }
+                let scroll = TranscriptNativeScrollView(frame: CGRect(x: 0, y: 0, width: width, height: 720))
+                let document = TranscriptNativeDocument(page: page); scroll.documentView = document
+                let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance); window.contentView = scroll; window.makeKeyAndOrderFront(nil)
+                defer { window.contentView = nil; window.close() }
+                var environment = TranscriptRowEnvironment(); environment.colorScheme = appearance == .darkAqua ? .dark : .light
+                document.update(snapshot: page.snapshot, actions: .init(), environment: environment, disclosure: session.disclosure)
+                document.layoutRows(width: scroll.contentSize.width); document.finishDisclosureMotion()
+                let rows = document.rows(drawing: "reply").filter { if case .block(let block) = $0.item { return block.presentation == .work }; return false }
+                XCTAssertEqual(rows.count, 3)
+                for row in rows { row.prepareToDraw(); row.layoutForViewport() }
+                XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(TranscriptCardMoreLines.self, in: rows[0]).first).accessibilityPerformPress())
+                try await eventually("Both \(tool) cards expand in \(name)") {
+                    document.layoutRows(width: scroll.contentSize.width); window.displayIfNeeded()
+                    return [rows[0], rows[2]].allSatisfy { row in
+                        row.prepareToDraw(); row.layoutForViewport()
+                        return tool == "read" ? ConversationPaneTests.views(TranscriptNativeReadCard.self, in: row).first?.expanded == true
+                            : ConversationPaneTests.views(TranscriptNativeDiffCard.self, in: row).first?.expanded == true
+                    }
+                }
+                scroll.contentView.scroll(to: CGPoint(x: 0, y: rows[2].frame.minY))
+                for _ in 0..<4 { scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield(); try await Task.sleep(for: .milliseconds(10)) }
+                let bitmap = try XCTUnwrap(scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds))
+                scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("repeated-\(tool)-\(name).png"))
+            }
+        }
+    }
     @MainActor func testExpandedReadRemountGallery() async throws {
         guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
         let directory = URL(fileURLWithPath: path)

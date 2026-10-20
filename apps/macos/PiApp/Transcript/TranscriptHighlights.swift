@@ -182,12 +182,14 @@ extension TranscriptNativeDocument {
         return nil
     }
     /// Whether `text` draws a call's input rather than what it returned: a
-    /// card's "Tool input" section, or a terminal card's command line.
+    /// card's "Tool input" section, a terminal command, or requested diff content.
     static func isToolInput(_ text: NSView) -> Bool {
         var current = text.superview, capped = false
         while let ancestor = current, !(ancestor is TranscriptNativeActionRow) {
             if let prose = ancestor as? TranscriptAgentMarkdown { return prose.isToolInput }
             if let section = ancestor as? TranscriptCardSection { return section.accessibilityLabel() == "Tool input" }
+            if ancestor is TranscriptCardSource { return true }
+            if ancestor is TranscriptNativeDiffCard { return text is TranscriptCardLines }
             if ancestor is TranscriptCappedText { capped = true }
             if ancestor is TranscriptNativeTerminalCard { return !capped }
             current = ancestor.superview

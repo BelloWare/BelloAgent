@@ -49,8 +49,9 @@ enum ToolOccurrence {
         /// conversation republishes for these, so every row of the response
         /// reaches its new height in the same layout pass. A reply read in
         /// order has a row for each part of its text, and they switch
-        /// between rendered and source together.
-        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold || kind == .source }
+        /// between rendered and source together. Repeated cards for one call
+        /// also share their inner read/diff expansion.
+        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold || kind == .source || kind == .toolLines }
     }
     /// Only what the reader actually changed, so a long conversation keeps no
     /// entry for the rows it never touched.
@@ -58,14 +59,14 @@ enum ToolOccurrence {
     private(set) var revision = 0
     /// Called when a fold that spans several rows changes, so the conversation
     /// publishes its page again and every row of the response follows.
-    var spanningChange: (() -> Void)?
+    var spanningChange: ((Part) -> Void)?
 
     func isOpen(_ part: Part) -> Bool { changed[part] ?? part.openByDefault }
     func setOpen(_ open: Bool, _ part: Part) {
         guard isOpen(part) != open else { return }
         if open == part.openByDefault { changed.removeValue(forKey: part) } else { changed[part] = open }
         revision += 1
-        if part.spansRows { spanningChange?() }
+        if part.spansRows { spanningChange?(part) }
     }
     func toggle(_ part: Part) { setOpen(!isOpen(part), part) }
     /// Rows that leave the conversation take their entries with them.

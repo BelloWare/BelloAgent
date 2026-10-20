@@ -782,12 +782,18 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// with the others. Handed over by SwiftUI's next update instead, each
     /// row drew its new content in its old frame for a frame — the space a
     /// folded turn had taken, empty — and moved a run-loop turn later.
-    func spanningDisclosureChanged() {
+    func spanningDisclosureChanged(animate: Bool = true) {
         guard let page, let snapshot = page.snapshot, let environment, !rows.isEmpty,
               snapshot.sessionID == self.snapshot?.sessionID, snapshot.generation == self.snapshot?.generation else { return }
         let actions = actionRelay.current, disclosure = disclosure, toolInputs = toolInputs
-        moveDisclosure {
+        let reconcile = {
             self.update(snapshot: snapshot, actions: actions, environment: environment, disclosure: disclosure, toolInputs: toolInputs)
+        }
+        if animate { moveDisclosure(reconciling: reconcile) }
+        else {
+            // Inner read/diff expansion keeps its existing immediate resize.
+            finishDisclosureMotion(settling: false)
+            reconcile(); layoutNow()
         }
     }
 

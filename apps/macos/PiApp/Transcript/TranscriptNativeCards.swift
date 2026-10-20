@@ -41,7 +41,7 @@ enum TranscriptCardFaces {
     let panel = TranscriptPanel()
     private(set) var environment = TranscriptRowEnvironment()
     private(set) var link: (() -> Void)?
-    var expansionChanged: (() -> Void)?
+    var expansionChanged: ((Bool) -> Void)?
     func restoreExpansion(_ expanded: Bool) {}
     var rightToLeft: Bool { environment.layoutDirection == .rightToLeft }
     override var isFlipped: Bool { true }
@@ -606,7 +606,7 @@ enum TranscriptCardFaces {
         guard expanded != value else { return }
         restoreExpansion(value)
         invalidatePlans()
-        expansionChanged?()
+        expansionChanged?(value)
     }
     override func restoreExpansion(_ value: Bool) { guard expanded != value else { return }; expanded = value; configureLines() }
     override func configure(_ card: TranscriptToolRow.Card) {
@@ -881,7 +881,7 @@ enum TranscriptCardFaces {
         guard expanded != value else { return }
         restoreExpansion(value)
         invalidatePlans()
-        expansionChanged?()
+        expansionChanged?(value)
     }
     override func restoreExpansion(_ value: Bool) { guard expanded != value else { return }; expanded = value; configureLines() }
     override func configure(_ card: TranscriptToolRow.Card) {

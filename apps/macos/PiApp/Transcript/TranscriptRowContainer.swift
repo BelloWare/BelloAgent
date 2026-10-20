@@ -584,6 +584,7 @@ struct TranscriptRowEnvironment: Equatable {
         if known != nil { workListReuses += 1 }
         return TranscriptRowInputs(item: item, fresh: fresh, actions: relay, width: width, environment: environment,
                                    disclosure: disclosure, toggle: { [weak self] part in self?.toggleDisclosure(part) },
+                                   setOpen: { [weak self] part, open in self?.setDisclosure(part, open: open) },
                                    workListHeight: known,
                                    workListMeasured: { [weak self] height in
                                        guard let self, self.workListKey == key else { return }
@@ -620,13 +621,17 @@ struct TranscriptRowEnvironment: Equatable {
     /// hosting view to notice its own intrinsic size changed.
     func toggleDisclosure(_ part: TranscriptDisclosure.Part) {
         guard let disclosureStore else { return }
+        setDisclosure(part, open: !disclosureStore.isOpen(part))
+    }
+    private func setDisclosure(_ part: TranscriptDisclosure.Part, open: Bool) {
+        guard let disclosureStore else { return }
         // Switching a reply between rendered and its source takes away the
         // text a selection in it lives in. The selection ends here, in the
         // click, rather than when its view goes: that is inside the update
         // that removes it, and moving the first responder there lays the
         // window out in the middle of SwiftUI's update.
         if part.kind == .source { releaseSelection(inReply: part.id) }
-        disclosureStore.toggle(part)
+        disclosureStore.setOpen(open, part)
         // A card the reader just opened whose arguments the host had to cut
         // asks for the rest, once. The card draws the inline document until it
         // lands, and this row is measured again when it does.
