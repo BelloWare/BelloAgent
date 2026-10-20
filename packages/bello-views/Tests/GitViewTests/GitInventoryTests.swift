@@ -418,6 +418,118 @@ final class GitInventoryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
     }
 
+    func testConditionalIncludeObservesSymlinksInsideOriginTarget() async throws {
+        let external = root.appendingPathComponent("external"), away = root.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        try write("away/config", "[includeIf \"gitdir:./.git\"]\npath = \(root.path)/conditional\n")
+        try FileManager.default.linkItem(at: away.appendingPathComponent("config"), to: root.appendingPathComponent("config"))
+        let current = external.appendingPathComponent("current")
+        try FileManager.default.createSymbolicLink(at: current, withDestinationURL: away)
+        try FileManager.default.createSymbolicLink(atPath: external.appendingPathComponent("config").path, withDestinationPath: "current/config")
+        try git(["config", "include.path", "../external/config"])
+        try write("conditional", "[core]\nfsmonitor = \(try monitor())\n")
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        let warm = GitConfiguration.queryCount
+        // The spelled origin and its final inode stay identical; only a
+        // symlink inside that origin's target chain changes Git's condition.
+        try FileManager.default.removeItem(at: current)
+        try FileManager.default.createSymbolicLink(at: current, withDestinationURL: root)
+        XCTAssertEqual(try git(["config", "--get", "core.fsmonitor"]), root.appendingPathComponent("monitor").path + "\n")
+        _ = try await service.status(in: root.path)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    @MainActor func testNewlineOnlyHeaderDoesNotPermitRedirects() async throws {
+        let source = try GitRedirectReceiver(), destination = try GitRedirectReceiver()
+        defer { source.stop(); destination.stop() }
+        let address = try await source.start(), other = try await destination.start()
+        try git(["config", "remote.origin.url", address + "/repo"])
+        try git(["config", "http.extraHeader", "X-Fixture-Secret: newline"])
+        try git(["config", "--add", "http.extraHeader", "\n"])
+        try git(["config", "http.followRedirects", "false"])
+        source.answer([307], location: other + "/collect")
+        do { try await GitService(environment: environment).fetch(in: root.path); XCTFail("Redirected newline header") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("http.extraHeader"), "\(error)") }
+        XCTAssertEqual(source.requests.count, 1)
+        XCTAssertTrue(source.requests.first?.head.lowercased().contains("x-fixture-secret: newline") == true)
+        XCTAssertEqual(destination.requests.count, 0)
+    }
+
+    @MainActor func testURLLessLegacyDefaultRemoteCannotForwardHeaders() async throws {
+        let source = try GitRedirectReceiver(), destination = try GitRedirectReceiver()
+        defer { source.stop(); destination.stop() }
+        let address = try await source.start(), other = try await destination.start()
+        try git(["config", "remote.backup.fetch", "+refs/heads/*:refs/remotes/backup/*"])
+        try git(["config", "http.extraHeader", "X-Fixture-Secret: legacy-default"])
+        try git(["config", "http.followRedirects", "false"])
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".git/remotes"), withIntermediateDirectories: true)
+        try write(".git/remotes/backup", "URL: \(address)/backup\nFetch: refs/heads/main:refs/remotes/backup/main\nPush: refs/heads/main:refs/heads/main\n")
+        for command in ["fetch", "pull", "push"] {
+            source.answer([308], location: other + "/collect"); destination.answer([])
+            let service = GitService(environment: environment)
+            do {
+                switch command {
+                case "fetch": try await service.fetch(in: root.path)
+                case "pull": try await service.pull(in: root.path)
+                default: try await service.push(in: root.path)
+                }
+                XCTFail("Redirected legacy default: \(command)")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("http.extraHeader"), "\(command): \(error)") }
+            XCTAssertEqual(source.requests.count, 1, command)
+            XCTAssertTrue(source.requests.first?.head.lowercased().contains("x-fixture-secret: legacy-default") == true, command)
+            XCTAssertEqual(destination.requests.count, 0, command)
+        }
+    }
+
+    @MainActor func testAnyHeaderKeyProtectsEveryDestinationRegardlessOfValue() async throws {
+        let source = try GitRedirectReceiver(), destination = try GitRedirectReceiver()
+        defer { source.stop(); destination.stop() }
+        let address = try await source.start(), other = try await destination.start()
+        try git(["config", "remote.origin.url", address + "/repo"])
+        try git(["config", "http.\(address)/repo.followRedirects", "true"])
+        try git(["config", "http.http://127.0.*.1/.followRedirects", "initial"])
+        let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)
+        for (key, value) in [("HTTP.ExTrAhEaDeR", ""), ("http.extraHeader", "\n"),
+                             ("HTTP.https://unrelated.invalid/.EXTRAHEADER", ""),
+                             ("http.https://*.unrelated.invalid/.extraHeader", "X-Unrelated: fixture")] {
+            try original.write(to: config)
+            // Empty and newline values count even after a real header.
+            try git(["config", "--add", key, "X-Fixture-Secret: previous"])
+            try git(["config", "--add", key, value])
+            source.answer([307], location: other + "/collect"); destination.answer([])
+            do { try await GitService(environment: environment).fetch(in: root.path); XCTFail("Redirected: \(key)") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("this repository has http.extraHeader"), "\(key): \(error)") }
+            XCTAssertEqual(source.requests.count, 1, key)
+            XCTAssertEqual(destination.requests.count, 0, key)
+        }
+        try original.write(to: config)
+        let ordinary = try GitConfiguration(in: root, environment: environment).redirectOptions()
+        XCTAssertFalse(ordinary.protected, "Removing all header keys restores ordinary redirects")
+        XCTAssertTrue(stride(from: 1, to: ordinary.options.count, by: 2).allSatisfy { ordinary.options[$0].hasSuffix("=initial") })
+    }
+
+    func testSubmoduleAliasRetargetRechecksConfiguration() throws {
+        let first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")
+        for child in [first, second] {
+            try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+            try git(["init", "-q", "--template="], in: child)
+        }
+        try git(["config", "http.extraHeader", "X-Fixture-Secret: child"], in: second)
+        let link = root.appendingPathComponent("child")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let commit = try git(["rev-parse", "HEAD"]).trimmingCharacters(in: .newlines)
+        try git(["update-index", "--add", "--cacheinfo", "160000,\(commit),child"])
+        XCTAssertFalse(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        let warm = GitConfiguration.queryCount
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+    }
+
     private func lateInclude(_ file: String, querying directory: URL) async throws {
         try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
@@ -505,13 +617,12 @@ final class GitInventoryTests: XCTestCase {
         }
     }
 
-    @MainActor func testWildcardScopesMatchConcreteDestinations() async throws {
+    @MainActor func testWildcardScopesNeverNeedDestinationResolution() async throws {
         let receiver = try GitRedirectReceiver(); defer { receiver.stop() }
         let address = try await receiver.start()
         try git(["config", "remote.origin.url", address + "/old"])
         try git(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
         try git(["config", "http.https://*.example.com/.followRedirects", "true"])
-        try git(["config", "http.https://*.example.com/.extraHeader", "X-Unrelated: fixture"])
         receiver.answer([301, 200], location: address + "/new/info/refs?service=git-upload-pack",
                         responseBody: "001e# service=git-upload-pack\n00000000", contentType: "application/x-git-upload-pack-advertisement")
         do { try await GitService(environment: environment).fetch(in: root.path) }

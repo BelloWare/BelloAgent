@@ -172,7 +172,7 @@ public actor GitService {
         let directory = URL(fileURLWithPath: root, isDirectory: true)
         let transport = gitOptions && !readOnly && ["fetch", "pull", "push"].contains(arguments.first ?? "")
         let redirects = transport ? try GitConfiguration(in: directory, environment: environment, invocation: handle)
-            .redirectOptions(for: arguments[0], in: directory, environment: environment, invocation: handle) : (options: [], protected: false)
+            .redirectOptions(invocation: handle) : (options: [], protected: false)
         let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
                                 "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + redirects.options + arguments
         // Foundation raises an uncaught Objective-C exception past its own
@@ -245,7 +245,7 @@ public actor GitService {
         let diagnostics = String(decoding: streams[1], as: UTF8.self)
         if redirects.protected, process.terminationStatus != 0,
            diagnostics.range(of: "redirect|error: 30[12378]", options: .regularExpression) != nil {
-            throw GitFailure(message: "Git refused an HTTP redirect because this remote has http.extraHeader configured. Use the final remote URL.")
+            throw GitFailure(message: "Git refused an HTTP redirect because this repository has http.extraHeader configured. Use the final remote URL.")
         }
         // Git may report success after an optional clean/process filter failed.
         // Do not present unconverted bytes as a successful repository comparison.

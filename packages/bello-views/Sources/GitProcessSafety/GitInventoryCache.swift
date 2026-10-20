@@ -45,17 +45,38 @@ struct GitFileStamp: Hashable {
     }
     var exists: Bool { !identity.isEmpty }
 
-    static func parents(of file: String) -> [GitFileStamp] {
-        var path = file, result: [GitFileStamp] = []
-        // Keep every literal prefix, including symlinks before "..". A
-        // conditional include can depend on the origin's resolved directory
-        // even when the config file is the very same hardlinked inode.
-        while let slash = path.lastIndex(of: "/") {
-            path = String(path[..<slash])
-            result.append(GitFileStamp(path.isEmpty ? "/" : path, directoryIdentity: true))
-            if path.isEmpty { break }
+    var resolution: (stamps: [GitFileStamp], complete: Bool) {
+        guard path.hasPrefix("/") else { return ([], false) }
+        var pending = path.split(separator: "/").map(String.init), resolved: [String] = []
+        var result = [GitFileStamp("/", directoryIdentity: true)], links = 0
+        // Walk each symlink target too, before processing "..". The final
+        // inode alone cannot detect a changed relative gitdir: condition.
+        while !pending.isEmpty {
+            let component = pending.removeFirst()
+            if component == "." { continue }
+            if component == ".." { if !resolved.isEmpty { resolved.removeLast() }; continue }
+            let prefix = "/" + (resolved + [component]).joined(separator: "/")
+            result.append(GitFileStamp(prefix, directoryIdentity: pending.isEmpty ? directoryIdentity : true))
+            var value = stat()
+            guard lstat(prefix, &value) == 0 else {
+                return (result, errno == ENOENT || errno == ENOTDIR)
+            }
+            if value.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) {
+                links += 1
+                guard links <= 40 else { return (result, false) }
+                var buffer = [UInt8](repeating: 0, count: Int(PATH_MAX))
+                let count = buffer.withUnsafeMutableBytes { readlink(prefix, $0.baseAddress!, $0.count) }
+                guard count > 0, count < buffer.count, let target = String(bytes: buffer[..<count], encoding: .utf8) else {
+                    return (result, false)
+                }
+                if target.hasPrefix("/") { resolved.removeAll() }
+                pending = target.split(separator: "/").map(String.init) + pending
+            } else {
+                guard pending.isEmpty || value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { return (result, false) }
+                resolved.append(component)
+            }
         }
-        return result
+        return (result, result.allSatisfy(\.cacheable))
     }
 
     static func discovery(in directory: URL) -> [GitFileStamp] {

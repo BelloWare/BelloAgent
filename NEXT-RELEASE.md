@@ -16,13 +16,13 @@
 - [x] SECURITY-BOUNDARIES-1j: Local Git program keys containing an override separator fail safely before repository programs can run; global-only settings remain usable. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1k: Git program inventory preserves byte-distinct Unicode names and refuses arguments macOS would rewrite. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2: Webhook redirects fail at the configured endpoint without forwarding payloads or custom headers. [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2b: Git follows initial redirects without extra headers; private-header remotes refuse redirects even with URL-scoped followRedirects overrides (review P1 fixed). [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2c: Git refuses remote/config lookups that would change Unicode bytes before private headers can be sent. [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2d: Private-header redirect protection recognises mixed-case HTTP URL schemes. [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2e: Private-header redirect protection checks the HTTP address inside Git's explicit transport-helper URL form. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2b: Git repositories with any http.extraHeader key refuse all redirects, including URL-scoped overrides; repositories without header keys use initial redirects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2c: Git refuses redirect-policy overrides that would change Unicode bytes before private headers can be sent. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2d: Private-header Git redirect protection covers mixed-case HTTP URL schemes without Bello parsing destinations. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2e: Private-header Git redirect protection also covers explicit transport-helper URLs. [Validation](docs/validation/a130-security-0.1.130.md).
 
-- [x] SECURITY-BOUNDARIES-2f: Private-header Git pushes resolve push-only rewrites, push URLs and branch/default destinations. [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2g: Git HTTP wildcard scopes match concrete destinations without breaking ordinary redirects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2f: Private-header Git pushes stay protected across push-only rewrites, push URLs and branch/default destinations without Bello resolving remotes. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2g: Git HTTP wildcard redirect scopes are overridden directly, without treating patterns as destination addresses. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2h: Equivalent Git HTTP URL scopes cannot override private-header redirect refusal through argument ordering. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2i: Legacy Git remote definitions receive the same private-header push redirect protection. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1l: Trusted submodule reads retain each repository’s own conditional global filters while suppressing local programs. [Validation](docs/validation/a130-security-0.1.130.md).
@@ -44,6 +44,11 @@
 - [x] SECURITY-BOUNDARIES-1ab: File blame passes its displayed snapshot through a private file, preventing stdin-backed config from consuming or executing viewed content. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1ac: Folder ignore queries pass bounded paths after `--`, preserving unusual filenames without exposing them to stdin-backed config. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1ad: Include inspection preserves Git-reported Unicode origins and falls back to confinement when an unseen path cannot be passed unchanged. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1ae: Git inventories stamp every symlink and final target in config and repository resolution chains, detecting retargets even when config files share an inode. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1af: Submodule inventories retain the original gitlink path so retargeting an aliased checkout cannot reuse its old configuration. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2j: Empty and newline-only extraHeader values still refuse Git redirects; protection depends on NUL-delimited, case-insensitive key presence. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2k: URL-less legacy default remotes receive repository-wide redirect refusal without remote enumeration. [Validation](docs/validation/a130-security-0.1.130.md).
 
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).

@@ -16,18 +16,17 @@ public struct GitConfiguration {
     let identity: Data
     let cacheable: Bool
     let permitsUnconfinedRead: Bool
-    private let directory: URL
     private let gitDirectory: String
     private let children: [GitConfiguration]
     private let policy: GitInventoryMemo<GitReadOverrides?>
-    private let fetchRedirects: GitInventoryMemo<(options: [String], protected: Bool)>
-    private let pushRedirects: GitInventoryMemo<(options: [String], protected: Bool)>
+    private let redirects: GitInventoryMemo<(options: [String], protected: Bool)>
 
     public static func invalidate() { GitInventoryCache.shared.clear() }
     @discardableResult public static func invalidate(paths: [String]) -> Bool { GitInventoryCache.shared.invalidate(paths: paths) }
 
     public init(in directory: URL, environment: [String: String], invocation: GitInvocation = GitInvocation()) throws {
-        self = try Self.inventory(in: directory.resolvingSymlinksInPath(), environment: environment, invocation: invocation, ancestors: [])
+        // Keep the queried spelling so discovery also stamps its symlinks.
+        self = try Self.inventory(in: directory, environment: environment, invocation: invocation, ancestors: [])
     }
     private static func inventory(in directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL]) throws -> GitConfiguration {
         guard ancestors.count <= 16, !ancestors.contains(directory) else {
@@ -39,7 +38,7 @@ public struct GitConfiguration {
     }
     private init(loading directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL]) throws {
         let discovery = GitFileStamp.discovery(in: directory)
-        policy = GitInventoryMemo(); fetchRedirects = GitInventoryMemo(); pushRedirects = GitInventoryMemo()
+        policy = GitInventoryMemo(); redirects = GitInventoryMemo()
         let options = ["config", "--null", "--list", "--includes", "--show-scope", "--show-origin"]
         let output = try Self.query(options, in: directory, environment: environment, invocation: invocation)
         let names = try Self.query(options + ["--name-only"], in: directory, environment: environment, invocation: invocation)
@@ -66,7 +65,6 @@ public struct GitConfiguration {
                 value: record == keys[index + 2] ? "true" : String(decoding: record.dropFirst(prefix.count), as: UTF8.self)))
         }
         self.entries = entries
-        self.directory = directory
         func path(_ arguments: [String]) throws -> String {
             let result = try Self.query(arguments, in: directory, environment: environment, invocation: invocation)
             guard result.status == 0, let text = String(data: result.data, encoding: .utf8) else { return "" }
@@ -132,13 +130,6 @@ public struct GitConfiguration {
             files += [gitDirectory + "/config", gitDirectory + "/config.worktree", gitDirectory + "/commondir",
                       gitDirectory + "/gitdir", gitDirectory + "/index", gitDirectory + "/HEAD"]
             if !common.isEmpty { files += [common + "/config", common + "/packed-refs"] }
-            let defaults = entries.filter { $0.name == "remote.pushdefault" || ($0.name.hasPrefix("branch.") && ($0.name.hasSuffix(".remote") || $0.name.hasSuffix(".pushremote"))) }.map(\.value) + ["origin"]
-            for base in Set([gitDirectory, common]).filter({ !$0.isEmpty }) {
-                for kind in ["remotes", "branches"] {
-                    files.append(base + "/" + kind)
-                    files += defaults.map { base + "/" + kind + "/" + $0 }
-                }
-            }
         }
         if !top.isEmpty { files.append(top + "/.gitmodules") }
         if let index = environment["GIT_INDEX_FILE"], !index.isEmpty { files.append(absolute(index)) }
@@ -239,7 +230,7 @@ public struct GitConfiguration {
                 guard let tab = record.firstIndex(of: 9), let path = String(data: record[record.index(after: tab)...], encoding: .utf8) else {
                     throw Failure("Git submodule paths contain invalid UTF-8; their configuration cannot be checked safely.")
                 }
-                let child = root.appendingPathComponent(path).resolvingSymlinksInPath()
+                let child = root.appendingPathComponent(path)
                 files.append(child.appendingPathComponent(".git").path)
                 guard FileManager.default.fileExists(atPath: child.appendingPathComponent(".git").path) else { continue }
                 children.append(try Self.inventory(in: child, environment: environment, invocation: invocation, ancestors: ancestors + [directory]))
@@ -249,7 +240,6 @@ public struct GitConfiguration {
         var stamps = Set(files).sorted().map { path in
             indexStamp?.path == path ? indexStamp! : GitFileStamp(path)
         }
-        stamps += Set(files).flatMap { GitFileStamp.parents(of: $0) }
         stamps += discovery + branchStamps + includeStamps
         stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
         if !top.isEmpty { stamps.append(GitFileStamp(top + "/.git", directoryIdentity: true)) }
@@ -257,6 +247,14 @@ public struct GitConfiguration {
         // identity; objects/refs and HEAD determine whether Git still finds it.
         stamps += Set([gitDirectory, common]).filter { !$0.isEmpty }.flatMap { directory in
             ["objects", "refs"].map { GitFileStamp(directory + "/" + $0, directoryIdentity: true) }
+        }
+        // Include repository/discovery paths as well as config origins.
+        // Retargeting any link in either chain changes Git's conditions.
+        for stamp in stamps {
+            try invocation.check()
+            let chain = stamp.resolution
+            canCache = canCache && chain.complete
+            stamps += chain.stamps
         }
         stamps += children.flatMap(\.stamps)
         self.stamps = Array(Set(stamps))
@@ -271,7 +269,9 @@ public struct GitConfiguration {
     }
 
     private static func staticConfiguration(_ path: String, allowNull: Bool = false) -> Bool {
-        let paths = [GitFileStamp(path)] + GitFileStamp.parents(of: path)
+        let stamp = GitFileStamp(path), chain = stamp.resolution
+        guard chain.complete else { return false }
+        let paths = [stamp] + chain.stamps
         // Check ancestors as well: /tmp/fd-link/0 may resolve through /dev/fd,
         // whose descriptor can refer to a different file in the next process.
         for stamp in paths where stamp.watchedPath == "/dev" || stamp.watchedPath.hasPrefix("/dev/")
@@ -343,100 +343,30 @@ public struct GitConfiguration {
             || (name.hasPrefix("remote.") && [".vcs", ".uploadpack", ".receivepack", ".proxy"].contains(where: name.hasSuffix))
     }
 
-    /// Ask Git to resolve remote aliases and URL-scoped headers. Generic -c
-    /// alone loses to http.<url>.followRedirects, even in a lower scope.
-    public func redirectOptions(for command: String, in directory: URL, environment: [String: String], invocation: GitInvocation = GitInvocation()) throws -> (options: [String], protected: Bool) {
-        let memo = command == "push" ? pushRedirects : fetchRedirects
-        return try memo.get(invocation: invocation) { try buildRedirects(for: command, environment: environment, invocation: invocation) }
-    }
-    private func buildRedirects(for command: String, environment: [String: String], invocation: GitInvocation) throws -> (options: [String], protected: Bool) {
-        var settings = [Data("http.followredirects".utf8): "initial"], protected = false
-        for configuration in repositories {
-            let directory = configuration.directory
-            func hasHeaders(_ url: String) throws -> Bool {
-                let headers = try Self.query(["config", "--get-urlmatch", "http.extraHeader", url], in: directory, environment: environment, invocation: invocation)
-                guard headers.status == 0 || headers.status == 1 else { throw Failure("Git HTTP header configuration could not be checked safely.") }
-                return headers.status == 0 && headers.data.contains { $0 != 10 }
+    /// Any configured extraHeader makes every network destination protected.
+    /// Generic -c alone loses to a URL-scoped followRedirects setting.
+    public func redirectOptions(invocation: GitInvocation = GitInvocation()) throws -> (options: [String], protected: Bool) {
+        try redirects.get(invocation: invocation) {
+            let entries = repositories.flatMap(\.entries)
+            // Names come from Git's NUL-delimited inventory. Header values,
+            // URL matching and remote resolution cannot weaken this policy.
+            let protected = entries.contains { entry in
+                let name = entry.name.lowercased()
+                return name == "http.extraheader" || (name.hasPrefix("http.") && name.hasSuffix(".extraheader"))
             }
-            // Patterns (including wildcard hosts) are config scopes, never
-            // destination arguments. Git matches headers against concrete URLs.
-            for entry in configuration.entries where entry.name.hasPrefix("http.") && entry.name.hasSuffix(".followredirects") {
-                if settings[Data(entry.name.utf8)] != "false" { settings[Data(entry.name.utf8)] = "initial" }
+            let names = Set(entries.compactMap { entry -> Data? in
+                let name = entry.name.lowercased()
+                return name.hasPrefix("http.") && name.hasSuffix(".followredirects") ? Data(entry.name.utf8) : nil
+            }).union([Data("http.followredirects".utf8)])
+            guard !names.contains(where: { $0.contains(61) || $0.contains(10) }) else {
+                throw Failure("Git HTTP configuration contains a URL that cannot be overridden safely.")
             }
-            var remotes = Set(configuration.entries.compactMap { entry -> Data? in
-                guard entry.name.hasPrefix("remote.") else { return nil }
-                if entry.name.hasSuffix(".url") { return Data(entry.name.dropFirst(7).dropLast(4).utf8) }
-                if entry.name.hasSuffix(".pushurl") { return Data(entry.name.dropFirst(7).dropLast(8).utf8) }
-                return nil
-            })
-            remotes.insert(Data("origin".utf8))
-            for entry in configuration.entries where entry.name == "remote.pushdefault"
-                || (entry.name.hasPrefix("branch.") && (entry.name.hasSuffix(".remote") || entry.name.hasSuffix(".pushremote"))) {
-                remotes.insert(Data(entry.value.utf8))
+            let options = names.sorted(by: { $0.lexicographicallyPrecedes($1) }).flatMap {
+                ["-c", String(decoding: $0, as: UTF8.self) + "=" + (protected ? "false" : "initial")]
             }
-            for key in remotes.sorted(by: { $0.lexicographicallyPrecedes($1) }) {
-                let remote = String(decoding: key, as: UTF8.self)
-                let urls: [String]
-                let named = try Self.query(["remote", "get-url", "--all"] + (command == "push" ? ["--push"] : []) + ["--", remote],
-                                           in: directory, environment: environment, invocation: invocation)
-                guard named.status == 0 || named.status == 2 else { throw Failure("Git remote URLs could not be checked safely.") }
-                if named.status == 0 {
-                    guard let text = String(data: named.data, encoding: .utf8) else { throw Failure("Git remote URLs contain invalid UTF-8.") }
-                    urls = text.components(separatedBy: "\n").filter { !$0.isEmpty }
-                } else if command == "push", let rewritten = configuration.pushURL(remote) {
-                    // Literal push defaults use pushInsteadOf on the original
-                    // alias, before the fetch-only insteadOf fallback.
-                    urls = [rewritten]
-                } else {
-                    let result = try Self.query(["ls-remote", "--get-url", "--", remote], in: directory, environment: environment, invocation: invocation)
-                    guard result.status == 0 else { throw Failure("Git remote URLs could not be checked safely.") }
-                    guard let text = String(data: result.data, encoding: .utf8) else { throw Failure("Git remote URLs contain invalid UTF-8.") }
-                    urls = text.components(separatedBy: "\n").filter { !$0.isEmpty }
-                }
-                for remoteURL in urls {
-                    var url = remoteURL
-                    // The explicit helper form passes only its address to the
-                    // helper. Git/curl also accept mixed-case HTTP schemes.
-                    if let colon = url.firstIndex(of: ":"), url[url.index(after: colon)...].hasPrefix(":") {
-                        url = String(url[url.index(colon, offsetBy: 2)...])
-                    }
-                    guard url.lowercased().hasPrefix("http://") || url.lowercased().hasPrefix("https://") else { continue }
-                    let deny = try hasHeaders(url)
-                    let key = Data("http.\(url).followredirects".utf8)
-                    if deny || settings[key] != "false" { settings[key] = deny ? "false" : "initial" }
-                    protected = protected || deny
-                }
-            }
+            try Self.requireUnchangedBytes(options)
+            return (options, protected)
         }
-        guard !settings.keys.contains(where: { $0.contains(61) || $0.contains(10) }) else {
-            throw Failure("Git HTTP configuration contains a URL that cannot be overridden safely.")
-        }
-        // Git normalizes URL scopes: two byte-distinct keys can match with
-        // equal specificity. Refusals must follow every ordinary redirect rule.
-        let options = settings.sorted {
-            if ($0.value == "false") != ($1.value == "false") { return $0.value != "false" }
-            return $0.key.lexicographicallyPrecedes($1.key)
-        }.flatMap {
-            ["-c", String(decoding: $0.key, as: UTF8.self) + "=" + $0.value]
-        }
-        try Self.requireUnchangedBytes(options)
-        return (options, protected)
-    }
-
-    private func pushURL(_ literal: String) -> String? {
-        let url = Data(literal.utf8)
-        var match: Entry?
-        let rewrites = entries.filter { $0.name.hasPrefix("url.") && $0.name.hasSuffix(".pushinsteadof") }
-        var seen = Set<Data>()
-        for base in rewrites where seen.insert(Data(base.name.utf8)).inserted {
-            for entry in rewrites where entry.name.utf8.elementsEqual(base.name.utf8) {
-                let prefix = Data(entry.value.utf8)
-                if url.starts(with: prefix), match == nil || prefix.count > match!.value.utf8.count { match = entry }
-            }
-        }
-        guard let match else { return nil }
-        let base = match.name.dropFirst(4).dropLast(".pushinsteadof".count)
-        return String(decoding: Data(base.utf8) + url.dropFirst(match.value.utf8.count), as: UTF8.self)
     }
 
     /// Foundation's macOS Process converts arguments/environment through the

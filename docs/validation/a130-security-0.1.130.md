@@ -15,7 +15,7 @@ The owner decisions below supersede the initial `fc82085a` policies. Earlier evi
 7. **SECURITY-BOUNDARIES-1g, untrusted manual writes:** both controller write admissions retain the live trust/root check and existing trust notice, including revocation after review. Already dispatched trusted writes retain their existing lifetime.
 8. **SECURITY-BOUNDARIES-1h, signature verification:** ordinary history/commit details retain disabled signature display. Trusted reads also override local `gpg.program` and `gpg.<format>.program` settings.
 9. **SECURITY-BOUNDARIES-2, webhooks:** all redirects remain refused. Original 3xx responses fail permanently without forwarding payloads/headers or retrying.
-10. **SECURITY-BOUNDARIES-2b, Git redirects and the review P1:** Git follows `initial` redirects for remotes without extra headers. Git resolves effective remote URLs and URL-matched `http.extraHeader`; protected URLs receive `followRedirects=false`, including existing URL-scoped redirect settings. Generic refusal alone was bypassable. A refused redirect reports that `http.extraHeader` requires the final remote URL.
+10. **SECURITY-BOUNDARIES-2b, Git redirects:** any effective `http.extraHeader` key, at any scope or URL scope and with any value, refuses redirects for every Bello network Git command in that repository. The key test is case-insensitive and uses Git's NUL-delimited scope/origin/name inventory. Both generic and every existing URL-scoped `followRedirects` key receive `false`; only inventories without any header key use `initial`. This is the owner's requested conservative superset of the former per-remote rule: an unrelated or empty header key also refuses redirects. Initialized submodule inventories retain the same conservative coverage for recursively dispatched network operations. Git alone resolves remotes, rewrites and legacy definitions; Bello no longer enumerates or emulates them. The failure message identifies the repository-wide `http.extraHeader` policy.
 
 ### Owner decisions (verbatim)
 
@@ -37,6 +37,12 @@ Round-5 rule (verbatim; qualifies permission for unconfined trusted reads):
 
 > General rule to apply (not only for /dev/stdin): a trusted read may run without confinement only if the inventory can prove that the final command reads exactly the configuration bytes it inspected. Any include (direct or conditional, at any depth) that resolves to something other than a regular file — character/block devices, FIFOs, sockets, /dev/*, /dev/fd/*, process-substitution style paths, or anything whose content can depend on the command's own stdin/arguments/environment — makes that repository's reads fall back to the untrusted confinement (sandbox) for that query; never run them unconfined. Also make sure no read command feeds attacker-influenced data on stdin while repository config could reference stdin (blame/check-ignore/etc.): prefer passing paths as arguments with `--` where Git supports it.
 
+Round-6 rules (verbatim; replace per-remote resolution and strengthen cache validity):
+
+> A. Redirect protection (replaces per-remote resolution): if the repository's effective configuration contains ANY `http.extraHeader` key at all (any scope, any URL-scoped variant, any value — query Git with NUL-delimited output and a case-insensitive key match), then every Bello-launched network Git command in that repository runs with redirects refused for all URLs (override `http.followRedirects=false` AND every URL-scoped `http.<url>.followRedirects` present). Only when Git reports no extraHeader key at all do redirects follow Git's normal `initial` behaviour. This is a conservative superset of the owner's rule ("refuse redirects for remotes with an http.extraHeader configured"); record it as such. Remove the remote/default/pushurl resolution code that is no longer needed (keep it only if something else depends on it).
+>
+> B. Inventory cache validity: reuse only when every component of every configuration origin's resolution chain is unchanged — stamp each symlink in the chain (lstat) and its final target, plus the repository path's own realpath chain that gitdir:/onbranch conditions depend on; if any component cannot be stamped, do not cache.
+
 **Explicit writes:** Stage/Unstage/Discard, branch mutations, stash mutations, fetch/pull/push, commit/amend/reword and hunk publication retain normal hooks, filters, signing and transports after trusted admission. Reword's hook-path query remains a confined data query and returns the actual configured path. Read overrides never reach a later write. No new entitlement, preference, helper capability or production test bypass is added. Minimum/current macOS packaging compatibility remains part of the lead's release gate.
 
 ## Subprocess sweep
@@ -50,7 +56,7 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | Quick Open recursive listing | `git ls-files -z --cached --others --exclude-standard` | Project folders and nested repositories/submodules; nested repos need not be independently trusted | Index can invoke fsmonitor (fixed). No clean/smudge/process conversion, diff driver, hook or editor is requested. Sparse-index expansion cannot fetch: lazy-fetch/protocol guards apply in both trust states. |
 | Folder tree and breadcrumb menus | `git check-ignore -- <bounded paths>`, repository detection | Arbitrary folder reached from a file card, including absent/untrusted project | Index fsmonitor (fixed); ignore decisions are data. No diff/conversion, hooks or editor. Paths never enter stdin; C-quoted output preserves control characters and unusual filenames. Sparse-index missing-tree transport is disabled in both trust states. Shared FolderDirectory covers both tree and menu. |
 | Non-repository ignore fallback | `git config --path --get core.excludesFile` | Walked folder, outside projects allowed | Reads global/local includes as data; uses configured ignore file without executing programs. |
-| Scope/origin and redirect inventory | `config --null --list --includes --show-scope --show-origin`, a second `--name-only` inventory and final config-data verification, `config --type=path --get-regexp` for include targets, `config --system --no-includes --list --show-origin` to locate the selected Git's default system root, `ls-files --stage --sparse --full-name -z`, `rev-parse --absolute-git-dir/--git-common-dir/--show-toplevel/--git-path`, `symbolic-ref --no-recurse` for onbranch dependencies, `remote get-url --all [--push]`, `ls-remote --get-url`, `config --get-urlmatch http.extraHeader` | Selected repository and initialized submodules; inventory itself always confined, including trusted projects | Fixed data queries only. No index monitor or transport may execute while identifying config. Scope is inherited through includes; origin/name records must match between inventories. Git resolves named/legacy remote URLs and URL-matched headers. Literal push defaults apply Git’s longest-prefix `pushInsteadOf` rule before the fetch-only fallback. Reuse requires resolved identity, discovery/config/include/index/HEAD stamps and readable path ancestors. |
+| Scope/origin and redirect inventory | `config --null --list --includes --show-scope --show-origin`, a second `--name-only` inventory and final config-data verification, `config --type=path --get-regexp` for include targets, `config --system --no-includes --list --show-origin` to locate the selected Git's default system root, `ls-files --stage --sparse --full-name -z`, `rev-parse --absolute-git-dir/--git-common-dir/--show-toplevel/--git-path`, `symbolic-ref --no-recurse` for onbranch dependencies | Selected repository and initialized submodules; inventory itself always confined, including trusted projects | Fixed data queries only. No index monitor or transport may execute while identifying config. Scope is inherited through includes; origin/name records must match between inventories. Header-key presence alone protects every destination; no remote or URL-match probes remain. Reuse requires resolved identity, discovery/config/include/index/HEAD stamps and every symlink/component/final target in their resolution chains. Missing components are watched for creation; unreadable, unresolvable or cyclic chains cannot be cached. |
 | Git read-only tool resolution | `/usr/bin/xcrun --find git` | `/`, clean environment, once per process | Selects developer Git; no repository-controlled PATH, cwd, `DEVELOPER_DIR`, or config. |
 | Git root/state/index | `rev-parse`, `symbolic-ref`, `status --porcelain=v2`, `ls-files` | Selected project root; public library root can be arbitrary. File blame also uses this service | Local/worktree fsmonitor and filters, including submodule programs, are overridden. Global/system programs run only for trusted reads. Optional index locks and implicit Git transports remain disabled. |
 | Git history and branch catalog | `log`, `show`, `for-each-ref`, `rev-list`, `merge-base`, `reflog show`, `branch --list`, `remote`, `worktree list`, `check-ref-format` | Project/repository root | Textconv/external diff disabled for patches/stats; signature display disabled. Missing-object fetch, SSH/credential/remote helpers blocked; pager forced off, no editor. Includes and branch config still read as data. |
@@ -60,7 +66,7 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | Commit preview and hunk review | status/index reads; `diff --check`, `check-attr`, `cat-file`, `ls-tree`; raw `diff --no-index` in private scratch | Project root or generated temporary patch directory | No commit hooks during preflight. Filters/driver/fsmonitor use the trust/scope policy; implicit fetch is disabled. Hunk content-attribute refusal is retained. Raw diff uses isolated config and no external driver/textconv. |
 | Watchers, Files and folder menus | FSEvents/vnode callbacks -> launchers above; GitWatcher reads `.git`/`commondir` metadata directly | Watched repository/file roots; folder browser may be outside projects | No additional subprocess launcher. Refresh queries inherit the same policy. |
 | Reword identity and configuration reads | `var GIT_COMMITTER_IDENT`, `config --get commit.gpgSign`, `config --path --get core.hooksPath`, `rev-parse --git-path hooks` | Project/repository root, before an explicit trusted write | Hook/signing configuration is read as data under confinement; identity reads follow the same trust/scope policy. Only the later admitted mutation may execute the configured signer/hook. |
-| Explicit Git mutations | `add`, `restore`, `reset`, `rm`, `clean`, `switch`, `branch -m/-d/-D`, mutating `stash`, `fetch`, `pull`, `push`, `commit`, reword plumbing (`read-tree`, `write-tree`, `interpret-trailers`, `commit-tree`, `update-ref`, `hook run`), hunk `hash-object -w --no-filters`/`update-index` | Trusted project chosen through existing UI | Normal fsmonitor, hooks/core.hooksPath, clean/smudge/process, SSH/credential/remote helpers, signing and includes retained where Git uses them. Git HTTP redirects use `initial` unless effective extra headers require refusal; no automatic/background mutation is newly authorized. |
+| Explicit Git mutations | `add`, `restore`, `reset`, `rm`, `clean`, `switch`, `branch -m/-d/-D`, mutating `stash`, `fetch`, `pull`, `push`, `commit`, reword plumbing (`read-tree`, `write-tree`, `interpret-trailers`, `commit-tree`, `update-ref`, `hook run`), hunk `hash-object -w --no-filters`/`update-index` | Trusted project chosen through existing UI | Normal fsmonitor, hooks/core.hooksPath, clean/smudge/process, SSH/credential/remote helpers, signing and includes retained where Git uses them. Git HTTP redirects use `initial` only when no effective extraHeader key exists; no automatic/background mutation is newly authorized. |
 | Reword post-rewrite | Resolved `core.hooksPath/post-rewrite`, argv `amend`, stdin old/new hashes | Explicit Reword in trusted project | Existing intentional hook execution retained; hook path read itself is confined. |
 | App helper launcher | Bundled `pi-native-host` via HostTransport | Trusted project/session cwd, or a generated temporary directory for ConnectionProbe | Fixed app helper, no repository-selected executable. Context/read/find/grep tools use native filesystem code, no hidden Git subprocess. |
 | Terminal | Configured login shell via `forkpty`/`execve` | Selected workspace path; TerminalRegistry itself does not check project trust | Intentional shell execution through the terminal UI; login-shell configuration and user commands may invoke Git with normal config. Not a Bello background/read-only query. |
@@ -1147,3 +1153,157 @@ Visually inspected the eight `http-redirect-{light,dark}-{920x600,310x600}.png` 
 Final source review and hash checks match the tested bytes after all mutations and the Unicode correction. `git diff --check` passes. The fixture index was independently counted before cleanup: 50,001 ordinary entries and 20 submodules (`round5-fixture-counts.json`). The generated baseline export, large fixture and default XCTest result bundle were removed; no native Clone directories remained. Text logs, source-proof records and gallery PNGs are retained under this workstream's build root. All locks owned by this workstream were released; another workstream's subsequent lock was left untouched.
 
 Round 5 is complete: the review P1 and separately recorded stdin/Unicode instances are fixed, with seven failing-first regressions, eight killed mutations, 82 passing focused tests, complete package/native/gallery validation, and three source-verified measurements within budget. No unresolved finding or owner decision remains in this workstream. No merge or fast-forward to `dev/next` was performed.
+
+
+## Round 6 — origin chains and repository-wide redirect refusal
+
+The three review P1s are confirmed. Failing-first tests ran against unchanged round-5 production sources (`67e25bab3396e1aadee582e617fd492304b8c3da`) with only regression tests added: **3 tests, 10 failed assertions** (`logs/round6-failing-first.log`). All fixtures are generated; HTTP receivers bind loopback and configured programs only create the fixture marker.
+
+| Finding | Failing-first evidence | Fix |
+| --- | --- | --- |
+| Symlink inside a config origin's target chain | `testConditionalIncludeObservesSymlinksInsideOriginTarget`: external/config → current/config; current switches between directories with hardlinked config files. Git activates the relative `gitdir:./.git` include; query count stays 9 and fsmonitor creates the marker (2 assertions). | Stamp the full component walk, including `lstat` of each symlink, its recursively expanded target and final file. Apply the same walk to repository/discovery/config/include/index/HEAD dependencies, preserve the queried repository spelling, and disable caching for incomplete chains. Directory stamps retain identity-only comparisons so ordinary working-file saves do not invalidate inventories. |
+| Newline-only extraHeader after a private value | `testNewlineOnlyHeaderDoesNotPermitRedirects`: a second value of `"\n"` causes the old URL-match/value check to allow a 307. The second receiver gets a request (2 assertions). | NUL-delimited inventory key presence, without interpreting header values, protects every URL. |
+| URL-less legacy default remote | `testURLLessLegacyDefaultRemoteCannotForwardHeaders`: the sole configured `backup` has only a fetch refspec; `.git/remotes/backup` supplies its URL. Fetch, pull and push each reach the second receiver after a 308 (6 assertions). | Remove remote/default/pushurl/pushInsteadOf resolution, its per-command memo and legacy-definition stamps. All network commands use the same cached repository-wide refusal decision. |
+
+Additional policy coverage checks case-varied keys, empty reset values, newline values, unrelated and wildcard HTTP scopes, restoration of `initial` after removing every header key, all configured scope types, URL-scoped refusal overrides, alternative HTTP/helper URL forms, and existing push/default rewrite fixtures. Header-free same-host renamed-repository redirects remain a real successful smart-HTTP fetch.
+
+Primary-source review: Git resolves a relative `gitdir:` condition against the origin's realpath ([config.c](https://github.com/git/git/blob/v2.39.5/config.c#L213-L223)); only a genuinely empty value clears previous extra headers ([http.c](https://github.com/git/git/blob/v2.39.5/http.c#L363-L369)); configured default selection includes URL-less remote names ([remote.c](https://github.com/git/git/blob/v2.39.5/remote.c#L508-L520)). The new redirect decision does not reproduce any of these remote/header resolution algorithms.
+
+Development validation caught a buffer-pointer error in the first implementation of symlink reading (SIGSEGV before assertions, including after a clean build). `readlink` now receives the array's explicitly scoped mutable byte buffer. The passing runs below supersede those failed development attempts; their logs remain `round6-fixed.log` and `round6-focused.log`.
+
+### Round-6 mutations and adversarial self-review
+
+| Mutation | Regression selection | Failed assertions |
+| --- | --- | ---: |
+| Stop resolution at the first symlink instead of walking its target | Nested origin-target symlink retarget | 2 |
+| Inspect only the last header value and treat LF as empty | Newline-only header after a private value | 2 |
+| Require a configured `remote.*.url` before enabling protection | URL-less legacy default fetch/pull/push | 6 |
+| Override only generic followRedirects | Equivalent URL scopes and the five HTTP redirect statuses | 6 |
+| Ignore URL-scoped extraHeader keys | Empty/case-varied/unrelated/wildcard key-presence matrix | 4 |
+| Resolve submodule checkout paths before inventory | Retargeted submodule checkout alias | 2 |
+
+**6 mutations killed, 22 failed assertions, no unexpected test failures.** Production sources were restored in `finally` after each case. Logs: `round6-mutation-{omit-target-chain,newline-value-clear,require-remote-url,omit-url-overrides,omit-scoped-headers,resolve-submodule-before-inventory}.log`; structured evidence `round6-mutations.json` under the build root's `logs/`.
+
+Adversarial source review covered the complete new diff and adjacent launch/cache paths. Every supported network Git launch (fetch/pull/push) reaches the shared repository-wide decision. No `get-urlmatch`, remote enumeration, literal push rewrite, legacy-default selection, or value-trimming redirect probe remains in production. All URL-scoped redirect keys get the same refusal, so their relative specificity, spelling or argument ordering cannot re-enable redirects. Byte-distinct keys remain `Data` values; unrepresentable override arguments still fail closed.
+
+Every cached dependency now contributes its resolution walk before publication, including discovery ancestors, the original queried path, resolved worktree/gitdir/commondir, config origins, expanded includes, symbolic HEAD dependencies and submodules. The walk records symlink metadata with `lstat`, visits intermediate target components before `..`, and stamps final targets even when they are hardlinks. A link retarget therefore invalidates reuse independently of final file identity. Missing components retain absence stamps; unreadable components, invalid link bytes, readlink failures and link-depth exhaustion prevent caching. The same walk checks dynamic include sources before permitting unconfined reads. Existing cache-generation, watcher, cancellation/deadline and static-config confirmation checks remain in force; the new per-dependency walk also checks the invocation deadline.
+
+The neighboring read launchers still force short/non-recursive submodule output, prevent lazy fetch, and supply no attacker-controlled stdin. Trusted global/system programs remain allowed for proven static config; local/worktree programs remain masked. Explicit writes retain the trust notice and normal hooks; webhooks retain all-redirect refusal. No helper or wire behavior changed in round 6, so helper/wire/concurrent/acceptance reruns are not applicable. No additional unresolved finding or owner-policy question emerged from this review.
+
+
+The self-review found one additional instance of the resolution-chain issue in the same inventory constructor: a gitlink's checkout path was resolved before constructing its child inventory. `testSubmoduleAliasRetargetRechecksConfiguration` retargets an initialized submodule alias from a header-free fixture to a fixture with an extraHeader. Before the fix, the parent reused the old child policy (query count remained 14), producing **2 failed assertions** (`round6-submodule-failing-first.log`). Keeping the original child path fixes both assertions (`round6-submodule-fixed.log`, **1/1 passed**); restoring early resolution kills the additional mutation. Aliased checkouts whose discovery cannot be proven from the original spelling conservatively bypass caching; normal initialized submodules retain caching. The original five mutation cases were repeated after this change. Final failing-first total: **4 regressions / 12 failed assertions**.
+
+Exact focused/failing-first commands (run from this worktree; each run writes a separate text log under `$B/logs`):
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+# Original three regressions against round-5 production sources:
+env CFFIXED_USER_HOME="$B/round6-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests.testConditionalIncludeObservesSymlinksInsideOriginTarget|GitInventoryTests.testNewlineOnlyHeaderDoesNotPermitRedirects|GitInventoryTests.testURLLessLegacyDefaultRemoteCannotForwardHeaders'
+# Adjacent submodule regression, separately before and after its one-line fix:
+env CFFIXED_USER_HOME="$B/round6-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter GitInventoryTests/testSubmoduleAliasRetargetRechecksConfiguration
+# Focused five-class run:
+env CFFIXED_USER_HOME="$B/round6-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests|GitHTTPRedirectTests|GitRepositorySecurityTests|GitBlameTests|FolderBrowserTests'
+# All six mutations, restored after each invocation:
+python3 "$B/round6-mutations.py"
+```
+
+### Final round-6 validation and latency
+
+Full bello-views package: **380 executed, 376 passed, 4 skipped, 0 failures** (`round6-final-views-full.log`). The skips are the existing opt-in scale/benchmark cases; the benchmark is explicitly executed below. The full run follows all mutation restorations, and all five changed source/test hashes match `round6-tested-source-hashes.json`.
+
+The focused run passed **91/91** before mutation checks: FolderBrowserTests 19, GitBlameTests 13, GitInventoryTests 42, GitHTTPRedirectTests 5, GitRepositorySecurityTests 12 (`round6-focused-fixed.log`). The complete package run above repeats every affected class after restoring all mutations.
+
+```sh
+env CFFIXED_USER_HOME="$B/round6-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests"
+```
+
+The full package run, performance runs and native/gallery runs each hold the shared full-lane lock. The package run waited for the Git/files, panel and workspace workstreams to release it; no other workstream's lock or build products were changed.
+
+The freshly fetched baseline is pinned `origin/dev/next` **649ea623291c9417443d61d3bb55314d8a2f5d9a**. Its package is exported with `git archive`, without checking out or integrating that branch. The same generated fixture contains **50,001 ordinary tracked entries plus 20 initialized submodules**; there is one changed tracked file. Each variant takes **25 warmed samples** of status and a complete Changes refresh including selected diff and hunk review.
+
+| Variant | Status median / p95 (ms) | Changes including hunk review median / p95 (ms) | Median versus baseline |
+| --- | ---: | ---: | --- |
+| baseline | 251.09 / 266.63 | 2173.09 / 2199.57 | baseline |
+| branch | 173.05 / 186.08 | 2040.34 / 2071.70 | status -31.08%; Changes -6.11% |
+| branch-repeat | 172.16 / 183.24 | 2023.54 / 2071.11 | status -31.43%; Changes -6.88% |
+
+Both branch runs meet the 5% budget. All three benchmark executions pass (1/1 each). Text logs: `round6-final-verified-perf-{branch,baseline,branch-repeat}.log`; source-proof records: `round6-final-verified-build-{branch,baseline,branch-repeat}.json`. Before each build, only this workstream's `views-tests` products are removed. Each run verifies the compile-time variant marker, actual compiled source paths, and GitService bytes/hash; the baseline GitService must exactly match its pinned commit. The branch also verifies its GitProcessSafety source paths and GitConfiguration hash. The baseline receives the identical benchmark source and only a test-target `BELLO_GIT_BENCHMARK_BASELINE` define.
+
+Exact measurement command, executed for branch, baseline, then branch again after the per-variant clean:
+
+```sh
+env CFFIXED_USER_HOME="$B/round6-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  BELLO_GIT_INVENTORY_BENCHMARK="$B/round6-large-fixture" BELLO_GIT_BENCHMARK_SAMPLES=25 \
+  swift test --package-path "$PACKAGE" --scratch-path "$B/views-tests" --filter GitInventoryPerformanceTests
+```
+
+`PACKAGE` is this worktree's `packages/bello-views`, then `$B/round6-baseline/packages/bello-views`, then the worktree package again. `$B/round6-final-performance.py` records the exact export/build-proof sequence.
+
+Native: **41 classes, 375 executed, 373 passed, 2 skipped, 0 failures**. The skips remain the opt-in commit-browsing and diff-capture cases. Every invocation uses `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1 PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO`, with `-only-testing:PiAppTests/<Class>` for each selected class. The host uses the generated `PiAppTests-Home`; the extra variables keep direct test Git subprocesses off the real global/system config too. The class batches and serial-alone selections are identical to the explicit round-4 list above; fresh round-6 evidence follows.
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `round6-final-native-ChangesTabFrameTests.log` |
+| ChangesTabTests | 8 | 0 | `round6-final-native-file-git.log` |
+| CrashAuditRegressionTests | 12 | 0 | `round6-final-native-CrashAuditRegressionTests.log` |
+| FileBlameTests | 10 | 0 | `round6-final-native-file-git.log` |
+| FileFindTabTests | 16 | 0 | `round6-final-native-FileFindTabTests.log` |
+| FileFolderTests | 20 | 0 | `round6-final-native-FileFolderTests.log` |
+| FileHiddenReadTests | 5 | 0 | `round6-final-native-file-git.log` |
+| FilePageReadTests | 3 | 0 | `round6-final-native-file-git.log` |
+| FilePreviewRefreshTests | 2 | 0 | `round6-final-native-FilePreviewRefreshTests.log` |
+| FileReviewStateTests | 20 | 0 | `round6-final-native-file-git.log` |
+| FileTabTests | 16 | 0 | `round6-final-native-file-git.log` |
+| GitBranchesInteractionTests | 20 | 0 | `round6-final-native-file-git.log` |
+| GitChangelistReadTests | 2 | 0 | `round6-final-native-file-git.log` |
+| GitCommitBrowsingTests | 3 | 1 | `round6-final-native-file-git.log` |
+| GitConfirmationSheetTests | 7 | 0 | `round6-final-native-file-git.log` |
+| GitDiffTableTests | 19 | 0 | `round6-final-native-GitDiffTableTests.log` |
+| GitDiscardQuestionTests | 2 | 0 | `round6-final-native-file-git.log` |
+| GitHistoryFilterTests | 14 | 0 | `round6-final-native-file-git.log` |
+| GitHunkReviewTests | 9 | 0 | `round6-final-native-file-git.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `round6-final-native-file-git.log` |
+| GitOperationSafetyTests | 12 | 0 | `round6-final-native-GitOperationSafetyTests.log` |
+| GitPanelAuditTests | 8 | 0 | `round6-final-native-file-git.log` |
+| GitPanelDiffCaptureTests | 0 | 1 | `round6-final-native-file-git.log` |
+| GitPanelLayoutTests | 4 | 0 | `round6-final-native-file-git.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `round6-final-native-GitPanelNarrowParityTests.log` |
+| GitPanelRedrawTests | 4 | 0 | `round6-final-native-file-git.log` |
+| GitPanelShownTests | 13 | 0 | `round6-final-native-file-git.log` |
+| GitPanelTimingTests | 4 | 0 | `round6-final-native-GitPanelTimingTests.log` |
+| GitPanelWidthTests | 3 | 0 | `round6-final-native-file-git.log` |
+| GitPathBoundaryTests | 5 | 0 | `round6-final-native-file-git.log` |
+| GitRenameTests | 6 | 0 | `round6-final-native-file-git.log` |
+| GitRepositoryPermissionTests | 4 | 0 | `round6-final-native-boundaries.log` |
+| GitRepositorySwitchTests | 17 | 0 | `round6-final-native-GitRepositorySwitchTests.log` |
+| GitSafetyGalleryTests | 1 | 0 | `round6-final-native-GitSafetyGalleryTests.log` |
+| GitToolTests | 5 | 0 | `round6-final-native-file-git.log` |
+| GitWorkingTreeWatcherTests | 16 | 0 | `round6-final-native-GitWorkingTreeWatcherTests.log` |
+| QuickOpenPlacementTests | 1 | 0 | `round6-final-native-file-git.log` |
+| QuickOpenTests | 17 | 0 | `round6-final-native-QuickOpenTests.log` |
+| WebhookExchangeTests | 5 | 0 | `round6-final-native-boundaries.log` |
+| WebhookTests | 18 | 0 | `round6-final-native-boundaries.log` |
+| WorkspaceTests | 17 | 0 | `round6-final-native-boundaries.log` |
+
+Gallery regenerated **112 PNGs**, using:
+
+```sh
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY="$B/round6-final-gallery" PI_BUILD_ROOT="$B" \
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1 \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+Visually inspected eight fresh images: `http-redirect-{light,dark}-{920x600,310x600}.png` and `untrusted-{light,dark}-{700x640,310x600}.png`. The redirect refusal and trust notice remain visible in both themes, with the existing ellipsis when space is limited. File rows and commit controls remain available. The gallery also asserts the full redirect notice, including `http.extraHeader`. Image hashes are recorded in `round6-final-gallery-inspection.json`.
+
+Extended lock contention delayed the native runs. Only idle lock waiters were restarted; no active test was interrupted. The orchestration traces in `round6-package-performance-native-batches.log` and `round6-idle-lock-waiter.log` are those intentional waiter exits; the per-suite logs above contain the actual test results.
+
+Final adversarial review and source-hash checks confirm the committed implementation is the restored, tested code. The generated fixture's index was independently counted before cleanup: **50,001 ordinary entries and 20 submodules** (`round6-fixture-counts.json`). The generated baseline export, large fixture and default XCTest result bundle were removed; no Clone directories remained (`round6-cleanup.json`). Text logs, source-proof records and gallery images remain under this workstream's build root. Every lock owned by this workstream was released; other workstreams' locks and build products were left untouched.
+
+Round 6 resolves all three review findings plus the adjacent submodule-alias instance: four failing-first regressions, six killed mutations, full package/native/gallery validation and three source-verified latency measurements within budget. No unresolved security finding or owner-policy question remains. No helper/wire behavior changed, and no merge or fast-forward to `dev/next` was performed.

@@ -67,7 +67,7 @@ final class GitHTTPRedirectTests: XCTestCase {
                     try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
                 }
                 try git(["init", "-q", "--template=", "-b", "main"])
-                // A non-origin default and insteadOf must be resolved by Git.
+                // Git still resolves a non-origin default and insteadOf.
                 try git(["config", "remote.renamed.url", "fixture:repo"])
                 try git(["config", "branch.main.remote", "renamed"])
                 try git(["config", "url.\(address)/.insteadOf", "fixture:"])
@@ -144,7 +144,6 @@ final class GitHTTPRedirectTests: XCTestCase {
         try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
         let service = GitService(environment: environment)
         _ = try await service.run(["config", "remote.origin.url", address + "/old"], in: root.path, readOnly: false)
-        _ = try await service.run(["config", "http.https://unrelated.example.invalid/.extraHeader", "X-Unrelated: synthetic"], in: root.path, readOnly: false)
         _ = try await service.run(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], in: root.path, readOnly: false)
         // An empty smart-HTTP advertisement is sufficient for a real fetch.
         receiver.answer([301, 200], location: address + "/renamed/info/refs?service=git-upload-pack",
