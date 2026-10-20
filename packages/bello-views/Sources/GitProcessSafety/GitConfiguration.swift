@@ -79,7 +79,7 @@ public struct GitConfiguration {
         // Git setup changes cwd to the worktree (or bare gitdir) before it
         // reads config. --show-origin may still report relative filenames.
         let originBase = !top.isEmpty ? top : (!gitDirectory.isEmpty ? gitDirectory : directory.path)
-        func absolute(_ file: String) -> String { file.hasPrefix("/") ? file : originBase + "/" + file }
+        func absolute(_ file: String) -> String { file.gitHasPrefix("/") ? file : originBase + "/" + file }
         func resolved(_ file: String) -> String { file.isEmpty ? "" : URL(fileURLWithPath: absolute(file)).resolvingSymlinksInPath().path }
         // --show-toplevel is the effective worktree, including core.worktree;
         // a linked worktree also has its own gitdir and shared commondir.
@@ -99,14 +99,14 @@ public struct GitConfiguration {
             guard ancestor != "/" else { canCache = false; break }
             ancestor = (ancestor as NSString).deletingLastPathComponent
         }
-        var files = entries.compactMap { $0.origin.hasPrefix("file:") ? absolute(String($0.origin.dropFirst(5))) : nil }
+        var files = entries.compactMap { $0.origin.gitHasPrefix("file:") ? absolute($0.origin.gitDropFirst(5)) : nil }
         let readFiles = Set(files.map { Data($0.utf8) })
         let home = environment["HOME"] ?? NSHomeDirectory()
         files.append(absolute(environment["GIT_CONFIG_GLOBAL"] ?? home + "/.gitconfig"))
         if environment["GIT_CONFIG_GLOBAL"] == nil {
             files.append(absolute((environment["XDG_CONFIG_HOME"] ?? home + "/.config") + "/git/config"))
         }
-        if !["1", "true", "yes", "on"].contains(environment["GIT_CONFIG_NOSYSTEM"]?.lowercased() ?? "") {
+        if !["1", "true", "yes", "on"].contains(environment["GIT_CONFIG_NOSYSTEM"]?.gitASCIILowercased ?? "") {
             if let system = environment["GIT_CONFIG_SYSTEM"] {
                 // Git lexically normalizes this particular environment path.
                 // Do not expand a leading tilde as NSString would.
@@ -119,10 +119,10 @@ public struct GitConfiguration {
                                             environment: probeEnvironment, diagnostics: true, invocation: invocation)
                 let prefix = "fatal: unable to read config file '", suffix = "': No such file or directory\n"
                 if system.status == 0, let origin = system.data.split(separator: 0).first,
-                   let text = String(data: origin, encoding: .utf8), text.hasPrefix("file:") {
-                    files.append(absolute(String(text.dropFirst(5))))
-                } else if let text = String(data: system.data, encoding: .utf8), text.hasPrefix(prefix), text.hasSuffix(suffix) {
-                    files.append(absolute(String(text.dropFirst(prefix.count).dropLast(suffix.count))))
+                   let text = String(data: origin, encoding: .utf8), text.gitHasPrefix("file:") {
+                    files.append(absolute(text.gitDropFirst(5)))
+                } else if let text = String(data: system.data, encoding: .utf8), text.gitHasPrefix(prefix), text.gitHasSuffix(suffix) {
+                    files.append(absolute(text.gitDropFirst(prefix.utf8.count).gitDropLast(suffix.utf8.count)))
                 } else { canCache = false }
             }
         }
@@ -136,7 +136,7 @@ public struct GitConfiguration {
         }
         if !top.isEmpty { files.append(top + "/.gitmodules") }
         if let index = environment["GIT_INDEX_FILE"], !index.isEmpty { files.append(absolute(index)) }
-        let includes = entries.filter { $0.name == "include.path" || ($0.name.hasPrefix("includeif.") && $0.name.hasSuffix(".path")) }
+        let includes = entries.filter { $0.name == "include.path" || ($0.name.gitHasPrefix("includeif.") && $0.name.gitHasSuffix(".path")) }
         var includeFiles: [String] = []
         if !includes.isEmpty {
             // --type=path uses Git's own ~, ~user and %(prefix) expansion,
@@ -156,12 +156,13 @@ public struct GitConfiguration {
                           record.starts(with: prefix), let target = String(data: record.dropFirst(prefix.count), encoding: .utf8) else {
                         canCache = false; canReadUnconfined = false; continue
                     }
-                    if target.hasPrefix("/") { includeFiles.append(target) }
-                    else if entry.origin.hasPrefix("file:") {
-                        let source = absolute(String(entry.origin.dropFirst(5)))
+                    if target.gitHasPrefix("/") { includeFiles.append(target) }
+                    else if entry.origin.gitHasPrefix("file:") {
+                        let source = absolute(entry.origin.gitDropFirst(5))
                         // Preserve symlink/.. semantics; lexical normalization
                         // can watch a different file from the one Git opens.
-                        includeFiles.append(String(source[...source.lastIndex(of: "/")!]) + target)
+                        guard let parent = source.gitSplitOnce(separator: 47, last: true) else { throw ConfinementRequired() }
+                        includeFiles.append(parent.before + "/" + target)
                     } else { canCache = false; canReadUnconfined = false }
                 }
             }
@@ -198,16 +199,17 @@ public struct GitConfiguration {
                 guard value.starts(with: prefix), let target = String(data: value.dropFirst(prefix.count), encoding: .utf8) else {
                     canReadUnconfined = false; break
                 }
-                includeFiles.append(target.hasPrefix("/") ? target : String(file[...file.lastIndex(of: "/")!]) + target)
+                guard let parent = file.gitSplitOnce(separator: 47, last: true) else { throw ConfinementRequired() }
+                includeFiles.append(target.gitHasPrefix("/") ? target : parent.before + "/" + target)
             }
         }
         files += includeFiles
         var branchStamps: [GitFileStamp] = []
-        if includes.contains(where: { $0.name.hasPrefix("includeif.onbranch:") }) {
+        if includes.contains(where: { $0.name.gitHasPrefix("includeif.onbranch:") }) {
             // onbranch follows the entire symbolic HEAD chain. Stamp each
             // link before reading it, not just the unchanged HEAD file.
-            var reference = "HEAD", seen = Set<String>()
-            while seen.insert(reference).inserted, seen.count <= 16 {
+            var reference = "HEAD", seen = Set<Data>()
+            while seen.insert(Data(reference.utf8)).inserted, seen.count <= 16 {
                 let file = try path(["rev-parse", "--path-format=absolute", "--git-path", reference])
                 guard !file.isEmpty else { canCache = false; break }
                 branchStamps.append(GitFileStamp(file))
@@ -215,7 +217,7 @@ public struct GitConfiguration {
                                           in: directory, environment: environment, invocation: invocation)
                 if next.status == 1 { reference = ""; break }
                 guard next.status == 0, next.data.last == 10, let text = String(data: next.data.dropLast(), encoding: .utf8),
-                      text.hasPrefix("refs/") else { canCache = false; break }
+                      text.gitHasPrefix("refs/") else { canCache = false; break }
                 reference = text
             }
             if !reference.isEmpty { canCache = false }
@@ -264,7 +266,7 @@ public struct GitConfiguration {
                     // Relative root config paths depend on a missing
                     // checkout's cwd, which this metadata query cannot prove.
                     guard ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"].allSatisfy({
-                        environment[$0].map { $0.hasPrefix("/") } ?? true
+                        environment[$0].map { $0.gitHasPrefix("/") } ?? true
                     }) else { throw ConfinementRequired() }
                     var childEnvironment = environment
                     // Stored modules need no checkout. Give Git a valid cwd
@@ -279,8 +281,10 @@ public struct GitConfiguration {
         }
         if !common.isEmpty { try storedModules(in: URL(fileURLWithPath: common).appendingPathComponent("modules")) }
         self.children = children
-        var stamps = Set(files).sorted().map { path in
-            indexStamp?.path == path ? indexStamp! : GitFileStamp(path)
+        var stamps = Set(files.map { Data($0.utf8) }).sorted(by: { $0.lexicographicallyPrecedes($1) }).map { bytes in
+            let path = String(decoding: bytes, as: UTF8.self)
+            if let indexStamp, indexStamp.path.utf8.elementsEqual(bytes) { return indexStamp }
+            return GitFileStamp(path)
         }
         stamps += discovery + branchStamps + includeStamps + moduleStamps
         stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
@@ -316,8 +320,8 @@ public struct GitConfiguration {
         let paths = [stamp] + chain.stamps
         // Check ancestors as well: /tmp/fd-link/0 may resolve through /dev/fd,
         // whose descriptor can refer to a different file in the next process.
-        for stamp in paths where stamp.watchedPath == "/dev" || stamp.watchedPath.hasPrefix("/dev/")
-            || stamp.watchedPath == "/proc" || stamp.watchedPath.hasPrefix("/proc/") {
+        for stamp in paths where stamp.watchedPath == "/dev" || stamp.watchedPath.gitHasPrefix("/dev/")
+            || stamp.watchedPath == "/proc" || stamp.watchedPath.gitHasPrefix("/proc/") {
             // The explicitly selected empty root config is stable. This
             // exception never applies to an include directive, even /dev/null.
             if allowNull, paths[0].watchedPath == "/dev/null" { continue }
@@ -358,15 +362,15 @@ public struct GitConfiguration {
             let name = String(decoding: key, as: UTF8.self)
             // Only an override must fit -c's encoding. User-owned settings
             // that Git reads directly retain their original names and bytes.
-            guard !name.contains("="), !name.contains("\n") else {
+            guard !name.utf8.contains(61), !name.utf8.contains(10) else {
                 throw ConfinementRequired()
             }
             let user = entries.filter { $0.userOwned && $0.name.utf8.elementsEqual(key) }
-            if name == "credential.helper" || (name.hasPrefix("credential.") && name.hasSuffix(".helper")) {
+            if name == "credential.helper" || (name.gitHasPrefix("credential.") && name.gitHasSuffix(".helper")) {
                 options += ["-c", name + "="]
                 for entry in user { options += ["-c", name + "=" + entry.value] }
             } else {
-                let fallback = name == "core.fsmonitor" || name.hasSuffix(".required") ? "false" : ""
+                let fallback = name == "core.fsmonitor" || name.gitHasSuffix(".required") ? "false" : ""
                 options += ["-c", name + "=" + (user.last?.value ?? fallback)]
             }
         }
@@ -378,13 +382,13 @@ public struct GitConfiguration {
     }
 
     private static func isProgram(_ name: String) -> Bool {
-        if ["core.fsmonitor", "core.hookspath", "core.sshcommand", "core.gitproxy", "core.pager", "core.editor", "sequence.editor", "diff.external", "gpg.program", "log.showsignature"].contains(name.lowercased()) { return true }
-        return name.hasPrefix("filter.") || name.hasPrefix("alias.") || name.hasPrefix("pager.")
-            || (name.hasPrefix("diff.") && (name.hasSuffix(".command") || name.hasSuffix(".textconv")))
-            || (name.hasPrefix("difftool.") && name.hasSuffix(".cmd"))
-            || (name.hasPrefix("gpg.") && name.hasSuffix(".program"))
-            || (name.hasPrefix("credential.") && name.hasSuffix(".helper"))
-            || (name.hasPrefix("remote.") && [".vcs", ".uploadpack", ".receivepack", ".proxy"].contains(where: name.hasSuffix))
+        if ["core.fsmonitor", "core.hookspath", "core.sshcommand", "core.gitproxy", "core.pager", "core.editor", "sequence.editor", "diff.external", "gpg.program", "log.showsignature"].contains(name.gitASCIILowercased) { return true }
+        return name.gitHasPrefix("filter.") || name.gitHasPrefix("alias.") || name.gitHasPrefix("pager.")
+            || (name.gitHasPrefix("diff.") && (name.gitHasSuffix(".command") || name.gitHasSuffix(".textconv")))
+            || (name.gitHasPrefix("difftool.") && name.gitHasSuffix(".cmd"))
+            || (name.gitHasPrefix("gpg.") && name.gitHasSuffix(".program"))
+            || (name.gitHasPrefix("credential.") && name.gitHasSuffix(".helper"))
+            || (name.gitHasPrefix("remote.") && [".vcs", ".uploadpack", ".receivepack", ".proxy"].contains(where: name.gitHasSuffix))
     }
 
     /// Any configured extraHeader makes every network destination protected.
@@ -396,12 +400,12 @@ public struct GitConfiguration {
             // Names come from Git's NUL-delimited inventory. Header values,
             // URL matching and remote resolution cannot weaken this policy.
             let protected = entries.contains { entry in
-                let name = entry.name.lowercased()
-                return name == "http.extraheader" || (name.hasPrefix("http.") && name.hasSuffix(".extraheader"))
+                let name = entry.name.gitASCIILowercased
+                return name == "http.extraheader" || (name.gitHasPrefix("http.") && name.gitHasSuffix(".extraheader"))
             }
             let configured = Set(entries.compactMap { entry -> Data? in
-                let name = entry.name.lowercased()
-                return name.hasPrefix("http.") && name.hasSuffix(".followredirects") ? Data(entry.name.utf8) : nil
+                let name = entry.name.gitASCIILowercased
+                return name.gitHasPrefix("http.") && name.gitHasSuffix(".followredirects") ? Data(entry.name.utf8) : nil
             })
             // Without headers, preserve each repository's own stricter
             // settings instead of propagating a weaker -c into children.

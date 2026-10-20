@@ -61,6 +61,18 @@
 - [x] SECURITY-BOUNDARIES-1al: FileFinder preserves trailing whitespace in repository and global ignore-file paths returned by Git. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1am: Stash common-directory and hunk index paths preserve trailing whitespace from Git output. [Validation](docs/validation/a130-security-0.1.130.md).
 
+- [x] SECURITY-BOUNDARIES-1an: Git program keys use byte delimiters, including filter and driver names beginning with combining marks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ao: Git origin and relative-include paths preserve separators beside grapheme-extending scalars, including inactive include targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ap: Inventory resolution stamps every slash-delimited component in original paths and symlink targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aq: Combining marks after onbranch conditions cannot bypass symbolic-ref-chain invalidation. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ar: Generated override parsing uses guarded byte separators; restored values cannot trap the reader. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1as: Git watchers and ignored-path boundaries use byte separators for metadata and nested paths. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1at: Status, history, branch, stash, blame and statistics parsers preserve literal Unicode next to Git field delimiters. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1au: Diff prefixes and quoted paths preserve adjacent combining marks and their line kinds. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1av: Hunk file reads split paths on slash bytes, preserving symlink refusal for every component. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aw: Folder breadcrumbs, hidden names and ignore fallback retain byte-exact path boundaries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2p: Combining marks after HTTP config delimiters cannot hide private-header keys or URL-scoped redirect overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).

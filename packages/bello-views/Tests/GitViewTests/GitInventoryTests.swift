@@ -35,6 +35,201 @@ final class GitInventoryTests: XCTestCase {
         return path
     }
 
+    private var graphemeExtenders: [String] { ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"] }
+
+    private func graphemeRepositories(_ body: (String) async throws -> Void) async throws {
+        let base = root!
+        defer { root = base }
+        for (index, extender) in graphemeExtenders.enumerated() {
+            root = base.appendingPathComponent("grapheme-\(index)")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try git(["init", "-q", "--template=", "-b", "main"])
+            try write("file", "base\n"); try git(["add", "file"]); try git(["commit", "-qm", "Fixture"])
+            try await body(extender)
+        }
+    }
+
+    private func markerProgram(filter: Bool = false) throws -> String {
+        try write("marker-program", "#!/bin/sh\n: > '\(root.path)/fixture-marker'\n" + (filter ? "cat\n" : "printf 'token\\000'\n"))
+        let path = root.appendingPathComponent("marker-program").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+
+    func testGraphemeProgramKeysCannotStartLocalPrograms() async throws {
+        try await graphemeRepositories { extender in
+            let name = extender + "probe", command = try self.markerProgram(filter: true)
+            try self.git(["config", "filter." + name + ".clean", command])
+            try self.write(".gitattributes", "file filter=" + name + "\n")
+            try self.write("file", "changed\n")
+            XCTAssertEqual(try self.git(["config", "--null", "--get", "filter." + name + ".clean"]), command + "\0")
+            _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path), extender.debugDescription)
+        }
+    }
+
+    func testGraphemeIncludeParentsStampActualTargets() async throws {
+        try await graphemeRepositories { extender in
+            for active in [true, false] {
+                let key = active ? "include.path" : "includeIf.onbranch:absent.path"
+                let include = extender + (active ? "include" : "inactive"), target = active ? "payload" : "inactive-payload"
+                try self.git(["config", key, include])
+                try self.write(".git/" + include, "[include]\npath = " + target + "\n")
+                let inventory = try GitConfiguration(in: self.root, environment: self.environment)
+                let directory = String(decoding: try self.git(["rev-parse", "--absolute-git-dir"]).utf8.dropLast(), as: UTF8.self)
+                XCTAssertTrue(inventory.stamps.contains { $0.path.utf8.elementsEqual((directory + "/" + target).utf8) }, extender.debugDescription)
+                let warm = GitConfiguration.queryCount
+                try self.write(".git/" + target, "[core]\nfsmonitor = " + (try self.markerProgram()) + "\n")
+                if active { XCTAssertEqual(try self.git(["config", "--get", "core.fsmonitor"]), self.root.path + "/marker-program\n") }
+                _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path)
+                XCTAssertGreaterThan(GitConfiguration.queryCount, warm, extender.debugDescription)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path), extender.debugDescription)
+                try self.git(["config", "--unset", key])
+                try? FileManager.default.removeItem(at: self.root.appendingPathComponent("fixture-marker"))
+            }
+        }
+    }
+
+    func testGraphemeSymlinkComponentsInvalidateInventory() async throws {
+        try await graphemeRepositories { extender in
+            let away = self.root.appendingPathComponent("away"), link = self.root.appendingPathComponent("link")
+            try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+            let name = extender + "config"
+            try self.write("away/" + name, "[includeIf \"gitdir:./.git\"]\npath = " + self.root.path + "/conditional\n")
+            try FileManager.default.linkItem(at: away.appendingPathComponent(name), to: self.root.appendingPathComponent(name))
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: away)
+            try self.git(["config", "include.path", "../link/" + name])
+            try self.write("conditional", "[core]\nfsmonitor = " + (try self.markerProgram()) + "\n")
+            let service = GitService(environment: self.environment, trusted: true)
+            _ = try await service.status(in: self.root.path)
+            let warm = GitConfiguration.queryCount
+            try FileManager.default.removeItem(at: link)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: self.root)
+            XCTAssertEqual(try self.git(["config", "--get", "core.fsmonitor"]), self.root.path + "/marker-program\n")
+            _ = try await service.status(in: self.root.path)
+            XCTAssertGreaterThan(GitConfiguration.queryCount, warm, extender.debugDescription)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path), extender.debugDescription)
+        }
+    }
+
+    func testGraphemeOnBranchConditionsStampSymbolicRefs() async throws {
+        try await graphemeRepositories { extender in
+            let branch = extender + "branch"
+            try self.git(["branch", branch]); try self.git(["symbolic-ref", "refs/heads/alias", "refs/heads/main"])
+            try self.git(["symbolic-ref", "HEAD", "refs/heads/alias"])
+            try self.git(["config", "includeIf.onbranch:" + branch + ".path", "../conditional"])
+            try self.write("conditional", "[core]\nfsmonitor = " + (try self.markerProgram()) + "\n")
+            let service = GitService(environment: self.environment, trusted: true)
+            _ = try await service.status(in: self.root.path)
+            let head = try Data(contentsOf: self.root.appendingPathComponent(".git/HEAD")), warm = GitConfiguration.queryCount
+            try self.git(["symbolic-ref", "refs/heads/alias", "refs/heads/" + branch])
+            XCTAssertEqual(try Data(contentsOf: self.root.appendingPathComponent(".git/HEAD")), head)
+            XCTAssertEqual(try self.git(["config", "--get", "core.fsmonitor"]), self.root.path + "/marker-program\n")
+            _ = try await service.status(in: self.root.path)
+            XCTAssertGreaterThan(GitConfiguration.queryCount, warm, extender.debugDescription)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path), extender.debugDescription)
+        }
+    }
+
+    func testGraphemeRestoredValuesRoundTripWithoutTrapping() throws {
+        for extender in graphemeExtenders {
+            let value = extender + "tool", name = "core.fsmonitor"
+            do {
+                let overrides = try GitReadOverrides(gitDirectory: root.path + "/.git", options: ["-c", name + "=" + value])
+                defer { withExtendedLifetime(overrides) {} }
+                let parsed = try GitConfiguration.query(["config", "--file", overrides.directory.appendingPathComponent("config").path,
+                                                        "--null", "--get", name], in: root, environment: environment)
+                XCTAssertEqual(parsed.status, 0)
+                XCTAssertEqual(parsed.data, Data((value + "\0").utf8))
+            } catch is GitConfiguration.ConfinementRequired {
+                XCTAssertNotNil(value.rangeOfCharacter(from: .controlCharacters))
+            }
+        }
+    }
+
+    func testGraphemeProgramFamiliesAndHeaderScopesMatchGit() async throws {
+        try await graphemeRepositories { extender in
+            let keys = ["filter.%@.clean", "filter.%@.smudge", "filter.%@.process", "filter.%@.required",
+                        "diff.%@.command", "diff.%@.textconv", "difftool.%@.cmd", "gpg.%@.program",
+                        "credential.%@.helper", "remote.%@.vcs", "remote.%@.uploadpack", "remote.%@.receivepack", "remote.%@.proxy",
+                        "alias.%@.command", "pager.%@.command"].map { $0.replacingOccurrences(of: "%@", with: extender + "fixture") }
+            let program = try self.markerProgram()
+            for key in keys { try self.git(["config", key, key.hasSuffix(".required") ? "true" : program]) }
+            let inventory = try GitConfiguration(in: self.root, environment: self.environment)
+            do {
+                let options = try inventory.readOptions(in: self.root, environment: self.environment, submodules: false, invocation: GitInvocation())
+                for key in keys {
+                    let output = try self.git(options + ["config", "--null", "--get", key])
+                    XCTAssertEqual(Data(output.utf8), Data((key.hasSuffix(".required") ? "false\0" : "\0").utf8), key.debugDescription)
+                }
+            } catch is GitConfiguration.ConfinementRequired {
+                XCTAssertNotNil(extender.rangeOfCharacter(from: .controlCharacters))
+            }
+            let header = "http." + extender + "scope.extraHeader", redirect = "http." + extender + "scope.followRedirects"
+            try self.git(["config", header, "X-Fixture: bytes"]); try self.git(["config", redirect, "true"])
+            let policy = try GitConfiguration(in: self.root, environment: self.environment).redirectOptions()
+            XCTAssertTrue(policy.protected)
+            XCTAssertEqual(try self.git(policy.options + ["config", "--get", redirect]), "false\n")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path))
+        }
+    }
+
+    func testGraphemeGlobalProgramValueIsRestoredOrConfined() async throws {
+        try await graphemeRepositories { extender in
+            let saved = self.environment!
+            defer { self.environment = saved }
+            let name = extender + "tool"
+            self.environment["GIT_CONFIG_GLOBAL"] = self.root.path + "/fixture-global"
+            self.environment["PATH"] = self.root.path + ":/usr/bin:/bin"
+            try self.write(name, "#!/bin/sh\n: > '\(self.root.path)/global-marker'\nprintf 'token\\000'\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.root.path + "/" + name)
+            try self.git(["config", "--file", self.root.path + "/fixture-global", "core.fsmonitor", name])
+            try self.git(["config", "core.fsmonitor", try self.markerProgram()])
+            _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: self.root.path + "/global-marker"), extender.rangeOfCharacter(from: .controlCharacters) == nil)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.path + "/fixture-marker"))
+        }
+    }
+
+    func testGraphemeOverrideSeparatorsCannotHideInKeys() async throws {
+        try await graphemeRepositories { extender in
+            let key = "filter.separator=" + extender + "fixture.clean"
+            try self.git(["config", key, try self.markerProgram()])
+            let process = Process(); process.currentDirectoryURL = self.root
+            let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: self.environment, trusted: true)
+            defer { read.remove() }
+            XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+            process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.path + "/fixture-marker"))
+        }
+    }
+
+    func testGraphemeFileOriginsAndDevicePrefixesStayExact() async throws {
+        try await graphemeRepositories { extender in
+            let saved = self.environment!
+            defer { self.environment = saved }
+            let global = extender + "global"
+            self.environment["GIT_CONFIG_GLOBAL"] = global
+            try self.write(global, "[include]\npath = global-payload\n")
+            try self.write("global-payload", "[core]\nfsmonitor = " + (try self.markerProgram()) + "\n")
+            try self.git(["config", "core.fsmonitor", "false"])
+            XCTAssertEqual(try self.git(["config", "--null", "--show-origin", "--get", "include.path"]), "file:" + global + "\0global-payload\0")
+            _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: self.root.path + "/fixture-marker"), "The global program remains allowed")
+            try? FileManager.default.removeItem(atPath: self.root.path + "/fixture-marker")
+            self.environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+            try self.git(["config", "includeIf.onbranch:absent.path", "/dev/" + extender + "fixture-absent"])
+            let process = Process(); process.currentDirectoryURL = self.root
+            let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: self.environment, trusted: true)
+            defer { read.remove() }
+            XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+            process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.path + "/fixture-marker"))
+        }
+    }
+
     func testDeinitializedSubmoduleKeepsRedirectRefusal() async throws {
         try await storedModuleRedirect(nested: false)
     }

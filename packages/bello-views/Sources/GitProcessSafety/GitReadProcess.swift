@@ -79,7 +79,7 @@ public struct GitReadProcess {
 
     private static func nonrecursive(_ arguments: [String]) -> [String] {
         var arguments = arguments, command = 0
-        while command < arguments.count, arguments[command].hasPrefix("-") {
+        while command < arguments.count, arguments[command].gitHasPrefix("-") {
             command += arguments[command] == "-c" ? 2 : 1
         }
         if command < arguments.count {
@@ -129,7 +129,7 @@ public struct GitReadProcess {
         let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         let bytes = data.last == 10 ? data.dropLast() : data
         let path = String(decoding: bytes, as: UTF8.self)
-        guard process.terminationStatus == 0, path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
+        guard process.terminationStatus == 0, path.gitHasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
             throw Failure()
         }
         return URL(fileURLWithPath: path).resolvingSymlinksInPath()

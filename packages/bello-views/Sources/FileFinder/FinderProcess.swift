@@ -54,11 +54,11 @@ enum FinderProcess {
         try handle.check()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-c", "core.quotepath=off"] + arguments
+        let all = ["-c", "core.quotepath=off"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         // A sparse index can load a missing tree and invoke a promisor remote,
         // even for ls-files/check-ignore. The shared read policy covers that too.
-        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle)
+        let confinement = try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle)
         defer { confinement.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr

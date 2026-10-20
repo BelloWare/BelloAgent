@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 import CryptoKit
 
 public struct GitBranchReference: Equatable, Sendable, Identifiable {
@@ -23,10 +24,10 @@ public struct GitBranchTracking: Equatable, Sendable {
     }
     private static func counts(_ value: String) -> (Int, Int)? {
         if value.isEmpty { return (0, 0) }
-        guard value.hasPrefix("["), value.hasSuffix("]") else { return nil }
+        guard value.gitHasPrefix("["), value.gitHasSuffix("]") else { return nil }
         var counts: [String: Int] = [:]
-        for part in value.dropFirst().dropLast().split(separator: ",", omittingEmptySubsequences: false) {
-            let fields = part.split(whereSeparator: \.isWhitespace)
+        for part in value.gitDropFirst().gitDropLast().gitSplit(separator: 44, omittingEmptySubsequences: false) {
+            let fields = part.gitSplitWhitespace()
             guard fields.count == 2, fields[0] == "ahead" || fields[0] == "behind",
                   counts[String(fields[0])] == nil, let count = Int(fields[1]), count >= 0 else { return nil }
             counts[String(fields[0])] = count
@@ -87,8 +88,8 @@ extension GitService {
         let object = try await run(["rev-parse", "--verify", "-q", "HEAD"], in: root)
         let symbolic = try await run(["symbolic-ref", "-q", "HEAD"], in: root)
         guard object.status == 0 || (object.status == 1 && symbolic.status == 0) else { throw GitFailure(message: "HEAD could not be read. Refresh the repository and try again.") }
-        return GitBranchHead(oid: object.status == 0 ? object.text.trimmingCharacters(in: .newlines) : "",
-                             ref: symbolic.status == 0 ? symbolic.text.trimmingCharacters(in: .newlines) : nil)
+        return GitBranchHead(oid: object.status == 0 ? object.path : "",
+                             ref: symbolic.status == 0 ? symbolic.path : nil)
     }
 
     public func branchCatalog(in root: String) async throws -> GitBranchCatalog {
@@ -96,21 +97,21 @@ extension GitService {
         // One actor-side metadata read for all refs. Tracking travels with the
         // catalog, so filtering, keyboard selection and layout never query Git.
         let output = try await branchCommand(["for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)%00%(upstream:short)%00%(upstream:track)", "refs/heads/", "refs/remotes/"], in: root)
-        let remotes = try await branchCommand(["remote"], in: root).text.split(separator: "\n").map(String.init).sorted { $0.count > $1.count }
-        let branches = output.text.split(separator: "\n").compactMap { line -> GitBranchReference? in
-            let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        let remotes = try await branchCommand(["remote"], in: root).text.gitSplit(separator: 10).sorted { $0.count > $1.count }
+        let branches = output.text.gitSplit(separator: 10).compactMap { line -> GitBranchReference? in
+            let fields = line.gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard fields.count == 6, fields[2].isEmpty else { return nil } // origin/HEAD is an alias, not a branch
-            let local = fields[0].hasPrefix("refs/heads/")
-            let name = String(fields[0].dropFirst(local ? 11 : 13))
-            let remote = local ? nil : remotes.first { name.hasPrefix($0 + "/") } ?? name.split(separator: "/").first.map(String.init)
+            let local = fields[0].gitHasPrefix("refs/heads/")
+            let name = String(fields[0].gitDropFirst(local ? 11 : 13))
+            let remote = local ? nil : remotes.first { name.gitHasPrefix($0 + "/") } ?? name.gitSplit(separator: 47).first
             return GitBranchReference(ref: fields[0], name: name, oid: fields[1], current: fields[0] == head.ref,
                                       remote: remote, upstream: fields[3].isEmpty ? nil : fields[3],
                                       tracking: local && !fields[4].isEmpty ? GitBranchTracking(upstream: fields[4], description: fields[5]) : nil)
         }
         let log = try await run(["reflog", "show", "-n", "80", "--format=%gs", "HEAD"], in: root)
         var recent: [String] = []
-        for line in log.text.split(separator: "\n") where line.hasPrefix("checkout: moving from ") {
-            guard let name = line.components(separatedBy: " to ").last,
+        for line in log.text.gitSplit(separator: 10) where line.gitHasPrefix("checkout: moving from ") {
+            guard let name = line.gitComponents(separatedBy: " to ").last,
                   let branch = branches.first(where: { $0.remote == nil && $0.name == name }), !recent.contains(branch.ref) else { continue }
             recent.append(branch.ref)
             if recent.count == 8 { break }
@@ -119,14 +120,14 @@ extension GitService {
     }
 
     private func requireBranch(_ branch: GitBranchReference, head: GitBranchHead? = nil, in root: String) async throws {
-        guard branch.ref.hasPrefix("refs/heads/") || branch.ref.hasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
-        let current = try await branchCommand(["rev-parse", "--verify", "--end-of-options", branch.ref + "^{commit}"], in: root).text.trimmingCharacters(in: .newlines)
+        guard branch.ref.gitHasPrefix("refs/heads/") || branch.ref.gitHasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
+        let current = try await branchCommand(["rev-parse", "--verify", "--end-of-options", branch.ref + "^{commit}"], in: root).path
         guard current == branch.oid else { throw GitFailure(message: "The branch moved. Refresh and review it again.") }
         if let head, try await branchHead(in: root) != head { throw GitFailure(message: "HEAD changed. Refresh and choose the action again.") }
     }
     private func branchName(_ name: String, in root: String) async throws -> String {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !name.hasPrefix("-"), name != "HEAD", !name.contains("@{"), !name.contains("\0") else { throw GitFailure(message: "Enter a valid branch name.") }
+        guard !name.isEmpty, !name.gitHasPrefix("-"), name != "HEAD", !name.gitContains("@{"), !name.utf8.contains(0) else { throw GitFailure(message: "Enter a valid branch name.") }
         _ = try await branchCommand(["check-ref-format", "refs/heads/" + name], in: root)
         return name
     }
@@ -191,7 +192,7 @@ extension GitService {
         guard !current.isUnborn else { throw GitFailure(message: "Create the initial commit or check out a branch before comparing history.") }
         async let ours = branchCommits(from: branch.oid, to: current.oid, in: root, skip: skip)
         async let theirs = branchCommits(from: current.oid, to: branch.oid, in: root, skip: skip)
-        let counts = try await branchCommand(["rev-list", "--left-right", "--count", current.oid + "..." + branch.oid, "--"], in: root).text.split(whereSeparator: \.isWhitespace)
+        let counts = try await branchCommand(["rev-list", "--left-right", "--count", current.oid + "..." + branch.oid, "--"], in: root).text.gitSplitWhitespace()
         return try await GitBranchComparison(current: current, target: branch, onlyCurrent: ours, onlyTarget: theirs,
                                               currentCount: Int(counts.first ?? "0") ?? 0, targetCount: Int(counts.last ?? "0") ?? 0)
     }
@@ -202,15 +203,15 @@ extension GitService {
 
     private func requireNotCheckedOut(_ branch: GitBranchReference, in root: String) async throws {
         guard branch.remote == nil else { throw GitFailure(message: "Remote branch deletion is not offered.") }
-        let worktrees = try await branchCommand(["worktree", "list", "--porcelain", "-z"], in: root).text.split(separator: "\0")
-        guard !worktrees.contains(Substring("branch " + branch.ref)) else { throw GitFailure(message: "This branch is checked out in a worktree. Switch that worktree to another branch first.") }
+        let worktrees = try await branchCommand(["worktree", "list", "--porcelain", "-z"], in: root).text.gitSplit(separator: 0)
+        guard !worktrees.contains("branch " + branch.ref) else { throw GitFailure(message: "This branch is checked out in a worktree. Switch that worktree to another branch first.") }
     }
     public func reviewBranchDeletion(_ branch: GitBranchReference, in root: String) async throws -> GitBranchDeletion {
         try await requireNotCheckedOut(branch, in: root)
         let head = try await branchHead(in: root)
         guard !head.isUnborn else { throw GitFailure(message: "Check out a committed branch before reviewing another branch for deletion.") }
         try await requireBranch(branch, head: head, in: root)
-        let count = try await branchCommand(["rev-list", "--count", head.oid + ".." + branch.oid, "--"], in: root).text.trimmingCharacters(in: .newlines)
+        let count = try await branchCommand(["rev-list", "--count", head.oid + ".." + branch.oid, "--"], in: root).path
         return try await GitBranchDeletion(branch: branch, head: head, unmergedCount: Int(count) ?? 0,
                                             commits: branchCommits(from: head.oid, to: branch.oid, in: root, limit: 8))
     }

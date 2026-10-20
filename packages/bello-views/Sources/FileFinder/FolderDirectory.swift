@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 public struct FolderEntry: Sendable, Equatable {
     public let url: URL
@@ -48,7 +49,7 @@ public struct FolderDirectory: Sendable {
             let name = String(decoding: value.name, as: UTF8.self)
             let url = folder.appendingPathComponent(name, isDirectory: false)
             var status = stat()
-            let hidden = name.hasPrefix(".") || (lstat(url.path, &status) == 0 && status.st_flags & UInt32(UF_HIDDEN) != 0)
+            let hidden = name.gitHasPrefix(".") || (lstat(url.path, &status) == 0 && status.st_flags & UInt32(UF_HIDDEN) != 0)
             entries.append(FolderEntry(url: url, isDirectory: value.kind == .folder, isDimmed: hidden))
         }
         var warnings: [String] = complete ? [] : ["Only the first \(limits.files.formatted()) entries or \(limits.pathBytes.formatted()) bytes of names were read."]
@@ -82,17 +83,17 @@ public struct FolderDirectory: Sendable {
                 try Task.checkCancellation()
                 if !component.isEmpty {
                     cursor.appendPathComponent(component)
-                    let relative = Array(cursor.path.dropFirst(base.path == "/" ? 1 : base.path.count + 1).utf8)
+                    let relative = Array(cursor.path.gitDropFirst(base.path == "/" ? 1 : base.path.utf8.count + 1).utf8)
                     inherited = inherited || rules.isIgnored(relative, nameStart: relative.count - component.utf8.count, isDirectory: true)
                 }
-                let prefix = cursor == base ? "" : String(cursor.path.dropFirst(base.path == "/" ? 1 : base.path.count + 1)) + "/"
+                let prefix = cursor == base ? "" : String(cursor.path.gitDropFirst(base.path == "/" ? 1 : base.path.utf8.count + 1)) + "/"
                 switch FileListing.contents(of: cursor.path + "/.gitignore", limit: FileListing.ignoreFileLimit, following: false) {
                 case .data(let data): rules.stack.append(IgnoreFile(base: Array(prefix.utf8), contents: data))
                 case .tooLarge: warn("An ignore file over 1 MiB was not applied.")
                 case .missing: break
                 }
             }
-            let prefix = folder == base ? "" : String(folder.path.dropFirst(base.path == "/" ? 1 : base.path.count + 1)) + "/"
+            let prefix = folder == base ? "" : String(folder.path.gitDropFirst(base.path == "/" ? 1 : base.path.utf8.count + 1)) + "/"
             for entry in entries {
                 try Task.checkCancellation()
                 if inherited || rules.isIgnored(Array((prefix + entry.name).utf8), nameStart: prefix.utf8.count, isDirectory: entry.isDirectory) { ignored.insert(entry.name) }

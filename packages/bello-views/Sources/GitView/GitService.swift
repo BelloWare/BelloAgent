@@ -372,36 +372,36 @@ public actor GitService {
         func next() -> String? { guard index < fields.count else { return nil }; defer { index += 1 }; return fields[index] }
         while let line = next() {
             if line.isEmpty { continue }
-            if line.hasPrefix("# ") {
-                let parts = line.dropFirst(2).split(separator: " ", maxSplits: 1).map(String.init)
+            if line.gitHasPrefix("# ") {
+                let parts = line.gitDropFirst(2).gitSplit(separator: 32, maxSplits: 1)
                 guard parts.count == 2 else { continue }
                 switch parts[0] {
                 case "branch.head": status.branch = parts[1]
                 case "branch.oid": status.head = parts[1] == "(initial)" ? nil : parts[1]
                 case "branch.upstream": status.upstream = parts[1]
                 case "branch.ab":
-                    let counts = parts[1].split(separator: " ")
-                    status.ahead = Int(counts.first?.dropFirst() ?? "") ?? 0
-                    status.behind = Int(counts.last?.dropFirst() ?? "") ?? 0
+                    let counts = parts[1].gitSplit(separator: 32)
+                    status.ahead = Int(counts.first?.gitDropFirst() ?? "") ?? 0
+                    status.behind = Int(counts.last?.gitDropFirst() ?? "") ?? 0
                 default: break
                 }
                 continue
             }
-            let columns = line.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+            let columns = line.gitSplit(separator: 32, omittingEmptySubsequences: false)
             switch columns.first {
             case "1" where columns.count >= 9:
-                let xy = Array(columns[1]); let path = columns[8...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }; guard xy.count == 2 else { continue }; let path = columns[8...].joined(separator: " ")
                 status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "2" where columns.count >= 10:
-                let xy = Array(columns[1]); let path = columns[9...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }; guard xy.count == 2 else { continue }; let path = columns[9...].joined(separator: " ")
                 let original = next() ?? ""
                 status.entries.append(GitStatusEntry(path: path, originalPath: original, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "u" where columns.count >= 11:
-                let xy = Array(columns[1]), path = columns[10...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }, path = columns[10...].joined(separator: " ")
                 guard xy.count == 2 else { continue }
                 status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "?":
-                status.entries.append(GitStatusEntry(path: String(line.dropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
+                status.entries.append(GitStatusEntry(path: String(line.gitDropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
             default: break
             }
         }
@@ -420,7 +420,7 @@ public actor GitService {
         let path = path ?? filter.path
         if path != nil { arguments.append("--follow") }
         if let reference {
-            guard reference.hasPrefix("refs/heads/") || reference.hasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
+            guard reference.gitHasPrefix("refs/heads/") || reference.gitHasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
             arguments += ["--end-of-options", reference]
         }
         if let path { arguments += ["--"] + Self.literal([path]) }
@@ -432,7 +432,7 @@ public actor GitService {
         }
         var commits = Self.parseLog(output.text)
         // A hex filter is also tried as a hash prefix, on the first page only.
-        if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.hasPrefix(text.lowercased()) }) {
+        if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.gitHasPrefix(text.lowercased()) }) {
             let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
             if byHash.status == 0, let match = Self.parseLog(byHash.text).first {
                 var show = filter.allBranches && reference == nil
@@ -445,12 +445,12 @@ public actor GitService {
 
     static func parseLog(_ text: String) -> [GitCommit] {
         let formatter = ISO8601DateFormatter()
-        return text.split(separator: "\u{1e}", omittingEmptySubsequences: true).compactMap { record in
-            let fields = record.trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        return text.gitSplit(separator: 30, omittingEmptySubsequences: true).compactMap { record in
+            let fields = record.trimmingCharacters(in: .newlines).gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard fields.count >= 6, !fields[0].isEmpty else { return nil }
-            let refs = fields.count >= 7 ? fields[6].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } : []
+            let refs = fields.count >= 7 ? fields[6].gitSplit(separator: 44).map { $0.gitTrimmingWhitespace() }.filter { !$0.isEmpty } : []
             return GitCommit(hash: fields[0], shortHash: fields[1], author: fields[2], date: formatter.date(from: fields[3]) ?? Date(timeIntervalSince1970: 0),
-                             subject: fields[4], parents: fields[5].split(separator: " ").map(String.init), refs: refs)
+                             subject: fields[4], parents: fields[5].gitSplit(separator: 32), refs: refs)
         }
     }
 
@@ -483,9 +483,9 @@ public actor GitService {
         var index = 0
         while index < fields.count {
             var record = fields[index]; index += 1
-            while record.first == "\n" || record.first == "\r" { record.removeFirst() }
+            while record.utf8.first == 10 || record.utf8.first == 13 { record = record.gitDropFirst() }
             guard !record.isEmpty else { continue }
-            let parts = record.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            let parts = record.gitSplit(separator: 9, omittingEmptySubsequences: false)
             guard parts.count >= 2 else { continue }
             let binary = parts[0] == "-" || parts[1] == "-"
             var path = parts.count >= 3 ? parts[2...].joined(separator: "\t") : ""
@@ -546,7 +546,8 @@ public actor GitService {
         while index < fields.count {
             // `git show` writes a newline between its header and the records.
             let code = fields[index].trimmingCharacters(in: .newlines); index += 1
-            guard let state = code.first, index < fields.count else { break }
+            guard let byte = code.utf8.first, index < fields.count else { break }
+            let state = Character(UnicodeScalar(byte))
             if state == "R" || state == "C" {
                 let original = fields[index]; index += 1
                 guard index < fields.count else { break }
@@ -564,24 +565,24 @@ public actor GitService {
     /// even a large `node_modules` costs one line.
     func ignoredPaths(in root: String) async throws -> [String] {
         let output = try require(await run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], in: root), "Listing ignored paths")
-        return output.text.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+        return output.text.gitSplit(separator: 0).filter { !$0.isEmpty }
     }
     func branches(in root: String) async throws -> [String] {
         let output = try require(await run(["branch", "--list", "--format=%(refname:short)"], in: root), "Listing branches")
-        return output.text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return output.text.gitSplit(separator: 10).filter { !$0.isEmpty }
     }
     func checkout(_ branch: String, in root: String) async throws {
         _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root, readOnly: false), "Switching branch")
     }
     func createBranch(_ name: String, in root: String) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains(" ") else { throw GitFailure(message: "Enter a branch name without spaces.") }
+        guard !trimmed.isEmpty, !trimmed.utf8.contains(32) else { throw GitFailure(message: "Enter a branch name without spaces.") }
         _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root, readOnly: false), "Creating the branch")
     }
     func stashes(in root: String) async throws -> [GitStashEntry] {
         let output = try require(await run(["stash", "list", "--format=%gd%x00%s"], in: root), "Listing stashes")
-        return output.text.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        return output.text.gitSplit(separator: 10).compactMap { line in
+            let parts = line.gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard parts.count == 2 else { return nil }
             return GitStashEntry(name: parts[0], subject: parts[1])
         }
@@ -742,8 +743,8 @@ public actor GitService {
     /// leave to remove what the first commit would have had.
     func isUnbornBranch(in root: String) async throws -> Bool {
         let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
-        let branch = symbolic.text.trimmingCharacters(in: .newlines)
-        guard symbolic.status == 0, branch.hasPrefix("refs/heads/"),
+        let branch = symbolic.path
+        guard symbolic.status == 0, branch.gitHasPrefix("refs/heads/"),
               try await run(["rev-parse", "--verify", "--quiet", "HEAD"], in: root).status == 1 else { return false }
         // `show-ref --verify` answers the same for a missing and a damaged
         // ref; `for-each-ref` lists nothing for a missing one, warns about a
@@ -751,15 +752,15 @@ public actor GitService {
         // Its pattern also matches refs below it (`topic/work` for `topic`),
         // so only the exact name counts as the branch existing.
         let listed = try await run(["for-each-ref", "--format=%(refname)", branch], in: root)
-        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.split(separator: "\n").contains { $0 == branch }
+        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.gitSplit(separator: 10).contains { $0 == branch }
     }
     /// Which of these paths the index holds as submodules (gitlinks).
     private func gitlinks(_ paths: [String], in root: String) async throws -> Set<String> {
         var found: Set<String> = []
         for batch in Self.batches(of: Self.literal(paths), prefix: ["ls-files", "-s", "-z", "--"]) {
             let output = try require(await run(["ls-files", "-s", "-z", "--"] + batch, in: root), "Reading the index")
-            for record in output.text.split(separator: "\0") where record.hasPrefix("160000 ") {
-                if let tab = record.firstIndex(of: "\t") { found.insert(String(record[record.index(after: tab)...])) }
+            for record in output.text.gitSplit(separator: 0) where record.gitHasPrefix("160000 ") {
+                if let parts = record.gitSplitOnce(separator: 9) { found.insert(parts.after) }
             }
         }
         return found
@@ -779,9 +780,9 @@ public actor GitService {
     static func cleanedMessage(_ message: String) -> String {
         var lines: [String] = []
         var blank = false
-        for raw in message.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+        for raw in message.gitComponents(separatedBy: "\r\n").joined(separator: "\n").gitSplit(separator: 10, omittingEmptySubsequences: false) {
             var line = String(raw)
-            while let last = line.last, last == " " || last == "\t" { line.removeLast() }
+            while let last = line.utf8.last, last == 32 || last == 9 { line = line.gitDropLast() }
             if line.isEmpty { blank = !lines.isEmpty; continue }
             if blank { lines.append("") ; blank = false }
             lines.append(line)
@@ -816,17 +817,17 @@ public actor GitService {
         // where a shallow clone stops (rev-list would report none there and
         // the reword would become a new root).
         let header = try require(await run(["cat-file", "commit", head], in: root), "Reading the last commit").text
-            .components(separatedBy: "\n\n").first ?? ""
-        let fields = header.split(separator: "\n").map(String.init)
-        guard let tree = fields.first(where: { $0.hasPrefix("tree ") }).map({ String($0.dropFirst(5)) }) else { throw GitFailure(message: "The last commit could not be read.") }
-        let parents = fields.filter { $0.hasPrefix("parent ") }.map { String($0.dropFirst(7)) }
+            .gitComponents(separatedBy: "\n\n").first ?? ""
+        let fields = header.gitSplit(separator: 10)
+        guard let tree = fields.first(where: { $0.gitHasPrefix("tree ") }).map({ $0.gitDropFirst(5) }) else { throw GitFailure(message: "The last commit could not be read.") }
+        let parents = fields.filter { $0.gitHasPrefix("parent ") }.map { $0.gitDropFirst(7) }
         // A commit cannot be written over a parent git does not have (a
         // shallow clone's edge): refused, never rewritten as a new root.
         for parent in parents where try await run(["cat-file", "-e", parent + "^{commit}"], in: root).status != 0 {
             throw GitFailure(message: "The last commit's parent is not in this clone (it is shallow). Reword it in a full clone.")
         }
         let author = try require(await run(["log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", head], in: root), "Reading the last commit").text
-            .trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            .trimmingCharacters(in: .newlines).gitSplit(separator: 0, omittingEmptySubsequences: false)
         guard author.count == 3 else { throw GitFailure(message: "The last commit's author could not be read.") }
         let branch = try await symbolicHead(in: root)
 
@@ -846,9 +847,9 @@ public actor GitService {
         try Data(Self.cleanedMessage(message).utf8).write(to: messageFile)
         if signOff {
             let identity = try require(await run(["var", "GIT_COMMITTER_IDENT"], in: root), "Reading sign-off identity").text
-            guard let end = identity.lastIndex(of: ">") else { throw GitFailure(message: "The sign-off identity could not be read.") }
+            guard let parts = identity.gitSplitOnce(separator: 62, last: true) else { throw GitFailure(message: "The sign-off identity could not be read.") }
             _ = try require(await run(["interpret-trailers", "--in-place", "--if-exists=addIfDifferent", "--trailer",
-                                       "Signed-off-by: " + identity[...end], messageFile.path], in: root, readOnly: false), "Adding sign-off")
+                                       "Signed-off-by: " + parts.before + ">", messageFile.path], in: root, readOnly: false), "Adding sign-off")
         }
         // As git commit --amend -m calls it: a message given, amending HEAD.
         _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The prepare-commit-msg hook")
@@ -884,7 +885,7 @@ public actor GitService {
         if let expectedTarget { try await validateCommitTarget(expectedTarget, in: root) }
         guard try await symbolicHead(in: root) == branch else { throw GitFailure(message: "HEAD moved to another branch while rewording, so the last commit was not reworded.") }
         try await refuseDuringOperation(in: root)
-        let subject = finalMessage.split(separator: "\n").first.map(String.init) ?? ""
+        let subject = finalMessage.gitSplit(separator: 10).first ?? ""
         let reflog = "commit (amend): " + subject
         // Compare-and-swap through HEAD itself: git locks HEAD and the branch
         // it names together, and moves that branch (or a detached HEAD) only
@@ -954,7 +955,7 @@ public actor GitService {
         let shallowFile = try? require(await run(["rev-parse", "--path-format=absolute", "--git-path", "shallow"], in: root), "Reading the repository").text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let shallowFile, let edge = try? String(contentsOfFile: shallowFile, encoding: .utf8) {
-            blame = blame.marking(historyMissing: Set(edge.split(whereSeparator: \.isNewline).map(String.init)))
+            blame = blame.marking(historyMissing: Set(edge.gitSplit(separator: 10)))
         }
         return blame
     }
@@ -970,7 +971,7 @@ public actor GitService {
     /// The branch HEAD is on (its full ref name), or nil when detached.
     private func symbolicHead(in root: String) async throws -> String? {
         let symbolic = try await run(["symbolic-ref", "-q", "HEAD"], in: root)
-        return symbolic.status == 0 ? symbolic.text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        return symbolic.status == 0 ? symbolic.path : nil
     }
 
     /// The files on disk, as something to compare: every tracked file and
@@ -1015,9 +1016,9 @@ public actor GitService {
         let configured = try await run(["config", "--path", "--get", "core.hooksPath"], in: root)
         var folder: String
         if configured.status == 0, case let value = configured.path, !value.isEmpty {
-            folder = value.hasPrefix("/") ? value : (root as NSString).appendingPathComponent(value)
+            folder = value.gitHasPrefix("/") ? value : (root as NSString).appendingPathComponent(value)
         } else {
-            folder = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], in: root), "Reading the repository").text.trimmingCharacters(in: .newlines)
+            folder = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], in: root), "Reading the repository").path
         }
         let hook = (folder as NSString).appendingPathComponent("post-rewrite")
         guard FileManager.default.isExecutableFile(atPath: hook) else { return }

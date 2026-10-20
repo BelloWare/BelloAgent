@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 /// A value captured before any read starts. Hash navigation is deliberately
 /// absent: opening a commit must never insert a row into filtered pagination.
@@ -59,10 +60,10 @@ public struct GitHistoryRef: Equatable, Sendable, Identifiable {
     public let object: String
     public var id: String { name }
     public var title: String {
-        for prefix in ["refs/heads/", "refs/remotes/", "refs/tags/"] where name.hasPrefix(prefix) { return String(name.dropFirst(prefix.count)) }
+        for prefix in ["refs/heads/", "refs/remotes/", "refs/tags/"] where name.gitHasPrefix(prefix) { return String(name.gitDropFirst(prefix.utf8.count)) }
         return name
     }
-    public var kind: String { name.hasPrefix("refs/tags/") ? "Tag" : name.hasPrefix("refs/remotes/") ? "Remote branch" : "Branch" }
+    public var kind: String { name.gitHasPrefix("refs/tags/") ? "Tag" : name.gitHasPrefix("refs/remotes/") ? "Remote branch" : "Branch" }
 }
 
 /// Every page walks these immutable commit IDs, even if a branch moves while

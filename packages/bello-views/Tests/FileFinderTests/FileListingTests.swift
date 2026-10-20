@@ -19,6 +19,23 @@ final class FileListingTests: XCTestCase {
         git = try TestGit(root)
     }
 
+    func testGraphemeBreadcrumbAndIgnorePathDelimiters() async throws {
+        for (index, extender) in ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"].enumerated() {
+            // Outside Git, the folder browser applies the same .gitignore
+            // path syntax without invoking any configured program.
+            let base = root.appendingPathComponent("plain-\(index)"), name = extender + "folder"
+            let folder = base.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write(name + "/ignored\n", ".gitignore", in: base)
+            try write("fixture\n", "ignored", in: folder)
+            try write("fixture\n", "." + extender + "hidden", in: folder)
+            XCTAssertTrue(FileBreadcrumb.contains(folder, in: base))
+            let result = try await FolderDirectory.read(folder, relativeTo: base, environment: git.environment)
+            XCTAssertTrue(result.entries.first { $0.name == "ignored" }?.isDimmed == true)
+            XCTAssertTrue(result.entries.first { $0.name == "." + extender + "hidden" }?.isDimmed == true)
+        }
+    }
+
     func testGitPathsKeepTrailingCarriageReturn() async throws {
         let repo = root.appendingPathComponent("repo\r")
         try git.initialize(repo)

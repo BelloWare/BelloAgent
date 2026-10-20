@@ -1726,3 +1726,59 @@ Final adversarial review rechecked every stored-module traversal exit, grouping 
 The only integration discrepancy is the anticipated FileFolder resolver setup/test being absent from the fetched upstream, as documented above; the marker test remains intact. No unresolved finding in the round-8 fix or owner-policy decision remains.
 
 Removed the generated large repository, exported baseline package, temporary byte-probe compiler cache and default XCTest result bundles after extracting evidence. No Clone directories remain. Text logs and JSON evidence are retained (`round8-cleanup.json`). Both validation drivers released their own shared lock; other workstreams’ locks and build products were untouched.
+
+## Round 9: byte-delimited Git parsing — 2026-10-21
+
+The five findings are confirmed against `7ee344e2824b1de07b74c3f148e0a0e595c0fc85`. A shared UTF-8 delimiter implementation now separates Git syntax from user-facing Unicode text. Every GitProcessSafety prefix/suffix, separator, config-key case comparison and path-component parser uses bytes or Unicode scalars. Generated override parsing guards missing/invalid fields rather than force-unwrapping. Existing control-character and exact-byte representability failures still select confinement; ZWJ is included in Foundation's control-character set and retains that conservative policy. No global program setting is silently rewritten.
+
+The sweep covers all of GitProcessSafety and the Git path/config/output readers in GitView and FileFinder. It also fixes adjacent instances that feed subsequent reads or mutations. No new Git behavior, transport permission or trust exception is introduced.
+
+| Entry points / fixed instances | Byte delimiters and coverage |
+| --- | --- |
+| Program-key classification, credential resets and required-filter defaults | `.` boundaries for filter, alias, pager, diff, difftool, gpg, credential and remote families; real `git config` validates keys and reads effective neutralised values back. |
+| Redirect-key inventory | HTTP section/subsection `.` boundaries, case-insensitive ASCII key comparison, `=` override separator; any header-key presence still refuses all redirects. |
+| Origin and active/inactive include resolution | `file:`, absolute `/`, final parent `/`, NUL/name/LF records; actual Git-reported origins and rev-parse paths determine expectations. Both relative-include sites stamp the real missing target. |
+| Config/discovery resolution and invalidation | Original paths and readlink targets split on slash bytes; symlinks before a leading combining mark remain in the chain. Hardlinked config retarget tests still change the policy. |
+| Conditional branch inventory | `includeif.onbranch:` and `refs/` prefixes; a symbolic alias change with unchanged HEAD rechecks the newly active include. |
+| Generated overrides | First `=`, first/last `.`, subsection quote/backslash and glob punctuation; Git reads every representable generated config back exactly. Missing/invalid fields and unsupported control scalars throw confinement, never trap. |
+| Git root, branch, history, stash and submodule metadata | LF/NUL/space/comma/tab/colon, ref prefixes, stash selector punctuation and ASCII whitespace; output path/ref terminators remove exactly one LF. User text search remains Unicode-aware. |
+| Status, name-status, numstat and blame | NUL records, space/tab fields, byte status codes and blame metadata keys; generated real Git outputs preserve literal path/author/subject bytes. |
+| Display/raw patch and C-quoted path parsing | `diff --git`, `a/`, `b/`, `--- `, `+++ `, `@@`, comma/space, quote/backslash, line `+`/`-`/space/note prefixes, LF/CRLF. Hunk data remains raw bytes. |
+| Hunk working-file traversal | Every `/` component is opened separately with the existing no-follow checks; a separator plus combining mark cannot hide a symlink inside an openat path. |
+| Watcher gitfiles, common dirs, refs and ignored paths | `gitdir: `, `/private`, relative/absolute `/`, LF/CRLF, directory-prefix separators; state notifications and ignored-directory coverage retain exact components. |
+| FileFinder breadcrumbs, hidden names and ignore fallback | Root `/`, hidden `.`, relative path slices use UTF-8 counts; ignore patterns were already byte-based and remain so. |
+
+The table-driven fixtures place U+0301, U+200D, U+FE0F and a regional-indicator pair beside relevant delimiters. Generated-config cases additionally cover `. / : = " \ [ ] * ?`, space, TAB, LF and NUL; real Git accepts and reads back representable cases, while unsupported encodings select confinement. File and program fixtures only write marker files inside generated temporary directories. The matrix verifies both local-program suppression and allowed global fsmonitor execution.
+
+Before-fix evidence: the first four finding tests failed 29 assertions; the isolated restored-value test trapped at the old `GitInventoryCache.swift:203` with signal 5. After correcting fixture expectations, the finalized broad replay on round 8 executed **13 tests with 135 failed assertions, 0 unexpected** (`round9-before-final-fixtures.log`). Both the direct restored-value case and the real global-value restoration case independently reproduced the same trap (`round9-before-value.log`, `round9-before-global-value.log`). Exact commands and exit statuses are in `round9-before.json` under this workstream's build root.
+
+Fixture corrections are retained in the preliminary logs: path assertions now use Git's own absolute spelling rather than Foundation's `/var` alias; fixture C-quoting uses scalar escapes rather than grapheme-sensitive replacement; fsmonitor readback uses the scratch config directly so the confined inventory's own false override does not mask the value being tested; ZWJ cases accept the existing control-character confinement. None of those preliminary results is counted as final validation.
+
+#### Mutation checks and adversarial self-review
+
+Each mutation restored one Character-based boundary (or the original generated-option parser), then rebuilt and ran its regression; all **16 mutations were detected**. Per-command records are in `$B/logs/round9-mutations-through-quoting.json` and `round9-mutations.json`; the final fixed matrix is rerun after restoring sources.
+
+| Mutated boundary | Result |
+| --- | --- |
+| program-prefix | Executed 2 tests, with 43 failures (0 unexpected) in 7.883 (7.884) seconds |
+| active-include-parent | Executed 1 test, with 7 failures (0 unexpected) in 12.202 (12.203) seconds |
+| inactive-include-parent | Executed 1 test, with 5 failures (0 unexpected) in 9.524 (9.525) seconds |
+| original-path-chain | Executed 2 tests, with 9 failures (0 unexpected) in 4.303 (4.305) seconds |
+| readlink-chain | Executed 1 test, with 3 failures (0 unexpected) in 0.220 (0.221) seconds |
+| onbranch-prefix | Executed 1 test, with 6 failures (0 unexpected) in 4.518 (4.519) seconds |
+| override-parser-trap | Signal 5: restored forced unwrap |
+| header-prefix | Executed 1 test, with 6 failures (0 unexpected) in 5.721 (5.722) seconds |
+| origin-prefix | Executed 1 test, with 3 failures (0 unexpected) in 5.610 (5.612) seconds |
+| shared-field-split | Executed 2 tests, with 9 failures (0 unexpected) in 6.468 (6.470) seconds |
+| shared-prefix-removal | Executed 2 tests, with 21 failures (0 unexpected) in 5.952 (5.953) seconds |
+| quoted-path-parser | Executed 1 test, with 15 failures (0 unexpected) in 0.230 (0.231) seconds |
+| working-file-symlink | Executed 1 test, with 3 failures (0 unexpected) in 0.226 (0.227) seconds |
+| watcher-metadata | Executed 1 test, with 6 failures (0 unexpected) in 0.216 (0.217) seconds |
+| folder-ignore-paths | Executed 1 test, with 6 failures (0 unexpected) in 0.847 (0.848) seconds |
+| breadcrumb-boundary | Executed 1 test, with 6 failures (0 unexpected) in 0.909 (0.910) seconds |
+
+Two preliminary mutation attempts survived and are retained as evidence: replacing only program-prefix checks did not fail the marker-only selection, so the final check restores the original classifier and additionally verifies effective Git configuration; the original quoted-path selection did not place a scalar immediately after its opening/closing quote, so that test was extended before repeating the mutation (15 failed assertions). No compile failure was counted as a detected mutation.
+
+Self-review followed inventory input through config classification, both include expansions, original/readlink component walks, branch dependencies, override emission, and the command/fallback boundary. Remaining `split`/index/prefix operations in GitProcessSafety are on bytes, arrays or Unicode scalars. Generated options reject malformed separators rather than force-unwrapping. GitView/FileFinder now share the byte operations for protocol and path boundaries; user-entered search grammar and human-facing messages remain character-aware. Raw invalid UTF-8 and unsupported controls retain the existing confinement policy. No real preferences, credentials, user repositories, or remote services were used by fixtures.
+
+After restoring every mutation, the finalized matrix passed **16/16**, with no failures (`round9-matrix-restored-after-mutations.log`). All production files were byte-compared with the pre-mutation backup before committing.

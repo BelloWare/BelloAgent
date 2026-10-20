@@ -71,20 +71,20 @@ import GitProcessSafety
         let marker = root + "/.git"
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: marker, isDirectory: &isDirectory), !isDirectory.boolValue,
-              let text = try? String(contentsOfFile: marker, encoding: .utf8), text.hasPrefix("gitdir: ")
+              let text = try? String(contentsOfFile: marker, encoding: .utf8), text.gitHasPrefix("gitdir: ")
         else { return nil }
-        let named = Self.metadataPath(String(text.dropFirst("gitdir: ".count)))
+        let named = Self.metadataPath(text.gitDropFirst(8))
         guard !named.isEmpty else { return nil }
-        let absolute = named.hasPrefix("/") ? named : root + "/" + named
+        let absolute = named.gitHasPrefix("/") ? named : root + "/" + named
         let resolved = URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
-        return resolved == root || resolved.hasPrefix(root + "/") ? nil : resolved
+        return resolved == root || resolved.gitHasPrefix(root + "/") ? nil : resolved
     }
 
     nonisolated static func commonDirectory(of gitDirectory: String) -> String? {
         guard let text = try? String(contentsOfFile: gitDirectory + "/commondir", encoding: .utf8) else { return nil }
         let named = Self.metadataPath(text)
         guard !named.isEmpty else { return nil }
-        let absolute = named.hasPrefix("/") ? named : gitDirectory + "/" + named
+        let absolute = named.gitHasPrefix("/") ? named : gitDirectory + "/" + named
         return URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
@@ -182,23 +182,23 @@ import GitProcessSafety
         // A linked worktree keeps its git state outside the tree; the same few
         // names matter there as inside a `.git` directory. Its own directory
         // first: it sits inside the common one.
-        if let gitDirectory, path == gitDirectory || path.hasPrefix(gitDirectory + "/") {
-            return isGitState(path.dropFirst(gitDirectory.count).drop(while: { $0 == "/" }))
+        if let gitDirectory, path == gitDirectory || path.gitHasPrefix(gitDirectory + "/") {
+            return isGitState(path.gitDropFirst(gitDirectory.utf8.count))
         }
-        if let common = commonDirectory.map(GitIgnoredPaths.comparable), path == common || path.hasPrefix(common + "/") {
-            return isGitState(path.dropFirst(common.count).drop(while: { $0 == "/" }))
+        if let common = commonDirectory.map(GitIgnoredPaths.comparable), path == common || path.gitHasPrefix(common + "/") {
+            return isGitState(path.gitDropFirst(common.utf8.count))
         }
-        guard path.hasPrefix(root) else { return !stateOnly }
-        let relative = path.dropFirst(root.count).drop(while: { $0 == "/" })
-        var parts = relative.split(separator: "/", omittingEmptySubsequences: true)
+        guard path.gitHasPrefix(root) else { return !stateOnly }
+        let relative = path.gitDropFirst(root.utf8.count)
+        var parts = relative.gitSplit(separator: 47, omittingEmptySubsequences: true)
         guard let first = parts.first else { return false }
         guard first == ".git" else { return !stateOnly }
         parts.removeFirst()
-        return isGitState(parts.joined(separator: "/")[...])
+        return isGitState(parts.joined(separator: "/"))
     }
     /// True for the few names that say where HEAD is and what is staged.
-    private nonisolated static func isGitState(_ relative: Substring) -> Bool {
-        guard let first = relative.split(separator: "/", omittingEmptySubsequences: true).first else { return false }
+    private nonisolated static func isGitState(_ relative: String) -> Bool {
+        guard let first = relative.gitSplit(separator: 47, omittingEmptySubsequences: true).first else { return false }
         return ["HEAD", "index", "refs", "packed-refs", "MERGE_HEAD", "ORIG_HEAD", "REBASE_HEAD", "shallow"].contains(String(first))
     }
 }
@@ -294,7 +294,7 @@ final class GitIgnoredPaths: @unchecked Sendable {
         let root = Self.comparable(root)
         var directories: [String] = [], files: Set<String> = []
         for entry in relative {
-            if entry.hasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
+            if entry.gitHasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
         }
         lock.lock(); self.directories = directories; self.files = files; lock.unlock()
     }
@@ -302,12 +302,12 @@ final class GitIgnoredPaths: @unchecked Sendable {
         let path = Self.comparable(path)
         lock.lock(); defer { lock.unlock() }
         if files.contains(path) { return true }
-        let directory = path.hasSuffix("/") ? path : path + "/"
-        return directories.contains { directory.hasPrefix($0) }
+        let directory = path.gitHasSuffix("/") ? path : path + "/"
+        return directories.contains { directory.gitHasPrefix($0) }
     }
     /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
     /// "/private" (the root reads "/var/…") while FSEvents keeps it.
-    static func comparable(_ path: String) -> String { path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path }
+    static func comparable(_ path: String) -> String { path.gitHasPrefix("/private/") ? path.gitDropFirst(8) : path }
 }
 
 /// Told when a repository's HEAD, refs or index change — a commit, a

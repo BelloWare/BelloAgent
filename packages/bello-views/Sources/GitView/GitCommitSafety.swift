@@ -30,7 +30,7 @@ extension GitService {
         guard let head = try await headCommit(in: root) else { return nil }
         let branch = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
         guard branch.status == 0 || branch.status == 1 else { throw GitFailure(message: "The current branch could not be read.") }
-        return GitCommitTarget(head: head, branch: branch.status == 0 ? String(branch.text.trimmingCharacters(in: .newlines).dropFirst("refs/heads/".count)) : "(detached)")
+        return GitCommitTarget(head: head, branch: branch.status == 0 ? String(branch.path.gitDropFirst("refs/heads/".count)) : "(detached)")
     }
 
     func validateCommitTarget(_ expected: GitCommitTarget, in root: String) async throws {

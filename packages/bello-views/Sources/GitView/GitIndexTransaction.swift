@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 import Darwin
 
 struct GitIndexSnapshot: Sendable {
@@ -92,8 +93,8 @@ struct GitIndexTransaction {
 struct GitPatchFile {
     let bytes: Data, mode: String
     static func read(in root: String, path: String) throws -> Self {
-        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+        let parts = path.gitSplit(separator: 47, omittingEmptySubsequences: false)
+        guard let last = parts.last, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw GitFailure(message: "Use whole-file staging for this path.")
         }
         var directory = open(root, O_RDONLY | O_DIRECTORY)
@@ -104,7 +105,7 @@ struct GitPatchFile {
             guard next >= 0 else { throw GitFailure(message: "Use whole-file staging for paths through symlinks or missing directories.") }
             close(directory); directory = next
         }
-        let fd = openat(directory, parts.last!, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        let fd = openat(directory, last, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw GitFailure(message: "Use whole-file staging for symlinks or deleted files.") }
         defer { close(fd) }
         var info = stat()

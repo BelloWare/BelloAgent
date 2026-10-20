@@ -46,8 +46,8 @@ struct GitFileStamp: Hashable {
     var exists: Bool { !identity.isEmpty }
 
     var resolution: (stamps: [GitFileStamp], complete: Bool) {
-        guard path.hasPrefix("/") else { return ([], false) }
-        var pending = path.split(separator: "/").map(String.init), resolved: [String] = []
+        guard path.gitHasPrefix("/") else { return ([], false) }
+        var pending = path.gitSplit(separator: 47), resolved: [String] = []
         var result = [GitFileStamp("/", directoryIdentity: true)], links = 0
         // Walk each symlink target too, before processing "..". The final
         // inode alone cannot detect a changed relative gitdir: condition.
@@ -65,12 +65,15 @@ struct GitFileStamp: Hashable {
                 links += 1
                 guard links <= 40 else { return (result, false) }
                 var buffer = [UInt8](repeating: 0, count: Int(PATH_MAX))
-                let count = buffer.withUnsafeMutableBytes { readlink(prefix, $0.baseAddress!, $0.count) }
+                let count = buffer.withUnsafeMutableBytes { bytes in
+                    guard let base = bytes.baseAddress else { return -1 }
+                    return readlink(prefix, base, bytes.count)
+                }
                 guard count > 0, count < buffer.count, let target = String(bytes: buffer[..<count], encoding: .utf8) else {
                     return (result, false)
                 }
-                if target.hasPrefix("/") { resolved.removeAll() }
-                pending = target.split(separator: "/").map(String.init) + pending
+                if target.gitHasPrefix("/") { resolved.removeAll() }
+                pending = target.gitSplit(separator: 47) + pending
             } else {
                 guard pending.isEmpty || value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { return (result, false) }
                 resolved.append(component)
@@ -136,7 +139,7 @@ final class GitInventoryCache: @unchecked Sendable {
     private var generation = 0
     func configuration(in directory: URL, environment: [String: String], invocation: GitInvocation,
                        build: () throws -> GitConfiguration) throws -> GitConfiguration {
-        let lookup = Data(([directory.path] + environment.keys.sorted().flatMap { [$0, environment[$0]!] }).joined(separator: "\0").utf8)
+        let lookup = Data(([directory.path] + environment.sorted(by: { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }).flatMap { [$0.key, $0.value] }).joined(separator: "\0").utf8)
         let (memo, ticket) = lock.withLock {
             if let key = lookups[lookup], let value = values[key] { return (value, generation) }
             if let value = building[lookup] { return (value, generation) }
@@ -174,7 +177,7 @@ final class GitInventoryCache: @unchecked Sendable {
                 guard let configuration = memo.cached else { return key }
                 return configuration.stamps.contains { stamp in
                     let file = stamp.watchedPath
-                    return paths.contains { file == $0 || file.hasPrefix($0 + "/") }
+                    return paths.contains { file == $0 || file.gitHasPrefix($0 + "/") }
                 } ? key : nil
             }
             guard !keys.isEmpty || !building.isEmpty else { return false }
@@ -199,13 +202,20 @@ final class GitReadOverrides: @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let file = directory.appendingPathComponent("config")
         var content = ""
+        guard options.count.isMultiple(of: 2) else { throw GitConfiguration.ConfinementRequired() }
         for index in stride(from: 1, to: options.count, by: 2) {
-            let option = options[index], equals = option.firstIndex(of: "=")!
-            let name = option[..<equals], value = option[option.index(after: equals)...]
-            let first = name.firstIndex(of: ".")!, last = name.lastIndex(of: ".")!
-            content += "[" + name[..<first]
-            if first != last { content += " " + (try Self.subsection(String(name[name.index(after: first)..<last]))) }
-            content += "]\n" + name[name.index(after: last)...] + " = " + (try Self.value(String(value))) + "\n"
+            guard options[index - 1] == "-c", let setting = options[index].gitSplitOnce(separator: 61),
+                  let section = setting.before.gitSplitOnce(separator: 46),
+                  let key = setting.before.gitSplitOnce(separator: 46, last: true),
+                  !section.before.isEmpty, !key.after.isEmpty,
+                  [section.before, key.after].allSatisfy({ part in
+                      part.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }
+                  }) else { throw GitConfiguration.ConfinementRequired() }
+            content += "[" + section.before
+            if let subsection = section.after.gitSplitOnce(separator: 46, last: true) {
+                content += " " + (try Self.subsection(subsection.before))
+            }
+            content += "]\n" + key.after + " = " + (try Self.value(setting.after)) + "\n"
         }
         try Data(content.utf8).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
