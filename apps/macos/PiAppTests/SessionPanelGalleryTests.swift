@@ -87,6 +87,16 @@ final class SessionPanelGalleryTests: GitPanelTestCase, SerialTestLane {
             }
             await settle(window)
             try capture(root, name: "diff-1440x900-\(theme)", output: output, manifest: &manifest)
+            let changes = try XCTUnwrap(pane.sessionPanel.changes)
+            try git(["config", "status.renames", "false"], in: project)
+            await changes.controller.refresh()
+            XCTAssertEqual(changes.controller.status.entries.count, 7)
+            XCTAssertEqual(changes.controller.changeStats["docs/guide.md"]?.added, 3)
+            XCTAssertEqual(changes.controller.changeStats["docs/old-guide.md"]?.removed, 3)
+            await settle(window)
+            try capture(root, name: "diff-no-renames-1440x900-\(theme)", output: output, manifest: &manifest)
+            try git(["config", "--unset", "status.renames"], in: project)
+            await changes.controller.refresh()
             pane.sessionPanel.select(.files)
             let browser = try XCTUnwrap(pane.sessionPanel.files?.browser)
             try await eventually("root listing") { browser.snapshot(project) != nil }

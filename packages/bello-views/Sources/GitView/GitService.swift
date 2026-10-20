@@ -51,6 +51,52 @@ public struct GitRepositoryStatus: Equatable, Sendable {
     public var head: String?
     public var entries: [GitStatusEntry] = []
     public var stagedCount: Int { entries.filter(\.staged).count }
+    var changeOptions = GitChangeOptions()
+    var dirtySubmodules: Set<String> = []
+}
+
+/// Status owns the grouping used by both the compact counts and opened patch.
+/// Keep its effective configuration with the snapshot, not in a repository cache.
+struct GitChangeOptions: Equatable, Sendable {
+    var renameSimilarity: Int?
+    private var configuration: [String: String]
+    init(configuration data: Data = Data(), renameSimilarity: Int? = nil) {
+        var values: [String: String] = [:], renames: String?, limit: String?
+        for record in data.split(separator: 0) {
+            let parts = String(decoding: record, as: UTF8.self).split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(parts[0]), value = parts.count == 2 ? String(parts[1]) : "true"
+            values[key] = value
+            // Match status's precedence, including diff's fallback.
+            if key == "status.renames" || (key == "diff.renames" && renames == nil) { renames = value }
+            if key == "status.renamelimit" || (key == "diff.renamelimit" && limit == nil) { limit = value }
+        }
+        values["status.renames"] = renames ?? "true"; values["diff.renames"] = renames ?? "true"
+        values["status.renamelimit"] = limit ?? "1000"; values["diff.renamelimit"] = limit ?? "1000"
+        // Status with untracked-files=all sees dirty submodules by default.
+        // A configured per-submodule ignore still takes precedence in Git.
+        if values["diff.ignoresubmodules"] == nil { values["diff.ignoresubmodules"] = "none" }
+        self.configuration = values; self.renameSimilarity = renameSimilarity
+    }
+    private var configurationArguments: [String] {
+        configuration.keys.sorted().flatMap { ["-c", $0 + "=" + configuration[$0]!] }
+    }
+    var statusArguments: [String] {
+        configurationArguments + ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"]
+            + (renameSimilarity.map { ["--find-renames=\($0)%"] } ?? [])
+    }
+    func diffArguments(staged: Bool) -> [String] {
+        // The parser reads unified gitlink changes, not submodule logs or nested
+        // patches. Both summary and preview also disable external/text converters.
+        var arguments = configurationArguments + ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff",
+            "--no-textconv", "--submodule=short", "--ita-invisible-in-index"]
+        if let renameSimilarity {
+            let copies = ["copy", "copies"].contains(configuration["diff.renames"] ?? "")
+            arguments.append((copies ? "--find-copies=" : "--find-renames=") + "\(renameSimilarity)%")
+        }
+        // Status never hides a staged gitlink, even when its worktree is ignored.
+        if staged { arguments += ["--cached", "--ignore-submodules=dirty"] }
+        return arguments
+    }
 }
 
 public struct GitCommit: Identifiable, Equatable, Sendable {
@@ -367,9 +413,20 @@ public actor GitService {
         return top.isEmpty ? nil : top
     }
 
-    func status(in root: String) async throws -> GitRepositoryStatus {
-        let output = try require(await run(["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"], in: root), "Reading status")
-        return Self.parseStatus(output.stdout)
+    private func changeOptions(in root: String, renameSimilarity: Int? = nil) async throws -> GitChangeOptions {
+        let output = try await run(["config", "-z", "--get-regexp",
+            "^(status\\.(renames|renamelimit)|diff\\.(renames|renamelimit|ignoresubmodules)|submodule\\..*\\.ignore)$"], in: root)
+        // No configured values is an ordinary empty snapshot.
+        if output.status != 1 { _ = try require(output, "Reading change options") }
+        return GitChangeOptions(configuration: output.stdout, renameSimilarity: renameSimilarity)
+    }
+
+    func status(in root: String, renameSimilarity: Int? = nil) async throws -> GitRepositoryStatus {
+        let options = try await changeOptions(in: root, renameSimilarity: renameSimilarity)
+        let output = try require(await run(options.statusArguments, in: root), "Reading status")
+        var status = Self.parseStatus(output.stdout)
+        status.changeOptions = options
+        return status
     }
 
     static func parseStatus(_ data: Data) -> GitRepositoryStatus {
@@ -410,6 +467,10 @@ public actor GitService {
             case "?":
                 status.entries.append(GitStatusEntry(path: String(line.dropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
             default: break
+            }
+            if (columns.first == "1" && columns.count >= 9) || (columns.first == "2" && columns.count >= 10), columns[2].hasPrefix("S"),
+               columns[2].contains("M") || columns[2].contains("U"), let entry = status.entries.last {
+                status.dirtySubmodules.insert(entry.path)
             }
         }
         fields.removeAll()
@@ -509,16 +570,22 @@ public actor GitService {
 
     /// Counts for the same side of each file that the compact list opens.
     /// Two batched reads, no patches, external diff drivers or text conversion.
-    func changeStats(in root: String, entries: [GitStatusEntry]) async throws -> [String: GitDiffStat] {
+    func changeStats(in root: String, status: GitRepositoryStatus) async throws -> [String: GitDiffStat] {
+        let entries = status.entries
         guard !entries.isEmpty else { return [:] }
-        let arguments = ["diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames"]
-        async let worktree = run(arguments, in: root)
-        async let index = run(arguments + ["--cached"], in: root)
+        let format = ["--numstat", "-z"]
+        async let worktree = run(status.changeOptions.diffArguments(staged: false) + format, in: root)
+        async let index = run(status.changeOptions.diffArguments(staged: true) + format, in: root)
         let working = Self.parseNumstat(try require(await worktree, "Reading change counts").stdout)
         let staged = Self.parseNumstat(try require(await index, "Reading staged counts").stdout)
         var stats: [String: GitDiffStat] = [:]
         for entry in entries where !entry.untracked {
             stats[entry.path] = entry.unstaged ? working[entry.path] : staged[entry.path]
+            // Numstat omits the short patch's "-dirty" gitlink-line change.
+            if entry.unstaged, status.dirtySubmodules.contains(entry.path),
+               stats[entry.path] == GitDiffStat(added: 0, removed: 0, binary: false) {
+                stats[entry.path] = GitDiffStat(added: 1, removed: 1, binary: false)
+            }
         }
         let untracked = entries.filter(\.untracked).map(\.path)
         // The working-tree replacement owns this row even if it cannot be read.
@@ -563,12 +630,13 @@ public actor GitService {
     /// The working-tree or staged patch of one path, already parsed. A renamed
     /// file is asked for under both its names: given only the new one, git has
     /// nothing to match against and reports the whole file as added.
-    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
-        var arguments: [String]
-        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false,
+                   options: GitChangeOptions? = nil) async throws -> [GitDiffFile] {
+        let resolved: GitChangeOptions
+        if let options { resolved = options } else { resolved = try await changeOptions(in: root) }
+        var arguments = resolved.diffArguments(staged: staged) + ["-U3"]
+        if untracked, let path = paths.last { arguments += ["--no-index", "--", "/dev/null", path] }
         else {
-            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "-U3", "--find-renames"]
-            if staged { arguments.append("--cached") }
             if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }
         let allowed: Int32 = untracked ? 1 : 0

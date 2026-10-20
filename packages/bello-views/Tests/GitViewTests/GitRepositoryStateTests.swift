@@ -3,6 +3,142 @@ import XCTest
 @testable import GitView
 
 final class GitRepositoryStateTests: XCTestCase {
+    private static let summaryService = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"])
+    func testSummaryMatchesOpenedRowsWithRenameDetectionDisabled() async throws {
+        for key in ["status.renames", "diff.renames"] {
+            let root = try renameRepository()
+            if key == "status.renames" { try git(["config", "diff.renames", "copies"], in: root) }
+            try git(["config", key, "false"], in: root)
+            try git(["mv", "same.txt", "moved.txt"], in: root)
+            let status = try await Self.summaryService.status(in: root.path)
+            XCTAssertEqual(status.entries.map(\.badge), ["A", "D"])
+            try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: [
+                "moved.txt": GitDiffStat(added: 20, removed: 0, binary: false),
+                "same.txt": GitDiffStat(added: 0, removed: 20, binary: false)
+            ])
+        }
+    }
+
+    @MainActor func testSummaryMatchesOpenedRowsWithCopyDetection() async throws {
+        for key in ["status.renames", "diff.renames"] {
+            let root = try renameRepository()
+            if key == "status.renames" { try git(["config", "diff.renames", "false"], in: root) }
+            try git(["config", key, "copies"], in: root)
+            try FileManager.default.copyItem(at: root.appendingPathComponent("same.txt"), to: root.appendingPathComponent("copy.txt"))
+            try (renameText + "copy addition\n").write(to: root.appendingPathComponent("copy.txt"), atomically: true, encoding: .utf8)
+            try (renameText + "source addition\n").write(to: root.appendingPathComponent("same.txt"), atomically: true, encoding: .utf8)
+            try git(["add", "."], in: root)
+            let status = try await Self.summaryService.status(in: root.path)
+            XCTAssertEqual(status.entries.map(\.badge), ["C", "M"])
+            try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: [
+                "copy.txt": GitDiffStat(added: 1, removed: 0, binary: false),
+                "same.txt": GitDiffStat(added: 1, removed: 0, binary: false)
+            ])
+            let strict = try await Self.summaryService.status(in: root.path, renameSimilarity: 90)
+            XCTAssertEqual(strict.entries.map(\.badge), ["C", "M"])
+            try await Self.assertSummaryMatchesOpenedRows(strict, in: root, expected: [
+                "copy.txt": GitDiffStat(added: 1, removed: 0, binary: false),
+                "same.txt": GitDiffStat(added: 1, removed: 0, binary: false)
+            ])
+            let controller = GitController(roots: [root.path], service: Self.summaryService)
+            defer { controller.letGo() }
+            controller.setShown(true)
+            try await wait { controller.statusRead && !controller.loading && !controller.diffLoading }
+            for entry in status.entries {
+                controller.selection = .init(path: entry.path, staged: true)
+                try await wait { !controller.diffLoading }
+                XCTAssertEqual(controller.diff.map(\.path), [entry.path], "Only the selected copy or source belongs in this preview")
+                XCTAssertEqual(controller.diff.first?.added, 1)
+                XCTAssertEqual(controller.diff.first?.removed, 0)
+            }
+        }
+    }
+
+    func testSummaryMatchesOpenedRowsWithCustomRenameSimilarity() async throws {
+        let root = try renameRepository()
+        try git(["mv", "same.txt", "moved.txt"], in: root)
+        let changed = (0..<20).map { $0 < 5 ? "replacement line \($0)\n" : "generated line \($0)\n" }.joined()
+        try changed.write(to: root.appendingPathComponent("moved.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root)
+        // Ask Git for a stricter grouping than the default 50% similarity.
+        let status = try await Self.summaryService.status(in: root.path, renameSimilarity: 90)
+        XCTAssertEqual(status.entries.map(\.badge), ["A", "D"])
+        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: [
+            "moved.txt": GitDiffStat(added: 20, removed: 0, binary: false),
+            "same.txt": GitDiffStat(added: 0, removed: 20, binary: false)
+        ])
+        let lower = try await Self.summaryService.status(in: root.path, renameSimilarity: 60)
+        XCTAssertEqual(lower.entries.map(\.badge), ["R"])
+        try await Self.assertSummaryMatchesOpenedRows(lower, in: root, expected: ["moved.txt": GitDiffStat(added: 5, removed: 5, binary: false)])
+    }
+
+    func testSummaryKeepsStatusOptionsUntilRefresh() async throws {
+        let root = try renameRepository()
+        try git(["config", "status.renames", "false"], in: root)
+        try git(["mv", "same.txt", "moved.txt"], in: root)
+        let before = try await Self.summaryService.status(in: root.path)
+        try git(["config", "status.renames", "true"], in: root)
+        try await Self.assertSummaryMatchesOpenedRows(before, in: root, expected: [
+            "moved.txt": GitDiffStat(added: 20, removed: 0, binary: false),
+            "same.txt": GitDiffStat(added: 0, removed: 20, binary: false)
+        ])
+        let after = try await Self.summaryService.status(in: root.path)
+        XCTAssertEqual(after.entries.map(\.badge), ["R"])
+        try await Self.assertSummaryMatchesOpenedRows(after, in: root, expected: ["moved.txt": GitDiffStat(added: 0, removed: 0, binary: false)])
+    }
+
+    func testSummaryMatchesSubmoduleRowsAndIgnoreSettings() async throws {
+        let root = try repository(), source = try repository()
+        try git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", source.path, "module"], in: root)
+        try git(["add", "."], in: root); try git(["commit", "-qm", "Generated submodule"], in: root)
+        let module = root.appendingPathComponent("module")
+        try "generated\n".write(to: module.appendingPathComponent("loose.txt"), atomically: true, encoding: .utf8)
+        var status = try await Self.summaryService.status(in: root.path)
+        XCTAssertEqual(status.entries.map(\.path), ["module"])
+        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: ["module": GitDiffStat(added: 1, removed: 1, binary: false)])
+        try git(["config", "submodule.module.ignore", "all"], in: root)
+        status = try await Self.summaryService.status(in: root.path)
+        XCTAssertTrue(status.entries.isEmpty, "A configured worktree ignore remains effective")
+        try git(["add", "."], in: module); try git(["commit", "-qm", "Advance generated submodule"], in: module)
+        try git(["add", "module"], in: root)
+        try git(["config", "diff.ignoreSubmodules", "all"], in: root)
+        try git(["config", "diff.submodule", "log"], in: root)
+        status = try await Self.summaryService.status(in: root.path)
+        XCTAssertEqual(status.entries.map(\.path), ["module"], "Status still lists a manually staged gitlink")
+        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: ["module": GitDiffStat(added: 1, removed: 1, binary: false)])
+    }
+
+    func testSummaryAndPreviewIgnoreTextConverters() async throws {
+        let root = try repository()
+        try "same.txt diff=fixture\n".write(to: root.appendingPathComponent(".gitattributes"), atomically: true, encoding: .utf8)
+        try git(["add", ".gitattributes"], in: root); try git(["commit", "-qm", "Generated attributes"], in: root)
+        try git(["config", "diff.fixture.textconv", "printf identical"], in: root)
+        let status = try await Self.summaryService.status(in: root.path)
+        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: ["same.txt": GitDiffStat(added: 1, removed: 1, binary: false)])
+    }
+
+    private var renameText: String { (0..<20).map { "generated line \($0)\n" }.joined() }
+    private func renameRepository() throws -> URL {
+        let root = try repository()
+        try renameText.write(to: root.appendingPathComponent("same.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-qm", "Rename baseline"], in: root)
+        return root
+    }
+    private static func assertSummaryMatchesOpenedRows(_ status: GitRepositoryStatus, in root: URL, expected: [String: GitDiffStat],
+                                               file: StaticString = #filePath, line: UInt = #line) async throws {
+        let service = summaryService
+        let stats = try await service.changeStats(in: root.path, status: status)
+        XCTAssertEqual(Set(stats.keys), Set(expected.keys), file: file, line: line)
+        for entry in status.entries {
+            let files = try await service.diffFiles(in: root.path, paths: [entry.originalPath, entry.path].compactMap { $0 },
+                staged: !entry.unstaged && entry.staged, untracked: entry.untracked, options: status.changeOptions)
+            let opened = try XCTUnwrap(files.first { $0.path == entry.path }, entry.path, file: file, line: line)
+            let counted = GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary)
+            XCTAssertEqual(stats[entry.path], counted, entry.path + " must count the diff it opens", file: file, line: line)
+            XCTAssertEqual(counted, expected[entry.path], entry.path, file: file, line: line)
+        }
+    }
+
     func testSummaryNeverKeepsDeletionCountsForUnreadableUntrackedReplacements() async throws {
         for replacement in ["symlink", "oversized", "removed after status", "readable"] {
             let root = try repository(), file = root.appendingPathComponent("same.txt")
@@ -16,11 +152,11 @@ final class GitRepositoryStateTests: XCTestCase {
             } else {
                 try "replacement\nhas\nthree lines\n".write(to: file, atomically: true, encoding: .utf8)
             }
-            let entries = try await GitService.shared.status(in: root.path).entries
+            let status = try await GitService.shared.status(in: root.path), entries = status.entries
             XCTAssertTrue(entries.contains { $0.path == "same.txt" && $0.staged })
             XCTAssertTrue(entries.contains { $0.path == "same.txt" && $0.untracked })
             if replacement == "removed after status" { try FileManager.default.removeItem(at: file) }
-            let stats = try await GitService.shared.changeStats(in: root.path, entries: entries)
+            let stats = try await GitService.shared.changeStats(in: root.path, status: status)
             if replacement == "readable" {
                 XCTAssertEqual(stats["same.txt"]?.added, 3)
                 XCTAssertEqual(stats["same.txt"]?.removed, 0)
@@ -33,8 +169,8 @@ final class GitRepositoryStateTests: XCTestCase {
     func testSummaryNeverFollowsAReplacedDirectoryOutsideTheRepository() async throws {
         let root = try repository(), outside = try repository()
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("replaced"), withDestinationURL: outside)
-        let entries = GitService.parseStatus(Data("? replaced/same.txt\0".utf8)).entries
-        let stats = try await GitService.shared.changeStats(in: root.path, entries: entries)
+        let status = GitService.parseStatus(Data("? replaced/same.txt\0".utf8))
+        let stats = try await GitService.shared.changeStats(in: root.path, status: status)
         XCTAssertNil(stats["replaced/same.txt"], "A directory replaced after status was read must not escape the project")
     }
 
@@ -117,6 +253,7 @@ final class GitRepositoryStateTests: XCTestCase {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] + arguments
         process.currentDirectoryURL = root
+        process.environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
         let out = Pipe(); process.standardOutput = out; process.standardError = FileHandle.nullDevice
         try process.run(); let data = out.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)

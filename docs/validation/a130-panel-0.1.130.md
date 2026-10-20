@@ -627,3 +627,226 @@ are not treated as resolved. Owner visual feedback remains pending.
 Gallery fixture directories were removed by teardown. No native clone folders
 or extra DerivedData roots remain. All evidence and builds use this workstream's
 build root; the shared lane lock was released after each run.
+
+## Change-count options follow-up 2026-10-20
+
+The round-4 review found that summary numstats forced rename detection while
+status respected `status.renames=false`. A moved file therefore appeared as
+separate added/deleted rows but inherited counts from a grouped rename.
+
+`GitChangeOptions` now belongs to the status snapshot. One bounded configuration
+read per status refresh resolves `status.renames` / `diff.renames` and the
+corresponding rename limits, preserving status's precedence. Both batched
+numstats and the selected-file preview use that snapshot and the same diff
+argument builder. Configuration is reread on refresh; no repository-options
+cache or per-row configuration process is added. The default rename limit is
+Git's 1,000 candidates. Explicit similarity travels with the snapshot; tests
+exercise 60% and 90%, including copies at 90%. This is an internal read option,
+not a new preference or UI control.
+
+The shared reader uses short gitlink patches, fixed parser prefixes, invisible
+intent-to-add index entries and no external diff/text-conversion commands.
+Submodule ignores follow status: worktree defaults include dirty/untracked
+submodules, per-submodule ignores still apply, and manually staged gitlinks
+remain visible even when their worktree is ignored. Numstat's zero-count dirty
+gitlink record is corrected from porcelain's dirty-submodule metadata to the
+short patch's one removed/one added gitlink line; this adds no patch read.
+The generated submodule fixture covers an untracked-only dirty module, its
+configured ignore, and an advance staged while `diff.ignoreSubmodules=all`
+and `diff.submodule=log` are configured.
+
+The status precedence and side-specific submodule rules were checked against
+[Git 2.39.5's status configuration reader](https://github.com/git/git/blob/v2.39.5/builtin/commit.c#L1372-L1389)
+and [status collection](https://github.com/git/git/blob/v2.39.5/wt-status.c#L557-L621).
+The Mac runs Apple Git 2.39.5. Similarity uses Git's percentage option documented
+in [git diff](https://git-scm.com/docs/git-diff#Documentation/git-diff.txt---find-renamesn).
+
+Copy detection passes the source and destination to Git, then the controller
+publishes only the selected file. The source has its own status row and must
+not appear as a second preview under the copy's counts. Files/Changes canonical
+opening and trust checks from round 3 remain intact. Existing untracked safe
+reads, the 4 MiB bound, cancellation, and the choice of working-tree versus
+staged counts are preserved. There is still one status read and two batched
+numstats for a nonempty summary, plus the single configuration read; no history
+or per-file patch is loaded by the compact panel.
+
+### Failing first and mutation evidence
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r3/`.
+
+Before the production change, the three requested rename/copy/similarity
+regressions failed: **3 tests, 10 assertion failures**, `counts-red.log`.
+The custom-similarity red test obtained its status directly from
+`git status --porcelain=v2 -z --find-renames=90%`; after adding the shared read
+option, it uses the real `GitService.status` entry point with the same threshold
+and assertions. Status-specific overrides and the `diff.renames` fallback both
+have coverage. Every row is compared with the parsed patch it opens and with
+independent expected counts, so agreement between two incorrect readers cannot
+pass the test.
+
+The initial submodule regression failed too (**1 test, 1 assertion failure**,
+`submodule-red.log`). After sharing options, the three rename cases passed but
+the submodule test exposed numstat's zero-count dirty gitlink
+(`counts-first-green.log`: **3 passed, 1 failed**). The status-metadata correction
+passes it. The focused summary run then passed **9/9** (`counts-green.log`),
+and the expanded copy-preview check passed **1/1** (`copy-preview-green.log`).
+Two test-authoring compile issues (an omitted `binary` argument and a Swift
+actor-isolation annotation) were corrected before these behavioral results.
+
+All nine independent mutations were restored. Each fails an XCTest assertion
+or unwrap, not compilation:
+
+| Mutation | Targeted tests / assertion failures | Log |
+| --- | ---: | --- |
+| Restore forced renames in numstat | 3 / 10 | `mutation-summary-renames.log` |
+| Preview ignores the status options | 1 / 2 | `mutation-preview-options.log` |
+| Counts reread config instead of using the status snapshot | 1 / 2 | `mutation-snapshot.log` |
+| Drop status's worktree submodule-ignore default | 1 / 1 | `mutation-submodule-ignore.log` |
+| Hide staged gitlinks using worktree ignores | 1 / 1 | `mutation-staged-submodule.log` |
+| Use submodule logs instead of the shared short patch | 1 / 1 | `mutation-submodule-format.log` |
+| Drop dirty-gitlink count correction | 1 / 1 | `mutation-dirty-submodule.log` |
+| Include the copy source in the selected preview | 1 / 2 | `mutation-copy-preview.log` |
+| Allow text conversion in the shared reader | 1 / 1 | `mutation-text-converter.log` |
+
+`run-mutations.py` records the exact commands and restores each source file in
+`finally`; `mutation-summary.json` records exits/counts. The initial log checker
+mistook an `XCTUnwrap` failure for missing evidence; it was corrected to accept
+both XCTest failure kinds and resumed after the six already-completed mutations.
+
+The package regression commands use this form (the exact filters are in the
+logs and mutation runner):
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter 'GitRepositoryStateTests/testSummaryMatchesOpenedRows'
+```
+
+### Restored validation
+
+The full Git package suite passed **184 tests, 0 failures, 0 skips**, including
+all **23 GitRepositoryStateTests**, in 461.310 seconds (`git-package-final.log`):
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter GitViewTests
+```
+
+Native validation passed **233 tests, 0 failures, 1 skip** across the focused
+classes below. `SessionPanelTests` clicks every disabled-rename and copy row,
+checks its accessibility count label, opens the real Changes tab, and compares
+that tab's selected patch and counts. Across the package and native runs, the
+prior accessibility, repository-discovery, safe-untracked, canonical file-trust
+and panel regressions pass.
+The skip is the existing `GitCommitBrowsingTests` real-repository benchmark;
+`PI_APP_GIT_BENCH_REPO` was intentionally unset. No unrelated test failed.
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `changes-frames-final.log` |
+| ChangesTabTests | 8 | 0 | `git-readers-final.log` |
+| GitBranchesInteractionTests | 20 | 0 | `git-actions-final.log` |
+| GitChangelistReadTests | 2 | 0 | `git-readers-final.log` |
+| GitCommitBrowsingTests | 3 | 1 | `git-actions-final.log` |
+| GitConfirmationSheetTests | 7 | 0 | `git-actions-final.log` |
+| GitDiffTableTests | 19 | 0 | `diff-table-final.log` |
+| GitDiscardQuestionTests | 2 | 0 | `git-actions-final.log` |
+| GitHistoryFilterTests | 14 | 0 | `git-actions-final.log` |
+| GitHunkReviewTests | 9 | 0 | `git-actions-final.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `git-actions-final.log` |
+| GitOperationSafetyTests | 12 | 0 | `git-actions-final.log` |
+| GitPanelAuditTests | 8 | 0 | `git-readers-final.log` |
+| GitPanelLayoutTests | 4 | 0 | `git-readers-final.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `git-narrow-final.log` |
+| GitPanelRedrawTests | 4 | 0 | `git-readers-final.log` |
+| GitPanelShownTests | 13 | 0 | `git-readers-final.log` |
+| GitPanelTimingTests | 4 | 0 | `git-timing-final.log` |
+| GitPanelWidthTests | 3 | 0 | `git-readers-final.log` |
+| GitPathBoundaryTests | 5 | 0 | `git-readers-final.log` |
+| GitRenameTests | 6 | 0 | `git-readers-final.log` |
+| GitRepositorySwitchTests | 17 | 0 | `repository-switch-final.log` |
+| GitToolTests | 5 | 0 | `git-readers-final.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | `watcher-final.log` |
+| SessionPanelGalleryTests | 1 | 0 | `gallery-final.log` |
+| SessionPanelTests | 25 | 0 | `panel-final.log` |
+
+Exact native runner command:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r3/run-native-final.py
+```
+
+The runner invoked these class groups, in order. Each corresponding log starts
+with the complete expanded `PI_BUILD_ROOT=... scripts/test-macos.sh
+-parallel-testing-enabled NO -only-testing:PiAppTests/<Class> ...` command.
+`run-native.py` takes/releases the shared full-lane lock for each invocation,
+including the gallery. Serial classes run alone.
+
+```text
+python3 run-native.py panel-final.log SessionPanelTests
+python3 run-native.py git-readers-final.log ChangesTabTests GitToolTests GitRenameTests GitPathBoundaryTests GitPanelAuditTests GitPanelShownTests GitPanelRedrawTests GitChangelistReadTests GitPanelLayoutTests GitPanelWidthTests
+python3 run-native.py git-actions-final.log GitBranchesInteractionTests GitHistoryFilterTests GitHunkReviewTests GitIntegratedHistoryTests GitCommitBrowsingTests GitOperationSafetyTests GitConfirmationSheetTests GitDiscardQuestionTests
+python3 run-native.py watcher-final.log GitWorkingTreeWatcherTests
+python3 run-native.py repository-switch-final.log GitRepositorySwitchTests
+python3 run-native.py diff-table-final.log GitDiffTableTests
+python3 run-native.py changes-frames-final.log ChangesTabFrameTests
+python3 run-native.py git-timing-final.log GitPanelTimingTests
+python3 run-native.py git-narrow-final.log GitPanelNarrowParityTests
+python3 run-native.py gallery-final.log SessionPanelGalleryTests
+```
+
+The gallery additionally sets
+`TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r3`.
+All native tests use the isolated test host and generated data. No installed
+app, real preferences/chats/Keychain, paid call, named result bundle, or release
+operation was used. Helper and wire code did not change, so those suites were
+not rerun. The lead still runs the full merged gate.
+
+### Screenshots and final review
+
+All **16 PNGs** were opened and visually inspected. The original 14 scenes are
+byte-identical to `review-r2`, verified by `screenshot-hashes.json`. Two new
+light/dark scenes show `status.renames=false`: `docs/guide.md` is an addition
+with `+3 −0`, and `docs/old-guide.md` is a deletion with `+0 −3`. Row labels,
+counts, card bounds, transcript wrapping and composer separation are intact.
+The existing shots under owner review are preserved; no layout or styling
+change was needed.
+
+Directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r3/`.
+
+```text
+agents-1440x900-light.png
+agents-1180x800-light.png
+pill-960x700-light.png
+diff-1440x900-light.png
+diff-no-renames-1440x900-light.png
+files-1440x900-light.png
+empty-1440x900-light.png
+side-open-1600x900-light.png
+agents-1440x900-dark.png
+agents-1180x800-dark.png
+pill-960x700-dark.png
+diff-1440x900-dark.png
+diff-no-renames-1440x900-dark.png
+files-1440x900-dark.png
+empty-1440x900-dark.png
+side-open-1600x900-dark.png
+```
+
+Adversarial self-review traced status → summary and status → selected preview
+for both index/worktree sides; checked configuration precedence, copy source
+context, custom similarity, submodule ignores and text conversion; verified
+that no command uses shell-interpolated paths; and rechecked cancellation,
+bounded reads, prior trust routing and cleanup. The shared options do not freeze
+repository contents against external writers; normal refresh still supplies
+new status and counts. No new in-scope issue remained. Earlier unrelated
+Topic-search failure and the independent-child-pill **needs owner decision**
+remain recorded above. Owner visual feedback is pending.
+
+All gallery fixture directories were removed by teardown. No native clone
+folders or extra DerivedData roots remain under this build root. Every owned
+lane lock was released after its run; other workstreams' locks were untouched.
+`git diff --check` passes. `NEXT-RELEASE.md` has the concise follow-up entry.

@@ -288,6 +288,41 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         XCTAssertTrue(changes.controller.suspended)
     }
 
+    @MainActor func testConfiguredRenameAndCopyRowsCountTheDiffTheyOpen() async throws {
+        for mode in ["false", "copies"] {
+            let (model, pane, _, root) = try fixture(gitRepository: true)
+            try git(["restore", "file.txt"], in: root)
+            try git(["config", "status.renames", mode], in: root)
+            if mode == "false" {
+                try git(["mv", "file.txt", "moved.txt"], in: root)
+            } else {
+                try "one\ntwo\ncopy\n".write(to: root.appendingPathComponent("copy.txt"), atomically: true, encoding: .utf8)
+                try "one\ntwo\nsource\n".write(to: root.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+                try git(["add", "."], in: root)
+            }
+            try await eventually("repository discovered") { pane.sessionPanel.availableTabs.contains(.diff) }
+            pane.sessionPanel.select(.diff)
+            let changes = try XCTUnwrap(pane.sessionPanel.changes)
+            try await eventually("counts read") { changes.controller.statusRead && !changes.controller.loading }
+            XCTAssertEqual(changes.controller.status.entries.map(\.badge), mode == "false" ? ["D", "A"] : ["C", "M"])
+            pane.layoutSubtreeIfNeeded()
+            for entry in changes.controller.status.entries {
+                let row = try button("panel-diff-" + entry.path, in: changes)
+                row.onPress?()
+                let tab = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab)
+                tab.controller.setShown(true)
+                await tab.controller.refresh()
+                try await eventually("selected diff read") { !tab.controller.diffLoading && !tab.controller.diff.isEmpty }
+                XCTAssertEqual(tab.controller.selection, .init(path: entry.path, staged: true))
+                XCTAssertEqual(tab.controller.diff.map(\.path), [entry.path], "A copy source is context for detection, not another selected row")
+                let opened = try XCTUnwrap(tab.controller.diff.first { $0.path == entry.path })
+                let stats = try XCTUnwrap(changes.controller.changeStats[entry.path])
+                XCTAssertEqual(stats, GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary), entry.path)
+                XCTAssertTrue(row.accessibilityLabel()?.contains("+\(opened.added) −\(opened.removed)") == true)
+            }
+        }
+    }
+
     @MainActor func testFilesAreLazyVirtualizedAndKeepUntrustedContentUnreadable() async throws {
         let (model, pane, _, root) = try fixture()
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources/Nested"), withIntermediateDirectories: true)

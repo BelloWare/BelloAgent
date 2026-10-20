@@ -581,7 +581,7 @@ import AppKit
             let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
             if summaryOnly {
-                let stats = try await service.changeStats(in: top, entries: status.entries)
+                let stats = try await service.changeStats(in: top, status: status)
                 guard current(generation) else { return }
                 publish(\.changeStats, stats)
                 if let ignored = try? await service.ignoredPaths(in: top),
@@ -973,13 +973,17 @@ import AppKit
         // A rename is asked for under both names, or git sees a new file and
         // shows every one of its lines as added.
         let paths = [entry?.originalPath, selection.path].compactMap { $0 }
+        let options = status.changeOptions
         if !silently { publish(\.diffLoading, true) }
         selectedDiffTask = Task { [service] in
             do {
-                let files = try await service.diffFiles(in: repositoryRoot, paths: paths, staged: selection.staged, untracked: entry?.untracked == true)
+                let files = try await service.diffFiles(in: repositoryRoot, paths: paths, staged: selection.staged,
+                    untracked: entry?.untracked == true, options: options)
                 try Task.checkCancellation()
                 guard self.selection == selection else { return }
-                publish(\.diff, files); publish(\.diffLoading, false)
+                // Copy detection needs the source path, but that source has its
+                // own row. Only the selected destination belongs in this preview.
+                publish(\.diff, files.filter { $0.path == selection.path }); publish(\.diffLoading, false)
             } catch is CancellationError {
             } catch {
                 guard self.selection == selection else { return }

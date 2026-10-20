@@ -7,6 +7,7 @@
 - [x] Main chats show a floating Agents / Diff / Files card when space permits, with lazy project readers, per-window tabs/collapse and the existing narrow pill fallback. [Validation and screenshots](docs/validation/a130-panel-0.1.130.md).
 - [x] Panel review fixes: stable tab accessibility identities, repository discovery retries after `git init`, and no stale deletion counts for unreadable untracked replacements. [Evidence](docs/validation/a130-panel-0.1.130.md#follow-up-review-2026-10-20).
 - [x] Panel Files opens resolve symlink destination ownership through the canonical opener, preserving untrusted-project boundaries. [Evidence](docs/validation/a130-panel-0.1.130.md#destination-trust-follow-up-2026-10-20).
+- [x] Panel Diff counts and opened previews share status rename/copy, similarity and submodule options, including disabled renames and dirty gitlinks. [Evidence](docs/validation/a130-panel-0.1.130.md#change-count-options-follow-up-2026-10-20).
 
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
