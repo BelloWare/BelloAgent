@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Image formats (owner, 2026-10-20): Attach Images…, paste and drag-and-drop accept any still image macOS reads (JPEG, PNG, GIF, WebP, HEIC/HEIF, TIFF, BMP, AVIF, JPEG 2000, ICO, camera raw, …) and decide by content. PNG/JPEG/GIF/WebP up to 8 MiB attach as they are; other formats, mislabeled files and originals over 8 MiB become PNGs within the helper's unchanged limits; an unreadable file is refused by name. [Validation](docs/validation/a130-images-0.1.130.md).
+- [x] Owner-requested deviation from pi 0.85.1: an animated GIF, WebP or PNG reaches the model as its first frame (PNG, with a hint) in attachments, read results and tool images.
+- [x] Owner-requested deviation from pi 0.85.1: the read tool returns HEIC/HEIF, AVIF, TIFF, JPEG 2000 and other ImageIO images as converted images instead of failing as binary; text, pi's own formats, TGA/PICT and undecodable bytes keep pi's result. [Parity](docs/Swift-Feature-Parity.md#owner-requested-deviations-from-pi-0851-image-formats-01130).
+
 - [x] Standalone-file test classes install their own project resolver and restore the previous callback. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-14--native-fixture-hook-ownership).
 - [x] Native-sheet test fixtures isolate and restore the shared question hooks.
 - [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.

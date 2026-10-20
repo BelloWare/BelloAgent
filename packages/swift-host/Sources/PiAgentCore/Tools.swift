@@ -349,11 +349,15 @@ private struct FileToolContext: Sendable {
         var remaining = Int(info.st_size)
         var data = try file.read(upToCount:min(4100,remaining)) ?? Data()
         remaining -= data.count
-        if let mimeType=PiImage.sniff(data) {
+        let piType=PiImage.sniff(data)
+        if let mimeType=piType ?? PiImage.decodableType(data) {
             guard info.st_size <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
             data.append(try file.read(upToCount:16 * 1024 * 1024 + 1 - data.count) ?? Data())
             guard data.count <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
             try cancellation.checkCancellation()
+            // A format pi does not know is an image only if ImageIO reads
+            // it; otherwise it is the binary file pi's text read refuses.
+            if piType == nil, PiImage.uprightSize(data) == nil { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
             switch PiImage.process(data, mimeType:mimeType) {
             case .success(let image):
                 let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")

@@ -55,6 +55,30 @@ enum PiImage {
         return nil
     }
 
+    /// Ours, at the owner's request (0.1.130), not pi: the read tool also
+    /// takes a still image in a format pi does not know (HEIC/HEIF, AVIF,
+    /// TIFF, JPEG 2000, ICO, camera raw, …) as ImageIO finds it in a file's
+    /// first bytes, and converts it as pi converts a BMP. Only bytes pi's text
+    /// read refuses as binary qualify, so no text file reads differently;
+    /// pi's own formats keep `sniff`'s verdict, and TGA and PICT, which
+    /// ImageIO finds by heuristics that random data can satisfy, stay binary.
+    static func decodableType(_ prefix: Data) -> String? {
+        // The text read's own test: complete UTF-8 scalars, a partial last
+        // one left for the next chunk.
+        let bytes = [UInt8](prefix)
+        var complete = bytes.count
+        if let start = bytes.lastIndex(where: { $0 & 0xC0 != 0x80 }) {
+            let lead = bytes[start], length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1
+            if bytes.count - start < length { complete = start }
+        }
+        guard String(bytes: bytes.prefix(complete), encoding: .utf8) == nil,
+              let source = CGImageSourceCreateWithData(prefix as CFData, nil),
+              let identifier = CGImageSourceGetType(source) as String?,
+              !["public.jpeg", "public.png", "com.compuserve.gif", "org.webmproject.webp", "com.microsoft.bmp",
+                "com.truevision.tga-image", "com.apple.pict"].contains(identifier) else { return nil }
+        return UTType(identifier)?.preferredMIMEType ?? identifier
+    }
+
     struct Processed: Equatable {
         let data: String, mimeType: String, hints: [String]
     }
@@ -63,9 +87,15 @@ enum PiImage {
     /// shows in its place.
     static func process(_ bytes: Data, mimeType: String) -> Result<Processed, Failure> {
         let base = mimeType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? mimeType.lowercased()
-        var source = bytes, type = base, converted: String?
+        var source = bytes, type = base, converted: String?, animated = false
         switch base {
-        case "image/png", "image/gif", "image/webp": break
+        case "image/png", "image/gif", "image/webp":
+            // Ours, at the owner's request (0.1.130), not pi: OpenAI takes
+            // still images only, so an animated GIF, WebP or PNG goes as its
+            // first frame, as PNG. Pi sends it as it is.
+            guard isAnimated(bytes) else { break }
+            guard let png = pngData(bytes) else { return .failure(Failure(message: conversionFailure)) }
+            source = png; type = "image/png"; converted = base; animated = true
         case "image/jpeg", "image/jpg": type = "image/jpeg"
         default:
             guard let png = pngData(bytes) else { return .failure(Failure(message: conversionFailure)) }
@@ -73,7 +103,8 @@ enum PiImage {
         }
         guard let resized = resize(source, mimeType: type) else { return .failure(Failure(message: resizeFailure)) }
         var hints: [String] = []
-        if let converted, converted != resized.mimeType { hints.append("[Image converted from \(converted) to \(resized.mimeType).]") }
+        if let converted, animated { hints.append("[Image converted from animated \(converted) to \(resized.mimeType); only its first frame is shown.]") }
+        else if let converted, converted != resized.mimeType { hints.append("[Image converted from \(converted) to \(resized.mimeType).]") }
         if resized.resized {
             let scale = String(format: "%.2f", Double(resized.originalWidth) / Double(resized.width))
             hints.append("[Image: original \(resized.originalWidth)x\(resized.originalHeight), displayed at \(resized.width)x\(resized.height). Multiply coordinates by \(scale) to map to original image.]")
@@ -117,6 +148,12 @@ enum PiImage {
             if nextWidth == targetWidth && nextHeight == targetHeight { return nil }
             targetWidth = nextWidth; targetHeight = nextHeight
         }
+    }
+
+    /// More than one frame: an animation (or an image sequence).
+    static func isAnimated(_ bytes: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else { return false }
+        return CGImageSourceGetCount(source) > 1
     }
 
     /// The first frame's size once turned upright by its EXIF orientation.

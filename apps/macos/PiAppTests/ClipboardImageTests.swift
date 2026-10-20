@@ -316,12 +316,21 @@ final class ClipboardImageTests: XCTestCase {
         let editor = try XCTUnwrap(composer.field?.documentView as? ComposerTextView)
         let file = root.appendingPathComponent("changed.png"), bytes = try Self.image(type: .tiff)
         try bytes.write(to: file)
-        let board = board(); board.writeObjects([file as NSURL])
-        XCTAssertTrue(editor.pasteAttachments(from: board))
+        // Inspection never converts: a file that is no longer what its
+        // preparation found stays a refusal.
+        model.attachImageFiles([file], sessionID: chat.id)
         try await eventually("file inspection settled") { model.attachmentImports == 0 }
         XCTAssertTrue(session.attachments.isEmpty, "The ordinary file inspector's refusal must remain a refusal")
-        XCTAssertTrue(model.error?.contains("formats") == true)
+        XCTAssertTrue(model.error?.contains("changed") == true, model.error ?? "")
         XCTAssertFalse(FileManager.default.fileExists(atPath: model.pastedImages.directory.path))
+        // Preparation decides by content (0.1.130): the TIFF called .png converts.
+        model.error = nil
+        let board = board(); board.writeObjects([file as NSURL])
+        XCTAssertTrue(editor.pasteAttachments(from: board))
+        try await eventually("file conversion settled") { model.attachmentImports == 0 }
+        XCTAssertNil(model.error)
+        XCTAssertEqual(session.attachments.map(\.mimeType), ["image/png"])
+        XCTAssertNotEqual(session.attachments.first?.path, file.resolvingSymlinksInPath().path, "A private PNG, not the TIFF")
         XCTAssertEqual(try Data(contentsOf: file), bytes)
     }
 

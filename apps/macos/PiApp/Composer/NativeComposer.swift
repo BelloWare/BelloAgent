@@ -486,7 +486,7 @@ struct ComposerEditMeasurement {
             defer { importing.finish() }
             do {
                 let written = try await Task.detached(priority: .userInitiated) {
-                    if let urls { return try Self.preparePastedFiles(urls, storage: storage) }
+                    if let urls { return try Self.prepareImageFiles(urls, storage: storage) }
                     guard let storage else { throw HostError.failure(Self.storageUnavailable) }
                     guard let pasted, let file = Self.writePastedImage(pasted, storage: storage) else { throw HostError.failure(Self.unreadableImage) }
                     return [file]
@@ -629,18 +629,24 @@ struct ComposerEditMeasurement {
     }
     private nonisolated static let unreadableImage = "That image could not be read or saved. Copy it again, or attach the file instead."
     private nonisolated static let storageUnavailable = "Desktop image storage is unavailable. Attach an image file instead."
+    nonisolated static func unreadableFile(_ url: URL) -> String {
+        "“\(url.lastPathComponent)” could not be read as an image. Attach a JPEG, PNG, HEIC, TIFF, GIF, WebP or other image file."
+    }
     /// Preserve accepted PNGs; bridge larger clipboard images to the helper's
     /// 8 MiB attachment gate. Its provider normalizer still owns ordinary files.
     nonisolated static func writePastedImage(_ image: PastedImage, storage: PastedImageStorage) -> URL? {
         if image.isPNG, !image.data.isEmpty, image.data.count <= 8 * 1024 * 1024 { return try? storage.write(image.data) }
         guard let source = CGImageSourceCreateWithData(image.data as CFData, nil) else { return nil }
-        return writePastedImage(source, largePNG: image.isPNG, storage: storage)
+        return writePastedImage(source, oversized: image.isPNG, storage: storage)
     }
-    private nonisolated static func writePastedImage(_ source: CGImageSource, largePNG: Bool = false, storage: PastedImageStorage) -> URL? {
+    /// An original over 8 MiB starts at the helper's 2,000 pixels, as a large
+    /// clipboard PNG always did: a PNG of all of a photo's pixels takes
+    /// seconds to encode and would not fit either.
+    private nonisolated static func writePastedImage(_ source: CGImageSource, oversized: Bool = false, storage: PastedImageStorage) -> URL? {
         guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0 else { return nil }
-        var normalized = largePNG
+        var normalized = oversized
         var pixels = normalized ? min(2000, max(width, height)) : max(width, height)
         while true {
             let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -660,19 +666,32 @@ struct ComposerEditMeasurement {
             normalized = true
         }
     }
-    private nonisolated static func preparePastedFiles(_ urls: [URL], storage: PastedImageStorage?) throws -> [URL] {
+    /// Image files from paste, drag-and-drop and Attach Images… alike. The
+    /// bytes decide, never the name: a PNG, JPEG, GIF or WebP within the
+    /// helper's 8 MiB is attached as it is (the helper sends an animation's
+    /// first frame); anything else ImageIO reads — HEIC, TIFF, AVIF, a large
+    /// photo, a mislabeled file — becomes a private PNG.
+    nonisolated static func prepareImageFiles(_ urls: [URL], storage: PastedImageStorage?) throws -> [URL] {
         try urls.map { url in
             let canonical = url.resolvingSymlinksInPath()
             let values = try canonical.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true, let count = values.fileSize, count > 0 else { throw HostError.failure("Select a regular image file.") }
+            guard let source = CGImageSourceCreateWithURL(canonical as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  (properties[kCGImagePropertyPixelWidth] as? Int ?? 0) > 0, (properties[kCGImagePropertyPixelHeight] as? Int ?? 0) > 0
+            else { throw HostError.failure(unreadableFile(url)) }
             // Native files still go through the ordinary inspector once.
             // Its integrity/refusal errors must not become conversion retries.
-            if count <= 8 * 1024 * 1024, ["png", "jpg", "jpeg", "gif", "webp"].contains(url.pathExtension.lowercased()) { return url }
+            let oversized = count > 8 * 1024 * 1024
+            if !oversized, AttachmentRecord.mimeType(signature: try Self.signature(of: canonical)) != nil { return url }
             guard let storage else { throw HostError.failure(storageUnavailable) }
-            guard let source = CGImageSourceCreateWithURL(canonical as CFURL, nil),
-                  let file = writePastedImage(source, storage: storage) else { throw HostError.failure(unreadableImage) }
+            guard let file = writePastedImage(source, oversized: oversized, storage: storage) else { throw HostError.failure(unreadableImage) }
             return file
         }
+    }
+    private nonisolated static func signature(of file: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
+        return try handle.read(upToCount: 12) ?? Data()
     }
     /// File URLs are explicit input; TIFF/HEIC and oversized images are
     /// converted in the same background import as clipboard bytes.

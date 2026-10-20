@@ -87,6 +87,32 @@ uses the existing accounting paths. Stop remains cancellation, including when
 it races the known incomplete terminal. See
 [validation](validation/retry-incomplete-0.1.127.md).
 
+## Owner-requested deviations from pi 0.85.1: image formats (0.1.130)
+
+On 2026-10-20 the owner asked: "regarding image support, please support jpg
+and more image format, and if openai model does not support, just convert to
+a supported format". OpenAI takes PNG, JPEG, WebP and non-animated GIF.
+
+- **Composer images (app, not pi).** Attach Images…, paste and drag-and-drop
+  share one preparation that decides by content: a PNG, JPEG, GIF or WebP up
+  to 8 MiB is attached as it is; anything else ImageIO reads (HEIC/HEIF, TIFF,
+  BMP, AVIF, JPEG 2000, ICO, camera raw, a mislabeled file, an original over
+  8 MiB) becomes a private PNG within the helper's limits. The helper's
+  attachment contract is unchanged: four images, 8 MiB each, 16 MiB in all.
+- **Animated images.** `PiImage.process` sends an animated GIF, WebP or PNG as
+  its first frame, as PNG, with the hint `[Image converted from animated
+  image/gif to image/png; only its first frame is shown.]`. Pi sends them as
+  they are. This covers attachments, read results and tool-result images.
+- **Read tool.** When pi's `detectSupportedImageMimeType` finds no image and
+  the file's first bytes are not UTF-8 text, ImageIO's type identifies HEIC,
+  HEIF, AVIF, TIFF, JPEG 2000 and other formats; one ImageIO reads is converted
+  as pi converts a BMP (PNG, then pi's resize, with pi's conversion hint).
+  Pi fails these as binary. Text, pi's own five formats (including its refusal
+  of animated PNG), TGA and PICT (found by heuristics) and undecodable bytes
+  keep pi's result. The tool description is unchanged.
+
+See [validation](validation/a130-images-0.1.130.md).
+
 ## Deviations from pi 0.85.1: side chats and skill selection
 
 Pi has no side chats, and its fork starts a new session id. Our sides follow
