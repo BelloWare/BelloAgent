@@ -149,7 +149,7 @@ extension WorkspaceModel {
         // An edit stays in the composer while the helper replies. Its saved
         // copy needs the same review gate as a normal send returned on failure.
         view.submissionReviews.insert(commandID)
-        let savedDraft = view.savedDraft
+        let savedDraft = view.savedDraft, write = store.draftWriter.capture(view.id)
         var params = turnOverrides(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
@@ -166,7 +166,7 @@ extension WorkspaceModel {
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             do {
                 let connection = Result { try connectionLease(for: item) }
-                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion) }
+                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: write) }
                 let lease = try connection.get()
                 try requireConnection(lease)
                 let host = try await open(item)

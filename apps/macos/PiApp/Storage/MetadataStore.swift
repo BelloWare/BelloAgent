@@ -122,6 +122,8 @@ actor MetadataStore {
         kind == "draft" || kind.hasPrefix("draft-conflict:") || kind.hasPrefix("pending:") ? inputRecordByteLimit : 524_288
     }
     nonisolated let draftWrites = DraftWriteEvents()
+    nonisolated let draftWriter = OrderedDraftWriter()
+    var activeDraftWrites: Set<OrderedDraftWriter.Key> = []
     /// Draft writes so far, and those of a transaction not yet committed.
     private var draftSequence = 0
     private var transactionDrafts: [(String, Bool)]?
@@ -171,8 +173,8 @@ actor MetadataStore {
         guard let database = connection?.handle else { throw StoreError.unavailable }
         return database
     }
-    /// Reserve before an asynchronous debounce. Persisted revisions, rather
-    /// than the wall clock alone, keep edits ordered across clock corrections.
+    /// Ordered draft writes reserve only inside their synchronous commit.
+    /// Persisted revisions also stay monotonic across clock corrections.
     func reserveRevision(kind: String, id: String) throws -> Int64 {
         let database = try ready()
         var statement: OpaquePointer?
@@ -188,7 +190,32 @@ actor MetadataStore {
         lastReservedRevision = max(latest + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
         return lastReservedRevision
     }
-    func put<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64? = nil, releasingTitleClaim: Bool = false, draftVersion: DraftVersion? = nil) throws {
+    private func draftWriteKey(kind: String, id: String) -> OrderedDraftWriter.Key? {
+        switch kind {
+        case "draft": return .init(id: id, payload: .draft)
+        case "anchor", "anchor-deleted": return .init(id: id, payload: .anchor)
+        default:
+            if kind.hasPrefix("draft-conflict:") { return .init(id: String(kind.dropFirst("draft-conflict:".count)), payload: .conflict) }
+            if kind.hasPrefix("pending:") { return .init(id: String(kind.dropFirst("pending:".count)), payload: .submission) }
+            return nil
+        }
+    }
+    func put<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64? = nil, releasingTitleClaim: Bool = false, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
+        // Reject obsolete local reservations even before admission: they must
+        // neither cancel newer typing nor start/update a conflict episode.
+        if kind == "draft", let revision, let committed = draftVersion?.snapshot.revision, revision <= committed {
+            if let write { draftWriter.finish(write) }
+            throw StoreError.staleRevision
+        }
+        if let key = draftWriteKey(kind: kind, id: id) {
+            try orderedDraftWrite(key.id, payload: key.payload, ticket: write) {
+                try putRecord(value, kind: kind, id: id, revision: revision, releasingTitleClaim: releasingTitleClaim, draftVersion: draftVersion)
+            }
+        } else {
+            try putRecord(value, kind: kind, id: id, revision: revision, releasingTitleClaim: releasingTitleClaim, draftVersion: draftVersion)
+        }
+    }
+    private func putRecord<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64?, releasingTitleClaim: Bool, draftVersion: DraftVersion?) throws {
         if let draftVersion, kind == "draft", let draft = value as? DraftRecord {
             try putDraft(draft, version: draftVersion, revision: revision); return
         }
@@ -283,13 +310,16 @@ actor MetadataStore {
         return copies
     }
     func preserveDraftConflicts(_ version: DraftVersion) throws {
-        let copies = version.unsavedConflicts, submissions = version.unsavedSubmissions
-        try transaction {
-            for copy in copies { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
-            try preserveSubmissions(submissions)
+        guard let id = version.unsavedConflicts.first?.draft.id ?? version.unsavedSubmissions.first?.sessionID else { return }
+        try orderedDraftWrite(id, payload: .conflict) {
+            let copies = version.unsavedConflicts, submissions = version.unsavedSubmissions
+            try transaction {
+                for copy in copies { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
+                try preserveSubmissions(submissions)
+            }
+            for copy in copies { version.preserved(copy) }
+            for intent in submissions { version.preservedSubmission(intent.id) }
         }
-        for copy in copies { version.preserved(copy) }
-        for intent in submissions { version.preservedSubmission(intent.id) }
     }
     private func preserveSubmissions(_ submissions: [CommandIntent]) throws {
         for intent in submissions {
@@ -304,22 +334,24 @@ actor MetadataStore {
     }
     /// An explicit choice from the recovery banner. Preserve the current
     /// saved and live copies before replacing either; nothing is submitted.
-    func restoreConflict(_ conflict: SavedDraftConflict, replacing live: DraftRecord, version: DraftVersion) throws {
-        let pending = version.unsavedConflicts, submissions = version.unsavedSubmissions
-        try transaction {
-            for copy in pending { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
-            try preserveSubmissions(submissions)
-            guard live.id == conflict.draft.id,
-                  try get(DraftRecord.self, kind: "draft-conflict:" + live.id, id: conflict.id) == conflict.draft else { throw StoreError.staleRevision }
-            if let saved = try get(DraftRecord.self, kind: "draft", id: live.id), !saved.hasSameContents(as: conflict.draft) { try preserveConflict(saved) }
-            if !live.hasSameContents(as: conflict.draft) { try preserveConflict(live) }
-            let revision = try reserveRevision(kind: "draft", id: live.id)
-            try put(conflict.draft, kind: "draft", id: live.id, revision: revision)
-            transactionDraftVersions.append((version, conflict.draft, revision))
-            try remove(kind: "draft-conflict:" + live.id, id: conflict.id)
+    func restoreConflict(_ conflict: SavedDraftConflict, replacing live: DraftRecord, version: DraftVersion, write: OrderedDraftWriter.Ticket? = nil) throws {
+        try orderedDraftWrite(live.id, ticket: write) {
+            let pending = version.unsavedConflicts, submissions = version.unsavedSubmissions
+            try transaction {
+                for copy in pending { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
+                try preserveSubmissions(submissions)
+                guard live.id == conflict.draft.id,
+                      try get(DraftRecord.self, kind: "draft-conflict:" + live.id, id: conflict.id) == conflict.draft else { throw StoreError.staleRevision }
+                if let saved = try get(DraftRecord.self, kind: "draft", id: live.id), !saved.hasSameContents(as: conflict.draft) { try preserveConflict(saved) }
+                if !live.hasSameContents(as: conflict.draft) { try preserveConflict(live) }
+                let revision = try reserveRevision(kind: "draft", id: live.id)
+                try put(conflict.draft, kind: "draft", id: live.id, revision: revision)
+                transactionDraftVersions.append((version, conflict.draft, revision))
+                try remove(kind: "draft-conflict:" + live.id, id: conflict.id)
+            }
+            for copy in pending { version.preserved(copy) }
+            for intent in submissions { version.preservedSubmission(intent.id) }
         }
-        for copy in pending { version.preserved(copy) }
-        for intent in submissions { version.preservedSubmission(intent.id) }
     }
     func anchorVersion(id: String) throws -> AnchorVersion {
         let database = try ready()
@@ -336,25 +368,27 @@ actor MetadataStore {
         guard size <= Self.recordByteLimit("anchor"), let bytes = sqlite3_column_blob(statement, 1) else { throw StoreError.invalidRecord }
         return AnchorVersion(anchor: try JSONDecoder().decode(TranscriptAnchor.self, from: Data(bytes: bytes, count: size)), revision: revision)
     }
-    func putAnchor(_ anchor: TranscriptAnchor?, id: String, version: AnchorVersion) throws {
-        let previous = version.snapshot
-        guard anchor != previous.anchor else { return }
-        let revision: Int64? = try transaction {
-            guard try anchorVersion(id: id).snapshot.revision == previous.revision else { return nil }
-            guard (previous.revision ?? 0) < Int64.max else { throw StoreError.invalidRecord }
-            let next = max(try reserveRevision(kind: "anchor", id: id), (previous.revision ?? 0) + 1)
-            if let anchor {
-                try put(anchor, kind: "anchor", id: id, revision: next)
-                try remove(kind: "anchor-deleted", id: id)
-            } else {
-                // Keep a revision for absence: an old missing-row baseline
-                // cannot resurrect a position after another instance clears it.
-                try put(next, kind: "anchor-deleted", id: id, revision: next)
-                try remove(kind: "anchor", id: id)
+    func putAnchor(_ anchor: TranscriptAnchor?, id: String, version: AnchorVersion, write: OrderedDraftWriter.Ticket? = nil) throws {
+        try orderedDraftWrite(id, payload: .anchor, ticket: write) {
+            let previous = version.snapshot
+            guard anchor != previous.anchor else { return }
+            let revision: Int64? = try transaction {
+                guard try anchorVersion(id: id).snapshot.revision == previous.revision else { return nil }
+                guard (previous.revision ?? 0) < Int64.max else { throw StoreError.invalidRecord }
+                let next = max(try reserveRevision(kind: "anchor", id: id), (previous.revision ?? 0) + 1)
+                if let anchor {
+                    try put(anchor, kind: "anchor", id: id, revision: next)
+                    try remove(kind: "anchor-deleted", id: id)
+                } else {
+                    // Keep a revision for absence: an old missing-row baseline
+                    // cannot resurrect a position after another instance clears it.
+                    try put(next, kind: "anchor-deleted", id: id, revision: next)
+                    try remove(kind: "anchor", id: id)
+                }
+                return next
             }
-            return next
+            if let revision { version.committed(anchor, revision: revision) }
         }
-        if let revision { version.committed(anchor, revision: revision) }
     }
     /// Update only the cost choice from the latest durable chat. The revision
     /// also protects it from unrelated writes holding an older chat copy.
@@ -860,6 +894,11 @@ actor MetadataStore {
         return value
     }
     func remove(kind: String, id: String) throws {
+        if let key = draftWriteKey(kind: kind, id: id) {
+            try orderedDraftWrite(key.id, payload: key.payload) { try removeRecord(kind: kind, id: id) }
+        } else { try removeRecord(kind: kind, id: id) }
+    }
+    private func removeRecord(kind: String, id: String) throws {
         let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "DELETE FROM records WHERE kind=? AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
@@ -913,6 +952,11 @@ actor MetadataStore {
     }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
     func prune(kind: String, keeping: Int) throws {
+        if kind.hasPrefix("draft-conflict:"), let key = draftWriteKey(kind: kind, id: "") {
+            try orderedDraftWrite(key.id, payload: key.payload) { try pruneRecords(kind: kind, keeping: keeping) }
+        } else { try pruneRecords(kind: kind, keeping: keeping) }
+    }
+    private func pruneRecords(kind: String, keeping: Int) throws {
         let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "DELETE FROM records WHERE kind=? AND id NOT IN (SELECT id FROM records WHERE kind=? ORDER BY revision DESC LIMIT ?)", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
@@ -924,26 +968,35 @@ actor MetadataStore {
     /// A submission and the composer it left normally commit together. If
     /// another instance won the draft, retain the captured input separately
     /// beside the losing composer copy before reporting the conflict.
-    func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
-        try transaction {
-            do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) } }
-            catch StoreError.draftConflict {
-                // Roll back the draft write, then durably retain this intent
-                // beside its conflict copy. Debounces may replace only that
-                // composer copy; withdrawal/acknowledgement settles the input.
-                draftVersion?.preservingSubmission(intent)
-                throw StoreError.draftConflict
+    func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
+        defer { if let write { draftWriter.finish(write) } }
+        try orderedDraftWrite(intent.sessionID, payload: .submission) {
+            try transaction {
+                do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion, write: write) } }
+                catch StoreError.staleRevision {
+                    // Newer typing owns the composer, but cannot cancel the
+                    // captured message. Its independent intent still commits.
+                }
+                catch StoreError.draftConflict {
+                    // Roll back the draft write, then durably retain this intent
+                    // beside its conflict copy. Debounces may replace only that
+                    // composer copy; withdrawal/acknowledgement settles the input.
+                    draftVersion?.preservingSubmission(intent)
+                    throw StoreError.draftConflict
+                }
+                try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
             }
-            try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
         }
     }
     /// A submission the helper never acted on went back into the composer:
     /// the draft that holds its text again and the end of its record, in one
     /// commit.
-    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
-        try transaction {
-            if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
-            try remove(kind: "pending:\(sessionID)", id: commandID)
+    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
+        try orderedDraftWrite(sessionID, payload: draft == nil ? .submission : .draft, ticket: write) {
+            try transaction {
+                if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
+                try remove(kind: "pending:\(sessionID)", id: commandID)
+            }
         }
     }
     func acknowledgeCommand(sessionID: String, commandID: String) throws {
@@ -951,21 +1004,25 @@ actor MetadataStore {
         guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }
         intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID)
     }
-    func preserveSubmissionReviews(sessionID: String, commands: Set<String>, draftVersion: DraftVersion? = nil) throws {
-        // Read inside the actor: a review marker must never overwrite newer
-        // typing with the draft a journal read started from.
-        guard var draft = try get(DraftRecord.self, kind: "draft", id: sessionID) else { return }
-        draft.requireSubmissionReview(commands)
-        try put(draft, kind: "draft", id: sessionID, draftVersion: draftVersion)
+    func preserveSubmissionReviews(sessionID: String, commands: Set<String>, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
+        try orderedDraftWrite(sessionID, ticket: write) {
+            // Read inside the actor: a review marker must never overwrite newer
+            // typing with the draft a journal read started from.
+            guard var draft = try get(DraftRecord.self, kind: "draft", id: sessionID) else { return }
+            draft.requireSubmissionReview(commands)
+            try put(draft, kind: "draft", id: sessionID, draftVersion: draftVersion)
+        }
     }
-    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord, draftVersion: DraftVersion? = nil) throws -> ChatRecord {
-        try transaction {
+    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws -> ChatRecord {
+        defer { if let write { draftWriter.finish(write) } }
+        return try transaction {
             guard proposed.id == expected.id else { throw StoreError.staleRevision }
             let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id)
             if pending == nil {
                 // Another registration may have won while this caller read the
                 // header. A receipt proves which copy won; an ID alone cannot.
                 // Return its current organization without touching newer typing.
+                // A prepared writer has not cancelled that typing's debounce.
                 guard let completed = try sideKeepRegistration(id: expected.id),
                       completed.expected == expected else { throw StoreError.staleRevision }
                 return completed.chat
@@ -975,25 +1032,27 @@ actor MetadataStore {
             // Compare the captured intent before path/organization migration;
             // no chat or draft write is allowed without that exact pending copy.
             guard pending?.chat == expected else { throw StoreError.staleRevision }
-            var chat = proposed
-            if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
-                // Replaying a keep receipt must preserve an independent rename
-                // or topic move made after this child was first retained.
-                chat.applyOrganization(from: existing)
-            } else if let parentID = chat.parentSessionID {
-                // Whichever commits first, moving a parent and publishing a new
-                // side agree on the parent's current durable group. A fork has
-                // no parentSessionID and keeps its captured topic instead.
-                let parent = try get(ChatRecord.self, kind: "chat", id: parentID)
-                chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
+            return try orderedDraftWrite(proposed.id, ticket: write) {
+                var chat = proposed
+                if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
+                    // Replaying a keep receipt must preserve an independent rename
+                    // or topic move made after this child was first retained.
+                    chat.applyOrganization(from: existing)
+                } else if let parentID = chat.parentSessionID {
+                    // Whichever commits first, moving a parent and publishing a new
+                    // side agree on the parent's current durable group. A fork has
+                    // no parentSessionID and keeps its captured topic instead.
+                    let parent = try get(ChatRecord.self, kind: "chat", id: parentID)
+                    chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
+                }
+                try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id, draftVersion: draftVersion); try remove(kind: "side-keep", id: chat.id)
+                try put(SideKeepRegistration(expected: expected, path: chat.path), kind: SideKeepRegistration.kind, id: chat.id)
+                // The registered chat now owns this reference. Other dismissed
+                // paths with the same ID remain independently protected.
+                try remove(kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(expected))
+                guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
+                return saved
             }
-            try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id, draftVersion: draftVersion); try remove(kind: "side-keep", id: chat.id)
-            try put(SideKeepRegistration(expected: expected, path: chat.path), kind: SideKeepRegistration.kind, id: chat.id)
-            // The registered chat now owns this reference. Other dismissed
-            // paths with the same ID remain independently protected.
-            try remove(kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(expected))
-            guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
-            return saved
         }
     }
     /// A commit may precede its caller's sidebar publication. Read its receipt
@@ -1030,16 +1089,18 @@ actor MetadataStore {
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
-        let database = try ready()
-        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        transactionDrafts = []  // told once committed (`transaction`)
-        do {
-            try put(chat, kind: "chat", id: chat.id)
-            try put(draft, kind: "draft", id: chat.id)
-            if let provenance { try put(provenance, kind: "handoff", id: chat.id) }
-            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-            flushTransactionDrafts()
-        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        try orderedDraftWrite(chat.id) {
+            let database = try ready()
+            guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            transactionDrafts = []  // told once committed (`transaction`)
+            do {
+                try put(chat, kind: "chat", id: chat.id)
+                try put(draft, kind: "draft", id: chat.id)
+                if let provenance { try put(provenance, kind: "handoff", id: chat.id) }
+                guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+                flushTransactionDrafts()
+            } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        }
     }
     /// Current and future chat choices commit together. A storage failure must
     /// not leave the picker and next-chat defaults disagreeing after restart.

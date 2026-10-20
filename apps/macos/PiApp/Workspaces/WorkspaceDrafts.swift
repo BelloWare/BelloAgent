@@ -91,13 +91,13 @@ extension WorkspaceModel {
         if view.hasSubmittableInput { view.submissionReviews.formUnion(commands) }
         view.draftBeforeEdit?.requireSubmissionReview(commands)
         view.draftBeforeQueueEdit?.requireSubmissionReview(commands)
-        // The marker-only write can overtake a typing revision reserved while
-        // we await the old debounce. Reissue the latest live draft afterward.
+        // The marker-only operation reads durable text. Reissue the latest
+        // live typing afterward so both the text and its review gate persist.
         defer { if view.selectionMetadataLoaded, !isShutDown, displays[view.id] === view { draftChanged(view) } }
         let previous = draftWrites.tasks[view.id]; previous?.cancel(); await previous?.value
         if !isEphemeral(view.id) {
             guard let store else { throw StoreError.unavailable }
-            try await store.preserveSubmissionReviews(sessionID: view.id, commands: commands, draftVersion: view.draftVersion)
+            try await store.preserveSubmissionReviews(sessionID: view.id, commands: commands, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
         }
         // Only a successful marker write allows a terminal receipt to remove
         // the last evidence that the returned draft may already have run.
@@ -129,28 +129,31 @@ extension WorkspaceModel {
         guard view.selectionMetadataLoaded else { view.draftWritePending = true; return }
         view.draftWritePending = false
         let previous = draftWrites.tasks[view.id]; previous?.cancel()
+        guard let store else {
+            if !draftWrites.failed { draftWrites.failed = true; error = "Draft could not be saved. \(StoreError.unavailable.localizedDescription)" }
+            return
+        }
+        let write = store.draftWriter.capture(view.id)
         // The entry is cleared when this write finishes, and only by the write
         // that owns it: a newer one replaces the token first, so a cancelled
         // task's own cleanup can never drop it.
         let draft = view.savedDraft, id = view.id, token = UUID()
         draftWrites.tokens[id] = token
         draftWrites.tasks[id] = Task {
-            defer { if draftWrites.tokens[id] == token { draftWrites.tokens.removeValue(forKey: id); draftWrites.tasks.removeValue(forKey: id) } }
+            defer { store.draftWriter.finish(write); if draftWrites.tokens[id] == token { draftWrites.tokens.removeValue(forKey: id); draftWrites.tasks.removeValue(forKey: id) } }
             do {
                 // Cancellation cannot withdraw a write already in the store.
                 // Compare against its committed version, including an undo
                 // back to the draft that was originally loaded.
                 await previous?.value
                 try Task.checkCancellation()
-                guard let store else { throw StoreError.unavailable }
-                let revision = try await store.reserveRevision(kind: "draft", id: draft.id)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
-                try await store.put(draft, kind: "draft", id: draft.id, revision: revision, draftVersion: view.draftVersion); draftWrites.failed = false
+                try await store.put(draft, kind: "draft", id: draft.id, draftVersion: view.draftVersion, write: write); draftWrites.failed = false
             }
             catch is CancellationError { }
             catch StoreError.staleRevision { /* A newer send, flush or edit already saved this draft. */ }
             catch {
-                if error as? StoreError == .draftConflict, let copies = try? await store?.draftConflicts(id: view.id) {
+                if error as? StoreError == .draftConflict, let copies = try? await store.draftConflicts(id: view.id) {
                     view.draftConflicts = copies
                 }
                 // A full disk fails every debounce tick; report it once, not per keystroke.
@@ -158,6 +161,7 @@ extension WorkspaceModel {
                 draftWrites.failed = true; self.error = "Draft could not be saved. \(error.localizedDescription)"
             }
         }
+        if let task = draftWrites.tasks[id] { store.draftWriter.cancelOnSupersession(write, task: task) }
     }
     /// Writes every pending draft and anchor now. Quit calls this so the
     /// 150 ms debounce cannot lose the last thing typed; the update path does
@@ -188,8 +192,8 @@ extension WorkspaceModel {
                 guard view.hasUnsavedDraft || view.anchorWritePending else { continue }
                 try await loadDraftBaseline(view)
             }
-            if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion) }
-            try await store.putAnchor(view.scrollAnchor, id: view.id, version: view.anchorVersion)
+            if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id)) }
+            try await store.putAnchor(view.scrollAnchor, id: view.id, version: view.anchorVersion, write: store.draftWriter.capture(view.id, payload: .anchor))
         }
     }
     /// Quit and update end every side that was never saved, and a side's
@@ -211,11 +215,16 @@ extension WorkspaceModel {
         guard !isEphemeral(view.id) else { return }
         guard view.selectionMetadataLoaded else { view.anchorWritePending = true; return }
         view.anchorWritePending = false
+        guard let store else { return }
         let anchor = view.scrollAnchor, previous = view.anchorWrite
+        let write = store.draftWriter.capture(view.id, payload: .anchor)
         view.anchorWrite = Task {
+            defer { store.draftWriter.finish(write) }
             await previous?.value
-            try? await store?.putAnchor(anchor, id: view.id, version: view.anchorVersion)
+            guard !Task.isCancelled else { return }
+            try? await store.putAnchor(anchor, id: view.id, version: view.anchorVersion, write: write)
         }
+        if let task = view.anchorWrite { store.draftWriter.cancelOnSupersession(write, task: task) }
     }
     func canRestoreConflictedDraft(_ id: String) -> Bool {
         guard !isShutDown, !installPreparing, let item = record(id), !item.isSubagent, !item.imported,
@@ -233,7 +242,7 @@ extension WorkspaceModel {
                 guard let store else { throw StoreError.unavailable }
                 view.recoveringDraft = true
                 let live = view.savedDraft
-                try await store.restoreConflict(conflict, replacing: live, version: view.draftVersion)
+                try await store.restoreConflict(conflict, replacing: live, version: view.draftVersion, write: store.draftWriter.capture(view.id))
                 // Typing is disabled while this explicit recovery commits.
                 view.restoreDraft(conflict.draft)
                 view.unreconciledQueuedEdit = conflict.draft.queuedEdit
@@ -289,7 +298,7 @@ extension WorkspaceModel {
                 // image conversions wait behind it; typing before it began
                 // was included above. Quit awaits this task as well.
                 view.recoveringDraft = true
-                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged, draftVersion: view.draftVersion)
+                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged, draftVersion: view.draftVersion, write: merged.map { _ in store.draftWriter.capture(view.id) })
                 if let merged {
                     view.draft = merged.text; view.attachments = merged.attachments ?? []; view.skills = merged.skills ?? []; view.directCommand = false
                     view.submissionReviews = merged.submissionReviews ?? []

@@ -2176,3 +2176,415 @@ retained. No other workstream's build products or lock were touched. There are
 no unresolved code findings; the three existing opt-in/permission skips are
 listed above. The two requested defects and the confirmed nearby baseline
 writers are fixed; no helper or wire behavior was changed.
+
+## Round 8 — ordered draft writers
+
+Both review findings are **confirmed and fixed**. The baseline is `edab6936`.
+All fixtures use generated state directories, memory vaults and injected helper
+frames. No live provider, real preferences, credentials or user chats are used.
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round8/`.
+
+### Writer contract
+
+`OrderedDraftWriter.swift` documents the rules enforced by `MetadataStore`:
+
+1. Each actual snapshot write claims its chat's writer ticket synchronously, before
+   creating a task or awaiting a predecessor. Newer snapshots invalidate and
+   cancel older pending snapshots of the same payload, including when the new
+   value equals the loaded baseline. A cancelled task cannot evade the store's
+   separate ticket check by ignoring cancellation.
+2. A conditional side registration first prepares an ordered candidate. A
+   receipt replay is read-only and must not cancel pending typing or save its
+   captured publication text. When eligibility checks show an actual write is
+   needed, beginning that candidate supersedes older pending writes; any newer
+   actual capture/commit has already retired the candidate. An older candidate
+   beginning leaves newer conditional candidates eligible. All unused candidates
+   are released without cancelling other work.
+3. The store actor begins a ticket before reserving a revision or touching any
+   conflict/recovery state. Superseded, reused or mismatched tickets throw
+   `staleRevision`. Revision reservation, the loaded-revision comparison and
+   commit have no suspension between them. An operation that has already begun
+   finishes before the next operation can begin; its version advances only
+   after commit. An older task's cleanup cannot retire a newer ticket.
+4. All writes use this boundary, including compound transactions, their rollback
+   conflict preservation, raw draft initialization, removals and conflict-copy
+   pruning. Internal nested writes reuse the admitted operation. No production
+   debounce reserves a draft revision outside its commit anymore.
+5. A chat's text and reading position are independent payloads in this writer:
+   scrolling cannot cancel typing, or vice versa. They still reserve and commit
+   serially on the same store actor. Conflict copies and captured command inputs
+   are independent durable records, not replaceable composer snapshots.
+6. A superseded composer snapshot accompanying `recordSubmission` is skipped,
+   while its captured command still commits. A superseded *restoration* cannot
+   consume its recovery record. Explicit discard without a composer replacement
+   does not claim a text ticket. Conflict episodes, review gates, attachment
+   references and retention rules from earlier rounds remain intact.
+7. Supplied legacy/test revisions at or below the version's committed revision
+   are rejected **before writer admission**, the unchanged-value shortcut or
+   conflict detection. They cannot cancel newer pending typing, create a new
+   episode, replace an existing losing copy or pin obsolete input.
+
+### Callers routed through the writer
+
+| Caller | Payload / admission |
+| --- | --- |
+| `WorkspaceDrafts.draftChanged` (composer changes, edits/queue edits, attachments, returned input, review acknowledgement) | Text ticket captured before the debounce task and predecessor wait. |
+| `WorkspaceDrafts.flushDrafts` (quit, update and explicit flush) | Current text and anchor each claim immediately before their store call, after baseline/recovery draining. |
+| `WorkspaceDrafts.anchorChanged` (ordinary, side and managed-child readers) | Anchor ticket captured before the asynchronous predecessor wait. |
+| `WorkspaceDrafts.protectReturnedDrafts` / `MetadataStore.preserveSubmissionReviews` | Ordered read/modify/write of the durable review marker; latest live typing is rescheduled with the marker. |
+| `WorkspaceEditing.sendEdit` | Marked text claims a ticket before its task starts. Finish/cancel/newer editing goes through `draftChanged`. |
+| `WorkspaceRun.deliverSubmission` | Connection refusal samples the live composer and claims at save; the captured post-send snapshot claims before `progress.recording` starts. `recordSubmission` independently preserves the command. |
+| `WorkspaceRun.recoverFailedSubmission` | Returned snapshot claims before awaiting intent recording; newer typing can supersede that snapshot without consuming the intent. |
+| `WorkspaceDrafts.recoverDraft` / `MetadataStore.withdrawSubmission` | Restored text and intent withdrawal are one ordered transaction; explicit discard uses the input-record operation only. |
+| `WorkspaceDrafts.restoreConflictedDraft` / `MetadataStore.restoreConflict` | One ordered transaction preserves current copies, restores the chosen copy and removes only that recovery entry. |
+| `WorkspaceChatLifecycle.materializeChat` | Baseline-loaded draft claims at save. |
+| `WorkspaceSides.publishPendingSide`, `moveSideDraft`, `registerKeptSide`, `closeSide` | Initial side text, parent transfer, close text and anchor claim writes at capture. Kept-side registration prepares its candidate before the actor call, and begins only after eligibility checks. Standalone pinned-conflict preservation enters the ordered conflict operation. |
+| `MetadataStore.put`, `putDraft`, `putAnchor`, `preserveDraftConflicts`, `preserveConflict`, `preserveSubmissions`, `acknowledgeCommand` | Generic desktop input writes, CAS, backup copies and command state changes all enter/reuse the writer. Conflict preservation completes synchronously after rollback before the original write returns. |
+| `MetadataStore.commitKeptSide`, `commitPortableHandoff` | Actual writes begin after keep eligibility checks and run synchronously through commit. Handoff initialization is ordered too; its new identity has no display yet. |
+| `MetadataStore.remove`, `removeAll` / `prune` | Draft/anchor deletion and per-chat conflict pruning enter the same writer, including side-open rollback, chat deletion and family deletion. Unrelated metadata kinds retain their previous path. |
+
+### Findings and failing-first evidence
+
+**Debounce versus direct writes — confirmed/fixed.**
+`testDelayedDebounceCannotOverwriteDirectSave` and
+`testDelayedDebounceCannotRemoveAnEditSubmissionReview` hold a predecessor while
+respectively saving directly and dispatching a real `sendEdit` through an
+injected helper. Releasing the older debounce must leave the newer durable
+value and the interrupted edit's review marker intact. Before production edits,
+`failing-order.log` recorded:
+
+```text
+XCTAssertEqual failed: (Optional("Older typing")) is not equal to (Optional("Direct save"))
+XCTAssertEqual failed: (nil) is not equal to (Optional(Set([command])))
+- An interrupted edit must reopen behind its review gate
+```
+
+**Superseded revision becomes conflict input — confirmed/fixed.**
+`testSupersededRevisionCannotStartOrReplaceAConflictEpisode` reserves an older
+revision, commits newer local input, then commits through a second independent
+store. It checks both no existing episode and an existing latest losing copy.
+Before the fix:
+
+```text
+XCTAssertEqual failed: Optional(StoreError.draftConflict) != Optional(StoreError.staleRevision)
+Superseded input must not create or replace a recovery copy
+actual: "Obsolete snapshot"; expected: no copy / "Latest losing input"
+```
+
+The initial native run executed **3 tests, all 3 failed (7 assertions)**.
+A preliminary compile caught a missing `try` in the new helper fixture; that
+was corrected before the recorded failing-first test execution.
+
+### Nearby sweep and race coverage
+
+`DraftOrderingTests` adds the two review reproductions plus coverage of:
+
+- An obsolete ticket whose caller ignores cancellation, after another instance
+  commits; neither conflict memory nor the durable conflict table changes.
+- An obsolete or reused supplied revision arriving while newer typing is still
+  pending; the latest ticket remains valid.
+- Delayed anchors versus direct position saves and explicit clears, and both
+  directions of independent anchor/text writes.
+- Eight direct writers racing a held debounce: ordinary save, review marker,
+  submission, withdrawal, chosen-conflict restoration, kept-side registration,
+  portable handoff and deletion. Even an unchanged direct snapshot cancels its
+  predecessor.
+- Superseded post-send snapshots retaining independent captured input;
+  superseded recovery operations retaining both the input and conflict copy.
+- Cancellation binding after supersession and cleanup of an older ticket while
+  a newer ticket remains pending.
+- A write already inside its synchronous commit while newer input arrives;
+  the newer revision and unchanged-value decision follow the older commit.
+
+The existing `DraftConcurrencyTests` predecessor fixture now captures a ticket
+before its artificial suspension instead of introducing an unlabelled direct
+write after the newer snapshot. It still checks undo back to the initial empty
+baseline. The separate begun-commit test covers the genuinely in-flight case.
+The first integration run exposed that obsolete fixture assumption and a nil-
+replacement withdrawal using a text ticket; both were corrected. The final
+core run passed **76/76**, including all 34 concurrency tests and all 13 existing
+recovered-input tests. Final wider validation and mutations are listed below.
+
+The adversarial sweep reproduced a duplicate-registration corner in the new
+integration: admitting the candidate too early cancelled a debounce even when
+`commitKeptSide` found an existing receipt and performed no write.
+`failing-registration.log` captured `Optional("") != Optional("Typing while
+registration finishes")`. The first attempted correction saved the versioned
+candidate; 13 ordering tests passed, but the wider window run correctly rejected
+that approach. `SideKeepOrderingTests.testCapturedRegistrationSucceedsWhenAnotherRegistrationCommitsFirst`
+failed for both sides and forks at line 241:
+
+```text
+actual: Optional("Question being published")
+expected: Optional("Newer typing")
+```
+
+That run (`final-windows-before-conditional.log`) executed 182 tests: 180 passed,
+1 skipped, 1 failed (two assertions). This was a regression from the attempted
+correction, not an unrelated failure. The final implementation preserves the
+existing read-only receipt replay: it **prepares** the conditional candidate,
+then begins the writer only when a pending keep will actually be committed.
+`testCompletedRegistrationLeavesPendingTypingWithItsWriter` covers the no-op
+side; `testPreparedRegistrationSupersedesAnOlderDebounceWhenItWrites` covers a
+real registration. The other new tests cover newer typing superseding a
+prepared registration, and two conditional candidates beginning in either
+order. The final targeted check (`fixed-conditional-order.log`) passed all
+**16 ordering tests plus the existing side/fork race**, 17/17. The full affected
+classes and final mutation cycle are rerun below.
+
+### Adversarial self-review
+
+Reviewed each new/changed branch against the states that now take it:
+
+| Condition | Newly affected states and intended outcome |
+| --- | --- |
+| Capture replaces the pending ticket for the same payload | Older delayed text is cancelled by saves/markers/recovery, and older anchors by newer positions/clears. Different chats and text versus anchor remain independent. The eight-writer matrix and anchor tests cover this. |
+| Bind cancellation after a newer capture; finish only if identity matches | A task bound late is still cancelled; an older task finishing cannot remove the current ticket. A ticket already begun is no longer pending and finishes its synchronous commit. |
+| Begin requires the exact current ticket/key; nested synchronous calls reuse the active operation | Superseded/replayed/mismatched writes stop before revision reservation or conflict state. Compound calls cannot cancel their own nested writes. No asynchronous operation occurs inside this boundary. |
+| Supplied revision is at or below the committed local revision | Obsolete or reused reservations fail before cancelling current typing or checking the other instance. Both new and existing conflict episodes remain untouched. Fresh reservations keep their existing CAS behavior. |
+| Draft/anchor/conflict/pending record-kind routing | Only desktop input kinds use the writer; unrelated metadata retains its previous SQL path. Draft and anchor removals cancel pending snapshots too. |
+| Empty `preserveDraftConflicts` input | No write is needed. Nonempty pinned copies/inputs still persist after rollback before errors return, and remain pinned if preservation fails. Existing release-path and rollback tests pass. |
+| Submission snapshot is stale | Its composer write is skipped, but the captured input still commits independently. A genuine cross-instance conflict still saves both copies and throws. Recovery/withdrawal never catches stale to consume an unsaved restored input. |
+| Withdrawal has no replacement draft | Explicit discard uses the independent input operation; it does not supersede unrelated typing. A text restoration uses one text transaction and preserves the intent on rejection. |
+| Conditional registration finds a receipt instead of a pending keep | Return the registered chat without beginning its prepared writer, cancelling typing or replacing saved text. Real registration begins after eligibility checks and before any mutation. A newer actual write invalidates older preparations; an older candidate beginning does not invalidate newer candidates. Completion removes only its own candidate. Both the existing side/fork race and the new conditional ordering tests cover these branches. |
+| Debounce/store unavailable or cancellation; anchor cancellation | The existing one-time save-error banner is retained. Cancelled/stale work is silent, without a conflict banner. Baseline-loading guards, ephemeral-side policy and recovery ownership remain unchanged. |
+| Connection refusal samples the live composer at its save | The refusal never emptied the composer. New typing/attachments after Return now remain the durable contents, rather than being replaced by the rejected captured proposal. The original connection error and refusal to dispatch remain unchanged. |
+| Returned-submission snapshot captured before waiting for recording | New typing during that wait supersedes the old returned snapshot. Rejected recovery leaves the independent intent durable rather than overwriting newer text or consuming the only recoverable copy. |
+
+The review did not find changes to helper identity, wire parameters, dispatch
+authority, permission/capture/tool/vault boundaries, conflict retention or UI
+layout. No helper/wire behavior or UI rendering changed this round.
+
+### Validation process note
+
+One broad run was misclassified: `AppShellPerformanceTests` creates/focuses
+windows and had been included in the headless group. It was stopped, its partial
+results excluded, and its log retained as `aborted-focus-group.log`. Some AppShell
+tests had started before the stop; this was a lock-procedure error, not a claim
+that the run was focus-free. The corrected final script runs that class in the
+locked window group. No other workstream's lock was removed. All remaining
+window/focus runs use the shared lock, and serial-lane classes run alone.
+
+### Initial mutation evidence
+
+Each initial mutation was applied alone, tested, and restored in `finally`
+before the next run. These seven commands exited 65 from test assertions, not
+build failures (10/10 selected executions failed as expected). The final writer,
+including conditional admission, is mutation-tested again below; these earlier
+results are not added to the final counts.
+
+| Log | Tests | Assertion/error failures | Result |
+| --- | ---: | ---: | --- |
+| `mutation-debounce.log` | 2 | 2 (0 unexpected-error assertions) | Mutation caught |
+| `mutation-stale-revision.log` | 2 | 7 (1 unexpected-error assertions) | Mutation caught |
+| `mutation-ticket.log` | 2 | 7 (0 unexpected-error assertions) | Mutation caught |
+| `mutation-anchor.log` | 1 | 2 (0 unexpected-error assertions) | Mutation caught |
+| `mutation-submission.log` | 1 | 1 (1 unexpected-error assertions) | Mutation caught |
+| `mutation-cancel.log` | 1 | 8 (0 unexpected-error assertions) | Mutation caught |
+| `mutation-registration.log` | 1 | 1 (0 unexpected-error assertions) | Mutation caught |
+
+Exact reproduction and mutation commands:
+
+```sh
+# failing-order
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests
+# failing-registration
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testAlreadyRegisteredSideSavesTheNewerSnapshotThatCancelledItsDebounce
+# mutation-debounce
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testDelayedDebounceCannotOverwriteDirectSave -only-testing:PiAppTests/DraftOrderingTests/testDelayedDebounceCannotRemoveAnEditSubmissionReview
+# mutation-stale-revision
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededRevisionCannotStartOrReplaceAConflictEpisode -only-testing:PiAppTests/DraftOrderingTests/testObsoleteReservationCannotCancelNewerPendingTyping
+# mutation-ticket
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededTicketIsStaleEvenWhenItsTaskIgnoresCancellation -only-testing:PiAppTests/DraftOrderingTests/testSupersededRecoveryCannotConsumeItsInputOrConflictCopy
+# mutation-anchor
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testDelayedAnchorCannotOverwriteDirectPositionOrClear
+# mutation-submission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededSubmissionSnapshotKeepsItsIndependentInput
+# mutation-cancel
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testEveryDirectDraftWriterSupersedesAPendingDebounce
+# mutation-registration
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testAlreadyRegisteredSideSavesTheNewerSnapshotThatCancelledItsDebounce
+```
+
+Intermediate integration evidence: `fixed-order.log` ran 39 tests with two
+failures (the predecessor fixture and nil-replacement withdrawal described
+above); `ordering-sweep.log` ran 47 with the remaining old fixture failure;
+`fixed-core.log` passed 76/76 after both corrections. `fixed-registration.log`
+passed all 13 ordering tests after the adversarial registration check. These
+intermediate runs are not added to the final unique test count.
+
+### Final mutation evidence
+
+All nine isolated mutations failed through test assertions (native exit 65);
+12/12 selected test executions failed as expected. Each mutation was restored
+in `finally`. The final source hashes were captured after restoration.
+
+| Log | Tests | Assertion/error failures |
+| --- | ---: | ---: |
+| `mutation-final-debounce.log` | 2 | 2 (0 unexpected-error assertions) |
+| `mutation-final-stale-revision.log` | 2 | 7 (1 unexpected-error assertions) |
+| `mutation-final-ticket.log` | 2 | 7 (0 unexpected-error assertions) |
+| `mutation-final-anchor.log` | 1 | 2 (0 unexpected-error assertions) |
+| `mutation-final-submission.log` | 1 | 1 (1 unexpected-error assertions) |
+| `mutation-final-cancel.log` | 1 | 8 (0 unexpected-error assertions) |
+| `mutation-final-conditional-admission.log` | 1 | 2 (0 unexpected-error assertions) |
+| `mutation-final-conditional-begin.log` | 1 | 2 (0 unexpected-error assertions) |
+| `mutation-final-conditional-order.log` | 1 | 3 (0 unexpected-error assertions) |
+
+Exact final mutation commands:
+
+```sh
+# mutation-final-debounce
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testDelayedDebounceCannotOverwriteDirectSave -only-testing:PiAppTests/DraftOrderingTests/testDelayedDebounceCannotRemoveAnEditSubmissionReview
+# mutation-final-stale-revision
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededRevisionCannotStartOrReplaceAConflictEpisode -only-testing:PiAppTests/DraftOrderingTests/testObsoleteReservationCannotCancelNewerPendingTyping
+# mutation-final-ticket
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededTicketIsStaleEvenWhenItsTaskIgnoresCancellation -only-testing:PiAppTests/DraftOrderingTests/testSupersededRecoveryCannotConsumeItsInputOrConflictCopy
+# mutation-final-anchor
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testDelayedAnchorCannotOverwriteDirectPositionOrClear
+# mutation-final-submission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testSupersededSubmissionSnapshotKeepsItsIndependentInput
+# mutation-final-cancel
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testEveryDirectDraftWriterSupersedesAPendingDebounce
+# mutation-final-conditional-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testCompletedRegistrationLeavesPendingTypingWithItsWriter
+# mutation-final-conditional-begin
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testPreparedRegistrationSupersedesAnOlderDebounceWhenItWrites
+# mutation-final-conditional-order
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testPreparedRegistrationCannotOverwriteNewerTypingOrConsumeItsIntent
+```
+
+### Final caller audit: connection refusal
+
+The final capture audit confirmed another delayed-snapshot instance in
+`deliverSubmission`: a connection refusal saved the proposal captured before
+its task started, while admitting it as a new write after newer typing.
+`testConnectionRefusalSavesCurrentTypingInsteadOfItsCapturedMessage` failed
+first in `failing-refusal.log`:
+
+```text
+actual: Optional("Text when Return was pressed")
+expected: Optional("Newer typing after the refusal")
+```
+
+A refused send never cleared the composer. Its direct save now samples
+`view.savedDraft` at admission, including the current text and attachments,
+and still reports the original connection refusal without dispatching work.
+`fixed-refusal.log` passed 35/35 tests (all 17 ordering tests, 12 submission
+bookkeeping tests and 6 workspace-failure tests). Reinstating the captured
+proposal is checked in `mutation-final-refusal.log`. This is an additional
+nearby writer fixed in the same function. All final affected classes are rerun
+after this one-line change; the preceding full pass remains available in the
+`final-*-before-refusal.log` files and is not counted twice.
+
+The refusal mutation restored the captured proposal and failed 1/1 test with
+one equality assertion (native exit 65), reproducing the same text mismatch.
+The source was restored before the final rerun. Together with the nine
+mutations above, **10/10 mutation variants were caught; 13/13 selected test
+executions failed as expected**.
+
+```sh
+# failing-refusal / mutation-final-refusal
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests/testConnectionRefusalSavesCurrentTypingInsteadOfItsCapturedMessage
+# fixed-refusal
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/WorkspaceFailureTests
+```
+
+### Final native validation
+
+**680 passed; 1 skipped; 0 failed**, across 45 affected classes.
+
+| Class | Tests | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| `AppShellPerformanceTests` | 11 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ComposerSubmissionTests` | 7 | 1 | 0 |
+| `ConversationFamilyTests` | 22 | 0 | 0 |
+| `ConversationPaneTests` | 83 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 34 | 0 | 0 |
+| `DraftLoadingTests` | 15 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftOrderingTests` | 17 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `FamilyDeletionTests` | 10 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoricalEditFocusTests` | 1 | 0 | 0 |
+| `HistoricalEditingTests` | 5 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 8 | 0 | 0 |
+| `LaunchSelectionTests` | 20 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `ModelSwitchTests` | 24 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueueEditInteractionTests` | 17 | 0 | 0 |
+| `QueuedEditPresentationTests` | 9 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SendImmediacyTests` | 14 | 0 | 0 |
+| `SessionReadStateTests` | 16 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 10 | 0 | 0 |
+| `SubagentMetadataTests` | 9 | 0 | 0 |
+| `SubagentOpeningTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 56 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceFailureTests` | 6 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 49 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+
+Exact final commands (text logs use the comment names):
+
+```sh
+# final-model
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceFailureTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/SessionReadStateTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/SubagentMetadataTests
+# final-deletion
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/SubagentDeletionTests
+# final-windows
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/AppShellPerformanceTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/HistoricalEditFocusTests -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/ModelSwitchTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/SendImmediacyTests -only-testing:PiAppTests/ComposerSubmissionTests -only-testing:PiAppTests/ComposerImportSubmissionTests -only-testing:PiAppTests/QueuedEditPresentationTests
+# final-queue
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+# final-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+# final-original
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+# final-opening
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+# final-conversation
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+# final-lifecycle
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+# final-window
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+```
+
+All 10 source/project hashes match the validated state in
+`tested-source-sha256.json`. The final classes cover draft ordering, conflict
+retention and release, baseline hydration, markers, size limits, submission and
+edit bookkeeping, side publication/recovery, queue editing, managed-child
+readers, lifecycle/quit/update, and native conversation interactions. No helper
+implementation, host protocol or wire contract changed; helper and
+wire/concurrent/acceptance suites were not required. No UI rendering changed,
+so no gallery was needed. No unresolved code findings remain.
+
+The single existing skip is
+`ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer`:
+“This test host has no Conversation menu” (`ComposerSubmissionTests.swift:126`).
+No additional skips or failed tests remain in the final run.
+
+Final adversarial review and source-hash verification are complete. Own generated
+test-result bundles were removed after the runs; no own clone app directories
+remained. Text logs are retained. The shared lane was released after each owned
+run, including the last window test. Other workstreams' locks and build products
+were not touched. The early focus-group procedure error and corrected locked
+rerun are recorded above; its partial results are excluded from these counts.

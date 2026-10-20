@@ -187,7 +187,7 @@ extension WorkspaceModel {
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
-        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id, draftVersion: view.draftVersion)
+        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
         let host = try await open(parent), connection = host.connectionID; host.isBusy = true
         let result: [String: WireValue]
         var written = false
@@ -312,7 +312,7 @@ extension WorkspaceModel {
                     if parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
                 }
                 let merged = saved.receiving(moving), revision = version.snapshot.revision
-                try await store.put(merged, kind: "draft", id: info.parentID, draftVersion: version)
+                try await store.put(merged, kind: "draft", id: info.parentID, draftVersion: version, write: store.draftWriter.capture(info.parentID))
                 if let parent = displays[info.parentID], parent.draftVersion.snapshot.revision == revision { parent.draftVersion = version }
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // Or loaded the copy from before this write: given the draft
@@ -553,7 +553,7 @@ extension WorkspaceModel {
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
-        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat, draftVersion: version)
+        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat, draftVersion: version, write: store.draftWriter.prepare(retained.id))
         await finishSideKeepRegistration(retained, expected: intent.chat)
     }
     private func finishSideKeepRegistration(_ saved: ChatRecord, expected: ChatRecord) async {
@@ -624,9 +624,9 @@ extension WorkspaceModel {
             // must get its baseline and be saved before the pane closes.
             if !view.selectionMetadataLoaded, view.hasUnsavedDraft || view.anchorWritePending { try await loadDraftBaseline(view) }
             if view.selectionMetadataLoaded {
-                try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion)
+                try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
                 await view.anchorWrite?.value
-                try await store.putAnchor(view.scrollAnchor, id: id, version: view.anchorVersion)
+                try await store.putAnchor(view.scrollAnchor, id: id, version: view.anchorVersion, write: store.draftWriter.capture(view.id, payload: .anchor))
             }
             view.presentation.cancel()
             // Another side may have opened on this chat during the awaits

@@ -521,20 +521,20 @@ import SQLite3
         XCTAssertEqual(saved?.text, "A newer edit")
     }
 
-    func testFlushWaitsForAnAdmittedWriteBeforeSkippingAnUnchangedDraft() async throws { try await admittedWrite(flush: true) }
-    func testDebounceWaitsForAnAdmittedWriteBeforeSkippingAnUnchangedDraft() async throws { try await admittedWrite(flush: false) }
+    func testFlushDrainsACapturedWriteBeforeSkippingAnUnchangedDraft() async throws { try await admittedWrite(flush: true) }
+    func testDebounceSupersedesACapturedWriteBeforeSkippingAnUnchangedDraft() async throws { try await admittedWrite(flush: false) }
 
     private func admittedWrite(flush: Bool) async throws {
         let (model, view, _, _) = try await fixture()
         let store = try XCTUnwrap(model.store), gate = AsyncGate(), token = UUID()
-        let revision = try await store.reserveRevision(kind: "draft", id: view.id)
-        // A write already dispatched to the actor is not withdrawn by Task
-        // cancellation. Hold its completion while the composer returns to
-        // the initially loaded empty draft.
+        let write = store.draftWriter.capture(view.id)
+        // Capture the older snapshot before its suspension, just as every
+        // asynchronous producer does. Task cancellation alone cannot stop
+        // this fixture; the store must reject its superseded ticket.
         let admitted = Task {
             defer { if model.draftWrites.tokens[view.id] == token { model.draftWrites.tasks[view.id] = nil; model.draftWrites.tokens[view.id] = nil } }
             await gate.wait()
-            try? await store.put(DraftRecord(id: view.id, text: "Older queued write"), kind: "draft", id: view.id, revision: revision, draftVersion: view.draftVersion)
+            try? await store.put(DraftRecord(id: view.id, text: "Older queued write"), kind: "draft", id: view.id, draftVersion: view.draftVersion, write: write)
         }
         model.draftWrites.tasks[view.id] = admitted; model.draftWrites.tokens[view.id] = token
         var finished = false

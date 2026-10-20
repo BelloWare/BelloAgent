@@ -147,8 +147,9 @@ extension WorkspaceModel {
         try await materializeChat(item.id)
         sendSteps?("materialized")
         guard accepted else {
-            // Preserve the user's draft even when the connection is already missing.
-            if !isEphemeral(item.id) { try await store.put(DraftRecord(id: item.id, text: text, attachments: attachments, skills: skills), kind: "draft", id: item.id, draftVersion: view.draftVersion) }
+            // A refusal leaves the composer intact. Save its current contents:
+            // typing may have changed since Return captured the rejected text.
+            if !isEphemeral(item.id) { try await store.put(view.savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id)) }
             _ = try connection.get()
             return
         }
@@ -165,8 +166,8 @@ extension WorkspaceModel {
             // the command goes out only once it is on disk.
             let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
                                        epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
-            let draft = view.savedDraft
-            progress.recording = Task { try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion) }
+            let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
+            progress.recording = Task { try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write) }
         }
         let host = try await open(item)
         sendSteps?("opened")
@@ -270,15 +271,17 @@ extension WorkspaceModel {
         if accepted, rejection == nil, dispatched { view.submissionReviews.insert(commandID) }
         if accepted { restoreUnsent(view, text: text, attachments: attachments, skills: skills, directCommand: directCommand) }
         let draft = accepted && !isEphemeral(item.id) ? view.savedDraft : nil
+        let write = draft.map { _ in store.draftWriter.capture(view.id) }
+        defer { if let write { store.draftWriter.finish(write) } }
         if rejection != nil || !dispatched {
             // The helper never acted on it: its record goes, in the
             // same commit as the draft that holds the text again.
             _ = try? await recording?.value
-            try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion); pendingIntentsChanged(item.id)
+            try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write); pendingIntentsChanged(item.id)
         } else if let draft {
             // Its outcome is unknown: the record stays to say so, and
             // the text is back in the draft as well.
-            try? await store.put(draft, kind: "draft", id: item.id, draftVersion: view.draftVersion)
+            try? await store.put(draft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: write)
         }
         if let rejection {
             // The helper refused it, so nothing new is running. The
