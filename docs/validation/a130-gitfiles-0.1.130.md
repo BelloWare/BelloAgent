@@ -4039,3 +4039,223 @@ homes and automatic result bundles after retaining text/JSON evidence.
 No clone folders remain in this build root, and no extra DerivedData copy
 was created. The separate Unicode ignore-prefix observation above is the
 only newly recorded follow-up outside this fix.
+
+## Round 17 — clean tracked-file replacement review
+
+2026-10-21, branch `dev/a130-gitfiles`, base `9df33e88`.
+
+**Disposition: rejected with evidence; no production change.** The reported
+ordering was exercised against the existing code before changing any product
+line. Both new native tests passed. The premise that `ignoredPaths` returns
+`cache/` while the regular file `cache` remains in the index is false for the
+command the app uses:
+
+```sh
+/usr/bin/git ls-files --others --ignored --exclude-standard --directory -z
+```
+
+With `/usr/bin/git` version `2.39.5 (Apple Git-154)`, replacing the clean,
+committed regular file with `cache/first.o` gives:
+
+```text
+status before replacement: no entries
+ignored paths after replacement: []
+status after replacement: cache, indexState ".", worktreeState "D"
+```
+
+The file remains indexed after it is removed from the working tree. Git's
+`show_other_files` calls `index_name_is_other`, which strips a directory's
+trailing slash and rejects an exact index match. Thus `cache/` is excluded
+from this query's results even though the directory matches `.gitignore`.
+This agrees with the fixture observations. Primary source:
+[Git 2.39.5 ls-files.c](https://github.com/git/git/blob/v2.39.5/builtin/ls-files.c#L145-L155),
+[index_name_is_other](https://github.com/git/git/blob/v2.39.5/read-cache.c#L3226-L3252).
+
+There is consequently no newly learned covering ignore to drop either queued
+batch in the reported case. Adding a tracked-path query would add product work
+without a reproduced defect. No per-refresh index scan, additional Git process,
+or asynchronous product path was added.
+
+### Attempted failing-first reproduction
+
+Extended the existing held-status fixture, preserving its untracked-file
+cases, with:
+
+- `testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes`: the replacement
+  batch reaches the controller while its automatic refresh is held.
+- `testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes`: the batch
+  stays in the watcher throttle until the held refresh finishes.
+
+Each new case commits `cache`, verifies the initial status is empty, holds the
+next completed status read, replaces the file with a directory, and queues a
+child-only event (`cache/first.o`). It requires exactly one follow-up refresh
+and a displayed tracked deletion. The helper now also verifies the actual
+`GitService.ignoredPaths` result while status is held: `[]` for a tracked file,
+`["cache/"]` for the existing untracked case. This checks the disputed premise
+directly instead of injecting an ignored result Git does not produce.
+
+Initial output, with unchanged product code (`r17-clean-replacement-red.log`;
+the label names the attempted red run, not a failure):
+
+```text
+testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes passed (2.482 seconds).
+testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes passed (2.491 seconds).
+Executed 2 tests, with 0 failures
+```
+
+After adding the direct ignore-result assertions, the two new and two existing
+replacement cases passed **4/4**, zero failures, before any mutation
+(`r17-baseline-four.log`). No genuine failing-first product result was obtained;
+the counterfactual mutation below is explicitly not represented as one.
+
+### Nearby sweep
+
+Generated repositories and generated home directories only. The seven-case
+probe (`r17-git-matrix.json`) used the same real Git command:
+
+| Variant | Tracked path removed | Ignored list after replacement |
+| --- | --- | --- |
+| Exact reported case, `cache/` rule | `cache` | empty |
+| Nested tracked file under `cache/` | `cache/tracked` | empty |
+| Nested directory-only rule | `cache/build` | empty |
+| Wildcard `cache*` rule, force-added file | `cache` | empty |
+| Ignored parent, force-added file | `parent/cache` | empty |
+| Tracked symlink replaced by a directory | `cache` | empty |
+| Tracked child removed, ignored sibling created | `cache/file` | `cache/first.o` only |
+
+All seven initial statuses were clean; all seven final statuses showed the
+tracked deletion. In the last case Git lists the untracked sibling, not the
+directory containing the tracked deletion. No second production bug was found.
+The earlier Unicode ignore-prefix observation remains outside this assignment.
+
+Also inspected every `ignoredPaths`, `ignored.update`, `covers`, and queued
+`isInteresting(ignoring:)` call in GitView. Production ignore publication has
+one source, `GitService.ignoredPaths`; tests that manually seed `cache/` cannot
+establish that Git returns it for an indexed `cache`.
+
+### Mutation checks
+
+All mutations are temporary, restored in `finally`, and absent from the final
+diff. They check the sensitivity of the added regressions, not a claimed fix:
+
+1. **Counterfactual ignored list:** make `ignoredPaths` return `["cache/"]`
+   only after the fixture's `cache` becomes a directory. Both new tests fail,
+   reproducing exactly the review's predicted stale status under that
+   deliberately false result:
+
+   ```text
+   XCTAssertEqual failed: ("[\"cache/\"]") is not equal to ("[]")
+   XCTAssertEqual failed: ("1") is not equal to ("2") - The stale status needs exactly one follow-up
+   XCTAssertEqual failed: ("[]") is not equal to ("[\"cache\"]") - The tracked deletion must appear
+   XCTAssertEqual failed: ("nil") is not equal to ("Optional(\"D\")")
+   ```
+
+   Evidence: `r17-mutation-counterfactual-ignore.log`, exit 65, two failed
+   test cases / ten assertions.
+2. **Drop the controller's nonempty pending batch:** the unthrottled new test
+   fails its follow-up count and deletion assertions. Exit 65, one failed
+   test case / three assertions (`r17-mutation-drop-controller-pending.log`).
+3. **Drop subsequent throttle deliveries:** the throttled new test fails
+   the same follow-up/deletion assertions. Exit 65, one failed test case /
+   three assertions (`r17-mutation-drop-throttle-pending.log`).
+
+All **3/3 mutations were caught**, with the exact selected test cases failing.
+The production files match the base commit byte for byte after restoration
+(`git diff --exit-code -- packages/bello-views/Sources/GitView/{GitService,GitController,GitWatcher}.swift`).
+
+### Adversarial self-review
+
+There are no changed production conditions. In the fixture:
+
+- `committed == false` retains the existing untracked setup, parent-and-child
+  event batch, one follow-up, empty final status and quiet ignored writes.
+- `committed == true` adds a commit before controller construction, expects an
+  initially empty status and a final tracked deletion, and deliberately delivers
+  only a child event so ancestor handling is exercised.
+- `throttled == false` still drains the actual throttle callback while status
+  is held and asserts the controller retained it; `true` still waits for that
+  read to finish before releasing the throttle.
+- The added Git read is test-only, runs while the completed status snapshot is
+  held, and asserts actual ignore semantics. It cannot change the index.
+- Both fixture branches still clear the seam, resume any held continuation,
+  stop the controller and remove the generated repository on every exit.
+
+### Validation commands and evidence
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+All native invocations use the existing `run-home-review.py` wrapper to set
+generated `HOME`, `CFFIXED_USER_HOME`, `CODEX_HOME` and this workstream's
+`PI_BUILD_ROOT`. Native products use the isolated test host. The four focused
+replacement methods do not open windows or change app focus. The full watcher
+class and stress run hold the shared `full-lane.lock` as
+`a130-gitfiles r17 pid=…`, released in `finally`.
+
+The exact driver invocation, including baseline, mutations, lock acquisition,
+class run and stress:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  r17-finish \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r17-finish.py
+```
+
+Baseline and mutation commands use this prefix and select the methods named
+above with `-only-testing:PiAppTests/GitWorkingTreeWatcherTests/<method>`:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO
+```
+
+Final class and stress commands:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO -test-iterations 30 \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testWritesIntoAnIgnoredFolderCauseNoRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAnAutomaticRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAReaderRefreshAreRechecked
+```
+
+Only the watcher test class and documentation change. No helper, wire, layout
+or UI drawing behavior changes, so helper/wire suites and galleries do not apply.
+
+Final rebuilt `GitWorkingTreeWatcherTests`: **28 passed, 0 failed, 0 skipped**
+(`r17-green-GitWorkingTreeWatcherTests.log`, exit 0).
+
+Final stress: **240 passed, 0 failed, 0 skipped**, exit 0, 793.139 seconds of
+test execution (`r17-stress.log`; counts recovered from the native driver's text
+log into `r17-native-counts.json`, per-method counts in `r17-stress-counts.json`):
+
+| Method | Passed repetitions | Failed |
+| --- | ---: | ---: |
+| `testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes` | 30 | 0 |
+| `testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes` | 30 | 0 |
+| `testAnIgnoredReplacementOfADisplayedFileStillRefreshes` | 30 | 0 |
+| `testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes` | 30 | 0 |
+| `testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores` | 30 | 0 |
+| `testIgnoredEventsDuringAnAutomaticRefreshAreRechecked` | 30 | 0 |
+| `testIgnoredEventsDuringAReaderRefreshAreRechecked` | 30 | 0 |
+| `testWritesIntoAnIgnoredFolderCauseNoRefresh` | 30 | 0 |
+
+The original real-FSEvents ignored-folder test's observed failure rate is
+**0/30**, with its at-most-one-refresh assertion unchanged. The two new tracked
+replacement tests have **0/60** stress failures on unchanged production code.
+This is evidence for rejecting the review's specific trace, not a claim that
+an unreproduced product bug was fixed.
+
+Final driver exit 0; shared lock released. Generated homes, automatic result
+bundles and clone directories are absent after cleanup; text/JSON evidence
+remains in this workstream's build root. No extra DerivedData copy was created.
+`git diff --check` passes, and the final product-file diff against `9df33e88` is
+empty. No new unresolved issue or owner decision arose in this round.
