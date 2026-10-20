@@ -836,6 +836,11 @@ final class GitInventoryTests: XCTestCase {
         let status = try await service.status(in: root.path)
         XCTAssertTrue(status.entries.contains { $0.path == "child" }, "Read gitlink changes without inspecting the child's worktree")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+        _ = try await service.changeStats(in: root.path, status: status)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), "Counts must retain the child-program boundary")
+        try? FileManager.default.removeItem(at: root.appendingPathComponent("hostile-ran"))
+        _ = try await service.diffFiles(in: root.path, paths: ["child"], staged: false, entry: status.entries.first)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), "Preview must retain the child-program boundary")
     }
 
     func testRepositoryCreationInvalidatesDiscovery() async throws {

@@ -7,6 +7,7 @@ import AppKit
 /// pills at the start of a sent message's bubble, the card a resting pointer
 /// brings up and the popover a press opens.
 class InlineSkillPillTestCase: XCTestCase {
+    @MainActor override func setUp() async throws { installSkillPopoverHooks(self) }
 
     // MARK: Fixtures
 
@@ -72,16 +73,6 @@ class InlineSkillPillTestCase: XCTestCase {
         XCTFail(what, file: file, line: line)
     }
 
-    override func tearDown() {
-        MainActor.assumeIsolated {
-            SkillPopovers.shared.close()
-            SkillPopovers.shared.card.delay = PiHoverCardPresenter.delay
-            SkillPopovers.shared.openFile = { NSWorkspace.shared.open($0) }
-            SkillPopovers.shared.revealFile = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
-        }
-        super.tearDown()
-    }
-
     // MARK: The wire: the skills a message was sent with reach the app
 
     fileprivate static let sorted: JSONEncoder = {
@@ -123,6 +114,10 @@ class InlineSkillPillTestCase: XCTestCase {
 }
 
 final class InlineSkillPillTests: InlineSkillPillTestCase {
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkSkillPopoverHooksSetup(self) { try await self.setUp() }
+    }
+
     /// The helper's display row carries the skills a user message was sent
     /// with; the direct projector reads them exactly as Codable does, and a
     /// row it is unsure of falls back to Codable's answer.
@@ -782,6 +777,10 @@ final class InlineSkillPillTests: InlineSkillPillTestCase {
 /// The pill's hover card, which waits for the pointer to rest: a wall-clock
 /// delay, so it runs in the serial lane (`scripts/test-lanes.py`).
 final class InlineSkillPillTimingTests: InlineSkillPillTestCase, SerialTestLane {
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkSkillPopoverHooksSetup(self) { try await self.setUp() }
+    }
+
     /// The card appears once the pointer has rested on a pill for about 450
     /// ms, takes no focus, and leaves with the pointer.
     @MainActor func testHoverShowsTheCardAfterTheDelayAndHidesItOnExit() async throws {

@@ -16,6 +16,12 @@ private extension HistoryReader {
 }
 
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor override func setUp() async throws { installSidebarRevealHook(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkSidebarRevealSetup(self) { try await self.setUp() }
+    }
+
     @MainActor func testVisibleChildAttachmentSurvivesAnUnrelatedMainSelection() async throws {
         let (_, model, _, parent, target) = try await fixture()
         await model.select(parent.id)

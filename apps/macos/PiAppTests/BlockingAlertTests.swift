@@ -8,13 +8,12 @@ import SwiftUI
 /// stop being delivered, and AppKit re-enters its own callbacks from inside
 /// the one that is running.
 final class BlockingAlertTests: XCTestCase {
-    override func tearDown() {
-        MainActor.assumeIsolated {
-            PiQuestion.shared.answerAlert = nil
-            PiQuestion.shared.chooseFiles = nil
-        }
-        super.tearDown()
+    @MainActor override func setUp() async throws { installQuestionHooks(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkQuestionHooksSetup(self) { try await self.setUp() }
     }
+
     private func scratch(_ name: String) throws -> URL {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent(name + "-" + UUID().uuidString)

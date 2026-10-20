@@ -83,11 +83,14 @@ public struct GitReadProcess {
             command += arguments[command] == "-c" ? 2 : 1
         }
         if command < arguments.count {
+            // Keep the read boundary after caller-supplied display options,
+            // but before path operands, so a later option cannot re-enable it.
+            let end = arguments[(command + 1)...].firstIndex { $0 == "--" || $0 == "--end-of-options" } ?? arguments.endIndex
             switch arguments[command] {
             case "diff", "show", "log":
-                arguments.insert(contentsOf: ["--submodule=short", "--ignore-submodules=dirty"], at: command + 1)
+                arguments.insert(contentsOf: ["--submodule=short", "--ignore-submodules=dirty"], at: end)
             case "status":
-                arguments.insert("--ignore-submodules=dirty", at: command + 1)
+                arguments.insert("--ignore-submodules=dirty", at: end)
             default: break
             }
         }

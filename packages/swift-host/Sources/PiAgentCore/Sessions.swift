@@ -52,7 +52,12 @@ public actor AgentSession {
     // history: every journal message in order. context: live model context.
     // visible: the displayed timeline, i.e. history minus tails abandoned by
     // turn.edit branches. boundary: the latest complete side-chat boundary.
-    var journal: SessionJournal?, history: [ChatMessage]=[], context: [ChatMessage]=[], boundary: [ChatMessage]=[], visible: [ChatMessage]=[]
+    var journal: SessionJournal?, context: [ChatMessage]=[], boundary: [ChatMessage]=[]
+    var history: [ChatMessage] = [] { didSet { contentGeneration &+= 1 } }
+    var visible: [ChatMessage] = [] { didSet { contentGeneration &+= 1 } }
+    var contentGeneration: UInt64 = 0
+    var contentCache: RetainedContent?
+    var contentLoad: (key: RetainedContent.Key, load: SharedHistoryLoad)?
     /// Edited messages' versions, and the rows the versions an edit hid read
     /// as (SessionVersions.swift). Derived from the journal's branch records.
     var versions = MessageVersionStore()

@@ -5,10 +5,15 @@ import XCTest
 final class PastedAttachmentTests: XCTestCase {
     private let png = Data([137, 80, 78, 71, 13, 10, 26, 10, 0])
 
+    private func abandonedFiles(_ count: Int, root: URL) throws -> [URL] {
+        let previous = PastedImageStorage(root: root)
+        return try (0..<count).map { _ in try previous.write(png) }
+    }
+
     @MainActor func testDismissedCopiesKeepJournalAttachmentReferencesAcrossRelaunch() async throws {
         let root = scratchRoot("dismissed-copy-images"), model = makeWorkspaceModel(stateRoot: root)
-        let old = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
-        let images = try (0..<4).map { _ in try AttachmentRecord.inspect(old.write(png)) }
+        let store = try XCTUnwrap(model.store)
+        let images = try abandonedFiles(4, root: root).map(AttachmentRecord.inspect)
         var journals: [URL: Data] = [:]
         // Different preserved copies can reuse an ID. Dismissing the second
         // must not forget the first file's historical-edit or queue references.
@@ -82,8 +87,8 @@ final class PastedAttachmentTests: XCTestCase {
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         registerWorkspaceFixtureTeardown(model, root: root)
         model.launching = false
-        let previous = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
-        let files = try (0..<6).map { _ in try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: previous)) }
+        let store = try XCTUnwrap(model.store)
+        let files = try abandonedFiles(6, root: root)
         let images = try files.map(AttachmentRecord.inspect)
         var draft = DraftRecord(id: "chat", text: "", attachments: [images[0]])
         draft.edit = MessageEditDraft(messageID: "old", originalText: "", originalAttachments: [images[1]])
@@ -98,7 +103,7 @@ final class PastedAttachmentTests: XCTestCase {
         try await store.put(ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: journal.path, profileID: "p"), kind: "chat", id: "chat")
         let current = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: model.pastedImages))
         let userFile = root.appendingPathComponent("user.png"); try png.write(to: userFile)
-        let symlink = previous.directory.appendingPathComponent("pasted-\(UUID().uuidString)-\(UUID().uuidString).png")
+        let symlink = model.pastedImages.directory.appendingPathComponent("pasted-\(UUID().uuidString)-\(UUID().uuidString).png")
         try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: userFile)
         try await model.cleanupPastedImages()
         for file in files.prefix(5) + [current, userFile, symlink] { XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), file.path) }
@@ -110,8 +115,7 @@ final class PastedAttachmentTests: XCTestCase {
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         registerWorkspaceFixtureTeardown(model, root: root)
         model.launching = false
-        let previous = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
-        let file = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: previous))
+        let store = try XCTUnwrap(model.store), file = try XCTUnwrap(abandonedFiles(1, root: root).first)
         let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: root.appendingPathComponent("missing.jsonl").path, profileID: "p")
         try await store.put(chat, kind: "chat", id: chat.id)
         do { try await model.cleanupPastedImages(); XCTFail("Missing reference sources must defer cleanup") } catch {}
@@ -136,14 +140,22 @@ final class PastedAttachmentTests: XCTestCase {
     }
 }
 
-private final class PastedJournalPause: @unchecked Sendable {
+final class PastedJournalPause: @unchecked Sendable {
     private let lock = NSLock(), releaseRead = DispatchSemaphore(value: 0)
     private var began = false
+    private var skipped: Int
+    private let afterReading: Bool
+    init(skippingReads: Int = 0, afterReading: Bool = false) { skipped = skippingReads; self.afterReading = afterReading }
     var entered: Bool { lock.lock(); defer { lock.unlock() }; return began }
     func read(_ path: String) throws -> Set<String> {
-        lock.lock(); began = true; lock.unlock()
-        releaseRead.wait()
-        return try PastedImageStorage.names(inJournal: path)
+        let snapshot = afterReading ? try PastedImageStorage.names(inJournal: path) : nil
+        lock.lock()
+        let pause = skipped == 0 && !began
+        if skipped > 0 { skipped -= 1 }
+        if pause { began = true }
+        lock.unlock()
+        if pause { releaseRead.wait() }
+        return try snapshot ?? PastedImageStorage.names(inJournal: path)
     }
     func release() { releaseRead.signal() }
 }
@@ -154,8 +166,8 @@ extension PastedAttachmentTests {
             let root = scratchRoot("paste-race-" + source)
             let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
             registerWorkspaceFixtureTeardown(model, root: root)
-            let store = try XCTUnwrap(model.store), pause = PastedJournalPause(), old = PastedImageStorage(root: root)
-            let file = try old.write(png), image = try AttachmentRecord.inspect(file)
+            let store = try XCTUnwrap(model.store), pause = PastedJournalPause()
+            let file = try XCTUnwrap(abandonedFiles(1, root: root).first), image = try AttachmentRecord.inspect(file)
             let journal = root.appendingPathComponent("chat.jsonl"); try Data("{}\n".utf8).write(to: journal)
             let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: journal.path, profileID: "p")
             try await store.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
@@ -182,8 +194,8 @@ extension PastedAttachmentTests {
         let root = scratchRoot("paste-cleanup-restore")
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         registerWorkspaceFixtureTeardown(model, root: root)
-        let store = try XCTUnwrap(model.store), old = PastedImageStorage(root: root), pause = PastedJournalPause()
-        _ = try old.write(Data([1]))
+        let store = try XCTUnwrap(model.store), pause = PastedJournalPause()
+        _ = try abandonedFiles(1, root: root)
         let journal = root.appendingPathComponent("old.jsonl"); try Data("{}\n".utf8).write(to: journal)
         var chat = ChatRecord(id: "old", workspaceID: "w", title: "Old chat", path: journal.path, profileID: "p"); chat.archivedAt = Date(timeIntervalSince1970: 1)
         try await store.put(chat, kind: "chat", id: chat.id)

@@ -236,6 +236,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             chunks = list(text); delay = 0.002
         if prompt == "managed child short followup":
             chunks = ["Follow-up starts.", " Follow-up complete."]; text = "".join(chunks)
+        if prompt == "copy selection streaming fixture":
+            chunks = ["COPY-STREAM-1 ", "COPY-STREAM-2 ", "COPY-STREAM-3 "]; text = "".join(chunks)
         request_id = uuid.uuid4().hex
         # PI_APP_UI_FIXTURE_REAL_USAGE=1 reports the request's own size as its
         # input, as a gateway would, so a long chat's context reads as long.
@@ -310,6 +312,12 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
                         emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
+                        if prompt == "copy selection streaming fixture":
+                            step = chunks.index(chunk) + 1
+                            Path(f"copy-stream-{step}").touch()
+                            deadline = time.monotonic() + 30
+                            while not Path(f"release-copy-{step}").exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
                         if prompt.lower() == "managed child opening fixture" and chunk == chunks[0]:
                             Path("child-streaming").touch()
                             deadline = time.monotonic() + 30

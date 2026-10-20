@@ -58,6 +58,8 @@ final class GitByteParsingTests: XCTestCase {
             XCTAssertEqual(refs.first { $0.name == "refs/heads/" + branch }?.title, branch)
             let catalog = try await service.branchCatalog(in: root.path)
             XCTAssertTrue(catalog.branches.contains { $0.name == branch && $0.remote == nil })
+            let selected = try await service.log(in: root.path, limit: 1, reference: "refs/heads/" + branch)
+            XCTAssertEqual(selected.first?.subject, extender + "subject")
             let parsed = GitService.parseLog(String(decoding: try git(["log", "-1", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e"]), as: UTF8.self))
             XCTAssertEqual(parsed.first?.subject, extender + "subject")
         }
@@ -98,6 +100,24 @@ final class GitByteParsingTests: XCTestCase {
             try FileManager.default.createSymbolicLink(atPath: root.path + "/" + link, withDestinationPath: folder)
             XCTAssertThrowsError(try GitPatchFile.read(in: root.path, path: link + "/" + name))
             XCTAssertEqual(try GitPatchFile.read(in: root.path, path: folder + "/" + name).bytes, Data("fixture\n".utf8))
+        }
+    }
+
+    func testUntrackedCountSnapshotDelimiterMatrix() async throws {
+        let service = GitService(environment: environment, trusted: true)
+        for (index, extender) in extenders.enumerated() {
+            let folder = "folder-\(index)", path = folder + "/" + extender + "file.bin"
+            try write(folder + "/.gitattributes", "*.bin -diff\n")
+            try git(["add", "--", folder + "/.gitattributes"])
+            try git(["commit", "-qm", "Fixture attributes"])
+            try write(path, "fixture\nsecond line\n")
+            let status = try await service.status(in: root.path)
+            let counts = try await service.changeStats(in: root.path, status: status)
+            let reference = try await service.run(["diff", "--no-index", "--numstat", "-z", "--", "/dev/null", path], in: root.path)
+            XCTAssertEqual(reference.status, 1)
+            let expected = try XCTUnwrap(GitService.parseNumstat(reference.stdout)[path])
+            XCTAssertTrue(expected.binary)
+            XCTAssertEqual(counts[path]?.binary, expected.binary, path.debugDescription)
         }
     }
 

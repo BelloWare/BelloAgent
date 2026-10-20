@@ -28,7 +28,9 @@ func encodedPreview(_ s: String, bytes: Int) -> String {
     return best
 }
 func textPage(_ text: String, offset: Int, count: Int = 16_384) throws -> JSON {
-    let ns = text as NSString
+    try textPage(text as NSString, offset: offset, count: count)
+}
+func textPage(_ ns: NSString, offset: Int, count: Int = 16_384) throws -> JSON {
     guard offset >= 0, offset <= ns.length else { throw AgentError("invalid_range", "Text offset is outside the retained content") }
     if offset > 0, offset < ns.length, (0xDC00...0xDFFF).contains(ns.character(at: offset)) { throw AgentError("invalid_range", "Offset splits a Unicode character") }
     var end = min(ns.length, offset + count)

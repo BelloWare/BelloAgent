@@ -6,6 +6,24 @@ import CoreServices
 @testable import GitView
 
 final class GitWorkingTreeWatcherTests: GitPanelTestCase {
+    @MainActor func testDiscoveryWatchUsesOnlyTheProjectAndNoticesTheGitMarker() async throws {
+        let root = try repository("git-discovery-watch"), outside = try repository("git-discovery-outside")
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        try "gitdir: \(outside.path)\n".write(to: root.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        try "../unverified-common\n".write(to: outside.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        var changes = 0
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0, stateOnly: true, discoveringRepository: true) { changes += 1 }
+        XCTAssertNil(watcher.gitDirectory, "Discovery must not resolve metadata before Git verifies the repository")
+        XCTAssertNil(watcher.commonDirectory)
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/ordinary.txt", root.path + "/.git/objects/ab/cd"], [0, 0]) }.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(changes, 0)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("discover a .git directory or worktree marker appearing", timeout: 5) { changes == 1 }
+    }
+
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
         let root = try repository("git-large-patch"); defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
