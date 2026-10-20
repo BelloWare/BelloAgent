@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
 - [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.
 - [x] Legacy response timelines build in linear time, preserving the original segment metadata and order.

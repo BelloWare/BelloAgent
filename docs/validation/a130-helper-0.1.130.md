@@ -1126,3 +1126,104 @@ PI_BUILD_ROOT="$B" scripts/test-macos.sh -only-testing:PiAppTests/TranscriptBugR
 
 
 Final source hashes for the six changed Swift files are recorded in `final/source-sha256.json` and match the files being committed. `git diff --check` passes. One existing native build tree and the existing Debug/Release helper trees were reused under this workstream's build root; no extra DerivedData tree was created and no clone folders remain. No explicit result-bundle path was used; text logs are the evidence. No assigned finding remains unresolved. The separate live-provider scaling issue and native lane-classifier gap above are recorded for the lead. Only `dev/a130-helper` is committed/pushed; no merge, fast-forward, release, tag or history rewrite is performed.
+
+## Live reconciliation follow-up
+
+Base: `5726f1b150aafeb020550b45b8d2fc551f4e4ea5` on `dev/a130-helper`, after the lead merged round 9 locally. No merge, fast-forward or history rewrite is performed in this follow-up. The lead's Markdown-export decision remains text-only.
+
+### Confirmation, fix and regression evidence
+
+**Confirmed and fixed:** `ProviderDisplayEvents.consume` sent each terminal item through full-timeline searches in `ResponseTimeline.consume`. Begin, end and correction events also searched preceding segments. The generated failing-first run, before production edits, passed the old-behavior controls and failed the timing regressions:
+
+```text
+LIVE-STREAM items=5000 events=20000 ms=29444.009750001132
+LIVE-TERMINAL items=5000 json=true ms=19421.2717500031
+LIVE-TERMINAL items=5000 json=false ms=19650.764041662216
+XCTAssertLessThan failed: ("29444.009750001132") is not less than ("100.0")
+XCTAssertLessThan failed: ("19421.2717500031") is not less than ("100.0")
+XCTAssertLessThan failed: ("19650.764041662216") is not less than ("100.0")
+Executed 4 tests, with 3 failures (0 unexpected)
+```
+
+The fix indexes each exact existing `partKey`, its first segment and accumulated text, the latest correction by attempt/target, and still-streaming segment positions. Appends update the accumulated text; replacements compare the same joined content without joining the earlier fragments again. This is expected linear work in events plus their text, using hash lookups; the ordered segment array, metadata, revisions, return values and correction rules are unchanged. There is no new event/content limit. Index memory is linear in the active timeline/content, is excluded from Codable and equality, and is dropped on finish and display/ledger projection. Public segment assignment and in-place edits invalidate the index; decoded and canonical timelines rebuild it on their next event. Indexes and segments retain Swift value semantics across independent copies/actors.
+
+**Same-pattern instance found and fixed within the reconciler:** indexing only segment positions still left repeated corrections joining all interleaved fragments. `testRepeatedEmptyCorrectionsDoNotRescanInterleavedParts` first failed against that intermediate implementation: **1,369.44 ms** for 5,000 no-op replacements after 5,001 segments (`correction-failing-first.log`). The accumulated-text lookup reduces it to about **5 ms**, preserving the existing suppression of empty corrections. The original-reconciler mutation also exercises this test.
+
+Regression coverage in `ResponseTimelineTests`:
+
+- `testGeneratedLiveStreamsMatchOriginalReconcilerAfterEveryEvent`: 16 deterministic generated streams, 310 events each, with text/reasoning/tool/opaque contributions, multiple attempts, empty and nonempty begins/appends/replacements, interleaved continuations, repeat corrections, missing indexes, metadata, Unicode combining boundaries and finish/resume states. Compares each return value and complete timeline against a frozen copy of the old algorithm, then encoded JSON. The oracle never calls the optimized reconciler.
+- `testReconciliationSurvivesValueCopiesDecodingAndExternalSegmentEdits`: copied/projected/decoded sources, whole-array and subscript edits, reversal, removal, duplicate IDs, canonical replacement, finish followed by more events, and source isolation.
+- `testExternalTextEditsInvalidateReconciliationLookups`: both external mutation accessors must rebuild derived text before deduplicating a replacement.
+- `testPartKeyAliasesKeepOriginalMatchingAndCorrectionScope`: delimiter-containing identities retain the old string-key matching, while correction deduplication still distinguishes attempts.
+- `testFiveThousandTerminalProviderItemsReconcileWithinBudget`: actual provider adapter, both JSON and terminal SSE, 5,000 items under **100 ms** each.
+- `testFiveThousandStreamedPartsReconcileWithinBudget`: 5,000 begin/append/replace/end sequences, under **100 ms** for all 20,000 events.
+- `testRepeatedEmptyCorrectionsDoNotRescanInterleavedParts`: repeated empty corrections under **100 ms**, with unchanged segment count and no accepted changes.
+
+### Sweep and adversarial self-review
+
+| Changed lookup/condition | States and intended branch behavior |
+| --- | --- |
+| Lazy index absent/present | New, decoded, externally edited, finished and canonical timelines rebuild once; uninterrupted streaming uses the existing index. Empty timelines remain empty on ignored events. No journal migration or unsupported-version acceptance changes. |
+| Indexed end lookup | Only matching `streaming` segments complete; continued/completed segments and repeated ends remain unchanged. External edits can produce multiple streaming segments; all matching positions are indexed. |
+| Latest correction lookup | The most recently appended correction with the same attempt and reconciled key still suppresses identical text. Corrections for another attempt or target do not. Reads use the current segment text after later appends. |
+| Aggregated replacement text | Concatenated text equal to the provider's replacement remains a no-op, including canonically equivalent Unicode spanning fragments. An all-empty part fills its first segment and closes only that segment. Otherwise the same recursive correction is appended/suppressed. No prior segment is reordered or rewritten. |
+| Begin lookup / adjacent append | Empty duplicate begins and empty appends are ignored as before. Only the last, matching streaming segment coalesces; A/B/A remains three segments. The aggregate changes alongside accepted text, not on ignored events. |
+| Closing the previous streaming segment | Appending a new segment marks the last streaming segment continued and removes only that position from the end lookup. Its text and chronological position remain intact. |
+| External setter and `_modify` invalidation | Any replacement, element mutation, removal or reorder invalidates derived positions/text. Ordinary reads do not. Snapshot copies can mutate independently; cache contents never affect equality or JSON. |
+| Finish / projected ledger snapshot | Finish retains its original state/revision loop and terminal receipt, then releases the cache. Projection returns the identical schema value without derived storage; `saveResponseLedger` uses that projection to avoid sharing/copying indexes on every semantic event. Disk-write policy and live ledger contents are unchanged. |
+
+State audit covers live streaming, terminal completion, cancellation/interruption, idle/reopened history, paused work, capture Off/memory/persist and concurrent sibling sessions. This structure is display evidence only: no provider replay, tool execution, permission, accounting, capture policy, admission or session-lifecycle condition changes. There is no new await, UI action or visible layout change, so no gallery scene is changed. Existing native consumers are exercised below.
+
+Nearby call sites: ordinary streaming (`SessionStreaming.delta`), compaction display events, and crash partial-log replay all use the same corrected reconciler. Legacy canonical construction remains direct and linear. Provider adapters keep their existing event emission, terminal ordering, and call/reasoning metadata. Display projection/update scans in `SessionStreamingRow` run once per requested read, not inside a loop over the terminal's provider items; their per-segment JSON/text sizes remain cached. `DisplayResultTransfers` slices already-encoded immutable data and never scans timeline segments per chunk.
+
+Generated sweep (`path-sweep.log`, temporary fixture retained as `live-path-probe.swift` under the log directory and removed from the test target) measured 1,000/2,000 parts: ordinary delta accumulation **6.06/12.85 ms**, snapshot-plus-update **1.95/4.00 ms per read**, and chunk transfer **0.96/1.20 ms**. With a live request ledger, snapshot/update measured **2.02/3.94 ms** and transfer **1.29/3.00 ms**. Encoded transfer sizes grew proportionally; no repeated part-key scan remains in these consumers.
+
+**Separate pre-existing scaling issue, recorded rather than expanded into a display-lifecycle change:** `SessionStreaming.swift:52` / `SessionPresentationJournal.swift:39` publish a complete value snapshot into the live ledger on each semantic part change. The next mutation copies the shared segment array. The generated sweep measured ledger-enabled accumulation **32.56/107.74 ms** for 1,000/2,000 parts (without disk or provider work). Reconciliation's derived indexes are now excluded from those snapshots, so this fix does not add index-copy cost; eliminating the remaining array-copy growth would require changing how the live ledger obtains its current timeline. Per scope discipline, this independent snapshot-publication issue is left for a separate workstream. Full display reads still necessarily visit their requested content; no truncation or new cap is introduced to hide that cost.
+
+### Validation
+
+Fresh logs: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/live-reconciliation`. All fixtures use generated content and isolated directories; no installed app, real preferences/data/credentials, Keychain or live/paid endpoint is used.
+
+All commands run from the worktree root; `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper`.
+
+```sh
+# Failing-first: the four new initial timing/equivalence tests.
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ResponseTimelineTests.testGeneratedLive|ResponseTimelineTests.testReconciliationSurvives|ResponseTimelineTests.testFiveThousandTerminal|ResponseTimelineTests.testFiveThousandStreamed'
+# Same-pattern correction regression, before the accumulated-text fix.
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ResponseTimelineTests.testRepeatedEmptyCorrections
+# Frozen old reconciler + semantic cache mutations; each restores the fixed source.
+python3 "$B/live-reconciliation-mutations.py"
+python3 "$B/live-reconciliation-mutations.py" semantic
+# Final focused and full helper runs.
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ResponseTimelineTests|ResponseTimelineJSONTests|ResponseOrderTests|TimelineDurabilityTests|PartialReplyLogTests|FullDisplayTests|ToolInputDisplayTests|DisplayObservationTests|FailurePresentationTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --skip StreamingCostTests
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+H="$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$H"
+python3 scripts/test-concurrent-native-host.py "$H"
+python3 scripts/test-native-acceptance.py "$H"
+# Each native invocation holds the shared full-lane lock; serial class alone.
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -only-testing:PiAppTests/TranscriptBugRegressionTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/TranscriptGeometryCacheTests \
+  -only-testing:PiAppTests/TranscriptRowChangeTests \
+  -only-testing:PiAppTests/TranscriptTurnFoldTests
+```
+
+- Failing-first: **2 timing tests failed / 3 assertions**, **2 equivalence controls passed**, then the separate repeated-correction timing test failed as recorded above.
+- Mutations: **4/4 caught** after strengthening the oracle stream. Original reconciler: **3 tests / 4 timing failures**, taking 29,753.92 ms (stream), 20,046.37/20,116.00 ms (JSON/SSE terminal) and 34,661.66 ms (repeated corrections). Missing aggregate append: **1 test / 2 failures** at seed 0/event 12. Missing external-edit invalidation: **1 test / 4 failures**. Failing to remove a continued segment from the streaming lookup: **1 test / 2 failures**. Logs are `mutation-*.log`; `mutations-final.log` confirms all three semantic mutations are caught, alongside the previously caught original-reconciler mutation. Fixed source is restored and compared byte-for-byte before final validation.
+- Adversarial self-review/mutation testing exposed a **test coverage gap**, not a remaining production defect: random streams alone did not guarantee an adjacent append immediately followed by an identical replacement. The first missing-append mutation escaped. The generated stream now explicitly includes begin/append/identical replace/end and catches that mutation before the random suffix. Both the first-pass and corrected evidence are retained. First-pass verbose end-state failures were compressed to conserve disk; they are not counted as final validation.
+- Focused helper: **71 passed, 0 failed** (`affected-helper-final.log`). Final focused timing: 5,000 terminal items **16.39 ms JSON / 16.71 ms SSE**, 20,000 streamed events **26.69 ms**, 5,000 repeated corrections **5.64 ms**. Initial fixed focused run passed **69/69** before the two additional external-edit/key-alias controls.
+- Isolated `StreamingCostTests`: **5 passed, 0 failed** (`streaming-cost.log`), including bounded part/tool-input update frames and stable streamed-delta CPU/heap. Final build has **no new warning message** compared with the unchanged-reconciler build; existing Swift 6 migration warnings remain outside this scope.
+
+- Full helper: **1,142 passed, 7 opt-in skips, 0 failed**: **1,137 passed / 1,144 discovered** in `full-helper.log`, plus the isolated **5/5** above. The seven skips are the explicitly configured fork writer/large-fork, rapid-scroll, and four session open/memory/slimming benchmarks. Full-suite timings remained **16.97/19.39 ms** for the terminal JSON/SSE cases, **25.69 ms** for streaming, and **5.44 ms** for repeated corrections. No unrelated test failed.
+- Release helper rebuilt successfully (`release-helper.log`).
+
+- Release wire **40/40**, concurrent **4/4**, acceptance **3/3**, all with **0 failures** (`wire.log`, `concurrent.log`, `acceptance.log`). `validation.log` confirms successful completion of every helper/Release/wire command.
+
+- Locked native consumers: **166 passed, 0 failed**. `TranscriptBugRegressionTests` ran alone: **116/116** (`native-transcript-bugs.log`). The timeline group passed **50/50**: `ResponseTimelinePresentationTests` **13**, `TimelineStreamingFastPathTests` **2**, `TranscriptGeometryCacheTests` **7**, `TranscriptRowChangeTests` **4**, `TranscriptTurnFoldTests` **24** (`native-timeline.log`). `live-reconciliation-native.py` waited for the shared lane, then held its own lock across both invocations; `native-lane.log` records matching acquisition/release. No other workstream's lock was removed.
+
+Final self-review found no further semantic defect in the new diff. Source hashes in `source-sha256.json` match the three validated Swift files; `git diff --check` passes. The existing Debug/Release helper trees and single native build tree were reused. The final own-products cleanup found **0 clone folders**; no extra DerivedData copy or explicit/named result bundle was created. Text logs are the evidence. The requested reconciliation bug and its repeated-correction instance are fixed; the independent live-ledger snapshot-copy cost is recorded above. Only `dev/a130-helper` is committed and pushed.
