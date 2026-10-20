@@ -266,7 +266,7 @@ final class GitRepositorySecurityTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: marker, encoding: .utf8).contains("pre-commit"))
     }
 
-    func testNestedSubmoduleStatusKeepsGitChildrenButNeverRunsTheirMonitor() async throws {
+    func testNestedSubmoduleStatusKeepsGitlinksWithoutChildWorktreeReads() async throws {
         try git(["init", "-q", "--template=", "module-source"])
         try write("module-source/tracked.txt", "base\n")
         try git(["-C", "module-source", "add", "."])
@@ -281,7 +281,8 @@ final class GitRepositorySecurityTests: XCTestCase {
         for trusted in [false, true] {
             do {
                 let status = try await GitService(environment: environment, trusted: trusted).status(in: root.path)
-                XCTAssertTrue(status.entries.contains { $0.path == "nested" && $0.unstaged })
+                XCTAssertTrue(status.entries.contains { $0.path == "nested" && $0.staged })
+                XCTAssertFalse(status.entries.contains { $0.path == "nested" && $0.unstaged })
             } catch { XCTAssertFalse(trusted, "\(error)") }
             assertNoProgram("Submodule status, trusted: \(trusted)")
         }

@@ -13,6 +13,8 @@ public struct GitConfiguration {
     }
     let entries: [Entry]
     let stamps: [GitFileStamp]
+    let identity: Data
+    let cacheable: Bool
     private let directory: URL
     private let gitDirectory: String
     private let children: [GitConfiguration]
@@ -35,6 +37,7 @@ public struct GitConfiguration {
         }
     }
     private init(loading directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL]) throws {
+        let discovery = GitFileStamp.discovery(in: directory)
         policy = GitInventoryMemo(); fetchRedirects = GitInventoryMemo(); pushRedirects = GitInventoryMemo()
         let options = ["config", "--null", "--list", "--includes", "--show-scope", "--show-origin"]
         let output = try Self.query(options, in: directory, environment: environment, invocation: invocation)
@@ -70,19 +73,58 @@ public struct GitConfiguration {
         }
         gitDirectory = try path(["rev-parse", "--absolute-git-dir"])
         let top = try path(["rev-parse", "--show-toplevel"])
-        var files = entries.compactMap { $0.origin.hasPrefix("file:") ? String($0.origin.dropFirst(5)) : nil }
+        let common = gitDirectory.isEmpty ? "" : try path(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        // Git setup changes cwd to the worktree (or bare gitdir) before it
+        // reads config. --show-origin may still report relative filenames.
+        let originBase = !top.isEmpty ? top : (!gitDirectory.isEmpty ? gitDirectory : directory.path)
+        func absolute(_ file: String) -> String { file.hasPrefix("/") ? file : originBase + "/" + file }
+        func resolved(_ file: String) -> String { file.isEmpty ? "" : URL(fileURLWithPath: absolute(file)).resolvingSymlinksInPath().path }
+        // --show-toplevel is the effective worktree, including core.worktree;
+        // a linked worktree also has its own gitdir and shared commondir.
+        identity = Data(["toplevel", resolved(top), "gitdir", resolved(gitDirectory),
+                         "commondir", resolved(common), "worktree", resolved(top)].joined(separator: "\0").utf8)
+        // Unresolved repository/worktree identity is safe to query afresh, but
+        // cannot be a reusable inventory (including a non-repository folder).
+        var canCache = !top.isEmpty && !gitDirectory.isEmpty && !common.isEmpty
+        var ancestor = directory.path
+        while canCache, ancestor != resolved(top) {
+            // An unrecognized candidate below the selected root can become a
+            // repository through an external commondir without changing .git.
+            if discovery.contains(where: { ($0.path == ancestor + "/.git" || $0.path == ancestor + "/commondir") && $0.exists }) {
+                canCache = false; break
+            }
+            guard ancestor != "/" else { canCache = false; break }
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+        }
+        var files = entries.compactMap { $0.origin.hasPrefix("file:") ? absolute(String($0.origin.dropFirst(5))) : nil }
         let home = environment["HOME"] ?? NSHomeDirectory()
-        files += [environment["GIT_CONFIG_GLOBAL"] ?? home + "/.gitconfig",
-                  (environment["XDG_CONFIG_HOME"] ?? home + "/.config") + "/git/config"]
-        if environment["GIT_CONFIG_NOSYSTEM"] != "1" {
-            files += [environment["GIT_CONFIG_SYSTEM"] ?? "/etc/gitconfig"]
+        files.append(absolute(environment["GIT_CONFIG_GLOBAL"] ?? home + "/.gitconfig"))
+        if environment["GIT_CONFIG_GLOBAL"] == nil {
+            files.append(absolute((environment["XDG_CONFIG_HOME"] ?? home + "/.config") + "/git/config"))
+        }
+        if !["1", "true", "yes", "on"].contains(environment["GIT_CONFIG_NOSYSTEM"]?.lowercased() ?? "") {
+            if let system = environment["GIT_CONFIG_SYSTEM"] {
+                // Git lexically normalizes this particular environment path.
+                // Do not expand a leading tilde as NSString would.
+                files.append(URL(fileURLWithPath: absolute(system)).standardizedFileURL.path)
+            } else {
+                // Git installations need not use /etc/gitconfig. Ask the
+                // selected Git; an empty/unrecognizable result disables reuse.
+                var probeEnvironment = environment; probeEnvironment["LC_ALL"] = "C"
+                let system = try Self.query(["config", "--system", "--no-includes", "--null", "--list", "--show-origin"], in: directory,
+                                            environment: probeEnvironment, diagnostics: true, invocation: invocation)
+                let prefix = "fatal: unable to read config file '", suffix = "': No such file or directory\n"
+                if system.status == 0, let origin = system.data.split(separator: 0).first,
+                   let text = String(data: origin, encoding: .utf8), text.hasPrefix("file:") {
+                    files.append(absolute(String(text.dropFirst(5))))
+                } else if let text = String(data: system.data, encoding: .utf8), text.hasPrefix(prefix), text.hasSuffix(suffix) {
+                    files.append(absolute(String(text.dropFirst(prefix.count).dropLast(suffix.count))))
+                } else { canCache = false }
+            }
         }
         if !gitDirectory.isEmpty {
-            // Watch absent worktree config and includes too: creating one must
-            // invalidate an inventory that previously saw no entries there.
             files += [gitDirectory + "/config", gitDirectory + "/config.worktree", gitDirectory + "/commondir",
-                      gitDirectory + "/index", gitDirectory + "/HEAD"]
-            let common = try path(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+                      gitDirectory + "/gitdir", gitDirectory + "/index", gitDirectory + "/HEAD"]
             if !common.isEmpty { files += [common + "/config", common + "/packed-refs"] }
             let defaults = entries.filter { $0.name == "remote.pushdefault" || ($0.name.hasPrefix("branch.") && ($0.name.hasSuffix(".remote") || $0.name.hasSuffix(".pushremote"))) }.map(\.value) + ["origin"]
             for base in Set([gitDirectory, common]).filter({ !$0.isEmpty }) {
@@ -92,21 +134,58 @@ public struct GitConfiguration {
                 }
             }
         }
-        if !top.isEmpty { files += [top + "/.git", top + "/.gitmodules"] }
-        if let index = environment["GIT_INDEX_FILE"], !index.isEmpty { files.append(index) }
-        for entry in entries where entry.name == "include.path" || (entry.name.hasPrefix("includeif.") && entry.name.hasSuffix(".path")) {
-            var included = entry.value
-            if included.hasPrefix("~/") { included = home + included.dropFirst() }
-            else if !included.hasPrefix("/"), entry.origin.hasPrefix("file:") {
-                included = URL(fileURLWithPath: String(entry.origin.dropFirst(5)), relativeTo: directory).deletingLastPathComponent().appendingPathComponent(included).path
+        if !top.isEmpty { files.append(top + "/.gitmodules") }
+        if let index = environment["GIT_INDEX_FILE"], !index.isEmpty { files.append(absolute(index)) }
+        let includes = entries.filter { $0.name == "include.path" || ($0.name.hasPrefix("includeif.") && $0.name.hasSuffix(".path")) }
+        if !includes.isEmpty {
+            // --type=path uses Git's own ~, ~user and %(prefix) expansion,
+            // including includeIf directives whose condition is not active.
+            let expanded = try Self.query(["config", "--null", "--includes", "--show-scope", "--show-origin", "--type=path",
+                                           "--get-regexp", "^(include\\.path|includeif\\..*\\.path)$"],
+                                          in: directory, environment: environment, invocation: invocation)
+            let fields = expanded.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
+            if expanded.status != 0 || expanded.data.last != 0 || fields.count != includes.count * 3 { canCache = false }
+            else {
+                for (index, entry) in includes.enumerated() {
+                    try invocation.check()
+                    let record = fields[index * 3 + 2], prefix = Data((entry.name + "\n").utf8)
+                    guard fields[index * 3].elementsEqual(entry.scope.utf8), fields[index * 3 + 1].elementsEqual(entry.origin.utf8),
+                          record.starts(with: prefix), let target = String(data: record.dropFirst(prefix.count), encoding: .utf8) else {
+                        canCache = false; continue
+                    }
+                    if target.hasPrefix("/") { files.append(target) }
+                    else if entry.origin.hasPrefix("file:") {
+                        let source = absolute(String(entry.origin.dropFirst(5)))
+                        // Preserve symlink/.. semantics; lexical normalization
+                        // can watch a different file from the one Git opens.
+                        files.append(String(source[...source.lastIndex(of: "/")!]) + target)
+                    } else { canCache = false }
+                }
             }
-            files.append(included)
+        }
+        var branchStamps: [GitFileStamp] = []
+        if includes.contains(where: { $0.name.hasPrefix("includeif.onbranch:") }) {
+            // onbranch follows the entire symbolic HEAD chain. Stamp each
+            // link before reading it, not just the unchanged HEAD file.
+            var reference = "HEAD", seen = Set<String>()
+            while seen.insert(reference).inserted, seen.count <= 16 {
+                let file = try path(["rev-parse", "--path-format=absolute", "--git-path", reference])
+                guard !file.isEmpty else { canCache = false; break }
+                branchStamps.append(GitFileStamp(file))
+                let next = try Self.query(["symbolic-ref", "--quiet", "--no-recurse", reference],
+                                          in: directory, environment: environment, invocation: invocation)
+                if next.status == 1 { reference = ""; break }
+                guard next.status == 0, let text = String(data: next.data, encoding: .utf8), text.hasSuffix("\n"),
+                      text.hasPrefix("refs/") else { canCache = false; break }
+                reference = String(text.dropLast())
+            }
+            if !reference.isEmpty { canCache = false }
         }
         var children: [GitConfiguration] = []
         var indexStamp: GitFileStamp?
         if !top.isEmpty {
             let root = URL(fileURLWithPath: top, isDirectory: true)
-            indexStamp = GitFileStamp(URL(fileURLWithPath: environment["GIT_INDEX_FILE"] ?? gitDirectory + "/index", relativeTo: directory).standardizedFileURL.path)
+            indexStamp = GitFileStamp(absolute(environment["GIT_INDEX_FILE"] ?? gitDirectory + "/index"))
             let index = try Self.query(["ls-files", "--stage", "--sparse", "--full-name", "-z"], in: root, environment: environment,
                                        limit: 64 * 1_048_576, invocation: invocation)
             guard index.status == 0 else { throw Failure("Git submodules could not be checked safely.") }
@@ -122,14 +201,25 @@ public struct GitConfiguration {
             }
         }
         self.children = children
-        stamps = Set(files.map { URL(fileURLWithPath: $0, relativeTo: directory).standardizedFileURL.path }).sorted().map { path in
+        var stamps = Set(files).sorted().map { path in
             indexStamp?.path == path ? indexStamp! : GitFileStamp(path)
         }
-            + children.flatMap(\.stamps)
+        stamps += Set(files).flatMap { GitFileStamp.parents(of: $0) }
+        stamps += discovery + branchStamps
+        stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
+        if !top.isEmpty { stamps.append(GitFileStamp(top + "/.git", directoryIdentity: true)) }
+        // Hunk reads create private indexes in .git. Those do not change its
+        // identity; objects/refs and HEAD determine whether Git still finds it.
+        stamps += Set([gitDirectory, common]).filter { !$0.isEmpty }.flatMap { directory in
+            ["objects", "refs"].map { GitFileStamp(directory + "/" + $0, directoryIdentity: true) }
+        }
+        stamps += children.flatMap(\.stamps)
+        self.stamps = Array(Set(stamps))
+        cacheable = canCache && self.stamps.allSatisfy(\.cacheable) && children.allSatisfy(\.cacheable)
         // Recheck the data after capturing origins, including missing include
         // files. Filesystem timestamps need not share Date's clock precision.
         let confirmed = try Self.query(options, in: directory, environment: environment, invocation: invocation)
-        guard confirmed.status == 0, confirmed.data == output.data, stamps.allSatisfy(\.unchanged) else {
+        guard confirmed.status == 0, confirmed.data == output.data, self.stamps.allSatisfy({ !$0.cacheable || $0.unchanged }) else {
             throw Failure("Git configuration changed while its inventory was being read. Try again.")
         }
     }
@@ -305,7 +395,7 @@ public struct GitConfiguration {
     #endif
     /// Only fixed metadata commands enter here. Confine even the inventory:
     /// a malformed/sparse index must not fetch while we inspect configuration.
-    static func query(_ arguments: [String], in directory: URL, environment: [String: String], limit: Int = 4 * 1_048_576, invocation: GitInvocation = GitInvocation()) throws -> Output {
+    static func query(_ arguments: [String], in directory: URL, environment: [String: String], limit: Int = 4 * 1_048_576, diagnostics: Bool = false, invocation: GitInvocation = GitInvocation()) throws -> Output {
         #if DEBUG
         countLock.withLock { queries += 1 }
         #endif
@@ -315,7 +405,7 @@ public struct GitConfiguration {
         process.currentDirectoryURL = directory
         let confinement = try GitReadProcess(process, arguments: arguments, environment: environment, invocation: invocation)
         defer { confinement.remove() }
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = diagnostics ? pipe : FileHandle.nullDevice
         let reader = pipe.fileHandleForReading
         defer { try? reader.close() }
         guard invocation.adopt(process) else { throw CancellationError() }

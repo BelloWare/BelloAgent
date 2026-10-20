@@ -29,6 +29,17 @@
 - [x] SECURITY-BOUNDARIES-1m: Git inventory and cache work share the read’s cancellation and timeout, including folder/Quick Open queries. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1n: Git safety inventories reuse config/submodule metadata with origin/index/HEAD stamps, watcher invalidation and trust-change eviction. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1o: A config edit during a cold inventory cannot become a cached permission for a repository program. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1p: Every Git read uses short, non-recursive submodule output, including history commit diffs; changed gitlink IDs remain visible. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1q: Repository creation and nested discovery changes invalidate cached Git policies through identity and ancestor discovery stamps. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1r: Git resolves include paths, including absent `~user` targets; unresolved includes disable inventory reuse. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1s: Relative config origins use Git's repository directory when queries start in deeper folders. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1t: Include stamps preserve symlink/`..` traversal and detect origin-directory retargeting even for hardlinked config files. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1u: Unreadable stamps disable Git inventory caching; a trust change during construction prevents cache publication. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1v: `onbranch` include invalidation follows the whole symbolic HEAD chain. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1w: Private hunk indexes no longer invalidate Git safety inventories or interrupt a concurrent read/fetch. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1x: Unrecognized nested Git candidates bypass inventory caching, including later activation through an external `commondir`. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1y: Changes to a gitdir/common directory's `objects` or `refs` identity revalidate repository discovery before reusing its policy. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1z: Repeated hunk reviews share scoped Git configuration across private indexes; actual Git commands retain their supplied index. [Validation](docs/validation/a130-security-0.1.130.md).
 
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).

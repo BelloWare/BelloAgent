@@ -18,11 +18,16 @@ public struct GitReadProcess {
     private let configuration: GitConfiguration?
     public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false, invocation: GitInvocation = GitInvocation()) throws {
         let git = try Self.git.get()
+        let arguments = Self.nonrecursive(arguments)
         var environment = environment
         if trusted, let directory = process.currentDirectoryURL {
-            let configuration = try GitConfiguration(in: directory, environment: environment, invocation: invocation)
+            // Non-recursive read policy depends on config, not the private
+            // index a hunk review supplies. The Git command keeps that index.
+            var configurationEnvironment = environment
+            configurationEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
+            let configuration = try GitConfiguration(in: directory, environment: configurationEnvironment, invocation: invocation)
             self.configuration = configuration
-            let options = try configuration.readOptions(in: directory, environment: environment, submodules: arguments.contains("status") || arguments.contains("diff"), invocation: invocation)
+            let options = try configuration.readOptions(in: directory, environment: configurationEnvironment, submodules: false, invocation: invocation)
             scratch = nil
             process.executableURL = git
             process.arguments = ["--no-pager"] + options + arguments
@@ -53,6 +58,27 @@ public struct GitReadProcess {
         // An invalidation may evict the cache while a child Git is still about
         // to read its conditional override file.
         withExtendedLifetime(configuration) {}
+    }
+
+    private static func nonrecursive(_ arguments: [String]) -> [String] {
+        var arguments = arguments, command = 0
+        while command < arguments.count, arguments[command].hasPrefix("-") {
+            command += arguments[command] == "-c" ? 2 : 1
+        }
+        if command < arguments.count {
+            switch arguments[command] {
+            case "diff", "show", "log":
+                arguments.insert(contentsOf: ["--submodule=short", "--ignore-submodules=dirty"], at: command + 1)
+            case "status":
+                arguments.insert("--ignore-submodules=dirty", at: command + 1)
+            default: break
+            }
+        }
+        // Inline submodule diffs and dirty-worktree inspection start child
+        // Git commands without the parent's diff safety flags. Read gitlink
+        // hashes only; an explicitly opened submodule gets its own policy.
+        return ["-c", "diff.submodule=short", "-c", "diff.ignoreSubmodules=dirty",
+                "-c", "submodule.recurse=false", "-c", "status.submoduleSummary=false"] + arguments
     }
 
     private static let profile = """

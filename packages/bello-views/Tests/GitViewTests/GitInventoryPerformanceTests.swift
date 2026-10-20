@@ -39,9 +39,14 @@ final class GitInventoryPerformanceTests: XCTestCase {
             try Data().write(to: base.appendingPathComponent("prepared"))
         }
         #if BELLO_GIT_BENCHMARK_BASELINE
+        print("GIT_BENCHMARK_BUILD baseline \(#filePath)")
         let service = GitService(environment: environment)
         #else
-        let service = GitService(environment: environment, trusted: true)
+        print("GIT_BENCHMARK_BUILD branch \(#filePath)")
+        let previousTrust = GitService.resolveTrust, repository = root.resolvingSymlinksInPath().path
+        GitService.resolveTrust = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == repository }
+        defer { GitService.resolveTrust = previousTrust }
+        let service = GitService(environment: environment)
         #endif
         let count = Int(ProcessInfo.processInfo.environment["BELLO_GIT_BENCHMARK_SAMPLES"] ?? "25") ?? 25
         _ = try await service.status(in: root.path)
@@ -60,9 +65,11 @@ final class GitInventoryPerformanceTests: XCTestCase {
             guard ProcessInfo.processInfo.systemUptime < readyBy else { XCTFail("Changes did not finish its initial read: \(controller.notice)"); return }
             try await Task.sleep(for: .milliseconds(10))
         }
+        _ = try await service.patchReview(in: root.path, path: "files-0/file-0.txt", staged: false)
         for _ in 0..<count {
             let finished = controller.refreshesFinished, start = ProcessInfo.processInfo.systemUptime
             await controller.refresh(automatic: true)
+            _ = try await service.patchReview(in: root.path, path: "files-0/file-0.txt", staged: false)
             refreshTimes.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
             XCTAssertEqual(controller.refreshesFinished, finished + 1, controller.notice)
         }

@@ -28,6 +28,296 @@ final class GitInventoryTests: XCTestCase {
     }
     private func write(_ path: String, _ text: String) throws { try Data(text.utf8).write(to: root.appendingPathComponent(path)) }
 
+    private func monitor() throws -> String {
+        try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+        let path = root.appendingPathComponent("monitor").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+
+    func testPrivateIndexesDoNotInvalidateOrInterruptInventory() async throws {
+        try git(["config", "core.fsmonitor", try monitor()])
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        let warm = GitConfiguration.queryCount
+        let snapshot = try GitIndexSnapshot.read(at: root.appendingPathComponent(".git/index").path)
+        let copy = try snapshot.copyForGit()
+        defer { copy.remove() }
+        _ = try await service.status(in: root.path)
+        XCTAssertEqual(GitConfiguration.queryCount, warm, "A private hunk index does not change repository identity or config")
+        GitConfiguration.invalidate()
+        let before = GitConfiguration.queryCount
+        let edit = Task.detached {
+            while GitConfiguration.queryCount < before + 3 { try await Task.sleep(for: .milliseconds(1)) }
+            return try snapshot.copyForGit()
+        }
+        do { _ = try await service.status(in: root.path) }
+        catch { XCTFail("A concurrent hunk review must not interrupt the inventory: \(error)") }
+        let concurrent = try await edit.value
+        concurrent.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    @MainActor func testHunkReadsReuseScopedConfiguration() async throws {
+        let previous = GitService.resolveTrust, path = root.path
+        defer { GitService.resolveTrust = previous }
+        GitService.resolveTrust = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == path }
+        try git(["config", "core.fsmonitor", try monitor()])
+        try write("file", "edit\n")
+        let service = GitService(environment: environment)
+        _ = try await service.patchReview(in: root.path, path: "file", staged: false)
+        let warm = GitConfiguration.queryCount
+        _ = try await service.patchReview(in: root.path, path: "file", staged: false)
+        XCTAssertEqual(GitConfiguration.queryCount, warm, "A new private index must not rebuild the repository's scoped config")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    private func splitRepository(activate: Bool) throws -> URL {
+        let child = root.appendingPathComponent("nested"), pending = root.appendingPathComponent("common-pending")
+        try FileManager.default.createDirectory(at: child.appendingPathComponent("deep"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: child.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try write("nested/.git/HEAD", "ref: refs/heads/main\n")
+        try write("nested/.git/commondir", root.appendingPathComponent("common").path + "\n")
+        try FileManager.default.copyItem(at: root.appendingPathComponent(".git/index"), to: child.appendingPathComponent(".git/index"))
+        try FileManager.default.copyItem(at: root.appendingPathComponent("file"), to: child.appendingPathComponent("file"))
+        try FileManager.default.copyItem(at: root.appendingPathComponent(".git"), to: pending)
+        if activate { try FileManager.default.moveItem(at: pending, to: root.appendingPathComponent("common")) }
+        return child.appendingPathComponent("deep")
+    }
+
+    func testIncompleteGitDirectoryCannotHideLaterDiscovery() async throws {
+        let directory = try splitRepository(activate: false)
+        try git(["config", "--file", root.appendingPathComponent("common-pending/config").path, "core.fsmonitor", try monitor()])
+        let first = try GitConfiguration(in: directory, environment: environment)
+        XCTAssertFalse(first.cacheable, "An unrecognized .git candidate can become valid through an external commondir")
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: directory.path)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("common-pending"), to: root.appendingPathComponent("common"))
+        _ = try await service.status(in: directory.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testCommonDirectoryValidityChangesRevalidateDiscovery() async throws {
+        try git(["config", "core.fsmonitor", try monitor()])
+        let directory = try splitRepository(activate: true)
+        let service = GitService(environment: environment, trusted: true)
+        for name in ["objects", "refs"] {
+            _ = try await service.status(in: directory.path)
+            let warm = GitConfiguration.queryCount
+            let file = root.appendingPathComponent("common/" + name), moved = root.appendingPathComponent("common/held-" + name)
+            try FileManager.default.moveItem(at: file, to: moved)
+            _ = try await service.status(in: directory.path)
+            XCTAssertGreaterThan(GitConfiguration.queryCount, warm, name)
+            let marker = root.appendingPathComponent("hostile-ran")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), name)
+            try? FileManager.default.removeItem(at: marker)
+            try FileManager.default.moveItem(at: moved, to: file)
+        }
+    }
+
+    func testHistoricalSubmoduleDiffNeverRunsChildPrograms() async throws {
+        let child = root.appendingPathComponent("child")
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try git(["init", "-q", "--template=", "-b", "main"], in: child)
+        try write("child/file", "base\n"); try write("child/.gitattributes", "file diff=hostile\n")
+        try git(["add", "."], in: child); try git(["commit", "-qm", "Child base"], in: child)
+        for change in [false, true] {
+            if change { try write("child/file", "edit\n"); try git(["commit", "-qam", "Child change"], in: child) }
+            let hash = try git(["rev-parse", "HEAD"], in: child).trimmingCharacters(in: .newlines)
+            try git(["update-index", "--add", "--cacheinfo", "160000,\(hash),child"])
+            try git(["commit", "-qm", change ? "New child" : "Initial child"])
+        }
+        try write("driver", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\ncat \"$1\"\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("driver").path)
+        try git(["config", "diff.hostile.textconv", root.appendingPathComponent("driver").path], in: child)
+        try git(["config", "diff.submodule", "diff"])
+        let service = GitService(environment: environment, trusted: true)
+        let commits = try await service.log(in: root.path, limit: 1)
+        _ = try await service.commitDiffFiles(in: root.path, commit: XCTUnwrap(commits.first))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), "History spawned a child's local textconv")
+        try git(["config", "status.submoduleSummary", "true"])
+        try git(["config", "submodule.recurse", "true"])
+        try git(["config", "core.fsmonitor", root.appendingPathComponent("driver").path], in: child)
+        for arguments in [["show", "--format=", "--no-ext-diff", "--no-textconv", "HEAD"],
+                          ["log", "-p", "-1", "--no-ext-diff", "--no-textconv"],
+                          ["diff", "--no-ext-diff", "--no-textconv", "HEAD^", "HEAD"],
+                          ["diff", "--no-ext-diff", "--no-textconv", "HEAD"],
+                          ["status", "--porcelain=v2"],
+                          ["blame", "--no-textconv", "--", "file"],
+                          ["ls-files", "-z"], ["stash", "list"]] {
+            try? FileManager.default.removeItem(at: root.appendingPathComponent("hostile-ran"))
+            let output = try await service.run(arguments, in: root.path)
+            XCTAssertEqual(output.status, 0, arguments.joined(separator: " "))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), arguments.joined(separator: " "))
+            if ["show", "log"].contains(arguments[0]) { XCTAssertTrue(output.text.contains("Subproject commit")) }
+        }
+        try git(["-c", "core.fsmonitor=false", "commit", "--allow-empty", "-qm", "New gitlink"], in: child)
+        let status = try await service.status(in: root.path)
+        XCTAssertTrue(status.entries.contains { $0.path == "child" }, "Read gitlink changes without inspecting the child's worktree")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testRepositoryCreationInvalidatesDiscovery() async throws {
+        // Neither a previously absent repository nor a new nested repository
+        // may inherit a warm inventory for the old discovery result.
+        for nested in [false, true] {
+            let directory = root.appendingPathComponent(nested ? "nested" : "plain")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !nested { try FileManager.default.removeItem(at: root.appendingPathComponent(".git")) }
+            let service = GitService(environment: environment, trusted: true)
+            let query = nested ? directory.appendingPathComponent("deep") : directory
+            try FileManager.default.createDirectory(at: query, withIntermediateDirectories: true)
+            _ = try await service.run(["status", "--porcelain=v2"], in: query.path)
+            try git(["init", "-q", "--template=", "-b", "main"], in: directory)
+            try Data("fixture\n".utf8).write(to: directory.appendingPathComponent("README"))
+            try git(["add", "README"], in: directory)
+            try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
+            try git(["config", "core.fsmonitor", root.appendingPathComponent("monitor").path], in: directory)
+            _ = try await service.status(in: query.path)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), "New repository, nested=\(nested)")
+            try? FileManager.default.removeItem(at: root.appendingPathComponent("hostile-ran"))
+            if !nested { try git(["init", "-q", "--template=", "-b", "main"]) }
+        }
+    }
+
+    func testNamedUserIncludeIsStampedBeforeItExists() async throws {
+        let account = try XCTUnwrap(getpwuid(getuid()))
+        let user = String(cString: account.pointee.pw_name), home = String(cString: account.pointee.pw_dir)
+        // Traverse from the account home to a generated temp file. Never read
+        // or write that account's real Git configuration or other user data.
+        let up = String(repeating: "../", count: home.split(separator: "/").count)
+        let target = "~\(user)/" + up + root.path.dropFirst() + "/late-include"
+        try git(["config", "include.path", target])
+        try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        try write("late-include", "[core]\nfsmonitor = \(root.path)/monitor\n")
+        XCTAssertEqual(try git(["config", "--get", "core.fsmonitor"]), root.appendingPathComponent("monitor").path + "\n")
+        _ = try await service.status(in: root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), "A populated ~user include escaped the warm inventory")
+    }
+
+    func testRelativeIncludeOriginsUseRepositoryRootFromDeepDirectory() async throws {
+        let deep = root.appendingPathComponent("deep/nested")
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        try git(["config", "include.path", "late-include"])
+        try write(".git/late-include", "")
+        try await lateInclude(".git/late-include", querying: deep)
+    }
+
+    func testIncludePathsPreserveSymlinkDotDotTraversal() async throws {
+        let leaf = root.appendingPathComponent("outside/leaf")
+        try FileManager.default.createDirectory(at: leaf, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(".git/bridge"), withDestinationURL: leaf)
+        try git(["config", "include.path", "bridge/../late-include"])
+        try await lateInclude("outside/late-include", querying: root)
+    }
+
+    func testConditionalIncludesAreStampedBeforeTheyExist() async throws {
+        for (index, condition) in ["onbranch:main", "gitdir:**/\(root.lastPathComponent)/.git", "gitdir/i:**/\(root.lastPathComponent.uppercased())/.GIT"].enumerated() {
+            try git(["config", "includeIf.\(condition).path", "../conditional-\(index)"])
+            try await lateInclude("conditional-\(index)", querying: root)
+        }
+    }
+
+    func testOnBranchIncludeObservesSymbolicRefChainChanges() async throws {
+        try git(["branch", "other"])
+        try git(["symbolic-ref", "refs/heads/alias", "refs/heads/other"])
+        try git(["symbolic-ref", "HEAD", "refs/heads/alias"])
+        try git(["config", "includeIf.onbranch:main.path", "../conditional"])
+        try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
+        try write("conditional", "[core]\nfsmonitor = \(root.path)/monitor\n")
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        let head = try Data(contentsOf: root.appendingPathComponent(".git/HEAD"))
+        try git(["symbolic-ref", "refs/heads/alias", "refs/heads/main"])
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".git/HEAD")), head)
+        XCTAssertEqual(try git(["config", "--get", "core.fsmonitor"]), root.appendingPathComponent("monitor").path + "\n")
+        _ = try await service.status(in: root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testConditionalIncludeObservesOriginDirectorySymlinkChanges() async throws {
+        let away = root.appendingPathComponent("away"), link = root.appendingPathComponent("link")
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        try write("away/config", "[includeIf \"gitdir:./.git\"]\npath = \(root.path)/conditional\n")
+        try FileManager.default.linkItem(at: away.appendingPathComponent("config"), to: root.appendingPathComponent("config"))
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: away)
+        try git(["config", "include.path", "../link/config"])
+        try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
+        try write("conditional", "[core]\nfsmonitor = \(root.path)/monitor\n")
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        XCTAssertEqual(try git(["config", "--get", "core.fsmonitor"]), root.appendingPathComponent("monitor").path + "\n")
+        _ = try await service.status(in: root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    private func lateInclude(_ file: String, querying directory: URL) async throws {
+        try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent("monitor").path)
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: directory.path)
+        let warm = GitConfiguration.queryCount
+        try write(file, "[core]\nfsmonitor = \(root.path)/monitor\n")
+        XCTAssertEqual(try git(["config", "--get", "core.fsmonitor"], in: directory), root.appendingPathComponent("monitor").path + "\n")
+        _ = try await service.status(in: directory.path)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm, file)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path), file)
+        // Give each conditional include an independent absent-to-present test.
+        try write(file, "")
+    }
+
+    func testUnresolvableInactiveIncludeDisablesCache() throws {
+        let user = "bello-fixture-" + UUID().uuidString
+        XCTAssertNil(getpwnam(user))
+        try git(["config", "includeIf.onbranch:never.path", "~\(user)/missing"])
+        let first = try GitConfiguration(in: root, environment: environment)
+        let warm = GitConfiguration.queryCount
+        _ = try GitConfiguration(in: root, environment: environment)
+        XCTAssertFalse(first.cacheable)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm, "An unresolved include must never enter the cache")
+    }
+
+    func testUnreadableDiscoveryOrIncludeStampDisablesCache() throws {
+        let loop = root.appendingPathComponent("loop"), blocked = root.appendingPathComponent("blocked")
+        try FileManager.default.createSymbolicLink(at: loop, withDestinationURL: loop)
+        XCTAssertFalse(GitFileStamp(loop.path).cacheable)
+        XCTAssertFalse(GitFileStamp(loop.path).unchanged)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try git(["config", "includeIf.onbranch:never.path", "../blocked/missing"])
+        _ = try GitConfiguration(in: root, environment: environment)
+        let readable = GitConfiguration.queryCount
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: blocked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blocked.path) }
+        let first = try GitConfiguration(in: root, environment: environment), warm = GitConfiguration.queryCount
+        _ = try GitConfiguration(in: root, environment: environment)
+        XCTAssertFalse(first.cacheable)
+        XCTAssertGreaterThan(warm, readable, "Permission failure is not proof that an absent file is unchanged")
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+    }
+
+    @MainActor func testTrustChangeDuringInventoryCannotRepopulateCache() async throws {
+        let previous = GitService.resolveTrust
+        defer { GitService.resolveTrust = previous }
+        GitService.resolveTrust = { _ in true }
+        let service = GitService(environment: environment), path = root.path, before = GitConfiguration.queryCount
+        let read = Task { try await service.status(in: path) }
+        while GitConfiguration.queryCount < before + 3 { try await Task.sleep(for: .milliseconds(1)) }
+        GitService.resolveTrust = { _ in false }
+        GitService.resolveTrust = { _ in true }
+        _ = try await read.value
+        let warm = GitConfiguration.queryCount
+        _ = try await service.status(in: path)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm, "A pre-invalidation builder must not publish into the new cache")
+    }
+
     @MainActor func testPushDestinationsUsePushRewritesAndDefaults() async throws {
         let source = try GitRedirectReceiver(), destination = try GitRedirectReceiver()
         defer { source.stop(); destination.stop() }
@@ -130,7 +420,11 @@ final class GitInventoryTests: XCTestCase {
         // Equal sizes force content conversion instead of Git's size shortcut.
         try write(".gitattributes", "file filter=foo\n"); try write("file", "edit\n"); try write("child/file", "edit\n")
         do { _ = try await GitService(environment: environment, trusted: true).status(in: root.path) }
-        catch { XCTFail("Child must retain its own global filter: \(error)") }
+        catch { XCTFail("Parent must not recurse into child filters: \(error)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("allowed-ran").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+        do { _ = try await GitService(environment: environment, trusted: true).status(in: child.path) }
+        catch { XCTFail("An explicit child read must retain its own global filter: \(error)") }
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("allowed-ran").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
     }
@@ -271,14 +565,22 @@ final class GitInventoryTests: XCTestCase {
         try git(["symbolic-ref", "HEAD", "refs/heads/fixture"])
         _ = try await service.status(in: root.path)
         XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+        // Transport inventories still use the caller's index for gitlinks.
+        _ = try GitConfiguration(in: root, environment: environment)
         warm = GitConfiguration.queryCount
         // An in-place change only to the alternate index: the normal index,
         // HEAD and git-directory stamps all remain unchanged.
         let bytes = try Data(contentsOf: alternate)
         let handle = try FileHandle(forWritingTo: alternate)
         try handle.write(contentsOf: bytes); try handle.close()
-        _ = try await service.status(in: root.path)
+        _ = try GitConfiguration(in: root, environment: environment)
         XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+        try git(["symbolic-ref", "HEAD", "refs/heads/main"])
+        let normal = try Data(contentsOf: root.appendingPathComponent(".git/index"))
+        try write("file", "alternate\n"); try git(["add", "file"]); try write("file", "base\n")
+        let status = try await service.status(in: root.path)
+        XCTAssertTrue(status.entries.contains { $0.path == "file" && $0.staged && $0.indexState == "M" })
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".git/index")), normal)
     }
 
     func testConfigEditDuringInventoryCannotBecomeAWarmUnsafeEntry() async throws {

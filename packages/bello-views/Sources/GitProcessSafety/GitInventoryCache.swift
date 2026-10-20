@@ -3,18 +3,23 @@ import Darwin
 
 /// Device/inode and nanosecond ctime also catch same-size edits with restored
 /// mtimes. Keep the symlink and its target: either can change independently.
-struct GitFileStamp: Equatable {
+struct GitFileStamp: Hashable {
     let path: String
     let watchedPath: String
     private let identity: [Int64]
-    private let cacheable: Bool
-    init(_ path: String) {
-        self.init(path, watchedPath: URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+    let cacheable: Bool
+    private let directoryIdentity: Bool
+    init(_ path: String, directoryIdentity: Bool = false) {
+        self.init(path, watchedPath: URL(fileURLWithPath: path).resolvingSymlinksInPath().path, directoryIdentity: directoryIdentity)
     }
-    private init(_ path: String, watchedPath: String) {
+    private init(_ path: String, watchedPath: String, directoryIdentity: Bool) {
         self.path = path
         self.watchedPath = watchedPath
+        self.directoryIdentity = directoryIdentity
         func fields(_ value: stat) -> [Int64] {
+            if directoryIdentity, value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) {
+                return [Int64(value.st_dev), Int64(bitPattern: UInt64(value.st_ino)), Int64(value.st_mode)]
+            }
             // devfs timestamps can advance with the clock or unrelated writes.
             // /dev/null is immutable empty config, identified by its device.
             if watchedPath == "/dev/null", value.st_mode & mode_t(S_IFMT) == mode_t(S_IFCHR) {
@@ -30,10 +35,42 @@ struct GitFileStamp: Equatable {
             let followed = symlink && stat(path, &target) == 0
             identity = fields(link) + (followed ? fields(target) : [])
             let kind = (followed ? target.st_mode : link.st_mode) & mode_t(S_IFMT)
-            cacheable = [mode_t(S_IFREG), mode_t(S_IFDIR), mode_t(S_IFLNK)].contains(kind) || (kind == mode_t(S_IFCHR) && watchedPath == "/dev/null")
-        } else { identity = []; cacheable = true }
+            let readableTarget = !symlink || followed || errno == ENOENT || errno == ENOTDIR
+            cacheable = readableTarget && ([mode_t(S_IFREG), mode_t(S_IFDIR), mode_t(S_IFLNK)].contains(kind) || (kind == mode_t(S_IFCHR) && watchedPath == "/dev/null"))
+        } else { identity = []; cacheable = errno == ENOENT || errno == ENOTDIR }
     }
-    var unchanged: Bool { cacheable && identity == GitFileStamp(path, watchedPath: watchedPath).identity }
+    var unchanged: Bool {
+        let current = GitFileStamp(path, watchedPath: watchedPath, directoryIdentity: directoryIdentity)
+        return cacheable && current.cacheable && identity == current.identity
+    }
+    var exists: Bool { !identity.isEmpty }
+
+    static func parents(of file: String) -> [GitFileStamp] {
+        var path = file, result: [GitFileStamp] = []
+        // Keep every literal prefix, including symlinks before "..". A
+        // conditional include can depend on the origin's resolved directory
+        // even when the config file is the very same hardlinked inode.
+        while let slash = path.lastIndex(of: "/") {
+            path = String(path[..<slash])
+            result.append(GitFileStamp(path.isEmpty ? "/" : path, directoryIdentity: true))
+            if path.isEmpty { break }
+        }
+        return result
+    }
+
+    static func discovery(in directory: URL) -> [GitFileStamp] {
+        var path = directory.path, result: [GitFileStamp] = []
+        while true {
+            // Directory identity ignores ordinary working-file saves. The
+            // markers also cover bare repositories and a newly created .git.
+            result += [GitFileStamp(path, directoryIdentity: true), GitFileStamp(path + "/.git", directoryIdentity: true),
+                       GitFileStamp(path + "/HEAD"), GitFileStamp(path + "/commondir"), GitFileStamp(path + "/objects", directoryIdentity: true),
+                       GitFileStamp(path + "/refs", directoryIdentity: true)]
+            if path == "/" { break }
+            path = (path as NSString).deletingLastPathComponent
+        }
+        return result
+    }
 }
 
 /// Waiters can abandon a cold build without cancelling another read's work.
@@ -43,7 +80,7 @@ final class GitInventoryMemo<Value>: @unchecked Sendable {
     private var value: Value?
     private var building = false
     var cached: Value? { condition.lock(); defer { condition.unlock() }; return value }
-    func get(invocation: GitInvocation, valid: (Value) throws -> Bool = { _ in true }, build: () throws -> Value) throws -> Value {
+    func get(invocation: GitInvocation, valid: (Value) throws -> Bool = { _ in true }, retain: (Value) -> Bool = { _ in true }, build: () throws -> Value) throws -> Value {
         while true {
             try invocation.check()
             condition.lock()
@@ -60,7 +97,7 @@ final class GitInventoryMemo<Value>: @unchecked Sendable {
                 try invocation.check()
                 let result = try build()
                 try invocation.check()
-                condition.lock(); value = result; building = false; condition.broadcast(); condition.unlock()
+                condition.lock(); value = retain(result) ? result : nil; building = false; condition.broadcast(); condition.unlock()
                 return result
             } catch {
                 condition.lock(); building = false; condition.broadcast(); condition.unlock(); throw error
@@ -73,21 +110,42 @@ final class GitInventoryCache: @unchecked Sendable {
     static let shared = GitInventoryCache()
     private let lock = NSLock()
     private var values: [Data: GitInventoryMemo<GitConfiguration>] = [:]
+    private var lookups: [Data: Data] = [:]
+    private var building: [Data: GitInventoryMemo<GitConfiguration>] = [:]
+    private var generation = 0
     func configuration(in directory: URL, environment: [String: String], invocation: GitInvocation,
                        build: () throws -> GitConfiguration) throws -> GitConfiguration {
-        let key = Data(([directory.path] + environment.keys.sorted().flatMap { [$0, environment[$0]!] }).joined(separator: "\0").utf8)
-        let memo = lock.withLock {
-            if let value = values[key] { return value }
-            // Bound retained metadata and private policy files, not disk copies
-            // of a repository. Active invocations keep their own references.
-            if values.count >= 128, let completed = values.first(where: { $0.value.cached != nil })?.key { values.removeValue(forKey: completed) }
-            let value = GitInventoryMemo<GitConfiguration>(); values[key] = value; return value
+        let lookup = Data(([directory.path] + environment.keys.sorted().flatMap { [$0, environment[$0]!] }).joined(separator: "\0").utf8)
+        let (memo, ticket) = lock.withLock {
+            if let key = lookups[lookup], let value = values[key] { return (value, generation) }
+            if let value = building[lookup] { return (value, generation) }
+            let value = GitInventoryMemo<GitConfiguration>(); building[lookup] = value; return (value, generation)
         }
-        return try memo.get(invocation: invocation, valid: { configuration in
-            try configuration.stamps.allSatisfy { stamp in try invocation.check(); return stamp.unchanged }
-        }, build: build)
+        do {
+            let result = try memo.get(invocation: invocation, valid: { configuration in
+                guard configuration.cacheable else { return false }
+                return try configuration.stamps.allSatisfy { stamp in try invocation.check(); return stamp.unchanged }
+            }, retain: { $0.cacheable }, build: build)
+            lock.withLock {
+                // A trust change or watcher invalidation during a cold build
+                // must not let that build repopulate the new cache generation.
+                guard ticket == generation else { return }
+                building.removeValue(forKey: lookup)
+                if let old = lookups.removeValue(forKey: lookup) { values.removeValue(forKey: old) }
+                guard result.cacheable else { return }
+                let key = lookup + Data([0]) + result.identity
+                if values.count >= 128, let old = values.keys.first {
+                    values.removeValue(forKey: old); lookups = lookups.filter { $0.value != old }
+                }
+                values[key] = memo; lookups[lookup] = key
+            }
+            return result
+        } catch {
+            lock.withLock { if building[lookup] === memo { building.removeValue(forKey: lookup) } }
+            throw error
+        }
     }
-    func clear() { lock.withLock { values.removeAll() } }
+    func clear() { lock.withLock { generation &+= 1; values.removeAll(); lookups.removeAll(); building.removeAll() } }
     func invalidate(paths: [String]) -> Bool {
         let paths = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path }
         return lock.withLock {
@@ -98,8 +156,11 @@ final class GitInventoryCache: @unchecked Sendable {
                     return paths.contains { file == $0 || file.hasPrefix($0 + "/") }
                 } ? key : nil
             }
+            guard !keys.isEmpty || !building.isEmpty else { return false }
+            generation &+= 1; building.removeAll()
             for key in keys { values.removeValue(forKey: key) }
-            return !keys.isEmpty
+            lookups = lookups.filter { values[$0.value] != nil }
+            return true
         }
     }
 }
