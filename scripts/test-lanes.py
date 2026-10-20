@@ -40,7 +40,6 @@ import argparse
 import pathlib
 import re
 import sys
-import textwrap
 from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -64,11 +63,8 @@ PATTERNS = {
 BUDGET = re.compile(r"\breleaseBudget\(")
 ELAPSED = re.compile(r"systemUptime|Date\(\)\.timeIntervalSince\(|timeIntervalSinceNow|DispatchTime\.now|CFAbsoluteTimeGetCurrent|ContinuousClock")
 MARKER = "SerialTestLane"
-MODIFIERS = r"^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:final|open|public|internal|private|fileprivate|nonisolated)\s+)*"
-DECLARATION = re.compile(MODIFIERS + r"class\s+(\w+)\s*:\s*([^{]+)\{")
-EXTENSION = re.compile(MODIFIERS + r"extension\s+(\w+)\b[^{]*\{")
-HELPER = re.compile(MODIFIERS + r"(?:(?:static|class|mutating|override|convenience|required)\s+)*"
-                    r"(class|struct|enum|actor|protocol|func|let|var|typealias)\s+(\w+)")
+DECLARATION = re.compile(r"(class|struct|enum|actor|protocol|extension|func|let|var|typealias)\s+(\w+)|\b(init|deinit|subscript)\b")
+MODIFIER = re.compile(r"(?:final|open|public|internal|private|fileprivate|nonisolated|static|class|mutating|nonmutating|override|convenience|required|lazy|weak|unowned|indirect|distributed|isolated)\b")
 REFERENCE = re.compile(r"(?<![\w.])\b[A-Za-z_]\w*(?:\s*\??\.\s*[A-Za-z_]\w*)*")
 
 
@@ -181,30 +177,26 @@ def focus_sources(paths):
     member (e.g. ConversationPaneTests.workbench) includes only that member,
     so data builders do not import unrelated window fixtures or test methods.
     """
-    nodes, names, containers, parents, members, kinds = [], {}, set(), {}, {}, {}
+    nodes, names, containers, parents, members, kinds, headers = [], {}, set(), {}, {}, {}, {}
 
     def add(text, file, scope="", inherited_private=False):
-        for kind, name, inherits, chunk in blocks(text):
-            extension = EXTENSION.match(chunk)
-            declaration = HELPER.match(chunk)
-            if not declaration and not extension:
-                continue
-            member = extension[1] if extension else declaration[2]
+        for declaration in declarations(text):
+            kind, member, inherits, chunk, header, body = declaration
+            extension = kind == "extension"
             qualified = scope + "." + member if scope else member
-            private = inherited_private or bool(re.search(r"\b(?:private|fileprivate)\b", chunk.split("{", 1)[0]))
+            private = inherited_private or bool(re.search(r"\b(?:private|fileprivate)\b", header))
             index = len(nodes)
             nodes.append((qualified, file, chunk, scope, private))
             names.setdefault(qualified, []).append(index)
             members.setdefault(scope, []).append(index)
-            kinds[index] = "extension" if extension else declaration[1]
+            kinds[index] = kind
+            headers[index] = header
             if kind == "class":
                 parents.setdefault(qualified, set()).update(inherits)
             if not extension:
                 containers.add(qualified)
-            if extension or declaration[1] in ("class", "struct", "enum", "actor", "protocol"):
-                if "{" in chunk:
-                    body = textwrap.dedent(chunk[chunk.index("{") + 1:chunk.rfind("}")]).strip()
-                    add(body, file, qualified, private)
+            if extension or kind in ("class", "struct", "enum", "actor", "protocol"):
+                add(body, file, qualified, private)
 
     for path in paths:
         add(swift_code(path.read_text()), str(path))
@@ -255,7 +247,7 @@ def focus_sources(paths):
 
     edges = {index: references(index) for index in range(len(nodes))}
     factories = {index for index, node in enumerate(nodes)
-                 if re.search(r"\bfunc\b[^{}]*->\s*TabHost\s*\{", node[2].split("{", 1)[0] + "{")
+                 if re.search(r"\bfunc\b[^{}]*->\s*TabHost\s*\{", headers[index] + "{")
                  and offscreen_popouts(node[2])[1]}
 
     def is_factory(index, name):
@@ -283,31 +275,136 @@ def focus_sources(paths):
     return collect
 
 
-def blocks(text):
-    """Top-level declarations and their text, up to the closing brace at the
-    start of a line. Test sources indent their members, as Xcode does. Yields
-    ("class", name, inherits, text), ("extension", name, [], text), and
-    ("helper", None, [], text) for every other declaration."""
-    lines = text.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line or line[0] in " \t}/" or line.startswith(("import ", "#")):
-            i += 1
+class Declaration(NamedTuple):
+    kind: str
+    name: str
+    inherits: list[str]
+    text: str
+    header: str
+    body: str
+
+
+def declarations(text):
+    """Read whole Swift declarations before constructing dependency nodes.
+
+    Delimiters in attributes, parameter defaults and generic signatures belong
+    to the header. Only a brace outside those delimiters starts the body.
+    Scan masked code for boundaries, but retain the original text for lane rules.
+    """
+    code = swift_code(text)
+    length, i = len(code), 0
+
+    def space(at):
+        while at < length and code[at].isspace():
+            at += 1
+        return at
+
+    def balanced(at):
+        pairs, stack = {"(": ")", "[": "]", "{": "}"}, []
+        while at < length:
+            char = code[at]
+            if char in pairs:
+                stack.append(pairs[char])
+            elif stack and char == stack[-1]:
+                stack.pop()
+                if not stack:
+                    return at + 1
+            at += 1
+        return at
+
+    while (i := space(i)) < length:
+        start, cursor = i, i
+        # Attributes can span lines and contain nested argument lists. Access
+        # modifiers such as private(set) use the same balanced parentheses.
+        while cursor < length:
+            if code[cursor] == "@":
+                match = re.match(r"@[\w.]+", code[cursor:])
+                if not match:
+                    break
+                cursor = space(cursor + match.end())
+                if cursor < length and code[cursor] == "(":
+                    cursor = space(balanced(cursor))
+            elif match := MODIFIER.match(code, cursor):
+                if match[0] == "class" and not re.match(r"\s+(?:func|var|let)\b", code[match.end():]):
+                    break
+                cursor = space(match.end())
+                if cursor < length and code[cursor] == "(":
+                    cursor = space(balanced(cursor))
+            else:
+                break
+        match = DECLARATION.match(code, cursor)
+        if not match:
+            # Imports and conditional-compilation directives are not nodes.
+            end = code.find("\n", cursor)
+            i = length if end < 0 else end + 1
             continue
-        end = i
-        if line.count("{") > line.count("}"):
-            end = i + 1
-            while end < len(lines) and lines[end].rstrip() != "}":
-                end += 1
-        chunk = "\n".join(lines[i:end + 1])
-        if (match := DECLARATION.match(line)):
-            yield "class", match.group(1), [part.strip() for part in match.group(2).split(",")], chunk
-        elif (match := EXTENSION.match(line)):
-            yield "extension", match.group(1), [], chunk
-        else:
-            yield "helper", None, [], chunk
-        i = end + 1
+        kind, name = (match[1], match[2]) if match[1] else (match[3], match[3])
+        cursor, body_start, body_end = match.end(), None, None
+        needs_body = kind not in ("let", "var", "typealias")
+        while cursor < length:
+            char = code[cursor]
+            if char in "([":
+                cursor = balanced(cursor)
+                continue
+            if char == "<" and (needs_body or "=" not in code[match.end():cursor]):
+                depth = 1
+                cursor += 1
+                while cursor < length and depth:
+                    if code[cursor] in "([":
+                        cursor = balanced(cursor)
+                        continue
+                    if code[cursor] == "<": depth += 1
+                    elif code[cursor] == ">" and code[cursor - 1] != "-": depth -= 1
+                    cursor += 1
+                continue
+            if char == "{":
+                body_start, body_end = cursor, balanced(cursor)
+                cursor = body_end
+                # Stored-property initializer closures may be immediately
+                # invoked; keep their suffix in this declaration too.
+                if needs_body:
+                    break
+                continue
+            if char == ";" or char == "}":
+                break
+            if char == "\n":
+                following = space(cursor)
+                tail = code[match.end():cursor].rstrip()
+                if (not needs_body and code[following:following + 1] not in (".", "{")
+                        and not tail.endswith(("=", ",", "->", ".", "(", "["))):
+                    break
+                # Bodyless protocol requirements must not consume the next
+                # declaration. Continuations (where, ->, {) do not match.
+                if (DECLARATION.match(code, following) or MODIFIER.match(code, following)
+                        or code[following:following + 1] == "@"):
+                    break
+            cursor += 1
+        end = cursor
+        header_end = body_start if body_start is not None else end
+        header = code[start:header_end]
+        inherits = []
+        if kind == "class":
+            suffix = code[match.end():header_end]
+            # Ignore a generic parameter list and where constraints when
+            # finding the superclass and protocols in the inheritance clause.
+            depth, colon = 0, None
+            for offset, char in enumerate(suffix):
+                if char == "<": depth += 1
+                elif char == ">": depth = max(0, depth - 1)
+                elif char == ":" and depth == 0:
+                    colon = offset; break
+            if colon is not None:
+                clause = re.split(r"\bwhere\b", suffix[colon + 1:], maxsplit=1)[0]
+                inherits = [part.strip() for part in clause.split(",")]
+        yield Declaration(kind, name, inherits, text[start:end], header,
+                          text[body_start + 1:body_end - 1] if body_start is not None else "")
+        i = max(end + (code[end:end + 1] in ";}"), start + 1)
+
+
+def blocks(text):
+    for declaration in declarations(text):
+        kind = declaration.kind if declaration.kind in ("class", "extension") else "helper"
+        yield kind, declaration.name, declaration.inherits, declaration.text
 
 
 TIMED_LOCAL = re.compile(r"\b(?:let|var)\s+([A-Za-z_]\w*)\s*(?::[^=\n]*)?=([^\n]*)")

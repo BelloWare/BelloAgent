@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Native lane detection preserves complete multiline declarations, including attributes, generics/where clauses and default closures. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-13-review--declarations-and-intermittent-native-tests).
+- [x] Preview tests use a scoped project resolver, so earlier workspace fixtures cannot disable their change notifications.
+- [x] Sheet lifetime checks precisely exempt the detached AppKit system cursor retained by framework observers, while still rejecting attached cursors, app subclasses and retained content.
+
 - [x] Native lanes follow actual shared-fixture dependencies and serialize visible-window/focus contention while keeping offscreen responder work parallel; Python guards cover both cases. [Validation](docs/validation/a130-gitfiles-0.1.130.md#focus-lane-cost-review).
 - [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
 - [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).

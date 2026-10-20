@@ -5,6 +5,11 @@ import XCTest
 
 final class FilePreviewRefreshTests: XCTestCase {
     @MainActor func testSiblingNotificationsLetTheActivePreviewPublish() async throws {
+        // Workspace fixtures leave a resolver whose weak owner may be gone.
+        // This standalone file needs its own resolver, just as FileReviewFixture does.
+        let saved = FileTab.resolveProject
+        FileTab.resolveProject = { $0 == nil ? .none : .removed }
+        defer { FileTab.resolveProject = saved }
         let folder = scratchRoot("preview-refresh")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -35,6 +40,30 @@ final class FilePreviewRefreshTests: XCTestCase {
         await gate.releaseAll()
         try await eventually("metadata recheck drained") { preview.readingTask == nil }
         XCTAssertEqual(preview.decodeStarts, 1)
+    }
+
+    @MainActor func testSiblingNotificationsAfterAWorkspaceFixtureIsReleased() async throws {
+        let saved = FileTab.resolveProject
+        let fileActions = (FileTab.activate, FileTab.openHistory)
+        let changes = (ChangesTab.resolveProject, ChangesTab.openLocation, ChangesTab.activate)
+        let blame = FileBlame.openChange, policy = TranscriptKeptRows.policy
+        defer {
+            FileTab.resolveProject = saved; FileTab.activate = fileActions.0; FileTab.openHistory = fileActions.1
+            ChangesTab.resolveProject = changes.0; ChangesTab.openLocation = changes.1; ChangesTab.activate = changes.2
+            FileBlame.openChange = blame; TranscriptKeptRows.policy = policy
+        }
+        let root = scratchRoot("preview-expired-workspace")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var model: WorkspaceModel? = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        weak var departed = model
+        model?.shutdown()
+        try await model?.traces.close(); await model?.store?.close()
+        model = nil
+        try await eventually("preceding workspace released") { departed == nil }
+        XCTAssertFalse(FileTab.resolveProject(nil).isTrusted, "the preceding fixture left its expired resolver installed")
+        try await testSiblingNotificationsLetTheActivePreviewPublish()
+        XCTAssertFalse(FileTab.resolveProject(nil).isTrusted, "the preview fixture restores the resolver it inherited")
     }
 
     @MainActor func testSuccessfulPreviewFollowsSameSizeAndMtimeOverwrite() async throws {

@@ -63,7 +63,9 @@ test classes it inherits from, and the helper declarations in those files):
   `NSApp.activate`, `isKeyWindow`, `NSApp.keyWindow`, application event dispatch,
   Core Graphics event posting/pointer movement): one window server gives focus
   to one process at a time. Focus checks follow referenced declarations,
-  including shared/nested fixtures and inherited members. Inspector and
+  including shared/nested fixtures and inherited members. Declarations retain
+  their complete signatures and bodies across line breaks, attributes,
+  generic/where clauses and closure default arguments. Inspector and
   popped-out-tab entry points count because they show windows inside app code;
   a proven `showsWindows = false` host or factory is exempt from the pop-out
   rule. Unknown or re-enabled hosts still count. A responder assignment/check,

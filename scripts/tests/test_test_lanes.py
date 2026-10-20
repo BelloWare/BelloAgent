@@ -74,6 +74,141 @@ class TestLaneTests(unittest.TestCase):
         self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
         self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
 
+    def test_complete_helper_signatures_keep_their_bodies(self):
+        signatures = (
+            "func mount(\n    value: Int\n) async throws",
+            "func mount<T>(\n    value: T\n) -> T\nwhere T: Equatable",
+            '@available(macOS 14, *)\n@MainActor\nprivate func mount(\n    value: Int\n)',
+            "func mount(\n    value: Int = makeValue({ nested(1, 2) }),\n    callback: () -> Void = { localHandler() }\n)",
+        )
+        for signature in signatures:
+            with self.subTest(signature=signature):
+                source = ("class Visible: XCTestCase {\n"
+                          "    func testWindow() { mount(value: 1) }\n"
+                          + textwrap.indent(signature, "    ")
+                          + "\n    {\n        openWindow()\n    }\n}\n"
+                          "func openWindow() { NSApp.activate(ignoringOtherApps: true) }\n")
+                classes = self.fixture_classes({"Tests.swift": source})
+                self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_signature_closures_are_not_the_declaration_body(self):
+        classes = self.fixture_classes({"Tests.swift": """
+            @MainActor
+            class Helpers
+            {
+                @available(macOS 14, *)
+                static func data<T>(
+                    value: T = { nested({ 1 }) }()
+                ) -> T where T: Equatable
+                { return value }
+                static func mount(
+                    callback: () -> Void = {}
+                ) { window.makeKeyAndOrderFront(nil) }
+            }
+            class Offscreen: XCTestCase { func testValue() { Helpers.data() } }
+            class Visible: XCTestCase { func testWindow() { Helpers.mount() } }
+        """})
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_declaration_boundaries_include_attributes_generics_and_defaults(self):
+        source = textwrap.dedent("""
+            @available(
+                macOS 14, *
+            )
+            @MainActor
+            final class Fixture<
+                T: Equatable
+            >: NSObject where T: Sendable
+            {
+                @MainActor private func mount<U>(
+                    value: U = makeValue({ nested({ 1 }) }),
+                    callback: () -> Void = { window.makeKeyAndOrderFront(nil) }
+                ) async throws -> U
+                where U: Equatable, U: Sendable
+                {
+                    openWindow()
+                    return value
+                }
+                let values: Dictionary<
+                    String, T
+                > = [:]
+                func data() { return 1 }
+            }
+        """)
+        declaration, = lanes.declarations(source)
+        self.assertEqual((declaration.kind, declaration.name, declaration.inherits),
+                         ("class", "Fixture", ["NSObject"]))
+        self.assertTrue(declaration.text.startswith("@available("))
+        mount, values, data = lanes.declarations(declaration.body)
+        self.assertEqual([mount.name, values.name, data.name], ["mount", "values", "data"])
+        self.assertIn("callback: () -> Void", mount.header)
+        self.assertIn("where U: Equatable", mount.header)
+        self.assertEqual(mount.body.strip(), "openWindow()\n        return value")
+        self.assertIn("Dictionary<", values.text)
+        self.assertIn("> = [:]", values.text)
+        self.assertNotIn("func data", values.text)
+
+    def test_multiline_inheritance_and_attributes_keep_test_declarations(self):
+        classes = self.fixture_classes({"Tests.swift": """
+            @available(
+                macOS 14, *
+            )
+            @MainActor
+            final class Visible:
+                XCTestCase,
+                FixtureProtocol
+            {
+                func testWindow(
+                ) { fixture() }
+            }
+            func fixture(
+                callback: () -> Void = { nested({ 1 }) }
+            )
+            { NSApp.activate() }
+            class Offscreen: XCTestCase {
+                func testValue() { data() }
+            }
+            func data(
+                value: Int = 1
+            ) -> Int { value }
+        """})
+        self.assertIn("Visible", classes)
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+
+    def test_string_properties_and_protocol_requirements_do_not_eat_neighbors(self):
+        classes = self.fixture_classes({"Tests.swift": """
+            struct Helpers {
+                static let label = "generated"
+                static func data() -> Int { 1 }
+                static func window() { NSApp.activate() }
+            }
+            protocol Fixture {
+                func data(
+                    value: Int
+                ) -> Int
+                func mount()
+            }
+            class Offscreen: XCTestCase { func testValue() { Helpers.data() } }
+            class Visible: XCTestCase { func testWindow() { Helpers.window() } }
+        """})
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_multiline_property_bodies_and_initializers_keep_focus_calls(self):
+        for property in (
+            "var fixture: NSWindow\n{ window.makeKeyAndOrderFront(nil); return window }",
+            "let fixture = makeFixture()\n{ window.makeKeyAndOrderFront(nil) }",
+            "let fixture = makeFixture()\n.configure { window.makeKeyAndOrderFront(nil) }",
+        ):
+            with self.subTest(property=property):
+                source = ("class Visible: XCTestCase {\n"
+                          + textwrap.indent(property, "    ")
+                          + "\n    func testWindow() { _ = fixture }\n}\n")
+                classes = self.fixture_classes({"Tests.swift": source})
+                self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
     def test_shared_type_members_do_not_pull_in_other_members_or_tests(self):
         classes = self.fixture_classes({
             "Tests.swift": """
@@ -323,6 +458,7 @@ class TestLaneTests(unittest.TestCase):
             "SubagentDisplayGalleryTests", "CostLimitTests",
             "FileReviewStateTests", "PendingChatProjectTests", "MessageDetailTests",
             "InspectorFollowTests", "InspectorWindowControlTests", "MessageVersionTranscriptTests",
+            "TranscriptStreamingScrollTests", "TranscriptRowGalleryTests",
         ):
             with self.subTest(name=name):
                 self.assertIn("focus", lanes.reasons(*classes[name], "Debug"))
