@@ -61,10 +61,21 @@ final class GitInventoryTests: XCTestCase {
             let name = extender + "probe", command = try self.markerProgram(filter: true)
             try self.git(["config", "filter." + name + ".clean", command])
             try self.write(".gitattributes", "file filter=" + name + "\n")
-            try self.write("file", "changed\n")
+            try self.write("file", "edit\n") // Equal sizes require Git to check converted content.
             XCTAssertEqual(try self.git(["config", "--null", "--get", "filter." + name + ".clean"]), command + "\0")
-            _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: self.root.appendingPathComponent("fixture-marker").path), extender.debugDescription)
+            let marker = self.root.appendingPathComponent("fixture-marker")
+            try self.git(["status", "--porcelain=v2"])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The generated Git fixture must exercise its filter")
+            try FileManager.default.removeItem(at: marker)
+            do { _ = try await GitService(environment: self.environment, trusted: true).status(in: self.root.path) }
+            catch let error as GitFailure {
+                guard extender.rangeOfCharacter(from: .controlCharacters) != nil else { throw error }
+                let process = Process(); process.currentDirectoryURL = self.root
+                let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: self.environment, trusted: true)
+                defer { read.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), extender.debugDescription)
         }
     }
 

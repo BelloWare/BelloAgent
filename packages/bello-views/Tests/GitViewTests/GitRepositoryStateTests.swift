@@ -415,8 +415,10 @@ final class GitRepositoryStateTests: XCTestCase {
     private func assertBoundedPairCounts(_ status: GitRepositoryStatus, in root: URL, expected: [String: GitDiffStat],
                                          maximum: Int, file: StaticString = #filePath, line: UInt = #line) async throws {
         let trace = root.appendingPathComponent(".git/count-trace.json")
+        // This generated repository is trusted so the measured commands can
+        // write their fixture trace; untrusted readers cannot write here.
         let service = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1", "GIT_TRACE2_EVENT": trace.path])
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_TRACE2_EVENT": trace.path], trusted: true)
         let counts = try await service.changeStats(in: root.path, status: status)
         let events = try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").map {
             try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
