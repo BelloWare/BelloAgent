@@ -202,7 +202,7 @@ enum SessionPanelLayout {
             browser.openFile = { [weak self] url in
                 guard let self, self.active, let model = self.model, let project = self.project,
                       model.workspace(for: project.id)?.roots == project.roots else { return }
-                let tab = model.openFile(url, project: project.id)
+                let tab = model.openFile(url)
                 model.quickOpen.focusAfterOpening(tab)
             }
             browser.changed = { [weak self, weak files] in

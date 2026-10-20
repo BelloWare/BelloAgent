@@ -442,3 +442,188 @@ independent-child-pill owner decision remain recorded above; neither was changed
 or treated as resolved. Owner visual approval remains separate.
 Generated gallery fixture directories were cleaned by teardown; no additional
 DerivedData root or test clone folders were created.
+
+
+## Destination trust follow-up 2026-10-20
+
+Addresses the P1 review of `09f5d8afb3b9787278851eab3d73b41f39201764`.
+The Files callback now calls `WorkspaceModel.openFile(url)` without assigning
+the source project's ID. The existing opener canonicalizes the path and resolves
+the closest configured destination project, just as Quick Open does. A link in
+a trusted project into an untrusted project therefore opens the existing denied
+file state and never creates a document reader. The panel's active/root guards
+and focus handling remain in place. This is the only production-code change.
+
+### Navigation audit
+
+| Route | Ownership / boundary |
+| --- | --- |
+| Files pointer, Return and accessibility press | `FolderTreeView` → `FolderBrowser.activate` → the panel's `browser.openFile` → canonical `WorkspaceModel.openFile`, with no project override. All three paths are exercised by the regression. |
+| Diff row pointer, Return and accessibility press | `SessionPanelChanges` checks the repository context, then opens/selects the existing `ChangesTab` through `showChanges(in:)`. The tab represents the source Git repository; it does not open the destination as a file. |
+| Changes “Open File at Line” menu after a panel Diff row | `GitDiffPiMenu` → `ChangesTab.openFile` → `WorkspaceModel.openChangesFile` → canonical `openFile(url, lines:)`. A second regression exercises the actual menu action against the untrusted symlink. |
+| Panel folder selector and Files folder rows | Select an existing project root or lazily navigate folders. Neither creates a `FileTab`. The panel adds no file context menu or Finder-reveal action. |
+| Subsequent FileTab folder/menu opens | Existing `FileFolderNavigation` delegates to `openNearbyFile`, configured by `WorkspaceModel.configureFileNavigation` to call canonical `openFile(url, in:)`. Existing Show in Folder Tree and Finder reveal actions do not assign a file's project identity. |
+
+The audit included `SessionFloatingPanel.swift`, `FolderTreeView.swift`,
+`FolderBrowser.swift`, `FileFolderNavigation.swift`, `FileFolderMenu.swift`,
+`ChangesTab.swift`, `GitDiffTable+Pi.swift`, `GitChangesList.swift`,
+`WorkspaceChanges.swift` and `WorkspaceTabs.swift`. No additional override was
+found in the panel's file-opening routes. Existing Git repository identity and
+read-only behavior are preserved; no Finder action was invoked by the tests.
+
+### Failing first and mutation
+
+Text logs are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r2/`.
+All fixtures are generated temporary files/repositories with isolated native
+settings and the in-memory vault. No real credentials, user files or installed
+app were used.
+
+- `failing-first.log`: two new tests against the pre-fix production source.
+  `testFilesSymlinkUsesTheSameDestinationTrustAsQuickOpen` failed with **15
+  assertion failures**: pointer, Return and accessibility each assigned the
+  trusted source project, lost the denial reason and created a readable
+  `FileDocument`. `testDiffFileMenuResolvesSymlinkDestinationTrust` passed,
+  confirming the existing Diff menu already follows the canonical opener.
+- The Quick Open baseline really opens the same symlink, then closes its tab.
+  Each panel route creates and closes a fresh tab, preventing tab deduplication
+  from hiding an incorrect project assignment. URL, project ID/state, denial
+  reason, readability and document creation are checked. Trust stays unchanged
+  and no helper starts.
+- `regression-green.log`: **2/2 passed**, zero failures after removing the
+  project override.
+- `mutation-source-project.log`: restoring only the source-project override
+  made the Files regression fail again with **15 assertion failures**, including
+  document creation through all three routes. **1/1 mutation detected**. The
+  mutation runner restored the production file in `finally` before final runs.
+
+### Commands
+
+Commands run from this worktree, with the shared full-lane lock held for every
+native invocation and released on success or failure. Final serial-lane class
+runs are isolated. No new source files were added; the native script regenerates the project.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel
+
+# Failing first and fixed positive control:
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelTests/testFilesSymlinkUsesTheSameDestinationTrustAsQuickOpen \
+  -only-testing:PiAppTests/SessionPanelTests/testDiffFileMenuResolvesSymlinkDestinationTrust
+# Source-project override mutation:
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelTests/testFilesSymlinkUsesTheSameDestinationTrustAsQuickOpen
+
+for TEST_CLASS in SessionPanelTests FileFolderTests FileTabTests \
+  QuickOpenTests QuickOpenPlacementTests FileReviewStateTests \
+  GitWorkingTreeWatcherTests ChangesTabFrameTests GitRepositorySwitchTests \
+  GitDiffTableTests; do
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+    -only-testing:PiAppTests/$TEST_CLASS
+done
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ChangesTabTests \
+  -only-testing:PiAppTests/GitPanelShownTests \
+  -only-testing:PiAppTests/GitPanelRedrawTests \
+  -only-testing:PiAppTests/GitPanelAuditTests \
+  -only-testing:PiAppTests/GitRenameTests \
+  -only-testing:PiAppTests/GitOperationSafetyTests \
+  -only-testing:PiAppTests/GitPathBoundaryTests
+
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY="$PI_BUILD_ROOT/screenshots/review-r2" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelGalleryTests
+
+swift test --package-path packages/bello-views \
+  --scratch-path "$PI_BUILD_ROOT/views" --filter GitViewTests
+swift test --package-path packages/bello-views \
+  --scratch-path "$PI_BUILD_ROOT/views" --filter FileFinderTests
+```
+
+The loop lists the individual native commands; the evidence runner acquires
+and releases the shared lock around each one. `run-native.py`,
+`run-native-final.py` and `mutate-trust.py` are retained in the evidence folder.
+Quick Open initially ran together with its placement class (both passed);
+they were rerun separately after checking the lane classifier. Only the
+separate final runs count below. All native logs record their exact command.
+
+### Restored validation
+
+All **214 native tests passed**, with **0 failures and 0 skips**. Behavioral
+coverage is panel **24**, Files/Quick Open **73**, Git/Changes **116**, plus the
+one gallery test. Repeated positive controls and the initial combined Quick
+Open invocation are excluded.
+
+| Suite / class | Passed | Text log |
+| --- | ---: | --- |
+| `SessionPanelTests` | 24 | `panel-final.log` |
+| `FileFolderTests` | 19 | `files-final.log` |
+| `FileTabTests` | 16 | `file-tab-final.log` |
+| `QuickOpenTests` | 17 | `quick-open-isolated-final.log` |
+| `QuickOpenPlacementTests` | 1 | `quick-open-isolated-final.log` |
+| `FileReviewStateTests` | 20 | `file-review-final.log` |
+| `GitWorkingTreeWatcherTests` | 17 | `watcher-final.log` |
+| `ChangesTabTests` | 8 | `git-app-final.log` |
+| `GitPanelShownTests` | 13 | `git-app-final.log` |
+| `GitPanelRedrawTests` | 4 | `git-app-final.log` |
+| `GitPanelAuditTests` | 8 | `git-app-final.log` |
+| `GitRenameTests` | 6 | `git-app-final.log` |
+| `GitOperationSafetyTests` | 12 | `git-app-final.log` |
+| `GitPathBoundaryTests` | 5 | `git-app-final.log` |
+| `ChangesTabFrameTests` | 7 | `changes-frames-final.log` |
+| `GitRepositorySwitchTests` | 17 | `repository-switch-final.log` |
+| `GitDiffTableTests` | 19 | `diff-table-final.log` |
+| `SessionPanelGalleryTests` | 1 | `gallery-final.log` |
+| `GitViewTests` package suite | 178 | `git-final.log` |
+| `FileFinderTests` package suite | 38 | `finder-final.log` |
+
+Package totals: **216 passed, 0 failures, 3 skips**. The three skipped cases
+are the existing opt-in `FileFinderPerformanceTests` (100,000 / 500,000-file
+benchmarks requiring `FINDER_PERF=1`). The Git total includes all **17/17**
+`GitRepositoryStateTests` and **1/1** `GitStateWatchTests`, retaining the prior
+round's regression coverage. No helper or wire behavior changed, so their
+suites were not rerun. No unrelated test failure occurred in these final runs.
+
+### Screenshots and adversarial self-review
+
+The gallery passed **1/1**. All **14/14 PNGs are byte-identical** to the prior
+`review-r1` gallery, verified by SHA-256 in `screenshot-hashes.json`. Every image
+was opened and visually inspected: both themes of Agents at 1440 and 1180,
+Diff, Files with expanded folders, the narrow pill, empty Agents and the main
+chat beside the open side. Panel/transcript/composer separation, text wrapping,
+tab labels, rows and contrast are intact. The screenshots already under owner
+review are preserved. This fix changes destination trust handling, with no
+panel layout or styling change.
+
+Directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r2/`.
+
+```text
+agents-1440x900-light.png
+agents-1440x900-dark.png
+agents-1180x800-light.png
+agents-1180x800-dark.png
+diff-1440x900-light.png
+diff-1440x900-dark.png
+files-1440x900-light.png
+files-1440x900-dark.png
+pill-960x700-light.png
+pill-960x700-dark.png
+empty-1440x900-light.png
+empty-1440x900-dark.png
+side-open-1600x900-light.png
+side-open-1600x900-dark.png
+```
+
+Adversarial self-review checked the canonical ownership lookup, closest-root
+selection, absence of source-project overrides, fresh tabs in each regression
+route, the denied document getter, the Diff menu's end-to-end model callback,
+existing root/active guards, and subsequent folder/menu navigation. No new
+in-scope issue was found. The production diff is one removed argument; neither
+the shared opener nor trust policy was changed. Previous unrelated topic-search
+failure and independent-child-pill owner decision remain recorded above and
+are not treated as resolved. Owner visual feedback remains pending.
+
+Gallery fixture directories were removed by teardown. No native clone folders
+or extra DerivedData roots remain. All evidence and builds use this workstream's
+build root; the shared lane lock was released after each run.
