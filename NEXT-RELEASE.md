@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Saved copy handoffs and canceled searches register their indexes with the eight-entry LRU, closing and removing evicted index files. [Validation](docs/validation/a130-wire-0.1.130.md#round-9).
 - [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
 - [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.
 - [x] Search readers reuse fingerprints for a matching snapshot; Next Results sends a new manifest only when the reader needs it.

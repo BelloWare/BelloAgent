@@ -351,7 +351,7 @@ actor HistoryReader {
     private var searchDecodeObserver: (@Sendable (SearchDecodeEvent) -> Void)?
     func observeSearchDecodes(_ observer: (@Sendable (SearchDecodeEvent) -> Void)?) { searchDecodeObserver = observer }
     /// Journals whose offset index is currently retained.
-    var retainedIndexCount: Int { recency.count }
+    var retainedIndexCount: Int { indexes.count }
     var retainedSearchCacheTables: Int { indexes.values.reduce(0) { $0 + $1.branch.searchCacheTableCount } }
     /// What the retained offset indexes take, together.
     var retainedIndexBytes: Int { indexes.values.reduce(0) { $0 + $1.branch.bytes } }
@@ -1206,6 +1206,9 @@ actor HistoryReader {
     /// now (`buildIndex`).
     private func journalIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
                               targetTurns: Int?, progress: Progress?, whole: Bool, bounded: Bool = false) throws -> JournalFacts {
+        // Register cached and newly built indexes before a caller can yield
+        // or cancel. Copies and abandoned searches share the same LRU.
+        defer { if indexes[path] != nil { retainIndex(path) } }
         // A page reaching past the rows an index built from the metadata
         // file holds needs the whole journal indexed.
         var wholeJournal = whole

@@ -940,3 +940,63 @@ Identity sweep also verified that `WorkspaceHosts.open` still rejects imported o
 `native-parity-final.log`: **7 passed / 0 failures**, 201.690 s. `native-geometry-final.log`: **1 passed / 0 failures**, 5.042 s. **Final native total: 205 passed / 1 opt-in skip / 0 failures**, 206 executed. `helper-cost-final.log`: **5 passed / 0 failures**, 3.560 s in its own process after the other runs. **Final helper total: 1,160 passed / 7 opt-in skips / 0 failures**, 1,167 executed. Release wire/concurrent/acceptance totals remain **40 / 4 / 3 passed**, with no failures.
 
 The final adversarial review checked the exact restored, tested diff and found no remaining assigned defect. Source/test hashes and the Release helper hash were rechecked after all runs and still match. All window/gallery runs held the shared full-lane lock; every owned lock was released, including failed runs, and no foreign lock was deleted. Removed this build root's last automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and gallery PNGs are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture, or paid provider was used. `git diff --check` passes, and the generated project is unchanged.
+
+## Round 9
+
+Review of `2790d4bd9bdde1b112c4199448f43310ff0efb14`, on `dev/a130-wire`. Evidence is in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round9`; `B` below denotes that existing build root. All journals, index files, preferences and test homes are generated fixtures.
+
+### Index retention — confirmed
+
+`testRetainedCopiesRegisterNewAndEvictedIndexes` captures selections from twelve distinct journals with a separate source reader, releases its indexes, then copies each selected range through a fresh disk reader. It repeats the copies in the same order to exercise rebuilding evicted indexes. Before the fix both passes retain **12 indexes / 12 files / 12 open files**. The test checks the actual cache count and filesystem entries after each copy, and tracks device/inode identities to detect descriptors left open even after unlinking. Shutdown must remove the files and close every observed descriptor.
+
+The nearby sweep found the same missing registration when a rendered search is canceled after indexing but before publication. `testCancelledRenderedSearchIndexesStayBounded` cancels twelve real search tasks at that boundary; before the fix it also leaves **12 indexes / 12 files / 12 open files**. `testRetainedCopyRefreshesIndexRecency` shows that copying a cached index did not refresh its recency: opening a ninth chat evicted the index just copied.
+
+`index-red.log` contains **3 failing tests / 24 assertions**, with all three scenarios failing at runtime. The pre-fix run changes only the test counter to report `indexes.count` instead of the recency-list length, which previously hid unregistered indexes; it does not change retention.
+
+`journalIndex` now registers any retained index before returning to its caller, covering both new and cached indexes before an asynchronous copy/search can yield or cancel. Existing read/search publication registration remains in place. The LRU size, immutable in-flight snapshots, selected-range identity/digest checks, formatting and wire protocol are unchanged. `index-green.log` has **6 passed / 1 opt-in skip / 0 failures**. Both copy passes and canceled searches hold exactly **8 indexes / 8 files / 8 open files**, and shutdown releases all of them.
+
+Removing acquisition registration reproduces **3 failing tests / 24 assertions** (`index-mutation.log`). `index-mutation.py` restores the exact source bytes in `finally`; the final class runs rebuild that restored source.
+
+### Nearby sweep and adversarial review
+
+- `buildIndex` is the sole assignment into `indexes`, and is called only by `journalIndex`. Registration at that common boundary covers checkpoint indexes, whole-journal fallback, replaced snapshots and cached acquisitions.
+- All four direct acquisitions were checked: `read` and its whole-journal fallback, rendered `searchContent`, and `retainedContentPage`. Normal source search, edit inputs, message-role lookup, automatic-context admission, window reads and changed-history reads route through `read`.
+- Strict legacy `copyContentPage` can request a whole-journal `read` for a partial index; otherwise it only consumes an existing entry. `message` either consumes an existing index or scans the source without installing one.
+- Canceled rendered search was the additional unregistered installer path. Rejected searches, damaged/incomplete journals, construction cancellation, replacement, eviction and `releaseIndexes` were checked for ownership. A snapshot held by an active read remains strongly owned until that read finishes; eviction does not invalidate its SQLite handle.
+- The tests verify actual files and open descriptors independently of the cache metric, refresh recency for an already cached copy, and cover copies both before any disk index exists and after eviction. No owner decision is needed.
+
+### Commands and final validation
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testRetainedCopiesRegisterNewAndEvictedIndexes \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testRetainedCopyRefreshesIndexRecency \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testCancelledRenderedSearchIndexesStayBounded
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryIndexFilesTests
+python3 "$B/logs/round9/index-mutation.py"
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round9/copy" \
+  bash "$B/logs/round9/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round9/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round9/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round9/components" \
+  bash "$B/logs/round9/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round9/components" \
+  bash "$B/logs/round9/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+```
+
+The window/gallery wrapper runs each class alone with `-parallel-testing-enabled NO` under the shared full-lane lock, releasing only its own lock on exit. This round changes only app-side index ownership and its test counter; no helper or wire behavior changed, so the helper and Python wire/concurrent/acceptance suites are not rerun.
+
+`native-headless-final.log`: ContentSearchTests **13 passed**, HardeningTests **12 passed**, HistoryReaderCheckpointTests **7 passed**, HistoryIndexFilesTests **6 passed / 1 opt-in skip**, StorageTruthTests **11 passed**. Total **49 passed / 1 skip / 0 failures**, 50 executed in 10.228 seconds. All three index measurements remain **8 / 8 / 8**; no SQLite cleanup diagnostics appear.
+
+`native-copy-final.log`: **18 passed / 0 failures**, 11.770 seconds. Inspected the regenerated light, dark and narrow copy-sheet images in `gallery-round9/copy`: headings, retained previews, range fields and footer actions are readable and unobscured; long previews retain their existing ellipsis. `native-workspace-final.log`: **17 passed / 0 failures**, 0.630 seconds. The same **15** generated-fixture SQLite “vnode unlinked while in use” cleanup diagnostics recorded in round 8 recur at `WorkspaceTests.swift:238` and `:274`; no such diagnostic appears in the copy/export run.
+
+`native-transcript-final.log`: **116 passed / 0 failures**, 145.557 seconds. Its same **8** pre-existing fixture-cleanup diagnostics recur at `TranscriptBugRegressionTests.swift:625` and `:664`. Those unrelated temporary database cleanup sites remain unchanged.
+
+`native-parity-final.log`: **7 passed / 0 failures**, 199.270 seconds. `native-geometry-final.log`: **1 passed / 0 failures**, 5.025 seconds. Neither emits SQLite cleanup diagnostics. **Final native total: 208 passed / 1 opt-in skip / 0 failures**, 209 executed across the same ten classes as round 8.
+
+Final adversarial self-review found no remaining assigned defect. The source/test hashes in `source-hashes.txt` still match the restored files after all runs; `git diff --check` passes and the generated project is unchanged. All window/gallery runs held the shared lock and released only their own acquisition. Removed this build root's final automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and generated gallery images are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture or paid provider was used. No merge, rebase, fast-forward, tag or release was performed.
