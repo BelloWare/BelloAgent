@@ -207,6 +207,7 @@ import AppKit
                               focused: { [id = session.id] in model.focusPane(id); model.prewarm(id) },
                               accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer",
                               inputRejected: { [weak session] in session?.notice = $0 },
+                              imageRejected: { [weak session] in session?.notice = $0; model.error = $0 },
                               attachFiles: { [id = session.id] in model.attachImageFiles($0, sessionID: id) },
                               pastedImages: model.pastedImages,
                               beginImageImport: { [id = session.id] in model.beginImageImport(sessionID: id) },

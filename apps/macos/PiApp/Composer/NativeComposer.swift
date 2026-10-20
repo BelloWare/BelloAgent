@@ -1,4 +1,6 @@
 import AppKit
+import ImageIO
+import UniformTypeIdentifiers
 
 /// The composer's native editor, as a value: what it shows and what it calls.
 /// `makeView()` builds the field once; `apply(to:)` hands it a newer value,
@@ -20,8 +22,9 @@ import AppKit
     var focused: () -> Void = {}
     var accessibilityLabel = "Message composer"
     var inputRejected: (String) -> Void = { _ in }
+    var imageRejected: ((String) -> Void)? = nil
     /// Image files dropped on or pasted into the composer.
-    var attachFiles: ([URL]) -> Void = { _ in }
+    var attachFiles: (([URL]) -> Void)? = nil
     var pastedImages: PastedImageStorage? = nil
     var beginImageImport: () -> ComposerImageImport = { ComposerImageImport() }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
@@ -69,14 +72,17 @@ import AppKit
         editor.send = { [weak coordinator] in coordinator?.parent.send($0) }
         editor.directSlash = { [weak coordinator] in coordinator?.parent.directSlash() }
         editor.pasted = { [weak coordinator] in coordinator?.parent.pasted() }
-        editor.attachFiles = { [weak coordinator] in coordinator?.parent.attachFiles($0) }
+        editor.attachFiles = { [weak coordinator] in coordinator?.parent.attachFiles?($0) }
         editor.attachmentDestination = { [weak coordinator] in
-            guard let parent = coordinator?.parent else { return nil }
+            guard let parent = coordinator?.parent, let attach = parent.attachFiles else { return nil }
             // Snapshot the callbacks for this session before conversion yields.
-            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected, storage: parent.pastedImages, beginImport: parent.beginImageImport)
+            return ComposerTextView.AttachmentDestination(attach: attach, reject: parent.imageRejected ?? parent.inputRejected, storage: parent.pastedImages, beginImport: parent.beginImageImport)
         }
-        editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
-        editor.registerForDraggedTypes([.fileURL, .png, .tiff])
+        editor.imageRejected = { [weak coordinator] message in
+            guard let parent = coordinator?.parent else { return }
+            (parent.imageRejected ?? parent.inputRejected)(message)
+        }
+        editor.registerForDraggedTypes([.fileURL] + ComposerTextView.imagePasteboardTypes + NSFilePromiseReceiver.readableDraggedTypes.map { .init($0) })
         editor.completionKey = { [weak coordinator] in coordinator?.parent.completionKey($0, $1) ?? false }
         editor.focused = { [weak editor, weak coordinator] in
             if let editor { coordinator?.focusChanged(editor) }
@@ -424,7 +430,14 @@ struct ComposerEditMeasurement {
     /// Reported when a pasted or dropped image cannot be read; wired to the
     /// same notice the composer uses for text it refuses.
     var imageRejected: ((String) -> Void)?
+    /// A plain NSTextView disables Paste for image-only boards before paste:
+    /// can run. Menu admission, like drag admission, reads only type metadata.
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)), Self.acceptsImageTypes(on: .general) { return isEditable }
+        return super.validateUserInterfaceItem(item)
+    }
     override func paste(_ sender: Any?) {
+        guard isEditable else { return }
         if PerformanceProbe.shared.enabled { measurement.begin(event: PerformanceProbe.now, handler: PerformanceProbe.now) }
         defer { measurement.end() }
         // A screenshot on the clipboard or a copied image file becomes an
@@ -432,15 +445,29 @@ struct ComposerEditMeasurement {
         if pasteAttachments(from: NSPasteboard.general) { return }
         pasted?(); super.paste(sender)
     }
-    /// True when the pasteboard held images and they became attachments.
+    /// True when an image paste was handled, including a visible refusal.
     /// Separated from `paste` so a test can paste from its own pasteboard
     /// rather than the clipboard the owner is using.
     func pasteAttachments(from pasteboard: NSPasteboard) -> Bool {
-        guard let attachFiles else { return false }
-        if let urls = Self.imageFiles(on: pasteboard) { attachFiles(urls); return true }
-        guard Self.imageIsWhatWasCopied(on: pasteboard), let pasted = Self.pastedImage(on: pasteboard) else { return false }
-        let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
-        guard let storage = destination.storage else { destination.reject?("Desktop image storage is unavailable. Attach an image file instead."); return true }
+        guard isEditable else { return false }
+        let urls = Self.imageFiles(on: pasteboard)
+        let imageWasCopied = Self.imageIsWhatWasCopied(on: pasteboard)
+        let image = imageWasCopied && (pasteboard.types ?? []).contains(where: Self.isImageType)
+        let promise = imageWasCopied && Self.hasFilePromise(on: pasteboard)
+        guard urls != nil || image || promise else { return false }
+        // A resolver returning nil is an unavailable destination, not a reason
+        // to fall back to an old callback or paste an image's caption as text.
+        let resolved: AttachmentDestination?
+        if let attachmentDestination { resolved = attachmentDestination() }
+        else { resolved = attachFiles.map { AttachmentDestination(attach: $0, reject: imageRejected) } }
+        guard let destination = resolved else {
+            imageRejected?("Images cannot be attached in this composer. Open an editable chat and try again."); return true
+        }
+        guard urls != nil || image else {
+            destination.reject?("This clipboard item promises a file but has no image data. Save the image, then attach the file."); return true
+        }
+        let pasted = urls == nil ? Self.pastedImage(on: pasteboard) : nil
+        let storage = destination.storage
         let importing = destination.beginImport()
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
@@ -448,19 +475,27 @@ struct ComposerEditMeasurement {
         // the main thread and the chip appears when it lands.
         Task { @MainActor in
             defer { importing.finish() }
-            let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted, storage: storage) }.value
-            guard importing.isCurrent() else {
-                destination.reject?("The draft changed while its image was being prepared. Attach it again.")
-                return
+            do {
+                let written = try await Task.detached(priority: .userInitiated) {
+                    if let urls { return try Self.preparePastedFiles(urls, storage: storage) }
+                    guard let storage else { throw HostError.failure(Self.storageUnavailable) }
+                    guard let pasted, let file = Self.writePastedImage(pasted, storage: storage) else { throw HostError.failure(Self.unreadableImage) }
+                    return [file]
+                }.value
+                guard importing.isCurrent() else {
+                    destination.reject?("The draft changed while its image was being prepared. Attach it again.")
+                    return
+                }
+                destination.attach(written)
+            } catch {
+                destination.reject?(error.localizedDescription)
             }
-            if let written { destination.attach([written]) }
-            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead.") }
         }
         return true
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let pasteboard = sender.draggingPasteboard
-        return Self.acceptsImageTypes(on: pasteboard) ? .copy : super.draggingEntered(sender)
+        return isEditable && Self.acceptsImageTypes(on: pasteboard) ? .copy : super.draggingEntered(sender)
     }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         if pasteAttachments(from: sender.draggingPasteboard) { return true }
@@ -468,44 +503,107 @@ struct ComposerEditMeasurement {
     }
     /// Image bytes taken from the pasteboard without decoding them.
     struct PastedImage: Sendable { let data: Data; let isPNG: Bool }
+    static let imagePasteboardTypes: [NSPasteboard.PasteboardType] = [.png] +
+        [UTType.jpeg, .heic, .heif, .gif, .webP, .bmp].map { .init($0.identifier) } + [.tiff]
+    private nonisolated static func isImageType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        UTType(type.rawValue)?.conforms(to: .image) == true
+    }
+    private static func hasFilePromise(on pasteboard: NSPasteboard) -> Bool {
+        let types = Set((pasteboard.types ?? []).map(\.rawValue))
+        return !types.isDisjoint(with: NSFilePromiseReceiver.readableDraggedTypes + ["com.apple.filepromise", "com.apple.pasteboard.promised-file-url"])
+    }
     /// Drag admission must not fetch/decode a promised screenshot's bytes.
     static func acceptsImageTypes(on pasteboard: NSPasteboard) -> Bool {
-        pasteboard.availableType(from: [.fileURL, .png, .tiff]) != nil
+        (pasteboard.types ?? []).contains { $0 == .fileURL || isImageType($0) } || hasFilePromise(on: pasteboard)
     }
-    /// Image bytes on the pasteboard are what was copied only when nothing
-    /// else was. Text copied from a document often carries a picture of
-    /// itself, and a file copied in Finder carries its icon: pasting either
-    /// attached the picture and dropped the text or the file's name. An image
-    /// copied from a browser comes with its own address as text; it is still
-    /// the image. (Image files were taken before this is asked.)
+    /// Files win over their icons. Rich text with a rendering stays text;
+    /// an image's URL, image-only HTML or lower-fidelity caption does not
+    /// replace the image. Ambiguous text-first copies remain text.
     static func imageIsWhatWasCopied(on pasteboard: NSPasteboard) -> Bool {
-        if pasteboard.availableType(from: [.fileURL]) != nil { return false }
-        guard let text = pasteboard.string(forType: .string), text.contains(where: { !$0.isWhitespace }) else { return true }
-        return pasteboard.availableType(from: [.URL]) != nil
+        let types = pasteboard.types ?? []
+        if types.contains(.fileURL) { return false }
+        if types.contains(.URL) { return true }
+        let text = types.contains(.string) ? pasteboard.string(forType: .string) ?? "" : ""
+        let hasText = text.contains { !$0.isWhitespace && $0 != "\u{fffc}" }
+        if types.contains(.html), let html = pasteboard.string(forType: .html) {
+            // Inspect markup only; an attributed HTML reader can fetch images
+            // or stylesheets. Never load resources from copied HTML.
+            guard html.utf8.count <= NativeComposer.Coordinator.byteLimit,
+                  html.range(of: "(?i)<img\\b", options: .regularExpression) != nil else { return false }
+            let visible = html
+                .replacingOccurrences(of: "(?is)<!--.*?-->|<(head|style|script)\\b[^>]*>.*?</\\1\\s*>", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "<(?:[^\"'>]|\"[^\"]*\"|'[^']*')*>", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "(?i)&nbsp;|&#160;|&#xA0;", with: " ", options: .regularExpression)
+            return visible.allSatisfy { $0.isWhitespace || $0 == "\u{fffc}" }
+        }
+        if hasText, types.contains(.rtf) || types.contains(.rtfd) { return false }
+        guard hasText else { return true }
+        return types.first(where: { isImageType($0) || $0 == .string }).map(isImageType) ?? false
     }
     static func pastedImage(on pasteboard: NSPasteboard) -> PastedImage? {
-        if let png = pasteboard.data(forType: .png) { return PastedImage(data: png, isPNG: true) }
-        if let tiff = pasteboard.data(forType: .tiff) { return PastedImage(data: tiff, isPNG: false) }
+        // AppKit also advertises a synthesized TIFF for JPEG/HEIC/etc.
+        // Prefer their encoded source before TIFF to avoid a main-thread
+        // conversion. Only request listed types; ImageIO decodes later.
+        let types = (pasteboard.types ?? []).filter(isImageType)
+        let ordered = imagePasteboardTypes.filter(types.contains) + types.filter { !imagePasteboardTypes.contains($0) }
+        for type in ordered {
+            if let data = pasteboard.data(forType: type), !data.isEmpty { return PastedImage(data: data, isPNG: type == .png) }
+        }
         return nil
     }
-    /// Writes the pasted bytes to a private PNG. PNG goes through untouched;
-    /// anything else is converted here, off the main thread.
+    private nonisolated static let unreadableImage = "That image could not be read or saved. Copy it again, or attach the file instead."
+    private nonisolated static let storageUnavailable = "Desktop image storage is unavailable. Attach an image file instead."
+    /// Preserve accepted PNGs; bridge larger clipboard images to the helper's
+    /// 8 MiB attachment gate. Its provider normalizer still owns ordinary files.
     nonisolated static func writePastedImage(_ image: PastedImage, storage: PastedImageStorage) -> URL? {
-        let bytes: Data
-        if image.isPNG { bytes = image.data }
-        else {
-            guard let bitmap = NSBitmapImageRep(data: image.data),
-                  let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
-            bytes = png
-        }
-        guard !bytes.isEmpty, bytes.count <= 8 * 1024 * 1024 else { return nil }
-        return try? storage.write(bytes)
+        if image.isPNG, !image.data.isEmpty, image.data.count <= 8 * 1024 * 1024 { return try? storage.write(image.data) }
+        guard let source = CGImageSourceCreateWithData(image.data as CFData, nil) else { return nil }
+        return writePastedImage(source, largePNG: image.isPNG, storage: storage)
     }
-    /// Image files on the pasteboard, which need no conversion at all.
+    private nonisolated static func writePastedImage(_ source: CGImageSource, largePNG: Bool = false, storage: PastedImageStorage) -> URL? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else { return nil }
+        var normalized = largePNG
+        var pixels = normalized ? min(2000, max(width, height)) : max(width, height)
+        while true {
+            let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: pixels,
+                kCGImageSourceShouldCacheImmediately: true]
+            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+            let bytes = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(bytes, UTType.png.identifier as CFString, 1, nil) else { return nil }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            // PiImage's strict 4.5 MiB base64 bound and 2,000-pixel ceiling.
+            if bytes.length <= 8 * 1024 * 1024, !normalized || (bytes.length + 2) / 3 * 4 < 4_718_592 {
+                return try? storage.write(bytes as Data)
+            }
+            guard pixels > 1 else { return nil }
+            pixels = normalized ? max(1, pixels * 3 / 4) : min(2000, pixels)
+            normalized = true
+        }
+    }
+    private nonisolated static func preparePastedFiles(_ urls: [URL], storage: PastedImageStorage?) throws -> [URL] {
+        try urls.map { url in
+            let canonical = url.resolvingSymlinksInPath()
+            let values = try canonical.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, let count = values.fileSize, count > 0 else { throw HostError.failure("Select a regular image file.") }
+            // Native files still go through the ordinary inspector once.
+            // Its integrity/refusal errors must not become conversion retries.
+            if count <= 8 * 1024 * 1024, ["png", "jpg", "jpeg", "gif", "webp"].contains(url.pathExtension.lowercased()) { return url }
+            guard let storage else { throw HostError.failure(storageUnavailable) }
+            guard let source = CGImageSourceCreateWithURL(canonical as CFURL, nil),
+                  let file = writePastedImage(source, storage: storage) else { throw HostError.failure(unreadableImage) }
+            return file
+        }
+    }
+    /// File URLs are explicit input; TIFF/HEIC and oversized images are
+    /// converted in the same background import as clipboard bytes.
     private static func imageFiles(on pasteboard: NSPasteboard) -> [URL]? {
-        let extensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
-        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return nil }
-        let images = urls.filter { extensions.contains($0.pathExtension.lowercased()) }
+        guard pasteboard.types?.contains(.fileURL) == true,
+              let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return nil }
+        let images = urls.filter { UTType(filenameExtension: $0.pathExtension.lowercased())?.conforms(to: .image) == true }
         return images.isEmpty ? nil : images
     }
     override func didChangeText() { measurement.edited(); super.didChangeText(); reportContentHeight() }
