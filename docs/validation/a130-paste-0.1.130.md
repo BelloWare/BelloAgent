@@ -99,16 +99,19 @@ The heuristic is intentionally conservative:
 - The existing explicit URL + image case remains an image copy.
 - HTML containing an image and no visible document text identifies an image
   copy, including an Office copy with a rich representation and alt text.
-  Inspection uses bounded string matching only, with no HTML rendering or
-  resource fetching.
-- Rich text plus real text, or HTML with document text, remains a text copy.
+  Inspection uses a fixed-budget, forward-only byte scanner, with no HTML
+  rendering or resource fetching. It can only add confidence after the other
+  signals fail; oversized, malformed or unsupported HTML cannot veto an image.
+- Rich text plus real text remains a text copy unless image-only HTML adds
+  confidence. HTML with document text contributes no image confidence.
 - Without those formats, an image preceding plain text in fidelity order wins;
   plain text preceding an image remains text.
 
-**Needs owner decision:** an ambiguous text-first image + caption with neither
-URL nor image-only HTML still pastes text. There is no reliable universal
-“copied an image” flag. Automatically preferring every such image would regress
-the explicitly preserved document-rendering rule.
+**Known choice, confirmed by the lead during review:** an ambiguous text-first
+image + caption with neither URL nor conclusive image-only HTML still pastes
+text. There is no reliable universal “copied an image” flag. Automatically
+preferring every such image would regress the preserved document-rendering
+rule.
 
 Promise-only files are not received automatically. This uses the conservative
 existing transfer boundary, with a new actionable notice. A promise accompanied
@@ -219,7 +222,8 @@ TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery" \
 | ConversationPaneRetentionTests | 6 / 6 | pane-retention.log |
 | ComposerPasteGalleryTests | 1 / 1 | gallery.log |
 
-Final distinct tests: **199 executed, 198 passed, 1 existing skip, 0 failures**.
+Initial implementation (`a588d6d4`): **199 executed, 198 passed, 1 existing
+skip, 0 failures**.
 `ConversationPaneTests` includes the input, error-strip, queue and run
 extensions. The gallery generated and was visually reviewed in light and dark
 at 1240 × 600 points, and narrow at 920 × 600 points:
@@ -267,13 +271,119 @@ unexpected failure; the other mutations fail assertions directly.
 
 - Rechecked the actual responder chain, source-flavor order, synthesized TIFF,
   missing destination, malformed bytes, storage failure and editability.
-- Kept HTML inspection bounded and inert: no attributed HTML parser, remote
-  image request, promised-file receiver or URL fetch.
+- Kept HTML inspection inert: no attributed HTML parser, remote image request,
+  promised-file receiver or URL fetch. The initial review incorrectly treated
+  a byte-capped regular expression as runtime-bounded; the follow-up below
+  reproduces and corrects that mistake.
 - Rechecked explicit file URLs against Finder icons, mixed files, document
   renderings and promises. Added failing regressions for promise/document
   interference and conversion retry after a file refusal.
 - Kept native accepted file paths and bytes unchanged; conversions use the
   existing private PNG storage. Existing model-capability, count/byte caps,
   stale-edit import tokens, queued drafts and recovery tests pass.
-- No additional out-of-scope bug was changed. The ambiguous text-first caption
-  decision above remains explicitly open for the owner.
+- No additional out-of-scope bug was changed. The lead subsequently confirmed
+  the conservative text-first caption choice above.
+
+## HTML classifier review follow-up — 2026-10-20
+
+Review of `a588d6d4` identified two real regressions: oversized HTML vetoed an
+otherwise valid image copy, and Foundation's tag-stripping regex could revisit
+an unmatched suffix quadratically on the main actor. No UI, helper, wire,
+permission, capture, vault or storage boundary changes are needed.
+
+The classifier now checks file/type metadata and obtains encoded image bytes
+before considering HTML. Image-first copies without rich text, explicit image
+URLs, and absence of meaningful text decide without reading HTML. A missing
+image flavor or unavailable image bytes never triggers an HTML read. Deferred
+private pasteboard providers verify the request order and omitted reads.
+
+HTML supplies positive evidence only. The scanner accepts a conservative set
+of ordinary image/container tags, quoted attributes, comments and hidden
+head/style/script content. It moves one cursor forward, uses constant-size
+lookahead and tag names capped at 16 bytes, and has no regex, recursion,
+backtracking or resource loading. The existing **256 KiB** HTML inspection
+budget is retained. Data larger than that is inconclusive before decoding or
+scanning. Plain-text inspection is also capped at 256 KiB and checks Unicode
+scalars, avoiding unbounded grapheme work; over-budget text is not evidence of
+an empty document. Pasteboard byte delivery itself remains an AppKit/provider
+operation; these bounds cover the app's inspection work.
+
+### Failing first
+
+- `html-failing-first.log`: **2 tests, 7 assertion failures, 0 unexpected**.
+  The exactly **307,200-byte** generated data-URL HTML discarded its valid PNG
+  both with image-first flavor order and with whitespace-only plain text.
+  Lazy-flavor assertions also proved HTML was requested without image bytes
+  and before the encoded PNG.
+- `html-timing-failing-first.log`: **1 test, 3 assertion failures,
+  0 unexpected**. `<img>` followed by 16,000 `<` bytes took **11,137.621 ms**
+  with text-first order and **11,081.698 ms** with image-first order; the latter
+  also incorrectly rejected the image.
+
+Exact commands, with `PI_BUILD_ROOT` exported as above:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardImageTests/testLargeDataURLHTMLCannotVetoAnImageCopy \
+  -only-testing:PiAppTests/ClipboardImageTests/testHTMLIsReadOnlyAfterImageBytesAndCheapSignals
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardHTMLPerformanceTests
+```
+
+The initial fixed matrix passed **18/18** (`html-fixed.log`), including all
+previous cases. The timing regression passed **1/1** (`html-timing-fixed.log`):
+**1.215 ms** text-first and **0.172 ms** image-first, both below the enforced
+50 ms limit. The timing class runs alone with parallel testing disabled.
+
+### Mutation checks and final regression run
+
+Each mutant was built and exercised, then restored before the next change.
+All **6/6** were caught; all failures were assertions, not build failures or
+unexpected errors. Logs are `html-mutation-<name>.log`.
+
+| Mutation | Test selector after `PiAppTests/` | Assertion failures |
+| --- | --- | ---: |
+| veto: restore oversized-HTML rejection before fallback | ClipboardImageTests/testLargeDataURLHTMLCannotVetoAnImageCopy | 2 |
+| regex: restore Foundation tag stripping | ClipboardHTMLPerformanceTests | 1 |
+| eager-read: request HTML before eligibility/image bytes | ClipboardImageTests/testHTMLIsReadOnlyAfterImageBytesAndCheapSignals | 5 |
+| missing-bytes: allow HTML without available image bytes | ClipboardImageTests/testHTMLIsReadOnlyAfterImageBytesAndCheapSignals | 1 |
+| unbounded: remove the HTML byte budget | ClipboardImageTests/testHTMLConfidenceIsConservativeAndNeverVetoesFlavorOrder | 1 |
+| no-confidence: disable positive HTML evidence | ClipboardImageTests/testImageCopiesWithURLHTMLAndTextKeepTheirImage | 2 |
+
+Each command was `scripts/test-macos.sh -parallel-testing-enabled NO
+-only-testing:PiAppTests/<selector>`. The regex mutant again stalled for
+**10,877.807 ms** on the text-first malformed fragment; the 50 ms assertion
+caught it.
+
+After restoring the complete fix, the exact focused-regression command above
+was rerun with `-parallel-testing-enabled NO` (`html-regressions-final.log`):
+**79 executed, 78 passed, 1 existing skip, 0 failures**. Per-class passes:
+ClipboardImage **18**, ComposerAttachmentDestination **2**,
+ComposerImportSubmission **11**, ComposerSubmission **6** (+ **1** existing
+missing-menu skip), PastedAttachment **8**, QueuedAttachmentLimit **2**,
+CatalogImageInput **2**, DraftSize **2**, DraftMark **5**, RecoveredDraft **13**,
+QueuedEditPresentation **9**.
+
+The separate final `ClipboardHTMLPerformanceTests` run passed **1/1**
+(`html-timing-final.log`): **1.233 ms** text-first, **0.160 ms** image-first.
+No helper or wire code changed, so their full suites were not rerun.
+
+### Adversarial self-review
+
+- Verified every HTML outcome is reached only after ordinary image signals
+  fail. Oversized, unexpected, visible-text and malformed HTML all preserve
+  image-first fallback; text-first captions retain the lead's known choice.
+- Exercised 12 HTML fixtures in both flavor orders: comments, apparent images
+  inside quoted attributes/scripts, quoted angle brackets, metadata/hidden
+  content, Unicode whitespace/entities, unfinished tags/comments/quotes,
+  unknown tags, and over-budget attributes.
+- Checked cursor progress and bounded lookahead on every scanner branch.
+  Tag-name allocation is capped at 16 bytes; the UTF-8 whitespace probe reads
+  at most four bytes. There is no repeated suffix search or whole-input
+  normalization.
+- Verified missing image types and missing image bytes never request HTML,
+  encoded image bytes precede any optional HTML read, and image-first copies
+  skip HTML entirely. HTML is never rendered or fetched as a remote resource.
+- Reran the existing document/Finder/promise, JPEG/HEIC, large screenshot,
+  malformed-image notice, destination, edit-boundary, storage and durable-draft
+  matrix. No additional out-of-scope bug was changed.

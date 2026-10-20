@@ -4,7 +4,7 @@
 
 ## 0.1.130
 
-- [x] Clipboard images reach every editable composer through Edit → Paste; JPEG/HEIC and large screenshots normalize in the background, mixed image copies retain their image, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
+- [x] Clipboard images reach every editable composer through Edit → Paste; common formats and large screenshots normalize in the background, bounded HTML inspection can add but never remove image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
 - [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.

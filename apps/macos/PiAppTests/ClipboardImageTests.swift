@@ -122,6 +122,88 @@ final class ClipboardImageTests: XCTestCase {
         }
     }
 
+    @MainActor func testLargeDataURLHTMLCannotVetoAnImageCopy() async throws {
+        let png = try Self.image(width: 384, height: 256)
+        var html = "<img src='data:image/png;base64,\(png.base64EncodedString())'>"
+        html += String(repeating: " ", count: max(0, 300 * 1024 - html.utf8.count))
+        XCTAssertGreaterThanOrEqual(html.utf8.count, 300 * 1024)
+        print("PASTE data-URL HTML: \(html.utf8.count) bytes")
+        for imageFirst in [true, false] {
+            let board = board(), item = NSPasteboardItem()
+            if imageFirst { item.setData(png, forType: .png) }
+            item.setString(imageFirst ? "Generated caption" : " \n\t", forType: .string)
+            item.setString(html, forType: .html)
+            if !imageFirst { item.setData(png, forType: .png) }
+            board.writeObjects([item])
+            _ = try await paste(board, label: "300 KiB HTML, image first: \(imageFirst)")
+        }
+    }
+
+    private final class DeferredFlavors: NSObject, NSPasteboardItemDataProvider {
+        let data: [NSPasteboard.PasteboardType: Data]
+        private let lock = NSLock()
+        private var requested: [NSPasteboard.PasteboardType] = []
+        var requests: [NSPasteboard.PasteboardType] { lock.lock(); defer { lock.unlock() }; return requested }
+        init(_ data: [NSPasteboard.PasteboardType: Data]) { self.data = data }
+        func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+            lock.lock(); requested.append(type); lock.unlock()
+            item.setData(data[type] ?? Data(), forType: type)
+        }
+    }
+
+    @MainActor func testHTMLIsReadOnlyAfterImageBytesAndCheapSignals() async throws {
+        let png = try Self.image(), html = Data("<img src='https://fixture.invalid/image'>".utf8)
+        for advertisedImage in [false, true] {
+            let board = board(), item = NSPasteboardItem(), provider = DeferredFlavors([.html: html])
+            item.setString("Generated caption", forType: .string)
+            item.setDataProvider(provider, forTypes: advertisedImage ? [.html, .png] : [.html])
+            board.writeObjects([item])
+            let editor = ComposerTextView(); editor.attachFiles = { _ in XCTFail("No image bytes") }
+            _ = editor.pasteAttachments(from: board)
+            XCTAssertFalse(provider.requests.contains(.html), "No image bytes: do not request HTML")
+        }
+        for imageFirst in [true, false] {
+            let board = board(), item = NSPasteboardItem()
+            let provider = DeferredFlavors([.png: png, .html: html])
+            if imageFirst { item.setDataProvider(provider, forTypes: [.png]) }
+            item.setString("Generated caption", forType: .string)
+            item.setDataProvider(provider, forTypes: imageFirst ? [.html] : [.html, .png])
+            board.writeObjects([item])
+            _ = try await paste(board, label: "Deferred HTML, image first: \(imageFirst)")
+            XCTAssertEqual(provider.requests.first, .png, "Read image bytes before optional HTML")
+            XCTAssertEqual(provider.requests.contains(.html), !imageFirst, "Flavor order already decides an image-first copy")
+        }
+    }
+
+    @MainActor func testHTMLConfidenceIsConservativeAndNeverVetoesFlavorOrder() throws {
+        let png = try Self.image()
+        let cases: [(String, Bool)] = [
+            ("<!DOCTYPE html><HTML><HEAD><TITLE>Generated</TITLE><STYLE>.x { color: red; }</STYLE></HEAD><BODY><IMG src='fixture'>&nbsp;&#160;&#xA0;\u{00a0}\u{fffc}</BODY></HTML>", true),
+            ("<!-- <img> --><a href='fixture'><img alt='angles > and < stay quoted'></a>", true),
+            ("<p>Generated document</p><img src='fixture'>", false),
+            ("<!-- <img> -->", false),
+            ("<span title='<img>'></span>", false),
+            ("<script>const image = '<img>';</script>", false),
+            ("<img src='unterminated>", false),
+            ("<img><!-- unfinished", false),
+            ("<img><style>unfinished", false),
+            ("<img src='fixture'><unexpected>", false),
+            ("<image src='fixture'>", false),
+            ("<img src='" + String(repeating: "a", count: 300 * 1024) + "'>", false),
+        ]
+        for (index, fixture) in cases.enumerated() {
+            for imageFirst in [false, true] {
+                let board = board(), item = NSPasteboardItem()
+                if imageFirst { item.setData(png, forType: .png) }
+                item.setString("Generated caption", forType: .string); item.setString(fixture.0, forType: .html)
+                if !imageFirst { item.setData(png, forType: .png) }
+                board.writeObjects([item])
+                XCTAssertEqual(ComposerTextView.imageIsWhatWasCopied(on: board, inspectHTML: true), imageFirst || fixture.1,
+                               "HTML case \(index), image first: \(imageFirst)")
+            }
+        }
+    }
+
     @MainActor func testFilePromisesDoNotOverrideDocumentTextOrFinderFileURLs() throws {
         let editor = ComposerTextView()
         editor.attachFiles = { _ in XCTFail("Keep the document or file-name paste") }
@@ -290,5 +372,33 @@ final class ClipboardImageTests: XCTestCase {
         editor.attachFiles = { _ in XCTFail("A locked composer must not accept attachments") }
         editor.isEditable = false
         XCTAssertFalse(editor.pasteAttachments(from: board))
+    }
+}
+
+final class ClipboardHTMLPerformanceTests: XCTestCase, SerialTestLane {
+    @MainActor func testMalformedHTMLInspectionStaysBelowFiftyMilliseconds() async throws {
+        let png = try ClipboardImageTests.image(), html = "<img>" + String(repeating: "<", count: 16_000)
+        let root = scratchRoot("clipboard-html-timing")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for imageFirst in [false, true] {
+            let board = NSPasteboard(name: .init("clipboard-html-timing-" + UUID().uuidString))
+            defer { board.releaseGlobally() }
+            let item = NSPasteboardItem()
+            if imageFirst { item.setData(png, forType: .png) }
+            item.setString("Generated caption", forType: .string); item.setString(html, forType: .html)
+            if !imageFirst { item.setData(png, forType: .png) }
+            board.writeObjects([item])
+            var attached = false
+            let field = NativeComposer(text: "", send: { _ in }, inputRejected: { XCTFail($0) },
+                attachFiles: { _ in attached = true }, pastedImages: .init(root: root)).makeView()
+            let editor = try XCTUnwrap(field.documentView as? ComposerTextView)
+            let start = ProcessInfo.processInfo.systemUptime
+            let handled = editor.pasteAttachments(from: board)
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            print(String(format: "PASTE 16,000 '<', image first %@: %.3f ms", String(imageFirst), elapsed * 1000))
+            XCTAssertLessThan(elapsed, 0.050)
+            XCTAssertEqual(handled, imageFirst, "Malformed HTML is inconclusive; preserve the other signals")
+            if handled { try await eventually("malformed HTML image fallback") { attached } }
+        }
     }
 }

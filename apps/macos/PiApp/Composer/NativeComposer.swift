@@ -451,9 +451,15 @@ struct ComposerEditMeasurement {
     func pasteAttachments(from pasteboard: NSPasteboard) -> Bool {
         guard isEditable else { return false }
         let urls = Self.imageFiles(on: pasteboard)
-        let imageWasCopied = Self.imageIsWhatWasCopied(on: pasteboard)
-        let image = imageWasCopied && (pasteboard.types ?? []).contains(where: Self.isImageType)
-        let promise = imageWasCopied && Self.hasFilePromise(on: pasteboard)
+        let types = pasteboard.types ?? [], hasImage = types.contains(where: Self.isImageType)
+        let hasPromise = Self.hasFilePromise(on: pasteboard)
+        guard urls != nil || hasImage || hasPromise else { return false }
+        // Do not request optional HTML without image bytes, or inspect the
+        // caption/icon of an explicit file URL.
+        let pasted = urls == nil && !types.contains(.fileURL) ? Self.pastedImage(on: pasteboard) : nil
+        let imageWasCopied = urls == nil && Self.imageIsWhatWasCopied(on: pasteboard, inspectHTML: pasted != nil)
+        let image = imageWasCopied && hasImage
+        let promise = imageWasCopied && hasPromise
         guard urls != nil || image || promise else { return false }
         // A resolver returning nil is an unavailable destination, not a reason
         // to fall back to an old callback or paste an image's caption as text.
@@ -466,7 +472,6 @@ struct ComposerEditMeasurement {
         guard urls != nil || image else {
             destination.reject?("This clipboard item promises a file but has no image data. Save the image, then attach the file."); return true
         }
-        let pasted = urls == nil ? Self.pastedImage(on: pasteboard) : nil
         let storage = destination.storage
         let importing = destination.beginImport()
         // Decoding a screenshot, re-encoding it and writing it out takes long
@@ -519,26 +524,93 @@ struct ComposerEditMeasurement {
     /// Files win over their icons. Rich text with a rendering stays text;
     /// an image's URL, image-only HTML or lower-fidelity caption does not
     /// replace the image. Ambiguous text-first copies remain text.
-    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard) -> Bool {
+    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard, inspectHTML: Bool) -> Bool {
         let types = pasteboard.types ?? []
         if types.contains(.fileURL) { return false }
         if types.contains(.URL) { return true }
-        let text = types.contains(.string) ? pasteboard.string(forType: .string) ?? "" : ""
-        let hasText = text.contains { !$0.isWhitespace && $0 != "\u{fffc}" }
-        if types.contains(.html), let html = pasteboard.string(forType: .html) {
-            // Inspect markup only; an attributed HTML reader can fetch images
-            // or stylesheets. Never load resources from copied HTML.
-            guard html.utf8.count <= NativeComposer.Coordinator.byteLimit,
-                  html.range(of: "(?i)<img\\b", options: .regularExpression) != nil else { return false }
-            let visible = html
-                .replacingOccurrences(of: "(?is)<!--.*?-->|<(head|style|script)\\b[^>]*>.*?</\\1\\s*>", with: "", options: .regularExpression)
-                .replacingOccurrences(of: "<(?:[^\"'>]|\"[^\"]*\"|'[^']*')*>", with: "", options: .regularExpression)
-                .replacingOccurrences(of: "(?i)&nbsp;|&#160;|&#xA0;", with: " ", options: .regularExpression)
-            return visible.allSatisfy { $0.isWhitespace || $0 == "\u{fffc}" }
+        let imageFirst = types.first(where: { isImageType($0) || $0 == .string }).map(isImageType) ?? false
+        if imageFirst, !types.contains(.rtf), !types.contains(.rtfd) { return true }
+        if types.contains(.string), let text = pasteboard.data(forType: .string) {
+            // Large text is inconclusive, not proof that a document is empty.
+            if text.count <= clipboardInspectionByteLimit, !String(decoding: text, as: UTF8.self).unicodeScalars.contains(where: { !$0.properties.isWhitespace && $0.value != 0xfffc }) { return true }
+        } else { return true }
+        // HTML may add confidence, never veto the cheap signals above. Read
+        // bytes rather than decoding an unbounded flavor on the main actor.
+        guard inspectHTML, types.contains(.html), let html = pasteboard.data(forType: .html) else { return false }
+        return htmlContainsOnlyImage(html)
+    }
+    private nonisolated static let clipboardInspectionByteLimit = 256 * 1024
+    private nonisolated static func htmlContainsOnlyImage(_ data: Data) -> Bool {
+        guard !data.isEmpty, data.count <= clipboardInspectionByteLimit else { return false }
+        // A bounded, forward-only lexical scan; unknown/malformed markup is
+        // inconclusive. No regex backtracking, HTML rendering or resource load.
+        return data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            func lower(_ byte: UInt8) -> UInt8 { (65...90).contains(byte) ? byte + 32 : byte }
+            func space(_ byte: UInt8) -> Bool { byte == 32 || (9...13).contains(byte) }
+            func matches(_ text: StaticString, at index: Int) -> Bool {
+                text.withUTF8Buffer { literal in
+                    guard index + literal.count <= bytes.count else { return false }
+                    for offset in literal.indices where lower(bytes[index + offset]) != lower(literal[offset]) { return false }
+                    return true
+                }
+            }
+            var index = matches("\u{feff}", at: 0) ? 3 : 0, sawImage = false
+            var hidden: String?
+            while index < bytes.count {
+                if matches("<!--", at: index) {
+                    index += 4
+                    while index < bytes.count, !matches("-->", at: index) { index += 1 }
+                    guard index < bytes.count else { return false }
+                    index += 3; continue
+                }
+                if bytes[index] == 60 {
+                    index += 1
+                    guard index < bytes.count else { return false }
+                    let closing = bytes[index] == 47
+                    if closing { index += 1 }
+                    let start = index
+                    if !closing, matches("!doctype", at: index) { index += 8 }
+                    else {
+                        while index < bytes.count, (97...122).contains(lower(bytes[index])) {
+                            index += 1
+                            if index - start > 16 { return false }
+                        }
+                    }
+                    guard index > start, index < bytes.count,
+                          space(bytes[index]) || bytes[index] == 47 || bytes[index] == 62 else { return false }
+                    let name = String(decoding: bytes[start..<index], as: UTF8.self).lowercased()
+                    guard ["!doctype", "html", "head", "title", "style", "script", "body", "meta", "div", "span", "p", "a", "img", "br",
+                           "figure", "picture", "source", "b", "strong", "em", "i", "u", "table", "tbody", "tr", "td"].contains(name) else { return false }
+                    var quote: UInt8?, ended = false
+                    while index < bytes.count {
+                        let byte = bytes[index]; index += 1
+                        if let delimiter = quote { if byte == delimiter { quote = nil }; continue }
+                        if byte == 34 || byte == 39 { quote = byte }
+                        else if byte == 60 { return false }
+                        else if byte == 62 { ended = true; break }
+                        else if closing, !space(byte) { return false }
+                    }
+                    guard ended else { return false }
+                    if let hiddenTag = hidden {
+                        if closing, name == hiddenTag { hidden = nil }
+                    } else if !closing {
+                        if name == "img" { sawImage = true }
+                        if ["head", "style", "script"].contains(name) { hidden = name }
+                    }
+                    continue
+                }
+                if hidden != nil || space(bytes[index]) { index += 1; continue }
+                if matches("&nbsp;", at: index) || matches("&#160;", at: index) { index += 6; continue }
+                if matches("&#xa0;", at: index) { index += 6; continue }
+                if bytes[index] >= 128,
+                   let scalar = String(decoding: bytes[index..<min(index + 4, bytes.count)], as: UTF8.self).unicodeScalars.first,
+                   scalar.properties.isWhitespace || scalar.value == 0xfffc {
+                    index += scalar.utf8.count; continue
+                }
+                return false
+            }
+            return sawImage && hidden == nil
         }
-        if hasText, types.contains(.rtf) || types.contains(.rtfd) { return false }
-        guard hasText else { return true }
-        return types.first(where: { isImageType($0) || $0 == .string }).map(isImageType) ?? false
     }
     static func pastedImage(on pasteboard: NSPasteboard) -> PastedImage? {
         // AppKit also advertises a synthesized TIFF for JPEG/HEIC/etc.
