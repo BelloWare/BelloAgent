@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Wire, concurrent, acceptance, subagent and bundle-smoke fixture helpers isolate HOME, CFFIXED_USER_HOME and CODEX_HOME, including custom launch environments. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-helper-homes--round-3-follow-up).
+- [x] The native test-host guard keeps parent and explicit child process homes inside the verified fixture home; shipping apps are unchanged.
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
