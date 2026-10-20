@@ -173,7 +173,7 @@ final class SidebarSearchScopeTests: XCTestCase {
         }
     }
 
-    @MainActor func testSideAndSubagentDetailsKeepTheirAncestorsAndTopicVisible() throws {
+    @MainActor func testSideAndSubagentOwnMatchesKeepTheirAncestorsAndTopicVisible() throws {
         let root = scratchRoot("scope-family"), model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model, root: root)
         model.chats[1].title = "Parser investigation"; model.chats[1].delegationTask = "Check ambiguous boundaries"
@@ -184,11 +184,135 @@ final class SidebarSearchScopeTests: XCTestCase {
         let view = WorkspaceSidebarView(model: model)
         for flat in [false, true] {
             model.setSidebarFlat(flat)
-            for (query, id) in [("Parser", "chat-child"), ("ambiguous", "chat-child"), ("child-alias", "chat-child"), ("side-alias", "chat-side")] {
+            for (query, id) in [("Parser", "chat-child"), ("ambiguous", "chat-child"), ("side", "chat-side")] {
                 view.setFilter(query); view.settle()
                 XCTAssertEqual(Set(model.sidebarChatOrder), ["chat-parent", id], query)
                 XCTAssertTrue(view.list.contents.entries.contains { $0.id == "chat|" + id }, query)
                 if !flat { XCTAssertTrue(view.list.contents.entries.contains { $0.id == "topic|family" }, query) }
+            }
+            for query in ["child-alias", "side-alias"] {
+                view.setFilter(query); view.settle()
+                XCTAssertTrue(model.sidebarChatOrder.isEmpty, "Metadata alone does not promote a family row")
+                XCTAssertFalse(view.list.contents.entries.contains { $0.id == "topic|family" })
+            }
+        }
+    }
+
+    @MainActor func testMetadataMatchesOnlyMainRowsAcrossScopesLayoutsAndArchives() async throws {
+        let root = scratchRoot("scope-metadata-family"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces[0].path = root.appendingPathComponent("Orchard").path
+        let project = model.workspaces[0]
+        let topic = TopicRecord(id: "family", workspaceID: project.id, title: "Planning")
+        model.topics = [topic]
+        var profile = ProfileRecord(); profile.id = "studio"; profile.name = "Gateway"; profile.modelId = "default-alias"
+        model.profiles = [profile]
+        for index in model.chats.indices {
+            model.chats[index].topicID = topic.id; model.chats[index].profileID = profile.id
+            model.chats[index].model = nil
+        }
+        let view = WorkspaceSidebarView(model: model), search = model.sidebarSearch
+        search.debounce = .zero
+        for scope in SidebarSearch.Scope.allCases {
+            search.setScope(scope)
+            for flat in [false, true] {
+                model.setSidebarFlat(flat)
+                for archived in [false, true] {
+                    for index in model.chats.indices { model.chats[index].archivedAt = archived ? Date() : nil }
+                    model.setArchivedChatsShown(archived)
+                    for query in ["orchard", "planning", "gateway", "default-alias"] {
+                        view.setFilter(query); await search.settleQuery(); view.settle()
+                        let context = "\(scope), flat \(flat), archived \(archived), \(query)"
+                        XCTAssertEqual(model.sidebarFilterMatches(query: query), ["chat-parent"], context)
+                        XCTAssertEqual(model.sidebarChatOrder, ["chat-parent"], context)
+                        XCTAssertEqual(view.list.contents.entries.compactMap { entry -> String? in
+                            if case .chat(let chat, _, _) = entry { return chat.id }; return nil
+                        }, model.sidebarChatOrder, context)
+                        XCTAssertFalse(model.sidebarMatches(model.chats[1], query: query), context)
+                        XCTAssertFalse(model.sidebarMatches(model.chats[2], query: query), context)
+                        let group = model.topicGroupContents(in: project, topic: topic, includesArchive: archived,
+                            filter: query, sidebarWidth: 300, namesConnection: true)
+                        XCTAssertEqual(group.header.chats, archived ? 0 : 1, context)
+                        XCTAssertEqual(group.contents.total, archived ? 0 : 1, context)
+                        XCTAssertEqual(group.archive?.total, archived ? 1 : nil, context)
+                        let rootGroup = model.sidebarGroupContents(in: flat ? nil : project, topicID: flat ? nil : topic.id,
+                            archived: archived, filter: query, showEmpty: false, sidebarWidth: 300, namesConnection: true)
+                        XCTAssertEqual(rootGroup.total, 1, context)
+                        XCTAssertEqual(view.list.contents.entries.compactMap { entry -> Int? in
+                            if case .archiveHeading(_, let count, _) = entry { return count }; return nil
+                        }, archived ? [1] : [], context)
+                    }
+                    if archived {
+                        model.setArchivedChatsShown(false); view.settle()
+                        XCTAssertTrue(model.sidebarChatOrder.isEmpty)
+                        XCTAssertFalse(view.list.contents.entries.contains { $0.id == "topic|family" })
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor func testMetadataKeepsMainChatExceptionsAndRechecksChangedFamilyOwnership() throws {
+        let root = scratchRoot("scope-metadata-eligibility"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var profile = ProfileRecord(); profile.id = "studio"; profile.name = "Gateway"; profile.modelId = "default-alias"
+        model.profiles = [profile]
+        let project = model.chats[0].workspaceID
+        var imported = ChatRecord(id: "imported", workspaceID: project, title: "Imported", path: nil, profileID: profile.id,
+                                  parentSessionID: "chat-parent")
+        imported.imported = true
+        var background = ChatRecord(id: "background", workspaceID: project, title: "Background", path: nil, profileID: profile.id)
+        background.backgroundTask = "title"
+        model.chats += [imported, background,
+            ChatRecord(id: "orphan", workspaceID: project, title: "Orphan", path: nil, profileID: profile.id, parentSessionID: "missing"),
+            ChatRecord(id: "cross-project", workspaceID: "retained", title: "Cross project", path: nil, profileID: profile.id, parentSessionID: "chat-parent")]
+        for index in model.chats.indices { model.chats[index].profileID = profile.id }
+        model.chats[1].pinnedAt = Date(); model.chats[2].pinnedAt = Date()
+        model.topics = [TopicRecord(id: "side-only", workspaceID: project, title: "Separate family group")]
+        model.chats[1].topicID = "side-only"; model.chats[2].topicID = "side-only"
+        model.chats[2].archivedAt = Date(); model.setArchivedChatsShown(true)
+        let view = WorkspaceSidebarView(model: model)
+        for scope in SidebarSearch.Scope.allCases {
+            model.sidebarSearch.setScope(scope)
+            for flat in [false, true] {
+                model.setSidebarFlat(flat); view.setFilter("gateway"); view.settle()
+                let expected: Set<String> = ["chat-parent", "imported", "orphan", "cross-project"]
+                XCTAssertEqual(model.sidebarFilterMatches(query: "gateway"), expected)
+                XCTAssertEqual(Set(model.sidebarChatOrder), expected)
+                XCTAssertFalse(model.sidebarMatches(background, query: "gateway"))
+                XCTAssertFalse(view.list.contents.entries.contains { $0.id == "topic|side-only" })
+                model.chats[2].parentSessionID = "missing"; view.settle()
+                XCTAssertEqual(Set(model.sidebarChatOrder), expected.union(["chat-side"]))
+                if !flat { XCTAssertTrue(view.list.contents.entries.contains { $0.id == "topic|side-only" }) }
+                model.chats[2].parentSessionID = "chat-parent"; view.settle()
+                XCTAssertEqual(Set(model.sidebarChatOrder), expected)
+            }
+        }
+    }
+
+    @MainActor func testFullChatContentStillFindsAChildWhenItsGroupMetadataMatches() async throws {
+        let root = scratchRoot("scope-metadata-content"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let project = model.chats[0].workspaceID
+        model.topics = [TopicRecord(id: "family", workspaceID: project, title: "Marmalade")]
+        for index in model.chats.indices { model.chats[index].topicID = "family" }
+        let journal = try SearchJournal(root.appendingPathComponent("content-side.jsonl"), id: "chat-side")
+        try journal.message("match", role: "user", "Marmalade appears in this side only.")
+        model.chats[2].path = journal.url.path
+        let view = WorkspaceSidebarView(model: model), search = model.sidebarSearch
+        search.debounce = .zero; await search.reconcileNow()
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            for archived in [false, true] {
+                for index in model.chats.indices { model.chats[index].archivedAt = archived ? Date() : nil }
+                model.setArchivedChatsShown(archived)
+                view.setFilter("marmalade"); search.setScope(.titlesAndDetails); view.settle()
+                XCTAssertEqual(model.sidebarChatOrder, ["chat-parent"])
+                search.setScope(.fullChats); await search.settleQuery(); view.settle()
+                XCTAssertEqual(model.sidebarChatOrder, ["chat-parent", "chat-side"])
+                XCTAssertTrue(view.list.contents.entries.contains { $0.id == "snippet|chat-side" })
+                XCTAssertFalse(view.list.contents.entries.contains { $0.id == "chat|chat-child" })
+                XCTAssertEqual(search.hit(for: "chat-side")?.messageID, "match")
             }
         }
     }
