@@ -516,6 +516,46 @@ class NativeIntegration(unittest.TestCase):
                 return value
             time.sleep(.01)
         self.fail('Session did not settle')
+    def test_stop_fences_a_resume_prepared_before_its_acknowledgment(self):
+        for mode in ('off', 'memory', 'persist'):
+            for pause in ('ordinary', 'cost'):
+                with self.subTest(capture=mode, pause=pause):
+                    session = 'resume-stop-' + mode + '-' + pause
+                    self.open(session=session, model='held-for-stop' if pause == 'ordinary' else 'billing-tool',
+                              costLimit={'usd': 1 if pause == 'ordinary' else 0.01})
+                    self.peer.command('debug.mode', {'mode': mode}, session)
+                    with Fixture.lock:
+                        before = len(Fixture.requests)
+                    self.submit(session)
+                    if pause == 'ordinary':
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            with Fixture.lock:
+                                if len(Fixture.requests) > before:
+                                    break
+                            time.sleep(.01)
+                        else:
+                            self.fail('The generated request did not arrive')
+                        self.peer.command('turn.stop', session=session)
+                    paused = self.settled(session)
+                    self.assertEqual(paused.get('costPaused', False), pause == 'cost', paused)
+                    token = paused.get('resumeToken', 'before-token-support')
+                    self.peer.command('session.configure', {'costLimit': {'usd': 1}}, session)
+                    self.assertTrue(self.peer.command('turn.stop', session=session)['accepted'])
+                    with Fixture.lock:
+                        before = len(Fixture.requests)
+                    refused = self.peer.command('run.continue', {'resumeToken': token}, session, fail=True)
+                    self.assertEqual(refused['code'], 'resume_superseded')
+                    after = self.peer.command('session.snapshot', session=session)
+                    self.assertEqual(after['state'], 'paused', after)
+                    self.assertEqual(after.get('costPaused', False), pause == 'cost', after)
+                    with Fixture.lock:
+                        self.assertEqual(len(Fixture.requests), before, 'Stale continuation must not issue a provider request')
+                    self.peer.command('run.continue', {'resumeToken': after['resumeToken'], 'model': 'text'}, session)
+                    done = self.settled(session)
+                    self.assertEqual(done['state'], 'idle', done)
+                    self.assertFalse(done.get('costPaused', False))
+
     def test_request_observations_during_tool_loop_without_capture_and_after_recorder_rejection(self):
         for capture, reject in [('off',False), ('persist',True), ('memory',False)]:
             session = 'observations-'+capture

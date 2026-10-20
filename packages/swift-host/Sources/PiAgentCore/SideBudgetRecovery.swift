@@ -33,7 +33,10 @@ enum SideBudgetRecovery {
     /// to the runtime. No actor-isolated initializer state escapes in filters.
     static func pause(_ saved: JSON, id: String, parent: JSON, family: AgentFamilyState?, sides: Set<String>, directory: URL) throws -> (paused: Bool, members: [String], pending: [String]) {
         var paused = saved["costPaused"].flag == true
-        var members = saved["costPausedMembers"].list.compactMap(\.text)
+        // A Recover Copy changes identity, not historical state records.
+        // Only validated descendants of the reopening identity can inherit
+        // membership; an original family's files may still exist next to it.
+        var members = saved["costPausedMembers"].list.compactMap(\.text).filter { sides.contains($0) }
         let pending = try saved["costPendingSidePauses"].list.compactMap(\.text).filter { side in
             guard sides.contains(side), let file = try journalURL(side,directory:directory) else { return false }
             return try pauseState(file,id:side).hasWork

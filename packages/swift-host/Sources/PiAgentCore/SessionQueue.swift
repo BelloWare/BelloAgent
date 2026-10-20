@@ -138,8 +138,9 @@ extension AgentSession {
         guard ["one-at-a-time","all"].contains(steering), ["one-at-a-time","all"].contains(followUp) else { throw AgentError("queue_mode", "Queue modes are one-at-a-time or all") }
         steeringMode=steering; followUpMode=followUp; try persistState(); event("queue.changed")
     }
-    public func resumeQueue() throws {
+    public func resumeQueue(resumeToken: JSON = .null) throws {
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
+        try checkResumeToken(resumeToken)
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
         // Only the run's Resume (`run.continue`) ends a cost-limit pause: it

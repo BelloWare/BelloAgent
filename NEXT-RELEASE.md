@@ -13,6 +13,8 @@
 - [x] Export Metadata validates and freezes the selected request before opening the destination chooser.
 - [x] Redacted exports retain their original Raw part label when navigation changes during the chooser.
 
+- [x] Stop retires pending Resume preparation and locally queued continuations, including Resume Follow-ups; helper generation tokens reject delayed requests after Stop. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Recover Copy restores paused membership only for its own descendants, clears an empty inherited family pause and preserves its own held work. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
 - [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
 - [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.

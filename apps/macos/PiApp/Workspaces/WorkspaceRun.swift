@@ -329,14 +329,28 @@ extension WorkspaceModel {
         guard !item.isSubagent || method == "turn.stop" else { return }
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
+        if method == "turn.stop" { cancelPendingResumes(for: item) }
+        let isResume = method == "queue.resume", preparation = resumePreparation(id)
+        if isResume {
+            guard resumeTasks[id] == nil, displays[id]?.resuming != true else { return }
+            displays[id]?.resuming = true
+        }
         // Compact uses the same selected model/effort/limits as Send. Freeze
         // the originating pane's choice before opening or awaiting its helper.
-        let requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
+        var requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
         let commandID = UUID().uuidString
         let archiveRevision = archiveRevisions[id, default: 0]
-        Task { do {
+        let task = Task { do {
+            defer { if isResume { resumeTasks[id] = nil; displays[id]?.resuming = false; updateHostActivity(workspaceID: item.workspaceID) } }
             let lease = try connectionLease(for: item)
-            let host = try await open(item)
+            let host: HostSupervisor
+            if method == "turn.stop", opened.contains(item.id), let loaded = hosts[item.workspaceID] { host = loaded }
+            else { host = try await open(item) }
+            if isResume {
+                try requireResume(preparation)
+                let status = try await host.request("session.status", sessionID: item.id)
+                requestParams["resumeToken"] = status.object?["resumeToken"]
+            }
             if method == "context.compact" && !isEphemeral(item.id) {
                 guard let store else { throw StoreError.unavailable }
                 try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
@@ -344,6 +358,7 @@ extension WorkspaceModel {
             }
             try requireConnection(lease)
             if method != "turn.stop" { try requireUnarchived(item.id, revision: archiveRevision) }
+            if isResume { try requireResume(preparation) }
             _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
@@ -357,11 +372,14 @@ extension WorkspaceModel {
             refresh(item.id)
         }
             catch {
+                if isResume, error is CancellationError { return }
+                if isResume, case HostError.rejected("resume_superseded", _) = error { return }
                 // A rejected compaction never ran; a leftover intent would mark
                 // the chat "outcome uncertain" on its next visit.
                 if method == "context.compact", case HostError.rejected = error { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 self.error = error.localizedDescription
             } }
+        if isResume { resumeTasks[id] = (task, false) }
     }
     /// `userInitiated` is the Stop button, the live bar and ⌘. — a press that
     /// has to resolve what is on screen even when there is no helper left to
@@ -370,6 +388,7 @@ extension WorkspaceModel {
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id), let view = displays[id] else { return }
         if let link = item.delegation { stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID); return }
+        cancelPendingResumes(for: item)
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".
         guard view.hasWork else { return }

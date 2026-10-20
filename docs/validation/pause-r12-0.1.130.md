@@ -118,6 +118,26 @@ PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
 python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
 python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
 python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+# Each class below ran alone, holding the shared full-lane lock for that run.
+for C in CostPauseFamilyTests LifecycleHelperTests SubagentOpeningTests \
+  SubagentNavigationTests InheritedSubagentReaderTests SessionReadStateTests \
+  ConversationPaneTests; do
+  (
+    L=/Users/admin/Library/Caches/BelloSwiftWork/full-lane.lock
+    until mkdir "$L" 2>/dev/null; do sleep 60; done
+    trap 'rm -rf "$L"' EXIT
+    echo "pause-r12-hunt3-final $C $(date)" > "$L/owner"
+    PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+      -only-testing:PiAppTests/"$C"
+  )
+done
+# Parallel-lane classes, one focused invocation; no focus or app activation.
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/CostPausePresentationTests \
+  -only-testing:PiAppTests/CostLimitTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/SkillRefreshTests
 ```
 
 `scripts/test-macos.sh` stages the Release helper with
@@ -1700,3 +1720,241 @@ Own automatic xcresult bundles and clone folders are absent, the temporary
 warning-build source copy is removed, and this workstream released its native
 lock after each invocation. No owner decision or in-scope unresolved finding
 remains. Nothing was merged or published to a release branch.
+
+## Round 3 hunt
+
+2026-10-20. Continued on `dev/a130-pause-r12` after the earlier branch was
+merged and this worktree was advanced to `28dbfb3090068e61ea308fa51b8d1db37b22013b`.
+This section records only the new hunt fixes. All fixtures use generated data,
+scripted clients or loopback services. Build products and text evidence are in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12`, with logs under
+`logs/hunt3-*`. No installed app, real preferences, real chats, Keychain,
+external provider, release branch or tag was used.
+
+### CONCURRENCY-LIFECYCLE-4 — Stop overtaken by Resume preparation
+
+Confirmed. An ordinary Resume had an untracked app task: Stop could be
+acknowledged while `open` awaited the metadata actor, then the task persisted
+its intent and dispatched `run.continue`. A late raw continuation also had no
+way to identify the Stop generation for which it had been prepared.
+
+The app now owns pending Resume tasks and their Stop revisions. Stop changes
+the revision synchronously, cancels the task (including supervisor requests
+still queued locally), and the task checks its revision immediately before
+request admission. Opening, intent persistence and family fan-out all retain
+the original preparation. Undispatched cancelled intents are removed; an
+already dispatched mutation still settles through its actual helper receipt.
+Shutdown cancels these tasks too. A side's Stop cancels a pending whole-family
+Resume, while an ordinary Resume in another family member remains independent.
+
+The helper publishes an opaque `resumeToken` in status/snapshots, comprising
+the runtime incarnation and Stop count. The app reads it before intent
+persistence and supplies it to continuation admission. After the host's shared
+budget await, acceptance checks both that token and the host's admission Stop
+count, before changing any run state. An old runtime's token is invalid after
+reopen. A retry of an accepted command reads its receipt and remains idempotent.
+The token is an optional additive wire precondition for older callers; a
+legacy tokenless command is an explicit fresh Resume, not evidence of an older
+preparation. The current app supplies the token whenever the helper exposes it.
+
+Nearby sweep: `queue.resume` had the same app preparation/Stop gap and released
+its queue after an acknowledged Stop. It now uses the same task ownership and
+wire token check. Forwarded Stop for an already loaded chat bypasses metadata
+preflight, so a blocked intent writer cannot hold up its acknowledgment.
+Ordinary send/edit/compaction admission, capture and permission paths retain
+their existing checks.
+
+Failing-first evidence:
+
+- `hunt3-first-helper.log`: the ordinary helper regression failed four
+  assertions: the stale Resume was accepted, provider requests increased from
+  one to two, the snapshot became idle and a stale command receipt appeared.
+- `hunt3-first-wire.log`: all three capture-mode subcases accepted the stale
+  continuation after Stop (`accepted: true, continued: true`), instead of
+  refusing it. The final wire case additionally covers ordinary pauses: six
+  ordinary/cost × Off/memory/persist orderings, with zero provider requests
+  after a stale continuation and a successful fresh Resume afterward.
+- `hunt3-first-queue.log`: the nearby queue regression failed two assertions:
+  stale queue Resume was accepted and `queuePaused` became false.
+- `hunt3-first-native.log`: six app regressions failed eleven assertions
+  with the original app implementation. Metadata preparation dispatched after
+  Stop and left intents; the unloaded-chat preparation also dispatched; a
+  family Resume continued to a side after the root Stop. The ordinary-root
+  control confirmed that stopping an independent side must not cancel it.
+
+The app regressions cover metadata preflight, opening an unloaded chat,
+blocked intent persistence, all 32 supervisor slots occupied, family
+preparation, Stop after root dispatch but before side fan-out, and isolation of
+an ordinary root Resume from a side's Stop. Assertions inspect emitted wire
+commands and durable pending intents. Helper tests also cover fresh Resume,
+receipt retries after Stop, tokenless host preflight, and runtime replacement.
+
+### HELPER-AGENTS-IO-1 — recovered copies inherit foreign paused members
+
+Confirmed. `SideBudgetRecovery.pause` accepted saved membership verbatim, and
+later pruning checked only for existing files. Recover Copy changed the
+session ID but left the original side file present, so the copy returned that
+side in `pausedMembers` and stayed paused after its own Resume.
+
+Recovery now filters saved membership against the actual descendant graph
+already validated for the reopening identity. Final pruning also requires that
+ancestry, and treats removed membership as a repair so an otherwise empty pause
+ends and the result is persisted. The copy's own pending work is still checked
+before clearing its pause. Recovery remains off the host actor and changes
+only the copy's journal.
+
+`hunt3-first-recovery.log` failed nine assertions on the unfixed code: original
+side IDs appeared in the copy's snapshot and Resume reply, the completed copy
+stayed paused/continuable, and the foreign membership remained on disk. The
+final fixture recovers a genuinely torn journal beside the existing original
+side, checks the retained $0.40 spend, raises the copy's limit from $0.30 to $1,
+and verifies an idle copy with no original-family IDs. Its second case keeps
+an unanswered question, reopens the copy, resumes it through an accounted
+scripted provider, and verifies completion exactly once. Original main and
+side bytes remain unchanged. Valid direct/nested/recovered side membership is
+covered by the existing family, side-budget and recovery classes.
+
+### Mutation checks and adversarial review
+
+Each mutation was restored before final verification. Helper mutations were
+built and executed independently; every one failed an observable assertion:
+
+| Mutation | Test/evidence |
+| --- | --- |
+| Ignore the supplied Resume token | `ContinueRunTests.testResumePreparedBeforeAnotherStopCannotRunAfterItsAcknowledgment`; `hunt3-mutant-token.log` |
+| Ignore Stop during helper preflight | `testStopDuringHelperResumePreflightRejectsEvenWithoutAWireToken`; `hunt3-mutant-preflight.log` |
+| Remove runtime incarnation from the token | `testResumeTokenFromAnUnloadedRuntimeCannotAuthorizeItsReplacement`; `hunt3-mutant-runtime-token.log` |
+| Omit the queue token check | `testQueuedResumeAlsoHonorsThePreparedStopGeneration`; `hunt3-mutant-queue-token.log` |
+| Restore existence-only recovered membership | `SideBudgetTests.testRecoveredCopyDropsOriginalPausedSidesButKeepsItsOwnHeldWork`; `hunt3-mutant-recovery-ancestry.log` |
+| Omit empty-pause retirement after ancestry pruning | Same copy test; `hunt3-mutant-recovery-retirement.log` |
+
+Five native mutations also compiled and failed their intended assertions:
+
+| Mutation | Test/evidence |
+| --- | --- |
+| Omit synchronous Stop retirement | `testStopInvalidatesResumeBlockedOnMetadataBeforeItsAcknowledgment`; `hunt3-mutant-app-stop.log` (3 assertions) |
+| Keep the revision check but omit task cancellation | `testStopCancelsResumeStillQueuedInTheSupervisor`; `hunt3-mutant-app-queued.log` (2 assertions) |
+| Cancel the root's ordinary Resume when a side stops | `testSideStopCancelsFamilyPreparationButNotAnOrdinaryRootResume`; `hunt3-mutant-app-scope.log` (1 assertion) |
+| Keep task cancellation but omit the revision check | `testStopGenerationAlsoFencesADirectResumeCaller`; `hunt3-mutant-app-generation.log` (3 assertions) |
+| Leave the cancelled intent on disk | `testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent`; `hunt3-mutant-app-intent.log` (1 assertion) |
+
+All eleven mutation checks caught the defect. An initial intent-cleanup
+mutation produced unused-variable compile errors instead of running; that
+attempt is retained separately as `hunt3-mutant-app-intent-compile-only.log`
+and is not counted. The corrected mutation compiled and failed the disk-state
+assertion above.
+
+The adversarial review caught the adjacent queue-Resume admission gap and
+narrowed cancellation to a tracked family operation, preserving ordinary
+Resume in another chat. It also checked the direct caller independently of
+task ownership, runtime replacement, accepted-command receipt retries, and
+empty-pause retirement after ancestry pruning. These cases have observable
+regressions and mutation checks. The final restored product diff contains no
+mutation remnants.
+
+The new conditions were reviewed against these states:
+
+| Condition | Newly rejected/retired state and retained behavior |
+| --- | --- |
+| App Stop revision / task cancellation | Preparation begun before Stop, including unloaded/opening, metadata writes and queued dispatch. A fresh click gets the new revision; unrelated ordinary chat preparation is retained. |
+| Family operation ownership | Stop of a member retires a pending family fan-out. It does not stop an already dispatched ordinary run in a different member. Root/member requests already accepted still settle through the helper. |
+| Helper token / preflight Stop count | Old Stop generations and replaced runtimes cannot admit new work. Accepted receipt retries stay reads; fresh tokens and legacy explicit resumes retain existing busy, queue-edit and cost-limit checks. |
+| Restored descendant membership | Foreign, deleted or detached sides cannot hold an independent copy. Valid nested sides remain root-owned; own pending calls, compaction, queue, steering, unsealed turns and unanswered context still hold the copy. |
+| Empty-pause recovery repair | A hold with no remaining work becomes durably idle. A copy with its own unfinished work remains paused until explicit Resume. |
+
+The same code runs in Off, memory and persist capture modes. No new journal
+replay or synchronous disk scan was introduced on the host actor. No UI layout
+or gallery scene changed.
+
+### Commands and final results
+
+`B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12` below. The helper
+was rebuilt after the laptop restart; final wire suites used its Release
+`-Osize` executable, built with the bundle script's exact Swift arguments.
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'ContinueRunTests|SideBudgetTests|FamilyLimitPauseTests|AgentFamilyRecoveryTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --skip-build --filter 'AcceptanceTests|AgentFamilyRecoveryTests|AgentSteeringBoundaryTests|ContinueRunTests|CostLimitTests|EditRecoveryTests|FailurePresentationTests|FamilyLimitPauseTests|HostDispatchTests|HostServiceTests|PartialReplyLogTests|QueueDeliveryRecoveryTests|QueueEditHoldTests|QueueEditingTests|QueueHandoffTests|QueuedSkillRefreshTests|RetryTests|SideBudgetTests|SnapshotProjectionTests|SteeringAndFollowUpTests|SubagentCoordinatorTests|SubagentForkTests|SubagentPermissionTests|SubagentRecoveryTests|TurnCapacityTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter SideBudgetTests
+swift build --package-path packages/swift-host --scratch-path "$B/swift-host" \
+  --configuration release --arch arm64 --product pi-native-host -Xswiftc -Osize
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+# Each class below ran alone, holding the shared full-lane lock for that run.
+for C in CostPauseFamilyTests LifecycleHelperTests SubagentOpeningTests \
+  SubagentNavigationTests InheritedSubagentReaderTests SessionReadStateTests \
+  ConversationPaneTests; do
+  (
+    L=/Users/admin/Library/Caches/BelloSwiftWork/full-lane.lock
+    until mkdir "$L" 2>/dev/null; do sleep 60; done
+    trap 'rm -rf "$L"' EXIT
+    echo "pause-r12-hunt3-final $C $(date)" > "$L/owner"
+    PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+      -only-testing:PiAppTests/"$C"
+  )
+done
+# Parallel-lane classes, one focused invocation; no focus or app activation.
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/CostPausePresentationTests \
+  -only-testing:PiAppTests/CostLimitTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/SkillRefreshTests
+```
+
+| Suite | Result | Log |
+| --- | --- | --- |
+| Directly affected helper classes | 168 passed, 0 failed | `hunt3-helper-focused.log` |
+| All classes calling continuation/queue Resume, plus host/snapshot coverage | 403 passed, 0 failed | `hunt3-helper-affected.log` |
+| Final recovery fixture, including below-spend limit then raise | 35 passed, 0 failed | `hunt3-recovery-final.log` |
+| Full helper excluding isolated measurements | 1,125 executed: 1,118 passed, 7 skipped, 0 failed | `hunt3-helper-full.log` |
+| Isolated streaming measurements | 5 passed, 0 failed | `hunt3-helper-streaming.log` |
+| Release wire | 40 passed, 0 failed | `hunt3-wire.log` |
+| Release concurrent | 4 passed, 0 failed | `hunt3-concurrent.log` |
+| Release acceptance | 3 passed, 0 failed | `hunt3-acceptance.log` |
+| Native affected classes | 220 passed, 0 failed, 0 skipped | `hunt3-native-final-*.log` |
+
+The native total consists of these complete focused classes (the original
+51 pause/lifecycle tests are included):
+
+| Class | Passed | Final log suffix |
+| --- | ---: | --- |
+| `CostPauseFamilyTests` | 3 | `family` |
+| `LifecycleHelperTests` | 11 | `lifecycle` |
+| `SubagentOpeningTests` | 14 | `subagent-opening` |
+| `SubagentNavigationTests` | 7 | `subagent-navigation` |
+| `InheritedSubagentReaderTests` | 7 | `inherited-readers` |
+| `SessionReadStateTests` | 16 | `read-state` |
+| `ConversationPaneTests` (including run extensions) | 81 | `conversation` |
+| `CostLimitTests` | 13 | `parallel` |
+| `CostPausePresentationTests` | 6 | `parallel` |
+| `RunHoldTests` | 18 | `parallel` |
+| `SkillRefreshTests` | 15 | `parallel` |
+| `WorkspaceRaceTests` | 29 | `parallel` |
+
+The seven helper skips are existing opt-in fixture/performance cases. The
+final Release compiler's warning messages, normalized by source file and
+message rather than repeated diagnostic locations, are all present in the
+pre-fix build (`hunt3-first-helper.log`); this patch adds none. Focused
+`WorkspaceRaceTests` is classified parallel by `scripts/test-lanes.py`; these
+model/transport fixtures create no windows or app activation. Focus-changing
+family/lifecycle/reader/conversation runs used the shared full-lane lock,
+released after each invocation, including on failure. `LifecycleHelperTests`
+ran alone. The local runner `$B/hunt3-native-final.py` recorded every exit code
+in `logs/hunt3-native-final.json`; the commands above show its per-run lock
+wrapper. Only this worktree's build root was used. Automatic result bundles
+were removed after each run; the final scan found no clone or `.xcresult`
+folders. Text logs remain the evidence.
+
+`git diff --check` passed. The final change was reviewed against the recorded
+merged baseline after restoring every mutation; no additional in-scope defect
+or owner decision remains. No merge, release, tag or history rewrite was
+performed.
