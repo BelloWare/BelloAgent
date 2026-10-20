@@ -3,6 +3,51 @@ import XCTest
 @testable import PiApp
 
 final class SidebarSearchGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testFamilyMetadataScenes() async throws {
+        guard let path = testEnvironment("PI_APP_SEARCH_SCOPE_GALLERY") else { throw XCTSkip("Set PI_APP_SEARCH_SCOPE_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let root = scratchRoot("search-family-gallery"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces[0].path = root.appendingPathComponent("Orchard").path
+        model.topics = [TopicRecord(id: "review", workspaceID: model.chats[0].workspaceID, title: "Marmalade review")]
+        for index in model.chats.indices { model.chats[index].topicID = "review" }
+        model.chats[0].title = "Release notes"
+        model.chats[1].title = "Marmalade checks"; model.chats[1].subagentNumber = 1
+        model.chats[2].title = "Supporting notes"; model.chats[2].archivedAt = Date()
+        let journal = try SearchJournal(root.appendingPathComponent("side-content.jsonl"), id: "chat-side")
+        try journal.message("match", role: "user", "Keep the marmalade notes beside the launch checklist.")
+        model.chats[2].path = journal.url.path
+        model.setArchivedChatsShown(true)
+        let sidebar = WorkspaceSidebarView(model: model)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = sidebar; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        await model.sidebarSearch.reconcileNow()
+        sidebar.setFilter("marmalade")
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            for scope in SidebarSearch.Scope.allCases {
+                sidebar.searchScope.tab(scope)?.performClick(nil)
+                await model.sidebarSearch.settleQuery(); sidebar.settle()
+                XCTAssertEqual(Set(model.sidebarChatOrder), scope == .fullChats
+                    ? ["chat-parent", "chat-child", "chat-side"] : ["chat-parent", "chat-child"])
+                for width: CGFloat in [300, 200] {
+                    window.setContentSize(NSSize(width: width, height: 640))
+                    for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                        window.appearance = NSAppearance(named: appearance)
+                        sidebar.needsLayout = true; sidebar.settle(); window.displayIfNeeded()
+                        try await Task.sleep(for: .milliseconds(150))
+                        let image = try XCTUnwrap(sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds))
+                        sidebar.cacheDisplay(in: sidebar.bounds, to: image)
+                        let name = "family-\(flat ? "flat" : "topics")-\(scope == .fullChats ? "full" : "details")-\(Int(width))-\(theme).png"
+                        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent(name))
+                    }
+                }
+            }
+        }
+    }
+
     @MainActor func testSearchScopeScenes() async throws {
         guard let path = testEnvironment("PI_APP_SEARCH_SCOPE_GALLERY") else { throw XCTSkip("Set PI_APP_SEARCH_SCOPE_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

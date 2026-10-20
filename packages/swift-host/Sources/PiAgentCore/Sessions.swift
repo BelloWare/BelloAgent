@@ -514,7 +514,15 @@ public actor AgentSession {
                 let replies = retained.filter { $0.role == "assistant" }
                 task.replies = replies.count
                 task.issuedCalls = replies.reduce(0) { $0 + $1.content.filter { $0["type"].text == "toolCall" }.count }
-                task.modelMs = replies.reduce(0) { $0 + ($1.modelMs ?? 0) }
+                // The saved aggregate includes failed attempts and summaries;
+                // reply rows carry only the winning request's duration.
+                if let source=replayed.stateSource {
+                    let spans=rowSpans
+                    task.modelMs += replies.reduce(0) { total, reply in
+                        guard let span=spans[reply.id], span.kind == .message, span.offset > source.offset else { return total }
+                        return total + (reply.modelMs ?? 0)
+                    }
+                }
                 task.toolMs = retained.filter { $0.role == "toolResult" }.reduce(0) { $0 + ($1.toolStats?["durationMs"].double ?? 0) }
                 task.preparingCalls = 0; task.currentTool = nil
                 task.detail = "Previous runtime ended without a terminal receipt. Tool effects may be unknown; no work was replayed."
