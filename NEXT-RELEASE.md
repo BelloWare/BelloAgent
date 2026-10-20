@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
+- [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.
+- [x] Search readers reuse fingerprints for a matching snapshot; Next Results sends a new manifest only when the reader needs it.
+- [x] Copy/export returns an already validated selected-range page without retrying for unrelated appends.
 - [x] Copy/export selections validate only their selected retained rows, surviving streaming deltas and saved-history handoff during a running response. [Validation](docs/validation/a130-wire-0.1.130.md#round-6-review).
 - [x] Retained-range copies recover when another reader supersedes their snapshot build, while preserving caller cancellation and closure checks.
 - [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).

@@ -5,11 +5,11 @@ import XCTest
 private final class ContentReadGate: @unchecked Sendable {
     private let lock = NSLock(), release = DispatchSemaphore(value: 0)
     private var steps = 0
-    let holding: Bool
-    init(holding: Bool = true) { self.holding = holding }
+    let holding: Bool, stage: String
+    init(holding: Bool = true, stage: String = "content") { self.holding = holding; self.stage = stage }
     var count: Int { lock.withLock { steps } }
     func step(_ stage: String) {
-        guard stage == "content" else { return }
+        guard stage == self.stage else { return }
         let first = lock.withLock { steps += 1; return steps == 1 }
         if first && holding { _ = release.wait(timeout: .now() + 10) }
     }
@@ -34,6 +34,40 @@ private actor ContentStreamClient: ModelClient {
 }
 
 final class ConversationReadTests: XCTestCase {
+    func testSearchSendsFingerprintsOnlyWhenTheReaderNeedsTheSnapshot() async throws {
+        let session = try await fixture(rows: 26_000)
+        let first = try await session.contentSearch(["retained": true])
+        XCTAssertGreaterThan(try first.data().count, HostProtocol.frameBytes)
+        let params: JSON = ["retained": true, "start": first["next"], "knownRevision": first["revision"], "knownIncarnation": first["incarnation"]]
+        let next = try await session.contentSearch(params)
+        XCTAssertTrue(next["rowHashes"].isNull)
+        XCTAssertLessThan(try next.data().count, 65_536)
+        let independent = try await session.contentSearch(["retained": true, "start": first["next"]])
+        XCTAssertEqual(independent["rowHashes"], first["rowHashes"], "An independent reader needs its own manifest")
+        await session.copyFixtureContent([textBlock("Changed outside the selection")], index: 1)
+        let changed = try await session.contentSearch(params)
+        XCTAssertNotEqual(changed["revision"], first["revision"]); XCTAssertFalse(changed["rowHashes"].isNull)
+        let otherRuntime = try await session.contentSearch(["retained": true, "knownRevision": changed["revision"], "knownIncarnation": "retired"])
+        XCTAssertFalse(otherRuntime["rowHashes"].isNull)
+        print("Search fingerprint bytes: initial=\(try first.data().count) next=\(try next.data().count)")
+    }
+    func testValidatedCopyPageReturnsWhileUnselectedRowsChange() async throws {
+        let session = try await fixture(rows: 2)
+        let found = try await session.contentSearch(["retained": true])
+        let hashes = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(found["rowHashes"].text)))
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(hashes, first: 1, last: 1))
+        let gate = ContentReadGate(stage: "contentPage")
+        await session.noteHistoryPageSteps { gate.step($0) }
+        let copy = Task { try await session.contentPage(["first": 1, "last": 1, "revision": found["revision"],
+            "incarnation": found["incarnation"], "digest": JSON(digest)]) }
+        defer { gate.open(); copy.cancel() }
+        try await eventually { gate.count > 0 }
+        await session.copyFixtureContent([textBlock("Unselected append/update")], index: 1)
+        gate.open()
+        let page = try await copy.value
+        XCTAssertTrue(page["text"].text?.contains("Answer 0") == true)
+        XCTAssertEqual(gate.count, 1, "An already validated immutable page must not rebuild and re-page")
+    }
     private func fixture(rows: Int = 130, client: (any ModelClient)? = nil) async throws -> AgentSession {
         let root = try temporaryDirectory(), path = root.appendingPathComponent("copy.jsonl"), profile = try fixtureProfile()
         do {

@@ -9,8 +9,10 @@ import AppKit
     init(model: WorkspaceModel, sessionID: String) { self.model = model; self.sessionID = sessionID }
     func search(_ query: String, start: Int) async throws -> ContentSearch {
         let id = UUID(); searchID = id
-        let result = try await model.searchConversation(sessionID, query: query, start: start)
+        let held = selection?.result
+        var result = try await model.searchConversation(sessionID, query: query, start: start, known: held)
         guard searchID == id, !Task.isCancelled else { throw CancellationError() }
+        if result.rowHashes == nil, let held, result.sameSnapshot(as: held) { result.rowHashes = held.rowHashes }
         let token = UUID().uuidString
         selection = (token, result); range = nil
         var published = result; published.revision = token
@@ -93,14 +95,14 @@ extension WorkspaceModel {
     }
 
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
-    func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false) async throws -> ContentSearch {
+    func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false, known: ContentSearch? = nil) async throws -> ContentSearch {
         let navigation = transcriptNavigation(id)
-        let result = try await searchConversationSource(id, query: query, start: start, renderedAgentProse: renderedAgentProse)
+        let result = try await searchConversationSource(id, query: query, start: start, renderedAgentProse: renderedAgentProse, known: known)
         try Task.checkCancellation()
         guard navigation.isCurrent(in: self) else { throw CancellationError() }
         return result
     }
-    private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool) async throws -> ContentSearch {
+    private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool, known: ContentSearch?) async throws -> ContentSearch {
         if let conversationSearchLoader { return try await conversationSearchLoader(id, query, start) }
         guard let item = record(id) else { throw StoreError.invalidRecord }
         // The app owns Markdown rendering. Search its journal projection for
@@ -118,14 +120,21 @@ extension WorkspaceModel {
         }
         if opened.contains(id), let host = hosts[item.workspaceID] {
             let epoch = host.epoch
-            let value = try await host.request("session.content.search", sessionID: id, params: ["query": .string(query), "start": .number(Double(start)), "retained": .bool(true)])
+            let source = ContentSearch.Source(sessionID: id, workspaceID: item.workspaceID, path: item.path, hostEpoch: epoch)
+            var params: [String: WireValue] = ["query": .string(query), "start": .number(Double(start)), "retained": .bool(true)]
+            if let known, known.rowHashes != nil, known.source == source {
+                params["knownRevision"] = .string(known.revision); params["knownIncarnation"] = known.incarnation.map(WireValue.string)
+            }
+            let value = try await host.request("session.content.search", sessionID: id, params: params)
             var result = try JSONDecoder().decode(ContentSearch.self, from: JSONEncoder().encode(value))
-            result.source = .init(sessionID: id, workspaceID: item.workspaceID, path: item.path, hostEpoch: epoch)
+            result.source = source
             return result
         }
         guard let path = item.path else { return .init(hits: [], total: 0, next: nil, revision: "empty") }
-        var result = try await history.searchContent(path: path, query: query, start: start, retained: true)
-        result.source = .init(sessionID: id, workspaceID: item.workspaceID, path: path, hostEpoch: nil)
+        let source = ContentSearch.Source(sessionID: id, workspaceID: item.workspaceID, path: path, hostEpoch: nil)
+        let revision = known?.source == source && known?.rowHashes != nil ? known?.revision : nil
+        var result = try await history.searchContent(path: path, query: query, start: start, retained: true, knownRevision: revision)
+        result.source = source
         return result
     }
     func conversationPage(_ id: String, first: Int, last: Int, cursor: ContentCursor, selection: ContentSearch, digest: String) async throws -> ContentPage {
@@ -146,7 +155,7 @@ extension WorkspaceModel {
         try Task.checkCancellation()
         guard let path = source.path else { throw StoreError.invalidRecord }
         if source.hostEpoch != nil { try await host?.settleCaptureIfStopping() }
-        return try await history.retainedContentPage(path: path, sessionID: id, first: first, last: last, cursor: cursor, digest: digest)
+        return try await history.retainedContentPage(path: path, journalID: selection.journalID, first: first, last: last, cursor: cursor, digest: digest)
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }

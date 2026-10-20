@@ -11,11 +11,16 @@ struct ContentHit: Codable, Sendable, Identifiable {
     var omittedOutputs: Set<String>? = nil
 }
 struct ContentSearch: Codable, Sendable {
-    struct Source: Codable, Sendable { var sessionID: String; var workspaceID: String; var path: String?; var hostEpoch: String? }
+    struct Source: Codable, Sendable, Equatable { var sessionID: String; var workspaceID: String; var path: String?; var hostEpoch: String? }
     var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String
     var digest: String? = nil, incarnation: String? = nil
     var rowHashes: Data? = nil
+    /// Imports keep their journal header ID while the desktop record gets a new ID.
+    var journalID: String? = nil
     var source: Source? = nil
+    func sameSnapshot(as other: ContentSearch) -> Bool {
+        revision == other.revision && incarnation == other.incarnation && journalID == other.journalID && source == other.source
+    }
 }
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }

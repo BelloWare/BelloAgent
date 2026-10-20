@@ -167,7 +167,10 @@ extension AgentSession {
         result["revision"] = JSON(contentRevision)
         if params["retained"].flag == true {
             result["digest"] = JSON(content.digest); result["incarnation"] = JSON(displayEpoch)
-            result["rowHashes"] = JSON(content.encodedRowHashes)
+            result["journalID"] = JSON(id)
+            if params["knownRevision"].text != content.revision || params["knownIncarnation"].text != displayEpoch {
+                result["rowHashes"] = JSON(content.encodedRowHashes)
+            }
             result["revision"] = JSON(content.revision)
         }
         return result
@@ -196,10 +199,14 @@ extension AgentSession {
             if digest == nil, ![contentRevision, content.revision].contains(params["revision"].text ?? "") {
                 throw AgentError("history_changed", "History changed; refresh the selection")
             }
-            let page = try await BlockingWorkExecutor.shared.run { try content.page(first: first, last: last, index: index, offset: offset, digest: digest, cancellation: $0) }
+            let step = historyPageStep
+            let page = try await BlockingWorkExecutor.shared.run {
+                let page = try content.page(first: first, last: last, index: index, offset: offset, digest: digest, cancellation: $0)
+                step?("contentPage")
+                return page
+            }
             try throwIfClosed(); try Task.checkCancellation()
-            if content.key != contentKey {
-                if digest != nil { continue }
+            if digest == nil, content.key != contentKey {
                 throw AgentError("history_changed", "History changed; refresh the selection")
             }
             return page

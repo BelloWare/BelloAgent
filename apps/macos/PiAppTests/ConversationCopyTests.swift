@@ -3,6 +3,64 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class ConversationCopyTests: XCTestCase, SerialTestLane {
+    func testImportedSelectionUsesTheJournalIdentity() async throws {
+        let root = scratchRoot("imported-copy-identity"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        let path = root.appendingPathComponent("external.jsonl")
+        try Data("{\"type\":\"session\",\"version\":3,\"id\":\"external-origin\"}\n{\"type\":\"message\",\"id\":\"answer\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"Imported retained answer\"}}\n".utf8).write(to: path)
+        await model.importChat(from: path, workspaceID: "pane-project", store: try XCTUnwrap(model.store))
+        let chat = try XCTUnwrap(model.chats.first { $0.path == path.path })
+        XCTAssertNotEqual(chat.id, "external-origin")
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id), found = try await source.search("", 0)
+        let text = try await collect(source, result: found)
+        XCTAssertTrue(text.contains("Imported retained answer"))
+    }
+    func testImportedJournalCopiesRangesConversationAndExportWithItsOwnIdentity() async throws {
+        let root = scratchRoot("copy-imported"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        let path = root.appendingPathComponent("external.jsonl"), destination = root.appendingPathComponent("export.txt")
+        let body = "IMPORTED-ANSWER " + String(repeating: "🌍 retained ", count: 4000)
+        var records: [WireValue] = [.object(["type": .string("session"), "version": .number(3), "id": .string("external-origin")])]
+        for (id, parent, text) in [("first", "", body), ("last", "first", "IMPORTED-LAST")] {
+            records.append(.object(["type": .string("message"), "id": .string(id), "parentId": parent.isEmpty ? .null : .string(parent),
+                "message": .object(["role": .string("assistant"), "content": .string(text)])]))
+        }
+        func journal(_ records: [WireValue]) throws -> Data {
+            try records.reduce(into: Data()) { $0.append(try JSONEncoder().encode($1)); $0.append(10) }
+        }
+        try journal(records).write(to: path)
+        await model.importChat(from: path, workspaceID: "pane-project", store: try XCTUnwrap(model.store))
+        let chat = try XCTUnwrap(model.chats.first { $0.path == path.path })
+        XCTAssertNotEqual(chat.id, "external-origin"); XCTAssertTrue(chat.imported)
+        let expected = records.dropFirst().map { ConversationContent.text($0.object ?? [:]) }
+        let pasteboard = NSPasteboard(name: .init("copy-imported-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let sheet = ConversationContentView(model: model, sessionID: chat.id, pasteboard: pasteboard)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: ConversationContentView.size), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = sheet; window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        try await eventually("The imported selection is ready") { sheet.copyAll.isEnabled }
+        sheet.lastField.value = 1; sheet.copyRange.onPress?()
+        try await eventually("The imported selection is ready") { sheet.copyAll.isEnabled }
+        XCTAssertEqual(pasteboard.string(forType: .string), expected[0])
+        sheet.copyAll.onPress?()
+        try await eventually("The imported selection is ready") { sheet.copyAll.isEnabled }
+        XCTAssertEqual(pasteboard.string(forType: .string), expected.joined())
+        let previous = PiQuestion.shared.chooseFiles
+        defer { PiQuestion.shared.chooseFiles = previous }
+        PiQuestion.shared.chooseFiles = { [destination] }
+        sheet.exportButton.onPress?()
+        try await eventually("The imported selection is ready") { sheet.copyAll.isEnabled }
+        XCTAssertEqual(try? String(contentsOf: destination, encoding: .utf8), expected.joined())
+        records[0] = .object(["type": .string("session"), "version": .number(3), "id": .string("different-journal")])
+        try journal(records).write(to: path)
+        pasteboard.clearContents(); pasteboard.setString("UNCHANGED CLIPBOARD", forType: .string)
+        sheet.copyAll.onPress?()
+        try await eventually("The imported selection is ready") { sheet.copyAll.isEnabled }
+        XCTAssertEqual(pasteboard.string(forType: .string), "UNCHANGED CLIPBOARD", "The same rows in a different journal cannot inherit the selection")
+    }
     private func fixture(omitArguments: Bool = false, streaming: Bool = false) async throws -> (WorkspaceModel, ChatRecord, HostSupervisor, String) {
         let setup = try await gatewayWorkspace("conversation-copy", projectID: "copy")
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
@@ -48,6 +106,31 @@ import XCTest
         model.scheduleIdle(workspaceID: chat.workspaceID, host: host)
         try await eventually("The idle helper retired") { !host.isReady && !model.opened.contains(chat.id) }
         try await host.shutdownAndWait()
+    }
+    func testNextResultsKeepsOnlyTheMatchingFingerprintManifest() async throws {
+        let (model, chat, _, expected) = try await fixture()
+        let found = try await model.searchConversation(chat.id, query: "", start: 0)
+        model.conversationSearchLoader = { _, _, start in
+            var page = found
+            if start > 0 { page.rowHashes = nil }
+            if start == 2 { page.revision = "a different snapshot" }
+            if start == 3 { page.incarnation = "a different runtime" }
+            if start == 4 { page.source?.hostEpoch = "a different host" }
+            return page
+        }
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id)
+        _ = try await source.search("", 0)
+        let next = try await source.search("", 1)
+        let text = try await collect(source, result: next)
+        XCTAssertEqual(text, expected)
+        for start in 2...4 {
+            _ = try await source.search("", 0)
+            do {
+                let changed = try await source.search("", start)
+                _ = try await collect(source, result: changed)
+                XCTFail("A different snapshot/source cannot borrow the old fingerprints")
+            } catch { }
+        }
     }
     func testCompletedRangeSurvivesStreamingAndDiskHandoffDuringTheResponse() async throws {
         try await copyDuringResponse(handoffFirst: false)
