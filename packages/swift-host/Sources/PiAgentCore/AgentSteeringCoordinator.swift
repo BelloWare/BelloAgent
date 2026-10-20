@@ -4,7 +4,9 @@ import Foundation
 /// with v2. Only runnable turns are retained here; journal state owns identity.
 actor AgentSteeringCoordinator {
     typealias Open = @Sendable (SubagentEnvironment, SubagentPlan) async throws -> AgentSession
+    typealias Retire = @Sendable (AgentSession, SubagentPlan, AgentChildTurn) async throws -> Void
     let open: Open
+    let retire: Retire
     let settled: SubagentCoordinator.Settled
     struct Job {
         let owner: AgentSession, environment: SubagentEnvironment, plan: SubagentPlan
@@ -14,6 +16,7 @@ actor AgentSteeringCoordinator {
         var cancelled = false, allocated = false, sealed = false
         /// Continues a turn parked at a cost-limit pause.
         var resuming = false
+        var resumeGeneration: CostPauseGeneration?
         /// This job, not a later one for the same turn (a Resume reinstalls
         /// parked turns under new jobs); and whether it is parking now.
         let instance = UUID()
@@ -25,6 +28,9 @@ actor AgentSteeringCoordinator {
     var queues: [String:[String]] = [:]
     var active: [String:Int] = [:]
     var gates: [String:AsyncGate] = [:]
+    var resumeGates: [String:AsyncGate] = [:]
+    var preparedResumes: [String:CostPauseGeneration] = [:]
+    var activatedResumes: [String:CostPauseGeneration] = [:]
     var signals: [String:AgentWakeSignal] = [:]
     var cancelledThrough: [String:Int] = [:]
     /// Owners paused at their family's cost limit: nothing of theirs starts,
@@ -38,8 +44,11 @@ actor AgentSteeringCoordinator {
     var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
-    init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
-        self.open = open; self.settled = settled
+    var beforeResumeInstall: (@Sendable () async -> Void)?
+    var afterResumeInstall: (@Sendable () async -> Void)?
+    init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() },
+         retire: @escaping Retire = { parent, plan, turn in try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:parent.directory) }) {
+        self.open = open; self.settled = settled; self.retire = retire
     }
     func gate(_ owner: String) -> AsyncGate {
         if let gate = gates[owner] { return gate }; let gate = AsyncGate(); gates[owner] = gate; return gate
@@ -159,7 +168,7 @@ actor AgentSteeringCoordinator {
             // Accepted before a pause landed (its child was still opening):
             // it parks now rather than waiting in a queue nothing pumps.
             // (After this command releases the owner's lock, which park takes.)
-            if paused.contains(parent.id) { let parked = job; jobs[turn.id]?.task = Task { await self.park(parked,child:parked.child) } }
+            if paused.contains(parent.id) { let parked = job, generation = parent.pauseGeneration; jobs[turn.id]?.task = Task { await self.park(parked,child:parked.child,generation:generation) } }
             else { pump(parent.id) }
         }
         if call.name == "subagent_stop" { await stop(owner:parent.id,target:.init(childID:call.arguments["child_id"].text!,turn:call.arguments["turn"].int!),human:false) }
@@ -196,7 +205,10 @@ actor AgentSteeringCoordinator {
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
             guard await child.subagents.origin?.matchesAccepted(job.plan.origin) == true else { throw SubagentRecovery.damaged() }
-            if job.resuming { try await child.resumeAgentTurn(job.turn,owner:job.owner,coordinator:self) }
+            if job.resuming {
+                guard let generation = job.resumeGeneration else { throw SubagentRecovery.damaged() }
+                try await child.resumeAgentTurn(job.turn,owner:job.owner,coordinator:self,generation:generation)
+            }
             else { try await child.prepareAgentTurn(job.turn,owner:job.owner,coordinator:self) }
             await child.useRetrySettings(job.environment.retry)
             try await job.environment.traces.inheritCapturePolicy(child:job.turn.childID,owner:job.owner.id)
@@ -229,7 +241,8 @@ actor AgentSteeringCoordinator {
             budgetStopped.remove(id)
             // Not under this runner's cancellation: the pause cancels it.
             let parked = child ?? job.child
-            await Task { await self.park(job,child:parked) }.value; return
+            let generation = job.owner.pauseGeneration
+            await Task { await self.park(job,child:parked,generation:generation) }.value; return
         }
         budgetStopped.remove(id)
         // Acceptance may already have prepared a child before it got a slot.
@@ -252,21 +265,33 @@ actor AgentSteeringCoordinator {
     /// Keeps an unsealed turn for Resume: queued in the owner and child
     /// journals, with no result and its pending parent messages kept. The
     /// runtime is released; Resume opens the child again from its journal.
-    func park(_ job: Job, child: AgentSession?) async {
+    func park(_ job: Job, child: AgentSession?, generation: CostPauseGeneration) async {
+        guard generation.clock === job.owner.costPauseClock, generation.isCurrentPause else { return }
         // Only the job still installed, once: a stale snapshot (a pause's
         // loop across awaits) never parks a job a Resume installed since,
         // and two parkers of one job do not both remove it.
         guard let current = jobs[job.turn.id], current.instance == job.instance, !current.parking else { return }
+        if current.cancelled {
+            if current.allocated { await finishJob(job,child:child) }
+            return
+        }
         jobs[job.turn.id]?.parking = true
         var turn = job.turn; turn.status = .queued; turn.result = nil
         let lock = gate(job.owner.id)
         do {
             try await lock.acquire()
             do {
-                if let saved = await job.owner.agentState().turns[turn.id], !saved.status.terminal, saved.status != .queued {
-                    try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                guard generation.isCurrentPause else { jobs[job.turn.id]?.parking = false; await lock.release(); return }
+                let saved = await job.owner.agentState().turns[turn.id]
+                guard generation.isCurrentPause else { jobs[job.turn.id]?.parking = false; await lock.release(); return }
+                if let saved, saved.status.terminal {
+                    try await seal(turn:saved,parent:job.owner,task:job.plan.origin.description,child:child)
+                } else {
+                    if let saved, saved.status != .queued {
+                        try await job.owner.parkOwnedTurn(turn,generation:generation)
+                    }
+                    if let child { try await child.parkAgentTurn(turn,generation:generation) }
                 }
-                if let child { try await child.parkAgentTurn(turn) }
                 await lock.release()
             } catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
@@ -275,13 +300,15 @@ actor AgentSteeringCoordinator {
         jobs.removeValue(forKey:turn.id); queues[job.owner.id]?.removeAll { $0 == turn.id }
         if job.allocated { active[job.owner.id,default:0] -= 1 }
         pump(job.owner.id)
-        await publishParked(job)
+        await publishParked(job,generation:generation)
         await signal(job.owner.id).pulse()
     }
     /// Drops the hold of an owner that is not paused (one an earlier runtime
     /// of the chat left), once nothing of it runs.
-    func releaseStaleHold(owner: AgentSession) async {
+    func releaseStaleHold(owner: AgentSession, generation: CostPauseGeneration) async {
+        guard generation.clock === owner.costPauseClock, generation.isCurrent else { return }
         guard paused.contains(owner.id), !jobs.values.contains(where: { $0.owner.id == owner.id }), !(await owner.costPaused) else { return }
+        guard generation.isCurrent else { return }
         paused.remove(owner.id); pump(owner.id)
     }
     /// The owner paused at its family's cost limit: queued turns park now;
@@ -290,70 +317,90 @@ actor AgentSteeringCoordinator {
     /// runner parks the turn. `halt` (Stop or close of a paused owner) stops
     /// the children's runs too. Idempotent; a pause older than a Resume
     /// (`generation`, the owner's pause count) is ignored.
-    func pause(owner: AgentSession, generation: Int, halt: Bool = false) async {
-        // An explicit Stop or close always halts; a late automatic pause
-        // older than a Resume does nothing.
-        guard halt || generation > resumedThrough[owner.displayEpoch, default: -1] else { return }
+    func pause(owner: AgentSession, generation: CostPauseGeneration, halt: Bool = false) async {
+        // All cross-actor pause/halt messages belong to the issuing generation.
+        // Halt is not an exception: a queued Stop cannot undo a later Resume.
+        guard generation.clock === owner.costPauseClock, generation.isCurrent,
+              halt || generation.pauses > resumedThrough[owner.displayEpoch,default:-1] else { return }
         paused.insert(owner.id)
         for snapshot in Array(jobs.values) where snapshot.owner === owner {
-            // The loop crosses awaits: a Resume since then ends it, and each
-            // job is read again, so a stale snapshot acts on nothing.
-            if !halt, generation <= resumedThrough[owner.displayEpoch, default: -1] { break }
+            guard generation.isCurrent else { break }
             guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance else { continue }
             if job.allocated {
                 if halt { jobs[job.turn.id]?.task?.cancel() }
-                if let child = job.child { if halt { await child.stop() } else { await child.abortModelRequests() } }
+                if let child = job.child { await child.receiveChildPause(generation:generation,halt:halt) }
             } else if jobs[job.turn.id]?.task == nil {
-                await park(job,child:job.child)
+                await park(job,child:job.child,generation:generation)
             }
         }
         await signal(owner.id).pulse()
     }
-    /// Resume: every unsealed turn of this owner goes on under the owner's
-    /// current execution, in acceptance order, through the ordinary slots.
-    /// Turns parked across a relaunch are found in the journal, not memory.
-    func resumeParked(owner parent: AgentSession, generation: Int) async throws {
-        // The pause's own hold may not have arrived yet: apply it first, so
-        // every running turn parks under the old execution.
+    /// Phase one installs continuations while the family remains held. The
+    /// separate install gate also makes duplicate preparations idempotent;
+    /// Stop still uses only the family gate and never waits for this drain.
+    func resumeParked(owner parent: AgentSession, generation: CostPauseGeneration) async throws {
+        guard generation.clock === parent.costPauseClock, generation.isCurrent else { return }
+        let install = resumeGates[parent.id] ?? AsyncGate(); resumeGates[parent.id] = install
+        try await install.acquire()
+        do { try await installParked(owner:parent,generation:generation); await install.release() }
+        catch { await install.release(); throw error }
+        await afterResumeInstall?()
+        try generation.check()
+    }
+    private func installParked(owner parent: AgentSession, generation: CostPauseGeneration) async throws {
+        try generation.check()
         let runtime = parent.displayEpoch
-        if !paused.contains(parent.id), jobs.values.contains(where: { $0.owner === parent }), generation > resumedThrough[runtime, default: -1] {
-            await pause(owner:parent,generation:generation)
-        }
-        resumedThrough[runtime] = max(resumedThrough[runtime, default: -1], generation)
-        // The pause's runners finish parking (or sealing) first: a turn still
-        // settling is otherwise neither resumed nor left for the next Resume.
-        // Queued jobs without a runner park here; Stop ends the wait.
+        if preparedResumes[runtime] == generation || activatedResumes[runtime] == generation { return }
+        paused.insert(parent.id)
+        await pause(owner:parent,generation:generation)
         let wake = signal(parent.id)
         while jobs.values.contains(where: { $0.owner === parent }) {
-            try Task.checkCancellation()
+            try generation.check()
             for snapshot in Array(jobs.values) where snapshot.owner === parent {
                 guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance, !job.allocated, job.task == nil else { continue }
-                await park(job,child:job.child)
+                await park(job,child:job.child,generation:generation)
+                try generation.check()
             }
             let revision = await wake.revision
+            try generation.check()
             guard jobs.values.contains(where: { $0.owner === parent }) else { break }
             await wake.wait(after:revision)
         }
-        paused.remove(parent.id)
-        let state = await parent.agentState()
-        let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
-        guard !parked.isEmpty else { pump(parent.id); return }
-        let env = try await parent.delegationEnvironment()
-        let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
-        let plans = await parent.subagents.plans.values
-        for original in parked.sorted(by: { (order($0), $0.id) < (order($1), $1.id) }) {
-            guard let plan = plans.first(where: { $0.origin.link.childSessionID == original.childID }) else { throw SubagentRecovery.damaged() }
-            var turn = original; turn.status = .queued; turn.result = nil
-            turn.continuations = (turn.continuations ?? []) + [AgentTurnContinuation(parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID)]
-            try await parent.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
-            var runtimeEnv = env
-            if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
-            var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn); job.resuming = true
-            jobs[turn.id] = job
-            queues[parent.id,default:[]].append(turn.id)
-        }
-        pump(parent.id)
-        await signal(parent.id).pulse()
+        let lock = gate(parent.id); try await lock.acquire()
+        do {
+            try generation.check()
+            let state = await parent.agentState(); try generation.check()
+            let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
+            if !parked.isEmpty {
+                let env = try await parent.delegationEnvironment(); try generation.check()
+                let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
+                let plans = await parent.subagents.plans.values; try generation.check()
+                for original in parked.sorted(by: { (order($0), $0.id) < (order($1), $1.id) }) {
+                    guard let plan = plans.first(where: { $0.origin.link.childSessionID == original.childID }) else { throw SubagentRecovery.damaged() }
+                    var turn = original; turn.status = .queued; turn.result = nil
+                    turn.continuations = (turn.continuations ?? []) + [AgentTurnContinuation(parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID)]
+                    await beforeResumeInstall?(); try generation.check()
+                    try await parent.installResumedTurn(turn,generation:generation); try generation.check()
+                    var runtimeEnv = env
+                    if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
+                    var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn); job.resuming = true; job.resumeGeneration = generation
+                    jobs[turn.id] = job; queues[parent.id,default:[]].append(turn.id)
+                }
+            }
+            await lock.release()
+        } catch { await lock.release(); throw error }
+        try generation.check()
+        preparedResumes[runtime] = generation
+    }
+    /// Phase two follows the owner's durable commit. No await separates this
+    /// final fence from releasing the hold/pumping. A newer pause makes a late
+    /// activation a no-op, as it does every other pause-protocol message.
+    func activateResume(owner: AgentSession, generation: CostPauseGeneration) {
+        guard generation.clock === owner.costPauseClock, generation.isCurrent, !owner.costPauseClock.isPaused else { return }
+        activatedResumes[owner.displayEpoch] = generation
+        resumedThrough[owner.displayEpoch] = max(resumedThrough[owner.displayEpoch,default:-1],generation.pauses)
+        paused.remove(owner.id); pump(owner.id)
+        let wake = signal(owner.id); Task { await wake.pulse() }
     }
     func finishJob(_ job: Job, child: AgentSession?) async {
         let lock = gate(job.owner.id)
@@ -369,7 +416,7 @@ actor AgentSteeringCoordinator {
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
         // A cost-limit pause stops runs itself and keeps the turns for Resume.
-        guard !paused.contains(owner), var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
+        guard human || !paused.contains(owner), var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
         job.cancelled = true; job.task?.cancel(); jobs[target.id] = job
         if let child = job.child { await child.stop() }
         if !job.allocated {

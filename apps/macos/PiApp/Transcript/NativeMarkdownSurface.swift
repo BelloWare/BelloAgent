@@ -149,28 +149,12 @@ import AppKit
     /// The reply's text over `ranges`, as a copy gives it.
     func copyText(_ ranges: [NSRange]) -> String {
         guard let storage = textStorage else { return "" }
-        let text = storage.string as NSString
         var result = ""
         for range in ranges {
             let clipped = NSIntersectionRange(range, NSRange(location: 0, length: storage.length))
             guard clipped.length > 0 else { continue }
             if !result.isEmpty { result += "\n" }
-            var skippedMarker = NSRange(location: NSNotFound, length: 0)
-            storage.enumerateAttributes(in: clipped) { attributes, run, _ in
-                if attributes[.piChrome] != nil { return }
-                if let marker = attributes[.piListMarker] as? String {
-                    // A marker counts once, however the selection cuts it.
-                    var whole = NSRange()
-                    _ = storage.attribute(.piListMarker, at: run.location, effectiveRange: &whole)
-                    guard whole != skippedMarker else { return }
-                    skippedMarker = whole
-                    result += marker
-                    return
-                }
-                let piece = text.substring(with: run)
-                if piece == "\n", let copy = attributes[.piBlockBreak] as? String { result += copy; return }
-                result += piece
-            }
+            result += MarkdownCopyText(storage, range: clipped).string
         }
         return result
     }
@@ -978,7 +962,7 @@ import AppKit
         headingAction = view
         view.update(target: target, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
         let size = view.fittingSize
-        let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth) + 30
+        let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth + 30)
         view.frame = NSRect(x: trailing - size.width, y: box.midY - size.height / 2, width: size.width, height: size.height)
         if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
     }

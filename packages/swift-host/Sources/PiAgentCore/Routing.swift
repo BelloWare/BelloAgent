@@ -86,6 +86,19 @@ struct RoutingIdentity: Sendable {
             if type == "message_delta" { add(value["delta"]["model"],source:"message_delta.delta.model",excluding:credential) }
         }
     }
+    /// Routing decisions use helper-owned enums. Only observed/configured
+    /// text is credential-bearing; the protocol and fixed provenance stay intact.
+    func captured(_ credentials: CaptureCredentials) -> JSON {
+        var value = json
+        for field in ["requestedAlias", "effectiveModel", "reportedModels", "contractReference"] { value[field] = credentials.metadata(value[field]) }
+        let configured = Set(["modelHeader", "deploymentHeader", "groupHeader"].compactMap { contract.raw[$0].text?.lowercased() }.map { "header:" + $0 })
+        value["evidence"] = .array(value["evidence"].list.map { item in
+            var safe = item; safe["value"] = credentials.metadata(item["value"])
+            if let source = item["source"].text, configured.contains(source) { safe["source"] = JSON(credentials.metadataText(source)) }
+            return safe
+        })
+        return value
+    }
     var json: JSON {
         // Only this explicitly observed namespace is equivalent to its bare
         // model name. Do not strip arbitrary providers or decode opaque IDs.

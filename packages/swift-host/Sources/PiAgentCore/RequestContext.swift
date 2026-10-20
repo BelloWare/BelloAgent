@@ -23,8 +23,7 @@ enum PiContext {
         let lastUsageIndex: Int?
     }
 
-    /// pi-ai's usage for one reply, read from the provider's own usage object
-    /// as pi reads it, so the count equals pi's for the same response. The
+    /// pi-ai's usage shape for one reply, using validated provider counts. The
     /// Responses API's input_tokens includes cached and cache-write tokens;
     /// pi's input does not. Without the provider object, the helper's
     /// normalized fields map the same way (their inputIncludingCache holds
@@ -32,17 +31,15 @@ enum PiContext {
     static func usage(_ reported: JSON, api: String) -> JSON? {
         func count(_ value: JSON) -> Int { UsageObservation.count(value) ?? 0 }
         func excluding(_ whole: Int, _ parts: Int...) -> Int { parts.reduce(whole) { $0 - min($0, $1) } }
-        let raw = reported["raw"]
-        if raw.isObject {
+        // The raw object is retained evidence. Only validated components may
+        // anchor context; an invalid total falls back to its valid parts.
+        if reported["raw"].isObject {
+            let input = count(reported["input"]), output = count(reported["output"])
+            let read = count(reported["cacheRead"]), write = count(reported["cacheWrite"])
             if api == "anthropic-messages" {
-                let input = count(raw["input_tokens"]), output = count(raw["output_tokens"])
-                let read = count(raw["cache_read_input_tokens"]), write = count(raw["cache_creation_input_tokens"])
-                return shape(input: input, output: output, cacheRead: read, cacheWrite: write, total: sum([input, output, read, write]))
+                return shape(input:input,output:output,cacheRead:read,cacheWrite:write,total:sum([input,output,read,write]))
             }
-            let details = raw["input_tokens_details"]
-            let read = count(details["cached_tokens"]), write = count(details["cache_write_tokens"])
-            return shape(input: excluding(count(raw["input_tokens"]), read, write), output: count(raw["output_tokens"]),
-                         cacheRead: read, cacheWrite: write, total: count(raw["total_tokens"]))
+            return shape(input:excluding(input,read,write),output:output,cacheRead:read,cacheWrite:write,total:count(reported["total"]))
         }
         guard ["input", "inputIncludingCache", "output", "total"].contains(where: { !reported[$0].isNull }) else { return nil }
         let read = count(reported["cacheRead"]), write = count(reported["cacheWrite"])
@@ -100,7 +97,8 @@ enum PiContext {
     /// at least one token; an unknown window clamps nothing.
     static func outputRoom(contextWindow: Int, requestTokens: Int) -> Int {
         guard contextWindow > 0 else { return Int.max }
-        return max(1, contextWindow - requestTokens - contextSafetyTokens)
+        guard contextWindow > contextSafetyTokens, requestTokens < contextWindow - contextSafetyTokens else { return 1 }
+        return contextWindow - contextSafetyTokens - max(0, requestTokens)
     }
 
     /// estimateContextTokens over the rows the next request replays.

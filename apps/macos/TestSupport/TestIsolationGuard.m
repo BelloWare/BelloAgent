@@ -1,9 +1,9 @@
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
 #include <pwd.h>
 #include <unistd.h>
 #if !PI_TEST_ISOLATION_PROBE
 #import <AppKit/AppKit.h>
-#import <objc/runtime.h>
 #endif
 
 // Compiled only into PiAppTestHost and PiAppTests. Constructors run before
@@ -44,6 +44,33 @@ static void refuse(NSString *reason) {
     // Exit before test discovery, without an exception handler, crash reporter
     // or shutdown callback that could open the rejected defaults domain.
     _exit(78);
+}
+
+static NSDictionary<NSString *, NSString *> *testHomeEnvironment;
+static void (*setTaskEnvironment)(id, SEL, NSDictionary<NSString *, NSString *> *);
+
+static void testSetTaskEnvironment(id receiver, SEL selector, NSDictionary<NSString *, NSString *> *environment) {
+    NSMutableDictionary *isolated = [(environment ?: NSProcessInfo.processInfo.environment) mutableCopy];
+    [isolated addEntriesFromDictionary:testHomeEnvironment];
+    setTaskEnvironment(receiver, selector, isolated);
+}
+
+static void homeIsolationMarker(id receiver, SEL selector) {}
+
+static void installTestHomes(NSString *home) {
+    home = canonical(home);
+    testHomeEnvironment = @{@"HOME": home, @"CFFIXED_USER_HOME": home,
+                            @"CODEX_HOME": [home stringByAppendingPathComponent:@".codex"]};
+    for (NSString *key in testHomeEnvironment) {
+        if (setenv(key.UTF8String, testHomeEnvironment[key].UTF8String, 1) != 0) refuse(@"cannot isolate the test environment");
+    }
+    // Explicit Process environments otherwise drop CFFIXED_USER_HOME, and
+    // Foundation in the helper resolves the account home despite HOME.
+    Class type = [NSTask new].class;
+    Method setter = class_getInstanceMethod(type, @selector(setEnvironment:));
+    if (!setter) refuse(@"cannot isolate child process homes");
+    if (!class_addMethod(type, sel_registerName("belloTestHomeIsolationInstalled"), (IMP)homeIsolationMarker, "v@:")) return;
+    setTaskEnvironment = (void *)method_setImplementation(setter, (IMP)testSetTaskEnvironment);
 }
 
 #if !PI_TEST_ISOLATION_PROBE
@@ -108,6 +135,7 @@ __attribute__((constructor)) static void guardTestProcess(void) {
         NSString *fixedHome = NSProcessInfo.processInfo.environment[@"CFFIXED_USER_HOME"];
         NSString *reason = isolationFailure(identifier, effectiveHome, @(account->pw_dir), fixedHome);
         if (reason) refuse(reason);
+        installTestHomes(effectiveHome);
         installTestPasteboards();
         // Also protect plain test invocations that removed the scheme's old
         // opt-out flag: test hosts can never start normal application services.

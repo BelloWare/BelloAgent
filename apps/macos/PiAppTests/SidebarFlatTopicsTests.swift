@@ -411,6 +411,7 @@ final class SidebarFlatTopicsTests: XCTestCase {
         }
         let sidebar = makeSidebar(model)
         await model.sidebarSearch.reconcileNow()
+        model.sidebarSearch.setScope(.fullChats)
         sidebar.setFilter("marmalade"); await model.sidebarSearch.settleQuery(); sidebar.settle()
         XCTAssertEqual(rows(sidebar.list.contents).map(\.id), ["content-b", "content-a"])
         func snippets() -> [String] { sidebar.list.contents.entries.compactMap { if case .searchSnippet(let state) = $0 { return state.chatID }; return nil } }

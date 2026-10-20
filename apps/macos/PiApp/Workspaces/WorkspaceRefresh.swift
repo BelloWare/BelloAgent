@@ -77,9 +77,9 @@ extension WorkspaceModel {
             do {
                 guard current() else { return }
                 let visible = id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id)
-                let generation = view.presentationGeneration
+                var generation = view.presentationGeneration
                 let requestedViewport = view.viewportRequest
-                let requestedRevision = view.projectionRevision
+                var requestedRevision = view.projectionRevision
                 // Human-readable footer accounting refreshes at 4 Hz. Decide
                 // here, so a poll that will not show those figures does not
                 // carry them: they are larger than the token that changed.
@@ -87,6 +87,15 @@ extension WorkspaceModel {
                 let params = snapshotParams(for: view, requestedRevision: requestedRevision, wantsMetrics: wantsMetrics)
                 let result = try await host.request(visible ? "session.snapshot" : "session.status", sessionID: id, params: params).object ?? [:]
                 guard current() else { return }
+                guard view.presentationGeneration == generation else { view.dirty = true; return }
+                let previousEpoch = view.snapshotEpoch
+                guard view.adoptSnapshotEpoch(result["monitoring"]?.object?["epoch"]?.string) else { return }
+                if previousEpoch != nil, previousEpoch != view.snapshotEpoch {
+                    generation = view.presentationGeneration; requestedRevision = view.projectionRevision
+                    resumeVisibleReaders()
+                }
+                let appliedEpoch = view.snapshotEpoch
+                guard (result["seq"]?.number ?? -1) >= view.lastSequence else { return }
                 await applySideStatus(id: id, result: result)
                 guard current() else { return }
                 let sequence = result["seq"]?.number ?? -1
@@ -109,7 +118,7 @@ extension WorkspaceModel {
                         let lifecycle = presentation.flatMap { decoder.decode($0) }
                         return (applied.rows, applied.resync, lifecycle, decoder)
                     }.value
-                    guard current() else { return }
+                    guard current(), view.snapshotEpoch == appliedEpoch else { return }
                     view.taskPresentationDecoder = decoded.decoder
                     incoming = decoded.rows; resyncNeeded = decoded.resync; lifecycle = decoded.lifecycle
                 }
@@ -476,9 +485,9 @@ extension WorkspaceModel {
     func pendingIntentsChanged(_ id: String) { displays[id]?.pendingIntentRevision &+= 1 }
     func cancelIdle(workspaceID: String) { idleTasks.removeValue(forKey: workspaceID)?.cancel() }
     func scheduleIdle(workspaceID: String, host: HostSupervisor) {
-        idleTasks[workspaceID]?.cancel(); guard !host.isBusy, !sides.values.contains(where: { $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) else { return }
+        idleTasks[workspaceID]?.cancel(); guard resourceInvocations[workspaceID] == nil, !host.isBusy, !sides.values.contains(where: { $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) else { return }
         let grace = configuration.runtime.idleGraceSeconds
-        idleTasks[workspaceID] = Task { try? await Task.sleep(for: .seconds(grace)); guard !Task.isCancelled, !host.isBusy else { return }
+        idleTasks[workspaceID] = Task { try? await Task.sleep(for: .seconds(grace)); guard !Task.isCancelled, resourceInvocations[workspaceID] == nil, !host.isBusy else { return }
             // A deliberate stop: its exit is not a crash (see `startHost`).
             retiringHosts.insert(ObjectIdentifier(host))
             host.shutdown(); opened.subtract(chats.filter { $0.workspaceID == workspaceID }.map(\.id))

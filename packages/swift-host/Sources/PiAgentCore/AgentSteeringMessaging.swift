@@ -26,22 +26,32 @@ extension AgentSteeringCoordinator {
     /// All calls here run only at complete request/tool boundaries. The per-owner
     /// gate serializes send routing, child sealing, and the final parent fence.
     func boundary(_ session: AgentSession, final: Bool) async throws -> Bool {
+        var compacted = false
         if let lease = await session.agentLease {
-            guard let job = jobs[lease.id], job.child === session else { throw SubagentRecovery.damaged() }
-            let lock = gate(job.owner.id); try await lock.acquire()
-            do {
-                let delivered = try await deliver(owner:job.owner,recipient:session,childTurn:lease)
-                if final, !delivered {
-                    // A cost-limit pause defers the seal: the runner parks the
-                    // turn and Resume finds its answer already in place.
-                    if paused.contains(job.owner.id) { throw CancellationError() }
-                    var terminal = jobs[lease.id] ?? job
-                    terminal.turn.result = await session.agentResult(lease,plan:job.plan,cancelled:terminal.cancelled)
-                    terminal.turn.status = terminal.turn.result!.status
-                    try await seal(job:terminal,child:session)
-                }
-                await lock.release(); return delivered
-            } catch { await lock.release(); throw error }
+            while true {
+                try Task.checkCancellation()
+                guard let job = jobs[lease.id], job.child === session else { throw SubagentRecovery.damaged() }
+                let lock = gate(job.owner.id); try await lock.acquire()
+                do {
+                    let delivery = try await deliver(owner:job.owner,recipient:session,childTurn:lease,canCompact:!compacted)
+                    if delivery != .compact {
+                        if final, delivery == .none {
+                            // A cost-limit pause defers the seal: the runner parks the
+                            // turn and Resume finds its answer already in place.
+                            if paused.contains(job.owner.id) { throw CancellationError() }
+                            var terminal = jobs[lease.id] ?? job
+                            terminal.turn.result = await session.agentResult(lease,plan:job.plan,cancelled:terminal.cancelled)
+                            terminal.turn.status = terminal.turn.result!.status
+                            try await seal(job:terminal,child:session)
+                        }
+                        await lock.release(); return delivery == .delivered
+                    }
+                    await lock.release()
+                } catch { await lock.release(); throw error }
+                // A provider request must not hold up a sibling's Stop. The
+                // next pass selects messages again under the family gate.
+                try await session.compactContext(reason:"agent-delivery"); compacted = true
+            }
         }
         guard await session.subagents.family != nil else { return false }
         let lock = gate(session.id), wake = signal(session.id)
@@ -52,50 +62,65 @@ extension AgentSteeringCoordinator {
             let revision = await wake.revision
             try await lock.acquire()
             do {
-                if try await deliver(owner:session,recipient:session,childTurn:nil) { await lock.release(); return true }
-                if !final { await lock.release(); return false }
-                if await session.agentDeliveryHeld {
+                let delivery = try await deliver(owner:session,recipient:session,childTurn:nil,canCompact:!compacted)
+                if delivery == .delivered { await lock.release(); return true }
+                if delivery == .compact { await lock.release() }
+                else {
+                    if !final { await lock.release(); return false }
+                    if await session.agentDeliveryHeld {
+                        await session.setFamilyWaiting(true)
+                        await lock.release(); await wake.wait(after:revision); continue
+                    }
+                    let busy = jobs.values.contains { $0.owner === session }
+                    if !busy {
+                        let ready = try await session.closeAgentFamilyFence()
+                        await lock.release(); return !ready
+                    }
                     await session.setFamilyWaiting(true)
-                    await lock.release(); await wake.wait(after:revision); continue
+                    await lock.release()
+                    if await session.hasAgentUserSteering { return true }
+                    await wake.wait(after:revision)
+                    continue
                 }
-                let busy = jobs.values.contains { $0.owner === session }
-                if !busy {
-                    let ready = try await session.closeAgentFamilyFence()
-                    await lock.release(); return !ready
-                }
-                await session.setFamilyWaiting(true)
-                await lock.release()
-                if await session.hasAgentUserSteering { return true }
-                await wake.wait(after:revision)
             } catch { await lock.release(); throw error }
+            try await session.compactContext(reason:"agent-delivery"); compacted = true
         }
     }
     func seal(job original: Job, child: AgentSession?) async throws {
         var job = original; job.turn.normalizeResult()
         if jobs[job.turn.id]?.sealed == true { return }
-        if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(job.turn) }
-        try await job.owner.appendAgentRecord(JournalRecordKind.agentTerminal,job.turn)
-        let state = await job.owner.agentState()
-        let id = "result:" + job.turn.id
-        if state.messages[id] == nil {
-            let message = AgentFamilyMessage.resultEvent(job.turn,task:job.plan.origin.description,sequence:state.sequence + 1)
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,message)
-        }
-        for var pending in state.pending(author:"parent") where pending.childID == job.turn.childID && pending.turn == job.turn.turn {
-            pending.disposition = "not_delivered_interrupted"
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,pending)
-            let current = await job.owner.agentState()
-            let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,notice)
-        }
+        try await seal(turn:job.turn,parent:job.owner,task:job.plan.origin.description,child:child)
         jobs[job.turn.id]?.turn = job.turn; jobs[job.turn.id]?.sealed = true
-        await signal(job.owner.id).pulse()
     }
-    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?) async throws -> Bool {
-        guard !(await recipient.agentDeliveryHeld) else { return false }
+    /// A parked turn has no job. Its accepted Stop seals and reports through
+    /// the same path; recovery catches up a closed child's mirror.
+    func seal(turn: AgentChildTurn, parent: AgentSession, task: String, child: AgentSession?) async throws {
+        if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(turn) }
+        if await parent.agentState().turns[turn.id] != turn { try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,turn) }
+        let state = await parent.agentState()
+        let id = "result:" + turn.id
+        if state.messages[id] == nil {
+            let message = AgentFamilyMessage.resultEvent(turn,task:task,sequence:state.sequence + 1)
+            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,message)
+        }
+        for var pending in state.messages.values.sorted(by: { $0.sequence < $1.sequence }) where pending.author == "parent" && pending.childID == turn.childID && pending.turn == turn.turn &&
+            (pending.disposition == "pending" || pending.disposition == "not_delivered_interrupted") {
+            if pending.disposition == "pending" {
+                pending.disposition = "not_delivered_interrupted"
+                try await parent.appendAgentRecord(JournalRecordKind.agentMessage,pending)
+            }
+            let current = await parent.agentState()
+            let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
+            if current.messages[notice.id] == nil { try await parent.appendAgentRecord(JournalRecordKind.agentMessage,notice) }
+        }
+        await signal(parent.id).pulse()
+    }
+    enum AgentDeliveryResult { case none, delivered, compact }
+    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?, canCompact: Bool = true) async throws -> AgentDeliveryResult {
+        guard !(await recipient.agentDeliveryHeld) else { return .none }
         let state = await owner.agentState(), author = childTurn == nil ? "subagent" : "parent"
         let pending = state.pending(author:author).filter { childTurn == nil || ($0.childID == recipient.id && $0.turn == childTurn?.turn) }
-        guard !pending.isEmpty else { return false }
+        guard !pending.isEmpty else { return .none }
         var selected: [AgentFamilyMessage] = []
         if childTurn != nil { selected = Array(pending.prefix(1)) }
         else {
@@ -118,9 +143,8 @@ extension AgentSteeringCoordinator {
         var payload: JSON = ["kind":"agent_events","version":3,"events":.array(selected.map(\.event))]
         while !(try await recipient.agentPayloadFits(payload,parentLane:childTurn == nil)) {
             if selected.count > 1 { selected.removeLast(); payload["events"] = .array(selected.map(\.event)); continue }
-            if await recipient.canCompact { try await recipient.compactContext(reason:"agent-delivery") }
-            guard try await recipient.agentPayloadFits(payload,parentLane:childTurn == nil) else { throw AgentError("coordination_limit", "Accepted agent input is held because it cannot fit this request budget; adjust context or Resume") }
-            break
+            if canCompact, await recipient.canCompact { return .compact }
+            throw AgentError("coordination_limit", "Accepted agent input is held because it cannot fit this request budget; adjust context or Resume")
         }
         let ids = selected.map(\.id)
         if childTurn == nil, (state.run?.reportContinuations ?? 0) >= 32,
@@ -136,7 +160,7 @@ extension AgentSteeringCoordinator {
         delivery.committed = true
         try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery)
         if owner !== recipient { try await recipient.appendAgentRecord(JournalRecordKind.agentDelivery,delivery,owner:owner.id) }
-        await signal(owner.id).pulse(); return true
+        await signal(owner.id).pulse(); return .delivered
     }
     func wait(_ receipt: JSON, args: JSON, parent: AgentSession) async throws -> JSON {
         let start = ContinuousClock.now

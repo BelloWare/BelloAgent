@@ -39,10 +39,10 @@ final class WorkspaceConcurrencyTests: XCTestCase {
         let profile = try XCTUnwrap(model.profiles.first)
         model.installPreparing = true
         do { try await model.verifyOnboardingConnection(profile); XCTFail("Update barrier must refuse a new probe") } catch ConnectionProbeError.cancelled { }
-        XCTAssertEqual(model.connectionProbes, 0)
+        XCTAssertEqual(model.connectionProbeAdmissions, 0)
         model.installPreparing = false; model.shutdown()
         do { try await model.verifyOnboardingConnection(profile); XCTFail("Shutdown must refuse a new probe") } catch ConnectionProbeError.cancelled { }
-        XCTAssertEqual(model.connectionProbes, 0)
+        XCTAssertEqual(model.connectionProbeAdmissions, 0)
     }
 
     @MainActor func testOnboardingProbeCountsAsActiveWhileCredentialsArePending() async throws {

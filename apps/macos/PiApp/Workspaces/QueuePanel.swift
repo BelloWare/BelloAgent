@@ -153,6 +153,9 @@ extension WorkspaceModel {
     }
     /// One `queue.edit.*` command to the chat's helper.
     func queueEditRequest(_ method: String, sessionID: String, params: [String: WireValue]) async throws -> [String: WireValue] {
+        let outputUse = beginToolOutputUse(.queuedEdit)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         if let queueEditOperation { return try await queueEditOperation(method, sessionID, params) }
         guard let item = record(sessionID) else { throw HostError.failure("This chat is no longer open.") }
         let host = try await open(item)
@@ -356,6 +359,9 @@ extension WorkspaceModel {
         let intent = sent.map { CommandIntent(id: "queue-edit:" + editID + ":" + QueuedEditDraft.digest($0), sessionID: view.id, turnID: "queue-edit:" + editID, text: $0,
                                               state: "intent", draftReviewTracked: true, queueEditID: editID) }
         let write = intent.flatMap { _ in store?.draftWriter.capture(view.id) }
+        // Protect captured references through their independent write. Input
+        // becomes durable before queueEditRequest waits for recycling.
+        let outputUse = intent.map { _ in beginToolOutputUse(.queuedEdit) }
         let completed: ([String: WireValue]) -> Void = { [weak self] reply in
             done(reply)
             guard let self, let intent, let store else { return }
@@ -367,6 +373,7 @@ extension WorkspaceModel {
             }
         }
         Task {
+            defer { if let outputUse { finishToolOutputUse(outputUse) } }
             if let intent {
                 do {
                     guard let store else { throw StoreError.unavailable }

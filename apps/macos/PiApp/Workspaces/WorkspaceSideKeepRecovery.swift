@@ -75,8 +75,11 @@ extension WorkspaceModel {
             guard let self, accepted else { return }
             let dismissal = UUID()
             self.sideKeepDismissals[issue.id, default: []].insert(dismissal)
+            let outputUse = self.beginToolOutputUse(.keepDismissal)
             Task {
+                defer { self.finishToolOutputUse(outputUse) }
                 do {
+                    try await self.prepareToolOutputUse(outputUse)
                     guard let store = self.store else { throw StoreError.unavailable }
                     try await store.dismissSideKeep(issue.chat)
                     self.sideKeepResolutionRevision &+= 1

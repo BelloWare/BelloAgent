@@ -60,7 +60,7 @@ extension WorkspaceModel {
     }
     func inspectResources(_ id: String?) { resourceTargetSessionID = id; showResources = true }
     func updateHostActivity(workspaceID: String) {
-        hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
+        hosts[workspaceID]?.isBusy = resourceInvocations[workspaceID] != nil || sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
     func canOpenSide(_ id: String) -> Bool {
         guard let parent = record(id), !parent.isSubagent, orphanedSideRefusal(id) == nil else { return false }
@@ -139,8 +139,11 @@ extension WorkspaceModel {
         }
         sides[parentID] = info
         displays[id] = view; view.loading = true; view.draft = question
+        let outputUse = beginToolOutputUse(.sidePublication)
         Task {
+            defer { finishToolOutputUse(outputUse) }
             do {
+                try await prepareToolOutputUse(outputUse)
                 try await publishPendingSide(info, view: view)
                 // This flag was set here, for the side's creation; the send
                 // below sets its own.
@@ -176,6 +179,9 @@ extension WorkspaceModel {
     /// entered after Return emptied it.
     func publishPendingSide(_ info: SideRecord, view: SessionDisplay, submission: CommandIntent? = nil) async throws {
         guard let store else { throw StoreError.unavailable }
+        let outputUse = beginToolOutputUse(.sidePublication)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         guard let parent = record(info.parentID) else { throw HostError.failure("The parent chat is no longer available.") }
         let id = info.id, parentID = info.parentID
         // A send that publishes the side holds this flag for the whole
@@ -285,6 +291,9 @@ extension WorkspaceModel {
     /// until nothing is left.
     func moveSideDraft(_ info: SideRecord, from shown: SessionDisplay? = nil) async throws {
         guard let side = shown ?? displays[info.id] else { return }
+        let outputUse = beginToolOutputUse(.sideDraft)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         while true {
             if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
             // One move of a side's draft at a time: another waits, then sees
@@ -305,6 +314,7 @@ extension WorkspaceModel {
             let (done, finish) = AsyncStream<Never>.makeStream(), token = UUID()
             sideDraftTransfers[info.id] = (token, Task { for await _ in done {} })
             defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
+            await sideDraftTransferStep?()
             do {
                 let version = try await store.draftVersion(id: info.parentID)
                 let saved = version.snapshot.draft ?? DraftRecord(id: info.parentID, text: "")
@@ -424,12 +434,12 @@ extension WorkspaceModel {
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
     func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id, generation = view.presentationGeneration, navigation = transcriptNavigation(child.id)
+        let id = child.id, generation = view.presentation.readGeneration, navigation = transcriptNavigation(child.id)
         let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
             defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
-            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentation.readGeneration == generation }
             do {
                 await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }
@@ -475,11 +485,14 @@ extension WorkspaceModel {
     private func performKeepSide(_ id: String, whenFinished: Bool) {
         guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, let host = hosts[info.workspaceID] else { return }
         view.loading = true
+        let outputUse = beginToolOutputUse(.keep)
         Task { defer {
+            finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
             if let host = hosts[info.workspaceID] { scheduleIdle(workspaceID: info.workspaceID, host: host) }
         }; do {
+            try await prepareToolOutputUse(outputUse)
             guard let store else { throw StoreError.unavailable }
             var chat = info.chat
             chat.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
@@ -522,6 +535,9 @@ extension WorkspaceModel {
     }
     func registerKeptSide(id: String, path: String?) async throws {
         guard let store, let path else { throw HostError.failure("Keep could not match this chat to its saved file.") }
+        let outputUse = beginToolOutputUse(.keepRegistration)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         let intent: SideKeepIntent
         switch try await store.sideKeepState(id: id) {
         case .pending(let pending): intent = pending
@@ -607,11 +623,14 @@ extension WorkspaceModel {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }
         if info.pending { if !discardPendingSideNow(info) { Task { await discardPendingSide(info) } }; return }
         view.loading = true
+        let outputUse = beginToolOutputUse(.sideClose)
         Task { defer {
+            finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
             if let host = hosts[info.workspaceID] { scheduleIdle(workspaceID: info.workspaceID, host: host) }
         }; do {
+            try await prepareToolOutputUse(outputUse)
             // Recovery removes its intent only with the merged draft saved.
             // Wait before any capture so closing cannot overwrite that draft.
             if let recovery = draftWrites.recoveries[id] { await recovery.value }
@@ -664,6 +683,9 @@ extension WorkspaceModel {
         guard !installPreparing, let parent = record(parentID), !parent.imported, !isEphemeral(parentID), let store else {
             throw HostError.failure("Choose a saved native session before forking its context.")
         }
+        let outputUse = beginToolOutputUse(.fork)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         let id = UUID().uuidString
         let title = atMessageID == nil ? parent.title + " — fork" : parent.title + " · fork"
         var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String(title.prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)

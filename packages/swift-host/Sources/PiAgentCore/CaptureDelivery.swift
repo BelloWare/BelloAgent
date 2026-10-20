@@ -35,13 +35,30 @@ public actor CaptureDelivery {
             // One page in flight at a time, in order.
             guard await withCheckedContinuation({ waiters.append($0) }) else { return false }
         } else { occupied = true }
-        let accepted = await withCheckedContinuation { continuation in
+        defer {
+            if waiters.isEmpty { occupied = false } else { waiters.removeFirst().resume(returning: true) }
+        }
+        guard let bytes = try? packet.data() else { return false }
+        if bytes.count <= HostProtocol.frameBytes - 512 { return await sendFrame(["packet": packet]) }
+        // Metadata can contain the complete provider usage object. Page the
+        // encoded packet, including JSON escaping, without truncating capture.
+        let packetID = UUID().uuidString
+        for offset in stride(from: 0, to: bytes.count, by: 32 * 1024) {
+            let end = min(bytes.count, offset + 32 * 1024)
+            guard await sendFrame(["chunk": ["packetId": JSON(packetID), "offset": JSON(offset),
+                "bytes": JSON(bytes.subdata(in: offset..<end).base64EncodedString()), "final": JSON(end == bytes.count)]]) else { return false }
+        }
+        return true
+    }
+    private func sendFrame(_ payload: JSON) async -> Bool {
+        guard !closed else { return false }
+        return await withCheckedContinuation { continuation in
             let id = UUID().uuidString
             pending = (id, continuation)
-            emit(["v": 1, "kind": "capture", "hostEpoch": JSON(epoch), "transferId": JSON(id), "packet": packet])
+            var frame = payload
+            frame["v"] = 1; frame["kind"] = "capture"; frame["hostEpoch"] = JSON(epoch); frame["transferId"] = JSON(id)
+            emit(frame)
         }
-        if waiters.isEmpty { occupied = false } else { waiters.removeFirst().resume(returning: true) }
-        return accepted
     }
     public func acknowledge(_ id: String, accepted: Bool) {
         guard let pending, pending.0 == id else { return }

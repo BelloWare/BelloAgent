@@ -25,6 +25,32 @@ import XCTest
     }
 
     func testSendKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot() async throws { try await typingDuringWrite("turn.submit") }
+    func testQueuedSaveProtectsOutputBeforePublishingCapturedInput() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        view.draft = "Captured output reference"; view.queueEditingID = "queued"; view.queueEditID = "edit"
+        view.queueEditOriginal = "Original queued text"; view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "")
+        let gate = AsyncGate(); var entered = false
+        model.toolOutputProducerStep = { producer in
+            if producer == .queuedEdit { entered = true; await gate.wait() }
+        }
+        wire.heldMethod = "queue.edit.save"
+        model.saveQueuedEdit(sessionID: view.id)
+        XCTAssertTrue(model.toolOutputProducers.values.contains(.queuedEdit), "Captured input needs protection before its persistence task starts")
+        try await eventually("Queued Save reached output protection") { entered }
+        let durable = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertEqual(durable.map(\.text), ["Captured output reference"], "Captured input must be durable while recycling delays dispatch")
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "queue.edit.save" })
+        view.draft = "Newer typing"; model.draftChanged(view)
+        await gate.open()
+        try await eventually("Captured queue Save dispatched") { wire.held != nil }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "queue.edit.save" }.count, 1)
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertEqual(pending.map(\.text), ["Captured output reference"])
+        wire.release()
+        try await eventually("Queued Save settled") { !view.queueEditResolving && model.toolOutputProducers.isEmpty }
+        XCTAssertTrue(view.draft.contains("Newer typing"))
+        try await wire.host.shutdownAndWait()
+    }
     func testSteerKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot() async throws { try await typingDuringWrite("turn.steer") }
     func testHistoricalEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot() async throws { try await typingDuringWrite("turn.edit") }
     func testQueuedEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot() async throws { try await typingDuringWrite("queue.edit.save") }

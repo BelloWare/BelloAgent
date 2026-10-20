@@ -928,6 +928,7 @@ final class UIScreenshotTests: XCTestCase {
         let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
         window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(0.8)
         await model.sidebarSearch.reconcileNow()
+        model.sidebarSearch.setScope(.fullChats)
         sidebar.setFilter(query)
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline, model.sidebarContentMatches.count < minimumMatches { try await settle(0.2) }

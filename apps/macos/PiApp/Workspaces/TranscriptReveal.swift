@@ -104,21 +104,20 @@ extension WorkspaceModel {
         view.jumpRetry = nil
         revealSerial += 1
         let navigation = transcriptNavigation(id, advancing: true)
-        let serial = revealSerial, generation = view.presentationGeneration
+        let serial = revealSerial, generation = view.presentation.readGeneration
         view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position; view.jumpOffset = offset
         // The timeline the window holds: a position counts rows of it, and a
         // page of another (the chat changed elsewhere) is not read in its
         // place; that change is the page's to report.
         let lineage = view.presentation.identity?.lineage, incarnation = view.presentation.identity?.incarnation
-        // The same source, or the other kind of it (the journal and the
-        // helper hand a chat over); a journal replaced under the window is
-        // not, and is reported as a change.
+        // A helper can replace its runtime or hand off to the journal after
+        // validating the held entry. A replaced file is still a source change.
         func sameSource(_ page: ConversationHistoryPage) -> Bool {
             guard let lineage, let incarnation else { return true }
-            return page.lineage == lineage && (page.incarnation == incarnation || page.incarnation.hasPrefix("file:") != incarnation.hasPrefix("file:"))
+            return page.lineage == lineage && (page.incarnation == incarnation || !page.incarnation.hasPrefix("file:") || !incarnation.hasPrefix("file:"))
         }
         func current() -> Bool {
-            !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
+            !Task.isCancelled && displays[item.id] === view && view.presentation.readGeneration == generation && view.jumpRead == serial
                 && view.revealRead == nil && transcriptShows(item.id) && navigation.isCurrent(in: self)
         }
         // Reads at the old window's edges join rows that are about to go.
@@ -267,7 +266,7 @@ extension WorkspaceModel {
     /// Reads the page that starts at `around` (the chat's first page when
     /// nil) and adopts it in place of the window, landing on its first row.
     private func readWindow(_ item: ChatRecord, view: SessionDisplay, around: String?, navigation: TranscriptNavigationToken) async -> Bool {
-        let generation = view.presentationGeneration
+        let generation = view.presentation.readGeneration
         let source = view.presentation.identity
         let boundary = view.olderPage.cursor ?? view.newerPage.cursor
         // The newest request wins: a find bar stepping through matches quickly
@@ -278,7 +277,7 @@ extension WorkspaceModel {
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {
-            !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.revealRead == serial
+            !Task.isCancelled && displays[item.id] === view && view.presentation.readGeneration == generation && view.revealRead == serial
                 && transcriptShows(item.id) && navigation.isCurrent(in: self)
         }
         // Reads at the old window's edges join rows that are about to go.
@@ -300,7 +299,7 @@ extension WorkspaceModel {
         do {
             var page = try await readConversationWindow(item, cursor: nil, around: around, start: around == nil, validating: boundary)
             guard current() else { return false }
-            if let source, page.lineage != source.lineage || (page.incarnation != source.incarnation && page.incarnation.hasPrefix("file:") == source.incarnation.hasPrefix("file:")) {
+            if let source, page.lineage != source.lineage || (page.incarnation != source.incarnation && page.incarnation.hasPrefix("file:") && source.incarnation.hasPrefix("file:")) {
                 changedSource(); return false
             }
             page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)

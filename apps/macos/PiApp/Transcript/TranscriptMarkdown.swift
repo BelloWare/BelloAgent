@@ -55,8 +55,21 @@ enum TranscriptMarkdown {
     static func blocks(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
         locatedBlocks(source, style: style).map(\.block)
     }
-    /// The words shown by the native reader, using the same cached parse and
-    /// untrusted-content policy. Search calls this off the main actor.
+    nonisolated(unsafe) private static let renderedCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>(); cache.countLimit = 1_000; cache.totalCostLimit = 16 << 20; return cache
+    }()
+    /// The native builder's selection-copy text, including list markers and
+    /// table cells. Search creates no views or layout managers.
+    static func renderedText(_ source: String, style: MarkdownStyle = .prose, streaming: Bool = false) -> String {
+        if streaming { return MarkdownTextBuilder.string(streamingBlocks(source, style: style), style: style) }
+        let key = (style.id + "\u{0}" + source) as NSString
+        if let cached = renderedCache.object(forKey: key) { return cached as String }
+        let text = MarkdownTextBuilder.string(blocks(source, style: style), style: style)
+        renderedCache.setObject(text as NSString, forKey: key, cost: source.utf8.count + text.utf8.count)
+        return text
+    }
+    /// Content characters without layout markers, used to bound incremental
+    /// adoption of agent previews. Find uses the native builder above.
     static func plainText(_ blocks: [MarkdownBlock]) -> String {
         blocks.map { block in
             switch block {
@@ -207,7 +220,12 @@ enum TranscriptMarkdown {
             return (blocks, collectingItems ? blocks.map { _ in [] } : [])
         }
         var lineOffsets = [0]
-        for (offset, byte) in source.utf8.enumerated() where byte == 10 { lineOffsets.append(offset + 1) }
+        var carriageReturn = false
+        for (offset, byte) in source.utf8.enumerated() {
+            if byte == 10, carriageReturn { lineOffsets[lineOffsets.count - 1] = offset + 1 }
+            else if byte == 10 || byte == 13 { lineOffsets.append(offset + 1) }
+            carriageReturn = byte == 13
+        }
         var leaves: [Leaf] = []
         let characters = parsed.characters
         for run in parsed.runs {
@@ -380,7 +398,7 @@ enum TranscriptMarkdown {
             return fragment
     }
 
-    /// The document's text with markdown removed, for accessibility labels and search.
+    /// The document's text with markdown removed, for accessibility labels.
     static func plainText(_ source: String) -> String {
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: false, interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
         guard let parsed = try? AttributedString(markdown: source, options: options) else { return source }

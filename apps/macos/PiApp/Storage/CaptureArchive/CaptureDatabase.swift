@@ -123,7 +123,6 @@ final class CaptureDatabase: @unchecked Sendable {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else { throw CaptureFailure.database("step", sqlite3_extended_errcode(handle)) }
-            guard result.count < 100_001 else { throw CaptureFailure.quota }
             var row: [String: CaptureSQLValue] = [:]
             for index in 0..<sqlite3_column_count(statement) {
                 let name = String(cString: sqlite3_column_name(statement, index))
@@ -133,7 +132,6 @@ final class CaptureDatabase: @unchecked Sendable {
                 case SQLITE_FLOAT: row[name] = .real(sqlite3_column_double(statement, index))
                 case SQLITE_BLOB:
                     let count = Int(sqlite3_column_bytes(statement, index))
-                    guard count <= 4_194_304 else { throw CaptureFailure.corrupt }
                     row[name] = .blob(sqlite3_column_blob(statement, index).map { Data(bytes: $0, count: count) } ?? Data())
                 default: row[name] = .null
                 }

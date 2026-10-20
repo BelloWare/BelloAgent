@@ -2872,3 +2872,305 @@ ran alone. Own generated result bundles were removed after testing; no own
 clone directories remained. Text logs are retained. No other workstream's
 build products or lock were touched. No unresolved findings from this review
 remain.
+
+## Round 9 integration with dev/next
+
+The lead requested a merge, after Round 9 passed review, of
+`origin/dev/next` (`649ea623291c9417443d61d3bb55314d8a2f5d9a`) into
+`dev/a130-workspace` (`8c3157244622061aa4904a364dc32cc968b2212f`).
+`git fetch origin` and `git merge origin/dev/next` produced ten conflicts.
+This is a two-parent merge; neither branch's history was rewritten.
+
+### Conflict resolutions
+
+- `NEXT-RELEASE.md`: retained both sets of completed entries. The incoming
+  completed cost-pause entry supersedes the old unchecked known-issue entry.
+- `PiApp.xcodeproj/project.pbxproj`: regenerated with
+  `xcodegen generate --quiet`; both branches' sources and tests are included.
+- `WorkspaceChatLifecycle.swift`: kept `anchor-deleted` and conflict-copy
+  cleanup, plus incoming deferred tool-output collection. Automatically merged
+  materialization retains loaded draft baselines and superseded-snapshot handling
+  inside the incoming producer lifetime.
+- `WorkspaceConnectionProbe.swift` / `WorkspaceModel.swift`: one
+  `connectionProbeAdmissions` counter covers configuration/credential waits and
+  cleanup. `connectionProbeHosts` owns private helpers so pause/quit can stop
+  them. `hasActiveWork` includes both the probe counter and Inspector resource
+  invocations. The workspace concurrency tests now assert the unified counter.
+- `WorkspaceResume.swift`: pause waits for admissions without a registered
+  helper, then stops and waits for registered private helpers. All incoming
+  Stop/Resume task cancellation and generation fences remain; image-import and
+  archive fences remain too.
+- `WorkspaceDrafts.swift`: each debounce retains its synchronously captured
+  ordered-writer ticket, predecessor drain, cancellation check and versioned
+  store write. Incoming tool-output use starts synchronously, is prepared before
+  writing and ends on every exit. No early revision reservation was restored.
+  Flush/recovery retain the incoming producer protection as well.
+- `WorkspaceSubagentDeletion.swift`: retained the unsaved-conflict refusal,
+  anchor tombstone/conflict cleanup, complete incoming tool-output inventory and
+  recycling, and identity-aware `removeDeletedSideKeep` ownership transfer.
+  Kept the incoming internal visibility used by deletion tests.
+- `SubagentReaderTests.swift`: kept all tests from both branches, including
+  pending-baseline typing, newer reveal ownership and mounted selection after
+  helper replacement.
+- `WorkspaceRaceTests.swift`: combined the fixture's session-scoped hold,
+  rejection and next-method hold support with multiple held frames, reply
+  tracking and Stop/Resume tokens. No test was removed.
+- Incoming `ToolOutputProducerTests` uses the current `publishPendingSide`
+  signature; its displayed draft remains the input for that admission test.
+
+### Adversarial integration review
+
+The only competing activity conditions are unified: credential-only probe
+admissions still block pausing; registered probes can now be stopped by the
+existing pause flow instead of waiting for provider completion. Both remain
+active through cleanup and refuse new work behind update/shutdown barriers.
+Inspector invocations also remain active. Stop invalidates Resume preparation
+before dispatch, including family fan-out, while archive invalidation remains
+independent. No obsolete task can publish a runtime or clean up its replacement.
+
+Draft ordering is unchanged: the incoming producer await does not reserve a
+revision, and a superseded ticket still fails before conflict mutation. Captured
+send/steer/edit/queue/side inputs stay in independent command records. Tool-output
+inventory scans all metadata rows, including conflict copies and independent
+inputs, so the durable recovery holders remain references after display release.
+A deleted side's different pending journal is retained before its intent is
+removed; draft-conflict cleanup occurs only with the explicit family deletion.
+
+The fixture's combined hold condition admits precisely frames matching its
+method and optional session filter, retaining every matching frame for release.
+Release switches the next hold method before replying, and rejection still
+reports failure while recording the answered method. Production conditions were
+not broadened to make either test set pass. All original test names in both
+conflicted test files and all completed release entries from both parents were
+checked for retention. No new product behavior or layout was introduced by the
+conflict resolution itself. The additional automatically merged queued-Save
+overlap below has a failing-first regression and mutation check. No layout
+changed, so a gallery run is not applicable to this integration.
+
+### Integration validation
+
+Fresh evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round9-integration/`.
+Native checks use the existing `native-tests` build root and text logs, with
+serial-lane classes run alone. The focused draft/model, deletion, onboarding, run-hold and concurrency classes
+are headless and use the explicit focused-test lock exemption; all window/focus groups hold the
+shared full-lane lock, including parallel-eligible classes that create windows. The helper
+checks use `swift-verify`, with the helper-test lock exemption for the ordinary
+suite/build and the shared lock for isolated streaming-cost measurements;
+wire/concurrent/acceptance are headless loopback helper tests and use that same
+helper-test lock exemption. They use the Release helper built
+by `scripts/build-bundle.py` under this workstream's build root. No installed app,
+real preferences/chats/Keychain, live capture or paid provider is used.
+
+
+### Queued Save integration overlap
+
+The automatically merged `QueuePanel.resolveQueuedEdit` persisted Round 9's
+captured input before calling the incoming `queueEditRequest` producer guard.
+The captured references therefore lacked the helper branch's synchronous
+producer registration while that independent write was pending.
+`SubmissionPersistenceTests.testQueuedSaveProtectsOutputBeforePublishingCapturedInput`
+checks protection synchronously at Save admission, then holds the request's
+recycling barrier. The independent input must already be durable while that
+barrier delays dispatch. Typing meanwhile still replaces only the composer;
+after release the captured input is dispatched exactly once and newer typing
+survives.
+
+Failing first against the unprotected merge: **1 test failed, 1 assertion**
+(`failing-queue-admission.log`, native exit 65):
+
+```text
+XCTAssertTrue failed - Captured input needs protection before its persistence task starts
+```
+
+Fix: a Save registers the existing `.queuedEdit` producer synchronously, before
+its persistence task is queued, and releases it on every exit. Captured input
+is saved before the request-level recycling wait. The request-level producer
+remains for direct requests and status/Cancel/Remove paths. The focused regression
+passes (`fixed-queue-admission.log`, 1 test, native exit 0).
+
+The adversarial review rejected an initial extra wait before input persistence:
+recycling must not delay durability of the captured submission. The exploratory
+`*-queue-output.log` runs tested that over-constrained ordering and are excluded
+from the final proof. The corrected regression explicitly requires durable input
+while the request waits. Only registration/lifetime extends to the earlier
+independent write; its persistence order is unchanged.
+
+Condition review: only `intent != nil` (Save) owns the additional producer;
+Cancel/Remove keep their request guard. Store failure retains the existing
+local-save refusal without dispatch. A newer composer ticket still cannot
+supersede the independent intent. The producer's lifetime includes refusal and
+uncertain-outcome settlement; its `defer` runs on all returns. Nearby captured
+send, Resend and side-first-send entry points already register before their
+persistence awaits; no further changes were needed.
+
+Mutation: replace the synchronous registration with `nil`. The corrected
+regression fails again on the admission gap (**1 test, 1 assertion**, native
+exit 65, `mutation-queue-admission.log`). The production registration was
+restored. Final native runs replace the preliminary/exploratory model/deletion
+results; helper and script source hashes remain unchanged.
+
+### Final integration results
+
+**Native: 825 passed, 2 skipped, 0 failures** (827 cases across 56 classes).
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| Native focused classes | 825 | 2 | 0 |
+| Helper except StreamingCostTests | 1137 | 7 | 0 |
+| Isolated StreamingCostTests | 5 | 0 | 0 |
+| Release wire | 40 | 0 | 0 |
+| Release concurrent | 4 | 0 | 0 |
+| Release acceptance | 3 | 0 | 0 |
+| Script unit tests | 118 | 0 | 0 |
+
+Together the two helper runs cover the full suite: **1,142 passed, 7 skipped, 0 failures** (1,149 cases).
+
+Native counts by class:
+
+| Class | Cases | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| `AppShellPerformanceTests` | 11 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ComposerSubmissionTests` | 7 | 1 | 0 |
+| `ConversationFamilyTests` | 22 | 0 | 0 |
+| `ConversationPaneTests` | 83 | 0 | 0 |
+| `CostPauseFamilyTests` | 3 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 34 | 0 | 0 |
+| `DraftLoadingTests` | 15 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftOrderingTests` | 17 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `FamilyDeletionTests` | 10 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoricalEditFocusTests` | 1 | 0 | 0 |
+| `HistoricalEditingTests` | 5 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 8 | 0 | 0 |
+| `LaunchSelectionTests` | 21 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `ModelSwitchTests` | 24 | 0 | 0 |
+| `OnboardingTests` | 22 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueueEditInteractionTests` | 17 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `QueuedEditPresentationTests` | 9 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `RunHoldTests` | 18 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SendImmediacyTests` | 14 | 0 | 0 |
+| `SessionReadStateTests` | 16 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `SkillRefreshTests` | 15 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 19 | 0 | 0 |
+| `SubagentMetadataTests` | 9 | 0 | 0 |
+| `SubagentOpeningTests` | 14 | 0 | 0 |
+| `SubagentReaderTests` | 58 | 0 | 0 |
+| `SubmissionPersistenceTests` | 11 | 0 | 0 |
+| `ToolOutputProducerTests` | 8 | 0 | 0 |
+| `UpdatePauseTests` | 8 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WireContractTests` | 11 | 1 | 0 |
+| `WorkspaceConcurrencyTests` | 10 | 0 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 9 | 0 | 0 |
+| `WorkspaceFailureTests` | 6 | 0 | 0 |
+| `WorkspaceFollowupTests` | 9 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 58 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 37 | 0 | 0 |
+
+Exact final commands, run from the worktree root. Each comment names the corresponding `.log`, `.command` and `.status` file:
+
+```sh
+# test-macos.sh rebuilds/stages the Release helper with this nested command:
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace python3 scripts/build-bundle.py
+# integration-model
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceFailureTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/SubagentMetadataTests -only-testing:PiAppTests/SubmissionPersistenceTests
+# integration-deletion
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/SubagentDeletionTests
+# integration-probes
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/OnboardingTests -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/WorkspaceConcurrencyTests
+# integration-priority
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/UpdatePauseTests
+# integration-cost-pause
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CostPauseFamilyTests
+# integration-alone-SessionReadStateTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionReadStateTests
+# integration-windows
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/AppShellPerformanceTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/ModelSwitchTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/SendImmediacyTests -only-testing:PiAppTests/ComposerSubmissionTests -only-testing:PiAppTests/ComposerImportSubmissionTests -only-testing:PiAppTests/QueuedEditPresentationTests
+# integration-alone-HistoricalEditFocusTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoricalEditFocusTests
+# integration-queue
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+# integration-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+# integration-original
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+# integration-opening
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+# integration-conversation
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+# integration-lifecycle
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+# integration-window
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+# integration-additional
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueuedAttachmentLimitTests -only-testing:PiAppTests/SkillRefreshTests -only-testing:PiAppTests/WireContractTests -only-testing:PiAppTests/WorkspaceFollowupTests
+# helper-build
+swift build --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --build-tests
+# helper
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --skip-build --skip StreamingCostTests
+# helper-cost
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-verify --skip-build --filter StreamingCostTests
+# wire
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+# concurrent
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+# acceptance
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+# python
+python3 -m unittest discover -s scripts/tests
+```
+
+Exact final regression/fault-check commands (the failing-first and mutation exits are expected):
+
+```sh
+# failing-queue-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveProtectsOutputBeforePublishingCapturedInput
+# fixed-queue-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveProtectsOutputBeforePublishingCapturedInput
+# mutation-queue-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveProtectsOutputBeforePublishingCapturedInput
+```
+
+Skipped checks are explicit opt-ins/test-host limitations, not ignored failures:
+
+- `ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer`: This test host has no Conversation menu
+- `WireContractTests.testPerTokenSnapshotWithSeventyFinishedTurns`: Set PI_PERF_WIRE=1 to measure the per-token snapshot with 70 finished turns
+- `ForkCloneTests.testWriteTheSharedForkFixture`: Set PI_WRITE_FORK_FIXTURE to the fixtures directory to write the fixture.
+- `ForkPerformanceTests.testForkingAVeryLargeChat`: Set PI_PERF_FORK_MB (or PI_PERF_FORK_JOURNAL) to measure forking a large chat.
+- `HistoryReadCancellationTests.testRapidSupersessionMeasurement`: Set PI_SCROLL14_PERF=1 for generated long-chat measurements
+- `SessionOpenPerformanceTests.testMemoryOfOneOpenChat`: Set PI_PERF_MEMORY_JOURNAL and PI_PERF_MEMORY_MODE.
+- `SessionOpenPerformanceTests.testOpeningAKeptJournal`: Set PI_PERF_OPEN_JOURNAL to a journal kept with PI_PERF_KEEP_JOURNAL.
+- `SessionOpenPerformanceTests.testOpeningALongChat`: Set PI_PERF_SESSION_TURNS to measure opening a long chat.
+- `SessionOpenPerformanceTests.testSlimmingAKeptJournal`: Set PI_PERF_SLIM_JOURNAL to a journal kept with PI_PERF_KEEP_JOURNAL.
+
+All final commands exited 0. No unrelated test failure or unresolved integration
+finding remains. The only red tests are the documented failing-first and
+intentional mutation runs. The 1,310 source/project hashes match
+`tested-source-sha256.json`; helper/script sources also match their pre-UI-run
+hashes. The Release helper used by the Python suites has SHA-256
+`377fcf9fbe8488222a0528e0b6c8206f0701b699792994a6a9bee3d8317aee8b`.
+
+Final `xcodegen generate --quiet` reproduced the tested project exactly.
+`git diff --check` and the staged equivalent pass. Automatic result bundles
+were removed from this workstream's build root; no clone directories remained.
+All owned full-lane locks were released. The lead still owns the merged full gate.

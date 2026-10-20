@@ -82,11 +82,11 @@ extension WorkspaceModel {
         openInspector(session: target.ownerID, focus: .subagent(target.delegationID), originalForkID: forkID)
     }
     func loadOriginalSubagent(_ child: ChatRecord, view: SessionDisplay, navigation: HostedReaderToken) async {
-        let generation = view.presentationGeneration
+        let generation = view.presentation.readGeneration
         defer { view.finishHistoryPresentation(generation); resumeVisibleReaders() }
         func current() -> Bool {
             !Task.isCancelled && navigation.isCurrent && subagentTab(child.id) === navigation.reader &&
-                displays[child.id] === view && view.presentationGeneration == generation &&
+                displays[child.id] === view && view.presentation.readGeneration == generation &&
                 child.delegation.map { originalAvailability(SubagentTarget($0)).reason == nil } == true
         }
         do {

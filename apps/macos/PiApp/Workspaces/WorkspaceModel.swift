@@ -47,6 +47,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
+    var toolOutputRecycling: (id: UUID, task: Task<Void, Error>)?
+    var toolOutputCleanup: Task<Void, Never>?
+    var toolOutputProducers: [UUID: ToolOutputProducer] = [:]
+    var toolOutputProducerRevision: UInt64 = 0
+    var toolOutputCollectionDeferred = false
+    var toolOutputProducerStep: ((ToolOutputProducer) async throws -> Void)?
+    var toolOutputReferenceScanStep: (() async -> Void)?
     var familyDeletionStep: ((String) throws -> Void)?
     var deletionTombstoneRead: ((String) async throws -> String?)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
@@ -70,7 +77,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var visibleReplyGraceOverride: Duration?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
+    @Published var profiles: [ProfileRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
@@ -108,6 +115,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
     var archiveStopRevisions: [String: Int] = [:]
     var archiveRevisions: [String: Int] = [:]
+    var resumeStopRevisions: [String: Int] = [:]
+    var resumeTasks: [String: (task: Task<Void, Never>, family: Bool)] = [:]
     var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
@@ -247,6 +256,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var projectSidebarWrites: [String: Task<Void, Never>] = [:]
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
+    @Published var resourceInvocations: [String: Int] = [:]
+    var connectionProbeAdmissions = 0
+    var connectionProbeHosts: [String: HostSupervisor] = [:]
     var budgetOwnerChanges: Set<String> = []
     @Published var installPreparing = false
     @Published var showConversationContent = false
@@ -465,6 +477,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceSides.swift`: a side's draft on its way to its
     /// parent's saved draft, which every other move of it waits for.
     var sideDraftTransfers: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    var sideDraftTransferStep: (() async -> Void)?
     /// Test seam: each step of a connection change as it happens, awaited
     /// ("closed", "marked", "rebound", "metadata"), so a fixture can hold the change there.
     var connectionSwitchSteps: ((String) async throws -> Void)?
@@ -532,8 +545,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var connectionProbes = 0
-    var hasActiveWork: Bool { connectionProbes > 0 || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 

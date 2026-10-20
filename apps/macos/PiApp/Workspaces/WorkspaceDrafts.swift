@@ -150,8 +150,10 @@ extension WorkspaceModel {
         // that owns it: a newer one replaces the token first, so a cancelled
         // task's own cleanup can never drop it.
         let draft = view.savedDraft, id = view.id, token = UUID()
+        let outputUse = beginToolOutputUse(.draftWrite)
         draftWrites.tokens[id] = token
         draftWrites.tasks[id] = Task {
+            defer { finishToolOutputUse(outputUse) }
             defer { store.draftWriter.finish(write); if draftWrites.tokens[id] == token { draftWrites.tokens.removeValue(forKey: id); draftWrites.tasks.removeValue(forKey: id) } }
             do {
                 // Cancellation cannot withdraw a write already in the store.
@@ -159,6 +161,7 @@ extension WorkspaceModel {
                 // back to the draft that was originally loaded.
                 await previous?.value
                 try Task.checkCancellation()
+                try await prepareToolOutputUse(outputUse)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
                 try await store.put(draft, kind: "draft", id: draft.id, draftVersion: view.draftVersion, write: write); draftWrites.failed = false
             }
@@ -179,6 +182,9 @@ extension WorkspaceModel {
     /// 150 ms debounce cannot lose the last thing typed; the update path does
     /// the same inside prepareForInstall.
     func flushDrafts() async throws {
+        let outputUse = beginToolOutputUse(.draftFlush)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         for task in draftWrites.recoveries.values { await task.value }
         let pending = draftWrites.tasks, tokens = draftWrites.tokens
         for task in pending.values { task.cancel() }
@@ -286,8 +292,11 @@ extension WorkspaceModel {
         }
         if insert, let reason = Self.recoveryLimit(mergedDraft()) { view.notice = reason; return }
         let previous = draftWrites.tasks[view.id]; previous?.cancel()
+        let outputUse = beginToolOutputUse(.draftRecovery)
         draftWrites.recoveries[view.id] = Task {
+            defer { finishToolOutputUse(outputUse) }
             defer { view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }
+            do { try await prepareToolOutputUse(outputUse) } catch { return }
             // A cancelled debounce may already be in the store. Let it finish
             // before the transaction reserves the draft's newer revision.
             await previous?.value

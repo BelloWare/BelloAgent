@@ -26,6 +26,7 @@ import AppKit
         if let model, model.subagentTab(key) === self, let display = model.displays[key] {
             display.findHost?.retireFindNavigation()
             display.presentation.cancel()
+            display.presentation.reload = nil
             display.presentation.olderRead = nil; display.presentation.newerRead = nil
             display.olderPage.loading = false; display.newerPage.loading = false; display.loadingEarlier = false
             display.abandonReveal(); display.abandonJump()
@@ -227,7 +228,7 @@ extension WorkspaceModel {
             await loadOriginalSubagent(child, view: view, navigation: navigation)
         } else {
             await loadSelectedChat(child.id, item: child, into: view, selection: selectionRevision,
-                                   generation: view.presentationGeneration, heldRows: held, focusesComposer: false, reader: navigation)
+                                   generation: view.presentation.readGeneration, heldRows: held, focusesComposer: false, reader: navigation)
         }
         if navigation.isCurrent { tab.refresh() }
         releaseUnreadDisplays(keeping: selectedID ?? "")

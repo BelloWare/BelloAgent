@@ -11,24 +11,34 @@ import AppKit
 /// like any other.
 @MainActor enum TranscriptHighlightSearch { static var scans = 0 }
 
-/// One text storage owns one revision. Attribute-only edits (including syntax
-/// colour and Find marks) do not invalidate the character matches.
+/// One text storage owns one revision. Copy-layout marks affect matching;
+/// syntax colour and Find marks do not.
 @MainActor final class TranscriptTextMatches: NSObject {
     private weak var storage: NSTextStorage?
     private(set) var revision = 0
     private var matches: [TranscriptMatchQuery: [NSRange]] = [:]
+    private var copied: MarkdownCopyText?
+    private var copyMarks: [MarkdownCopyText.Mark] = []
     init(_ storage: NSTextStorage) {
         self.storage = storage
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(edited), name: NSTextStorage.didProcessEditingNotification, object: storage)
     }
     @objc private func edited() {
-        guard storage?.editedMask.contains(.editedCharacters) == true else { return }
+        guard let storage else { return }
+        if !storage.editedMask.contains(.editedCharacters) {
+            guard copied != nil, MarkdownCopyText.marks(storage) != copyMarks else { return }
+        }
+        copied = nil
         revision += 1; matches.removeAll(keepingCapacity: true)
     }
     func ranges(_ query: TranscriptMatchQuery) -> [NSRange] {
+        guard !query.needle.isEmpty, let storage else { return [] }
         if let found = matches[query] { return found }
-        let found = TranscriptNativeDocument.ranges(of: query.needle, in: (storage?.string ?? "") as NSString, flexible: query.flexible)
+        if copied == nil { copied = MarkdownCopyText(storage); copyMarks = MarkdownCopyText.marks(storage) }
+        guard let copied else { return [] }
+        let found = TranscriptNativeDocument.ranges(of: query.needle, in: copied.string as NSString, flexible: query.flexible)
+            .compactMap { copied.renderedRange($0) }
         // At most the Find query and its focused excerpt; no query history.
         if matches.count >= 2 { matches.removeAll(keepingCapacity: true) }
         matches[query] = found
@@ -67,6 +77,8 @@ struct TranscriptHighlights: Equatable {
         /// The record the place was asked for when its row is another
         /// message's (a tool's result): whose count a find reconciles.
         var record: String? = nil
+        /// These outputs belong to separate receipt hits, even outside the page.
+        var omittedOutputs: Set<String> = []
         /// Counts only the message's own prose, not its cards: a mark placed
         /// by its text (`TranscriptReveal.Mark`) counts as the text does.
         var proseOnly = false
@@ -180,12 +192,14 @@ extension TranscriptNativeDocument {
         return nil
     }
     /// Whether `text` draws a call's input rather than what it returned: a
-    /// card's "Tool input" section, or a terminal card's command line.
+    /// card's "Tool input" section, a terminal command, or requested diff content.
     static func isToolInput(_ text: NSView) -> Bool {
         var current = text.superview, capped = false
         while let ancestor = current, !(ancestor is TranscriptNativeActionRow) {
             if let prose = ancestor as? TranscriptAgentMarkdown { return prose.isToolInput }
             if let section = ancestor as? TranscriptCardSection { return section.accessibilityLabel() == "Tool input" }
+            if ancestor is TranscriptCardSource { return true }
+            if ancestor is TranscriptNativeDiffCard { return text is TranscriptCardLines }
             if ancestor is TranscriptCappedText { capped = true }
             if ancestor is TranscriptNativeTerminalCard { return !capped }
             current = ancestor.superview
@@ -208,14 +222,19 @@ extension TranscriptNativeDocument {
             expandProse(view)
             if let action = view as? TranscriptNativeActionRow, let tool = action.tool,
                focus.scopeCall.map({ $0 == tool.id }) ?? true,
-               [tool.output, tool.input].contains(where: { !transcriptRanges(of: focus.needle, in: $0 as NSString, flexible: focus.flexibleSpace).isEmpty }) {
+               ([tool.output, tool.input].contains(where: { !transcriptRanges(of: focus.needle, in: $0 as NSString, flexible: focus.flexibleSpace).isEmpty }) ||
+                !transcriptRanges(of: focus.needle, in: action.searchText as NSString, flexible: focus.flexibleSpace).isEmpty) {
+                var changed = false
                 func expand(_ view: NSView) {
                     expandProse(view)
-                    if let read = view as? TranscriptNativeReadCard, !read.expanded { read.setExpanded(true) }
-                    if let diff = view as? TranscriptNativeDiffCard, !diff.expanded { diff.setExpanded(true) }
+                    if let read = view as? TranscriptNativeReadCard, !read.expanded { read.setExpanded(true); changed = true }
+                    if let diff = view as? TranscriptNativeDiffCard, !diff.expanded { diff.setExpanded(true); changed = true }
                     for child in view.subviews { expand(child) }
                 }
                 expand(action)
+                // A diff switches from head/tail views to its scrolling body.
+                // Expose that body before counting matches, or Find lands empty.
+                if changed { action.layoutSubtreeIfNeeded() }
                 return
             }
             for child in view.subviews { visit(child) }
@@ -298,6 +317,7 @@ extension TranscriptNativeDocument {
                 // they hold whether or not each line is built now.
                 var ranges: [(text: NSTextView?, range: NSRange, lines: TranscriptCardLines?, line: Int, source: String)] = []
                 for unit in Self.textUnits(in: row) {
+                    if let call = Self.card(holding: unit)?.tool?.id, focus.omittedOutputs.contains(call), !Self.isToolInput(unit) { continue }
                     // A call's input is drawn in more than one way (a command,
                     // a section, a diff): an input place counts the whole card.
                     if let call = focus.scopeCall, Self.card(holding: unit)?.tool?.id != call || (!focus.scopeInput && Self.isToolInput(unit)) { continue }

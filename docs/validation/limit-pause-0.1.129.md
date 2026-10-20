@@ -285,6 +285,10 @@ helper suite, with mutations `r9-resume-count`, `r9-held-card`, `r10-stopped-par
 Owner decision: 0.1.129 ships after review round 11. Codex round 12 (at 7201fcbf) found
 these; they are not fixed in 0.1.129.
 
+Fixed for 0.1.130 on `dev/a130-pause-r12`, including the same-pattern sweep.
+See [round-12 fixes and validation](pause-r12-0.1.130.md) for failing-first,
+mutation and suite evidence. The original findings are retained below.
+
 - **P1, a stopped child is requeued by recovery after a crash.** The reader stops a child,
   the family then reaches its limit, and the helper exits before the child seals. Recovery of
   the paused family keeps the turn queued and ignores the durable Stop

@@ -17,7 +17,12 @@ import Combine
     private(set) var headerMenu: PiKit.MenuControl!
     let newChat = PiKit.IconButton(symbol: "square.and.pencil", label: "New Chat (⌘N)", tone: .accent, size: 24, filled: true)
     let manage = PiKit.IconButton(symbol: "folder.badge.plus", label: "Add or manage projects", size: 24)
-    let filterField = PiKit.TextField(placeholder: "Search chats and messages", icon: "magnifyingglass")
+    let filterField = PiKit.TextField(placeholder: "Search titles and details", icon: "magnifyingglass")
+    let searchScope = PiKit.Tabs(selection: SidebarSearch.Scope.titlesAndDetails,
+                               items: SidebarSearch.Scope.allCases.map { ($0, $0.title) },
+                               horizontalPadding: 6, keyboardFocusable: true, accessibilityName: "Search scope")
+    let clearFilter = PiKit.IconButton(symbol: "xmark", label: "Clear search", size: 20)
+    private var searchKeyLoopFrame = CGRect.null
     private let filterKeys = SidebarFilterDelegate()
     let selectionBar: SidebarSelectionBarView
     let scroll = NSScrollView()
@@ -78,7 +83,21 @@ import Combine
         filterKeys.changed = { [weak self] in self?.filterChanged($0) }
         filterKeys.escape = { [weak self] in self?.escapeFromFilter() }
         filterKeys.submit = { [weak self] in self?.model.openFirstSidebarResult() }
-        filterField.field.setAccessibilityLabel("Search chats and topics by title and chats by their messages")
+        filterKeys.focusChanged = { [weak self] focused in
+            // End-editing precedes the next responder; let Tab land on the pill.
+            if focused { self?.refreshSearchChrome() }
+            else { DispatchQueue.main.async { [weak self] in self?.refreshSearchChrome() } }
+        }
+        filterKeys.tab = { [weak self] in
+            guard let self, self.inheritedEnabled else { return }
+            self.window?.makeFirstResponder(self.searchScope.tab(.titlesAndDetails))
+        }
+        searchScope.onSelect = { [weak self] in self?.model.sidebarSearch.setScope($0) }
+        searchScope.setAccessibilityIdentifier("sidebarSearchScope")
+        clearFilter.setAccessibilityIdentifier("sidebarSearchClear")
+        clearFilter.onPress = { [weak self] in self?.setFilter("") }
+        filterField.padding.right = 32
+        filterField.addSubview(clearFilter)
         filterField.field.setAccessibilityIdentifier("sidebarFilter")
 
         scroll.drawsBackground = false
@@ -123,7 +142,7 @@ import Combine
         settings.onPress = { [weak self] in self?.model.showProfiles = true }
 
         selectionBar.isHidden = true
-        for view in [headerMenu!, newChat, manage, filterField, selectionBar, scroll, empty, hairline,
+        for view in [headerMenu!, newChat, manage, filterField, searchScope, selectionBar, scroll, empty, hairline,
                      report, inspector, resources, background, archive, settings] as [NSView] { addSubview(view) }
         model.sidebarFilter = filter
         // Content matches arrive after the titles: the list takes them in.
@@ -188,6 +207,9 @@ import Combine
         resources.isEnabled = model.selectedWorkspaceID != nil && enabled
         for button in [manage, report, background, archive, settings] { button.isEnabled = enabled }
         filterField.field.isEnabled = enabled
+        clearFilter.isEnabled = enabled
+        for scope in SidebarSearch.Scope.allCases { searchScope.tab(scope)?.isEnabled = enabled }
+        refreshSearchChrome()
         empty.add.isEnabled = enabled
         for button in [selectionBar.copy, selectionBar.archiveWord, selectionBar.clearWord, selectionBar.archiveIcon, selectionBar.clearIcon] {
             button.isEnabled = enabled
@@ -205,6 +227,23 @@ import Combine
         if marked != barShown {
             barShown = marked
             showBar(marked)
+        }
+    }
+
+    @objc private func refreshSearchChrome() {
+        let scope = model.sidebarSearch.scope
+        searchScope.selection = scope
+        if filterField.field.placeholderString != scope.placeholder { filterField.field.placeholderString = scope.placeholder }
+        let label = "Search chats: " + scope.title
+        if filterField.field.accessibilityLabel() != label { filterField.field.setAccessibilityLabel(label) }
+        let filterFocused = window?.firstResponder === filterField.field
+            || (window?.firstResponder as? NSTextView)?.delegate as? NSTextField === filterField.field
+        let pillFocused = (window?.firstResponder as? NSView)?.isDescendant(of: searchScope) == true
+        let hidden = filter.isEmpty && !filterFocused && !pillFocused
+        if clearFilter.isHidden != filter.isEmpty { clearFilter.isHidden = filter.isEmpty }
+        if searchScope.isHidden != hidden {
+            searchScope.isHidden = hidden
+            window?.recalculateKeyViewLoop()
         }
     }
 
@@ -261,7 +300,7 @@ import Combine
     private func escapeFromFilter() {
         if model.hasMarkedSessions { model.clearSessionMarks() } else {
             filterField.text = ""
-            if !filter.isEmpty { filterChanged("") }
+            filterChanged("")
             model.focusComposer()
         }
     }
@@ -339,7 +378,12 @@ import Combine
         var y = Self.headerHeight
         let fieldHeight = filterField.intrinsicContentSize.height
         filterField.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: fieldHeight)
+        clearFilter.frame = CGRect(x: filterField.bounds.width - 26, y: (fieldHeight - 20) / 2, width: 20, height: 20)
         y += fieldHeight + 6
+        let scopeSize = searchScope.intrinsicContentSize
+        searchScope.frame = CGRect(x: PiSpacing.md, y: y, width: scopeSize.width, height: scopeSize.height)
+        // Reserve the pill's slot: entering/leaving search never moves a row.
+        y += scopeSize.height + 6
         if barShown {
             let height = selectionBar.height(forWidth: max(0, w - PiSpacing.md * 2))
             selectionBar.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: height)
@@ -362,6 +406,10 @@ import Combine
             button.frame = CGRect(x: x, y: bottom + 1 + 6, width: 28, height: 28); x += 28 + 2
         }
         settings.frame = CGRect(x: w - PiSpacing.sm - 28, y: bottom + 1 + 6, width: 28, height: 28)
+        if let window, searchKeyLoopFrame != searchScope.frame {
+            searchKeyLoopFrame = searchScope.frame
+            window.recalculateKeyViewLoop()
+        }
     }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
@@ -370,7 +418,12 @@ import Combine
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { refresh(animated: false) }
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didUpdateNotification, object: nil)
+        if let window {
+            searchKeyLoopFrame = .null; needsLayout = true
+            NotificationCenter.default.addObserver(self, selector: #selector(refreshSearchChrome), name: NSWindow.didUpdateNotification, object: window)
+            refresh(animated: false)
+        }
     }
 }
 
@@ -379,6 +432,10 @@ import Combine
 @MainActor final class SidebarFilterDelegate: NSObject, NSTextFieldDelegate {
     var changed: ((String) -> Void)?
     var escape: (() -> Void)?
+    var tab: (() -> Void)?
+    var focusChanged: ((Bool) -> Void)?
+    func controlTextDidBeginEditing(_ notification: Notification) { focusChanged?(true) }
+    func controlTextDidEndEditing(_ notification: Notification) { focusChanged?(false) }
     /// Return: open the first chat the filter lists, at its match.
     var submit: (() -> Void)?
     func controlTextDidChange(_ notification: Notification) {
@@ -386,6 +443,9 @@ import Combine
         changed?(field.stringValue)
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertTab(_:)), !textView.hasMarkedText(), let tab {
+            tab(); return true
+        }
         // Return confirms what an input method is composing before it opens anything.
         if selector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText(), let submit,
            !control.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

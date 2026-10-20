@@ -5,6 +5,33 @@ import XCTest
 /// The Delete confirmation that names a chat's saved sides. Generated titles
 /// only; set PI_APP_CHAT_DELETION_GALLERY to a folder to write the scenes.
 final class ChatDeletionGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testOwnedImportRefusalScenes() async throws {
+        guard let path = testEnvironment("PI_APP_CHAT_DELETION_GALLERY") else { throw XCTSkip("Set PI_APP_CHAT_DELETION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath:path)
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let root = scratchRoot("owned-import-gallery"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        _ = try SubagentDiscoveryTests.family(model)
+        let owner = model.chats[0], source = URL(fileURLWithPath:try XCTUnwrap(owner.path)), store = try XCTUnwrap(model.store)
+        try await store.putChats(model.chats)
+        for scene in ["another-project","unlisted"] {
+            if scene == "unlisted" { try await store.remove(kind:"chat",id:owner.id) }
+            model.error = nil
+            await model.importChat(from:source,workspaceID:scene == "unlisted" ? owner.workspaceID : scene,store:store)
+            let text = try XCTUnwrap(model.error)
+            for (theme,appearance) in [("light",NSAppearance.Name.aqua),("dark",.darkAqua)] {
+                for width in [CGFloat(720),320] {
+                    let banner = ErrorBannerView(text:text)
+                    banner.appearance = NSAppearance(named:appearance)
+                    banner.frame = CGRect(x:0,y:0,width:width,height:banner.height(forWidth:width))
+                    banner.layoutSubtreeIfNeeded()
+                    XCTAssertTrue(banner.bounds.contains(banner.dismissButton.convert(banner.dismissButton.bounds,to:banner)))
+                    try capture(banner,to:folder.appendingPathComponent("import-\(scene)-\(theme)-\(Int(width)).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testDeletionConfirmationScenes() throws {
         guard let path = testEnvironment("PI_APP_CHAT_DELETION_GALLERY") else { throw XCTSkip("Set PI_APP_CHAT_DELETION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

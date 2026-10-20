@@ -8,6 +8,12 @@ import Combine
 // `SidebarSearchSnippetView` below.
 
 @MainActor final class SidebarSearch {
+    enum Scope: CaseIterable {
+        case titlesAndDetails, fullChats
+        var title: String { self == .titlesAndDetails ? "Titles & details" : "Full chats" }
+        var placeholder: String { self == .titlesAndDetails ? "Search titles and details" : "Search chats and messages" }
+    }
+    private(set) var scope: Scope = .titlesAndDetails
     private weak var model: WorkspaceModel?
     let index: ChatSearchIndex
     let reader: ChatSearchQuery
@@ -110,14 +116,29 @@ import Combine
     /// running for older text is stopped.
     func setQuery(_ raw: String) {
         let new = ChatSearchHit.collapsed(raw)
-        guard new != query else { return }
+        let oldScope = scope
+        if raw.isEmpty { scope = .titlesAndDetails }
+        guard new != query || scope != oldScope else { return }
         let old = query
         query = new
+        updateContentQuery(from: old)
+    }
+
+    func setScope(_ value: Scope) {
+        guard scope != value else { return }
+        scope = value
+        updateContentQuery(from: query)
+        changed?()
+    }
+
+    private func updateContentQuery(from old: String) {
+        let new = query
+        model?.sidebarIndex.invalidate()
         heldHits = nil   // the reader's own query: what an older one found is not waited for
         answerTyped = true
         queryTask?.cancel(); reader.cancel()
         revealing?.cancel(); revealing = nil
-        guard ChatSearchDatabase.answers(new) else {
+        guard scope == .fullChats, ChatSearchDatabase.answers(new) else {
             if !hits.isEmpty { hits = [:] }
             return
         }
@@ -142,10 +163,10 @@ import Combine
     /// the reader is reaching for a row (`SidebarOrderHold`), so a match
     /// arriving or a snippet growing never moves the row under the pointer.
     private func ask(_ text: String, background: Bool) async {
-        guard !stopped else { return }
+        guard scope == .fullChats, !stopped else { return }
         let found: [String: ChatSearchHit]
         do { found = try await reader.search(text) } catch { return }
-        guard !Task.isCancelled, text == query, !stopped else { return }
+        guard !Task.isCancelled, scope == .fullChats, text == query, !stopped else { return }
         answeredQueries += 1
         // An answer from the cold index may be empty or partial. The typed
         // query still owns the answer when that first pass finishes.
@@ -177,7 +198,7 @@ import Combine
     }
 
     /// The match a listed chat shows and opens at, while the field asks for one.
-    func hit(for chatID: String) -> ChatSearchHit? { hits[chatID] }
+    func hit(for chatID: String) -> ChatSearchHit? { scope == .fullChats ? hits[chatID] : nil }
 
     /// Waits for the current query's answer (tests).
     func settleQuery() async { await queryTask?.value }
@@ -268,7 +289,7 @@ import Combine
     /// Something a query finds changed: the field's query is asked again,
     /// at most a few times a second while a long pass runs.
     private func indexChanged(throttled: Bool = true) {
-        guard ChatSearchDatabase.answers(query), !stopped else { return }
+        guard scope == .fullChats, ChatSearchDatabase.answers(query), !stopped else { return }
         let now = ContinuousClock.now
         guard !throttled || now - lastRequery > .milliseconds(500) else { return }
         lastRequery = now
@@ -311,9 +332,9 @@ extension WorkspaceModel {
     func sidebarSearchHit(_ chatID: String) -> ChatSearchHit? {
         sidebarSearchIfStarted?.hit(for: chatID)
     }
-    /// Whether a chat is listed by the filter: its title, or its messages.
+    /// Whether a chat is listed by the filter: its title, details, or (in Full chats) messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.displayTitle.localizedCaseInsensitiveContains(query) || (chat.isSubagent && chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
+        chat.displayTitle.localizedCaseInsensitiveContains(query) || (chat.isSubagent && chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarFilterMatches(query: query).contains(chat.id)
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what

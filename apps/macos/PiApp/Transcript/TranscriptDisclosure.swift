@@ -28,11 +28,12 @@ enum ToolOccurrence {
         /// `source` is a reply read as its markdown source rather than
         /// rendered: open means raw. It is keyed by the reply, so every part
         /// of its text switches together.
-        enum Kind: Hashable { case work, tool, reasoning, compaction, response, responseLine, turnFold, source }
+        enum Kind: Hashable { case work, tool, toolLines, reasoning, compaction, response, responseLine, turnFold, source }
         let kind: Kind
         let id: String
         static func work(_ id: String) -> Part { Part(kind: .work, id: id) }
         static func tool(_ id: String) -> Part { Part(kind: .tool, id: id) }
+        static func toolLines(_ id: String) -> Part { Part(kind: .toolLines, id: id) }
         static func reasoning(_ id: String) -> Part { Part(kind: .reasoning, id: id) }
         static func compaction(_ id: String) -> Part { Part(kind: .compaction, id: id) }
         static func response(_ id: String) -> Part { Part(kind: .response, id: id) }
@@ -48,8 +49,9 @@ enum ToolOccurrence {
         /// conversation republishes for these, so every row of the response
         /// reaches its new height in the same layout pass. A reply read in
         /// order has a row for each part of its text, and they switch
-        /// between rendered and source together.
-        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold || kind == .source }
+        /// between rendered and source together. Repeated cards for one call
+        /// also share their inner read/diff expansion.
+        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold || kind == .source || kind == .toolLines }
     }
     /// Only what the reader actually changed, so a long conversation keeps no
     /// entry for the rows it never touched.
@@ -57,14 +59,14 @@ enum ToolOccurrence {
     private(set) var revision = 0
     /// Called when a fold that spans several rows changes, so the conversation
     /// publishes its page again and every row of the response follows.
-    var spanningChange: (() -> Void)?
+    var spanningChange: ((Part) -> Void)?
 
     func isOpen(_ part: Part) -> Bool { changed[part] ?? part.openByDefault }
     func setOpen(_ open: Bool, _ part: Part) {
         guard isOpen(part) != open else { return }
         if open == part.openByDefault { changed.removeValue(forKey: part) } else { changed[part] = open }
         revision += 1
-        if part.spansRows { spanningChange?() }
+        if part.spansRows { spanningChange?(part) }
     }
     func toggle(_ part: Part) { setOpen(!isOpen(part), part) }
     /// Rows that leave the conversation take their entries with them.
@@ -76,6 +78,7 @@ enum ToolOccurrence {
     }
     var changedCount: Int { changed.count }
     var changedIDs: Set<String> { Set(changed.keys.map(\.id)) }
+    var rawReplies: Set<String> { Set(changed.compactMap { $0.key.kind == .source && $0.value ? $0.key.id : nil }) }
 }
 
 /// The disclosure values one row needs, as plain data. A row host compares this
@@ -84,6 +87,8 @@ enum ToolOccurrence {
 struct TranscriptRowDisclosure: Equatable {
     var work = false
     var openTools: Set<String> = []
+    /// Inner read/diff expansion survives releasing its native card.
+    var expandedTools: Set<String> = []
     var openReasoning: Set<String> = []
     var compaction = false
     /// The reader folded everything inside this row's response: whatever is
@@ -137,7 +142,11 @@ struct TranscriptRowDisclosure: Equatable {
                 value.responseFolded = value.responseLine || store.isOpen(.response(message.id))
             }
             value.compaction = store.isOpen(.compaction(message.id))
-            for tool in message.tools ?? [] where store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
+            for tool in message.tools ?? [] {
+                if store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
+                let key = ToolOccurrence.key(message.id, tool.id)
+                if store.isOpen(.toolLines(key)) { value.expandedTools.insert(key) }
+            }
             if store.isOpen(.reasoning(message.id)) { value.openReasoning.insert(message.id) }
         case .block(let block):
             // `key` stays with the block for its whole life; `id` follows its
@@ -150,6 +159,8 @@ struct TranscriptRowDisclosure: Equatable {
             for reply in block.replies { for tool in reply.tools ?? [] {
                 let id = block.presentation == .work ? ToolOccurrence.key(reply.id,tool.id) : tool.id
                 if store.isOpen(.tool(id)) { value.openTools.insert(id) }
+                let key = ToolOccurrence.key(reply.id, tool.id)
+                if store.isOpen(.toolLines(key)) { value.expandedTools.insert(key) }
             } }
             for reply in block.replies where store.isOpen(.reasoning(reply.id)) { value.openReasoning.insert(reply.id) }
             // `replies` already holds `message`, so its cards were read above,
@@ -158,11 +169,7 @@ struct TranscriptRowDisclosure: Equatable {
         }
         // Only the cards that are open can show a fetched document, so a
         // document landing for a closed card never re-measures this row.
-        if let inputs {
-            for id in value.openTools {
-                if let document = inputs.document(id) { value.toolInputs[id] = document }
-            }
-        }
+        value.toolInputs = inputs?.snapshot(value.openTools) ?? [:]
         return value
     }
 }

@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Integration: queued-message Save protects tool-output references before its captured-input persistence, keeping both submission durability and collection ordering. [Validation](docs/validation/a130-workspace-0.1.130.md#round-9-integration-with-devnext).
+
 - [x] Historical Resend persists its captured replacement independently; typing during storage cannot cancel the edit. [Round-9 validation](docs/validation/a130-workspace-0.1.130.md#round-9--independent-captured-submissions).
 - [x] Queued-message Saves persist independent captured input before dispatch; identical retries share a record, and recovery checks the saved text digest.
 - [x] Side first sends retain independent input while parent opening waits and after a failed opening restores only into an unsaved side.
@@ -41,6 +43,100 @@
 - [x] CONCURRENCY-LIFECYCLE-3: Late opening/fork/side completions cannot restore a dead helper's runtime cache. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
 - [x] Late opening cleanup cannot stop or close a replacement helper's chat. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
 - [x] Onboarding connection tests count as active work; update pausing waits for them and barriers refuse new probes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
+- [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
+- [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
+- [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.
+- [x] Legacy response timelines build in linear time, preserving the original segment metadata and order.
+
+- [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
+- [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
+- [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.
+- [x] Wire, concurrent, acceptance, subagent and bundle-smoke fixture helpers isolate HOME, CFFIXED_USER_HOME and CODEX_HOME, including custom launch environments. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-helper-homes--round-3-follow-up).
+- [x] The native test-host guard keeps parent and explicit child process homes inside the verified fixture home; shipping apps are unchanged.
+- [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
+- [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
+- [x] Accepted capture metadata over 4 MiB remains readable, exportable and expirable after reopening. [Validation](docs/validation/a130-inspector-0.1.130.md#round-3-hunt).
+- [x] Session-memory exports keep complete large manifests; manifest readers accept the same sizes and local retention counts their actual bytes.
+- [x] Capture database readers no longer reject accepted results above 100,001 rows.
+- [x] Legacy trace artifacts remain listable and clearable beyond 10,000 directories.
+- [x] Export Metadata validates and freezes the selected request before opening the destination chooser.
+- [x] Redacted exports retain their original Raw part label when navigation changes during the chooser.
+
+- [x] Stop retires pending Resume preparation and locally queued continuations, including Resume Follow-ups; helper generation tokens reject delayed requests after Stop. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Recover Copy restores paused membership only for its own descendants, clears an empty inherited family pause and preserves its own held work. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
+- [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
+- [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.
+- [x] Redacted exports remain valid when only the other capture body expires.
+- [x] Deletion schedules collection after retiring keep and import ownership rows, reclaiming last-reference output without a later deletion or relaunch.
+- [x] Journal import preserves its original project/profile and refuses navigation changes during preparation.
+- [x] Recovery cancels stale preparation and registers completed copies without overriding later navigation.
+- [x] Portable handoff checks its original source and navigation through preview and confirmation.
+
+- [x] Tool-output collection fences in-flight draft transfers, saves, editable handoffs, keep/fork/recovery publication and exports. [Validation](docs/validation/a130-helper-0.1.130.md#round-6-review--transient-output-ownership-and-deletion).
+- [x] Independently retained copies preserve their referenced output despite another copy's chat-ID tombstone.
+- [x] Deletion transfers a different pending keep copy to durable retained ownership before clearing its intent.
+- [x] Importing an unlisted native side loads its budget ancestors before selection, including archived sides.
+- [x] Chat deletion waits for background slimming; slimming cannot recreate a deleted source or overwrite a replaced source after discard.
+
+- [x] Concurrent deletions serialize shared tool-output recycling, preserving both deletion receipts. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-review-follow-up).
+- [x] Opportunistic retained-output cleanup runs after the remembered chat is restored.
+- [x] Import selects an existing native chat instead of registering an alias; another project's journal is refused with a notice.
+- [x] Recovery refuses a source deleted or replaced before publication and withdraws a copy if deletion wins during publication.
+
+- [x] Deleting a chat preserves full tool output referenced by surviving forks, sides and saved drafts, then reclaims it after the last reference is removed. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-compat-2--shared-retained-tool-output-ownership).
+
+- [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
+- [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
+- [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.
+- [x] Reopened image-result tool cards retain their saved image descriptions.
+- [x] Malformed token usage cannot overflow context output-room calculations; rejected raw counts no longer override validated usage.
+- [x] Credential masking preserves routing enums and helper-owned preview/source/tool schemas while masking configured and provider data.
+- [x] Retained large bash logs support bounded text paging, including from read-only sides.
+- [x] Portable preview, import inspection and recovery scan journals off the host actor so unrelated chats remain responsive.
+- [x] Alternate-screen selections and active drag anchors follow hidden normal-history movement during resize, including history eviction. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-review--selection-coordinates-and-plain-syntax-ink).
+- [x] Syntax-coloured file lines draw intervening plain text in the host's text colour, including long-line pieces and theme changes.
+- [x] GIT-FILES-5: Resizing a fullscreen terminal program preserves the hidden shell's lines, scrollback and cursor. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-hunt).
+- [x] GIT-FILES-6: Normal and alternate terminal screens keep separate saved cursor positions and attributes.
+- [x] Terminal cursor-save sweep: Reset clears saved modes and character sets in both screens.
+- [x] Terminal cursor-save sweep: Returning from a fullscreen program restores pending line wrap while preserving the existing resize behavior.
+- [x] GIT-FILES-7: File syntax waits for complete lines before caching tokens, preserving first-line colours after a slow open.
+- [x] TOOLING-CONFIG-1: Failed compaction scenarios account for spending before disposal; unknown spending stops further live dispatch and stays unknown in reports.
+- [x] TOOLING-CONFIG-2: Transcript performance and soak runs return failure if any test invocation fails.
+- [x] TOOLING-CONFIG-3: Transcript performance runs make product/output paths absolute without trimming whitespace and reject directory setup failures.
+- [x] Quota eviction seeks completed captures with retained chunks, skipping bodyless history. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body retention seeks overdue captures by timestamp, skipping unexpired requests and writers. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body-retention deadlines read the first eligible capture without materializing every reference. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Metric-retention deadlines use the completed-metrics index, skipping older running requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Capture cleanup selects and deletes orphan chunks through an index, skipping retained chunks. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Quota bookkeeping updates cached totals after cleanup instead of recounting every stored chunk. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+
+- [x] Metric retention seeks through an ordered index, avoiding repeated scans and sorts on large overdue archives. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Clearing captures pages large chats atomically, preserving every body if a later capture is busy. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Quota eviction pages oldest captures through an index and stops as soon as space is available, even beyond 100,000 requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Inspector export and Events recheck changed or pruned helper captures and retry confirmed archive handoffs. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Raw Events describes body retention without the removed event-count caps. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+
+- [x] Retention sweeps page overdue captures, keeping Reports and durable capture recording available beyond 100,000 expired requests while respecting export leases. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed Session memory captures export their retained bytes and show helper-held Events; reads follow the acknowledged payload handoff to the archive. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed capture-Off requests show their remaining helper-held Events without inventing retained bodies. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Inspector exports keep the original request's physical session when selection changes in the destination chooser. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Superseded history reloads cannot reclaim a newer reader destination during recovery. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Background child runtime replacement preserves native text selection, scroll anchors and open folds while fencing obsolete reads. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Home, reveals and history-position reads rebind validated boundaries across same-ID helper runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+
+- [x] Invalid command IDs cannot overflow helper rejection frames. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Runtime replacement restarts visible history loads and preserves their requested destination. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Retained-history paging rebinds stable message boundaries after same-ID runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Helper quiescence refuses commands still in submission preflight. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Onboarding connection tests participate in update activity and confirmed helper shutdown. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Update confirmation names Inspector-only tool calls accurately. [Validation](docs/validation/a130-wire-0.1.130.md).
+
+- [x] WIRE-CONTRACT-1: Oversized capture metadata uses acknowledged chunks and arrives complete without stopping other chats. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-2: Inspector MCP execution and result retention block app/helper update quiescence, including late IPC replies. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] CONCURRENCY-LIFECYCLE-2: Inspector MCP work pins the project helper through its durable-result acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-3: Attached child readers accept lower sequence numbers from a new runtime and reject retired snapshots. [Validation](docs/validation/a130-wire-0.1.130.md).
 
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
@@ -82,11 +178,84 @@
 - [x] Menu and Inspector usage model pages reach every retained route, keeping 24-row aligned pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] Raw → Headers Copy includes both displayed, masked header sections. [Validation](docs/validation/a130-inspector-0.1.130.md).
 - [x] Empty Raw Headers and Links no longer enable Copy just because request metadata exists. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Cost-limit pause round 12 (`dev/a130-pause-r12`): durable child Stops survive recovery and live parking; Stop during pending Resume halts child tools; side-pause fan-out survives a helper restart, including an idle root. [Validation](docs/validation/pause-r12-0.1.130.md).
+- [x] Round-12 follow-up: recovered side Resume membership transfers to the root and clears after completion; child Stop and Resume installation share the family gate. [Validation](docs/validation/pause-r12-0.1.130.md#follow-up-review-of-68491378).
+- [x] Round-12 second follow-up: child Stop cancels live work before waiting for delivery compaction; recovering idle intermediate sides preserves an accepted family Resume. [Validation](docs/validation/pause-r12-0.1.130.md#round-2-review-of-3a1dfbda).
+- [x] Round-12 third follow-up: a stopped parked child accepts later follow-ups without retaining its old pause or held tools; Stop acknowledges while sibling or parent delivery compaction waits. Full branch condition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-3-review-of-5fb1b5dc).
+- [x] Round-12 fourth follow-up: pause membership transfers require durable acknowledgment; failed retirements remain retryable; stopped child readers clear their pause and held tools during terminalization/recovery. Transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-4--transition-audit-before-implementation).
+- [x] Round-12 fifth follow-up: cold parked-child Stop mirrors its journal off the host actor, keeping other chats' snapshots and Stop responsive while the runtime gate protects the writer. [Validation](docs/validation/pause-r12-0.1.130.md#round-5--cold-terminal-mirror-responsiveness).
+- [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
+- [x] Round-12 seventh follow-up: generation-fenced pause messages and a two-phase Resume preserve the family through late publications, Stop, new pauses and failed acceptance writes. Stale-message matrix, transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-7--generation-fences-and-two-phase-resume).
+- [x] Round-12 eighth follow-up: side membership changes survive unload and restart through durable acknowledgments; automatic retirement includes applied but unpublished pauses, and recovered transfers stay root-owned. Lifecycle audit, warning comparison and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-8--durable-membership-intents-and-runtime-retirement).
+- [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and list-fence comments and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Heading Copy preserves CR, CRLF and mixed source line endings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches formatted exposed reasoning and opens matching folded timeline prose, including opaque/correction parts, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find follows View Raw in saved and unsaved replies and in completed timeline segments while later segments stream; arriving segments keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Refreshing Find after a source-view change preserves the reader's newest Next/Previous selection without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find shares the native Markdown text builder, preserving visible list numbers, headings, code, links and table previews in saved/live replies and agent prose. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Tool Find uses the native card model's formatted JSON and decoded command/edit/read content, preserving saved/live input presentation and searchable file/agent labels. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Pending Find navigation keeps its match identity when refreshed results change its index. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find exposes and lays out an expanded tool-card body before counting matches, including quoted edit text beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps the existing highlight when rendered counts clamp its occurrence, without a new navigation request. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved user/status Find searches displayed text, including image-only labels and display overrides, without export headings; source export stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens compaction summaries using the saved row's exact display prefix. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens execution parts while preserving the visible caption, including executions with no timeline body. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches displayed branch, failure, version and request details without adding export headings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Managed-child Find preserves the first task's rendered presentation and later user messages' literal text. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved agent Find retains visible attribution and omits absent-note separators. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Agent cards with unavailable attribution search their displayed notice. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find distinguishes standalone Markdown tool-result rows from literal results paired with their call cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find consumes the transcript planner's normalized rows, including orphan request ledgers, legacy recovery prose/reasoning and unfinished-operation notices. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find suppresses superseded ledgers and duplicate checkpoints using the active history branch, including dependencies across decoding windows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps paired tool inputs/results in their displayed card format without duplicate output, including distant receipts and unsupported-timeline recovery rows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find preserves the captured completed-row presentation when a final reply is appended during a search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find resolves captured tool output ownership across history-page boundaries, preserving one occurrence per displayed payload and highlighting an already-loaded card without fetching its receipt. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reconciliation keeps call-input occurrences separate from receipt-owned output, including partially loaded tool cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves the first managed task's agent attribution after it leaves the loaded page. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Unloaded agent rows and distant tool receipts share the display's agent presentation, including child numbers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find uses cached full tool arguments in retained, unsaved and folded cards, keyed by reply and call. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Arriving full arguments refresh Find without creating navigation focus. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find refreshes preserve an already-pending reader navigation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find opens closed cards using their cached full arguments when locating a match. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find expands fetched edit content using the actual native card model, including matches beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find retains the displayed file header on linked I/O fallback cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Fetched sub-agent task bodies keep the original visible row heading in Find. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find dependency lookups index active-branch positions, bounding reused tool-call IDs without scanning and sorting every reuse. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields between bounded scan batches so history paging can finish while a search runs. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Cancelling Find preserves the warm paging index; failed old searches do not discard a newer cached snapshot. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Read/diff card expansion belongs to the tool occurrence and survives native-host eviction without stale row heights. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Reordered full-table cells show and copy the value from the clicked column's stable identity. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find charges primary, captured and dependency reads to one yielding 16 MiB budget and memoizes each issuer/receipt by source offset with bounded cache memory. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses issuer ownership for tool-start rows and indexed presence for recovery/operation dependencies, avoiding repeated large-peer decoding. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Wide agent tool rounds normalize each receipt’s own card without repeatedly parsing its siblings’ arguments or stalling history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find keeps the displayed first error line of failed edit/write cards searchable, with receipt ownership and hidden details preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses bounded dependency summaries across continuation pages of the same query, journal revision and display state; replacement and cancellation release them. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide legacy tool rounds consume ordered card fragments without retaining or joining all receipt bodies; transient spill files are anonymous and close with the issuer. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide receipt joins plan only their own timeline segments, preserving the full issuer’s canonical display order. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields after receipt projection, including large standalone Markdown results, so source-byte budgets also leave time for history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find batches unanswered-call ownership lookups and card projections even when there are no receipt decodes to trigger a yield. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find snippets have a UTF-8 byte bound as well as a character bound, keeping the match visible beside oversized combining-character sequences. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves and focuses failed edit/write diff inputs when their error summaries belong to separate receipts. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Repeated read/diff cards share the occurrence’s stored expansion value through clicks, Find, refresh and remount, without adding fold animation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find searches selection-copy text, normalizing Markdown list markers, block/table breaks and preview chrome, with exact rendered highlight mapping and literal raw/code whitespace preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Copy and Find apply every marked block separator independently of color/style runs, keeping cached matches stable through syntax coloring. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
-- [ ] Cost-limit pause, known for 0.1.130 (Codex review round 12; owner: ship 0.1.129 after round 11): a child stopped by the reader is requeued by recovery after a crash; Stop racing an accepted Resume leaves child tools running; the side-pause fan-out is lost if the helper exits before its callbacks run. [Details](docs/validation/limit-pause-0.1.129.md#known-for-01130).
+- [x] Cost-limit pause findings deferred from 0.1.129 (Codex round 12): fixed for 0.1.130 on `dev/a130-pause-r12`. [Original findings](docs/validation/limit-pause-0.1.129.md#known-for-01130), [fixes and validation](docs/validation/pause-r12-0.1.130.md).
 - [x] Git review findings (2026-10-16): a stash pushed by another writer during Drop/Pop is never the one lost (Git's reported drop and the reflog are checked; a wrong entry is stored back and the drop refused); Discard works before the first commit, only on a genuinely unborn branch; Git keeps the app's `XDG_CONFIG_HOME` (no `GIT_DIR`-style inheritance); a staged deletion and its untracked recreation each show their own diff. [Validation](docs/validation/bugs-git-0.1.129.md).
 - [x] Intermittent tests: ten failures given causes and fixes:
   - a late reference definition moved the reading line (product);

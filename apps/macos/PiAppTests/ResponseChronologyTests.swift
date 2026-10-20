@@ -320,7 +320,7 @@ final class ResponseChronologyTests: XCTestCase {
     @MainActor func testAResponseFoldAsksTheConversationToReconcileEveryRow() {
         let store = TranscriptDisclosure()
         var spanning = 0
-        store.spanningChange = { spanning += 1 }
+        store.spanningChange = { _ in spanning += 1 }
         store.setOpen(true, .work("part:one"))
         store.setOpen(true, .tool("call-1"))
         XCTAssertEqual(spanning, 0, "A fold inside one row is that row's own business")

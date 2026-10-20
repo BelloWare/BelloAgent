@@ -509,6 +509,7 @@ final class SidebarSearchSidebarTests: XCTestCase {
     }
     @MainActor private func sidebar(_ model: WorkspaceModel) -> WorkspaceSidebarView {
         let view = WorkspaceSidebarView(model: model)
+        model.sidebarSearch.setScope(.fullChats)
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
         view.layoutSubtreeIfNeeded()
         return view

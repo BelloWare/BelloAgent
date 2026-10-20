@@ -396,6 +396,10 @@ import AppKit
     private var fetched: ToolInputDocument?
     private var environment = TranscriptRowEnvironment()
     private var cardModel: TranscriptToolRow.Card?
+    var searchText: String {
+        let heading = [line.content.title, line.content.summary].filter { !$0.isEmpty }.joined(separator: " · ")
+        return cardModel.map { ConversationContent.toolText($0, heading: heading, summary: tool?.output.isEmpty == false ? line.content.summary : nil) } ?? ""
+    }
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -407,7 +411,8 @@ import AppKit
 
     /// Takes the call as it is now. `openFile` opens a file at its lines.
     func update(tool: ToolView, open: Bool, fetched: ToolInputDocument?, environment: TranscriptRowEnvironment,
-                toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?, actions: TranscriptActions = .init()) {
+                toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?, actions: TranscriptActions = .init(),
+                expanded: Bool? = nil, setExpanded: ((Bool) -> Void)? = nil) {
         let model = TranscriptToolRow.model(of: tool)
         let subagent = SubagentToolView.isControl(tool.name) ? SubagentToolView(tool) : nil
         let historical = subagent?.target?.isHistorical(in:environment.sessionID) == true
@@ -431,6 +436,8 @@ import AppKit
                 addSubview(made); card = made
             }
             (card as? TranscriptNativeSubagentCard)?.actions = actions
+            card?.expansionChanged = setExpanded
+            if let expanded { card?.restoreExpansion(expanded) }
             card?.update(next, link: link, environment: environment)
             cardModel = next
         } else if let card {

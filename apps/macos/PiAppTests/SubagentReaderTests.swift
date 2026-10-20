@@ -55,6 +55,80 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(parent.draftConflicts.isEmpty)
     }
 
+    @MainActor func testSupersededReloadCannotInheritANewerReveal() async throws {
+        for hosted in [false, true] {
+            for around in [nil, "obsolete-target"] as [String?] {
+                let (model, gate) = try fixture()
+                defer { Task { await gate.release() } }
+                let id: String
+                if hosted {
+                    let tab = try await open("chat-child", in: model)
+                    await tab.loading?.value; id = tab.key
+                } else { id = "chat-parent" }
+                let view = try XCTUnwrap(model.displays[id])
+                view.messages = [.init(id: "held", role: "assistant", text: "The reader's destination")]
+                view.historyState = .ready; view.draftReady = true
+                await gate.set("Obsolete destination", held: true, messageID: around ?? "latest")
+                model.historyWindowLoader = { _, _, _, target in
+                    let page = try await gate.page()
+                    if target == "held" {
+                        return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                            "messages": .array([.object(["id": .string("held"), "role": .string("assistant"), "text": .string("The reader's destination")])]), "older": .null, "newer": .null]))
+                    }
+                    return page
+                }
+                let before = await gate.reads
+                model.reloadHistory(id, around: around)
+                let read = view.presentation.navigation
+                try await eventually("Reload is held before the newer reveal") { await gate.reads > before }
+                let revealed = hosted
+                    ? await model.revealInTranscript(sessionID: id, messageID: "held")
+                    : await model.revealMessage(sessionID: id, messageID: "held")
+                XCTAssertTrue(revealed)
+                let navigation = model.transcriptNavigation(id)
+                await gate.release(); await read?.value
+                try await eventually("The reader finishes recovery") {
+                    view.historyState != .loading && view.historyState != .dormant && view.presentation.navigation == nil && model.subagentTab(id)?.loading == nil
+                }
+                XCTAssertEqual(view.messages.map(\.id), ["held"], "A superseded reload cannot replace the newer destination (hosted=\(hosted), around=\(around ?? "Latest"))")
+                XCTAssertEqual(view.scrollAnchor?.id, "held")
+                XCTAssertTrue(navigation.isCurrent(in: model))
+                XCTAssertNotEqual(view.historyState, .loading)
+                XCTAssertNotEqual(view.historyState, .dormant)
+                model.shutdown()
+            }
+        }
+    }
+
+    @MainActor func testRuntimeReplacementPreservesMountedChildSelection() async throws {
+        let (model, _) = try fixture(), tab = try await open("chat-child", in: model)
+        await tab.loading?.value
+        let view = try XCTUnwrap(model.displays[tab.key])
+        view.messages = [.init(id: "saved-reply", role: "assistant", text: "Saved child reply", thinking: "Retained reasoning")]
+        view.historyState = .ready; view.browsingHistory = true; view.snapshotEpoch = "first-runtime"
+        view.disclosure.setOpen(true, .reasoning("saved-reply"))
+        let pane = tab.makeAppKitContent()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 600), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = pane; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let transcript = try XCTUnwrap(ConversationPaneTests.views(NativeTranscriptPane.self, in: pane).first)
+        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let editor = try XCTUnwrap(ConversationPaneTests.views(MarkdownTextView.self, in: transcript).first { $0.string.contains("Saved child reply") })
+        let selection = (editor.string as NSString).range(of: "child reply")
+        window.makeFirstResponder(editor); editor.setSelectedRange(selection)
+        view.scrollAnchor = .init(id: "saved-reply", offset: 19, followsBottom: false)
+        let generation = view.presentationGeneration, anchor = view.scrollAnchor
+        XCTAssertTrue(view.adoptSnapshotEpoch("follow-up-runtime"))
+        transcript.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let retained = ConversationPaneTests.views(MarkdownTextView.self, in: transcript).first { $0.string.contains("Saved child reply") }
+        XCTAssertEqual(view.presentationGeneration, generation, "Retiring runtime reads must not replace the mounted presentation")
+        XCTAssertTrue(retained === editor, "The selected native text view remains mounted")
+        XCTAssertEqual(retained?.selectedRange(), selection)
+        XCTAssertEqual(view.scrollAnchor?.id, anchor?.id); XCTAssertEqual(view.scrollAnchor?.offset, anchor?.offset)
+        XCTAssertTrue(view.disclosure.isOpen(.reasoning("saved-reply")))
+        XCTAssertEqual(view.historyState, .ready)
+    }
+
     @MainActor private func fixture() throws -> (WorkspaceModel, ChildHistoryGate) {
         let root = scratchRoot("subagent-reader")
         let model = try SubagentOrganizationTests.fixture(root)
@@ -530,6 +604,7 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         try "{\"type\":\"session\",\"version\":3,\"id\":\"chat-child\"}\n{\"type\":\"message\",\"id\":\"matching\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"Distinctive search phrase\"}}\n".write(to: path, atomically: true, encoding: .utf8)
         model.chats[1].path = path.path
         await model.sidebarSearch.reconcileNow()
+        model.sidebarSearch.setScope(.fullChats)
         model.sidebarSearch.setQuery("Distinctive search")
         try await eventually("The generated child journal is indexed") { model.sidebarSearchHit("chat-child") != nil }
         let tab = try await open("chat-child", in: model)

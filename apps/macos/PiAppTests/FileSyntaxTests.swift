@@ -6,6 +6,78 @@ import XCTest
 // The shared-pass byte counts depend on concurrent requests reaching the
 // reader together. Competing test hosts change that batching window.
 final class FileSyntaxTests: XCTestCase, SerialTestLane {
+    @MainActor func testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine() async throws {
+        try await paintProvisionalLine(beforeOpen: true)
+    }
+
+    @MainActor func testPaintingAGrowingLineDoesNotCacheItsPartialTokens() async throws {
+        try await paintProvisionalLine(beforeOpen: false)
+    }
+
+    @MainActor func testDelayedSyntaxGallery() async throws {
+        guard let path = testEnvironment("PI_ROUND2_GITFILES_GALLERY") else { throw XCTSkip("Set PI_ROUND2_GITFILES_GALLERY to capture") }
+        try await paintProvisionalLine(beforeOpen: true, gallery: URL(fileURLWithPath: path))
+    }
+
+    @MainActor private func paintProvisionalLine(beforeOpen: Bool, gallery: URL? = nil) async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("syntax-opening-\(UUID().uuidString).swift")
+        try "let value = 1\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let gate = SyntaxOpenGate()
+        addTeardownBlock { await gate.release() }
+        let tab = FileTab(url: url, projectID: nil)
+        if beforeOpen {
+            tab.documentReadOptions.beforeOpen = { await gate.wait() }
+        } else {
+            tab.documentReadOptions.chunkBytes = 4
+            tab.documentReadOptions.firstPublishBytes = 4
+            tab.documentReadOptions.beforeChunk = { if $0 == 4 { await gate.wait() } }
+        }
+        let content = tab.makeAppKitContent()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content
+        defer { tab.willClose(); window.contentView = nil; window.close() }
+        tab.didShow()
+        let document = try XCTUnwrap(tab.document), view = try XCTUnwrap(tab.scroll?.textView)
+        try await waitForSyntax { document.utf16Length(ofLine: 0) == (beforeOpen ? 0 : 4) }
+        XCTAssertFalse(document.isLineFinal(0))
+        let syntax = try XCTUnwrap(view.syntax)
+        var painted = false
+        view.syntax = { line, piece, text in
+            if line == 0 { painted = true }
+            return syntax(line, piece, text)
+        }
+        content.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        XCTAssertTrue(painted, "the mounted tab paints its provisional first line")
+        // Give the tiny initial syntax task time to complete while I/O stays
+        // held, so the regression covers a cached result, not just a race.
+        try await Task.sleep(for: .milliseconds(150))
+        await gate.release()
+        try await waitForSyntax { document.status == .ready }
+        try await waitForSyntax { syntax(0, 0..<13, "let value = 1").count == 2 }
+        let runs = syntax(0, 0..<13, "let value = 1")
+        XCTAssertEqual(runs.map(\.range), [NSRange(location: 0, length: 3), NSRange(location: 12, length: 1)])
+        XCTAssertEqual(runs.map(\.color), [TranscriptNSPalette.keyword, TranscriptNSPalette.number])
+        if let gallery {
+            try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
+            window.makeKeyAndOrderFront(nil)
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                for width in [800, 420] {
+                    window.appearance = NSAppearance(named: appearance)
+                    window.setContentSize(NSSize(width: width, height: 300))
+                    content.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for: .milliseconds(150))
+                    let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        .write(to: gallery.appendingPathComponent("syntax-\(name)-\(width).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testScrollingUpKeepsTheNewViewportColouredWithoutRelexing() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("syntax-lru-\(UUID().uuidString).swift")
         try String(repeating: "let value = 1\n", count: 1_400).write(to: url, atomically: true, encoding: .utf8)
@@ -330,4 +402,14 @@ final class FileSyntaxTests: XCTestCase, SerialTestLane {
             XCTAssertLessThanOrEqual(lexed, FileSyntax.chunkUnits + 64, "\(test.name): no lex bigger than a chunk")
         }
     }
+}
+
+private actor SyntaxOpenGate {
+    private var released = false
+    private var waiting: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiting = $0 }
+    }
+    func release() { released = true; waiting?.resume(); waiting = nil }
 }
