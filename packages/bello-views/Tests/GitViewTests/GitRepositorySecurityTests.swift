@@ -1,5 +1,6 @@
 import XCTest
 @testable import GitView
+@testable import GitProcessSafety
 
 /// Every executable is a generated marker writer. Nothing contacts a remote.
 final class GitRepositorySecurityTests: XCTestCase {
@@ -78,7 +79,7 @@ final class GitRepositorySecurityTests: XCTestCase {
         try write(".gitattributes", "file.txt filter=\(first)\nplain.txt filter=\(second)\n")
         try write("file.txt", "changed\n")
         do { _ = try await GitService(environment: environment, trusted: true).run(["diff", "--no-ext-diff", "--no-textconv"], in: root.path) }
-        catch { XCTAssertTrue(error.localizedDescription.contains("configuration"), error.localizedDescription) }
+        catch { XCTAssertTrue(error.localizedDescription.contains("content filter"), error.localizedDescription) }
         assertNoProgram("Canonically equivalent filter names")
     }
     private func unrepresentableProgramName(_ name: Data) async throws {
@@ -89,10 +90,16 @@ final class GitRepositorySecurityTests: XCTestCase {
         try bytes.write(to: config)
         try (Data("file.txt filter=".utf8) + name + Data("\n".utf8)).write(to: root.appendingPathComponent(".gitattributes"))
         try write("file.txt", "changed\n")
+        let process = Process(); process.currentDirectoryURL = root
+        do {
+            let policy = try GitReadProcess(process, arguments: ["diff", "--no-ext-diff", "--no-textconv"],
+                                            environment: environment, trusted: true)
+            defer { policy.remove() }
+            XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+        } catch { XCTFail("Unrepresentable overrides must select confinement: \(error)") }
         do {
             _ = try await GitService(environment: environment, trusted: true).run(["diff", "--no-ext-diff", "--no-textconv", "--", "file.txt"], in: root.path)
-            XCTFail("An origin inventory that cannot preserve config keys must fail closed")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("configuration"), error.localizedDescription) }
+        } catch { XCTAssertTrue(error.localizedDescription.contains("content filter"), error.localizedDescription) }
         assertNoProgram("Unrepresentable filter name")
     }
 

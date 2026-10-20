@@ -35,6 +35,114 @@ final class GitInventoryTests: XCTestCase {
         return path
     }
 
+    func testControlCharactersInGitdirRequireConfinement() throws {
+        for character in ["\n", "\t", "\u{8}", "\r", "\u{7f}"] {
+            try overridePathFixture("checkout" + character + "fixture", confined: true)
+        }
+    }
+
+    func testQuotedGitdirConditionsKeepLocalProgramsDisabled() throws {
+        for character in ["\"", "\\", "*?[]"] {
+            try overridePathFixture("checkout" + character + "fixture", confined: false)
+        }
+    }
+
+    private func overridePathFixture(_ name: String, confined: Bool) throws {
+        let directory = root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try git(["init", "-q", "--template="], in: directory)
+        try Data("base\n".utf8).write(to: directory.appendingPathComponent("file"))
+        try git(["add", "file"], in: directory)
+        try git(["config", "core.fsmonitor", try monitor()], in: directory)
+        let marker = root.appendingPathComponent("hostile-ran")
+        for _ in 0..<2 {
+            let process = Process(); process.currentDirectoryURL = directory
+            do {
+                let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+                defer { policy.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, confined ? "sandbox-exec" : "git", name.debugDescription)
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                try process.run(); process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0, name.debugDescription)
+            } catch { XCTFail("Path still needs a safe read: \(name.debugDescription): \(error)") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), name.debugDescription)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
+    func testGeneratedOverridesRoundTripThroughGitParsing() throws {
+        let values = [("filter.quote\"slash\\literal.clean", " \"quoted\" \\literal # ; = "),
+                      ("credential.helper", ""), ("credential.helper", "!printf '%s' \"a\\\\b\""),
+                      ("core.fsmonitor", "false")]
+        let gitDirectory = String(try git(["rev-parse", "--absolute-git-dir"]).dropLast())
+        let overrides = try GitReadOverrides(gitDirectory: gitDirectory,
+                                            options: values.flatMap { ["-c", $0.0 + "=" + $0.1] })
+        defer { withExtendedLifetime(overrides) {} }
+        let file = overrides.directory.appendingPathComponent("config").path
+        let parsed = try GitConfiguration.query(["config", "--file", file, "--no-includes", "--null", "--list"],
+                                                in: root, environment: environment)
+        XCTAssertEqual(parsed.status, 0)
+        XCTAssertEqual(parsed.data, Data(values.map { $0.0 + "\n" + $0.1 + "\0" }.joined().utf8))
+        let include = try GitConfiguration.query(["config", "--file", overrides.directory.appendingPathComponent("include").path,
+                                                  "--no-includes", "--null", "--list"], in: root, environment: environment)
+        XCTAssertEqual(include.status, 0)
+        XCTAssertEqual(include.data, Data("includeif.gitdir:\(gitDirectory).path\n\(file)\0".utf8))
+        let effective = try git(["-c", overrides.argument, "config", "--includes", "--null", "--show-origin",
+                                 "--get-regexp", "^(filter\\.|credential\\.|core\\.fsmonitor$)"])
+        XCTAssertEqual(Data(effective.utf8), Data(values.map { "file:" + file + "\0" + $0.0 + "\n" + $0.1 + "\0" }.joined().utf8))
+    }
+
+    func testUnsafeGeneratedSubsectionsAndValuesRequireConfinement() throws {
+        for character in ["\n", "\t", "\u{8}", "\r", "\0", "\u{7f}"] {
+            for option in ["filter.bad" + character + ".clean=", "core.fsmonitor=bad" + character] {
+                XCTAssertThrowsError(try GitReadOverrides(gitDirectory: root.appendingPathComponent(".git").path, options: ["-c", option])) {
+                    XCTAssertTrue($0 is GitConfiguration.ConfinementRequired, "\($0)")
+                }
+            }
+        }
+    }
+
+    func testInvalidConfigBytesRequireConfinedReads() throws {
+        let file = root.appendingPathComponent(".git/config")
+        let original = try Data(contentsOf: file), command = try monitor()
+        let variants = [Data("[filter \"unsafe".utf8) + Data([0xff]) + Data("\"]\nclean = \(command)\n".utf8),
+                        Data("[include]\npath = ../invalid-".utf8) + Data([0xff]) + Data("\n".utf8)]
+        for bytes in variants {
+            try (original + Data("\n[core]\nfsmonitor = \(command)\n".utf8) + bytes).write(to: file)
+            let process = Process(); process.currentDirectoryURL = root
+            do {
+                let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+                defer { policy.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                try process.run(); process.waitUntilExit()
+            } catch { XCTFail("Unrepresentable config must select confinement: \(error)") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+        }
+    }
+
+    func testControlCharactersInRestoredValuesRequireConfinement() throws {
+        let command = try monitor(), marker = root.appendingPathComponent("hostile-ran")
+        try git(["config", "core.fsmonitor", command])
+        for character in ["\n", "\t", "\u{8}", "\r"] {
+            try git(["config", "--file", environment["GIT_CONFIG_GLOBAL"]!, "core.fsmonitor", command + " #" + character])
+            let process = Process(); process.currentDirectoryURL = root
+            do {
+                let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+                defer { policy.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec", character.debugDescription)
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                try process.run(); process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0)
+            } catch { XCTFail("Unsafe restored value must select confinement: \(error)") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), character.debugDescription)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
     func testStdinIncludesCannotExecuteBlameContents() async throws {
         let contents = Data("[core]\nfsmonitor = \(try monitor())\n".utf8)
         for source in ["/dev/stdin", "/dev/fd/0"] {

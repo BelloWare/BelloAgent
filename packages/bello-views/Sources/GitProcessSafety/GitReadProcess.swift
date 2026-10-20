@@ -26,6 +26,7 @@ public struct GitReadProcess {
         let arguments = Self.nonrecursive(arguments)
         var environment = environment
         var checked: GitConfiguration?
+        var options: [String]?
         var configurationEnvironment = environment
         configurationEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
         if trusted, let directory = process.currentDirectoryURL {
@@ -33,15 +34,17 @@ public struct GitReadProcess {
             // index a hunk review supplies. The Git command keeps that index.
             do {
                 let value = try GitConfiguration(in: directory, environment: configurationEnvironment, invocation: invocation)
-                if value.permitsUnconfinedRead { checked = value }
+                if value.permitsUnconfinedRead {
+                    options = try value.readOptions(in: directory, environment: configurationEnvironment, submodules: false, invocation: invocation)
+                    checked = value
+                }
             } catch is GitConfiguration.ConfinementRequired {
-                // A stream/device can return different config to this command.
-                // An uncached inventory alone is not permission to execute.
+                // Dynamic sources and unrepresentable overrides cannot prove
+                // this command's config. Neither permits unconfined execution.
             }
         }
         configuration = checked
-        if let configuration = checked, let directory = process.currentDirectoryURL {
-            let options = try configuration.readOptions(in: directory, environment: configurationEnvironment, submodules: false, invocation: invocation)
+        if let options {
             scratch = nil
             process.executableURL = git
             process.arguments = ["--no-pager"] + options + arguments

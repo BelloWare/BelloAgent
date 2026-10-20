@@ -198,18 +198,14 @@ final class GitReadOverrides: @unchecked Sendable {
         defer { if !complete { try? FileManager.default.removeItem(at: directory) } }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let file = directory.appendingPathComponent("config")
-        func quote(_ text: String) -> String {
-            "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\t", with: "\\t").replacingOccurrences(of: "\u{8}", with: "\\b") + "\""
-        }
         var content = ""
         for index in stride(from: 1, to: options.count, by: 2) {
             let option = options[index], equals = option.firstIndex(of: "=")!
             let name = option[..<equals], value = option[option.index(after: equals)...]
             let first = name.firstIndex(of: ".")!, last = name.lastIndex(of: ".")!
             content += "[" + name[..<first]
-            if first != last { content += " " + quote(String(name[name.index(after: first)..<last])) }
-            content += "]\n" + name[name.index(after: last)...] + " = " + quote(String(value)) + "\n"
+            if first != last { content += " " + (try Self.subsection(String(name[name.index(after: first)..<last]))) }
+            content += "]\n" + name[name.index(after: last)...] + " = " + (try Self.value(String(value))) + "\n"
         }
         try Data(content.utf8).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
@@ -217,11 +213,24 @@ final class GitReadOverrides: @unchecked Sendable {
             if "\\*?[]".contains(character) { result.append("\\") }; result.append(character)
         }
         let include = directory.appendingPathComponent("include")
-        try Data(("[includeIf " + quote("gitdir:" + pattern) + "]\npath = " + quote(file.path) + "\n").utf8).write(to: include)
+        try Data(("[includeIf " + Self.subsection("gitdir:" + pattern) + "]\npath = " + Self.value(file.path) + "\n").utf8).write(to: include)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: include.path)
         // Keep repository path bytes out of -c's key/value separator syntax.
         argument = "include.path=\(include.path)"
         complete = true
     }
     deinit { try? FileManager.default.removeItem(at: directory) }
+
+    private static func subsection(_ text: String) throws -> String {
+        // Subsections do not support value escapes such as \n, \t or \b.
+        guard text.rangeOfCharacter(from: .controlCharacters) == nil else { throw GitConfiguration.ConfinementRequired() }
+        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    private static func value(_ text: String) throws -> String {
+        // Keep generated values in the same conservative printable subset;
+        // quotes/backslashes round-trip, and no unsupported escape is emitted.
+        guard text.rangeOfCharacter(from: .controlCharacters) == nil else { throw GitConfiguration.ConfinementRequired() }
+        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
 }

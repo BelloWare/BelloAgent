@@ -8,7 +8,7 @@ The owner decisions below supersede the initial `fc82085a` policies. Earlier evi
 
 1. **SECURITY-BOUNDARIES-1a (P0), folder tree/menu and Quick Open:** outside/untrusted folders retain the confined Git launcher and `core.fsmonitor=false`. Trusted folders use stamp-checked, cached Git scope/origin metadata to override local/worktree programs, preserving global/system fsmonitor.
 2. **SECURITY-BOUNDARIES-1b, Git status/index queries:** the same policy covers Changes, ignored paths, snapshots, preflight and blame. Every read forces non-recursive submodule output; explicitly opening a submodule applies its own global/system policy. Parent status still reports changed gitlink IDs, without inspecting child worktree dirtiness.
-3. **SECURITY-BOUNDARIES-1c, executable content filters:** trusted reads with proven static configuration run without an execution sandbox. Local/worktree clean/smudge/process commands are neutralised; matching user-owned settings are restored from global/system scope. Repository attributes may select global filters, including required conversions. Dynamic/non-regular includes force the same execution/network/write sandbox used outside/untrusted projects, and failed conversions are surfaced.
+3. **SECURITY-BOUNDARIES-1c, executable content filters:** trusted reads with proven static configuration and exactly representable overrides run without an execution sandbox. Local/worktree clean/smudge/process commands are neutralised; matching user-owned settings are restored from global/system scope. Repository attributes may select global filters, including required conversions. Dynamic/non-regular includes, unrepresentable override text and invalid UTF-8 metadata force the same execution/network/write sandbox used outside/untrusted projects, and failed conversions are surfaced.
 4. **SECURITY-BOUNDARIES-1d, textconv:** working/staged/untracked/history/stash/hunk diffs and commit statistics retain their no-textconv/no-external-diff switches. Trusted configuration overrides also cover local diff drivers.
 5. **SECURITY-BOUNDARIES-1e, implicit promisor fetch:** every read sets `GIT_NO_LAZY_FETCH=1` and `GIT_ALLOW_PROTOCOL=`; the latter also defeats per-protocol config allowances. Outside/untrusted queries additionally have no network or non-Git executables.
 6. **SECURITY-BOUNDARIES-1f, sparse-index folder queries:** FileFinder uses the same launcher; missing sparse trees cannot start a remote helper. Metadata inventory uses `ls-files --stage --sparse` under confinement.
@@ -42,6 +42,10 @@ Round-6 rules (verbatim; replace per-remote resolution and strengthen cache vali
 > A. Redirect protection (replaces per-remote resolution): if the repository's effective configuration contains ANY `http.extraHeader` key at all (any scope, any URL-scoped variant, any value — query Git with NUL-delimited output and a case-insensitive key match), then every Bello-launched network Git command in that repository runs with redirects refused for all URLs (override `http.followRedirects=false` AND every URL-scoped `http.<url>.followRedirects` present). Only when Git reports no extraHeader key at all do redirects follow Git's normal `initial` behaviour. This is a conservative superset of the owner's rule ("refuse redirects for remotes with an http.extraHeader configured"); record it as such. Remove the remote/default/pushurl resolution code that is no longer needed (keep it only if something else depends on it).
 >
 > B. Inventory cache validity: reuse only when every component of every configuration origin's resolution chain is unchanged — stamp each symlink in the chain (lstat) and its final target, plus the repository path's own realpath chain that gitdir:/onbranch conditions depend on; if any component cannot be stamped, do not cache.
+
+Round-7 rule (verbatim; qualifies generated overrides):
+
+> Rule (fail closed): any value Bello writes into a generated Git configuration override (subsection names, values, condition patterns) must round-trip exactly under Git's own parsing; if a path or value contains anything that cannot be represented safely (control characters, newlines, NUL, invalid UTF-8, unsupported escapes), that repository's reads run under the untrusted confinement instead of trusted-unconfined. Use separate subsection and value encoders and verify each generated override by asking Git to read it back (e.g. `git config --get-regexp` / `--show-origin` on a scratch config) in tests.
 
 **Explicit writes:** Stage/Unstage/Discard, branch mutations, stash mutations, fetch/pull/push, commit/amend/reword and hunk publication retain normal hooks, filters, signing and transports after trusted admission. Reword's hook-path query remains a confined data query and returns the actual configured path. Read overrides never reach a later write. No new entitlement, preference, helper capability or production test bypass is added. Minimum/current macOS packaging compatibility remains part of the lead's release gate.
 
@@ -1307,3 +1311,65 @@ Extended lock contention delayed the native runs. Only idle lock waiters were re
 Final adversarial review and source-hash checks confirm the committed implementation is the restored, tested code. The generated fixture's index was independently counted before cleanup: **50,001 ordinary entries and 20 submodules** (`round6-fixture-counts.json`). The generated baseline export, large fixture and default XCTest result bundle were removed; no Clone directories remained (`round6-cleanup.json`). Text logs, source-proof records and gallery images remain under this workstream's build root. Every lock owned by this workstream was released; other workstreams' locks and build products were left untouched.
 
 Round 6 resolves all three review findings plus the adjacent submodule-alias instance: four failing-first regressions, six killed mutations, full package/native/gallery validation and three source-verified latency measurements within budget. No unresolved security finding or owner-policy question remains. No helper/wire behavior changed, and no merge or fast-forward to `dev/next` was performed.
+
+## Round 7 — generated override encoding and upstream integration
+
+The P1 against `b8fd59e5470beac6506dbc19d0b0942374a38716` is confirmed. The old shared encoder emitted value escapes inside subsection names. Git's subsection grammar removes the backslash from `\n`, `\t` and `\b` instead of interpreting the corresponding control character, so the generated condition did not match the repository. Newline, tab and backspace path fixtures each executed their local fsmonitor marker on both consecutive reads. [Git config syntax](https://git-scm.com/docs/git-config/2.39.0#_syntax), [Git's subsection parser](https://github.com/git/git/blob/v2.39.5/config.c#L864-L898).
+
+### Fix and nearby sweep
+
+`GitReadOverrides` now has separate subsection and value encoders. Both conservatively accept printable text only, escaping quotes and backslashes without producing any other escape sequence. Control characters, including NUL, refuse override construction. Glob metacharacters in the actual Git-reported gitdir are escaped before subsection encoding. Tests ask Git to parse both scratch files, compare every key/value byte and duplicate credential-helper entry, and verify the conditional include's effective values and origins.
+
+`GitReadProcess` constructs the overrides inside the confinement decision. A representation failure therefore selects the same sandbox as an untrusted read. It cannot leave an unconfined launch prepared or turn that fallback into an uncaught override error. Invalid UTF-8 config/metadata, unrepresentable override separators and arguments Foundation would rewrite use this same fallback. Trusted global/system programs with representable settings retain their existing behavior; unsafe restored values select confinement as required by the new owner rule. Network Git inventory failures still prevent the network command from launching.
+
+The sweep covers all generated Git config in the app/shared views: the conditional file, its included program-value file, the condition's glob escaping, multi-valued credential helpers, local/worktree scope restoration, metadata decoding and the final include argument. The two encoders are the only production writer for these files. Background commands still use the non-recursive read policy, and the existing dynamic-include and cache checks remain in place.
+
+### Failing-first evidence
+
+All programs are generated marker writers and all config is fixture-owned. The final comparison restores all three round-6 production files before running the exact final regression selection, then restores the fix in `finally`.
+
+| Regression | Round-6 result |
+| --- | --- |
+| Newline, tab, backspace, CR and DEL repository paths, two reads each | 16 failed assertions; newline/tab/backspace executed the marker |
+| Control characters in restored global values | 8 failed assertions |
+| Unsafe generated subsection/value text, including NUL | 12 failed assertions |
+| Invalid UTF-8 local key and include-path bytes | 2 failed assertions |
+| Existing invalid-key/separator/Unicode cases updated to require confinement | 5 failed assertions |
+| Quote/backslash/glob paths and Git parser round-trips | Both positive-control tests passed |
+
+**9 tests, 43 failed assertions, 0 unexpected failures** against round 6 (`round7-failing-first-clean.log`); **9/9 passed** with the fix (`round7-fixed-focused.log`). These are seven failing regressions and two passing controls. Earlier development runs are retained separately; their parser assertion incorrectly used Foundation's `/var/...` spelling instead of Git's `/private/var/...` gitdir. The corrected test obtains the directory from `git rev-parse --absolute-git-dir`, as production does. Those development counts are excluded above.
+
+This Mac's APFS refuses an attempted raw non-UTF-8 repository filename (`repository-ff`, suffix byte `ff`) with **errno 92 / EILSEQ**, before a repository can be created. `round7-invalid-filename.json` records the generated-path attempt. No successful raw-byte filename fixture is claimed. Invalid UTF-8 bytes in a local program subsection and an included pathname are tested through the real inventory instead; both select confinement and leave the local fsmonitor marker absent. NUL rejection is tested directly at the generated-override boundary.
+
+### Mutation checks
+
+| Mutation | Selected tests | Failed assertions |
+| --- | ---: | ---: |
+| Restore the old shared encoder | 3 | 36 |
+| Allow control characters in generated values | 2 | 14 |
+| Construct overrides outside the confinement fallback | 2 | 14 |
+| Omit subsection backslash escaping | 2 | 6 |
+| Reject invalid UTF-8 instead of selecting confinement | 1 | 2 |
+
+**5 mutations killed, 72 failed assertions, 0 unexpected failures.** The script restores production bytes after each mutation and again in its outer `finally`. Evidence: `round7-mutation-{old-shared-encoder,allow-control-values,override-outside-fallback,unescaped-subsection-backslash,reject-instead-of-confine-utf8}.log` and `round7-mutations.json`.
+
+Exact regression/mutation commands, with `$B` still the workstream build root:
+
+```sh
+python3 "$B/round7-original-and-fixed.py"
+# The script runs original and restored production with:
+env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests.test(ControlCharacters|QuotedGitdir|GeneratedOverrides|UnsafeGenerated|InvalidConfigBytes)|GitRepositorySecurityTests.test(InvalidUTF8|EqualsCannot|CanonicallyEquivalent)'
+python3 "$B/round7-mutations.py"
+```
+
+After restoring all mutations, the affected package classes passed **98/98**: `GitInventoryTests` 49, `GitRepositorySecurityTests` 12, `GitHTTPRedirectTests` 5, `GitBlameTests` 13 and `FolderBrowserTests` 19 (`round7-focused-restored.log`). Exact command:
+
+```sh
+env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests|GitRepositorySecurityTests|GitHTTPRedirectTests|GitBlameTests|FolderBrowserTests'
+```
+
+Adversarial review checked both encoder grammars, literal backslashes/quotes and glob characters, duplicate settings, partial-file cleanup on encoding failure, strict UTF-8 decoding, the fallback's placement, retained override lifetimes and the network/read distinction. A throwing override never assigns the unconfined options, and the process's executable is selected only after that decision. No new process, permission or production test bypass was introduced. Normal cached reads add no config subprocess. No further finding emerged from this review.

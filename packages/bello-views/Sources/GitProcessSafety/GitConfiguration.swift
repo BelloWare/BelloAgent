@@ -44,13 +44,13 @@ public struct GitConfiguration {
         let names = try Self.query(options + ["--name-only"], in: directory, environment: environment, invocation: invocation)
         guard output.status == 0, names.status == 0 else { throw ConfinementRequired() }
         guard String(data: output.data, encoding: .utf8) != nil, String(data: names.data, encoding: .utf8) != nil else {
-            throw Failure("Git configuration contains invalid UTF-8; its program settings cannot be overridden safely.")
+            throw ConfinementRequired()
         }
         let fields = output.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
         let keys = names.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
         guard fields.count.isMultiple(of: 3), fields.count == keys.count,
               output.data.isEmpty || output.data.last == 0, names.data.isEmpty || names.data.last == 0 else {
-            throw Failure("Git configuration origins could not be read.")
+            throw ConfinementRequired()
         }
         var entries: [Entry] = []
         for index in stride(from: 0, to: fields.count, by: 3) {
@@ -67,7 +67,8 @@ public struct GitConfiguration {
         self.entries = entries
         func path(_ arguments: [String]) throws -> String {
             let result = try Self.query(arguments, in: directory, environment: environment, invocation: invocation)
-            guard result.status == 0, let text = String(data: result.data, encoding: .utf8) else { return "" }
+            guard result.status == 0 else { return "" }
+            guard let text = String(data: result.data, encoding: .utf8) else { throw ConfinementRequired() }
             return text.hasSuffix("\n") ? String(text.dropLast()) : text
         }
         gitDirectory = try path(["rev-parse", "--absolute-git-dir"])
@@ -228,7 +229,7 @@ public struct GitConfiguration {
             for record in index.data.split(separator: 0) where record.starts(with: Array("160000 ".utf8)) {
                 try invocation.check()
                 guard let tab = record.firstIndex(of: 9), let path = String(data: record[record.index(after: tab)...], encoding: .utf8) else {
-                    throw Failure("Git submodule paths contain invalid UTF-8; their configuration cannot be checked safely.")
+                    throw ConfinementRequired()
                 }
                 let child = root.appendingPathComponent(path)
                 files.append(child.appendingPathComponent(".git").path)
@@ -297,7 +298,8 @@ public struct GitConfiguration {
                 return options.isEmpty ? nil : try GitReadOverrides(gitDirectory: configuration.gitDirectory, options: options)
             }
             guard let overrides else { return [] }
-            try Self.requireUnchangedBytes([overrides.argument])
+            do { try Self.requireUnchangedBytes([overrides.argument]) }
+            catch { throw ConfinementRequired() }
             return ["-c", overrides.argument]
         }
         return overrides + ["-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
@@ -316,7 +318,7 @@ public struct GitConfiguration {
             // Only an override must fit -c's encoding. User-owned settings
             // that Git reads directly retain their original names and bytes.
             guard !name.contains("="), !name.contains("\n") else {
-                throw Failure("Git configuration contains a key that cannot be overridden safely.")
+                throw ConfinementRequired()
             }
             let user = entries.filter { $0.userOwned && $0.name.utf8.elementsEqual(key) }
             if name == "credential.helper" || (name.hasPrefix("credential.") && name.hasSuffix(".helper")) {
@@ -327,7 +329,8 @@ public struct GitConfiguration {
                 options += ["-c", name + "=" + (user.last?.value ?? fallback)]
             }
         }
-        try Self.requireUnchangedBytes(options)
+        do { try Self.requireUnchangedBytes(options) }
+        catch { throw ConfinementRequired() }
         // A read never needs hooks, a pager/editor, signature checks or a Git
         // transport. Global content filters and fsmonitor remain available.
         return options
