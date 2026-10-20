@@ -328,6 +328,116 @@ final class GitRepositoryStateTests: XCTestCase {
         XCTAssertEqual(counts["new-b.txt"], GitDiffStat(added: 5, removed: 5, binary: false))
     }
 
+    func testSummaryKeepsDirectoryRenamePairsInBoundedRequests() async throws {
+        let (root, expected) = try pairedRepository(mixed: false)
+        let status = try await Self.summaryService.status(in: root.path)
+        XCTAssertEqual(status.entries.count, 512)
+        XCTAssertTrue(status.entries.allSatisfy { $0.indexState == "R" })
+        try await assertBoundedPairCounts(status, in: root, expected: expected, maximum: 4)
+    }
+
+    func testPairedCountBatchesKeepGroupsAcrossCountAndByteLimits() {
+        let shared = (0..<512).map { ["source", "destination-\($0)"] }
+        let batches = GitService.pairedBatches(of: shared, prefix: ["diff", "--"])
+        XCTAssertEqual(batches.map(\.count), [512, 2])
+        XCTAssertTrue(batches.allSatisfy { $0.contains("source") && Set($0).count == $0.count })
+        XCTAssertEqual(Set(batches.flatMap { $0 }), Set(shared.flatMap { $0 }))
+
+        let long = String(repeating: "界", count: 15_000)
+        let pairs = [["first", "second"], [long + "a", long + "b"], [long + "c", long + "d"]]
+        XCTAssertTrue(GitService.pairedBatches(of: pairs, prefix: ["diff", "--"]) == [pairs[0] + pairs[1], pairs[2]],
+            "The byte budget must count UTF-8 bytes, keeping both paths together")
+        let oversized = [long + long + "a", long + long + "b"]
+        XCTAssertTrue(GitService.pairedBatches(of: [pairs[0], oversized, pairs[0]], prefix: ["diff", "--"]) ==
+            [pairs[0], oversized, pairs[0]], "An oversized group must make progress without being split")
+        XCTAssertEqual(GitService.pairedBatches(of: [["source", "source"]], prefix: []), [["source"]])
+    }
+
+    func testSummaryBatchesMixedRenamesCopiesAndModifications() async throws {
+        let (root, expected) = try pairedRepository(mixed: true)
+        let status = try await Self.summaryService.status(in: root.path)
+        XCTAssertEqual(status.entries.filter { $0.indexState == "R" }.count, 260)
+        XCTAssertEqual(status.entries.filter { $0.indexState == "C" }.count, 260)
+        XCTAssertEqual(status.entries.filter { $0.indexState == "M" }.count, 132)
+        XCTAssertEqual(status.entries.filter(\.unstaged).count, 2)
+        try await assertBoundedPairCounts(status, in: root, expected: expected, maximum: 4)
+    }
+
+    private func pairedRepository(mixed: Bool) throws -> (URL, [String: GitDiffStat]) {
+        let root = try repository(), fm = FileManager.default
+        try Self.git(["restore", "same.txt"], in: root)
+        for folder in ["source", "copies"] {
+            try fm.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        let renames = mixed ? 260 : 512, sources = mixed ? 130 : 0
+        func text(_ kind: String, _ index: Int) -> String {
+            (0..<20).map { "\(kind)-\(index)-unique-line-\($0)\n" }.joined()
+        }
+        func write(_ path: String, _ value: String) throws {
+            try value.write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        }
+        for index in 0..<renames { try write("source/\(index).txt", text("rename", index)) }
+        for index in 0..<sources { try write("copies/\(index).txt", text("copy", index)) }
+        if mixed {
+            for path in ["staged.txt", "working.txt", "both.txt"] { try write(path, "base\n") }
+        }
+        try Self.git(["add", "."], in: root); try Self.git(["commit", "-qm", "Generated pair sources"], in: root)
+        try fm.moveItem(at: root.appendingPathComponent("source"), to: root.appendingPathComponent("destination"))
+        var expected: [String: GitDiffStat] = [:]
+        for index in 0..<renames {
+            let count = mixed ? index % 3 + 1 : 0, path = "destination/\(index).txt"
+            try write(path, text("rename", index) + String(repeating: "added\n", count: count))
+            expected[path] = GitDiffStat(added: count, removed: 0, binary: false)
+        }
+        for index in 0..<sources {
+            let source = "copies/\(index).txt"
+            try write(source, text("copy", index) + "source addition\n")
+            expected[source] = GitDiffStat(added: 1, removed: 0, binary: false)
+            for count in 1...2 {
+                let path = "destination/copy-\(index)-\(count).txt"
+                try write(path, text("copy", index) + String(repeating: "copy addition\n", count: count))
+                expected[path] = GitDiffStat(added: count, removed: 0, binary: false)
+            }
+        }
+        if mixed {
+            try Self.git(["config", "status.renames", "copies"], in: root)
+            for path in ["staged.txt", "both.txt"] { try write(path, "staged\n") }
+            expected["staged.txt"] = GitDiffStat(added: 1, removed: 1, binary: false)
+        }
+        try Self.git(["add", "."], in: root)
+        if mixed {
+            try write("working.txt", "working\n")
+            try write("both.txt", "staged\nworking\n")
+            expected["working.txt"] = GitDiffStat(added: 1, removed: 1, binary: false)
+            expected["both.txt"] = GitDiffStat(added: 1, removed: 0, binary: false)
+        }
+        return (root, expected)
+    }
+
+    private func assertBoundedPairCounts(_ status: GitRepositoryStatus, in root: URL, expected: [String: GitDiffStat],
+                                         maximum: Int, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let trace = root.appendingPathComponent(".git/count-trace.json")
+        let service = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_TRACE2_EVENT": trace.path])
+        let counts = try await service.changeStats(in: root.path, status: status)
+        let events = try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").map {
+            try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }
+        let commands = events.compactMap { $0?["event"] as? String == "start" ? $0?["argv"] as? [String] : nil }
+        print("Paired summary: \(status.entries.count) rows, \(commands.count) Git invocations")
+        XCTAssertFalse(commands.isEmpty, "Git must record real invocations", file: file, line: line)
+        XCTAssertLessThanOrEqual(commands.count, maximum, "Summary Git invocations: \(commands.count)", file: file, line: line)
+        for command in commands where command.contains("--") {
+            let paths = Array(command.dropFirst(try XCTUnwrap(command.firstIndex(of: "--")) + 1))
+            XCTAssertEqual(paths.count, Set(paths).count, "Repeated copy sources waste the batch budget", file: file, line: line)
+        }
+        XCTAssertEqual(counts, expected, file: file, line: line)
+        for entry in status.entries {
+            XCTAssertEqual(counts[entry.path], try Self.gitCounts(entry, in: root),
+                entry.path + " must match the diff that row opens", file: file, line: line)
+        }
+    }
+
     func testSummarySplitsBoundedSnapshotsWithoutLosingUntrackedCounts() async throws {
         let root = try repository()
         try Self.git(["restore", "same.txt"], in: root)

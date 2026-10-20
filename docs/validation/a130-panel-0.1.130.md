@@ -2173,3 +2173,251 @@ lane is released. `tested-source-hashes.json` identifies the tested production,
 test and generated-project bytes. Only this record was completed after the
 final checks. The integration is a two-parent merge commit, with no rebase or
 history rewriting, pushed only to `dev/a130-panel`.
+
+## Paired count batching — round 9, 2026-10-20
+
+Review base: `2cb7d04fc92d070c0fbc2d09cd3a42b6e1241c1c`.
+Read the shared round rules, `AGENTS.md`, `NEXT-RELEASE.md`, and
+`docs/Swift-Test-Handoff.md`. Evidence and text logs are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/`.
+
+### Correction and regressions
+
+Reported rename/copy pairs now enter a dedicated `pairedBatches` helper
+together. It budgets the additional unique paths before adding a complete
+pair, using the existing 512-path and 128 KiB UTF-8 limits (including command
+prefix bytes). A shared copy source occurs once per batch, and is included
+again when needed by the next batch. A pair exceeding the byte budget remains
+whole in its own batch and makes progress. The existing flat-path batcher used
+by writes is unchanged.
+
+The two ordinary index/worktree reads, exact source/destination match check,
+isolated fallback for ambiguous matches, Git arguments, and untracked snapshot
+reader are unchanged. This corrects process amplification without changing the
+row counts or interpreting Git's grouping.
+
+Generated repository regressions cover:
+
+- A staged directory rename of 512 files, with all sources and destinations
+  separated by the old flattened-path sort.
+- 653 mixed rows: 260 renames, 260 copies sharing 130 modified sources, and
+  ordinary staged, working-tree, and staged-plus-working-tree modifications.
+  The pairs cross batch boundaries.
+- Path count, UTF-8 byte count, shared-source deduplication, and oversized-pair
+  progress through the helper seam, without inventing impossible on-disk paths.
+
+Every row in both repositories is checked against a separate Git numstat
+request for the exact diff that row opens, as well as distinct generated
+expected counts. Git's `GIT_TRACE2_EVENT` output, passed through the existing
+`GitService(environment:)` seam, counts actual summary invocations and checks
+that no request repeats a path. Oracle commands use a separate environment
+and do not contribute to that count. No production tracing hook was added.
+
+The original implementation failed both repository regressions, with **516**
+calls for the 512-file rename and **402** calls for the mixed fixture; every
+count parity assertion passed (`pairs-red.log`, 2 tests / 2 failures).
+The fixed batcher used **4 calls for each fixture**, passing all three new
+tests (`pairs-green.log`). The first native build exposed an overload ambiguity
+at the existing `GitPanelAuditTests` empty-path call; the helper was given its
+own name rather than changing that existing caller. The failed build remains
+in `native-parallel-before-namefix.log`.
+
+Mutation checks were repeated after that naming correction:
+
+| Mutation | Failed tests | Assertion failures | Text log |
+| --- | ---: | ---: | --- |
+| Flatten, deduplicate, and sort paths before batching again | 3 | 5 | `mutation-flatten.log` |
+| Stop deduplicating paths already present in a batch | 1 | 2 | `mutation-duplicate.log` |
+| Budget characters instead of UTF-8 bytes | 1 | 2 | `mutation-characters.log` |
+
+The first mutation restored the original **516 / 402** invocation counts.
+The other mutations failed the shared-source and byte/oversized-pair
+assertions. All mutations were restored byte-for-byte before final validation.
+`mutate.py`, `mutations.json`, and `fixed-GitService.swift` retain the exact
+controls; earlier checks before the helper rename are also retained with
+`-before-namefix` log suffixes.
+
+Failing-first and initial green command (the green run additionally selects
+`GitRepositoryStateTests.testPairedCountBatchesKeepGroupsAcrossCountAndByteLimits`):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel \
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter 'GitRepositoryStateTests.testSummaryKeepsDirectoryRenamePairsInBoundedRequests|GitRepositoryStateTests.testSummaryBatchesMixedRenamesCopiesAndModifications'
+```
+
+The flatten mutation runs those two tests plus the helper-budget test. The
+duplicate and character mutations each select only the helper-budget test.
+Each mutation log starts with its exact command.
+
+### Final package validation
+
+The restored source passed **342 tests, 0 failures, 3 skips**:
+
+| Suite | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| GitViewTests | 204 | 0 | 0 |
+| FileViewTests | 100 | 0 | 0 |
+| FileFinderTests | 38 | 0 | 3 |
+
+`GitRepositoryStateTests` passed all **43** tests, including the three new
+regressions and existing rename ambiguity, configuration, binary, attribute,
+untracked snapshot, and repository lifecycle cases. FileFinder's three skips
+are the existing `FINDER_PERF=1` measurements. The completed earlier pass,
+before the helper naming correction, also passed 342 / 0 / 3 and is retained
+in `packages-before-namefix.log`; it is not substituted for the final pass.
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel \
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter 'GitViewTests|FileViewTests|FileFinderTests'
+```
+
+Full output: `packages-final.log`. Per-class and per-module totals:
+`package-final-classes.json`, `package-final-modules.json`; command and exit:
+`package-exit.json`. The existing workstream scratch path was reused.
+
+### Refresh measurement
+
+Measured the real `GitController(summaryOnly: true)` refresh, including status,
+counts and ignored-path reads, against the same generated repositories for
+before and after. AppKit drawing is outside this measurement. The baseline is
+the round-8 merge `2cb7d04f`; only `GitService.swift` differs among the GitView
+sources. Both harnesses use `swiftc -O`, Apple Git 2.39.5 (Apple Git-154),
+Swift 6.0.2, macOS 14.8, and isolated Git configuration.
+
+The shared full-lane lock was held during measurement, with no concurrent
+builds or tests from this workstream. Three launches per version, alternating
+before/after order, each measured three steady refreshes after the initial
+load: **nine samples per cell**. All launches reported the expected
+512 / 653 rows, a count for every row, and no notice.
+
+| Fixture | Before median | After median | Reduction | Count-reader Git calls, before → after |
+| --- | ---: | ---: | ---: | ---: |
+| 512 staged directory renames | 7,526.22 ms | 715.55 ms | 90.49% | 516 → 4 |
+| 653 mixed rename/copy/modification rows | 6,165.96 ms | 803.54 ms | 86.97% | 402 → 4 |
+
+The invocation column comes from the traced regression tests and counts only
+`changeStats`; the timed controller refresh also includes its other Git reads.
+The two paired batches plus the two ordinary index/worktree reads account for
+the four calls in each fixture.
+
+Exact commands (under the round-9 evidence folder):
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/benchmark/build.py before
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/benchmark/build.py after
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/benchmark/run.py
+```
+
+`benchmark/Measure.swift` and `benchmark/run.py` retain the harness and generated
+fixtures' recipe; `benchmark/metadata.json`, `timings.json`, and `summary.json`
+record versions, every cold/steady sample and aggregates. Build logs include
+the complete compiler arguments. Both generated repositories were removed and
+the benchmark's lock was released in `finally`.
+
+### Native commands and lane discipline
+
+The requested round-8 selection is unchanged: **30 classes in 19 invocations**.
+`scripts/test-lanes.py list` was regenerated and checked against every selected
+class. The twelve focus-independent classes share one focused invocation;
+each of the eighteen serial classes runs alone, under the shared full-lane
+lock. All invocations use:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/<Class>
+```
+
+For the focused group, the same command includes twelve `-only-testing`
+arguments: `ContentSearchTests`, `ConversationSearchPagingTests`,
+`FileHiddenReadTests`, `FilePageReadTests`, `FilePreviewRefreshTests`,
+`GitChangelistReadTests`, `GitCommitBrowsingTests`, `GitHistoryFilterTests`,
+`GitPanelAuditTests`, `GitPathBoundaryTests`, `GitRenameTests`, `GitToolTests`.
+It passed **62 tests, 0 failures, 1 skip**. The skip is the existing opt-in
+commit-browsing measurement requiring `PI_APP_GIT_BENCH_REPO`.
+
+The exact group selection and driver commands are retained in
+`native-groups.json`, `native-lanes.txt`, and the first line of each native log.
+The driver invocations are:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/run-focused.py
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/run-lane.py final /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-9/native-groups.json
+```
+
+The serial driver releases only its own lock, including on failure. No
+installed app, live project data, credentials, or provider calls are used.
+
+Final native result: **255 passed, 0 failed, 1 skipped**, across all 30 classes.
+All 19 invocations exited successfully. `native-final-classes.json` and
+`native-totals.json` retain the totals; `native-commands.sh` contains all 19
+expanded commands. The watcher class passed all 17 tests on its first run this
+round, including the ignored-directory assertion that had failed once in
+round 8. No unrelated test failures occurred this round.
+
+| Class | Passed | Failed | Skipped | Text log |
+| --- | ---: | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | 0 | `ChangesTabFrameTests-final.log` |
+| ChangesTabTests | 8 | 0 | 0 | `ChangesTabTests-final.log` |
+| ContentSearchTests | 7 | 0 | 0 | `native-parallel-final.log` |
+| ConversationSearchPagingTests | 1 | 0 | 0 | `native-parallel-final.log` |
+| FileHiddenReadTests | 5 | 0 | 0 | `native-parallel-final.log` |
+| FilePageReadTests | 3 | 0 | 0 | `native-parallel-final.log` |
+| FilePreviewRefreshTests | 3 | 0 | 0 | `native-parallel-final.log` |
+| GitBranchesInteractionTests | 20 | 0 | 0 | `GitBranchesInteractionTests-final.log` |
+| GitChangelistReadTests | 2 | 0 | 0 | `native-parallel-final.log` |
+| GitCommitBrowsingTests | 3 | 0 | 1 | `native-parallel-final.log` |
+| GitConfirmationSheetTests | 7 | 0 | 0 | `GitConfirmationSheetTests-final.log` |
+| GitDiffTableTests | 19 | 0 | 0 | `GitDiffTableTests-final.log` |
+| GitDiscardQuestionTests | 2 | 0 | 0 | `GitDiscardQuestionTests-final.log` |
+| GitHistoryFilterTests | 14 | 0 | 0 | `native-parallel-final.log` |
+| GitHunkReviewTests | 9 | 0 | 0 | `GitHunkReviewTests-final.log` |
+| GitIntegratedHistoryTests | 10 | 0 | 0 | `GitIntegratedHistoryTests-final.log` |
+| GitOperationSafetyTests | 12 | 0 | 0 | `GitOperationSafetyTests-final.log` |
+| GitPanelAuditTests | 8 | 0 | 0 | `native-parallel-final.log` |
+| GitPanelLayoutTests | 4 | 0 | 0 | `GitPanelLayoutTests-final.log` |
+| GitPanelNarrowParityTests | 8 | 0 | 0 | `GitPanelNarrowParityTests-final.log` |
+| GitPanelRedrawTests | 4 | 0 | 0 | `GitPanelRedrawTests-final.log` |
+| GitPanelShownTests | 13 | 0 | 0 | `GitPanelShownTests-final.log` |
+| GitPanelTimingTests | 4 | 0 | 0 | `GitPanelTimingTests-final.log` |
+| GitPanelWidthTests | 3 | 0 | 0 | `GitPanelWidthTests-final.log` |
+| GitPathBoundaryTests | 5 | 0 | 0 | `native-parallel-final.log` |
+| GitRenameTests | 6 | 0 | 0 | `native-parallel-final.log` |
+| GitRepositorySwitchTests | 17 | 0 | 0 | `GitRepositorySwitchTests-final.log` |
+| GitToolTests | 5 | 0 | 0 | `native-parallel-final.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 | `GitWorkingTreeWatcherTests-final.log` |
+| SessionPanelTests | 29 | 0 | 0 | `SessionPanelTests-final.log` |
+
+### Adversarial self-review and cleanup
+
+Reviewed the complete production diff after restoring mutations. At a batch
+boundary, the whole group is reintroduced after resetting the deduplication
+set; a shared source cannot disappear merely because it was present in the
+previous batch. UTF-8 bytes and prefix bytes count toward the byte budget,
+and an oversized pair is admitted intact into an empty batch. Both the helper
+boundary test and actual Git traces check shared-source behavior. Exact
+source/destination matching and the existing ambiguous-rename fallback remain
+intact; the swapped-destination regression passed in the full Git suite.
+The ordinary write batcher is unchanged and its existing native audit passed.
+No further issue was found in the changed paths; no owner decision is needed.
+
+No UI code or gallery fixture changed, and per-row counts remain identical.
+Screenshots were therefore not regenerated; the previously reviewed light,
+dark and narrow images remain at
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r6/`.
+No helper or wire code changed. No source files were added or removed, so
+project regeneration was unnecessary.
+
+`git diff --check` and the staged diff check pass. `cleanup-final.json` records
+removal of the final automatically named Xcode result bundle after retaining
+text logs; no named result bundle was requested. There are no remaining
+fixture disk images, benchmark repositories or native clone directories.
+`tested-source-hashes.json` matches the final production, test and generated
+project bytes. The shared lane was released. Only the release note and this
+validation record were completed after the source checks. The change is
+committed and pushed only to `dev/a130-panel`, without merging or rewriting
+history.

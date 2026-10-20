@@ -361,6 +361,28 @@ public actor GitService {
         if !current.isEmpty { batches.append(current) }
         return batches
     }
+    /// A reported rename/copy needs both paths in the same request. Shared
+    /// copy sources cost one argument per batch; an oversized pair stays whole.
+    static func pairedBatches(of groups: [[String]], prefix: [String]) -> [[String]] {
+        let countLimit = 512, byteLimit = 128 * 1024
+        let base = prefix.reduce(0) { $0 + $1.utf8.count + 1 }
+        var batches: [[String]] = [], current: [String] = [], seen: Set<String> = [], bytes = base
+        for group in groups {
+            var unique: Set<String> = []
+            let paths = group.filter { unique.insert($0).inserted }
+            var additions = paths.filter { !seen.contains($0) }
+            let size = additions.reduce(0) { $0 + $1.utf8.count + 1 }
+            if !current.isEmpty, current.count + additions.count > countLimit || bytes + size > byteLimit {
+                batches.append(current); current = []; seen = []; bytes = base
+                additions = paths
+            }
+            current += additions
+            seen.formUnion(additions)
+            bytes += additions.reduce(0) { $0 + $1.utf8.count + 1 }
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
     /// Git reads every path after `--` as a pattern: "[id].txt" also names
     /// "i.txt", "*.md" every Markdown file, and a leading ":" is magic. Each
     /// path is marked literal on its own, at the command line: the global
@@ -576,8 +598,8 @@ public actor GitService {
             let side = pairs.filter { (!$0.unstaged && $0.staged) == cached }
             guard !side.isEmpty else { continue }
             let prefix = options.diffArguments(staged: cached) + ["--find-copies=1%", "--find-copies-harder"] + format + ["--"]
-            let paths = Array(Set(side.flatMap { options.paths(for: $0, staged: cached) })).sorted()
-            for batch in Self.batches(of: Self.literal(paths), prefix: prefix) {
+            let groups = side.map { Self.literal(options.paths(for: $0, staged: cached)) }
+            for batch in Self.pairedBatches(of: groups, prefix: prefix) {
                 let output = try require(await run(prefix + batch, in: root), "Reading paired counts")
                 for record in Self.numstatRecords(output.stdout) {
                     if side.contains(where: { $0.path == record.path && $0.originalPath == record.original }) {
