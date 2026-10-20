@@ -120,7 +120,7 @@ final class ComposerImportSubmissionTests: XCTestCase {
         }
         let composer = ComposerInputView(model: model); composer.show(view)
         let editor = try XCTUnwrap(composer.field?.documentView as? ComposerTextView)
-        let png = invalidImage ? Data([1, 2, 3]) : Data([137, 80, 78, 71, 13, 10, 26, 10, 0])
+        let png = invalidImage ? Data([1, 2, 3]) : try ClipboardImageTests.image()
         // Keep the import pending across UI refreshes and navigation,
         // independently of how fast actual conversion and inspection finish.
         let heldImport = model.beginImageImport(sessionID: view.id)
