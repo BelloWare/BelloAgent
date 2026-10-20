@@ -555,11 +555,11 @@ with the model. A small mutex serializes first acquisition; the lease remains
 held until the last storage owner releases it. Process death releases the
 kernel lock without needing application cleanup.
 
-The existing inventory still identifies candidate images and retains all
-database/journal/local-display references. Immediately before unlink, after
-every suspension, cleanup groups unreferenced candidates by generation and
-tries each generation's lock without waiting. A busy or unverifiable lease
-leaves the generation untouched. The lock remains held throughout deletion.
+The sweeper groups candidate images by generation and tries each generation's
+lock without waiting **before reading the reference inventory**. A busy or
+unverifiable lease leaves the generation untouched. The existing inventory
+still retains all database/journal/local-display references. Claims remain
+held through every suspension and deletion, including early-return/error paths.
 Competing sweepers tolerate files already collected. Empty lease sidecars stay
 in place so all contenders use the same inode; they contain no image/user data.
 
@@ -606,7 +606,7 @@ scripts/test-macos.sh -parallel-testing-enabled NO \
   -only-testing:PiAppTests/PastedAttachmentTests
 ```
 
-### Mutations and adversarial review
+### Initial mutations and adversarial review (`40cdb7ba`)
 
 Both mutations were built and executed, then restored:
 
@@ -625,9 +625,9 @@ mutation count, and was corrected before the runtime check.
 - Publication cannot precede acquisition. Failure creates no unprotected PNG.
   The storage copy test probes the actual flock from another process, then
   proves it becomes available after the final storage reference ends.
-- Collector acquisition is after reference scanning and the final local
-  activity/reference check; there is no suspension between acquisition and
-  unlink. `withExtendedLifetime` prevents early release under optimization.
+- The initial collector held its claim from the final local reference check
+  through unlink. Further review below moved acquisition before inventory
+  reads to close a producer-commit/exit race.
 - The child remains alive after the sweep, proving cleanup does not wait for
   its lease. SIGKILL exercises kernel release without application teardown.
 - No cleaner removes a lease sidecar, avoiding replacement-lock inode races.
@@ -657,7 +657,7 @@ those files; the sweep does not check its lock. This is outside the pasted
 generation fix and remains unchanged pending coordination with the helper
 workstream. No other shared per-launch image/import-generation sweep was found.
 
-### Final focused validation
+### Initial focused validation (`40cdb7ba`)
 
 ```sh
 scripts/test-macos.sh -parallel-testing-enabled NO \
@@ -689,5 +689,53 @@ QueuedEditPresentation **9**.
 **1.357 ms** text-first and **0.397 ms** image-first, below the 50 ms limit.
 No helper or wire source changed, so their full suites were not rerun.
 
-The serial menu/gallery reruns are queued behind the shared focus lock.
-Their results will be recorded after they run; they are not counted above.
+The menu/gallery waiter was stopped before acquiring the shared focus lock
+to finish the inventory-claim correction below. These counts cover the initial
+implementation; no unrun UI checks are counted.
+
+### Claim ownership before reading references
+
+Further adversarial review found that acquiring a generation only immediately
+before unlink leaves an ordering gap: a producer can persist a reference and
+exit after the final inventory check but before the collector acquires its now
+available lease. The final implementation claims abandoned generations before
+inventory reads and retains those claims through cleanup using an explicit
+`defer`/`withExtendedLifetime`. A live producer at candidate discovery is skipped
+for the whole sweep, even if it subsequently exits; an already-abandoned
+generation's committed references are read after ownership has been claimed.
+
+`testSweepClaimsAbandonedGenerationsBeforeReadingReferences` pauses an actual
+journal scan and starts a child process probing that generation's lock. This
+checks the ownership ordering directly, rather than relying on a probabilistic
+database-commit race.
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testSweepClaimsAbandonedGenerationsBeforeReadingReferences
+```
+
+- `lease-inventory-failing-first.log`: **1 test, 1 assertion failure,
+  0 unexpected** against `40cdb7ba`: the child acquired the supposedly claimed
+  generation during the reference scan.
+- `lease-inventory-fixed.log`: **14/14 passed**, using the two-class command
+  above: **6** lease tests and **8** existing pasted-attachment tests.
+- Repeated mutations against this final implementation:
+
+| Mutation | Selectors after `PiAppTests/PastedImageLeaseTests/` | Result |
+| --- | --- | --- |
+| Omit producer lease acquisition | Same three writer selectors above | 3 tests, 4 assertion failures |
+| Claim an unrelated lock instead of the generation's lock | Same three sweeper selectors above, plus `testSweepClaimsAbandonedGenerationsBeforeReadingReferences` | 4 tests, 4 assertion failures |
+| Release candidate claims before returning them to the inventory reader | `testSweepClaimsAbandonedGenerationsBeforeReadingReferences` | 1 test, 1 assertion failure |
+
+Logs: `lease-final-mutation-{writer,sweeper,early-release}.log`.
+**3/3 final mutations caught at runtime; 0 unexpected errors.** All were
+restored before final regression testing.
+
+The full focused command above was rerun on the revised source:
+`lease-inventory-regressions-final.log` — **86 executed, 85 passed, 1 existing
+skip, 0 failures**. The per-class counts above are unchanged except
+PastedImageLease now passes **6** tests.
+
+`lease-inventory-timing-final.log` — **1/1 passed**; malformed HTML took
+**1.243 ms** text-first and **0.187 ms** image-first.
+The menu/gallery reruns are queued behind the shared focus lock.

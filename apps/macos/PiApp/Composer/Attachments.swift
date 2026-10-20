@@ -32,15 +32,25 @@ struct PastedImageStorage: Sendable {
             if ownership == nil { ownership = try WorkspaceLock(url: directory.appendingPathComponent("pasted-" + generation + ".lock")) }
         }
     }
-    /// Candidates only: another generation may still have a live owner.
-    func oldFiles() throws -> [URL] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
+    struct OldFiles: Sendable { let files: [URL]; let leases: [WorkspaceLock] }
+    /// Claim abandoned generations before inventory reads. Retain the claims
+    /// through deletion so a producer cannot commit and exit after the inventory.
+    func oldFiles() throws -> OldFiles {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return OldFiles(files: [], leases: []) }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
             let name = file.lastPathComponent
             guard !name.hasPrefix(prefix), Self.names(in: Data(name.utf8)).contains(name) else { return false }
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             return values.isRegularFile == true && values.isSymbolicLink != true
         }
+        let generations = Dictionary(grouping: files) { String($0.lastPathComponent.prefix("pasted-".count + 36)) }
+        var abandoned: [URL] = [], leases: [WorkspaceLock] = []
+        for (generation, files) in generations {
+            guard let lease = try? WorkspaceLock(url: directory.appendingPathComponent(generation + ".lock")) else { continue }
+            leases.append(lease); abandoned.append(contentsOf: files)
+        }
+        // Sidecars stay in place so all contenders use the same lock inode.
+        return OldFiles(files: abandoned, leases: leases)
     }
     private static let pattern = try! NSRegularExpression(pattern: "pasted-[A-Fa-f0-9-]{36}-[A-Fa-f0-9-]{36}\\.png")
     static func names(in data: Data) -> Set<String> {
@@ -204,7 +214,9 @@ extension WorkspaceModel {
     func cleanupPastedImages() async throws {
         guard let store, pastedImageCleanupIsSafe else { return }
         let storage = pastedImages, read = pastedImageRead
-        let files = try await Task.detached(priority: .utility) { try storage.oldFiles() }.value
+        let candidates = try await Task.detached(priority: .utility) { try storage.oldFiles() }.value
+        defer { withExtendedLifetime(candidates) {} }
+        let files = candidates.files
         guard !files.isEmpty else { return }
         let inventory = try await store.pastedImageReferences(root: root)
         let scan = Task.detached(priority: .utility) {
@@ -228,17 +240,8 @@ extension WorkspaceModel {
                 names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
             }
         }
-        // Another instance's pending/side drafts need not be persisted. Check
-        // its generation lease after every suspension and hold it through unlink.
-        let generations = Dictionary(grouping: files.filter { !names.contains($0.lastPathComponent) }) {
-            String($0.lastPathComponent.prefix("pasted-".count + 36))
-        }
-        for (generation, files) in generations {
-            guard let lease = try? WorkspaceLock(url: storage.directory.appendingPathComponent(generation + ".lock")) else { continue }
-            try withExtendedLifetime(lease) {
-                for file in files where FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-            }
-            // Keep the sidecar's inode stable for other nonblocking sweepers.
+        for file in files where !names.contains(file.lastPathComponent) && FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
         }
     }
     private var pastedImageCleanupIsSafe: Bool {

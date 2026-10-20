@@ -140,7 +140,7 @@ final class PastedAttachmentTests: XCTestCase {
     }
 }
 
-private final class PastedJournalPause: @unchecked Sendable {
+final class PastedJournalPause: @unchecked Sendable {
     private let lock = NSLock(), releaseRead = DispatchSemaphore(value: 0)
     private var began = false
     var entered: Bool { lock.lock(); defer { lock.unlock() }; return began }

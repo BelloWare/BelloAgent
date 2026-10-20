@@ -82,6 +82,25 @@ final class PastedImageLeaseTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "Keep this file")
     }
 
+    @MainActor func testSweepClaimsAbandonedGenerationsBeforeReadingReferences() async throws {
+        let root = scratchRoot("paste-inventory-lease"), model = makeWorkspaceModel(stateRoot: root)
+        let file = try PastedImageStorage(root: root).write(ClipboardImageTests.image())
+        let journal = root.appendingPathComponent("saved.jsonl"), pause = PastedJournalPause()
+        try Data("{}\n".utf8).write(to: journal)
+        try await model.store?.put(ChatRecord(id: "saved", workspaceID: "w", title: "Saved", path: journal.path, profileID: "p"),
+                                   kind: "chat", id: "saved")
+        model.pastedImageRead = { try pause.read($0) }
+        defer { pause.release() }
+        let sweep = Task { try await model.cleanupPastedImages() }
+        try await eventually("reference scan paused") { pause.entered }
+        let contender = try LeaseProcess(lock: lockURL(for: file), hold: false)
+        defer { contender.stop() }
+        let result = try await contender.result()
+        XCTAssertEqual(result, "busy", "Ownership must precede the inventory, not be inferred after a producer can commit and exit")
+        contender.stop(); pause.release(); try await sweep.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
     private func lockURL(for image: URL) -> URL {
         image.deletingLastPathComponent().appendingPathComponent(String(image.lastPathComponent.prefix(43)) + ".lock")
     }
