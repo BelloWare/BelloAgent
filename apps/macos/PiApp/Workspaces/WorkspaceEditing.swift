@@ -163,8 +163,10 @@ extension WorkspaceModel {
         let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true
+        view.submittingCommands.insert(commandID)
         let outputUse = beginToolOutputUse(.messageEdit)
         Task {
+            defer { finishSubmission(commandID, in: view) }
             defer { finishToolOutputUse(outputUse) }
             defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false, helperAccepted = false

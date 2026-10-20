@@ -804,6 +804,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var captureMode = "persist"
     @Published var captureAvailable = false
     @Published var recovered: [CommandIntent] = []
+    /// Captured submissions belong to their task until it settles. Their
+    /// durable/pinned records are crash recovery, never live recovery actions.
+    @Published var submittingCommands: Set<String> = []
+    var settlingSubmissions: [String: CommandIntent] = [:]
+    var sideInputPendingTransfer = false
+    var recoverableSubmissions: [CommandIntent] { recovered.filter { !submittingCommands.contains($0.id) } }
     /// Edit-and-resend: the user message whose text is loaded in the composer, and the draft it replaced.
     @Published var editingMessageID: String?
     var draftBeforeEdit: DraftRecord?
@@ -870,6 +876,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     var draftVersion = DraftVersion() {
         didSet {
+            pendingIntents = nil
             // Hydration and side transfer replace the composer baseline, not
             // independent input still awaiting its own durable record.
             for intent in oldValue.unsavedSubmissions { draftVersion.preservingSubmission(intent) }
@@ -931,6 +938,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Bumped by every write of this chat's pending submissions
     /// (`WorkspaceModel.pendingIntentsChanged`).
     var pendingIntentRevision = 0
+    var pendingSubmissionRevision = -1
     /// What the snapshot loop last read of them, and at which revision.
     var pendingIntents: (revision: Int, intents: [CommandIntent])?
     /// A successful helper reply is enough to suppress draft recovery even

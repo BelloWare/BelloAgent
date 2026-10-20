@@ -192,6 +192,10 @@ extension WorkspaceModel {
         var saved = info.chat
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
+        if submission != nil {
+            view.sideInputPendingTransfer = true
+            try await materializeChat(parentID)
+        }
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
         let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
         if let submission {
@@ -215,12 +219,15 @@ extension WorkspaceModel {
             // be sent again or closed, and its text is where it was. Left
             // half-open, nothing could close, keep or replace it, and while it
             // existed the app refused to quit and blocked every update. A side
-            // the helper did write is still recovered from its intent; one it
-            // refused leaves nothing behind, since a draft side's text is
-            // never stored.
+            // the helper did write is still recovered from its intent. A
+            // refused side keeps only the parent link for captured input;
+            // its replaceable composer remains an ephemeral side draft.
             if sides[parentID]?.id == id, sides[parentID]?.kept != true { sides[parentID]?.pending = true }
             if !written {
-                try? await store.remove(kind: "side-keep", id: id)
+                // A failed first send still owns an independent input record.
+                // Keep its parent link until close/quit (or launch recovery)
+                // transfers that input; no journal is needed for recovery.
+                if submission == nil { try? await store.remove(kind: "side-keep", id: id) }
                 do {
                     try await store.remove(kind: "draft", id: id)
                     view.draftVersion = DraftVersion()
@@ -253,6 +260,7 @@ extension WorkspaceModel {
     /// cannot be read or written, the side stays as it was. True when gone.
     @discardableResult
     func discardPendingSide(_ info: SideRecord) async -> Bool {
+        if let recovery = draftWrites.recoveries[info.id] { await recovery.value }
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
         guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0 else {
             error = "Wait for the current side to finish opening or adding images before switching."; return false
@@ -274,6 +282,7 @@ extension WorkspaceModel {
     }
     /// The same, at once, when nothing has to be read first: true when done.
     func discardPendingSideNow(_ info: SideRecord) -> Bool {
+        guard draftWrites.recoveries[info.id] == nil else { return false }
         guard displays[info.id]?.draftVersion.hasUnsavedConflict != true else { error = StoreError.unavailable.localizedDescription; return false }
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
         // A draft on its way to the parent's saved draft is not done yet.
@@ -300,14 +309,28 @@ extension WorkspaceModel {
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
         while true {
+            if let recovery = draftWrites.recoveries[info.id] { await recovery.value }
             if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
             // One move of a side's draft at a time: another waits, then sees
             // what that one left in the side (all of it, if it failed).
             while let running = sideDraftTransfers[info.id] { await running.task.value }
-            if !side.draftVersion.unsavedSubmissions.isEmpty {
-                // A failed first keep write may leave no durable chat owning
-                // this side's input. Keep its recovery actions reachable here.
-                throw HostError.failure("Recover or dismiss the retained submission in this side before closing it.")
+            guard side.submittingCommands.isEmpty else { throw HostError.failure("Wait for the side's submission to finish before closing it.") }
+            if side.sideInputPendingTransfer || !side.recovered.isEmpty || !side.draftVersion.unsavedSubmissions.isEmpty {
+                guard let store else { throw StoreError.unavailable }
+                try await materializeChat(info.parentID)
+                let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
+                let retiring = keep?.chat.path.map { !FileManager.default.fileExists(atPath: $0) } ?? false
+                let moved = try await store.transferSideSubmissions(from: info.id, to: info.parentID, version: side.draftVersion, retiringKeep: retiring)
+                side.sideInputPendingTransfer = false
+                if retiring {
+                    sideKeepResolutionRevision &+= 1
+                    sideKeepIssues.removeAll { $0.id == info.id }
+                }
+                pendingIntentsChanged(info.id); pendingIntentsChanged(info.parentID)
+                side.recovered.removeAll { input in moved.contains { $0.id == input.id } }
+                if let parent = displays[info.parentID] {
+                    for intent in moved where intent.state == "intent" { offerSubmissionRecovery(intent, in: parent) }
+                }
             }
             if side.draftVersion.hasUnsavedConflict {
                 guard let store else { throw StoreError.unavailable }
@@ -363,9 +386,9 @@ extension WorkspaceModel {
     /// to move or the parent's loaded draft took it; false when only its
     /// saved draft can.
     func moveSideDraftHere(_ info: SideRecord, from shown: SessionDisplay? = nil) -> Bool {
-        guard draftWrites.recoveries[info.parentID] == nil else { return false }
+        guard draftWrites.recoveries[info.id] == nil, draftWrites.recoveries[info.parentID] == nil else { return false }
         guard let side = shown ?? displays[info.id] else { return true }
-        guard !side.draftVersion.hasUnsavedConflict else { return false }
+        guard !side.draftVersion.hasUnsavedConflict, !side.sideInputPendingTransfer, side.recovered.isEmpty, side.submittingCommands.isEmpty else { return false }
         let moving = Self.unsentDraft(of: side, to: info.parentID)
         guard !moving.isBlank else { return true }
         guard let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) else { return false }
@@ -613,6 +636,15 @@ extension WorkspaceModel {
                 for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
                     do {
                         guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
+                        if displays[intent.chat.id] == nil, !FileManager.default.fileExists(atPath: path),
+                           let parentID = intent.chat.parentSessionID, let store,
+                           try await !store.list(CommandIntent.self, kind: "pending:" + intent.chat.id).isEmpty {
+                            let moved = try await store.transferSideSubmissions(from: intent.chat.id, to: parentID, version: DraftVersion(), retiringKeep: true)
+                            sideKeepResolutionRevision &+= 1
+                            pendingIntentsChanged(parentID)
+                            if let parent = displays[parentID] { for input in moved where input.state == "intent" { offerSubmissionRecovery(input, in: parent) } }
+                            continue
+                        }
                         try await registerKeptSide(id: intent.chat.id, path: path)
                     } catch {
                         // A missing file may still be awaiting publication. Keep
@@ -739,7 +771,8 @@ extension WorkspaceModel {
         // A draft side has nothing on the helper to lose: it stays, with its text.
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
             // Failed conflict-copy writes still own their original display.
-            guard displays[info.id]?.draftVersion.hasUnsavedConflict != true else { continue }
+            guard displays[info.id]?.draftVersion.hasUnsavedConflict != true, displays[info.id]?.sideInputPendingTransfer != true,
+                  displays[info.id]?.recovered.isEmpty != false, displays[info.id]?.submittingCommands.isEmpty != false else { continue }
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
             sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)

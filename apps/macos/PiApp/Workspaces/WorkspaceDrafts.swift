@@ -279,17 +279,23 @@ extension WorkspaceModel {
     /// Until the independent input record commits, the version owns its pin.
     /// Recovery visibility is separate from whether the helper may have acted.
     func offerSubmissionRecovery(_ intent: CommandIntent, in view: SessionDisplay) {
-        guard !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }),
-              !view.recovered.contains(where: { $0.id == intent.id }) else { return }
+        guard !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
+        if view.submittingCommands.contains(intent.id) { view.settlingSubmissions[intent.id] = intent; return }
+        guard !view.recovered.contains(where: { $0.id == intent.id }) else { return }
         view.recovered.append(intent)
     }
+    func finishSubmission(_ id: String, in view: SessionDisplay) {
+        view.submittingCommands.remove(id)
+        if let intent = view.settlingSubmissions.removeValue(forKey: id) { offerSubmissionRecovery(intent, in: view) }
+    }
     func retainingCapturedInput(_ intents: [CommandIntent], in view: SessionDisplay) -> [CommandIntent] {
-        intents + view.draftVersion.unsavedSubmissions.filter { pinned in !intents.contains { $0.id == pinned.id } }
+        (intents + view.draftVersion.unsavedSubmissions.filter { pinned in !intents.contains { $0.id == pinned.id } })
+            .filter { !view.submittingCommands.contains($0.id) }
     }
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
         // The banner sits in the pane of the chat the submission belongs to,
         // a side's included: it acts on that chat, not on the selected one.
-        guard let view = displays[intent.sessionID], view.recovered.contains(where: { $0.id == intent.id }), draftWrites.recoveries[view.id] == nil else { return }
+        guard let view = displays[intent.sessionID], view.recoverableSubmissions.contains(where: { $0.id == intent.id }), draftWrites.recoveries[view.id] == nil else { return }
         guard intent.state == "intent", !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else {
             view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }; return
         }
@@ -318,7 +324,7 @@ extension WorkspaceModel {
             await previous?.value
             // A snapshot may have proved acceptance or retired this intent
             // while the old write finished. Its old button no longer applies.
-            guard view.recovered.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
+            guard view.recoverableSubmissions.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
                   !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
             do {
                 guard let store else { throw StoreError.unavailable }
@@ -326,7 +332,7 @@ extension WorkspaceModel {
                     try await materializeChat(view.id)
                     try await loadDraftBaseline(view)
                 }
-                guard view.recovered.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
+                guard view.recoverableSubmissions.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
                       !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
                 guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing,
                       view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {

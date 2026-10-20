@@ -3834,3 +3834,350 @@ vault or data boundary was changed; helper and Python wire suites are therefore
 not rerun for this app-only round. No unresolved finding or owner decision from
 this round. If storage remains unavailable, retained input stays pinned and
 quit/update refuses to discard it.
+
+
+## Round 13 — captured input ownership and reachable side recovery
+
+Reviewed base: `2fea5b95dcc1203255c9cc77ff2d60746320f1dd` on
+`dev/a130-workspace`. Work remains in the assigned worktree and build root;
+no merge, rebase or history rewrite. Read the round-13 shared rules,
+`AGENTS.md`, `NEXT-RELEASE.md` and the side/reader/lifecycle design policies.
+All storage, helper and image fixtures are generated; no live provider,
+credentials, user data, preferences or installed app are used.
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round13-input-ownership/`.
+Every test run has its exact `.command`, text `.log` and exit `.status` there.
+`run.py` serializes this worktree's build root; window/gallery runs also acquire
+and release the shared full-lane lock. Serial classes run alone.
+
+### Findings and failing-first evidence
+
+All four findings are confirmed. The initial unchanged-production run
+`failing-first.log` executed four tests with 15 expected assertion failures,
+exit 65; no build failure. The tests exercise real desktop SQLite records,
+independent store baselines and generated helper replies.
+
+1. **Persisted side input after failed publication — confirmed and fixed.**
+   `testFailedSidePublicationTransfersPersistedInputToParentRecovery` rejects
+   `side.open`, replaces the returned composer, then exercises Close and the
+   quit/update side-transfer path. Before the fix the parent inventory and
+   recovery chooser are empty, `pending:<side>` remains orphaned, and an
+   independent reopened store cannot recover the input via the parent.
+   The source input now moves to `pending:<parent>` in one transaction; its
+   immutable command ID, text, images and skills are retained and only its
+   recovery owner changes. The current composer still follows the existing
+   side-draft merge policy. Nothing is resent.
+2. **Withdrawal of an unchanged stale baseline — confirmed and fixed.**
+   `testWithdrawalCannotConsumeInputFromAnUnchangedButStaleDraft` loads a
+   draft, captures the same text, commits a different draft through a second
+   store, then withdraws the first input. Before: withdrawal succeeds, the
+   pin disappears and `hasUnsavedDraft` is false. Now withdrawal verifies the
+   actual durable draft's complete normalized contents inside the same
+   `BEGIN IMMEDIATE` transaction before removing the independent input or
+   its pin. Ordinary unchanged/stale flushes still perform no write. A
+   mismatching durable row returns `staleRevision`, without inventing a
+   composer conflict or modifying either instance's durable baseline.
+3. **Preservation and an empty pending cache — confirmed and fixed.**
+   `testPreservationInvalidatesAnEmptyPendingSnapshotCache` first delivers a
+   real snapshot with an empty durable inventory and a visible memory pin,
+   then preserves through both `flushDrafts` and `restoreConflict`, then
+   delivers another snapshot. Before: both cases replace visible recovery
+   with an empty list. A thread-safe generation on `DraftVersion` now advances
+   when a committed operation releases an input pin. The snapshot cache keys
+   and post-await validation include that generation and baseline identity;
+   replacing the baseline also clears the cached inventory. This includes
+   transaction-conflict preservation, explicit preservation retries,
+   conflict restoration, initial recording and withdrawal; rollback never
+   advances it. The existing `pendingIntentRevision` still handles ordinary
+   record/receipt changes.
+4. **Live input exposed as recovery — confirmed and fixed.**
+   `testStreamingSnapshotsNeverOfferLiveSteersOrFollowupsForRecovery` holds
+   dispatch replies after durable recording while a chat streams and delivers
+   a snapshot. Before: both sends appear as recoverable. A display now tracks
+   each captured command's live task separately from its durable record.
+   Hydration/snapshot inventories and pane/menu presentation exclude live
+   IDs; Insert and Dismiss recheck ownership before admission and after
+   suspension. A settled failure is offered when its task releases ownership,
+   including failure bookkeeping that itself suspends. Accepted input never
+   becomes recoverable, even when acknowledgement storage fails.
+
+Failing-first output excerpts (full records are in `failing-first.log`):
+
+```text
+testFailedSidePublicationTransfersPersistedInputToParentRecovery:
+  XCTAssertEqual failed: ("[]") is not equal to ("[\"First side input\"]")
+  XCTAssertTrue failed - No unresolved input may remain under an unregistered side
+testWithdrawalCannotConsumeInputFromAnUnchangedButStaleDraft:
+  failed - An unchanged loaded snapshot is not proof that durable storage holds the input
+  XCTAssertTrue failed - Eviction must retain input absent from the current durable draft
+testPreservationInvalidatesAnEmptyPendingSnapshotCache:
+  XCTAssertEqual failed: ("[]") ... A preservation commit must retire the cached empty inventory
+testStreamingSnapshotsNeverOfferLiveSteersOrFollowupsForRecovery:
+  XCTAssertTrue failed - A snapshot cannot turn live input into recovery
+```
+
+The first fixed run (`fixed-first.log`) passed all 45 tests in the then-current
+`SubmissionPersistenceTests` and `SideTests`. The initial expanded headless run
+(`final-headless.log`) passed 311 tests; the first restored run adds the two
+side self-review cases and passes 313. The next run covers side recovery/close
+ordering and passes 314; the final `final-headless-owned.log` also includes
+live queued-Save eviction and passes 315. Mutation selectors and assertion
+counts are recorded with the final validation below.
+
+### Ownership and nearby sweep
+
+| Captured input | Durable record | Live owner / settlement |
+| --- | --- | --- |
+| Send / follow-up | `pending:<chat>/<commandID>` | `send` task, through acceptance or failure bookkeeping |
+| Steer | Same independent command record | Same task ownership while the original run streams |
+| Historical Resend | Same independent command record; separate replaceable editor/review snapshot | `sendEdit` task |
+| Queued Save | `pending:<chat>/queue-edit:<editID>:<textDigest>` | `resolveQueuedEdit` task, including repeat-save/status reconciliation |
+| Side first send | `pending:<side>/<commandID>` until registration or parent transfer | `send` task also covers side publication |
+
+Pins protect storage failures from capture onward. A task's terminal failure
+can await further bookkeeping: `settlingSubmissions` retains its recovery
+offer across intervening snapshots until the task finishes. This contains the
+same immutable input already owned by a pin or independent durable record;
+it never replaces either owner. Older failed input remains recoverable while
+unrelated work streams. A retry of the same queued input hides only that
+command's recovery actions. Mere queued/paused work does not acquire live
+ownership and does not prevent draft restoration.
+
+Side release paths checked: immediate close/replacement, asynchronous close,
+quit, update, helper-loss discard, missing-journal keep reconciliation after
+relaunch. Immediate release refuses retained or live input; asynchronous
+transfer saves the independent records under the saved parent before release.
+Failed transfer leaves the source records/pins, composer and pane available.
+The helper-loss path leaves such a pane reachable instead of discarding it.
+A failed `side.open` keeps its durable parent link until transfer; relaunch
+with no live display and no side journal recovers the input via that parent,
+without creating a saved side or starting a helper. Existing journal-backed
+keep registration remains its own path.
+
+Additional regressions cover every capture kind during held dispatch;
+Insert/Dismiss with deliberately stale menu data and other UI guards cleared;
+side transfer failures at destination insert, source delete, link delete and
+transaction rollback; missing-journal relaunch; and pinned tool-output
+references through failed transfer, successful parent recovery and display
+release. The round-12 storage-failure and rejected-Resend cases remain required.
+
+### Additional ordering check — side Close versus admitted recovery
+
+`testSideCloseWaitsForAnAdmittedDismissalBeforeTransferringInput` holds a
+Dismiss at its producer barrier and then closes the failed side. Before the
+ordering fix, Close completes and migrates the input; the admitted Dismiss
+then has nothing left in its source display to act on, so the parent offers
+input the user had chosen to discard. `failing-side-recovery-order.log` has
+two expected assertion failures. The restored focused check passes;
+`mutation-side-recovery-order.log` fails again when the wait before setting
+`loading` is removed. Waiting only inside the transfer would be too late:
+`loading` would itself refuse the admitted recovery action.
+
+Asynchronous Close now drains the side's admitted recovery before setting
+`loading`; immediate release refuses it, and the shared quit/update transfer
+also drains it before moving records or composer state. This is the same
+per-side release path, with no new prompt or recovery behavior.
+
+### Additional ownership check — live queued Save and display eviction
+
+`testLiveQueuedSaveKeepsItsDisplayAfterItsInputBecomesDurable` holds a queued
+Save after its independent input record commits, then navigates above the
+8-display limit. A held queued edit can have no running work, no loading flag
+and no dirty draft: its captured snapshot is already saved. Before the fix,
+its display is evicted, which would let a new display hydrate the still-live
+input as recovery without knowing its task. `failing-live-eviction.log` fails
+one assertion; the fixed check passes and `mutation-live-eviction.log` fails
+the same assertion when the new release guard is removed.
+
+The eviction predicate now also requires no live captured submissions. This
+pins the task's display until settlement without changing `hasWork`, Stop,
+Resume or paused-queue behavior. Ordinary sends and Resend already have
+`loading`; pending sides and their parents are protected by pane membership.
+Saved-side Close retains the display, so the same eviction guard protects a
+queued Save after that pane closes. Quit/update drain or settle these tasks,
+and helper loss keeps the owning display while its request unwinds.
+
+### Adversarial self-review and additional side checks
+
+Reviewed every changed decision against both its old and new branch:
+
+| Decision | States newly taking the other branch; intended result |
+| --- | --- |
+| Pin-release generation | An existing pin successfully committed/consumed now invalidates its cached pending inventory. A failed write and a nonexistent pin do not advance it. Both preservation APIs share this release point. |
+| Snapshot cache hit/publication | A preservation-generation change or replaced baseline now forces reread/rejects a suspended stale result; stable streams retain the cache optimization. |
+| Withdrawal proof | An unchanged loaded draft whose current durable contents differ now refuses consumption. A committed matching draft still succeeds; explicit Dismiss has no draft and still consumes only its chosen input. No new conflict episode is created. |
+| Display eviction | A durable queued Save can have no run work or dirty draft. Its live ownership now prevents eviction; idle settled displays remain eligible under the existing eight-display policy. |
+| Live task capture/finish | Send/follow-up, Steer, historical Resend, queued Save and side first send now own their IDs synchronously before suspension. All task exits release ownership. Captured input remains pinned or durable throughout; only a settled unaccepted outcome is offered. |
+| Pending inventory filter | Pinned or durable live IDs are excluded; unrelated settled failures and hydrated records without a live task are retained. Acceptance and receipt filtering are unchanged. |
+| Recovery UI/actions | The pane and dynamic chooser exclude live IDs, including a chooser cached before a retry. Insert/Dismiss check the same ownership after each suspension; merely running/paused queued work still does not hide settled failures. |
+| Deferred failure offer | A known failure waiting on later bookkeeping retains its offer separately until the task finishes, so a streaming snapshot cannot erase the offer. Acceptance checks still win. |
+| Side release | A captured-input transfer flag, retained records or live task now refuse synchronous release. Async transfer finishes before composer transfer/display release; failures preserve the original pane and storage owners. Ordinary untouched sides still merge synchronously. |
+| Parent ownership | A side capture ensures its parent is materialized before saving its link/input. Retrying a failed transfer also materializes a still-pending parent. An absent/deleted durable parent still refuses transfer instead of creating orphan records. |
+| Keep-link retirement | Failed first-send publication retains a parent link. Only a successful transfer retires a missing-journal link. Existing journal-backed registration remains available. Keep-resolution revision changes prevent concurrent scans from resurrecting a retired notice. |
+| Helper loss/relaunch | Helper loss cannot discard a pane still owning input/transfer work. With no live display and a missing journal, launch reconciliation moves pending input to the saved parent; live or journal-backed sides retain their existing publication/registration path. |
+
+Besides the recovery ordering above, the self-review found two nearby cases
+within the side-transfer fix:
+
+- `testDismissingFailedSideInputRetiresItsParentLinkOnClose`: after explicit
+  Dismiss the recovered list is empty, but Close must still retire the missing
+  journal's parent link. `failing-side-link-cleanup.log` fails one assertion
+  before the transfer flag; `mutation-side-link-cleanup.log` independently
+  reproduces it. The flag lasts until the storage transaction succeeds, even
+  if no input remains to migrate.
+- `testPinnedSideInputMaterializesItsPendingParentBeforeTransfer`: an initial
+  keep-write failure can leave a new parent memory-only. Its input must still
+  close/quit safely once storage recovers. `failing-pending-parent.log` fails
+  three assertions; `mutation-pending-parent.log` reproduces them. The parent
+  is saved before it becomes the durable recovery owner.
+
+No production helper code, wire contract, provider behavior, controls or layout
+geometry changed. Helper/wire/concurrent/acceptance suites are therefore not
+required for this native-only round. The generated fake helper supports held
+replies and streaming snapshots; it no longer writes a fixture side journal
+when `side.open` is rejected. Existing tests that expected a rejected first
+send to leave no recovery link now require that link until parent transfer and
+await the resulting asynchronous Close. These changes preserve the existing
+side-draft UX while making its independent input recoverable.
+
+### Final validation
+
+**480 distinct native tests passed across 28 classes; zero failures or skips.**
+All round-12 classes were rerun from this worktree. Counts below exclude
+exploratory passes, expected failures, mutations and the restored UI spot check.
+
+| Class | Passed | Evidence log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 85 | `final-conversation.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless-owned.log` |
+| `DraftLoadingTests` | 15 | `final-headless-owned.log` |
+| `DraftOrderingTests` | 17 | `final-headless-owned.log` |
+| `FamilyDeletionTests` | 10 | `final-headless-owned.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless-owned.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless-owned.log` |
+| `PendingChatProjectTests` | 24 | `final-headless-owned.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless-owned.log` |
+| `RecoveredDraftTests` | 13 | `final-headless-owned.log` |
+| `RunHoldTests` | 18 | `final-headless-owned.log` |
+| `SendBookkeepingTests` | 12 | `final-headless-owned.log` |
+| `SessionOrganizationTests` | 9 | `final-headless-owned.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless-owned.log` |
+| `SubagentDeletionTests` | 19 | `final-headless-owned.log` |
+| `SubmissionPersistenceTests` | 35 | `final-headless-owned.log` |
+| `ToolOutputProducerTests` | 13 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless-owned.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless-owned.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless-owned.log` |
+| `WorkspaceValidationGalleryTests` | 3 | `final-gallery.log` |
+
+Exact final commands (also retained in the matching `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/DraftConcurrencyTests \
+  -only-testing:PiAppTests/DraftLoadingTests \
+  -only-testing:PiAppTests/DraftOrderingTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/HistoricalEditBookkeepingTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SendBookkeepingTests \
+  -only-testing:PiAppTests/SessionOrganizationTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/SubmissionPersistenceTests \
+  -only-testing:PiAppTests/WorkspaceDisplayMemoryTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/HistoricalEditFocusTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round13-input-ownership/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Mutation checks below each broke the named fix, produced assertion failures
+(exit 65, never a compile failure), and restored exact source in `finally`.
+The UI mutation and its restored pass held the shared focus lock. All source
+mutations serialized with the same build mutex as the final tests.
+
+| Mutation log | Tests | Expected failed assertions |
+| --- | ---: | ---: |
+| `mutation-edit-owner.log` | 1 | 4 |
+| `mutation-live-actions.log` | 1 | 10 |
+| `mutation-live-eviction.log` | 1 | 1 |
+| `mutation-live-inventory.log` | 1 | 2 |
+| `mutation-live-ui.log` | 1 | 1 |
+| `mutation-pending-parent.log` | 1 | 3 |
+| `mutation-preservation-cache.log` | 1 | 2 |
+| `mutation-queue-owner.log` | 1 | 4 |
+| `mutation-side-link-cleanup.log` | 1 | 1 |
+| `mutation-side-recovery-order.log` | 1 | 1 |
+| `mutation-side-relaunch.log` | 1 | 2 |
+| `mutation-side-transfer.log` | 1 | 4 |
+| `mutation-withdrawal-proof.log` | 1 | 3 |
+
+The reversible edits and exact selectors are in `mutations.py`,
+`mutation-side-cleanup.py`, `mutation-parent.py`, `mutation-ui.py` and
+`side-recovery-ordering.py` and `live-eviction.py`.
+The final source manifest is `tested-source-sha256.json`; `git diff --check` passes.
+No unexplained or unrelated test failures occurred. The additional failing
+self-review checks are listed above; all are fixed and mutation-checked.
+
+The gallery run generated **44 PNGs**, all visually inspected: live and settled
+Steer/follow-up (16), retained unsaved/rejected input (8), one/40 conflict copies
+(8), and existing draft/image/model errors (12). Each includes light/dark and
+760/300-point widths. Source PNGs are in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round13-input-ownership/gallery/`.
+The labeled inspection sheets in the adjacent `gallery-inspection/` directory
+show those same captures at their native point dimensions; `manifest.json`
+maps every sheet to its source images.
+
+Live Steer/follow-up scenes have no recovery row. Their settled counterparts
+show the fixed one-row chooser while unrelated work continues. Unsaved input
+shows “1 retained copy”; durable rejected input shows “1 saved copy”, including
+after edit cancellation. One and 40 conflict copies retain the same banner
+height and transcript space. At narrow width the transcript remains scrollable;
+the settled streaming fixture preserves its bottom reading position. No new
+control, layout geometry, clipping of recovery controls or capsule-border
+change was introduced.
+
+No production helper or wire behavior changed. All locks owned by this
+workstream were released and its automatic test results/clones cleaned up;
+text logs and generated PNGs are the evidence, with no named xcresult.

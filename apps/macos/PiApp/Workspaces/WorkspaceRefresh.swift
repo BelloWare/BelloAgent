@@ -409,8 +409,9 @@ extension WorkspaceModel {
             let queue = view.panelQueue(currentQueue); if view.queue != queue { view.queue = queue }
         }
         let revision = view.pendingIntentRevision
+        let draftVersion = view.draftVersion, submissionRevision = draftVersion.submissionRevision
         var intents: [CommandIntent]
-        if let known = view.pendingIntents, known.revision == revision { intents = known.intents }
+        if let known = view.pendingIntents, known.revision == revision, view.pendingSubmissionRevision == submissionRevision { intents = known.intents }
         else {
             view.intentReads += 1
             intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
@@ -432,8 +433,9 @@ extension WorkspaceModel {
         if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
         // Held against the revision read: a write during the awaits
         // above moves the revision on, and the next snapshot reads again.
-        guard revision == view.pendingIntentRevision else { return true }
+        guard revision == view.pendingIntentRevision, view.draftVersion === draftVersion, draftVersion.submissionRevision == submissionRevision else { return true }
         view.pendingIntents = (revision, intents)
+        view.pendingSubmissionRevision = submissionRevision
         view.acceptedCommands.formIntersection(Set(intents.map(\.id)))
         // A dispatched receipt or a local acknowledgement proves acceptance,
         // even while the intent waits here for its terminal receipt.

@@ -71,11 +71,13 @@ final class DraftVersion: @unchecked Sendable {
     private var value: (draft: DraftRecord?, revision: Int64?)
     private var conflicts: [SavedDraftConflict] = []
     private var submissions: [CommandIntent] = []
+    private var inputRevision = 0
     private var episode: (revision: Int64?, id: String)?
     init(draft: DraftRecord? = nil, revision: Int64? = nil) { value = (draft, revision) }
     var snapshot: (draft: DraftRecord?, revision: Int64?) { lock.withLock { value } }
     var unsavedConflicts: [SavedDraftConflict] { lock.withLock { conflicts } }
     var unsavedSubmissions: [CommandIntent] { lock.withLock { submissions } }
+    var submissionRevision: Int { lock.withLock { inputRevision } }
     var hasUnsavedConflict: Bool { lock.withLock { !conflicts.isEmpty || !submissions.isEmpty } }
     var hasConflictEpisode: Bool { lock.withLock { episode != nil } }
     fileprivate func conflicted(_ draft: DraftRecord, against revision: Int64?) {
@@ -95,7 +97,14 @@ final class DraftVersion: @unchecked Sendable {
             if !submissions.contains(where: { $0.id == intent.id }) { submissions.append(intent) }
         }
     }
-    fileprivate func preservedSubmission(_ id: String) { lock.withLock { submissions.removeAll { $0.id == id } } }
+    fileprivate func preservedSubmission(_ id: String) {
+        lock.withLock {
+            // Snapshot inventories read durable pending records. Publishing a
+            // pin there invalidates an earlier inventory before dropping it.
+            if submissions.contains(where: { $0.id == id }) { inputRevision &+= 1 }
+            submissions.removeAll { $0.id == id }
+        }
+    }
     fileprivate func preserved(_ copy: SavedDraftConflict) { lock.withLock { conflicts.removeAll { $0 == copy } } }
     fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision); episode = nil } }
 }
@@ -328,6 +337,30 @@ actor MetadataStore {
             // A retry must not roll an acknowledged command back to intent.
             if try get(CommandIntent.self, kind: kind, id: intent.id) == nil { try put(intent, kind: kind, id: intent.id) }
         }
+    }
+    /// An unsaved side has no lasting chat to own recovery. Move captured
+    /// inputs to its saved parent atomically; a failed move keeps every
+    /// source record and pin. The composer moves separately as a draft.
+    func transferSideSubmissions(from id: String, to parentID: String, version: DraftVersion, retiringKeep: Bool) throws -> [CommandIntent] {
+        let pinned = version.unsavedSubmissions
+        let moved: [CommandIntent] = try orderedDraftWrite(id, payload: .submission) {
+            try transaction {
+                guard try get(ChatRecord.self, kind: "chat", id: parentID) != nil else { throw StoreError.invalidRecord }
+                var inputs = try list(CommandIntent.self, kind: "pending:" + id)
+                inputs += pinned.filter { pin in !inputs.contains { $0.id == pin.id } }
+                var moved: [CommandIntent] = []
+                for var intent in inputs {
+                    intent.sessionID = parentID
+                    try preserveSubmissions([intent])
+                    try remove(kind: "pending:" + id, id: intent.id)
+                    moved.append(intent)
+                }
+                if retiringKeep { try remove(kind: "side-keep", id: id) }
+                return moved
+            }
+        }
+        for intent in pinned { version.preservedSubmission(intent.id) }
+        return moved
     }
     private func preserveConflict(_ draft: DraftRecord) throws {
         guard try !draftConflicts(id: draft.id).contains(where: { $0.draft.hasSameContents(as: draft) }) else { return }
@@ -1071,7 +1104,14 @@ actor MetadataStore {
     func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
         try orderedDraftWrite(sessionID, payload: draft == nil ? .submission : .draft, ticket: write) {
             try transaction {
-                if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) }
+                if let draft {
+                    try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion)
+                    // An unchanged stale snapshot deliberately owns no write.
+                    // Withdrawal needs stronger evidence: the durable draft
+                    // must actually contain this returned input, in this
+                    // transaction, before its independent record is consumed.
+                    guard try self.draftVersion(id: draft.id).snapshot.draft?.hasSameContents(as: draft) == true else { throw StoreError.staleRevision }
+                }
                 try remove(kind: "pending:\(sessionID)", id: commandID)
             }
         }

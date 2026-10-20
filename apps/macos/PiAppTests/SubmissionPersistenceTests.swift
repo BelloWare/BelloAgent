@@ -3,6 +3,286 @@ import SQLite3
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
+    func testFailedSidePublicationTransfersPersistedInputToParentRecovery() async throws {
+        for closing in [true, false] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            model.openSide(parentID: parent.id)
+            let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+            view.snapshotInFlight = true; view.draft = "First side input"
+            wire.rejectedMethod = "side.open"
+            model.send(sessionID: side.id)
+            try await eventually("Side publication refused") { !view.loading && model.toolOutputProducers.isEmpty }
+            let captured = try XCTUnwrap(view.recovered.first)
+            let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+            XCTAssertNotNil(keep, "The parent link protects launch recovery until transfer"); XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+            view.draft = "Different side draft"
+            if closing { let discarded = await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id])); XCTAssertTrue(discarded) }
+            else { try await model.moveUnsavedSideDraftsToParents() }
+            try await model.flushDrafts()
+            let saved = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+            XCTAssertEqual(saved.map(\.text), [captured.text], "Closing and quit must leave recovery with a saved parent")
+            XCTAssertEqual(parent.recovered.map(\.text), [captured.text])
+            let orphaned = try await store.list(CommandIntent.self, kind: "pending:" + side.id)
+            XCTAssertTrue(orphaned.isEmpty, "No unresolved input may remain under an unregistered side")
+            let relaunched = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+            let metadata = try await relaunched.selectionMetadata(id: parent.id, draft: true, anchor: false)
+            XCTAssertEqual(metadata.recovered.map(\.text), [captured.text])
+            XCTAssertTrue(metadata.draft?.text.contains("Different side draft") == true)
+            await relaunched.close(); try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testWithdrawalCannotConsumeInputFromAnUnchangedButStaleDraft() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let old = DraftRecord(id: view.id, text: "Captured input")
+        try await store.put(old, kind: "draft", id: view.id)
+        view.draftVersion = try await store.draftVersion(id: view.id); view.draft = old.text
+        let intent = CommandIntent(id: "refused", sessionID: view.id, turnID: "turn", text: old.text, state: "intent")
+        view.draftVersion.preservingSubmission(intent)
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: view.id, text: "Other instance's newer draft"), kind: "draft", id: view.id)
+        do {
+            try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: old, draftVersion: view.draftVersion)
+            XCTFail("An unchanged loaded snapshot is not proof that durable storage holds the input")
+        } catch {}
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent])
+        XCTAssertTrue(view.hasUnsavedDraft, "Eviction must retain input absent from the current durable draft")
+        let saved = try await other.get(DraftRecord.self, kind: "draft", id: view.id)
+        XCTAssertEqual(saved?.text, "Other instance's newer draft")
+        await other.close(); try await wire.host.shutdownAndWait()
+    }
+
+    func testFailedSidePublicationRecoversViaParentAfterRelaunch() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Side input before relaunch"
+        wire.rejectedMethod = "side.open"; model.send(sessionID: side.id)
+        try await eventually("Side publication refused") { !view.loading && model.toolOutputProducers.isEmpty }
+        // Reconstruct from desktop records alone, without the live display.
+        model.sides.removeAll(); model.displays.removeValue(forKey: side.id)
+        try await wire.host.shutdownAndWait()
+        await model.reconcileSideKeeps()
+        let recovered = try await store.selectionMetadata(id: parent.id, draft: false, anchor: false)
+        XCTAssertEqual(recovered.recovered.map(\.text), ["Side input before relaunch"])
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+        XCTAssertNil(keep); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+        XCTAssertEqual(parent.recovered.map(\.text), ["Side input before relaunch"])
+    }
+
+    func testPinnedSideInputMaterializesItsPendingParentBeforeTransfer() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.pendingChatIDs.insert(parent.id)
+        try await store.remove(kind: "chat", id: parent.id)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Side input for a new parent"
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_keep BEFORE INSERT ON records WHEN NEW.kind='side-keep' BEGIN SELECT RAISE(ABORT, 'generated keep failure'); END", root: model.root)
+        model.send(sessionID: side.id)
+        try await eventually("First side capture retained") { !view.loading && model.toolOutputProducers.isEmpty }
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_keep", root: model.root)
+        let closed = await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id]))
+        XCTAssertTrue(closed)
+        let saved = try await store.get(ChatRecord.self, kind: "chat", id: parent.id)
+        XCTAssertNotNil(saved)
+        let inputs = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+        XCTAssertEqual(inputs.map(\.text), ["Side input for a new parent"])
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testSideCloseWaitsForAnAdmittedDismissalBeforeTransferringInput() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Side input to dismiss"
+        wire.rejectedMethod = "side.open"; model.send(sessionID: side.id)
+        try await eventually("Side publication refused") { !view.loading && model.toolOutputProducers.isEmpty }
+        let intent = try XCTUnwrap(view.recovered.first)
+        view.draft = "Different current draft"
+        let gate = AsyncGate(); var entered = false
+        model.toolOutputProducerStep = { if $0 == .draftRecovery { entered = true; await gate.wait() } }
+        model.recoverDraft(intent, insert: false)
+        try await eventually("Dismiss admitted before Close") { entered }
+        let closing = Task { await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id])) }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(model.displays[side.id] === view, "Close must wait for the admitted recovery action")
+        await gate.open()
+        let closed = try await closing.value; await model.draftWrites.recoveries[side.id]?.value
+        XCTAssertTrue(closed)
+        let inputs = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+        XCTAssertTrue(inputs.isEmpty, "Explicit Dismiss must not become a new recovery copy in the parent")
+        XCTAssertEqual(parent.draft, "Different current draft")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testDismissingFailedSideInputRetiresItsParentLinkOnClose() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Side input to dismiss"
+        wire.rejectedMethod = "side.open"; model.send(sessionID: side.id)
+        try await eventually("Side publication refused") { !view.loading && model.toolOutputProducers.isEmpty }
+        let intent = try XCTUnwrap(view.recovered.first)
+        model.recoverDraft(intent, insert: false); await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertTrue(view.recovered.isEmpty)
+        let closed = await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id]))
+        XCTAssertTrue(closed)
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+        XCTAssertNil(keep, "An explicitly dismissed input must not leave a missing-journal recovery notice")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testFailedSideInputTransfersAreAtomicAndKeepThePaneReachable() async throws {
+        for (event, kind, rollback) in [("INSERT", "pending:chat", false), ("DELETE", "source", false), ("DELETE", "side-keep", false), ("INSERT", "pending:chat", true)] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            model.openSide(parentID: parent.id)
+            let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+            view.snapshotInFlight = true; view.draft = "Retained side input"
+            wire.rejectedMethod = "side.open"; model.send(sessionID: side.id)
+            try await eventually("Side publication refused") { !view.loading && model.toolOutputProducers.isEmpty }
+            view.draft = "Later draft"
+            let row = event == "DELETE" ? "OLD" : "NEW", target = kind == "source" ? "pending:" + side.id : kind
+            try RecoveredDraftTests.sql("CREATE TRIGGER fail_transfer \(rollback ? "AFTER" : "BEFORE") \(event) ON records WHEN \(row).kind='\(target)' BEGIN SELECT RAISE(\(rollback ? "ROLLBACK" : "ABORT"), 'generated transfer failure'); END", root: model.root)
+            let discarded = await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id]))
+            XCTAssertFalse(discarded); XCTAssertTrue(model.displays[side.id] === view)
+            XCTAssertEqual(view.recovered.map(\.text), ["Retained side input"]); XCTAssertEqual(view.draft, "Later draft")
+            let source = try await store.list(CommandIntent.self, kind: "pending:" + side.id)
+            let destination = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+            XCTAssertEqual(source.map(\.text), ["Retained side input"]); XCTAssertTrue(destination.isEmpty)
+            try RecoveredDraftTests.sql("DROP TRIGGER fail_transfer", root: model.root)
+            let closed = await model.discardPendingSide(try XCTUnwrap(model.sides[parent.id]))
+            XCTAssertTrue(closed); XCTAssertEqual(parent.recovered.map(\.text), ["Retained side input"])
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testPreservationInvalidatesAnEmptyPendingSnapshotCache() async throws {
+        for restoring in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let intent = CommandIntent(id: "retained", sessionID: view.id, turnID: "turn", text: "Captured input", state: "intent")
+            view.draftVersion.preservingSubmission(intent)
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertEqual(view.pendingIntents?.intents, []); XCTAssertEqual(view.recovered, [intent])
+            if restoring {
+                let copy = SavedDraftConflict(id: "copy", draft: DraftRecord(id: view.id, text: "Conflict copy"))
+                try await store.put(copy.draft, kind: "draft-conflict:" + view.id, id: copy.id)
+                try await store.restoreConflict(copy, replacing: view.savedDraft, version: view.draftVersion)
+            } else { try await model.flushDrafts() }
+            XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertEqual(view.recovered, [intent], "A preservation commit must retire the cached empty inventory")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testStreamingSnapshotsNeverOfferLiveSteersOrFollowupsForRecovery() async throws {
+        for steer in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            view.runState = .running; view.draft = "Input being delivered"
+            wire.heldMethod = steer ? "turn.steer" : "turn.submit"
+            model.send(steer: steer, sessionID: view.id)
+            try await eventually("Dispatch held before acceptance") { wire.held != nil }
+            let durable = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            let intent = try XCTUnwrap(durable.first)
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertTrue(view.recovered.isEmpty, "A snapshot cannot turn live input into recovery")
+            // Exercise both actions with the exact input, including a stale
+            // chooser snapshot retained while a retry started.
+            view.recovered = [intent]
+            for insert in [false, true] {
+                model.recoverDraft(intent, insert: insert)
+                await model.draftWrites.recoveries[view.id]?.value
+                let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+                XCTAssertEqual(pending, durable)
+                XCTAssertEqual(view.draft, "")
+            }
+            wire.release()
+            try await eventually("Accepted submission settled") { !view.loading && model.toolOutputProducers.isEmpty }
+            XCTAssertTrue(view.recovered.isEmpty)
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == (steer ? "turn.steer" : "turn.submit") }.count, 1)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testEveryCapturedSubmissionOwnsItsInputUntilItsTaskSettles() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let view: SessionDisplay
+            if method == "side" {
+                model.openSide(parentID: parent.id)
+                view = try XCTUnwrap(model.sides[parent.id].flatMap { model.displays[$0.id] }); view.snapshotInFlight = true
+            } else { view = parent }
+            view.draft = "Captured live input"
+            if method == "turn.edit" { view.editingMessageID = "original"; view.draftBeforeEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "queue.edit.save" { view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"; view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "turn.steer" { view.runState = .running }
+            wire.heldMethod = method == "side" ? "turn.submit" : method
+            if method == "turn.edit" { model.sendEdit(sessionID: view.id) }
+            else if method == "queue.edit.save" { model.saveQueuedEdit(sessionID: view.id) }
+            else { model.send(steer: method == "turn.steer", sessionID: view.id) }
+            try await eventually("Input dispatched but not accepted") { wire.held != nil }
+            let durable = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            let intent = try XCTUnwrap(durable.first)
+            XCTAssertEqual(view.submittingCommands, [intent.id], method)
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertTrue(view.recovered.isEmpty, method)
+            // Isolate command ownership from the other UI guards: stale menu
+            // actions must remain inert even if an unrelated callback clears
+            // loading or the editor before this submission task finishes.
+            let loading = view.loading, editing = view.editingMessageID, queueEditing = view.queueEditingID
+            view.loading = false; view.editingMessageID = nil; view.queueEditingID = nil; view.recovered = [intent]
+            let draft = view.draft
+            for insert in [false, true] {
+                model.recoverDraft(intent, insert: insert); await model.draftWrites.recoveries[view.id]?.value
+                let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+                XCTAssertEqual(pending, durable); XCTAssertEqual(view.draft, draft)
+            }
+            view.loading = loading; view.editingMessageID = editing; view.queueEditingID = queueEditing
+            view.recovered = []; view.draft = "Newer typing"
+            wire.rejectedMethod = wire.heldMethod; wire.release()
+            try await eventually("Rejected input settled") { view.submittingCommands.isEmpty && model.toolOutputProducers.isEmpty }
+            if method == "turn.edit" || method == "queue.edit.save" {
+                XCTAssertTrue(view.recoverableSubmissions.contains { $0.id == intent.id }, method)
+            } else {
+                let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+                XCTAssertTrue(saved?.text.contains(intent.text) == true, method)
+            }
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testLiveQueuedSaveKeepsItsDisplayAfterItsInputBecomesDurable() async throws {
+        let (model, view, wire) = try await fixture()
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked")
+        view.draft = "Live queued rewrite"; wire.heldMethod = "queue.edit.save"
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Save held after recording") { wire.held != nil }
+        await model.draftWrites.tasks[view.id]?.value
+        XCTAssertFalse(view.hasWork); XCTAssertFalse(view.loading); XCTAssertFalse(view.hasUnsavedDraft)
+        XCTAssertEqual(view.submittingCommands.count, 1)
+        view.used = .distantPast
+        for index in 0..<9 {
+            let id = "other-\(index)"
+            model.chats.append(ChatRecord(id: id, workspaceID: "w", title: id, profileID: "p"))
+            model.displays[id] = SessionDisplay(id: id)
+        }
+        model.selectedID = "other-8"
+        model.releaseUnreadDisplays(keeping: "other-8")
+        XCTAssertTrue(model.displays[view.id] === view, "A live task must retain its display ownership after durability, so hydration cannot present it as recovery")
+        XCTAssertLessThanOrEqual(model.displays.count, 8)
+        wire.release()
+        try await eventually("Queued Save settled") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        try await wire.host.shutdownAndWait()
+    }
+
+    private func snapshot(_ model: WorkspaceModel, view: SessionDisplay, wire: SubmissionPersistenceHost) async throws {
+        wire.snapshotSequence += 1
+        view.snapshotInFlight = false; model.refresh(view.id)
+        try await eventually("Streaming snapshot reconciled") { !view.snapshotInFlight && view.lastSequence == Double(wire.snapshotSequence) }
+        view.snapshotInFlight = true
+    }
+
     private func fixture() async throws -> (WorkspaceModel, SessionDisplay, SubmissionPersistenceHost) {
         let root = scratchRoot("submission-persistence")
         let workspace = WorkspaceRecord(id: "w", path: root.path, trusted: true)
@@ -123,15 +403,17 @@ import SQLite3
         let intent = try XCTUnwrap(view.recovered.first)
         view.draft = "Newer side text"
         try RecoveredDraftTests.sql("DROP TRIGGER fail_keep", root: model.root)
-        do { try await model.moveSideDraft(side); XCTFail("A pending record without a saved chat/keep intent cannot release its only reachable display") } catch {}
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_transfer BEFORE INSERT ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'generated transfer failure'); END", root: model.root)
+        do { try await model.moveSideDraft(side); XCTFail("A failed transfer must retain the source input") } catch {}
         XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id })
         XCTAssertEqual(view.recovered, [intent])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_transfer", root: model.root)
         let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
         XCTAssertNil(keep)
-        model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[side.id]?.value
         try await model.moveSideDraft(side); try await model.flushDrafts()
-        let saved = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
-        XCTAssertTrue(saved?.text.contains(intent.text) == true)
+        let saved = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+        XCTAssertEqual(saved.map(\.text), [intent.text])
+        XCTAssertEqual(parent.recovered.map(\.text), [intent.text])
         try await wire.host.shutdownAndWait()
     }
 
@@ -531,6 +813,7 @@ import SQLite3
     var heldMethod: String?
     var rejectedMethod: String?
     var held: [String: WireValue]?
+    var snapshotSequence = 0
     lazy var host = HostSupervisor(commandSender: { [weak self] frame in
         guard let self else { return }
         frames.append(frame)
@@ -540,7 +823,10 @@ import SQLite3
     func release(holding method: String? = nil) { let frame = held; held = nil; heldMethod = method; if let frame { answer(frame) } }
     private func answer(_ frame: [String: WireValue]) {
         var result: [String: WireValue] = [:]
-        if frame["method"]?.string == "side.open", let id = frame["params"]?.object?["sideSessionId"]?.string {
+        if frame["method"]?.string == "session.snapshot" || frame["method"]?.string == "session.status" {
+            result = ["seq": .number(Double(snapshotSequence)), "state": .string("running"), "queue": .array([]), "queueEditRevision": .number(0)]
+        }
+        if frame["method"]?.string == "side.open", rejectedMethod != "side.open", let id = frame["params"]?.object?["sideSessionId"]?.string {
             let path = root.appendingPathComponent("Workspaces/w/Sessions/side_\(id).jsonl")
             do {
                 try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)

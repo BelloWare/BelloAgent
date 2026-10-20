@@ -66,8 +66,10 @@ extension WorkspaceModel {
         }
         let outputUse = beginToolOutputUse(.submission)
         let submission = acceptSubmission(item, view: view, store: store, steer: steer)
+        view.submittingCommands.insert(submission.intent.id)
         sendSteps?("accepted")
         Task {
+            defer { finishSubmission(submission.intent.id, in: view) }
             defer { finishToolOutputUse(outputUse) }
             // A send that failed before any snapshot leaves the helper's busy
             // mark to be worked out again here (a failed first message of a

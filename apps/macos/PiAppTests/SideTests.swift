@@ -234,8 +234,9 @@ final class SideTests: XCTestCase {
         XCTAssertEqual(side.draft, "A question for the side", "What was typed is still there")
         let stored = try await f.model.store?.get(DraftRecord.self, kind: "draft", id: info.id)
         let intent = try await f.model.store?.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
-        XCTAssertNil(stored, "A draft side's text is not left in the store"); XCTAssertNil(intent, "Nor a recovery intent for a side that was never created")
+        XCTAssertNil(stored, "A draft side's text is not left in the store"); XCTAssertNotNil(intent, "Captured input keeps its parent link until recovery transfers")
         f.model.closeSide(info.id)
+        try await f.until("The side input did not transfer") { f.model.sides[f.parent.id] == nil }
         XCTAssertNil(f.model.sides[f.parent.id], "It closes")
         XCTAssertEqual(f.parentView.draft, "A question for the side", "Its text goes back to the parent, as for any draft side")
     }
@@ -311,6 +312,7 @@ final class SideTests: XCTestCase {
         f.parentView.draft = "Parent text"; f.parentView.attachments = [Self.parentImage]; f.parentView.skills = [Self.skill]
         let info = try draftSide(f, text: "  Side text ", images: [Self.image], skills: [Self.skill, Self.other])
         f.model.closeSide(info.id)
+        try await f.until("The side input did not transfer") { f.model.sides[f.parent.id] == nil }
         XCTAssertNil(f.model.sides[f.parent.id], "It closes")
         XCTAssertEqual(f.parentView.draft, "Parent text\n\nSide text")
         XCTAssertEqual(f.parentView.attachments.map(\.id), ["parent-image", "side-image"])

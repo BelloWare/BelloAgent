@@ -3,6 +3,37 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testLiveAndSettledSubmissionRecoveryInLightDarkAndNarrowLayouts() async throws {
+        guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                for kind in ["steer", "followup"] {
+                    let pane = try ConversationPaneTests.Pane(messages: [
+                        TranscriptMessage(id: "question", role: "user", text: "Review the changes while I prepare the next message.", turn: "turn"),
+                        TranscriptMessage(id: "answer", role: "assistant", text: "I am reviewing the changes. Your next message is being delivered.", turn: "turn")
+                    ], width: width, height: 620)
+                    defer { pane.close() }
+                    pane.model.prewarmsHelpers = false; pane.hosted.appearance = NSAppearance(named: appearance)
+                    let intent = CommandIntent(id: kind, sessionID: pane.chat.id, turnID: "next", text: "Include the pending edits in your review.", state: "intent")
+                    try await pane.model.store?.recordSubmission(intent, draft: nil)
+                    pane.session.runState = .running; pane.session.recovered = [intent]
+                    pane.session.submittingCommands.insert(intent.id)
+                    for live in [true, false] {
+                        if !live { pane.model.finishSubmission(intent.id, in: pane.session) }
+                        await pane.settle()
+                        let banner = try XCTUnwrap(ConversationPaneTests.views(RecoveredBannerView.self, in: pane.hosted).first)
+                        XCTAssertEqual(banner.isHidden, live)
+                        let image = try XCTUnwrap(pane.hosted.bitmapImageRepForCachingDisplay(in: pane.hosted.bounds))
+                        pane.hosted.cacheDisplay(in: pane.hosted.bounds, to: image)
+                        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("\(kind)-\(live ? "live" : "settled")-\(theme)-\(Int(width)).png"))
+                    }
+                }
+            }
+        }
+    }
+
     @MainActor func testRetainedInputRecoveryInLightDarkAndNarrowLayouts() async throws {
         guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

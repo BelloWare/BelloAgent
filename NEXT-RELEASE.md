@@ -4,6 +4,12 @@
 
 ## 0.1.130
 
+- [x] Failed side first sends retain their parent link and move captured input into parent recovery before Close/Quit or after relaunch. [Validation](docs/validation/a130-workspace-0.1.130.md#round-13--captured-input-ownership-and-reachable-side-recovery).
+- [x] Returning rejected input to a draft verifies its current durable contents before consuming the independent submission.
+- [x] Preserving captured input invalidates pending snapshots, including conflict-restoration retries, so recovery stays visible.
+- [x] Live Send, Steer, Resend, queued Save and side submissions never appear or act as recoverable; settled failures remain reachable.
+- [x] Closing or quitting a side waits for admitted recovery actions, so Dismiss cannot reappear as a parent recovery copy.
+
 - [x] Every captured Send, Steer, Resend, queued Save and side first send stays pinned and recoverable after any storage failure. [Validation](docs/validation/a130-workspace-0.1.130.md#round-12--retained-input-through-storage-failures).
 - [x] Retained-input recovery stays visible after rejection and edit cancellation, independently of execution uncertainty.
 - [x] A side with undurable captured input stays reachable until recovery or dismissal; quit/update cannot orphan its input.

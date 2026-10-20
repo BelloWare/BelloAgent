@@ -236,8 +236,8 @@ struct SideActions {
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
                      covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
-                     showsRecovered: !current.isSubagent && (!session.recovered.isEmpty || !session.draftConflicts.isEmpty),
-                     recovered: session.recovered.map(\.id), conflicts: session.draftConflicts,
+                     showsRecovered: !current.isSubagent && (!session.recoverableSubmissions.isEmpty || !session.draftConflicts.isEmpty),
+                     recovered: session.recoverableSubmissions.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
                      terminalWorkspace: terminalWorkspace, missingFolder: model.missingProjectFolders[current.workspaceID],
                      footer: kind, transcriptState: session.state, canFork: model.canForkFromReply(session.id),
@@ -286,7 +286,7 @@ struct SideActions {
             })
         } else { subagentHeader.removeFromSuperview() }
         recovered.isHidden = !state.showsRecovered
-        if state.showsRecovered { recovered.update(session.recovered, conflicts: session.draftConflicts, model: model) }
+        if state.showsRecovered { recovered.update(session.recoverableSubmissions, conflicts: session.draftConflicts, model: model) }
         // Over it: the starter card and the loading cover.
         if before?.showsStarter != state.showsStarter {
             if state.showsStarter {

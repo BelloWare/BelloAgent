@@ -192,6 +192,28 @@ import XCTest
         try await assertPinnedInputKeepsOutput(submission: true)
     }
 
+    func testSideInputTransferKeepsOutputThroughFailureAndParentRecovery() async throws {
+        let f = try await fixture("side-input-transfer")
+        f.view.draft = ""
+        let info = SideRecord(id: "unsaved-side", parentID: f.chat.id, workspaceID: f.chat.workspaceID, profileID: f.chat.profileID, title: "Side")
+        let side = SessionDisplay(id: info.id)
+        f.model.sides[f.chat.id] = info; f.model.displays[info.id] = side
+        let intent = CommandIntent(id: "captured", sessionID: side.id, turnID: "turn", text: f.output.path, state: "intent")
+        side.draftVersion.preservingSubmission(intent); side.recovered = [intent]
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_transfer BEFORE INSERT ON records WHEN NEW.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated transfer failure'); END", root: f.model.root)
+        do { try await f.model.moveSideDraft(info); XCTFail("Transfer must fail") } catch {}
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path))
+        XCTAssertEqual(side.draftVersion.unsavedSubmissions, [intent])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_transfer", root: f.model.root)
+        try await f.model.moveSideDraft(info)
+        XCTAssertTrue(side.draftVersion.unsavedSubmissions.isEmpty)
+        XCTAssertEqual(f.view.recovered.map(\.text), [f.output.path])
+        f.model.displays.removeAll()
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "The parent's durable recovery is now the only owner")
+    }
+
     func testConflictRestorationOwnsPinnedInputThroughStorageFailure() async throws {
         let f = try await fixture("failed-conflict-restoration")
         try await f.store.put(DraftRecord(id: f.chat.id, text: "Winning draft"), kind: "draft", id: f.chat.id)

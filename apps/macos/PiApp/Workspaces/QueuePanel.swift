@@ -358,7 +358,7 @@ extension WorkspaceModel {
         // captured rewrite gets its own record and cannot erase the first.
         let intent = sent.map { CommandIntent(id: "queue-edit:" + editID + ":" + QueuedEditDraft.digest($0), sessionID: view.id, turnID: "queue-edit:" + editID, text: $0,
                                               state: "intent", draftReviewTracked: true, queueEditID: editID) }
-        if let intent { view.draftVersion.preservingSubmission(intent) }
+        if let intent { view.draftVersion.preservingSubmission(intent); view.submittingCommands.insert(intent.id) }
         let write = intent.flatMap { _ in store?.draftWriter.capture(view.id) }
         // Protect captured references through their independent write. Input
         // becomes durable before queueEditRequest waits for recycling.
@@ -375,6 +375,7 @@ extension WorkspaceModel {
         }
         Task {
             defer {
+                if let intent { finishSubmission(intent.id, in: view) }
                 if let intent, !view.acceptedCommands.contains(intent.id) { offerSubmissionRecovery(intent, in: view) }
                 if let outputUse { finishToolOutputUse(outputUse) }
             }

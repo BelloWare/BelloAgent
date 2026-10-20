@@ -4,6 +4,31 @@ import AppKit
 @testable import PiApp
 
 extension ConversationPaneTests {
+    @MainActor func testLiveSubmissionHasNoRecoveryBannerOrStaleChooserActions() async throws {
+        let pane = try Pane(); defer { pane.close() }
+        await pane.settle()
+        let intent = CommandIntent(id: "retry", sessionID: pane.chat.id, turnID: "turn", text: "Captured input", state: "intent")
+        pane.session.recovered = [intent]
+        await pane.settle()
+        let banner = try XCTUnwrap(Self.views(RecoveredBannerView.self, in: pane.hosted).first)
+        let chooser = try XCTUnwrap(Self.views(PiKit.MenuButton.self, in: banner).first)
+        XCTAssertFalse(banner.isHidden)
+        pane.session.submittingCommands.insert(intent.id); pane.session.runState = .running
+        // Even before the next render, an already-created chooser must not
+        // offer the old Insert or Dismiss actions for a live retry.
+        XCTAssertTrue(PiMenus.menu(chooser.entries()).items.compactMap(\.submenu).isEmpty)
+        await pane.settle()
+        XCTAssertTrue(banner.isHidden)
+        // Execution certainty does not control a settled refusal's recovery.
+        pane.model.offerSubmissionRecovery(intent, in: pane.session)
+        pane.session.recovered = []
+        pane.model.finishSubmission(intent.id, in: pane.session)
+        pane.session.uncertain = false
+        await pane.settle()
+        XCTAssertFalse(banner.isHidden)
+        XCTAssertEqual(PiMenus.menu(chooser.entries()).items.compactMap(\.submenu).flatMap(\.items).count, 2)
+    }
+
     @MainActor func testConflictRecoveryKeepsTranscriptSpaceAndEveryCopyReachable() async throws {
         for width: CGFloat in [760, 300] {
             let pane = try Pane(messages: longChat(rows: 4), width: width); defer { pane.close() }

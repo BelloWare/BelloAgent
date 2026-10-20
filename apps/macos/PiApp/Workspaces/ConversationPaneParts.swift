@@ -186,7 +186,7 @@ import QuartzCore
                 }
             }
             if !intents.isEmpty { PiMenuEntry.note("Retained submissions · Nothing was resent") }
-            for (index, intent) in intents.enumerated() {
+            for (index, intent) in intents.enumerated() where model.displays[intent.sessionID]?.submittingCommands.contains(intent.id) != true {
                 PiMenuEntry.menu("Submission \(index + 1): " + preview(intent.text)) {
                     PiMenuEntry.button("Insert in Draft", identifier: "recover-intent-" + intent.id) { model.recoverDraft(intent, insert: true) }
                     PiMenuEntry.button("Dismiss", identifier: "dismiss-intent-" + intent.id) { model.recoverDraft(intent, insert: false) }
