@@ -2,6 +2,39 @@ import XCTest
 @testable import PiAgentCore
 
 final class ResponseTimelineTests: XCTestCase {
+    private typealias CanonicalPart = (kind:String,text:String,callID:String?,name:String?)
+    /// The original algorithm is the equivalence oracle for legacy records.
+    private func originalCanonical(_ parts: [CanonicalPart], sourceID: String) -> ResponseTimeline {
+        var result=ResponseTimeline(); result.coverage="canonical"
+        for (index,part) in parts.enumerated() {
+            result.consume(ResponsePartEvent(attemptID:"canonical:"+sourceID,ordinal:index,itemID:"part-\(index)",outputIndex:index,partIndex:0,kind:part.kind,update:"replace",text:part.text,callID:part.callID,name:part.name,evidence:"canonical"))
+        }
+        result.finish("completed"); return result
+    }
+    func testCanonicalMatchesOriginalAlgorithmForGeneratedParts() throws {
+        let kinds=["text","reasoningText","reasoningSummary","opaque","toolArguments","correction","",":0:text"]
+        let texts=["","plain","🙂\n漢字","e\u{301}","{}"]
+        for count in [0,1,2,17,128] {
+            let parts: [CanonicalPart]=(0..<count).map { index in
+                (kinds[index % kinds.count],texts[(index / 3) % texts.count],index % 3 == 0 ? nil : "same-call",index % 2 == 0 ? "read" : nil)
+            }
+            for source in ["","legacy",":0:canonical:🙂"] {
+                let actual=ResponseTimeline.canonical(parts,sourceID:source), expected=originalCanonical(parts,sourceID:source)
+                XCTAssertEqual(actual,expected)
+                XCTAssertTrue(actual.supported)
+                XCTAssertEqual(try JSON.parse(JSONEncoder().encode(actual)),try JSON.parse(JSONEncoder().encode(expected)))
+            }
+        }
+    }
+    func testFiveThousandLegacyPartsCanonicalizeWithinPagingBudget() {
+        let parts: [CanonicalPart]=(0..<5000).map { ("toolArguments","{}", "call-\($0)","read") }
+        let start=nowMS(), timeline=ResponseTimeline.canonical(parts,sourceID:"generated")
+        let elapsed=nowMS()-start
+        print("LEGACY-CANONICAL parts=5000 ms=\(elapsed)")
+        XCTAssertEqual(timeline.segments.count,5000)
+        XCTAssertLessThan(elapsed,2000,"One legacy row must not stall history paging")
+    }
+
     private func text(_ index: Int, _ text: String) -> JSON { ["type":"response.output_text.delta","item_id":JSON("m\(index)"),"output_index":JSON(index),"content_index":0,"delta":JSON(text)] }
     func testInterleavedPartsKeepObservedOrderThroughCanonicalCompletion() {
         var adapter=ProviderDisplayEvents(api:"openai-responses",attempt:"attempt")
