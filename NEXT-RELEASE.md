@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Git ignore filtering preserves events touching displayed status paths, including both rename names, until a refresh reconciles them. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-16--displayed-git-paths-survive-newer-ignores).
 - [x] Git refreshes recheck queued event paths against newly learned ignores, avoiding extra scans after an ignored directory appears. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-15--ignored-git-events-queued-during-refresh).
 
 - [x] Standalone-file test classes install their own project resolver and restore the previous callback. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-14--native-fixture-hook-ownership).

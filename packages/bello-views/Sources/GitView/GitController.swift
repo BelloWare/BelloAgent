@@ -532,6 +532,7 @@ import AppKit
         guard watcher?.root != resolved || watcher?.isWatching != true else { return }
         watcher?.stop()
         let watcher = GitWorkingTreeWatcher(root: root) { [weak self] changes in self?.workingTreeChanged(changes) }
+        if repositoryRoot == root { watcher.ignored.preserve(root: watcher.root, entries: status.entries) }
         watcher.start()
         self.watcher = watcher
     }
@@ -660,6 +661,9 @@ import AppKit
         guard current(generation), !closed, !suspended else { return false }
         clearPreflight()
         repositoryGeneration += 1
+        if let root, let watcher, watcher.root == URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path {
+            watcher.ignored.preserve(root: watcher.root, entries: status.entries)
+        }
         repository = RepositorySnapshot(context: root.map { RepositoryContext(root: $0, generation: repositoryGeneration) }, status: status, read: true)
         recountChecked()
         // The snapshot's observers can stop us too. Nothing may restart the

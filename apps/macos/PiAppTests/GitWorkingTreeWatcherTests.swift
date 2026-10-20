@@ -6,6 +6,120 @@ import CoreServices
 @testable import GitView
 
 final class GitWorkingTreeWatcherTests: GitPanelTestCase {
+    @MainActor func testAnIgnoredReplacementOfADisplayedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: false)
+    }
+
+    @MainActor func testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: true)
+    }
+
+    @MainActor private func ignoredReplacement(throttled: Bool) async throws {
+        let root = try repository("git-watch-visible-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "cache/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Ignore directories"], in: root)
+        let cache = root.appendingPathComponent("cache")
+        try "an untracked file\n".write(to: cache, atomically: false, encoding: .utf8)
+        let controller = GitController(roots: [root.path])
+        defer { controller.stop() }
+        try await eventually("read the untracked regular file") { controller.refreshesFinished > 0 && !controller.loading }
+        XCTAssertEqual(controller.status.entries.map(\.path), ["cache"])
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge)
+        watcher.interval = 3_600
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        var held: CheckedContinuation<Void, Never>?
+        var reads = 0
+        controller.statusDidRead = {
+            reads += 1
+            if reads == 1 { await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        await Task.detached { bridge.deliver([cache.path], [0]) }.value
+        try await eventually("hold the status containing cache") { held != nil }
+        XCTAssertTrue(controller.isAutomaticallyRefreshing)
+        try FileManager.default.removeItem(at: cache)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        let object = cache.appendingPathComponent("first.o")
+        try "object\n".write(to: object, atomically: false, encoding: .utf8)
+        await Task.detached { bridge.deliver([cache.path, object.path], [0, 0]) }.value
+        try await eventually("queue the replacement batch in the throttle") { watcher.hasTrailingChange }
+        if !throttled {
+            watcher.deliverTrailingChange()
+            XCTAssertTrue(controller.hasPendingAutomaticChange)
+        }
+        held?.resume(); held = nil
+        if throttled {
+            try await eventually("learn ignores before delivering the queued batch") {
+                controller.refreshesFinished > finished && !controller.isAutomaticallyRefreshing
+            }
+            XCTAssertEqual(controller.status.entries.map(\.path), ["cache"], "The held snapshot still contains the old file")
+            watcher.deliverTrailingChange()
+        }
+        try await eventually("finish the read and its follow-up") {
+            if watcher.hasTrailingChange { watcher.deliverTrailingChange() }
+            return controller.refreshesFinished > finished && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        XCTAssertEqual(controller.automaticRefreshes - before, 2, "The stale status needs exactly one follow-up")
+        XCTAssertTrue(controller.status.entries.isEmpty, "The untracked file was replaced by an ignored directory")
+        XCTAssertTrue(watcher.ignored.covers(object.path), "Once the stale row is gone, ignored writes are quiet again")
+    }
+
+    @MainActor func testIgnoredFilteringPreservesBothRenamePathsAndTheirRelatives() async throws {
+        let root = try repository("git-watch-visible-renames")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        for directory in ["cache", "renamed"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(directory), withIntermediateDirectories: false)
+        }
+        try "source\n".write(to: root.appendingPathComponent("cache/item"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try git(["mv", "cache/item", "renamed/item"], in: root)
+        let controller = GitController(roots: [root.path])
+        defer { controller.stop() }
+        try await eventually("read both names of the rename") { controller.refreshesFinished > 0 && !controller.loading }
+        let entry = try XCTUnwrap(controller.status.entries.first)
+        XCTAssertEqual(entry.path, "renamed/item"); XCTAssertEqual(entry.originalPath, "cache/item")
+        for restarted in [false, true] {
+            if restarted { controller.stop(); await controller.refresh() }
+            let ignored = try XCTUnwrap(controller.watcher).ignored
+            // Model a newer ignored list arriving after this rename snapshot.
+            ignored.update(root: root.path, relative: ["cache/", "renamed/", "cache-other/", "renamed-other/"])
+            for path in ["cache", "cache/", "cache/item", "cache/item/", "cache/item/child", "renamed", "renamed/item", "renamed/item/child"] {
+                XCTAssertFalse(ignored.covers(root.path + "/" + path), "A displayed rename still owns \(path), restarted: \(restarted)")
+            }
+            for path in ["cache/sibling", "renamed/sibling", "cache-other/item", "renamed-other/item"] {
+                XCTAssertTrue(ignored.covers(root.path + "/" + path), "An unrelated ignored path stays quiet: \(path)")
+            }
+        }
+    }
+
+    func testIgnoredFilteringUsesFilesystemSeparatorsBeforeCombiningCharacters() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["cache/", "source/"])
+        ignored.preserve(root: "/repo", entries: [
+            GitStatusEntry(path: "cache/\u{301}item", originalPath: "source/\u{301}item",
+                           indexState: "R", worktreeState: ".", untracked: false)
+        ])
+        for directory in ["cache", "source"] {
+            for path in [directory, directory + "/"] {
+                XCTAssertFalse(ignored.covers("/repo/" + path), "A combining character must not hide a filesystem separator: \(path)")
+            }
+        }
+        ignored.update(root: "/repo", relative: [
+            "cache/item/\u{301}child", "source/item/\u{301}child", "cache/\u{301}sibling", "source/\u{301}sibling"
+        ])
+        ignored.preserve(root: "/repo", entries: [
+            GitStatusEntry(path: "cache/item", originalPath: "source/item",
+                           indexState: "R", worktreeState: ".", untracked: false)
+        ])
+        for directory in ["cache", "source"] {
+            XCTAssertFalse(ignored.covers("/repo/" + directory + "/item/\u{301}child"))
+            XCTAssertTrue(ignored.covers("/repo/" + directory + "/\u{301}sibling"))
+        }
+    }
+
     func testQueuedPathsStayBoundedWithoutHidingUncertainChanges() {
         let ignored = GitIgnoredPaths()
         ignored.update(root: "/repo", relative: ["build/"])

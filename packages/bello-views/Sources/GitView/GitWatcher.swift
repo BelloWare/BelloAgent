@@ -20,7 +20,8 @@ import CoreServices
     /// Where a linked worktree's branches live: the main repository's git
     /// directory, named by its `commondir` file.
     let commonDirectory: String?
-    private let interval: TimeInterval
+    /// Mutable so fixtures can hold a queued callback until a read finishes.
+    var interval: TimeInterval
     private let onChange: (GitWatchChanges) -> Void
     private let handle: GitWatchStream
     private(set) var bridge: GitWatchBridge?
@@ -327,6 +328,25 @@ final class GitIgnoredPaths: @unchecked Sendable {
     private let lock = NSLock()
     private var directories: [String] = []
     private var files: Set<String> = []
+    private var shown: Set<String> = [], shownParents: Set<String> = []
+    /// The ignored-list read can be newer than the displayed status. Events
+    /// touching those rows must survive until another status read reconciles them.
+    func preserve(root: String, entries: [GitStatusEntry]) {
+        let root = Self.comparable(root)
+        var shown: Set<String> = [], parents: Set<String> = []
+        for entry in entries {
+            for relative in [entry.path, entry.originalPath].compactMap({ $0 }) where !relative.isEmpty {
+                var path = root + "/" + relative
+                if path.hasSuffix("/") { path.removeLast() }
+                shown.insert(path)
+                while let slash = path.utf8.lastIndex(of: 47) {
+                    path = String(path[..<slash])
+                    if path.isEmpty || !parents.insert(path).inserted { break }
+                }
+            }
+        }
+        lock.lock(); self.shown = shown; shownParents = parents; lock.unlock()
+    }
     /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
     func update(root: String, relative: [String]) {
         let root = Self.comparable(root)
@@ -339,9 +359,16 @@ final class GitIgnoredPaths: @unchecked Sendable {
     func covers(_ path: String) -> Bool {
         let path = Self.comparable(path)
         lock.lock(); defer { lock.unlock() }
-        if files.contains(path) { return true }
         let directory = path.hasSuffix("/") ? path : path + "/"
-        return directories.contains { directory.hasPrefix($0) }
+        guard files.contains(path) || directories.contains(where: { directory.hasPrefix($0) }) else { return false }
+        var ancestor = path.hasSuffix("/") ? String(path.dropLast()) : path
+        if shownParents.contains(ancestor) { return false }
+        while !ancestor.isEmpty {
+            if shown.contains(ancestor) { return false }
+            guard let slash = ancestor.utf8.lastIndex(of: 47) else { break }
+            ancestor = String(ancestor[..<slash])
+        }
+        return true
     }
     /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
     /// "/private" (the root reads "/var/…") while FSEvents keeps it.

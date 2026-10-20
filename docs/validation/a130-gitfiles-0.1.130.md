@@ -3750,3 +3750,292 @@ final run. Generated homes were removed by their wrappers. Automatic result
 bundles were removed after retaining text/JSON evidence; no clone directories
 remain in this workstream's native products. No extra DerivedData copy was
 created.
+
+## Round 16 — displayed Git paths survive newer ignores
+
+Base: `a9f9f946`, on `dev/a130-gitfiles`; no merge, rebase or fast-forward.
+The review finding is **confirmed and fixed**. A directory-only `cache/`
+ignore does not hide an untracked regular file named `cache`. Replacing that
+file with a directory between the status and ignored-list reads leaves a
+displayed row from the older snapshot. Round 15's refiltering discarded the
+replacement events against the newer ignored list, so no follow-up removed
+the stale row.
+
+`GitIgnoredPaths` now retains the current snapshot's paths and their parent
+paths. An otherwise ignored event remains interesting when it equals, contains
+or is contained by a displayed path. Both destination and original names of a
+rename participate. Publication replaces this protection together with the
+status snapshot; after the stale row disappears, writes under that ignored
+directory become quiet again. The sets are indexed by path components, so
+unrelated siblings and names such as `cache-other` do not get protection.
+
+The nearby sweep covered all three consumers of the shared ignore predicate:
+the background FSEvents bridge, `deliverPending`, and `workingTreeChanged`
+(including its automatic and reader/busy queues). They all use the same
+protection. A restarted watcher also seeds it from the matching published
+snapshot before starting: an unchanged next read returns early from
+`publishRepository`, so publication alone would miss this case. No other
+production paths were changed.
+
+### Failing-first and mutations
+
+All fixtures use generated repositories and generated
+`HOME`/`CFFIXED_USER_HOME`/`CODEX_HOME` under this workstream's build root.
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+
+New tests in `GitWorkingTreeWatcherTests`:
+
+- `testAnIgnoredReplacementOfADisplayedFileStillRefreshes`: hold the completed
+  status read, replace `cache` with ignored `cache/first.o`, and deliver the
+  replacement batch to the controller while that read is held.
+- `testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes`: hold the
+  same snapshot, but leave the replacement batch in the watcher until the
+  first refresh has finished learning ignores.
+- `testIgnoredFilteringPreservesBothRenamePathsAndTheirRelatives`: use a real
+  staged rename, install a newer ignored list, and check equal, ancestor,
+  descendant and trailing-slash event paths for both names. Repeat after
+  restarting the watcher with the unchanged snapshot. Unrelated siblings
+  and prefix collisions must remain ignored.
+
+The first two assert exactly **one follow-up** (two automatic reads including
+the initial read), disappearance of the stale row, and restored ignore
+filtering afterward. Their instance-owned throttle interval is held at 3,600
+seconds and the actual pending work item is manually delivered through the
+round-15 seam. The shipping one-second default is unchanged. Continuations
+are released on failure and controllers stop before their repositories are
+removed; the tests do not depend on sleeping until a timer happens to fire.
+
+Before the filtering fix, `r16-red.log` recorded **3/3 failed tests**, ten
+assertion failures. Both replacement variants reported:
+
+```text
+XCTAssertEqual failed: ("1") is not equal to ("2") - The stale status needs exactly one follow-up
+XCTAssertTrue failed - The untracked file was replaced by an ignored directory
+```
+
+The expanded rename test, still before the fix, failed **1/1** with sixteen
+assertion failures (`r16-red-rename-restart.log`), including:
+
+```text
+XCTAssertFalse failed - A displayed rename still owns cache/item/child, restarted: true
+```
+
+After the fix, the three new tests and three existing deterministic ignored
+batch tests passed **6/6**, zero failures or skips
+(`r16-green-probes.log`).
+
+The initial five mutations and the final seven separately rebuilt mutations
+all failed at the intended assertions. Final evidence:
+`r16-final-mutations.json`, `r16-final-mutations-driver.log` and
+`r16-final-mutation-<name>.log`.
+
+| Mutation | Expected failing test cases | Evidence |
+| --- | ---: | --- |
+| Remove snapshot protection at publication | 3 | Both replacement tests again see one read and a stale row; rename protection fails |
+| Omit `originalPath` | 1 | Rename source, its parent and descendants are dropped |
+| Omit the event-ancestor check | 1 | Events on `cache`, `cache/` and `renamed` are dropped |
+| Stop walking event ancestors | 1 | `cache/item/child` and `renamed/item/child` are dropped |
+| Omit watcher restart initialization | 1 | Protection fails only in the restarted-watcher half |
+| Use Character separators when indexing shown parents | 1 | Four parent-path assertions fail for filenames beginning with combining marks |
+| Use Character separators when walking event ancestors | 1 | Two descendant-path assertions fail for exactly ignored children beginning with combining marks |
+
+All seven final invocations returned 65 with the named XCTest failures
+(nine failed test cases total); none was a build failure. Every mutation was
+restored before broader validation.
+
+### Self-review follow-up — filesystem separators
+
+Before committing, adversarial review found that the new ancestor traversal's
+`String.lastIndex(of: "/")` searches Characters, not filesystem separators.
+A slash followed by a leading combining mark forms one Character with it:
+for `/repo/cache/item/\u{301}child`, that search finds the slash before `item`.
+The generated Swift probe in `r16-unicode-path-probe.log` prints:
+
+```text
+Character parent: /repo/cache
+UTF8 parent: /repo/cache/item
+```
+
+`testIgnoredFilteringUsesFilesystemSeparatorsBeforeCombiningCharacters`
+checks parents of displayed filenames beginning with a combining mark, then
+checks an exactly ignored child beginning with a combining mark under a
+displayed filename. It covers both rename names and unrelated exact ignored
+siblings. Before the correction it failed **1/1**, six assertions
+(`r16-unicode-red-scoped.log`); after changing both separator searches to
+UTF-8 slash bytes it passed **1/1** (`r16-unicode-green.log`). This keeps
+String equality/canonical equivalence for the indexed paths.
+
+The initial broad validation had already passed 173 package tests and 121
+native tests. Its first stress run was intentionally interrupted with SIGINT
+to our own `xcodebuild` after **20 passes, zero failed test cases** (exit 75,
+`r16-stress.log`). The lock wrapper released its owned lock. That partial run
+does not count as completed stress validation; final rebuilt validation uses
+the `r16-final-*` logs.
+
+Separate pre-existing observation, outside the displayed-snapshot fix:
+`packages/bello-views/Sources/GitView/GitWatcher.swift:363` uses
+`directory.hasPrefix` for ignored directories. With ignore `cache/`, an
+otherwise ignored child `cache/\u{301}sibling` is not covered because the
+trailing slash in the prefix is only part of a Character in the event path.
+The initial Unicode probe's two unrelated-sibling assertions exposed this
+(`r16-unicode-red.log`); `r16-unicode-prefix-probe.log` confirms that both
+String prefix matching and Foundation's default anchored matching return
+false. This matcher is unchanged from the base commit and may cause extra
+refreshes for those ignored names; it does not suppress displayed-path events.
+A fix must preserve canonical equivalence as well as filesystem boundaries,
+rather than simply replacing the existing matcher with byte-prefix equality.
+It is recorded for a separate follow-up. The final scoped regression uses
+exact ignored files for its descendant checks to test the new traversal
+independently of that older directory-prefix behavior.
+
+### Adversarial review
+
+Reviewed the complete new diff and each changed branch:
+
+- Only paths already covered by the ignored list can take a different result.
+  They now survive when related to a displayed row. Previously unignored paths,
+  unrelated ignored siblings and component-prefix collisions keep their old
+  result. The existing `/private` alias handling and path whitespace are
+  unchanged.
+- An event naming a parent of a displayed entry is found in `shownParents`.
+  Equal and descendant events are checked by walking their path components
+  against `shown`. Trailing directory slashes are normalized; empty original
+  names are skipped. Both rename names are included. Stopping parent-set
+  construction at an existing parent is safe because its ancestors were
+  already inserted with the earlier entry. Both traversals locate the slash
+  byte rather than a Character, so a leading combining mark cannot swallow
+  a component boundary; ASCII traversal is identical.
+- The protected sets replace the old sets, rather than accumulating. Publishing
+  an empty status removes all protection. Construction is outside the lock;
+  replacing both sets and checking them use the same lock as the ignore list,
+  including background bridge calls. No per-event scan of all status entries
+  is introduced.
+- Publication uses its existing generation, cancellation, closed and suspended
+  guards, and updates only a watcher for the matching resolved repository.
+  Restart seeding requires the same published root and occurs before the stream
+  starts. This preserves unchanged-snapshot optimization without carrying rows
+  across repositories.
+- Round 15's queue bounds, unknown/root-change handling, throttle defaults,
+  reader/action priority and cancellation behavior are unchanged. New ignored
+  directories absent from the status receive no protection. The original
+  ignored-directory test and the three held-batch controls are retained.
+- The only new scheduling seam is an internal, main-actor, per-watcher interval
+  setter. No global fixture callback or shipping interval value changes.
+
+No helper/wire behavior or UI rendering changed; helper/wire suites and
+galleries are outside this round's affected scope. No source file was added
+or removed. Round 15's separately recorded pre-entry reader scheduling
+observation remains outside this fix.
+
+### Validation commands and results
+
+The initial and final rebuilt package `GitViewTests` suites each passed
+**173/173**, zero failures or skips (`r16-gitview-package.log`,
+`r16-final-gitview-package.log`).
+
+All commands run from this worktree with a generated home via
+`evidence/run-home-review.py`. The final driver runs the Unicode green test,
+seven mutations and the package suite, then acquires the shared full-lane lock
+for the native classes and stress run. Each native class runs alone with
+parallel testing disabled. The driver invocation is:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  r16-finish-driver \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r16-finish.py
+```
+
+Its underlying commands are:
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/views-verify \
+  --filter GitViewTests
+
+for cls in GitWorkingTreeWatcherTests GitPathBoundaryTests GitRepositorySwitchTests \
+  GitPanelShownTests GitBranchesInteractionTests ChangesTabFrameTests ChangesTabTests \
+  GitPanelTimingTests GitIntegratedHistoryTests FileBlameTests; do
+  PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+    scripts/test-macos.sh -parallel-testing-enabled NO \
+    "-only-testing:PiAppTests/$cls" || exit
+done
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO -test-iterations 30 \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testWritesIntoAnIgnoredFolderCauseNoRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAnAutomaticRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAReaderRefreshAreRechecked
+```
+
+The red and publication-mutation runs use:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredFilteringPreservesBothRenamePathsAndTheirRelatives
+```
+
+The expanded rename red run and other four initial mutations select only
+`testIgnoredFilteringPreservesBothRenamePathsAndTheirRelatives` with the same
+command prefix. The six-test green probe adds the three deterministic
+round-15 methods from the stress command. These focused methods do not open
+windows or change app focus. The Unicode red/green runs and its two additional
+mutations select
+`testIgnoredFilteringUsesFilesystemSeparatorsBeforeCombiningCharacters`
+with the same command prefix. The final mutation driver reruns the original
+five mutations and separately reverts each UTF-8 separator search:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  r16-final-mutations-driver \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r16-final-mutations.py
+```
+
+Final rebuilt native results, each class alone under the shared lock:
+
+| Class | Passed | Failed |
+| --- | ---: | ---: |
+| `GitWorkingTreeWatcherTests` | 26 | 0 |
+| `GitPathBoundaryTests` | 5 | 0 |
+| `GitRepositorySwitchTests` | 17 | 0 |
+| `GitPanelShownTests` | 13 | 0 |
+| `GitBranchesInteractionTests` | 20 | 0 |
+| `ChangesTabFrameTests` | 8 | 0 |
+| `ChangesTabTests` | 9 | 0 |
+| `GitPanelTimingTests` | 4 | 0 |
+| `GitIntegratedHistoryTests` | 10 | 0 |
+| `FileBlameTests` | 10 | 0 |
+| **Total** | **122** | **0** |
+
+No native case was skipped. Evidence: `r16-final-green-<Class>.log` and
+`r16-final-native-results.json`.
+
+The final stress run completed **180/180**, zero failures or skips, under
+the same owned lock (`r16-final-stress.log`):
+
+| Method | Passed repetitions | Failed |
+| --- | ---: | ---: |
+| `testAnIgnoredReplacementOfADisplayedFileStillRefreshes` | 30 | 0 |
+| `testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes` | 30 | 0 |
+| `testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores` | 30 | 0 |
+| `testIgnoredEventsDuringAnAutomaticRefreshAreRechecked` | 30 | 0 |
+| `testIgnoredEventsDuringAReaderRefreshAreRechecked` | 30 | 0 |
+| `testWritesIntoAnIgnoredFolderCauseNoRefresh` | 30 | 0 |
+
+The original real-FSEvents test's observed failure rate is **0/30**; both
+stale-snapshot regressions together are **0/60**. This preserves the original
+new-ignored-directory limit while requiring exactly one follow-up to remove
+the stale displayed file.
+
+Final driver exit: 0. `git diff --check` passes, every mutation is restored,
+and the owned shared lock was released. The wrappers removed their generated
+homes and automatic result bundles after retaining text/JSON evidence.
+No clone folders remain in this build root, and no extra DerivedData copy
+was created. The separate Unicode ignore-prefix observation above is the
+only newly recorded follow-up outside this fix.
