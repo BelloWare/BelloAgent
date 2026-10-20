@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Git refreshes recheck queued event paths against newly learned ignores, avoiding extra scans after an ignored directory appears. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-15--ignored-git-events-queued-during-refresh).
+
 - [x] Standalone-file test classes install their own project resolver and restore the previous callback. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-14--native-fixture-hook-ownership).
 - [x] Native-sheet test fixtures isolate and restore the shared question hooks.
 - [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.

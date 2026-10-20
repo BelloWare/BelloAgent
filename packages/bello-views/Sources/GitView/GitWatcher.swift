@@ -21,13 +21,20 @@ import CoreServices
     /// directory, named by its `commondir` file.
     let commonDirectory: String?
     private let interval: TimeInterval
-    private let onChange: () -> Void
+    private let onChange: (GitWatchChanges) -> Void
     private let handle: GitWatchStream
     private(set) var bridge: GitWatchBridge?
     private var generation = UUID()
     private let queue = DispatchQueue(label: "BelloViews.git.watch", qos: .utility)
     private var lastCall = -Double.greatestFiniteMagnitude
     private var trailing: DispatchWorkItem?
+    private var pending = GitWatchChanges()
+    var hasTrailingChange: Bool { trailing != nil }
+    /// Deliver the queued callback in tests without racing its timer.
+    func deliverTrailingChange() {
+        let work = trailing
+        work?.perform(); work?.cancel()
+    }
     deinit { handle.stop() }
     /// How long FSEvents itself gathers events before handing them over. Short
     /// enough that a saved file appears at once, long enough that one save is
@@ -53,7 +60,7 @@ import CoreServices
     /// Only where HEAD is and what is staged: saves in the working tree are
     /// not told.
     let stateOnly: Bool
-    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, onChange: @escaping () -> Void) {
+    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, onChange: @escaping (GitWatchChanges) -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
         self.root = resolved; self.stateOnly = stateOnly
         self.gitDirectory = Self.gitDirectory(under: resolved)
@@ -102,10 +109,14 @@ import CoreServices
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }) else { return }
+            let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }
+            guard moved || !relevant.isEmpty else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
-                if moved { self.rootChanged() } else { self.changed() }
+                if moved { self.rootChanged() } else {
+                    self.pending.formUnion(GitWatchChanges(relevant))
+                    self.changed()
+                }
             }
         }
         self.bridge = bridge
@@ -127,7 +138,7 @@ import CoreServices
 
     func stop() {
         generation = UUID()
-        trailing?.cancel(); trailing = nil
+        trailing?.cancel(); trailing = nil; pending = GitWatchChanges()
         bridge?.invalidate(); bridge = nil
         handle.stop()
         lastCall = -Double.greatestFiniteMagnitude
@@ -141,7 +152,7 @@ import CoreServices
         guard handle.isRunning else { return }
         Self.countRootChange()
         stop()
-        onChange()
+        onChange(.unknown)
     }
     /// Root changes seen in this process, so a test can prove the flag was
     /// acted on rather than the move being noticed some other way.
@@ -155,18 +166,26 @@ import CoreServices
         guard handle.isRunning else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastCall >= interval {
-            lastCall = now; onChange(); return
+            trailing?.cancel(); trailing = nil
+            deliverPending(); return
         }
         guard trailing == nil else { return }
         let generation = generation
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
-                self.trailing = nil; self.lastCall = ProcessInfo.processInfo.systemUptime; self.onChange()
+                self.trailing = nil; self.deliverPending()
             }
         }
         trailing = work
         DispatchQueue.main.asyncAfter(deadline: .now() + (interval - (now - lastCall)), execute: work)
+    }
+
+    private func deliverPending() {
+        let changes = pending; pending = GitWatchChanges()
+        guard changes.isInteresting(ignoring: ignored) else { return }
+        lastCall = ProcessInfo.processInfo.systemUptime
+        onChange(changes)
     }
 
     /// True for a path the panel would show: anything in the working tree, and
@@ -280,6 +299,28 @@ private func gitWatchCallback(_ stream: ConstFSEventStreamRef, _ info: UnsafeMut
     bridge.deliver(list, (0..<count).map { flags[$0] })
 }
 
+/// Retain paths until a queued refresh can use the newest ignored list.
+/// A root move, or too many paths to retain, keeps the old unconditional refresh.
+struct GitWatchChanges: Sendable {
+    private(set) var paths: Set<String> = []
+    private var unconditional = false
+    private static let limit = 4_096
+    static var unknown: Self { var changes = Self(); changes.unconditional = true; return changes }
+    init(_ paths: [String] = []) {
+        self.paths = Set(paths)
+        if self.paths.count > Self.limit { self = .unknown }
+    }
+    var isEmpty: Bool { paths.isEmpty && !unconditional }
+    mutating func formUnion(_ other: Self) {
+        if unconditional || other.unconditional { self = .unknown; return }
+        paths.formUnion(other.paths)
+        if paths.count > Self.limit { self = .unknown }
+    }
+    func isInteresting(ignoring ignored: GitIgnoredPaths?) -> Bool {
+        unconditional || paths.contains { ignored?.covers($0) != true }
+    }
+}
+
 /// The ignored paths of one working tree, read by the FSEvents queue and set
 /// on the main actor.
 final class GitIgnoredPaths: @unchecked Sendable {
@@ -314,7 +355,7 @@ final class GitIgnoredPaths: @unchecked Sendable {
 @MainActor public final class GitStateWatch {
     private let watcher: GitWorkingTreeWatcher
     public init(root: String, onChange: @escaping @MainActor () -> Void) {
-        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true, onChange: onChange)
+        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true) { _ in onChange() }
     }
     public func start() { watcher.start() }
     public func stop() { watcher.stop() }

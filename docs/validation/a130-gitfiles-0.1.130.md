@@ -3466,3 +3466,287 @@ Adversarial review:
 identical lanes; the parser and its rules were not edited. No production or
 helper source changed, so helper/wire suites and UI gallery regeneration are
 outside this round's affected scope.
+
+## Round 15 — ignored Git events queued during refresh
+
+Base: `7e7927a6`, on `dev/a130-gitfiles`. No merge or fast-forward performed.
+Only the Git watcher/controller and their native regression class change.
+The helper, wire protocol, permissions, captures and file operations are unchanged.
+
+### Root cause and failing-first evidence
+
+Confirmed product defect, not an overly strict two-second test wait. The panel
+workstream's original log is
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-8/GitWorkingTreeWatcherTests-merged-first-failure.log`
+(copied to this workstream's evidence as `r15-original-panel-failure.log`).
+It records 17 tests with one failed test, specifically:
+
+```text
+XCTAssertLessThanOrEqual failed: ("2") is greater than ("1")
+a new ignored folder costs at most one refresh
+```
+
+The ignored list contains existing ignored paths, not the `.gitignore` patterns.
+A newly created `build/` therefore correctly triggers one refresh to learn it.
+The bug is losing the paths of a second batch before that refresh finishes:
+
+1. The FSEvents bridge accepts a batch using the old ignored list.
+2. The watcher's throttle stores only a work item; its trailing callback used
+   to call `onChange` unconditionally, even if the first refresh had learned
+   `build/` in the meantime.
+3. If the throttle fires while the read is still running, the controller
+   stores only `automaticChangePending = true`. Finishing the read used to
+   start another refresh unconditionally. A reader-requested refresh has the
+   same problem through `missedChange`.
+
+Both deferral points can independently cause the observed second refresh.
+The saved incident log lacks event-batch timestamps, so it cannot distinguish
+which queue delivered that incident's second refresh. Both orderings are
+reproduced directly, without waiting for the kernel to choose a batch split.
+No throttle interval, FSEvents latency or original test deadline was changed.
+
+`r15-red-final.log` is the decisive pre-fix run: **5 tests, 3 failed, 2 passed**.
+Each of the three ignored-event regressions failed (3/3); both tracked-file
+controls passed. The status-read seam holds a completed snapshot before the
+ignored list is read, and the existing bridge supplies separate batches.
+Read-only pending-state accessors prove delivery while the read is held.
+
+| Test in `GitWorkingTreeWatcherTests` | Before fix | Purpose |
+| --- | --- | --- |
+| `testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores` | 2 callbacks, expected 1 | The ignored list changes while a callback waits in the throttle |
+| `testIgnoredEventsDuringAnAutomaticRefreshAreRechecked` | 2 refreshes, expected 1 | The second batch reaches the controller while its first refresh is held |
+| `testIgnoredEventsDuringAReaderRefreshAreRechecked` | 2 automatic refreshes, expected 0 | Nearby sweep: the reader's refresh learns the folder before deferred events drain |
+| `testTrackedEventsDuringAnAutomaticRefreshStillRefresh` | Passed | Mixed ignored/source batches must retain a real follow-up |
+| `testTrackedEventsDuringAReaderRefreshStillRefresh` | Passed | Deferred source changes must reach the status after a reader refresh |
+
+An initial probe draft additionally assumed an exact count for source events,
+which can arrive through both the injected bridge and real FSEvents, and used
+an absolute count for the source-control callback after the intended failure.
+Those control assertions were corrected before the decisive red run. The
+ignored-event assertions and the original reported test were not relaxed.
+Afterward the throttle fixture was made independent of a short timer window:
+it queues with a long interval and explicitly performs the already-queued
+work item. The final mutation check exercises that exact callback path.
+
+### Stress-fixture ordering diagnosed
+
+The first repeated run (`r15-stress.log`) completed 30/30 throttle cases and
+30/30 automatic-refresh cases, then exposed a setup race in the new reader
+probe: **3 failures in 24 completed reader repetitions**. It was interrupted
+after those failures (exit 75), before the original filesystem test ran.
+The failure was `Never deliver the batch during the reader's refresh`,
+followed by a 2-versus-0 counter assertion.
+
+The probe wrote the ignored file before calling `startRefresh()`. A real file
+event could already be queued on the main actor, and could replace the reader
+task before that task entered `refresh()` and incremented `readerRefreshes`.
+The probe then held an **automatic** status snapshot while waiting for the
+reader's `missedChange` queue. That queue was the wrong one for the held read.
+
+`r15-reader-order-probe.log` confirms this deterministically. A temporary
+bridge delivery immediately before `startRefresh()` reproduced the phase
+mismatch **10/10 times**, with this diagnostic at the held snapshot:
+
+```text
+R15 reader setup: loading=false automatic=true automaticDelta=2 reads=1
+The held snapshot belongs to an automatic refresh; the reader task was displaced before entering
+```
+
+The final fixture starts and holds the reader first, verifies the kind of
+refresh held, and only then creates the ignored file and delivers the event.
+It still pauses before the ignored-list read and tests the same deferred-event
+condition. The product guards, original filesystem test and timeouts are
+unchanged by this fixture correction. Both filtering mutations are rerun
+against the final fixture.
+
+Nearby observation, outside the assigned in-flight ignored-event race:
+`GitController.swift:360` (`startRefresh`) schedules a reader task before that
+task establishes its priority; `GitController.swift:508` can cancel it when an
+already-queued watch callback starts an automatic task. The diagnostic proves
+that pre-entry ordering, not a visible-UX consequence. It remains unchanged
+here; the fixture now establishes the in-flight reader state it intends to test.
+
+### Fix and nearby sweep
+
+`GitWatchChanges` retains the accepted paths through the watcher throttle and
+both controller queues. Delivery checks those paths against the latest
+`GitIgnoredPaths` before scheduling another read. Empty/all-ignored batches
+stop there; a batch with any unignored path still refreshes. In-flight reads
+finish rather than being cancelled by incoming events.
+
+The sweep covered all three deferral sites, generation replacement, stream
+stop/root movement, linked-worktree metadata and the `GitStateWatch` adapter.
+The reader/busy-action queue was a second instance of the same lost-path bug
+and is fixed with the same representation. Root changes remain unconditional.
+The adapter's public no-argument callback and its state-only filtering remain
+unchanged.
+
+Each pending set retains at most 4,096 paths. If it overflows, or the cause is
+otherwise unknown, it conservatively retains the old unconditional-refresh
+behavior. This bounds memory during a stalled read without losing real
+changes. `testQueuedPathsStayBoundedWithoutHidingUncertainChanges` covers
+both accumulation and a single oversized batch, empty batches and root moves.
+This bound may permit an extra refresh for an exceptionally large unknown
+batch; it never suppresses a change that the old implementation reported.
+
+### Validation
+
+Evidence root:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+Every command uses this worktree and build root, with generated `HOME`,
+`CFFIXED_USER_HOME` and `CODEX_HOME`. The native host verifies its fixture
+identity and data home. No installed app, real user data or paid/live service
+was used.
+
+After the fix the six focused probes passed (`r15-green-probes.log`).
+Mutation checks (`r15-mutation-*.log`, `r15-mutations.json`):
+
+- Watcher: replace the current-ignored-list check with a nonempty-batch check;
+  the throttle regression fails with 2 callbacks instead of 1.
+- Controller: make that same replacement; the automatic and reader-refresh
+  regressions both fail again.
+- Bound: increase the limit so the test's overflow fits; the bounded-memory
+  and conservative-refresh assertions fail.
+
+Full affected native classes, each alone with parallel testing disabled:
+
+| Class | Passed | Failed |
+| --- | ---: | ---: |
+| `GitWorkingTreeWatcherTests` | 22 | 0 |
+| `GitPathBoundaryTests` | 5 | 0 |
+| `GitRepositorySwitchTests` | 17 | 0 |
+| `GitPanelShownTests` | 13 | 0 |
+| `GitBranchesInteractionTests` | 20 | 0 |
+| `ChangesTabFrameTests` | 8 | 0 |
+| `ChangesTabTests` | 9 | 0 |
+| `GitPanelTimingTests` | 4 | 0 |
+| `GitIntegratedHistoryTests` | 10 | 0 |
+| `FileBlameTests` | 10 | 0 |
+| **Total** | **118** | **0** |
+
+The package `GitViewTests` suite passed **173/173**, zero failures
+(`r15-gitview-package.log`). It includes the public `GitStateWatch` adapter,
+repository-state, history/reveal, Git operation and safety coverage.
+No focused native or package tests were skipped.
+
+The final timer-independent watcher mutation fails **1/1** at 2 callbacks
+versus 1 (`r15-mutation-watcher-filter-final.log`); restoring the guard passes
+**1/1** (`r15-green-callback-final.log`). With the corrected reader setup, the
+controller mutation fails **2/2**, at 2 versus 1 and 1 versus 0 respectively
+(`r15-mutation-controller-filter-final.log`). These are the intended count
+assertions, not setup/phase failures. After restoring the guard, the full
+watcher class again passes **22/22** (`r15-final-GitWorkingTreeWatcherTests.log`);
+the table above uses that final result.
+
+Final stress (`r15-stress-final.log`, `r15-final-native-results.json`):
+**120 passed, 0 failed, 0 skipped**, in 487.44 seconds of test time.
+Each method ran 30 times with retries disabled and the shared lock held:
+
+| Repeated method | Passed | Failed |
+| --- | ---: | ---: |
+| `testWritesIntoAnIgnoredFolderCauseNoRefresh` (original, unchanged) | 30 | 0 |
+| `testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores` | 30 | 0 |
+| `testIgnoredEventsDuringAnAutomaticRefreshAreRechecked` | 30 | 0 |
+| `testIgnoredEventsDuringAReaderRefreshAreRechecked` | 30 | 0 |
+
+The observed post-fix failure rate is **0/30** for the original real-FSEvents
+test, and **0/90** for the deterministic deferral probes. The interrupted
+earlier fixture run and its 10/10 diagnostic are accounted for above, not
+counted as successful validation.
+
+The focused native commands are the following loop (each class launches alone):
+
+```sh
+for cls in GitWorkingTreeWatcherTests GitPathBoundaryTests GitRepositorySwitchTests \
+  GitPanelShownTests GitBranchesInteractionTests ChangesTabFrameTests ChangesTabTests \
+  GitPanelTimingTests GitIntegratedHistoryTests FileBlameTests; do
+  PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+    scripts/test-macos.sh -parallel-testing-enabled NO \
+    "-only-testing:PiAppTests/$cls" || exit
+done
+```
+
+The decisive red run selects the five methods listed above. The initial green
+probe run also selects the bounded-queue test. Offscreen deterministic probes
+ran as focused selections of this one class; full native classes and the
+repeated run hold the shared full-lane lock, one class at a time.
+The recorded driver invocation was:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  r15-validation-driver \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r15-validate.py
+```
+
+That wrapper creates the generated homes; `r15-validate.py` runs the package
+command and takes/releases the shared lock around `r15-native.py`. The latter
+records every command, result and count in `r15-native-results.json`.
+The final mutations, corrected watcher class and repeated run use:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  r15-final-validation-driver \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r15-locked.py \
+  r15-final-validation-locked \
+  python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/r15-final-validation.py
+```
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/views-verify \
+  --filter GitViewTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO -test-iterations 30 \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testWritesIntoAnIgnoredFolderCauseNoRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAnAutomaticRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAReaderRefreshAreRechecked
+```
+
+### Adversarial review
+
+Reviewed every changed condition against its previous behavior:
+
+- Bridge eligibility is unchanged: the same Git-state and ignored-path
+  predicates now retain the accepted paths instead of only an `any` result.
+  A root-change flag still bypasses path filtering and stops the old stream.
+- A queued callback or refresh now stops only for an empty batch or one whose
+  paths are all covered by the current ignored list. Mixed batches retain a
+  follow-up; both tracked-file controls check the resulting status. If an
+  ignored-list read fails, the last known list remains in use.
+- Busy actions and reader refreshes keep priority over watcher refreshes.
+  Events accumulate instead of replacing one another. Draining the reader
+  queue clears it before rechecking, avoiding recursive reuse. A public
+  automatic read blocked before entering still requests an unconditional
+  retry, preserving the existing conservative behavior when no paths are
+  available at that entry point.
+- Completing an automatic refresh drains its own pending batch only if its
+  token is still current and its task is not cancelled. Start, stop and quiet
+  refresh retain their previous replacement/reset behavior. The stream's
+  generation and running checks still reject stale bridge deliveries.
+- An immediately due callback cancels the obsolete trailing work item before
+  draining the same pending set. Discarding an all-ignored batch does not move
+  the last-delivery timestamp, so it cannot delay the next real change.
+- Empty batches do nothing; root moves and overflow remain unconditional.
+  The 4,096-path bound affects storage, not whether uncertain work is kept.
+  The ignored-path matcher and linked-worktree/state-only rules are unchanged.
+- New observation seams are instance-owned. The throttle fixture performs
+  the actual queued work item and cancels its timer afterward; it does not
+  race a half-second deadline. The held-read fixture releases its continuation
+  on failure and stops its controller before deleting the generated repository.
+  Its phase guard fails immediately if the wrong kind of read is held. Moving
+  file creation after the reader enters changes only the probe's setup; the
+  automatic-refresh probe still begins with the directory creation.
+
+No helper/wire behavior or rendering changed, so helper/wire suites and gallery
+regeneration are outside this round's affected scope. No source files were
+added or removed. The separate pre-entry scheduling observation is recorded
+above rather than broadening this fix.
+
+`git diff --check` passes. All mutations are restored. The owned shared lock
+was released on the interrupted run, the diagnostic run and the successful
+final run. Generated homes were removed by their wrappers. Automatic result
+bundles were removed after retaining text/JSON evidence; no clone directories
+remain in this workstream's native products. No extra DerivedData copy was
+created.

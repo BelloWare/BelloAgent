@@ -6,6 +6,125 @@ import CoreServices
 @testable import GitView
 
 final class GitWorkingTreeWatcherTests: GitPanelTestCase {
+    func testQueuedPathsStayBoundedWithoutHidingUncertainChanges() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["build/"])
+        let paths = (0..<4_096).map { "/repo/build/unit\($0).o" }
+        var changes = GitWatchChanges(paths)
+        XCTAssertFalse(changes.isInteresting(ignoring: ignored))
+        changes.formUnion(GitWatchChanges(["/repo/build/overflow.o"]))
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "Overflow keeps the previous conservative refresh")
+        XCTAssertTrue(changes.paths.isEmpty, "A stalled read cannot retain unlimited paths")
+        XCTAssertTrue(GitWatchChanges(paths + ["/repo/build/extra.o"]).isInteresting(ignoring: ignored))
+        changes = GitWatchChanges(["/repo/build/ignored.o"])
+        changes.formUnion(.unknown)
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "A root move is never filtered as an ignored file")
+        XCTAssertFalse(GitWatchChanges().isInteresting(ignoring: ignored))
+    }
+
+    @MainActor func testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores() async throws {
+        let root = try repository("git-watch-queued-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var changes = 0
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 3_600) { _ in changes += 1 }
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/build"], [0]) }.value
+        try await eventually("deliver the directory batch") { changes == 1 }
+        await Task.detached { bridge.deliver([root.path + "/build/out/first.o"], [0]) }.value
+        try await eventually("queue the separate file batch") { watcher.hasTrailingChange }
+        watcher.ignored.update(root: root.path, relative: ["build/"])
+        watcher.deliverTrailingChange()
+        XCTAssertFalse(watcher.hasTrailingChange)
+        XCTAssertEqual(changes, 1, "The first refresh learned that the queued file is ignored")
+        let before = changes
+        await Task.detached { bridge.deliver([root.path + "/source.swift"], [0]) }.value
+        try await eventually("queue a subsequent source change") { watcher.hasTrailingChange }
+        watcher.deliverTrailingChange()
+        XCTAssertEqual(changes, before + 1)
+    }
+
+    @MainActor func testIgnoredEventsDuringAnAutomaticRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: true, tracked: false)
+    }
+
+    @MainActor func testIgnoredEventsDuringAReaderRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: false, tracked: false)
+    }
+
+    @MainActor func testTrackedEventsDuringAnAutomaticRefreshStillRefresh() async throws {
+        try await queuedEvents(automatic: true, tracked: true)
+    }
+
+    @MainActor func testTrackedEventsDuringAReaderRefreshStillRefresh() async throws {
+        try await queuedEvents(automatic: false, tracked: true)
+    }
+
+    @MainActor private func queuedEvents(automatic: Bool, tracked: Bool) async throws {
+        let root = try repository("git-watch-reading-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "build/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        let source = root.appendingPathComponent("source.swift")
+        try "let value = 1\n".write(to: source, atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        let controller = GitController(roots: [root.path])
+        defer { controller.stop() }
+        try await eventually("finish the initial read") { controller.refreshesFinished > 0 && !controller.loading }
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge)
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        var held: CheckedContinuation<Void, Never>?
+        var reads = 0
+        controller.statusDidRead = {
+            reads += 1
+            if reads == 1 { await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        let build = root.appendingPathComponent("build/out", isDirectory: true)
+        func writeObject() throws {
+            try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
+            try "object\n".write(to: build.appendingPathComponent("first.o"), atomically: false, encoding: .utf8)
+        }
+        if automatic {
+            try writeObject()
+            await Task.detached { bridge.deliver([root.path + "/build"], [0]) }.value
+        } else { controller.startRefresh() }
+        try await eventually("hold the status snapshot before ignored paths are read") { held != nil }
+        guard controller.loading == !automatic, controller.isAutomaticallyRefreshing == automatic else {
+            XCTFail("The held snapshot must belong to the requested kind of refresh")
+            return
+        }
+        XCTAssertFalse(watcher.ignored.covers(build.path + "/first.o"))
+        // Arm the reader before writing: an earlier queued file event can
+        // otherwise start an automatic refresh before the reader task enters.
+        if !automatic { try writeObject() }
+        if tracked { try "let value = 2\n".write(to: source, atomically: false, encoding: .utf8) }
+        let paths = [build.path + "/first.o"] + (tracked ? [source.path] : [])
+        await Task.detached { bridge.deliver(paths, paths.map { _ in 0 }) }.value
+        // A reader refresh cannot be superseded; an automatic one queues one
+        // further pass. Wait for actual delivery, not an assumed FSEvents delay.
+        if automatic {
+            try await eventually("queue the batch during the held refresh") { controller.hasPendingAutomaticChange }
+        } else {
+            try await eventually("deliver the batch during the reader's refresh") { controller.hasMissedChange }
+        }
+        held?.resume(); held = nil
+        let expected = (automatic ? 1 : 0) + (tracked ? 1 : 0)
+        try await eventually("finish the held read and any required follow-up") {
+            controller.refreshesFinished > finished && reads >= (tracked ? 2 : 1) &&
+                !controller.loading && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        XCTAssertTrue(watcher.ignored.covers(build.path + "/first.o"))
+        if tracked {
+            XCTAssertGreaterThanOrEqual(controller.automaticRefreshes - before, expected,
+                                        "An unignored change must still cause a follow-up")
+        } else {
+            XCTAssertEqual(controller.automaticRefreshes - before, expected,
+                           "Recheck the queued paths after the refresh learns build/")
+        }
+        XCTAssertEqual(controller.status.entries.map(\.path), tracked ? ["source.swift"] : [])
+    }
+
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
         let root = try repository("git-large-patch"); defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
@@ -25,7 +144,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         let root = try repository("git-watch-generation")
         defer { try? FileManager.default.removeItem(at: root) }
         var changes = 0
-        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0) {
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0) { _ in
             MainActor.assertIsolated(); XCTAssertTrue(Thread.isMainThread); changes += 1
         }
         watcher.start(); defer { watcher.stop() }
@@ -443,7 +562,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         // panel elsewhere is open when this test starts and closes halfway,
         // as that one did.
         let elsewhere = try repository("git-watch-elsewhere"); defer { try? FileManager.default.removeItem(at: elsewhere) }
-        let other = GitWorkingTreeWatcher(root: elsewhere.path) {}
+        let other = GitWorkingTreeWatcher(root: elsewhere.path) { _ in }
         other.start(); defer { other.stop() }
         XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: elsewhere.path), 1)
         XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 0)
