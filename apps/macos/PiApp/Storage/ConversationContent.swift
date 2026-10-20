@@ -259,9 +259,11 @@ enum ConversationContent {
         if entry["type"]?.string == "branch" { return RetainedConversation.edit }
         let message = entry["message"]?.object ?? [:]
         var timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        if adopted { timeline?.finish("completed") }
+        var detail = message["nativeDetail"]?.string
+        if adopted { timeline?.finish("completed"); detail = "Compaction · Checkpoint durably adopted" }
+        else { RetainedConversation.endWithoutReceipt(kind: message["nativeKind"]?.string, timeline: &timeline, detail: &detail) }
         return RetainedConversation.message(role: message["role"]?.string ?? "system", kind: message["nativeKind"]?.string,
-            detail: adopted ? "Compaction · Checkpoint durably adopted" : message["nativeDetail"]?.string,
+            detail: detail,
             content: message["content"], timeline: timeline)
     }
 }

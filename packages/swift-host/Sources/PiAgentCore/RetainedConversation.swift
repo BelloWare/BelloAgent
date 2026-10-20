@@ -11,6 +11,17 @@ protocol RetainedConversationValue: Encodable {
 enum RetainedConversation {
     static let edit = "## Edit\n\nEdited from here · earlier replies stay in the journal\n\n"
 
+    /// The same recovery presentation used by journal replay and saved-source
+    /// copy/search. It marks the receipt gap without inventing a saved outcome.
+    @discardableResult
+    static func endWithoutReceipt(kind: String?, timeline: inout ResponseTimeline?, detail: inout String?) -> Bool {
+        guard ["execution", "requestLedger"].contains(kind ?? ""), timeline?.terminal == nil else { return false }
+        timeline?.finish("interrupted")
+        timeline?.coverage = "partial"
+        detail = (kind == "requestLedger" ? "Request" : "Compaction") + " interrupted · no terminal receipt"
+        return true
+    }
+
     static func compaction(_ text: String) -> String {
         "## Compaction\n\n\(text)\n\n"
     }

@@ -80,6 +80,84 @@ import XCTest
             XCTAssertEqual(found.hits.map(\.id), live[index], query)
         }
     }
+    func testClosedRuntimePageRebindsBeforeUnloadAcknowledgement() async throws {
+        for changed in [false, true] {
+            let (model, chat, original, expected) = try await fixture()
+            let live = try await original.request("session.content.search", sessionID: chat.id, params: ["retained": .bool(true)])
+            var sent: [[String: WireValue]] = []
+            let retiring = HostSupervisor(commandSender: { sent.append($0) })
+            addTeardownBlock { @MainActor in try? await retiring.shutdownAndWait() }
+            try await retiring.connect(cwd: model.root, state: model.root.appendingPathComponent("retiring-host"))
+            let connection = try XCTUnwrap(retiring.connectionID), epoch = try XCTUnwrap(retiring.epoch)
+            model.hosts[chat.workspaceID] = retiring
+            defer { model.hosts[chat.workspaceID] = original }
+            func reply(_ command: [String: WireValue], result: WireValue, ok: Bool) {
+                retiring.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
+                    "commandId": command["commandId"] ?? .null, "ok": .bool(ok), "result": result]), connectionID: connection)
+            }
+            let source = ConversationContentSource.workspace(model, sessionID: chat.id)
+            let searching = Task { try await source.search("", 0) }
+            try await eventually("The live selection request arrived") { !sent.isEmpty }
+            reply(sent.removeFirst(), result: live, ok: true)
+            let found = try await searching.value
+            if changed {
+                let path = try XCTUnwrap(chat.path)
+                let text = try String(contentsOfFile: path, encoding: .utf8).replacingOccurrences(of: "COPY-TEXT", with: "EDIT-TEXT")
+                try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+            }
+            var finished = false, rejected = 0
+            let copying = Task { defer { finished = true }; return try await collect(source, result: found) }
+            try await eventually("Copy settles after the retired runtime rejects its page") {
+                while !sent.isEmpty {
+                    let command = sent.removeFirst()
+                    XCTAssertEqual(command["method"]?.string, "session.content.page")
+                    XCTAssertTrue(retiring.isReady); XCTAssertTrue(model.opened.contains(chat.id))
+                    rejected += 1
+                    reply(command, result: .object(["code": .string("session_closed"), "message": .string("Session runtime is closed")]), ok: false)
+                }
+                return finished
+            }
+            XCTAssertGreaterThan(rejected, 0)
+            if changed {
+                do { _ = try await copying.value; XCTFail("Changed retained text was accepted") }
+                catch { XCTAssertTrue(error.localizedDescription.contains("History changed"), error.localizedDescription) }
+            } else { let copied = try await copying.value; XCTAssertEqual(copied, expected) }
+        }
+    }
+    func testRecoveredOperationsCopyAndSearchIdenticallyAfterRetirement() async throws {
+        let (model, chat, host, _) = try await fixture()
+        _ = try await host.request("session.close", sessionID: chat.id)
+        model.helperSessionDidUnload(chat.id)
+        var parent = "final"
+        for (id, kind, terminal) in [("unfinished-request", "requestLedger", Optional<String>.none),
+                                      ("unfinished-compaction", "execution", nil),
+                                      ("completed-request", "requestLedger", "completed"),
+                                      ("failed-compaction", "execution", "failed")] {
+            var timeline = ResponseTimeline.canonical([("status", id, nil, nil)], sourceID: id)
+            timeline.terminal = terminal
+            if terminal == nil { timeline.segments[0].state = "streaming" }
+            let encoded = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+            let row: WireValue = .object(["type": .string("message"), "id": .string(id), "parentId": .string(parent),
+                "message": .object(["role": .string("system"), "content": .array([]), "nativeKind": .string(kind),
+                    "nativeDetail": .string(id), "nativeReplayEligible": .bool(false), "nativeResponseTimeline": encoded])])
+            try ContentSearchTests.append(JSONEncoder().encode(row) + Data([10]), to: try XCTUnwrap(chat.path))
+            parent = id
+        }
+        _ = try await model.open(chat)
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id)
+        let found = try await source.search("", 0), live = try await collect(source, result: found, last: found.total)
+        for title in ["Request interrupted · no terminal receipt", "Compaction interrupted · no terminal receipt", "completed-request", "failed-compaction"] {
+            XCTAssertTrue(live.contains("## " + title))
+        }
+        let query = "interrupted · no terminal receipt"
+        let before = try await model.searchConversation(chat.id, query: query, start: 0)
+        XCTAssertEqual(before.hits.map(\.id), ["unfinished-request", "unfinished-compaction"])
+        try await retire(model, chat: chat, host: host)
+        let saved = try await collect(source, result: found, last: found.total)
+        XCTAssertEqual(saved, live)
+        let after = try await model.searchConversation(chat.id, query: query, start: 0)
+        XCTAssertEqual(after.hits.map(\.id), before.hits.map(\.id))
+    }
     func testKeptCompactedSideRetainsCopyIdentityAfterRetirement() async throws {
         let (model, parent, host, _) = try await fixture()
         _ = try await host.request("session.close", sessionID: parent.id)

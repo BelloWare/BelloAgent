@@ -126,7 +126,7 @@ extension WorkspaceModel {
             } catch {
                 // A runtime can unload or retire while its page is awaiting IPC.
                 // Rebinding still verifies the complete original selection.
-                if case HostError.rejected(let code, _) = error, ["history_changed", "session_missing"].contains(code) { }
+                if case HostError.rejected(let code, _) = error, ["history_changed", "session_missing", "session_closed"].contains(code) { }
                 else if host.isReady, host.epoch == epoch, opened.contains(id) { throw error }
             }
         }

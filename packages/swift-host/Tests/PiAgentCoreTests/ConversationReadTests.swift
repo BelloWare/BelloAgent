@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import PiAgentCore
 
@@ -13,6 +14,13 @@ private final class ContentReadGate: @unchecked Sendable {
         if first && holding { _ = release.wait(timeout: .now() + 10) }
     }
     func open() { release.signal() }
+}
+
+private final class ContentReadBytes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes = 0
+    var total: Int { lock.withLock { bytes } }
+    func add(_ count: Int) { lock.withLock { bytes += count } }
 }
 
 final class ConversationReadTests: XCTestCase {
@@ -84,6 +92,58 @@ final class ConversationReadTests: XCTestCase {
         XCTAssertTrue(page["text"].text?.contains("REASONING-0") == true)
         XCTAssertEqual(first["digest"], next["digest"])
         XCTAssertEqual(count.count, 130, "Next Results and Copy must reuse formatted rows and their digest")
+    }
+    func testSixteenMiBRowExportReadsItsBytesOnce() throws {
+        let message = ChatMessage(role: "assistant", content: [textBlock(String(repeating: "x", count: 16 * 1_048_576))])
+        let expected = message.retainedConversationText, reads = ContentReadBytes(), cancellation = BlockingWorkCancellation()
+        let content = try RetainedContent.build(key: .init(generation: 0, revision: "fixture"), older: nil,
+            visible: [message], url: nil, cancellation: cancellation, step: nil, readObserver: { reads.add($0) })
+        let began = Date()
+        var offset = 0, pages = 0, exported = 0, hash = SHA256()
+        while true {
+            let page = try autoreleasepool { try content.page(first: 1, last: 1, index: 1, offset: offset, cancellation: cancellation) }
+            let bytes = Data((page["text"].text ?? "").utf8)
+            hash.update(data: bytes); exported += bytes.count; pages += 1
+            // Stop a broken implementation early instead of reading 16 GiB.
+            guard reads.total <= expected.utf8.count * 2 else {
+                return XCTFail("Paged export reread \(reads.total) bytes after \(pages) pages of one \(expected.utf8.count)-byte row")
+            }
+            if page["next"].isNull { break }
+            offset = try XCTUnwrap(page["next"]["offset"].int)
+        }
+        XCTAssertEqual(exported, expected.utf8.count)
+        XCTAssertEqual(hash.finalize(), SHA256.hash(data: Data(expected.utf8)))
+        XCTAssertEqual(reads.total, expected.utf8.count, "The same decoded row serves every bounded page")
+        XCTAssertGreaterThan(pages, 1000)
+        print("16 MiB export: \(pages) pages, \(exported) exported bytes, \(reads.total) read bytes, \(Date().timeIntervalSince(began)) s")
+    }
+    func testCopyCacheEvictsRowsAndKeepsUTF16Boundaries() throws {
+        let prefix = String(repeating: "a", count: 16_383 - "## assistant\n\n".utf16.count)
+        let messages = [ChatMessage(role: "assistant", content: [textBlock(prefix + "🌍e\u{301} tail")]),
+                        ChatMessage(role: "toolResult", content: [textBlock(String(repeating: "工具é", count: 10_000))])]
+        let expected = messages.map(\.retainedConversationText), reads = ContentReadBytes(), cancellation = BlockingWorkCancellation()
+        let content = try RetainedContent.build(key: .init(generation: 0, revision: "fixture"), older: nil,
+            visible: messages, url: nil, cancellation: cancellation, step: nil, readObserver: { reads.add($0) })
+        let first = try content.page(first: 1, last: 1, index: 1, offset: 0, cancellation: cancellation)
+        XCTAssertEqual(first["next"]["offset"].int, 16_383)
+        XCTAssertThrowsError(try content.page(first: 1, last: 1, index: 1, offset: 16_384, cancellation: cancellation)) {
+            XCTAssertEqual(($0 as? AgentError)?.code, "invalid_range")
+        }
+        for row in [1, 1, 2, 1] {
+            var offset = 0, copied = ""
+            while true {
+                let page = try content.page(first: row, last: row, index: row, offset: offset, cancellation: cancellation)
+                copied += page["text"].text ?? ""
+                if page["next"].isNull { break }
+                offset = try XCTUnwrap(page["next"]["offset"].int)
+            }
+            XCTAssertEqual(copied, expected[row - 1])
+        }
+        XCTAssertEqual(reads.total, expected[0].utf8.count * 2 + expected[1].utf8.count, "Only one decoded row is retained")
+        cancellation.cancel()
+        XCTAssertThrowsError(try content.page(first: 1, last: 1, index: 1, offset: 0, cancellation: cancellation)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
     }
     func testChangedRowsCannotPublishOrReuseAnObsoleteDigest() async throws {
         let session = try await fixture(), gate = ContentReadGate()

@@ -4,12 +4,14 @@
 
 ## 0.1.130
 
+- [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+- [x] Large live conversation exports reuse one decoded row across pages, avoiding repeated full-row reads and allocations.
 - [x] Live and saved conversation copies share one formatter; empty or incomplete timeline evidence keeps the canonical answer. [Validation](docs/validation/a130-wire-0.1.130.md#round-4-review).
 - [x] Kept sides normalize inherited compaction rows identically, preserving copy/export selections after helper retirement.
 - [x] Saved conversation copy and search reflect durably adopted compaction progress, matching the live helper's retained text.
 - [x] Retained conversation formatting and hashing run off the session actor and are cached per snapshot for search and copy pages.
 - [x] Live conversation source search includes the reasoning and tool arguments retained by saved-history search and Copy Conversation.
-- [ ] Needs owner decision: whether source copy/search includes recovery-only interruption annotations for unfinished operation rows. [Evidence](docs/validation/a130-wire-0.1.130.md#round-4-review).
+- [x] Saved conversation copy/search applies the same recovery presentation as helper replay for unfinished request and compaction rows. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
 
 - [x] Live Copy Conversation includes retained reasoning, tool arguments and message boundaries, matching saved-history copies. [Validation](docs/validation/a130-wire-0.1.130.md#round-3-hunt).
 - [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.

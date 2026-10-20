@@ -660,3 +660,47 @@ TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round4-review/copy" \
 The final native logs also retain **15** SQLite “vnode unlinked while in use” diagnostics for generated `native-fixture-*` request databases in the unchanged `WorkspaceTests` cleanup (for example, `apps/macos/PiAppTests/WorkspaceTests.swift:238` and `:274`), and **8** for the already-recorded `wide-search-*` history indexes (`TranscriptBugRegressionTests.swift:625`, `:664`, and similar defers). These fixtures delete their temporary roots before every database handle has closed. All tests pass; these unrelated fixture cleanup warnings are recorded, not suppressed or repaired in this branch.
 
 All seven mutations were caught and restored. Final read-only adversarial review and `git diff --check` pass; the tested production source hashes still match after all native runs. Only this build root's generated result bundle was removed; no cloned test-host directories remained. Text logs and the three inspected PNGs are retained. No installed app was launched, no real preferences/chats/Keychain or paid provider was accessed, and no other workstream's lock or build root was modified.
+
+## Round 5 review
+
+Review of `9298a94d3d370c8ee9dc1fa0b88adaca1f3792e2`, including the lead's decision to apply recovery presentation to disk source copy/search. Work continues on `dev/a130-wire`. Evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round5-review`; `B` below is the existing build root.
+
+### Findings and failing-first evidence
+
+1. **`session_closed` interrupts an unchanged held selection — confirmed.** `ConversationCopyTests.testClosedRuntimePageRebindsBeforeUnloadAcknowledgement` takes a real retained selection and uses the existing supervisor command-sender seam to hold page replies. It replies `session_closed` while the same host epoch is ready and the session remains in `opened`. Before the fix, copying throws that rejection (`native-red.log`). The retirement classification now includes `session_closed`; the existing source/path, cancellation, full digest and saved revision checks still own the handoff. The same test also changes the saved bytes and requires rejection.
+
+2. **Paged export rereads a large row quadratically — confirmed.** `ConversationReadTests.testSixteenMiBRowExportReadsItsBytesOnce` generates one 16 MiB assistant body, counts actual positional-read bytes, exports through ordinary 16,384-unit pages, and checks the exported length and SHA-256. Before the fix, only three pages read **50,331,696 bytes** from a **16,777,232-byte** formatted row (`helper-red.log`, **1 failure**). The regression stops a broken implementation at that point rather than reading roughly 16 GiB.
+
+   The snapshot now caches exactly one decoded `NSString`, under a per-snapshot lock. This matches the disk reader and avoids repeating either full-row I/O or Swift-to-Foundation conversion. The existing text-page boundary logic has a shared `NSString` entry point. Search still uses positional reads independently; paging, decoding and cache replacement remain on blocking workers. The byte observer is nil in production and reports actual successful reads in tests. The eviction/Unicode regression checks that only one row remains cached, that switching rows reloads the evicted one, that a page never splits a surrogate pair, and that cached reads still honor cancellation.
+
+   `helper-green.log`: the full **1,025-page** export reads **16,777,232 bytes once**, produces exactly those bytes, and takes **0.029 s** after snapshot creation. All **9 ConversationReadTests pass**. This is a deterministic I/O bound; the elapsed time is a measurement, not a machine-sensitive threshold.
+
+3. **Recovery-only annotations disagree across held handoff — lead decision implemented.** The previous round's owner-decision item is resolved. `testRecoveredOperationsCopyAndSearchIdenticallyAfterRetirement` adds unfinished request-ledger and compaction-execution rows, plus completed/failed controls, to the generated parity corpus. The original copy throws “History changed” despite an unchanged journal (`native-red.log`). Saved source copy/search now applies the same no-terminal-receipt presentation as helper replay through `RetainedConversation.endWithoutReceipt`. The helper's existing recovery function delegates to that shared implementation; its behavior is unchanged. Durably adopted checkpoints retain their explicit completed presentation, and existing terminal receipts are preserved. No synthetic terminal record is written to the journal.
+
+The initial native run has **2 failing tests / 2 failures**; the focused restored native run has **3 passed / 0 failures**, including adopted-compaction parity (`native-green.log`). The helper's initial test-authoring interpolation typo was corrected before the runtime failing-first run; its compiler log is retained separately as `helper-test-compile.log`.
+
+### Commands and nearby sweep
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests/testSixteenMiBRowExportReadsItsBytesOnce
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testClosedRuntimePageRebindsBeforeUnloadAcknowledgement \
+  -only-testing:PiAppTests/ConversationCopyTests/testRecoveredOperationsCopyAndSearchIdenticallyAfterRetirement \
+  -only-testing:PiAppTests/ConversationCopyTests/testAdoptedCompactionProgressKeepsTheSameCopyIdentity
+python3 "$B/logs/round5-review/mutations.py"
+```
+
+The red native run selects the first two tests. These focused model tests do not create windows or change focus. Mutation commands and their exact filters are also saved in `mutations.py`, which restores original source bytes in `finally`.
+
+Checked the held-copy source/epoch/error classification, the disk digest/revision rebind cache, the separate initial source-search and rendered Find routes, helper snapshot cancellation/publication guards, UTF-16 paging, row eviction and immutable snapshot lifetime, and both source-copy/search disk adapters. The only held-copy retirement-code list is in `WorkspaceContent`; ordinary errors continue to propagate. The disk reader already caches one decoded `NSString`; the helper now has the same bounded-row strategy. Separate message-text and tool-input APIs keep their prior contracts. Recovery normalization is shared by replay and disk formatting, with adoption applied first; the prior completed and inherited-compaction corpus remains covered.
+
+### Mutation checks and adversarial self-review
+
+All three mutations fail at runtime and were restored in `finally`:
+
+- Disable the decoded-row cache hit: `mutation-cache.log`, **1 test / 1 failure**, with **50,331,696 bytes read after three pages**, reproducing the original bound violation.
+- Remove `session_closed` from retirement classification: `mutation-closed.log`, **1 test / 1 failure**, throwing that rejection before handoff.
+- Remove disk recovery normalization: `mutation-recovery.log`, **1 test / 1 failure**, throwing “History changed” on the unchanged parity corpus.
+
+Read-only adversarial review checked that the additional retirement result does not bypass digest validation (the regression also edits equal-length saved bytes), row caching retains only one immutable decoded row and serializes concurrent page access, cache hits still check cancellation, and the same UTF-16 boundary checks serve both string entry points. The cache cannot outlive its snapshot or publish a different revision; it does not change the existing actor-side validation. Copy allocation and I/O are proportional to the exported text, with at most one decoded full row retained between pages. Recovery changes only the shared presentation; explicit terminal receipts and durable checkpoint adoption take precedence. No journal evidence, permissions or capture/tool/vault boundaries are changed.

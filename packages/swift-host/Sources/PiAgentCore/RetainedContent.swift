@@ -5,6 +5,7 @@ import Foundation
 /// An immutable formatted snapshot. Text lives in an unlinked private file,
 /// so a long conversation does not become a second in-memory history. Readers
 /// use positional I/O; concurrent searches and pages never share a file cursor.
+/// Only the one-row decoded copy cache is mutable, protected by `pageLock`.
 final class RetainedContent: @unchecked Sendable {
     struct Key: Equatable {
         let generation: UInt64
@@ -15,14 +16,19 @@ final class RetainedContent: @unchecked Sendable {
     }
     let key: Key, digest: String
     private let file: FileHandle, rows: [Row]
+    private let readObserver: (@Sendable (Int) -> Void)?
+    private let pageLock = NSLock()
+    private var decoded: (index: Int, text: NSString)?
     var count: Int { rows.count }
-    private init(key: Key, digest: String, file: FileHandle, rows: [Row]) {
+    private init(key: Key, digest: String, file: FileHandle, rows: [Row], readObserver: (@Sendable (Int) -> Void)?) {
         self.key = key; self.digest = digest; self.file = file; self.rows = rows
+        self.readObserver = readObserver
     }
     deinit { try? file.close() }
 
     static func build(key: Key, older: OlderRows?, visible: [ChatMessage], url: URL?,
-                      cancellation: BlockingWorkCancellation, step: (@Sendable (String) -> Void)?) throws -> RetainedContent {
+                      cancellation: BlockingWorkCancellation, step: (@Sendable (String) -> Void)?,
+                      readObserver: (@Sendable (Int) -> Void)? = nil) throws -> RetainedContent {
         let journal = try url.map { try FileHandle(forReadingFrom: $0) }
         defer { try? journal?.close() }
         var shown = ShownRows(older: older, base: 0, visible: visible, history: [], descriptor: journal?.fileDescriptor)
@@ -51,7 +57,7 @@ final class RetainedContent: @unchecked Sendable {
             shown.forget()
         }
         try cancellation.checkCancellation()
-        return RetainedContent(key: key, digest: hash.finalize().map { String(format: "%02x", $0) }.joined(), file: file, rows: rows)
+        return RetainedContent(key: key, digest: hash.finalize().map { String(format: "%02x", $0) }.joined(), file: file, rows: rows, readObserver: readObserver)
     }
 
     private func text(_ index: Int, cancellation: BlockingWorkCancellation) throws -> String {
@@ -63,6 +69,7 @@ final class RetainedContent: @unchecked Sendable {
                 let count = pread(file.fileDescriptor, buffer.baseAddress!.advanced(by: read), row.length - read, off_t(row.offset) + off_t(read))
                 if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { throw AgentError("content_read", "Cannot read retained conversation text") }
+                readObserver?(count)
                 read += count
             }
         }
@@ -90,7 +97,13 @@ final class RetainedContent: @unchecked Sendable {
     }
     func page(first: Int, last: Int, index: Int, offset: Int, cancellation: BlockingWorkCancellation) throws -> JSON {
         guard first >= 1, last >= first, last <= count, index >= first, index <= last else { throw AgentError("invalid_range", "Invalid history range") }
-        let page = try textPage(text(index - 1, cancellation: cancellation), offset: offset)
+        let page = try pageLock.withLock {
+            try cancellation.checkCancellation()
+            let full: NSString
+            if let decoded, decoded.index == index { full = decoded.text }
+            else { full = try text(index - 1, cancellation: cancellation) as NSString; decoded = (index, full) }
+            return try textPage(full, offset: offset)
+        }
         return ["text": page["text"], "next": page["next"].isNull ? (index < last ? ["index": JSON(index + 1), "offset": 0] : .null) : ["index": JSON(index), "offset": page["next"]]]
     }
 }
