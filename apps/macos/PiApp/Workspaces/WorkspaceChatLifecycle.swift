@@ -94,8 +94,13 @@ extension WorkspaceModel {
         }
         pendingChatIDs.remove(id)
         if let draft = displays[id]?.savedDraft, !draft.text.isEmpty || !(draft.attachments ?? []).isEmpty {
-            try await store.put(draft, kind: "draft", id: id, draftVersion: displays[id]?.draftVersion, write: store.draftWriter.capture(id))
-            PerformanceProbe.shared.count("pendingChatDraftWrites")
+            do {
+                try await store.put(draft, kind: "draft", id: id, draftVersion: displays[id]?.draftVersion, write: store.draftWriter.capture(id))
+                PerformanceProbe.shared.count("pendingChatDraftWrites")
+            } catch StoreError.staleRevision {
+                // The chat row is durable. Newer typing owns this snapshot;
+                // it cannot cancel the separate first submission.
+            }
         }
     }
     /// Drops a pending chat that never received a message. Nothing was written.

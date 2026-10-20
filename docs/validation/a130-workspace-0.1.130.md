@@ -2588,3 +2588,287 @@ remained. Text logs are retained. The shared lane was released after each owned
 run, including the last window test. Other workstreams' locks and build products
 were not touched. The early focus-group procedure error and corrected locked
 rerun are recorded above; its partial results are excluded from these counts.
+
+## Round 9 — independent captured submissions
+
+Baseline: `d5d63a40`. The historical-edit review finding is **confirmed and
+fixed**. The sweep covers every requested captured submission kind, including
+an ordinary chat's first send. Generated state directories, memory vaults,
+injected helper frames and existing loopback fixtures are the only inputs.
+No installed app, real preferences/chats/credentials or paid provider is used.
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round9/`.
+
+### Input records and ordering
+
+Captured input and the composer are separate lifetimes. `recordSubmission`
+commits the captured `CommandIntent` even if a newer typing ticket has retired
+its accompanying composer snapshot. It still refuses dispatch on a real
+storage error or cross-instance conflict, preserving the existing error and
+recovery paths. Connection, archive and helper-identity checks still gate
+execution. No request parameters or helper implementation changed.
+
+| Submission kind | Independent durable record | Dispatch / composer behavior |
+| --- | --- | --- |
+| Ordinary Send / follow-up | `pending:<sessionID>`, keyed by `commandID`, containing captured text, attachments, skills and turn ID | `turn.submit` waits for intent persistence. The post-send draft snapshot can be superseded. |
+| New chat's first Send | Same `CommandIntent`, after creating its chat row | A stale materialization **draft** no longer aborts the captured first input. Chat identity, storage failures and genuine conflicts still refuse the operation. |
+| Historical Resend / edit of an earlier message | Same `CommandIntent`, now saved by `recordSubmission` before opening the runtime | `turn.edit` uses the captured replacement and original target; newer editor typing stays attached to the accepted replacement as before. Its review marker belongs to the replaceable draft. |
+| Queued-message Save | `pending:<sessionID>`, keyed by `queue-edit:<editID>:<SHA256(captured text)>`; `turnID` uses the `queue-edit:` namespace and optional `queueEditID` identifies its helper hold | `queue.edit.save` waits for the independent input. Same-edit/same-text retries reuse the record; a different capture cannot overwrite it. Ordinary turn-intent rewrites do not target this namespace. |
+| Steer | Same ordinary `CommandIntent`, with its own command/turn IDs | `turn.steer` waits for persistence; text and image/skill captures remain independent of typing. Existing eligibility and completion behavior remain unchanged. |
+| Side first Send | Same ordinary `CommandIntent`, saved beside the existing `SideKeepIntent` before parent opening | The input is no longer the side's initial draft. Parent opening can wait while the current composer is saved separately. The retained input is reused when normal submission persistence follows publication. |
+
+Cancel/Remove of a queued hold do not capture new message input. They keep
+using the existing hold-resolution protocol. A queue Save's successful reply
+retires its captured input; after a lost reply, recovery requires both `saved`
+and the exact captured text digest from `queue.edit.status`. Different or
+unavailable outcomes keep the input in the existing recovery flow. The new
+optional desktop field is backward-decodable; no database migration or wire
+schema change is needed.
+
+A rejected historical edit removes its input only together with a durable
+composer still holding the captured text/images/skills. Changed typing or a
+superseded restoration keeps the intent recoverable. A failed first side send
+whose returned draft is only in an ephemeral display also keeps its intent,
+exposed through the existing recovery actions. An unsent side with no accepted
+submission retains its existing in-memory policy.
+
+### Failing-first evidence
+
+All new cases are in `SubmissionPersistenceTests`.
+
+| Finding / sweep | Test | Failing evidence |
+| --- | --- | --- |
+| Historical edit cancelled by typing — confirmed/fixed | `testHistoricalEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot` | No `turn.edit` frame and no intent; expected one frame and `Captured replacement`. |
+| Queued Save lacks independent input — confirmed/fixed | `testQueuedEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot` | `pending` text was `[]`, expected `["Captured replacement"]` while the helper reply was held. |
+| First side input is only a draft — confirmed/fixed | `testSideFirstSendIsDurableWhileParentOpeningAndTypingContinue` | While parent opening was held, `pending` was `[]`, expected `["Captured first side message"]`. |
+| First chat materialization aborts capture — confirmed/fixed | `testFirstChatSendSurvivesTypingDuringMaterializationDraftWrite` | Zero dispatches, no intent, and captured text returned into newer typing. The chat row had already committed. |
+| Historical refusal drops changed input — confirmed/fixed | `testRejectedHistoricalEditRetainsItsInputWhenTheComposerChanged` | `pending` was `[]` after rejection; expected the captured replacement while the composer held different text. |
+| Failed side recovery retires input held only in memory — confirmed/fixed | `testFailedSideFirstSendKeepsItsInputUntilDurableRecovery` | Neither the intent nor the saved draft contained the captured side input after parent-open rejection. |
+| Queue retry record duplication — caught during implementation, fixed | `testQueuedSaveRetriesKeepOneRecordPerCapturedInput` | Two identical retries plus a different capture made three records; expected two distinct captures. |
+
+The initial unchanged-production run, `failing-submissions.log`, executed five
+tests: **two passed, three failed (five assertions)**. Ordinary Send and Steer
+already used the separation correctly. The historical, queue and side failures
+above were observed before changing production code.
+
+`failing-recovery-sweep.log` executed three tests: **one passed, two failed
+(four assertions)** before the materialization/refusal corrections. The
+matching-versus-different queue outcome regression passed. `failing-side-recovery.log`
+failed **one test / one assertion** before retaining the ephemeral side input.
+`failing-queue-retry.log` failed **one test / one assertion** before making
+same-input retry identity stable. These failures are not included in the final
+passing counts.
+
+The actor-barrier regressions hold the metadata writer, capture the command,
+allow newer typing and its debounce, then release persistence. They assert one
+dispatch with the original input, an independent durable intent while the reply
+is held, and the newer saved composer. The side case additionally holds parent
+opening; the new-chat case holds the separate materialization draft write.
+A second store instance verifies that queue input survives later debounces and
+is retired only by the matching durable helper outcome.
+
+Intermediate positive evidence: `fixed-submissions.log` passed 24/24;
+`fixed-core.log` passed 142/142; `fixed-captured-inputs.log` passed 12/12
+(all ten new regressions plus both historical bookkeeping tests).
+
+### Adversarial self-review
+
+| Changed condition / ordering | States taking the new path and intended result |
+| --- | --- |
+| Historical snapshot ticket is stale | Skip only that snapshot; commit the captured intent and proceed through the existing connection/archive checks to `turn.edit`. No newer typing is substituted into dispatch. |
+| Historical intent persisted before runtime opening | Opening failures cannot leave its captured replacement dependent on a mutable editor snapshot. Epoch is the ready helper's epoch when available, matching ordinary sends; it is not execution authority. |
+| Queued Save versus Cancel/Remove | Only Save captures input. Its intent must be durable before the request; failed local persistence makes no helper mutation. Existing control operations still use their original protocol. |
+| Same queued edit/text versus different capture | Same digest reuses one input identity. Another text has another identity; later draft debounces and queue-row bookkeeping cannot overwrite either captured input. |
+| Queue reply or recovered outcome | A known successful Save retires the input. Recovery accepts only the same edit and exact text digest; missing, active or different outcomes retain the input. Later typing is never used as acceptance evidence. |
+| Pending side has a captured first input | Persist that intent before awaiting its parent's runtime; save the current composer separately. Non-submitting side publication still saves its ordinary draft. |
+| Only materialization's draft write becomes stale | Its already-written chat remains materialized and the first submission continues. Record removal, real CAS conflicts and storage errors retain their existing refusal behavior. |
+| Rejected edit still matches captured input | Save that matching draft and withdraw the intent atomically. A changed composer or stale ticket keeps the independent record; review-marker removal cannot erase captured text. |
+| Failed side has no durable replacement draft | Keep the independent input and existing recovery actions. Ordinary retained chats still withdraw only with their durable returned draft; connection refusals that never accepted input keep their previous path. |
+
+The review also traced `recordQueuedRewrite` (explicit accepted rewrite of an
+ordinary queued turn), `recoverFailedSubmission`, `recoverDraft`,
+`restoreConflictedDraft`, `protectReturnedDrafts`, terminal receipt retirement,
+side registration and materialization. Captured queue records use a separate
+turn namespace so ordinary queued-turn updates do not replace them. No new
+provider/tool/capture/vault permissions, routing behavior, prompt, or UI layout
+is introduced. Existing recovery controls display retained input; no gallery
+is required for these persistence and dispatch changes.
+
+The final test partition is regenerated from `scripts/test-lanes.py list
+--configuration Debug`; every serial class runs alone, including
+`HistoricalEditFocusTests` and `SessionReadStateTests`. Window/focus runs hold
+the shared full-lane lock. Focus-free actor tests and mutation checks use only
+this workstream's build root. All commands and counts follow below.
+
+### Mutation evidence
+
+All **9/9 mutation variants were caught** through native test assertions;
+**12/12 selected test executions failed as expected**, with native exit 65.
+Each mutation was isolated and restored in `finally` before the next run.
+
+| Mutation log | Tests | Assertion failures |
+| --- | ---: | ---: |
+| `mutation-historical.log` | 1 | 3 |
+| `mutation-queue.log` | 1 | 1 |
+| `mutation-side.log` | 1 | 1 |
+| `mutation-independent-input.log` | 4 | 14 |
+| `mutation-materialization.log` | 1 | 3 |
+| `mutation-edit-refusal.log` | 1 | 1 |
+| `mutation-side-recovery.log` | 1 | 1 |
+| `mutation-queue-outcome.log` | 1 | 2 |
+| `mutation-queue-retry.log` | 1 | 1 |
+
+Two preliminary mutation builds exposed unused locals after instrumentation
+removed their uses (`mutation-historical-build-failure.log` and
+`mutation-queue-build-failure.log`). The harness was corrected, source restored,
+and both variants rerun to actual failing assertions. Those build-only attempts
+are excluded from mutation counts.
+
+Exact reproduction, initial fixed and mutation commands:
+
+```sh
+# failing-submissions
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests
+# failing-recovery-sweep
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testFirstChatSendSurvivesTypingDuringMaterializationDraftWrite -only-testing:PiAppTests/SubmissionPersistenceTests/testRejectedHistoricalEditRetainsItsInputWhenTheComposerChanged -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveRecoveryRetiresOnlyTheMatchingDurableOutcome
+# failing-side-recovery
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testFailedSideFirstSendKeepsItsInputUntilDurableRecovery
+# failing-queue-retry
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveRetriesKeepOneRecordPerCapturedInput
+# fixed-submissions
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests
+# fixed-core
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceRaceTests
+# fixed-captured-inputs
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests
+# mutation-historical
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testHistoricalEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot
+# mutation-queue
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot
+# mutation-side
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testSideFirstSendIsDurableWhileParentOpeningAndTypingContinue
+# mutation-independent-input
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testSendKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot -only-testing:PiAppTests/SubmissionPersistenceTests/testSteerKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot -only-testing:PiAppTests/SubmissionPersistenceTests/testHistoricalEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedEditKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot
+# mutation-materialization
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testFirstChatSendSurvivesTypingDuringMaterializationDraftWrite
+# mutation-edit-refusal
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testRejectedHistoricalEditRetainsItsInputWhenTheComposerChanged
+# mutation-side-recovery
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testFailedSideFirstSendKeepsItsInputUntilDurableRecovery
+# mutation-queue-outcome
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveRecoveryRetiresOnlyTheMatchingDurableOutcome
+# mutation-queue-retry
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubmissionPersistenceTests/testQueuedSaveRetriesKeepOneRecordPerCapturedInput
+```
+
+### Final native validation
+
+**726 passed; 2 skipped; 0 failed**, across 50 affected classes.
+
+| Class | Tests | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| `AppShellPerformanceTests` | 11 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ComposerSubmissionTests` | 7 | 1 | 0 |
+| `ConversationFamilyTests` | 22 | 0 | 0 |
+| `ConversationPaneTests` | 83 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 34 | 0 | 0 |
+| `DraftLoadingTests` | 15 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftOrderingTests` | 17 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `FamilyDeletionTests` | 10 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoricalEditFocusTests` | 1 | 0 | 0 |
+| `HistoricalEditingTests` | 5 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 8 | 0 | 0 |
+| `LaunchSelectionTests` | 20 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `ModelSwitchTests` | 24 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueueEditInteractionTests` | 17 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `QueuedEditPresentationTests` | 9 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SendImmediacyTests` | 14 | 0 | 0 |
+| `SessionReadStateTests` | 16 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `SkillRefreshTests` | 15 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 10 | 0 | 0 |
+| `SubagentMetadataTests` | 9 | 0 | 0 |
+| `SubagentOpeningTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 56 | 0 | 0 |
+| `SubmissionPersistenceTests` | 10 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WireContractTests` | 11 | 1 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceFailureTests` | 6 | 0 | 0 |
+| `WorkspaceFollowupTests` | 9 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 49 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+
+Exact final commands (text logs use the comment names):
+
+```sh
+# final-model
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceFailureTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/SubagentMetadataTests -only-testing:PiAppTests/SubmissionPersistenceTests
+# final-alone-SessionReadStateTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionReadStateTests
+# final-deletion
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/SubagentDeletionTests
+# final-windows
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/AppShellPerformanceTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/ModelSwitchTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/SendImmediacyTests -only-testing:PiAppTests/ComposerSubmissionTests -only-testing:PiAppTests/ComposerImportSubmissionTests -only-testing:PiAppTests/QueuedEditPresentationTests
+# final-alone-HistoricalEditFocusTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoricalEditFocusTests
+# final-queue
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+# final-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+# final-original
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+# final-opening
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+# final-conversation
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+# final-lifecycle
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+# final-window
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+# final-additional
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueuedAttachmentLimitTests -only-testing:PiAppTests/SkillRefreshTests -only-testing:PiAppTests/WireContractTests -only-testing:PiAppTests/WorkspaceFollowupTests
+```
+
+All 9 source/project hashes match the validated state in
+`tested-source-sha256.json`. The final classes cover draft ordering, conflict
+retention and release, baseline hydration, markers, size limits, submission and
+edit bookkeeping, side publication/recovery, queue editing, managed-child
+readers, lifecycle/quit/update, and native conversation interactions. No helper
+implementation, host protocol or wire contract changed; helper and
+wire/concurrent/acceptance suites were not required. No UI rendering changed,
+so no gallery was needed. No unresolved findings from this review remain.
+
+The two existing skips are:
+
+- `ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer`
+  (`ComposerSubmissionTests.swift:126`): the test host has no Conversation menu.
+- `WireContractTests.testPerTokenSnapshotWithSeventyFinishedTurns`
+  (`WireContractTests.swift:614`): the performance measurement requires
+  `PI_PERF_WIRE=1`. No changed behavior depends on that opt-in measurement.
+
+Final adversarial review, source-hash verification and `git diff --check` are
+complete. All window/focus runs held the shared lane, and every serial class
+ran alone. Own generated result bundles were removed after testing; no own
+clone directories remained. Text logs are retained. No other workstream's
+build products or lock were touched. No unresolved findings from this review
+remain.

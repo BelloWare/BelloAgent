@@ -171,10 +171,10 @@ extension WorkspaceModel {
     /// parent's context snapshot as a durable child session, and its capture
     /// preference. Called when a side with a question opens, and when a
     /// pending side sends its first message.
-    /// `draft` is what the kept side starts with on disk: the message being
-    /// sent, whose composer has already emptied (`send`), else what the
-    /// composer holds.
-    func publishPendingSide(_ info: SideRecord, view: SessionDisplay, draft: DraftRecord? = nil) async throws {
+    /// A first send has its own input record before parent opening can wait.
+    /// The side's draft remains only the current composer, including typing
+    /// entered after Return emptied it.
+    func publishPendingSide(_ info: SideRecord, view: SessionDisplay, submission: CommandIntent? = nil) async throws {
         guard let store else { throw StoreError.unavailable }
         guard let parent = record(info.parentID) else { throw HostError.failure("The parent chat is no longer available.") }
         let id = info.id, parentID = info.parentID
@@ -187,7 +187,11 @@ extension WorkspaceModel {
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
-        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+        let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
+        if let submission {
+            try await store.recordSubmission(submission, draft: draft, draftVersion: view.draftVersion, write: write)
+            pendingIntentsChanged(id)
+        } else { try await store.put(draft, kind: "draft", id: id, draftVersion: view.draftVersion, write: write) }
         let host = try await open(parent), connection = host.connectionID; host.isBusy = true
         let result: [String: WireValue]
         var written = false

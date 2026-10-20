@@ -1562,6 +1562,9 @@ struct CommandIntent: Codable, Sendable, Equatable {
     /// New sends persist their own draft review gate before returning input.
     /// Older records cannot distinguish returned input from newer typing.
     var draftReviewTracked: Bool? = nil
+    /// A queued rewrite settles by its hold's saved digest, rather than a
+    /// new turn receipt. Its captured text is independent of later typing.
+    var queueEditID: String? = nil
 }
 struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {
     var id: String = UUID().uuidString; var revision: String = UUID().uuidString

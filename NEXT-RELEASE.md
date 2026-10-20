@@ -4,6 +4,12 @@
 
 ## 0.1.130
 
+- [x] Historical Resend persists its captured replacement independently; typing during storage cannot cancel the edit. [Round-9 validation](docs/validation/a130-workspace-0.1.130.md#round-9--independent-captured-submissions).
+- [x] Queued-message Saves persist independent captured input before dispatch; identical retries share a record, and recovery checks the saved text digest.
+- [x] Side first sends retain independent input while parent opening waits and after a failed opening restores only into an unsaved side.
+- [x] New-chat materialization lets newer typing replace its draft snapshot without cancelling the captured first send.
+- [x] Rejected historical edits retain captured input replaced by subsequent typing; removal requires an atomic save of a draft still holding that input.
+
 - [x] Draft snapshots, edit review markers and recovery writes share an ordered writer; delayed typing cannot overwrite a newer save. [Round-8 validation](docs/validation/a130-workspace-0.1.130.md#round-8--ordered-draft-writers).
 - [x] Superseded local drafts are rejected before conflict detection, preserving the latest losing copy and independent captured submissions.
 - [x] Delayed reading-position callbacks cannot overwrite newer direct saves or clears; scrolling and typing remain independently preserved.

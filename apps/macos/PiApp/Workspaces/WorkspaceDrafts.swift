@@ -65,10 +65,22 @@ extension WorkspaceModel {
     /// Consult durable helper evidence before exposing any recovery action.
     func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {
         let unchecked = intents.filter { $0.state == "intent" && !view.acceptedCommands.contains($0.id) }
+        // Queue saves have no new turn receipt. After a lost reply, the
+        // helper's durable outcome must match this captured text before it
+        // can retire the input; a different rewrite leaves it recoverable.
+        for intent in unchecked {
+            guard let editID = intent.queueEditID,
+                  let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
+                  status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+            view.acceptedCommands.insert(intent.id)
+            try await store?.remove(kind: "pending:" + item.id, id: intent.id)
+            pendingIntentsChanged(item.id)
+        }
         let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
         let accepted: Set<String>
-        if let commandAcceptanceRead { accepted = try await commandAcceptanceRead(path, unchecked, item.path == nil) }
-        else { accepted = try await history.acceptedCommands(in: path, intents: unchecked, missingIsEmpty: item.path == nil) }
+        let turns = unchecked.filter { $0.queueEditID == nil }
+        if let commandAcceptanceRead { accepted = try await commandAcceptanceRead(path, turns, item.path == nil) }
+        else { accepted = try await history.acceptedCommands(in: path, intents: turns, missingIsEmpty: item.path == nil) }
         view.acceptedCommands.formUnion(accepted)
         try await protectReturnedDrafts(intents, view: view)
         let unaccepted = unchecked.filter { !view.acceptedCommands.contains($0.id) }

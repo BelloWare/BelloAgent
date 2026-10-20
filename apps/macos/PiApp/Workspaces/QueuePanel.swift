@@ -348,13 +348,43 @@ extension WorkspaceModel {
         var params: [String: WireValue] = ["editId": .string(editID)]
         if let sent { params["text"] = .string(sent) }
         let method = "queue.edit." + operation
+        // A Save captures input just as Send does. The draft carries the
+        // editable hold UI; this independent record carries what Save sent.
+        let store = store, draft = view.savedDraft
+        // Retrying the same edit/text repeats its input record; a different
+        // captured rewrite gets its own record and cannot erase the first.
+        let intent = sent.map { CommandIntent(id: "queue-edit:" + editID + ":" + QueuedEditDraft.digest($0), sessionID: view.id, turnID: "queue-edit:" + editID, text: $0,
+                                              state: "intent", draftReviewTracked: true, queueEditID: editID) }
+        let write = intent.flatMap { _ in store?.draftWriter.capture(view.id) }
+        let completed: ([String: WireValue]) -> Void = { [weak self] reply in
+            done(reply)
+            guard let self, let intent, let store else { return }
+            view.acceptedCommands.insert(intent.id)
+            view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }
+            Task {
+                try? await store.remove(kind: "pending:" + view.id, id: intent.id)
+                self.pendingIntentsChanged(view.id)
+            }
+        }
         Task {
+            if let intent {
+                do {
+                    guard let store else { throw StoreError.unavailable }
+                    try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write)
+                    pendingIntentsChanged(view.id)
+                } catch {
+                    view.queueEditResolving = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
+                    view.queueEditNotice = "The rewrite could not be saved locally. " + error.localizedDescription
+                    draftChanged(view)
+                    return
+                }
+            }
             do {
                 let reply = try await queueEditRequest(method, sessionID: view.id, params: params)
                 guard view.queueEditID == editID else { return }
                 if let revision = reply["revision"]?.number { view.adoptQueueEditHold(QueueEditHold(reply["held"]?.object), revision: Int(revision)) }
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
-                done(reply)
+                completed(reply)
             } catch HostError.rejected(let code, let reason) where ["queue_edit_cancelled", "queue_edit_removed", "queue_edit_saved", "queue_edit_missing", "command_conflict"].contains(code) {
                 guard view.queueEditID == editID else { return }
                 // Ended otherwise. A Save refused because another text was
@@ -368,7 +398,7 @@ extension WorkspaceModel {
                 draftChanged(view)
             } catch {
                 guard view.queueEditID == editID else { return }
-                await settleUnansweredQueuedEdit(view, editID: editID, operation: operation, sentDigest: sentDigest, done: done)
+                await settleUnansweredQueuedEdit(view, editID: editID, operation: operation, sentDigest: sentDigest, done: completed)
             }
         }
     }

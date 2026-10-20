@@ -164,14 +164,28 @@ extension WorkspaceModel {
             // only while it is still what the chat shows.
             var shown: (state: RunState, replaced: RunState)?
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
+            @MainActor func settleRefusedInput() async {
+                // A rejection settles execution, not the captured input.
+                // Retire it only with a durable draft still holding that input.
+                if view.draft == text, view.attachments == attachments, view.skills == skills {
+                    try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
+                                                        draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                }
+                if let intent = try? await store.get(CommandIntent.self, kind: "pending:" + item.id, id: commandID),
+                   !view.recovered.contains(where: { $0.id == commandID }) { view.recovered.append(intent) }
+                pendingIntentsChanged(item.id)
+            }
             do {
                 let connection = Result { try connectionLease(for: item) }
-                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: write) }
+                // Newer typing may replace the editor snapshot, never the
+                // replacement captured by Resend or its independent intent.
+                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                           epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+                try await store.recordSubmission(intent, draft: savedDraft, draftVersion: view.draftVersion, write: write)
+                pendingIntentsChanged(item.id)
                 let lease = try connection.get()
                 try requireConnection(lease)
                 let host = try await open(item)
-                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills, draftReviewTracked: true)
-                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 try requireUnarchived(item.id, revision: archiveRevision)
                 dispatched = true
@@ -221,7 +235,7 @@ extension WorkspaceModel {
                    view.editGeneration == generation, view.editingMessageID == messageID {
                     view.submissionReviews.remove(commandID)
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
-                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    await settleRefusedInput()
                     undoShownState()
                     let refresh = await refreshRefusedSkills(view, sent: skills)
                     if view.editGeneration == generation { view.editNotice = refresh.notice }
@@ -237,7 +251,7 @@ extension WorkspaceModel {
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
                     // At the chat's cost limit the conversation says so, with a way to raise it.
                     if code == SessionDisplay.costLimitCode { view.sendFailureCode = code; view.sendFailure = error.localizedDescription }
-                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    await settleRefusedInput()
                     if code == "connection_unavailable" { view.runState = .interrupted } else { undoShownState() }
                 }
                 else if dispatched { view.uncertain = true; view.runState = .interrupted }

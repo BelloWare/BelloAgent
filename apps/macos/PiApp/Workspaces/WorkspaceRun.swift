@@ -155,17 +155,16 @@ extension WorkspaceModel {
         }
         let lease = try connection.get()
         try requireConnection(lease)
+        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
         if let info = side(item.id), info.pending {
-            // The message is the draft of the side it creates until its record below replaces it.
-            try await publishPendingSide(info, view: view, draft: DraftRecord(id: item.id, text: text, attachments: attachments, skills: skills))
+            try await publishPendingSide(info, view: view, submission: intent)
         }
         if !isEphemeral(item.id) {
             // The record that lets a crash flag or recover this
             // message, in one commit with the draft that no longer
             // holds it. It is written while the helper is reached, and
             // the command goes out only once it is on disk.
-            let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                       epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
             let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
             progress.recording = Task { try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write) }
         }
@@ -277,7 +276,14 @@ extension WorkspaceModel {
             // The helper never acted on it: its record goes, in the
             // same commit as the draft that holds the text again.
             _ = try? await recording?.value
-            try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write); pendingIntentsChanged(item.id)
+            if accepted, draft == nil {
+                // An unkept side restores only in memory. Its independent
+                // input stays recoverable until an explicit durable recovery
+                // or discard; typing in that side cannot overwrite it.
+                if let intent = try? await store.get(CommandIntent.self, kind: "pending:" + item.id, id: commandID),
+                   !view.recovered.contains(where: { $0.id == commandID }) { view.recovered.append(intent) }
+            } else { try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write) }
+            pendingIntentsChanged(item.id)
         } else if let draft {
             // Its outcome is unknown: the record stays to say so, and
             // the text is back in the draft as well.
