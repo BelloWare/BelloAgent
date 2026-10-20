@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] Live Copy Conversation includes retained reasoning, tool arguments and message boundaries, matching saved-history copies. [Validation](docs/validation/a130-wire-0.1.130.md#round-3-hunt).
+- [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
+- [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
+- [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+
 - [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
 - [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
 - [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.

@@ -220,6 +220,32 @@ public struct ChatMessage: Codable, Equatable, Sendable {
 // Presentation records have no model-facing content. Their retained display
 // source is read explicitly; ordinary assistant full-text reads stay complete.
 extension ChatMessage {
+    /// Copy Conversation matches the disk reader, including message boundaries
+    /// and retained non-text blocks. Message-text reads use retainedDisplayText.
+    var retainedConversationText: String {
+        if kind == "compaction" { return "## Compaction\n\n\(CompactionCheckpoint.summaryText(self))\n\n" }
+        if kind == "branch" { return "## Edit\n\n\(branchMarkerText)\n\n" }
+        if let timeline = responseTimeline, timeline.supported {
+            let evidence = "## \(detail ?? role)\n\n" + timeline.retainedText + "\n\n"
+            if !timeline.segments.contains(where: \.truncated) && timeline.omittedEvents == 0 { return evidence }
+            var plain = self; plain.responseTimeline = nil
+            return evidence + "## Full saved response\n\n" + plain.retainedConversationText
+        }
+        let body = content.map { block -> String in
+            switch block["type"].text {
+            case "text": return block["text"].text ?? ""
+            case "thinking": return "\n[Exposed reasoning]\n\(block["thinking"].text ?? "")\n"
+            case "toolCall":
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                let arguments = block.map["arguments"].flatMap { try? String(decoding: encoder.encode($0), as: UTF8.self) } ?? "{}"
+                return "\n[Tool \(block["name"].text ?? "tool")]\n\(arguments)\n"
+            case "image": return "\n[Image attachment omitted]\n"
+            default: return ""
+            }
+        }.joined()
+        return "## \(role)\n\n\(body)\n\n"
+    }
+
     var retainedDisplayText: String {
         if ["execution", "requestLedger"].contains(kind ?? ""), let responseTimeline {
             return (detail ?? "Operation") + "\n\n" + responseTimeline.retainedText

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // On-demand reads of retained content: older pages, whole tool inputs,
 // long message bodies, the event window and transcript search.
@@ -128,7 +129,30 @@ extension AgentSession {
                 }
                 shown.forget(); block=min(block*2,4096)
             }
-            return ["hits":.array(hits),"total":JSON(shown.count),"next":cursor < shown.count ? JSON(cursor) : .null,"revision":JSON(contentRevision)]
+            var result: JSON = ["hits":.array(hits),"total":JSON(shown.count),"next":cursor < shown.count ? JSON(cursor) : .null,"revision":JSON(contentRevision)]
+            if params["retained"].flag == true {
+                // A source-independent identity allows the app to verify an
+                // unchanged copy selection after this runtime has retired.
+                var hash = SHA256()
+                for start in stride(from: 0, to: shown.count, by: 128) {
+                    try Task.checkCancellation()
+                    let range = start..<min(shown.count, start + 128)
+                    try shown.prefetch(range)
+                    try autoreleasepool {
+                        for index in range {
+                            let message = try shown.row(index), text = message.retainedConversationText
+                            for value in [message.id, text] {
+                                hash.update(data: Data("\(value.utf8.count):".utf8)); hash.update(data: Data(value.utf8))
+                            }
+                        }
+                    }
+                    shown.forget()
+                }
+                result["digest"] = JSON(hash.finalize().map { String(format: "%02x", $0) }.joined())
+                result["incarnation"] = JSON(displayEpoch)
+                result["revision"] = JSON("\(contentRevision):\(sequence)")
+            }
+            return result
         }
     }
     /// Case-insensitive occurrences of `query` in `text` (zero for an empty query).
@@ -147,11 +171,12 @@ extension AgentSession {
     }
     public func contentPage(_ params: JSON) async throws -> JSON {
         if olderRows > 0 { try await loadOlderRows() }
-        guard params["revision"].text == contentRevision else { throw AgentError("history_changed", "History changed; refresh the selection") }
+        if let incarnation = params["incarnation"].text, incarnation != displayEpoch { throw AgentError("history_changed", "The conversation runtime changed; validate the retained selection") }
+        guard [contentRevision, "\(contentRevision):\(sequence)"].contains(params["revision"].text ?? "") else { throw AgentError("history_changed", "History changed; refresh the selection") }
         let first=try boundedInt(params["first"],fallback:1,maximum:100000), last=try boundedInt(params["last"],maximum:100000), index=try boundedInt(params["index"],fallback:1,maximum:100000), offset=try boundedInt(params["offset"],maximum:128*1024*1024)
         return try withShownRows { shown in
             guard first>=1,last>=first,last<=shown.count,index>=first,index<=last else { throw AgentError("invalid_range", "Invalid history range") }
-            let m=try shown.row(index-1), page=try textPage(m.retainedDisplayText,offset:offset)
+            let m=try shown.row(index-1), page=try textPage(m.retainedConversationText,offset:offset)
             return ["text":page["text"],"next":page["next"].isNull ? (index<last ? ["index":JSON(index+1),"offset":0] : .null) : ["index":JSON(index),"offset":page["next"]]]
         }
     }

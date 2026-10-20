@@ -914,6 +914,31 @@ actor HistoryReader {
         }
         return .init(hits: hits, total: rows.count, next: cursor < rows.count ? cursor : nil, revision: "presented")
     }
+    private var contentHandoff: (path: String, digest: String, revision: String)?
+    /// Reacquire positions only when the ordered identities and complete copy
+    /// text still match. Runtime/state-only writes do not invalidate a selection.
+    func rebindContent(path: String, sessionID: String, digest: String) throws -> String {
+        let file = try open(path); defer { try? file.close() }
+        if let held = contentHandoff, held.path == path, held.digest == digest,
+           let index = indexes[path], !index.partial, index.sessionID == sessionID,
+           revision(index.stamp) == held.revision, try stamp(file) == index.stamp { return held.revision }
+        let page = try read(path: path, whole: true)
+        guard page.notice == nil, let index = indexes[path], index.sessionID == sessionID,
+              try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
+        var hash = SHA256()
+        for position in 0..<index.branch.count {
+            try Task.checkCancellation()
+            let ref = try index.branch.at(position), text = try autoreleasepool { try content(ref, file: file) }
+            for value in [ref.id, text] {
+                hash.update(data: Data("\(value.utf8.count):".utf8)); hash.update(data: Data(value.utf8))
+            }
+        }
+        guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest,
+              try stamp(file) == index.stamp else { throw HostError.failure("History changed. Refresh the range before copying") }
+        let revision = revision(index.stamp)
+        contentHandoff = (path, digest, revision)
+        return revision
+    }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
         // Positions count every shown row, as the search that gave them did.
         if indexes[path]?.partial == true { _ = try read(path: path, whole: true) }
