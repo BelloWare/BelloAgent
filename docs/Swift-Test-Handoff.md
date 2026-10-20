@@ -58,9 +58,17 @@ come from the test sources, so a new test lands in one by what it uses. A
 class runs in the serial lane when its source (its body, its extensions, the
 test classes it inherits from, and the helper declarations in those files):
 
-- activates the app or reads activation or key-window state (`NSApp.activate`,
-  `NSApp.isActive`, `isKeyWindow`, `NSApp.keyWindow`, `NSApp.mainWindow`):
-  one window server gives focus to one process at a time;
+- activates the app, raises a key window, reads focus state, uses responders,
+  or injects input (`makeKeyAndOrderFront`, `makeKey`, `orderFrontRegardless`,
+  `NSApp.activate`, `isKeyWindow`, `firstResponder`, `makeFirstResponder`,
+  `sendEvent`/`postEvent`, Core Graphics event posting/pointer movement): one
+  window server gives focus to one process at a time. Focus checks follow
+  referenced shared fixtures, including nested types in other test classes and
+  nested source folders. Inspector and popped-out-tab entry points are included
+  because they raise windows inside app code. Responder use is conservatively
+  serial even when one fixture currently uses a non-key window. Constructing
+  event values or calling a view's local input handler alone does not require
+  serialization;
 - writes the standard user defaults (`UserDefaults.standard`,
   `WindowChrome.adjustStoredSidebarWidth`), which every test host shares;
 - uses the general or the drag pasteboard, which every test host shares;
@@ -75,18 +83,25 @@ test classes it inherits from, and the helper declarations in those files):
   struct), or when a count the test asserts depends on how fast the machine
   is.
 
-Every other class runs in the parallel lane, including the budget classes:
-`releaseBudget` is infinite in Debug, so those budgets cannot fail on time
-there. **A Release-configuration performance run keeps the budget classes
+Every other class runs in the parallel lane. `releaseBudget` alone does not
+require serialization in Debug because its bounds are infinite there; focus
+use still does. **A Release-configuration performance run keeps the budget classes
 serial:** `scripts/test-lanes.py --configuration Release serial|parallel` adds
 every class that calls `releaseBudget` to the serial lane, so a budget is only
 ever measured with the machine to itself. The parallel lane skips the serial
 classes rather than naming its own, so a class the script cannot read still
 runs.
 
-To keep the serial lane short, a class whose tests mostly run in parallel
-keeps those and moves the rest into a sibling serial class over a shared,
-test-free base: `GitPanelTestCase` (`GitPanelTimingTests`),
+The source detector is conservative about a referenced fixture type: all its
+methods and its file's helpers are considered. The Python lane tests reject a
+parallel selection containing focus APIs and exercise indirect fixture paths.
+Runtime-only focus behavior that cannot be seen in source needs an explicit
+`SerialTestLane` marker. Shared helper traversal adds focus checks, without
+changing the existing defaults/pasteboard/timing rules for unrelated helpers.
+
+Several classes separate behavior and timing tests over a shared, test-free
+base. Such a split still runs serially if that base or a shared fixture uses
+focus: `GitPanelTestCase` (`GitPanelTimingTests`),
 `TranscriptStressTestCase` (`TranscriptStreamingSerialTests`),
 `SmoothShellTestCase` (`SmoothShellTests`), `AppShellTestCase`
 (`AppShellTimingTests`), `HistoryEdgeTestCase` (`HistoryEdgeTimingTests`,
@@ -179,7 +194,8 @@ Inputs:
   With the scroller held at an edge, only the max applies. The reasons are
   in `docs/perf/long-chat-scrolling.md`. These budgets record the
   improvement, but still allow visible long frames.
-- `TranscriptRevealTests` and `TranscriptFindTests` (parallel lane) cover
+- `TranscriptRevealTests` and `TranscriptFindTests` (serial lane: the shared
+  fixture opens a key window) cover
   `revealInTranscript` and the ⌘F find bar on the same fixture:
   - a message read in and landed on;
   - an excerpt mark resolved to its own occurrence;

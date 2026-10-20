@@ -6,10 +6,11 @@ lanes"): most classes in parallel clones of the test host, then the rest in
 one host with the machine to itself. A class runs alone when its source does
 any of the things below. Its source is its body, its extensions, the test
 classes it inherits from, and the other declarations (helper types and
-functions) in the files where those are written.
+functions) in the files where those are written. Focus checks also follow
+referenced shared test helpers transitively, including nested source folders.
 
-  focus     activates the app, or reads activation or key-window state: one
-            window server gives focus to one process at a time
+  focus     changes/reads app or window focus, uses responders or dispatches
+            native input: one window server gives focus to one process at a time
   defaults  writes the standard user defaults, which every host shares
   pasteboard  uses the general or the drag pasteboard, which every host shares
   timing    asserts on elapsed time in this configuration: an elapsed-time
@@ -38,14 +39,24 @@ import argparse
 import pathlib
 import re
 import sys
+import textwrap
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "apps/macos/PiAppTests"
 TARGET = "PiAppTests"
 
 PATTERNS = {
-    "focus": re.compile(r"NSApp\.activate|\.activate\(ignoringOtherApps|NSApp\.isActive|NSApplication\.shared\.isActive"
-                        r"|\.isKeyWindow\b|NSApp\.keyWindow|NSApp\.mainWindow|orderFrontRegardless"),
+    "focus": re.compile(
+        r"\b(?:NSApp|NSApplication\s*\.\s*shared)\s*\.\s*(?:activate|isActive|keyWindow|mainWindow|hide|unhide|deactivate|sendAction)\b"
+        r"|\.\s*activate\s*\(\s*(?:ignoringOtherApps|options)\s*:"
+        r"|\.\s*(?:makeKeyAndOrderFront|makeKey|makeMain|becomeKey|becomeMain|resignKey|resignMain|orderFrontRegardless"
+        r"|isKeyWindow|isMainWindow|makeFirstResponder|becomeFirstResponder|resignFirstResponder|firstResponder"
+        r"|sendEvent|postEvent|performKeyEquivalent|showWindow|beginSheet|runModal)\b"
+        r"|\b(?:CGWarpMouseCursorPosition|CGAssociateMouseAndMouseCursorPosition|CGEventPost|CGEventPostToPid)\s*\("
+        r"|\.\s*(?:postToPid\s*\(|post\s*\(\s*(?:tap|toPid)\s*:)"
+        r"|\bNSEvent\s*\.\s*mouseLocation\b"
+        # App entry points that open/raise native windows through those APIs.
+        r"|\bSessionInspectorWindows\b|\.\s*(?:openInspector|showMessageDetail|popOut|bringForward|bringMainWindowForward)\s*\("),
     "defaults": re.compile(r"UserDefaults\.standard|adjustStoredSidebarWidth"),
     "pasteboard": re.compile(r"NSPasteboard\.general|NSPasteboard\(name:\s*\.(?:drag|general)\)"),
 }
@@ -55,6 +66,8 @@ MARKER = "SerialTestLane"
 MODIFIERS = r"^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:final|open|public|internal|private|fileprivate|nonisolated)\s+)*"
 DECLARATION = re.compile(MODIFIERS + r"class\s+(\w+)\s*:\s*([^{]+)\{")
 EXTENSION = re.compile(MODIFIERS + r"extension\s+(\w+)\b[^{]*\{")
+HELPER = re.compile(MODIFIERS + r"(?:class|struct|enum|actor|protocol|func|let|var|typealias)\s+(\w+)")
+IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
 
 
 def blocks(text):
@@ -136,16 +149,27 @@ def asserts_elapsed_time(text):
 
 def classes():
     declared, extended, files, helpers = {}, {}, {}, {}
-    for path in sorted(TESTS.glob("*.swift")):
+    exports, extensions = {}, []
+
+    def export(text, file):
+        # Private helpers belong only to their own file. Referencing a public
+        # helper includes its file's private helpers too, just as a test does.
+        if (match := HELPER.match(text)) and not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
+            exports.setdefault(match.group(1), set()).add(file)
+
+    for path in sorted(TESTS.rglob("*.swift")):
+        file = str(path.relative_to(TESTS))
         for kind, name, inherits, text in blocks(path.read_text()):
             if kind == "class":
                 declared[name] = (inherits, text)
-                files.setdefault(name, set()).add(path.name)
+                files.setdefault(name, set()).add(file)
             elif kind == "extension":
                 extended.setdefault(name, []).append(text)
-                files.setdefault(name, set()).add(path.name)
+                files.setdefault(name, set()).add(file)
+                extensions.append((name, text, file))
             else:
-                helpers.setdefault(path.name, []).append(text)
+                helpers.setdefault(file, []).append(text)
+                export(text, file)
 
     def is_test_case(name, seen=()):
         if name == "XCTestCase":
@@ -159,22 +183,66 @@ def classes():
         if not is_test_case(name):
             for file in files.get(name, ()):
                 helpers.setdefault(file, []).append(text)
+                helpers[file].extend(extended.get(name, []))
+                export(text, file)
 
-    result = {}
+    # Shared extension methods (notably XCTestCase fixture builders) are
+    # followed by member name, rather than attaching every builder to every test.
+    for name, text, file in extensions:
+        if name == "XCTestCase" or not is_test_case(name):
+            body = textwrap.dedent(text[text.index("{") + 1:text.rfind("}")]).strip()
+            for _, _, _, member in blocks(body):
+                helpers.setdefault(file, []).append(member)
+                if not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
+                    export(member, file)
+
+    roots, test_helpers = {}, {}
     for name, (inherits, text) in declared.items():
         if not is_test_case(name):
             continue
         own = [text] + extended.get(name, [])
-        if not any(re.search(r"\bfunc test\w*\s*\(", part) for part in own):
-            continue
         source, lineage, parent = list(own), [name], inherits[0] if inherits else None
         while parent and parent in declared:
             source.append(declared[parent][1])
             source.extend(extended.get(parent, []))
             lineage.append(parent)
             parent = declared[parent][0][0] if declared[parent][0] else None
+        has_tests = any(re.search(r"\bfunc test\w*\s*\(", part) for part in source)
         for file in sorted(set().union(*(files.get(member, set()) for member in lineage))):
             source.extend(helpers.get(file, []))
+        # Fixtures also live inside test classes (ConversationPaneTests.Pane,
+        # for example); another class can use them without inheriting the tests.
+        if not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
+            test_helpers[name] = source
+        if has_tests:
+            roots[name] = (inherits, source)
+
+    available = exports.keys() | test_helpers.keys()
+    references = {}
+    result = {}
+    for name, (inherits, own) in roots.items():
+        source = list(own)
+        # A helper can call another fixture or refer back to its caller. Visit
+        # each exported name once so those chains are complete and cycles stop.
+        pending, visited, included = list(source), set(), set(source)
+        while pending:
+            chunk = pending.pop()
+            if chunk not in references:
+                references[chunk] = set(IDENTIFIER.findall(chunk)) & available
+            referenced = references[chunk] - visited
+            for helper in sorted(referenced):
+                visited.add(helper)
+                chunks = list(test_helpers.get(helper, []))
+                for file in sorted(exports.get(helper, ())):
+                    chunks.extend(helpers.get(file, []))
+                for chunk in chunks:
+                    if chunk not in included:
+                        # Do not turn a shared releaseBudget definition or
+                        # an unrelated helper's timing check into a new rule.
+                        if PATTERNS["focus"].search(chunk):
+                            source.append(chunk)
+                        pending.append(chunk)
+                        included.add(chunk)
         result[name] = (inherits, "\n".join(source))
     return result
 
