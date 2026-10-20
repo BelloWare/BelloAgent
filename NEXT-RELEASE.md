@@ -6,6 +6,13 @@
 
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
+- [x] Accepted capture metadata over 4 MiB remains readable, exportable and expirable after reopening. [Validation](docs/validation/a130-inspector-0.1.130.md#round-3-hunt).
+- [x] Session-memory exports keep complete large manifests; manifest readers accept the same sizes and local retention counts their actual bytes.
+- [x] Capture database readers no longer reject accepted results above 100,001 rows.
+- [x] Legacy trace artifacts remain listable and clearable beyond 10,000 directories.
+- [x] Export Metadata validates and freezes the selected request before opening the destination chooser.
+- [x] Redacted exports retain their original Raw part label when navigation changes during the chooser.
+
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
 - [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
 - [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.

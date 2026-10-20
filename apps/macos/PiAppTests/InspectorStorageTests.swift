@@ -5,7 +5,7 @@ import XCTest
 
 /// Generated retained captures, with the same refresh and copy controls as Raw.
 @MainActor final class InspectorStorageTests: XCTestCase, SerialTestLane {
-    private func fixture(withHeaders: Bool = true) async throws -> (URL, PayloadArchive, SessionInspectorModel, InspectorRawTab, NSWindow) {
+    private func fixture(withHeaders: Bool = true, showWindow: Bool = true) async throws -> (URL, PayloadArchive, SessionInspectorModel, InspectorRawTab, NSWindow) {
         let root = scratchRoot("inspector-storage")
         let archive = PayloadArchive(root: root)
         try await archive.configure(quota: 8_388_608, bodyRetention: 86400, metricRetention: 86400)
@@ -36,7 +36,8 @@ import XCTest
         inspector.request.tab = .raw
         let raw = InspectorRawTab(inspector: inspector, request: inspector.request, compact: false)
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = raw; window.orderFront(nil)
+        window.isReleasedWhenClosed = false; window.contentView = raw
+        if showWindow { window.orderFront(nil) }
         try await eventually("the retained raw body") { self.copyButton(raw)?.isEnabled == true }
         return (root, archive, inspector, raw, window)
     }
@@ -213,6 +214,53 @@ import XCTest
         XCTAssertEqual(refreshed.controller.document?.id, document)
     }
 
+    func testRedactedExportKeepsItsSourcePartAcrossTheChooser() async throws {
+        let fixture = try await fixture(showWindow: false), request = fixture.2.request, raw = fixture.3
+        let workspace = makeWorkspaceModel(stateRoot: fixture.0.appendingPathComponent("workspace"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        fixture.2.workspace = workspace
+        addTeardownBlock { @MainActor in
+            PiQuestion.shared.answerAlert = nil; PiQuestion.shared.chooseFiles = nil
+            workspace.shutdown()
+            await self.close(fixture)
+        }
+        let destination = fixture.0.appendingPathComponent("redacted.json"), id = try XCTUnwrap(request.row?.id)
+        PiQuestion.shared.answerAlert = { alert in
+            if let field = alert.accessoryView as? NSSecureTextField { field.stringValue = "message 0" }
+            return .alertFirstButtonReturn
+        }
+        PiQuestion.shared.chooseFiles = { request.raw = .response; raw.refresh(); return [destination] }
+        let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+        XCTAssertTrue(PiMenus.perform("inspector-export-redacted", in: PiMenus.menu(menu.entries())))
+        try await eventually("the redacted view") { FileManager.default.fileExists(atPath: destination.path) }
+        let saved = try JSONDecoder().decode([String: WireValue].self, from: Data(contentsOf: destination))
+        XCTAssertEqual(saved["attemptId"]?.string, id)
+        XCTAssertEqual(saved["sourceView"]?.string, "request", "The request copy must not be labelled as a response after navigation")
+        XCTAssertTrue(saved["view"]?.string?.contains("[REDACTED]") == true)
+        XCTAssertFalse(saved["view"]?.string?.contains("message 0") == true)
+    }
+
+    func testMetadataExportRejectsARecordFromAnotherRequest() async throws {
+        let fixture = try await fixture(showWindow: false), request = fixture.2.request, raw = fixture.3
+        let workspace = makeWorkspaceModel(stateRoot: fixture.0.appendingPathComponent("workspace"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        fixture.2.workspace = workspace
+        addTeardownBlock { @MainActor in PiQuestion.shared.chooseFiles = nil; workspace.shutdown(); await self.close(fixture) }
+        let other = UUID().uuidString
+        var metadata = request.metadata; metadata["attemptId"] = .string(other)
+        request.metadataOverride = { _ in metadata }
+        request.refresh()
+        try await eventually("the mismatched metadata fixture") { request.metadataLoaded && request.metadata["attemptId"]?.string == other }
+        let destination = fixture.0.appendingPathComponent("wrong-request.json")
+        var chooserOpened = false
+        PiQuestion.shared.chooseFiles = { chooserOpened = true; return [destination] }
+        let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+        XCTAssertTrue(PiMenus.perform("inspector-export-metadata", in: PiMenus.menu(menu.entries())))
+        try await eventually("metadata identity validation") {
+            chooserOpened || InspectorExpandFixture.descendants(PiKit.Note.self, in: raw).contains { $0.text == "This request's record is unavailable." }
+        }
+        XCTAssertFalse(chooserOpened, "Validate the captured request before presenting a destination")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     func testSessionMemoryCompletionKeepsRawStateAndOffersTheLatestResponse() async throws {
         try await checkMemoryCompletion(omittedRequest: false)
     }
@@ -223,6 +271,55 @@ import XCTest
 
     func testCompletedMemoryCaptureExportsBodiesAndReadsHelperEvents() async throws {
         try await checkCompletedCaptureActions(mode: "memory")
+    }
+
+    func testMemoryCaptureExportsTheCompleteLargeUsageManifest() async throws {
+        try await checkCompletedCaptureActions(mode: "memory", largeUsage: true)
+    }
+
+    func testMemoryCaptureExportsEveryContextMessageID() async throws {
+        try await checkCompletedCaptureActions(mode: "memory", longContext: true)
+    }
+
+    func testMetadataExportKeepsTheRequestChosenBeforeTheSaveChooser() async throws {
+        let root = scratchRoot("inspector-metadata-export")
+        let workspace = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let windows = SessionInspectorWindows(), archive = workspace.traces
+        addTeardownBlock { @MainActor in
+            PiQuestion.shared.chooseFiles = nil; windows.closeAll(); workspace.shutdown()
+            try? await archive.close(); try? FileManager.default.removeItem(at: root)
+        }
+        workspace.chats = [ChatRecord(id: "session", workspaceID: "project", title: "Generated", profileID: "fixture")]
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+        let ids = [UUID().uuidString, UUID().uuidString]
+        for (index, id) in ids.enumerated() {
+            let value: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string("session"), "turnId": .string("turn"),
+                "mode": .string("off"), "outcome": .string("completed"), "requestedModel": .string("generated-\(index)")]
+            try await archive.begin(value, workspace: "project"); try await archive.finish(value)
+        }
+        let controller = windows.show(model: workspace, sessionID: "session", workspaceID: "project", title: "Generated", focus: .request(ids[0]))
+        let request = controller.inspector.request
+        try await eventually("request A metadata") { request.metadataLoaded && request.row?.id == ids[0] }
+        request.tab = .raw
+        let content = try XCTUnwrap(controller.window?.contentView)
+        try await eventually("Raw export menu") { InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: content).contains { $0.accessibilityIdentifier() == "inspector-raw-menu" } }
+        let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: content).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+        let destination = root.appendingPathComponent("metadata.json")
+        PiQuestion.shared.chooseFiles = {
+            // Keep the chooser's answer pending while Reports reuses this window.
+            let reused = windows.show(model: workspace, sessionID: "session", workspaceID: "project", title: "Generated", focus: .request(ids[1]))
+            XCTAssertTrue(reused === controller)
+            XCTAssertEqual(request.row?.id, ids[1])
+            XCTAssertFalse(request.metadataLoaded)
+            return [destination]
+        }
+        XCTAssertTrue(PiMenus.perform("inspector-export-metadata", in: PiMenus.menu(menu.entries())))
+        try await eventually("the exported metadata") { FileManager.default.fileExists(atPath: destination.path) }
+        let bytes = try Data(contentsOf: destination)
+        XCTAssertFalse(bytes.isEmpty, "The chooser must retain A's snapshot while B is loading")
+        guard !bytes.isEmpty else { return }
+        let saved = try JSONDecoder().decode([String: WireValue].self, from: bytes)
+        XCTAssertEqual(saved["attemptId"]?.string, ids[0]); XCTAssertEqual(saved["requestedModel"]?.string, "generated-0")
     }
 
     func testCompletedOffCaptureReadsHelperEventsWithoutInventingBodies() async throws {
@@ -286,7 +383,8 @@ import XCTest
     }
 
     private func checkCompletedCaptureActions(mode: String, expireMetrics: Bool = false, stopHelper: Bool = false,
-                                              handoff: String? = nil, navigateOnExport: Bool = false, probeFailure: Bool = false) async throws {
+                                              handoff: String? = nil, navigateOnExport: Bool = false, probeFailure: Bool = false,
+                                              largeUsage: Bool = false, longContext: Bool = false) async throws {
         let root = scratchRoot("inspector-capture-actions")
         let workspace = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let archive = workspace.traces, id = UUID().uuidString
@@ -300,6 +398,8 @@ import XCTest
         let events: [WireValue] = (0..<260).map { .object(["type": .string("response.output_text.delta"), "start": .number(Double($0)), "end": .number(Double($0 + 1)), "observedAt": .number(Double($0))]) }
         var metadata: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string("child"), "turnId": .string("turn"),
             "purpose": .string("turn"), "api": .string("openai-responses"), "mode": .string(mode), "outcome": .string("running")]
+        if largeUsage { metadata["usage"] = .object(["raw": .object(["vendor_details": .string(String(repeating: "v", count: 70_000))])]) }
+        if longContext { metadata["messageIds"] = .array((0..<6_000).map { .string("generated-message-\($0)") }) }
         if expireMetrics { metadata["wallTimestamp"] = .number(Date().timeIntervalSince1970 - 2 * 86400) }
         for (kind, bytes) in [("request", input), ("response", output)] {
             metadata[kind] = .object(["state": .string(mode == "off" ? "not-captured" : "complete"), "observedBytes": .number(Double(bytes.count)),
@@ -448,6 +548,9 @@ import XCTest
         }
         do { try await eventually("the export manifest", timeout: .seconds(3)) { FileManager.default.fileExists(atPath: exported.appendingPathComponent("manifest.json").path) } }
         catch { return }
+        let manifest = try JSONDecoder().decode([String: WireValue].self, from: Data(contentsOf: exported.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(manifest["usage"], metadata["usage"])
+        XCTAssertEqual(manifest["messageIds"], metadata["messageIds"])
         for (kind, expected) in [("request", input), ("response", output)] {
             let file = exported.appendingPathComponent(kind + ".bin")
             XCTAssertEqual(FileManager.default.fileExists(atPath: file.path), mode != "off", "\(mode) \(kind) export availability")

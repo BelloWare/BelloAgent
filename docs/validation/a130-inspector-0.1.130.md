@@ -1705,3 +1705,300 @@ rewrite was performed.
 
 Cleanup: no clone directories remained under this workstream's build root;
 no additional DerivedData root was created. `git diff --check` passed.
+
+
+## Round 3 hunt
+
+2026-10-20. Started from `28dbfb30` on `dev/a130-inspector`, after the lead
+merged and fast-forwarded the previous work. All fixtures and destinations are
+generated under the test scratch/build roots. No installed app, real preferences,
+chats, Keychain, paid provider or live capture was used. The refreshed Release
+helper and native test host were rebuilt in the same workstream build root.
+
+### Findings and nearby sweep
+
+1. **INSPECTOR-STORAGE-1 — confirmed and fixed.** Extended
+   `CaptureDrainTests.testLargeMetadataReachesTheArchiveWithoutTruncation` from
+   1,100,000 to **5,000,000** `vendor_details` characters. The loopback Responses
+   endpoint returns JSON: a single SSE data line of this size correctly exceeds
+   the transport's existing 4 MiB line boundary and never reaches the archive.
+   The initial SSE fixture timeout is retained in `hunt3-fixture-sse-limit.log`;
+   it is not evidence for the storage finding. With the accepted JSON response,
+   capture finish succeeds, then the first archive list throws **`corrupt`**
+   (`hunt3-first-metadata.log`, 1 test / 1 failure). The regression also checks
+   exact reopened body reads, exported bodies and full usage, dashboard and
+   lineage reprojection twice, metric expiry, reopened Reports, and another
+   physical chat's durable capture.
+
+   Removed the database reader's 4 MiB blob guard. SQLite's successfully stored
+   blob is read at its actual length; metadata parsing and all ownership,
+   descriptor, digest and retention checks remain in place.
+
+2. **INSPECTOR-STORAGE-2 — confirmed and fixed.**
+   The formatted manifest writer and legacy manifest reader each impose 64 KiB.
+   `TraceArchiveTests.testLargeManifestsRemainListableExportableAndClearable`
+   independently seeds a valid 70,000-character usage manifest: reconciliation
+   deletes it and returns **0 artifacts instead of 1**. The local-quota test
+   gets **`invalid` instead of `budget`**. Both fail before production changes
+   (`hunt3-first-data.log`). Actual Inspector regressions cover the same usage
+   field and 6,000 context message IDs, asserting exact request/response files
+   and the complete corresponding manifest fields.
+
+   The native Raw menu tests both fail before the manifest fix with
+   **`failed - the export manifest`** (`hunt3-first-inspector.log`). Removed
+   the writer and reader limits. Local retention reserves the actual finished
+   manifest size, while an explicitly chosen export destination has no such
+   quota. Both bodies still use verified 32 KiB pages and private staging.
+
+3. **INSPECTOR-STORAGE-3 — confirmed and fixed.**
+   `testMetadataExportKeepsTheRequestChosenBeforeTheSaveChooser` invokes Export
+   Metadata from the native Raw menu and keeps the chooser's answer pending
+   while `SessionInspectorWindows.show` reuses that Inspector for request B.
+   Before the fix it fails **`The chooser must retain A's snapshot while B is
+   loading`**: the exported file is empty (`hunt3-first-inspector.log`). It now
+   requires A's ID and model in the file. Another test supplies mismatched
+   metadata and fails **`Validate the captured request before presenting a
+   destination`**, with a wrongly published file, before the identity guard
+   (`hunt3-first-inspector-identity.log`).
+
+   Validate the loaded metadata's attempt and physical session, then freeze
+   its complete formatted bytes before awaiting the chooser. No new helper
+   call or mutable state read follows the chooser.
+
+Nearby accepted-data limits:
+
+- **Shared SQL result ceiling — confirmed.**
+  `PayloadArchiveTests.testDatabaseReadsEveryAcceptedRowWithoutAnImplicitQuota`
+  writes 100,002 rows, then the reader throws **`quota`** on their ordered read.
+  Removed that implicit result-size rejection. It also affected whole-body
+  reference reads and unpaged accounting/migration inputs. Existing explicit
+  page sizes and indexed maintenance batches are unchanged.
+- **Legacy trace directory ceiling — confirmed.**
+  `TraceArchiveTests.testEveryAcceptedArtifactRemainsListableBeyondTenThousandDirectories`
+  seeds 10,000 valid artifacts, successfully persists the next, then listing
+  throws **`budget`**. The failing-first data run has **4 tests / 4 failures**.
+- **Redacted export source label — confirmed and fixed.**
+  `testRedactedExportKeepsItsSourcePartAcrossTheChooser` fails with
+  **`Optional("response") is not equal to Optional("request")`** before the fix
+  (`hunt3-first-inspector-identity.log`). Freeze the source part alongside the
+  copy source, before either redaction question. The test checks the original
+  attempt, source part, replacement and absence of the original literal.
+
+The corrected identity/label failing-first run has **2 tests / 3 assertions
+failed / 0 unexpected failures**. Their initial menu fixtures lacked a
+workspace, so the two unavailable-menu/time-out results in the first Inspector
+log are setup errors, not bug evidence. These two fixtures now keep a generated
+workspace alive and attach Raw to a hidden window; their intercepted questions
+and choosers do not change app focus. The window-reuse test and normal Inspector
+runs still hold the full-lane lock.
+
+The 5 MB fixture also needed its export destination created and a report range
+within the existing ten-year window. Those test-setup failures are retained as
+`hunt3-fixture-export-folder.log` and `hunt3-fixture-report-window.log`; neither
+was a product failure. The corrected `hunt3-fixed-metadata.log` passes **1/1**,
+including exact bodies after reopening, complete metadata export, both migrations
+twice, expiration, reporting and a new sibling body. The focused storage run
+`hunt3-fixed-data.log` passes **4/4**.
+
+### Reader/exporter/migration audit and adversarial self-review
+
+Reviewed the new production diff against `28dbfb30`, not only the reported
+lines. No helper or wire code changes are required for these fixes.
+
+| Changed condition or operation | States taking a different path; intended result |
+| --- | --- |
+| Remove the SQL blob-size guard | Successfully stored metadata above 4 MiB now reads at its actual SQLite length. Small records, invalid JSON, missing rows, invalid IDs and integrity failures retain their existing handling. Streaming, completed, failed, cancelled and interrupted records share this reader. |
+| Remove the SQL result-count guard | Complete queries with more than 100,001 accepted rows now return every row. This covers whole-body reference lists and unpaged accounting/lineage inputs. Explicit query paging, nonnegative offsets and maintenance indexes/batches are unchanged. No writer admits a new data shape. |
+| Remove the manifest write/read size guards | Valid large manifests now publish, list, re-export, clear and expire. Invalid JSON still fails; missing/changed bodies, mismatched hashes, capture generation changes and cancellation still remove staging. Off, omitted, purged and expired descriptors still cannot produce fictitious body files. |
+| Reserve actual local manifest bytes | `destination == nil` retains the configured quota, with an early body reservation and an exact body-plus-manifest check before publication. Destination exports still bypass that local quota. Small local manifests also stop reserving an unused 64 KiB; actual stored bytes determine quota pressure. Merely deleting the old guard would undercount local storage; the quota regression and mutation cover this self-review finding. |
+| Remove the trace-directory count guard | The 10,001st accepted artifact stays accessible. UUID/name filtering, symlink exclusion, session matching, retention and byte quota are unchanged. Foreign directories do not become trace artifacts. |
+| Validate loaded metadata before the chooser | Missing/loading metadata, another attempt, or a different physical session now produces the existing unavailable-record notice instead of saving empty or unrelated content. Valid completed, idle, paused, streaming, Off/memory/persist and reopened archive metadata still exports. The model's generation fence keeps its formatted text paired with the same request. |
+| Freeze metadata bytes before awaiting | Reports navigation, request completion, refresh or window reuse cannot replace A's bytes with B's. Cancelling the chooser still writes nothing. There is no extra read/await before the chooser and no new helper handoff race. |
+| Freeze redacted source part | Changing Raw parts after the copy source is captured cannot relabel that copy. Attempt ID, transformed text, byte-exact flag, destination cancellation and literal-redaction behavior are unchanged. |
+| Restart and concurrent sibling work | No ownership, capture-mode, lease, transaction, permission, masking, vault or data boundary changes. Reopened SQL projection and lineage migration use the same unrestricted blob reader; each is exercised twice. Exports still verify bodies before publishing and retention still respects leases. Sibling records retain their physical sessions. |
+
+Audit details: metadata `record`/list/body/export/expiry all use the corrected
+SQL reader; dashboard reprojection and lineage backfill page the records but no
+longer reject an individual large metadata blob. Full-body reads have no
+reference-count ceiling. Event/message readers retain their navigable pages,
+not total-count caps. Chunk-size and numeric-length validation match the writer.
+The 4 MiB derived-event cache and combined-response sparse-index safeguards do
+not discard retained bytes or limit raw exports. Legacy manifest listing,
+re-export and clearing use the corrected reader. Explicit retention/quota and
+provider transport boundaries are preserved.
+
+Outside the app-layer changes, the shared helper display transport still has
+its separate 128 MiB single-result/cache budget
+(`packages/swift-host/Sources/PiAgentCore/DisplayResultTransfers.swift:14`, used
+by `HostService.swift:205`). This audit does not claim to remove that generic
+wire boundary. No helper capture metadata fixture above that size was run, so
+its end-to-end reachability is not confirmed here; it is recorded for the wire
+workstream rather than changing shared helper behavior without a reproduction.
+
+No assigned finding is rejected. No product decision is needed.
+
+### Commands, mutations and final validation
+
+All commands ran from this worktree. `B` below is the only build root:
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-inspector
+export PI_BUILD_ROOT="$B"
+```
+
+The failing-first and fixed storage runs used:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/CaptureDrainTests/testLargeMetadataReachesTheArchiveWithoutTruncation
+
+scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/TraceArchiveTests/testLargeManifestsRemainListableExportableAndClearable \
+ -only-testing:PiAppTests/TraceArchiveTests/testLocalManifestBytesCountTowardQuotaButDestinationExportsHaveNoSizeCap \
+ -only-testing:PiAppTests/TraceArchiveTests/testEveryAcceptedArtifactRemainsListableBeyondTenThousandDirectories \
+ -only-testing:PiAppTests/PayloadArchiveTests/testDatabaseReadsEveryAcceptedRowWithoutAnImplicitQuota
+```
+
+The five native export regressions used the shared-lock wrapper (acquire with
+`mkdir`, write the owner only after acquiring, release with an EXIT trap):
+
+```sh
+"$B/run-locked.sh" scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/InspectorStorageTests/testMemoryCaptureExportsTheCompleteLargeUsageManifest \
+ -only-testing:PiAppTests/InspectorStorageTests/testMemoryCaptureExportsEveryContextMessageID \
+ -only-testing:PiAppTests/InspectorStorageTests/testMetadataExportKeepsTheRequestChosenBeforeTheSaveChooser \
+ -only-testing:PiAppTests/InspectorStorageTests/testMetadataExportRejectsARecordFromAnotherRequest \
+ -only-testing:PiAppTests/InspectorStorageTests/testRedactedExportKeepsItsSourcePartAcrossTheChooser
+```
+
+The corrected hidden-window identity/label failing-first invocation was the
+same `scripts/test-macos.sh -parallel-testing-enabled NO` command with only the
+last two `-only-testing` arguments. The fixed five-test export run passed **5/5**
+(`hunt3-fixed-inspector.log`). Together with the storage checks above, all **10
+focused regression methods** passed before their corresponding mutations.
+
+Each mutation restored one old rejection/read timing (or removed the new quota
+or identity check), ran only the method(s) below with
+`PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO
+-only-testing:PiAppTests/<Class>/<Method>`, and restored the exact fixed file in
+`finally`. The two manifest-action methods ran together; all other rows are
+one-method runs. Window-changing cases held the shared lock.
+
+| Mutation / log suffix | Selected class and method(s) | Observed failure |
+| --- | --- | --- |
+| `blob-cap` | `CaptureDrainTests/testLargeMetadataReachesTheArchiveWithoutTruncation` | `corrupt`, 1 test / 1 failure |
+| `row-cap` | `PayloadArchiveTests/testDatabaseReadsEveryAcceptedRowWithoutAnImplicitQuota` | `quota`, 1 / 1 |
+| `manifest-read-cap` | `TraceArchiveTests/testLargeManifestsRemainListableExportableAndClearable` | 0 artifacts rather than 1, 1 / 1 |
+| `directory-cap` | `TraceArchiveTests/testEveryAcceptedArtifactRemainsListableBeyondTenThousandDirectories` | `budget`, 1 / 1 |
+| `manifest-quota` | `TraceArchiveTests/testLocalManifestBytesCountTowardQuotaButDestinationExportsHaveNoSizeCap` | Oversized local artifact wrongly published, 1 / 2 assertions |
+| `manifest-write-cap` | `InspectorStorageTests/testMemoryCaptureExportsTheCompleteLargeUsageManifest` and `testMemoryCaptureExportsEveryContextMessageID` | No export manifest, 2 / 2 |
+| `metadata-snapshot` | `InspectorStorageTests/testMetadataExportKeepsTheRequestChosenBeforeTheSaveChooser` | Empty export after selecting B, 1 / 1 |
+| `metadata-identity` | `InspectorStorageTests/testMetadataExportRejectsARecordFromAnotherRequest` | Chooser opens and wrong record publishes, 1 / 2 assertions |
+| `redacted-source` | `InspectorStorageTests/testRedactedExportKeepsItsSourcePartAcrossTheChooser` | `response` label on request bytes, 1 / 1 |
+
+**9/9 mutations caught.** Individual logs are
+`$B/hunt3-mutation-<suffix>.log`; summaries are `hunt3-mutations-data.log`,
+`hunt3-mutations-ui.log` and `hunt3-mutations-ui-remaining.log`. The first
+snapshot counterfactual left its immutable snapshot unused, which this project
+correctly rejects at compilation. That invalid mutation was not counted. The
+corrected counterfactual removes the unused snapshot declaration and fails at
+the runtime assertion above; the analogous source-label mutation also removes
+its dead declaration. No mutated production lines remain.
+
+After the condition review and storage mutations, the restored data/model run
+was exactly (`hunt3-final-data.log`):
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/CaptureMaintenanceQueryTests \
+ -only-testing:PiAppTests/PayloadArchiveTests \
+ -only-testing:PiAppTests/CaptureGarbageCollectionTests \
+ -only-testing:PiAppTests/TraceArchiveTests \
+ -only-testing:PiAppTests/DashboardTests \
+ -only-testing:PiAppTests/GatewayAccountingTests \
+ -only-testing:PiAppTests/MenuBarMetricsTests \
+ -only-testing:PiAppTests/InspectorIndexTests \
+ -only-testing:PiAppTests/InspectorRequestModelTests \
+ -only-testing:PiAppTests/CaptureMacIntegrationTests \
+ -only-testing:PiAppTests/SubagentCaptureTests \
+ -only-testing:PiAppTests/ReportWorkerPerformanceTests \
+ -only-testing:PiAppTests/AccountingScaleTests \
+ -only-testing:PiAppTests/InspectorDocumentCacheTests
+```
+
+| Class | Passed | Failed |
+| --- | ---: | ---: |
+| AccountingScaleTests | 3 | 0 |
+| CaptureGarbageCollectionTests | 2 | 0 |
+| CaptureMacIntegrationTests | 2 | 0 |
+| CaptureMaintenanceQueryTests | 5 | 0 |
+| DashboardTests | 19 | 0 |
+| GatewayAccountingTests | 25 | 0 |
+| InspectorDocumentCacheTests | 3 | 0 |
+| InspectorIndexTests | 11 | 0 |
+| InspectorRequestModelTests | 9 | 0 |
+| MenuBarMetricsTests | 29 | 0 |
+| PayloadArchiveTests | 40 | 0 |
+| ReportWorkerPerformanceTests | 4 | 0 |
+| SubagentCaptureTests | 12 | 0 |
+| TraceArchiveTests | 10 | 0 |
+
+**174/174 passed**, no skips.
+
+After the UI mutations, each class below ran **alone**, serially, using the
+following exact invocation inside the shared lock (driver:
+`$B/hunt3-final-ui.py`, logs: `$B/hunt3-final-<Class>.log`):
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+ -only-testing:PiAppTests/<Class>
+```
+
+For `InspectorStorageTests`, additionally:
+`TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$B/hunt3-gallery"`.
+For `CapturedBodyTests`, additionally:
+`TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT="$B/hunt3-body-gallery"`.
+All other classes used the same command without those optional gallery vars.
+The lock wrapper held the lock for the regression/mutation/class run and
+released it afterward, including the failed mutation-driver invocation.
+
+| Class | Passed | Failed |
+| --- | ---: | ---: |
+| InspectorStorageTests | 38 | 0 |
+| InspectorNativeControlTests | 12 | 0 |
+| InspectorNativeParityTests | 7 | 0 |
+| SubagentInspectorTests | 7 | 0 |
+| CaptureDrainTests | 7 | 0 |
+| InspectorEntryPointTests | 7 | 0 |
+| InspectorWindowControlTests | 1 | 0 |
+| InspectorFollowTests | 2 | 0 |
+| InspectorSummaryRequestTests | 5 | 0 |
+| InspectorExpandInPlaceTests | 8 | 0 |
+| InspectorExpandPerformanceTests | 2 | 0 |
+| InspectorOverviewDocumentGeometryTests | 1 | 0 |
+| InspectorFrameTests | 2 | 0 |
+| InspectorPerformanceTests | 2 | 0 |
+| CapturedBodyTests | 22 | 0 |
+| ReportPageTests | 33 | 0 |
+
+**156/156 passed**, no skips. Final affected-class total: **330 tests in 30
+classes, zero failures and zero skips**. The full helper and Python
+wire/concurrent/acceptance suites were not rerun: no helper or wire behavior was
+changed. Native tests rebuilt/staged the Release helper and exercised generated
+loopback capture through it, including the complete 5 MB metadata transfer.
+
+Gallery evidence: `$B/hunt3-gallery` contains **44 PNGs**, regenerated with the
+flag above and visually reviewed in all 11 contact sheets
+(`hunt3-contact-1.png` through `hunt3-contact-11.png`). Light/dark scenes cover
+1000 and 700 px and the 485 px Raw pane where applicable. Copy/menu and search
+remain inside the toolbar; the narrow pane uses the existing part menu. Events
+and their pager remain visible, purged bodies disable Copy, and the tiny-cost
+chart still has finite ticks. Both captured-body JPEGs in
+`$B/hunt3-body-gallery` were also regenerated and visually reviewed.
+
+The only failed checks were the deliberate regressions/mutations and the test
+setup/counterfactual corrections recorded above. No unrelated failing test was
+ignored. `git diff --check` passed. No clone folders remained under this build
+root, no extra DerivedData root was made, and no named result bundle was used.
+All assigned findings and the confirmed nearby reader/export bugs are fixed;
+no owner decision is pending. The lead retains merge and full merged-gate work.

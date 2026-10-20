@@ -25,6 +25,17 @@ private final class ArchiveMaintenanceCounter: @unchecked Sendable {
 }
 
 final class PayloadArchiveTests: XCTestCase {
+    func testDatabaseReadsEveryAcceptedRowWithoutAnImplicitQuota() throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let db = try CaptureDatabase(url: folder.appendingPathComponent("fixture.sqlite"))
+        try db.execute("CREATE TABLE fixture(ordinal INTEGER PRIMARY KEY, value BLOB NOT NULL)")
+        try db.execute("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<100001) INSERT INTO fixture SELECT i,x'616263' FROM n")
+        let rows = try db.rows("SELECT ordinal,value FROM fixture ORDER BY ordinal")
+        XCTAssertEqual(rows.count, 100_002)
+        XCTAssertEqual(rows.last?["ordinal"]?.number, 100_001)
+        XCTAssertTrue(rows.allSatisfy { $0["value"]?.data == Data("abc".utf8) })
+    }
+
     private let key = Data(repeating: 0x5a, count: 32)
     private func root() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)

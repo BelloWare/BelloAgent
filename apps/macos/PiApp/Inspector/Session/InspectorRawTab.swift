@@ -297,16 +297,25 @@ import AppKit
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {
-        let identity = exportIdentity(row), text = request.metadataText
+        let identity = exportIdentity(row)
         guard isCurrent(identity) else { return }
         let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
         defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
         do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
         catch { return }
-        guard isCurrent(identity), !text.isEmpty else { return }
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
-        guard let url = await PiQuestion.shared.save(panel), isCurrent(identity) else { return }
-        do { try Data(text.utf8).write(to: url, options: .atomic); notice = "" } catch { notice = error.localizedDescription }
+        guard isCurrent(identity) else { return }
+        do {
+            // Freeze this request's bytes before the chooser: the Inspector
+            // can be reused for another request while the sheet is open.
+            guard request.metadataLoaded, request.metadata["attemptId"]?.string == row.id,
+                  request.metadata["sessionId"]?.string == (row.sessionID ?? inspector.scope.sessionID) else {
+                throw HostError.failure("This request's record is unavailable.")
+            }
+            let data = Data(request.metadataText.utf8)
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            try data.write(to: url, options: .atomic); notice = ""
+        } catch { notice = error.localizedDescription }
     }
 
     private func exportBodies(_ row: InspectorRequestRow) async {
@@ -343,6 +352,7 @@ import AppKit
     private func exportRedacted(_ row: InspectorRequestRow) async {
         let identity = exportIdentity(row)
         guard let copySource, isCurrent(identity, source: copySource) else { return }
+        let sourceView = identity.part.rawValue
         let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
         defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
         do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
@@ -367,8 +377,8 @@ import AppKit
             preview.addButton(withTitle: "Export…"); preview.addButton(withTitle: "Cancel")
             guard await PiQuestion.shared.ask(preview) == .alertFirstButtonReturn, isCurrent(identity, source: copySource) else { return }
             let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-redacted-view.json"
-            guard let url = await PiQuestion.shared.save(panel), isCurrent(identity, source: copySource) else { return }
-            let manifest: WireValue = .object(["attemptId": .string(identity.attemptID), "sourceView": .string(identity.part.rawValue), "byteExact": .bool(false),
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            let manifest: WireValue = .object(["attemptId": .string(identity.attemptID), "sourceView": .string(sourceView), "byteExact": .bool(false),
                                                "transformations": .array([.string("The displayed view with a reader-named literal replaced by [REDACTED]. Other sensitive data may remain.")]),
                                                "view": .string(transformed)])
             try Data(manifest.pretty.utf8).write(to: url, options: .atomic)
