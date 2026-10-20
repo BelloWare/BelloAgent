@@ -344,6 +344,107 @@ final class GitRepositoryStateTests: XCTestCase {
         XCTAssertEqual(after, before, "Private snapshots must be removed after each read")
     }
 
+    func testSummarySplitsCaseCollisionsOnACaseSensitiveVolume() async throws {
+        let volume = try caseSensitiveVolume()
+        let cases: [(String, [(String, Int)])] = [
+            ("files", [("A.txt", 1), ("a.txt", 3)]),
+            ("directories", [("Dir/x.txt", 2), ("dir/x.txt", 5)]),
+            ("parents", [("Tree/one.txt", 4), ("tree/two.txt", 6)]),
+            ("file-directory", [("Node", 9), ("node/x.txt", 10)]),
+            ("directory-file", [("Folder/x.txt", 11), ("folder", 12)])
+        ]
+        for (name, files) in cases {
+            let root = volume.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+            try Self.git(["init", "-qb", "main"], in: root)
+            try Self.git(["commit", "--allow-empty", "-qm", "Case-sensitive fixture"], in: root)
+            let fixtures = files + [("shared/one.txt", 7), ("shared/two.txt", 8)]
+            for (path, lines) in fixtures {
+                let url = root.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try String(repeating: "generated\n", count: lines).write(to: url, atomically: true, encoding: .utf8)
+            }
+            if name == "parents" {
+                try "*.txt -diff\n".write(to: root.appendingPathComponent("Tree/.gitattributes"), atomically: true, encoding: .utf8)
+                try "*.txt diff\n".write(to: root.appendingPathComponent("tree/.gitattributes"), atomically: true, encoding: .utf8)
+                try Self.git(["add", "Tree/.gitattributes", "tree/.gitattributes"], in: root)
+                try Self.git(["commit", "-qm", "Distinct directory attributes"], in: root)
+            }
+            let status = try await Self.summaryService.status(in: root.path)
+            XCTAssertEqual(Set(status.entries.map(\.path)), Set(fixtures.map(\.0)), name)
+            var expected = Dictionary(uniqueKeysWithValues: fixtures.map { ($0.0, GitDiffStat(added: $0.1, removed: 0, binary: false)) })
+            if name == "parents" { expected["Tree/one.txt"] = GitDiffStat(added: 0, removed: 0, binary: true) }
+            do { try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: expected) }
+            catch { XCTFail("\(name): \(error)") }
+        }
+    }
+
+    func testSummaryOmitsNormalizationAliasesThatCannotHaveDistinctCountKeys() async throws {
+        let root = try repository()
+        let composed = "caf\u{e9}.txt", decomposed = "cafe\u{301}.txt"
+        XCTAssertNotEqual(Data(composed.utf8), Data(decomposed.utf8))
+        try "generated\nsecond\n".write(to: root.appendingPathComponent(composed), atomically: true, encoding: .utf8)
+        var status = try await Self.summaryService.status(in: root.path)
+        // APFS cannot store both spellings. Inject the status a normalization-
+        // sensitive source would report; String-keyed counts cannot separate it.
+        status.entries.removeAll { $0.path == composed }
+        status.entries += [composed, decomposed].map {
+            GitStatusEntry(path: $0, originalPath: nil, indexState: "?", worktreeState: "?", untracked: true)
+        }
+        let counts = try await Self.summaryService.changeStats(in: root.path, status: status)
+        XCTAssertNil(counts[composed])
+        XCTAssertNil(counts[decomposed])
+        XCTAssertEqual(counts["same.txt"], GitDiffStat(added: 1, removed: 1, binary: false))
+    }
+
+    func testSummaryDoesNotOverwriteAnAttributeFileAlias() async throws {
+        let root = try caseSensitiveVolume()
+        try Self.git(["init", "-qb", "main"], in: root)
+        let folder = root.appendingPathComponent("attributes")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try "*.txt -diff\n".write(to: folder.appendingPathComponent(".gitattributes"), atomically: true, encoding: .utf8)
+        try Self.git(["add", "."], in: root); try Self.git(["commit", "-qm", "Attributes"], in: root)
+        try "generated\nsecond\nthird\n".write(to: folder.appendingPathComponent(".GITATTRIBUTES"), atomically: true, encoding: .utf8)
+        try "ordinary\n".write(to: root.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        let status = try await Self.summaryService.status(in: root.path)
+        let counts = try await Self.summaryService.changeStats(in: root.path, status: status)
+        // Both files cannot coexist in the insensitive private tree. Refuse
+        // affected counts rather than replacing the untracked file's contents.
+        let sensitive = try FileManager.default.temporaryDirectory.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames == true
+        XCTAssertEqual(counts["attributes/.GITATTRIBUTES"], sensitive ? GitDiffStat(added: 3, removed: 0, binary: false) : nil)
+        XCTAssertEqual(counts["new.txt"], try Self.gitCounts(try XCTUnwrap(status.entries.first { $0.path == "new.txt" }), in: root))
+    }
+
+    private func caseSensitiveVolume() throws -> URL {
+        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        let folder = base.appendingPathComponent("git-counts-volume-" + UUID().uuidString)
+        let image = folder.appendingPathComponent("fixture.dmg"), mount = folder.appendingPathComponent("volume")
+        try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+        do {
+            try Self.diskImage(["create", "-size", "64m", "-fs", "Case-sensitive APFS", "-volname", "BelloCountsFixture", image.path])
+            try Self.diskImage(["attach", "-nobrowse", "-mountpoint", mount.path, image.path])
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+        addTeardownBlock {
+            try Self.diskImage(["detach", mount.path])
+            try FileManager.default.removeItem(at: folder)
+        }
+        return mount
+    }
+
+    private static func diskImage(_ arguments: [String]) throws {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = arguments
+        let output = Pipe(); process.standardOutput = output; process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw GitFailure(message: "hdiutil \(arguments.first ?? ""): " + String(decoding: data, as: UTF8.self))
+        }
+    }
+
     func testSummaryKeepsRelativeConfiguredAttributesAtTheOriginalRoot() async throws {
         for scope in ["global/local", "local/worktree"] {
             let root = try repository()
@@ -445,7 +546,8 @@ final class GitRepositoryStateTests: XCTestCase {
             let opened = try XCTUnwrap(files.first { $0.path == entry.path }, entry.path, file: file, line: line)
             XCTAssertEqual(stats[entry.path], try Self.gitCounts(entry, in: root), entry.path + " must count Git's diff", file: file, line: line)
             XCTAssertEqual(stats[entry.path], expected[entry.path], entry.path, file: file, line: line)
-            XCTAssertEqual(opened.binary, expected[entry.path]?.binary, file: file, line: line)
+            XCTAssertEqual(GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary),
+                expected[entry.path], entry.path + " must count the opened preview", file: file, line: line)
         }
     }
 

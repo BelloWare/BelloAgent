@@ -1895,3 +1895,93 @@ automatic Xcode result bundle was removed after preserving text logs
 (`cleanup-merged.json`). All build products and screenshots use this workstream's
 build root. No source changed after these final checks; only this validation
 record was completed.
+
+
+## Snapshot name collisions — round 8, 2026-10-20
+
+Review base: `d475cae99bd4644f62dbc4cfc1ed19c3d2dd6901` on `dev/a130-panel`.
+Read `/Users/admin/Library/Caches/BelloSwiftWork/r130/rules.md`, `AGENTS.md`,
+`NEXT-RELEASE.md`, and the test-lane handoff before changing the snapshot reader.
+Evidence and full text logs:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/round-8/`.
+
+### Minimal correction and conservative cases
+
+Before writing an untracked snapshot, the reader checks whether its destination
+already exists or any existing parent has a different byte spelling. At a
+collision it ends the batch without consuming that path; the existing loop
+retries the path in a fresh private tree. Byte-identical shared directories
+remain in the same batch. The 4 MiB per-file and 32 MiB per-batch bounds,
+symlink-safe reader, Git options, cancellation, and private-tree cleanup are
+unchanged. Ordinary file counts still come from the same Git commands.
+
+Two exactness limits use the review's explicitly permitted unavailable-count
+fallback. Canonically equivalent Unicode paths cannot have separate entries
+in the existing String-keyed count map, so both spellings are omitted. An
+attribute copy that aliases an accepted snapshot is refused; counts dependent
+on that attribute scope are unavailable, while unrelated paths retain their
+counts. The latter is the same overwrite issue in the same function, covered
+by its own regression. No new production test hook or broader path-key refactor
+was introduced.
+
+### Honest volume fixture and regression evidence
+
+`hdiutil create -size 64m -fs "Case-sensitive APFS" -volname BelloCountsFixture`
+succeeds without administrator rights. Tests create their image under this
+workstream's `PI_BUILD_ROOT`, attach it with `-nobrowse` at a unique mount point,
+and detach/remove it in XCTest teardown. The probe and test runs confirmed
+that `A.txt` and `a.txt` coexist with different bytes. `volume-probe.json`
+records the probe commands and successful detach. The first exploratory
+invocation used an inapplicable `-format UDRW` option and was corrected before
+the successful probe; no image was created by that rejected invocation.
+
+The APFS fixture tests leaf aliases (`A.txt`/`a.txt`), directory aliases
+(`Dir/x.txt`/`dir/x.txt`), distinct children under aliased parents with different
+`.gitattributes`, both file/directory collision orders, and ordinary siblings
+sharing one directory. Every available row is compared with Git's own numstat
+and the opened preview, with distinct expected counts. A separate real-volume
+test covers `.GITATTRIBUTES` aliasing a tracked `.gitattributes` while an
+unrelated root file keeps its exact count.
+
+The case-sensitive APFS image still aliases composed/decomposed Unicode names;
+this was measured in the probe, not treated as a normalization-sensitive volume.
+The normalization regression therefore injects the two byte-distinct spellings
+through the existing `GitRepositoryStatus` input, asserts that both counts are
+unavailable, and verifies an unrelated tracked count. This is the smallest
+existing seam and does not pretend to create two physical APFS files.
+
+With the final tests and the original production source, **3 tests failed with
+11 assertion/error reports** (`collisions-final-red.log`). An earlier version
+of the fixture failed **3 tests / 9 reports** (`collisions-red.log`); the final
+fixture additionally checks independent parent attributes. The fixed reader
+passed **3/3** (`collisions-green.log`). Mutation controls:
+
+| Removed protection | Failed tests | Assertion/error reports | Text log |
+| --- | ---: | ---: | --- |
+| Existing leaf destination | 1 | 2 | `mutation-leaf.log` |
+| Existing parent spelling | 1 | 5 | `mutation-parent.log` |
+| Ambiguous Unicode count keys | 1 | 2 | `mutation-normalization.log` |
+| Attribute destination | 1 | 1 | `mutation-attributes.log` |
+
+All four mutations failed executed tests, not compilation. `mutations.py`
+restores the source in `finally`; `mutations.json` records exits and counts.
+The exact focused command, used for red/green/restored runs, is:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter 'GitRepositoryStateTests/(testSummarySplitsCaseCollisionsOnACaseSensitiveVolume|testSummaryOmitsNormalizationAliasesThatCannotHaveDistinctCountKeys|testSummaryDoesNotOverwriteAnAttributeFileAlias)'
+```
+
+Mutation logs include each narrower command. No app layout, styling, gallery
+fixture or non-colliding displayed value changed; the 22 inspected round-7
+screenshots remain applicable and were not regenerated for this count-reader
+correction. There is no pending owner decision for the permitted unavailable
+fallback.
+
+After all mutations were restored and preview assertions were strengthened to
+compare full added/removed/binary values, the focused tests passed **3/3** again
+(`collisions-restored.log`). All fixture images were detached and removed.
+Adversarial review checked progress at batch boundaries, exact parent spellings,
+file-versus-directory aliases, independent attribute scopes, canonical Unicode
+keys, unrelated sibling counts, and cleanup on test failure. The collision
+checks never consume the path before retrying it in a fresh batch; invalid
+source reads retain the existing bounded-reader behavior.

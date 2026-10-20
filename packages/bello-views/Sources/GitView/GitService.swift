@@ -619,7 +619,15 @@ public actor GitService {
             let path = URL(fileURLWithPath: attributes.path, relativeTo: URL(fileURLWithPath: root, isDirectory: true)).path
             configuration = ["-c", "core.attributesFile=" + path]
         }
-        var remaining = paths[...], counts: [String: GitDiffStat] = [:]
+        // String keys equate Unicode normalization variants. Neither spelling
+        // may inherit the other's count when the source can store both.
+        var spellings: [String: Data] = [:], ambiguous: Set<String> = []
+        for path in paths {
+            let spelling = Data(path.utf8)
+            if let previous = spellings[path], previous != spelling { ambiguous.insert(path) }
+            spellings[path] = spelling
+        }
+        var remaining = paths.filter { !ambiguous.contains($0) }[...], counts: [String: GitDiffStat] = [:]
         while !remaining.isEmpty {
             try Task.checkCancellation()
             let batch = try await untrackedStats(in: root, gitDirectory: gitDirectory, configuration: configuration, paths: remaining)
@@ -639,6 +647,7 @@ public actor GitService {
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: false)
         let read = Task.detached(priority: .utility) {
             var accepted: [String] = [], attributes: Set<String> = []
+            var directories: Set<Data> = []
             var consumed = 0, bytes = 0
             let limit = 32 << 20
             for path in paths {
@@ -647,10 +656,20 @@ public actor GitService {
                 // replaced file or parent symlink in the live working tree.
                 guard let file = try? GitPatchFile.read(in: root, path: path) else { consumed += 1; continue }
                 if bytes + file.bytes.count > limit { break }
-                consumed += 1; bytes += file.bytes.count
                 let destination = tree.appendingPathComponent(path)
+                let components = path.split(separator: "/")
+                let parents = (1..<components.count).map { components.prefix($0).joined(separator: "/") }
+                // The private volume may fold names the source distinguishes.
+                // Reuse only byte-identical directories; retry aliases in a
+                // fresh batch before consuming or writing the colliding path.
+                if FileManager.default.fileExists(atPath: destination.path) || parents.contains(where: {
+                    FileManager.default.fileExists(atPath: tree.appendingPathComponent($0).path)
+                        && !directories.contains(Data($0.utf8))
+                }) { break }
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try file.bytes.write(to: destination)
+                directories.formUnion(parents.map { Data($0.utf8) })
+                consumed += 1; bytes += file.bytes.count
                 accepted.append(path)
                 var parts = path.split(separator: "/").dropLast().map(String.init)
                 while true {
@@ -671,8 +690,13 @@ public actor GitService {
                     }
                     continue
                 }
+                let destination = tree.appendingPathComponent(path)
+                guard !FileManager.default.fileExists(atPath: destination.path) else {
+                    unavailable.insert(String(path.dropLast(".gitattributes".count)))
+                    continue
+                }
                 attributeBytes += file.bytes.count
-                try file.bytes.write(to: tree.appendingPathComponent(path))
+                try file.bytes.write(to: destination)
             }
             return (accepted.filter { path in !unavailable.contains(where: { path.hasPrefix($0) }) }, consumed)
         }
