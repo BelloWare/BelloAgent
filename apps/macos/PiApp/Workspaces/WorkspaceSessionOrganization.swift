@@ -204,11 +204,15 @@ extension WorkspaceModel {
             let connections = Set(profiles.filter { $0.name.localizedCaseInsensitiveContains(query) }.map(\.id))
             let models = Dictionary(profiles.map { ($0.id, $0.modelId) }, uniquingKeysWith: { first, _ in first })
             var matches = sidebarContentMatches
-            for chat in chats where projects.contains(chat.workspaceID)
-                || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true)
-                || connections.contains(chat.profileID)
-                || (chat.model ?? models[chat.profileID])?.localizedCaseInsensitiveContains(query) == true {
-                matches.insert(chat.id)
+            // Metadata follows the normal main-chat list. Family rows still
+            // appear for their own title, task or full-chat content matches.
+            for chat in chats where !chat.isBackgroundTask && !chat.isSubagent && sideFamilyOwner(chat) == nil {
+                if projects.contains(chat.workspaceID)
+                    || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true)
+                    || connections.contains(chat.profileID)
+                    || (chat.model ?? models[chat.profileID])?.localizedCaseInsensitiveContains(query) == true {
+                    matches.insert(chat.id)
+                }
             }
             return matches
         }
