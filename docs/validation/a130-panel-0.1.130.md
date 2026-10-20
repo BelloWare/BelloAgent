@@ -865,9 +865,13 @@ rename detection and rename limits. Status, the panel's batched counts and
 selected Changes previews still share those options. No additional process,
 cache, per-file read, permission path or UI layout was added.
 
-### Raw-status compatibility — needs owner decision
+### Raw-status compatibility — resolved in the next follow-up
 
-**Needs owner decision:** the request's final-value policy and exact parity
+The lead resolved this conflict in the next follow-up: raw `git status` is
+now authoritative, including Apple Git’s first-value behavior. The evidence
+below records the previous round and its now-reverted policy.
+
+**Historical decision request:** the request's final-value policy and exact parity
 with unmodified `git status` conflict on this Mac. The branch implements the
 explicit final-value policy. With no `status.*` override, Apple Git 2.39.5
 (Apple Git-154) takes the **first** `diff.renames` / `diff.renameLimit` value
@@ -1118,3 +1122,330 @@ existing `views` and `native-tests` roots. Every owned lane lock was released;
 the wait behind another workstream's full package run did not touch its lock.
 The isolated native test host and generated fixtures were used throughout.
 Helper and wire code were unchanged. `git diff --check` passes.
+
+
+## Git-owned grouping and counts follow-up 2026-10-20
+
+The lead’s decision resolves the preceding rename-precedence question: Bello
+must match the installed Git’s raw status, including Apple Git’s first-value
+fallback. This round removes the configuration reader/map and all grouping
+`-c` overrides. The same raw status feeds Changes and the session panel.
+Explicit similarity remains a status test seam; its reported rows, not a
+configuration interpretation, determine each subsequent diff.
+
+### Implementation and boundaries
+
+- Ordinary tracked rows use cached/worktree `git diff --numstat -z` with
+  rename detection disabled, so separately reported additions/deletions stay
+  separate. A reported R/C row opens its two paths with pair detection; a
+  staged rename with later working-tree edits opens only the new path on
+  that working-tree side. Copy previews still exclude the source’s own row.
+- Rename/copy counts also batch by side, but are accepted only if numstat’s
+  source **and** destination match the status pair. Ambiguous or changed
+  pairings fall back to the exact two-path request the preview uses. No
+  rename or rename-limit config is read or overridden by Bello.
+- Untracked contents first pass `GitPatchFile.read`: regular files only,
+  no symlinks in any component, no files over 4 MiB. Git sees private copies
+  of those bounded bytes, so replacing a live path after validation cannot
+  redirect its read. Each snapshot holds at most 32 MiB of contents plus
+  32 MiB of relevant attributes; cancellation/error/success remove it.
+- `git diff --no-index --numstat` counts the copies against `/dev/null`.
+  Files sharing a top-level directory batch against an empty directory,
+  which emits the same `/dev/null` pairs. Root-level files use individual
+  calls through the existing eight-process gate. Relative names stay intact
+  for anchored attributes. The real Git directory/config/info attributes
+  and bounded copies of ancestor `.gitattributes` retain Git’s classification.
+  For a relative `core.attributesFile`, Git supplies its effective path via
+  `git config --path --get`; only that path is anchored to the original root
+  before changing the private copy’s cwd. Rename/limit settings are never
+  collected or overridden. Unreadable/oversized attributes make affected counts unavailable. No
+  working-tree file, index, configuration or repository metadata is written.
+- Git owns binary probing, `core.bigFileThreshold`, driver attributes and
+  every count. The whole-file NUL/line-count heuristic and dirty-gitlink
+  count adjustment are gone. Git itself reports 0/0 for a dirty-only gitlink
+  even though its short patch adds a `-dirty` suffix; the summary keeps 0/0.
+  Tracked counts remain Git reads even for files larger than the untracked
+  safe-reader limit. Untracked replacements clear staged counts first.
+- UI layout, navigation, trust checks and family behavior are unchanged.
+  Only counts/grouping in the affected configuration/content cases change.
+
+Git’s documented [no-index and numstat behavior](https://git-scm.com/docs/git-diff)
+and its [binary probe](https://github.com/git/git/blob/v2.39.5/xdiff-interface.c#L181-L187)
+were checked against generated fixtures on the installed Git. The independent
+oracle invokes Git directly; it does not use Bello’s option builder. Parity
+covers raw multi-scope rename/limit precedence, includes, explicit status
+options, copies, custom similarity, staged+unstaged entries, switched rename
+pairs, attributes, late/early NUL, empty/no-final-newline files, large tracked
+files, unsafe untracked replacements and bounded snapshot splitting.
+
+### Failing-first and mutation evidence
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r5/`.
+
+- `parity-red.log`: four tests fail with 43 assertions against the previous
+  implementation: raw status differs under conflicting scopes and untracked
+  classification differs for late NUL/attributes.
+- `attributes-bound-red.log`: one test, one expected failure after replacing
+  the heuristic, proving that skipping an oversized attributes file would
+  silently change classification. Affected counts are now unavailable.
+- `parity-first-green.log`: initial restored class run, 29 passed/1 failed.
+  The sole failure expected the removed 1/1 dirty-gitlink heuristic. Its
+  oracle now checks Git’s actual 0/0 numstat rather than invented counts.
+- `parity-green.log`: 19 summary tests pass. `batch-green.log`: two additional
+  tests pass for renamed destinations changing after status and snapshot
+  splitting/cleanup. Final full-suite results below supersede these focused
+  intermediate runs.
+
+| Mutation | Tests failing / assertions | Log |
+| --- | ---: | --- |
+| Reintroduce a status rename override | 1 / 6 | `mutation-grouping.log` |
+| Collapse separate A/D numstats with rename detection | 1 / 1 | `mutation-ordinary-renames.log` |
+| Accept a batched pair by destination alone | 1 / 4 | `mutation-pair-identity.log` |
+| Reintroduce the whole-file NUL heuristic | 1 / 2 | `mutation-binary-heuristic.log` |
+| Replace the no-follow bounded reader with a URL read | 2 / 3 | `mutation-safe-reader.log` |
+| Ignore unavailable attributes | 1 / 1 | `mutation-attribute-bound.log` |
+
+The first six controls failed behavior assertions, not compilation, and were
+restored in `finally`. `mutation-summary.json` preserves the results. The
+final attributes test also includes a malformed, ignored rule: valid numstat
+output is retained despite Git’s warning, just as the opened diff is.
+
+### Adversarial self-review
+
+Reviewed status/numstat/preview arguments, per-side R/C handling, source/destination
+validation of batch output, conflicting scopes and includes, literal paths,
+untracked replacement precedence, anchored/driver/info attributes, threshold
+and binary behavior, snapshot limits, no-follow reads, cancellation and cleanup.
+The only config grouping authority is now Git status. Every count comes from
+Git numstat; unavailable input never retains the opposite side’s tracked count.
+Snapshots keep content reads inside the source project even if live paths are
+replaced after validation. External diff and text converters remain disabled.
+No panel opener or trust-boundary code changed. Earlier unrelated topic-search
+and independent-child-pill findings remain historical/out of scope; no new
+product decision is required for this correction.
+
+The first 500-file measurement met the refresh target, but showed 22–27% cold
+opening overhead for mixed/untracked fixtures. The final reader starts the
+independent untracked work alongside tracked reads; superseded work still uses
+the existing cancellation and process limits. The pre-tuning measurements are
+retained as `benchmark/before-overlap-{measurements,summary}.json`.
+
+Self-review additionally reproduced a relative `core.attributesFile` resolving
+from the private snapshot instead of the original root. The new regression
+checks global/local and local/worktree precedence against direct Git numstat:
+`relative-attributes-red.log`, one test/two expected assertions; the fix and
+existing attribute test pass 2/2 in `relative-attributes-green.log`. Removing
+only the path anchoring fails the same two assertions in
+`mutation-relative-attributes.log` (the seventh mutation). This control used
+a temporary source copy with the existing Swift scratch root, to avoid
+mutating sources during queued native builds; the copy was deleted in
+`finally`. No extra DerivedData tree was created.
+
+### 500-file measurement
+
+Baseline: the actual `GitController`/`GitService` sources from fetched
+`origin/dev/next` at `649ea623291c9417443d61d3bb55314d8a2f5d9a`, compiled with
+`xcrun swiftc -O -parse-as-library -swift-version 6` alongside the final panel
+reader. Both executables use the same generated repositories and isolated Git
+environment. This measures controller refresh through completion, including
+its readers/watch setup, not AppKit painting. The shared lane lock covers the
+measurements. There are three alternating baseline/panel process pairs per
+fixture, each with a first opening and nine refreshes: 27 refresh samples and
+three opening samples per implementation/fixture. Every panel sample verifies
+500 rows and 500 counts, with no notice/error.
+
+Apple Git 2.39.5 (Git-154), Apple Swift 6.0.2, macOS 14.8, arm64.
+The harness, build commands, fixture generator, raw samples and baseline ref
+are in `evidence/review-r5/benchmark/`; `build.py`, `Measure.swift`, `run.py`,
+`measurements.json`, `summary.json` and `baseline-ref.txt` reproduce the check.
+It reuses the existing Swift module cache and creates no DerivedData copy.
+
+| Fixture | Changes refresh | Panel refresh | Change | Changes opening | Panel opening |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 500 tracked edits | 730.1 ms | 464.9 ms | -36.3% | 592.1 ms | 443.8 ms |
+| 350 edits + 50 renames + 50 staged additions + 50 untracked files | 726.5 ms | 551.4 ms | -24.1% | 597.3 ms | 532.2 ms |
+| 500 untracked files in one directory | 725.2 ms | 668.5 ms | -7.8% | 592.4 ms | 658.0 ms |
+
+All measured **refreshes meet the requested ~10% budget**, running 7.8–36.3%
+faster than the baseline. First opening is reported separately: the all-untracked
+fixture is 65.7 ms / 11.1% slower; the other two are faster. This is a measurement
+of the listed layouts, not a guarantee for every repository: root-level
+untracked files require individual no-index calls to retain anchored attribute
+semantics. No line-count or binary heuristic is substituted to improve timing.
+
+### Restored validation
+
+Final Git package command:
+
+```sh
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter GitViewTests
+```
+
+**196 passed, 0 failed, 0 skipped**, 17 classes, 470.156 seconds,
+`package-git-final.log`. Earlier complete sweeps passed 195/195 before the
+read overlap and before the final relative-attributes regression;
+`package-git-before-overlap.log` and
+`package-git-before-relative-attributes.log` retain them. Final per-class
+counts are in `package-restored-counts.json`:
+
+| Package class | Passed |
+| --- | ---: |
+| GitBlameTests | 13 |
+| GitBranchesTests | 21 |
+| GitCardShapeTests | 3 |
+| GitCommitScopeTests | 18 |
+| GitDiffParserTests | 3 |
+| GitDiffPrefixTests | 3 |
+| GitHistoryQueryTests | 17 |
+| GitHistoryWiringTests | 3 |
+| GitIndexTransactionTests | 17 |
+| GitLiteralPathTests | 8 |
+| GitPatchTests | 3 |
+| GitRepositoryStateTests | 35 |
+| GitRevealTests | 10 |
+| GitReviewFindingsTests | 6 |
+| GitSafetyTests | 17 |
+| GitStashTests | 18 |
+| GitStateWatchTests | 1 |
+
+Native focused runs: **234 passed, 0 failed, 1 existing opt-in skip**, 26
+classes. `GitCommitBrowsingTests.testMeasureCommitBrowsingWhenRequested`
+skipped because `PI_APP_GIT_BENCH_REPO` was unset. Every other requested test
+ran, including the env-enabled gallery. `native-restored-counts.json` lists
+the latest results per class; the panel and reader groups were rerun after
+the read-overlap tuning, and the panel was rerun after relative-attribute
+anchoring. The full Git package sweep above ran on that final source.
+
+All native invocations reused this workstream's `native-tests` build root,
+ran with `-parallel-testing-enabled NO`, and held/released the shared lane
+lock in `run-native.py`'s `finally`. Focus/timing/gallery classes ran in
+separate invocations. Exact final commands (from each log's `COMMAND` line,
+with the gallery environment made explicit):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ChangesTabTests \
+  -only-testing:PiAppTests/GitToolTests \
+  -only-testing:PiAppTests/GitRenameTests \
+  -only-testing:PiAppTests/GitPathBoundaryTests \
+  -only-testing:PiAppTests/GitPanelAuditTests \
+  -only-testing:PiAppTests/GitPanelShownTests \
+  -only-testing:PiAppTests/GitPanelRedrawTests \
+  -only-testing:PiAppTests/GitChangelistReadTests \
+  -only-testing:PiAppTests/GitPanelLayoutTests \
+  -only-testing:PiAppTests/GitPanelWidthTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitBranchesInteractionTests \
+  -only-testing:PiAppTests/GitHistoryFilterTests \
+  -only-testing:PiAppTests/GitHunkReviewTests \
+  -only-testing:PiAppTests/GitIntegratedHistoryTests \
+  -only-testing:PiAppTests/GitCommitBrowsingTests \
+  -only-testing:PiAppTests/GitOperationSafetyTests \
+  -only-testing:PiAppTests/GitConfirmationSheetTests \
+  -only-testing:PiAppTests/GitDiscardQuestionTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitRepositorySwitchTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitDiffTableTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ChangesTabFrameTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitPanelTimingTests
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitPanelNarrowParityTests
+
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r5 PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelGalleryTests
+
+```
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `changes-frames-final.log` |
+| ChangesTabTests | 8 | 0 | `git-readers-restored.log` |
+| GitBranchesInteractionTests | 20 | 0 | `git-actions-final.log` |
+| GitChangelistReadTests | 2 | 0 | `git-readers-restored.log` |
+| GitCommitBrowsingTests | 3 | 1 | `git-actions-final.log` |
+| GitConfirmationSheetTests | 7 | 0 | `git-actions-final.log` |
+| GitDiffTableTests | 19 | 0 | `diff-table-final.log` |
+| GitDiscardQuestionTests | 2 | 0 | `git-actions-final.log` |
+| GitHistoryFilterTests | 14 | 0 | `git-actions-final.log` |
+| GitHunkReviewTests | 9 | 0 | `git-actions-final.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `git-actions-final.log` |
+| GitOperationSafetyTests | 12 | 0 | `git-actions-final.log` |
+| GitPanelAuditTests | 8 | 0 | `git-readers-restored.log` |
+| GitPanelLayoutTests | 4 | 0 | `git-readers-restored.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `git-narrow-final.log` |
+| GitPanelRedrawTests | 4 | 0 | `git-readers-restored.log` |
+| GitPanelShownTests | 13 | 0 | `git-readers-restored.log` |
+| GitPanelTimingTests | 4 | 0 | `git-timing-final.log` |
+| GitPanelWidthTests | 3 | 0 | `git-readers-restored.log` |
+| GitPathBoundaryTests | 5 | 0 | `git-readers-restored.log` |
+| GitRenameTests | 6 | 0 | `git-readers-restored.log` |
+| GitRepositorySwitchTests | 17 | 0 | `repository-switch-final.log` |
+| GitToolTests | 5 | 0 | `git-readers-restored.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | `watcher-final.log` |
+| SessionPanelGalleryTests | 1 | 0 | `gallery-final.log` |
+| SessionPanelTests | 26 | 0 | `panel-attributes-final.log` |
+
+Helper/wire code was unchanged; those lanes were not required for this round.
+
+### Regenerated screenshots and visual review
+
+Generated **18 PNGs** under:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r5/`.
+
+Every image was opened and inspected. Light/dark Agents, Files, empty,
+narrow-pill and side-pane scenes retain readable labels and spacing; the
+panel stays beside transcript text and above the composer. The 1180-wide
+scene still fits, 960 falls back to the pill, and the 1600-wide side scene
+keeps the card on the main conversation. Diff and disabled-renames scenes
+retain aligned paths/status/counts. New classification scenes show
+`late-nul.txt +4501 −0` and `binary.dat Binary` without clipping or overlap.
+All 16 pre-existing scenes are byte-identical to review-r4; the two
+classification scenes are new. `screenshot-hashes.json`, `visual-review.json`
+and the gallery manifest retain evidence.
+
+```text
+agents-1180x800-dark.png
+agents-1180x800-light.png
+agents-1440x900-dark.png
+agents-1440x900-light.png
+diff-1440x900-dark.png
+diff-1440x900-light.png
+diff-classification-1440x900-dark.png
+diff-classification-1440x900-light.png
+diff-no-renames-1440x900-dark.png
+diff-no-renames-1440x900-light.png
+empty-1440x900-dark.png
+empty-1440x900-light.png
+files-1440x900-dark.png
+files-1440x900-light.png
+pill-960x700-dark.png
+pill-960x700-light.png
+side-open-1600x900-dark.png
+side-open-1600x900-light.png
+```
+
+### Cleanup and completion checks
+
+Generated gallery and benchmark fixture directories and the temporary
+mutation source copy were removed. No native clone folders remain under
+this workstream's build root (`cleanup-check.json`). No extra DerivedData
+copy was created. Every owned full-lane lock was released; other workstreams'
+locks were left alone. The final diff check passes. The production changes
+are confined to the shared Git reader and its selected-diff caller; no
+navigation, trust or panel-layout code changed in this round.

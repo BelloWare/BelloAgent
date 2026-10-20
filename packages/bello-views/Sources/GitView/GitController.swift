@@ -972,13 +972,13 @@ import AppKit
             ?? status.entries.first { $0.path == selection.path }
         // A rename is asked for under both names, or git sees a new file and
         // shows every one of its lines as added.
-        let paths = [entry?.originalPath, selection.path].compactMap { $0 }
+        let paths = entry.map { status.changeOptions.paths(for: $0, staged: selection.staged) } ?? [selection.path]
         let options = status.changeOptions
         if !silently { publish(\.diffLoading, true) }
         selectedDiffTask = Task { [service] in
             do {
                 let files = try await service.diffFiles(in: repositoryRoot, paths: paths, staged: selection.staged,
-                    untracked: entry?.untracked == true, options: options)
+                    untracked: entry?.untracked == true, options: options, entry: entry)
                 try Task.checkCancellation()
                 guard self.selection == selection else { return }
                 // Copy detection needs the source path, but that source has its

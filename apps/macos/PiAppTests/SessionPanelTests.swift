@@ -323,7 +323,7 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         }
     }
 
-    @MainActor func testPanelAndChangesUseEffectiveWorktreeOverrides() async throws {
+    @MainActor func testPanelAndChangesMatchRawStatusWithWorktreeOverrides() async throws {
         for key in ["diff.renames", "diff.renameLimit"] {
             let (model, pane, _, root) = try fixture(gitRepository: true)
             try git(["restore", "file.txt"], in: root)
@@ -343,12 +343,8 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
             try git(["config", "--worktree", key, key == "diff.renames" ? "false" : "1"], in: root)
             let effective = try git(["config", "--get", key], in: root).trimmingCharacters(in: .newlines)
             XCTAssertEqual(effective, key == "diff.renames" ? "false" : "1")
-            // Pass the effective value explicitly: older Git status readers
-            // otherwise retain the first diff.* value across scopes.
-            let option = key.replacingOccurrences(of: "diff.", with: "status.") + "=" + effective
-            let output = try git(["-c", option, "status", "--porcelain=v2", "--untracked-files=all", "-z"], in: root)
+            let output = try git(["status", "--porcelain=v2", "--untracked-files=all", "-z"], in: root)
             let expected = GitService.parseStatus(Data(output.utf8)).entries
-            XCTAssertEqual(expected.map(\.badge), ["A", "A", "A", "D", "D", "D"])
             try await eventually("repository discovered") { pane.sessionPanel.availableTabs.contains(.diff) }
             pane.sessionPanel.select(.diff)
             let changes = try XCTUnwrap(pane.sessionPanel.changes)
