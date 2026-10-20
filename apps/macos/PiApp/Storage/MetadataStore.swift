@@ -69,11 +69,13 @@ final class DraftVersion: @unchecked Sendable {
     private let lock = NSLock()
     private var value: (draft: DraftRecord?, revision: Int64?)
     private var conflicts: [SavedDraftConflict] = []
+    private var submissions: [CommandIntent] = []
     private var episode: (revision: Int64?, id: String)?
     init(draft: DraftRecord? = nil, revision: Int64? = nil) { value = (draft, revision) }
     var snapshot: (draft: DraftRecord?, revision: Int64?) { lock.withLock { value } }
     var unsavedConflicts: [SavedDraftConflict] { lock.withLock { conflicts } }
-    var hasUnsavedConflict: Bool { lock.withLock { !conflicts.isEmpty } }
+    var unsavedSubmissions: [CommandIntent] { lock.withLock { submissions } }
+    var hasUnsavedConflict: Bool { lock.withLock { !conflicts.isEmpty || !submissions.isEmpty } }
     var hasConflictEpisode: Bool { lock.withLock { episode != nil } }
     fileprivate func conflicted(_ draft: DraftRecord, against revision: Int64?) {
         lock.withLock {
@@ -85,15 +87,14 @@ final class DraftVersion: @unchecked Sendable {
             conflicts.append(.init(id: episode.id, draft: draft))
         }
     }
-    fileprivate func preservingSubmission(_ input: DraftRecord) {
+    fileprivate func preservingSubmission(_ intent: CommandIntent) {
         lock.withLock {
-            guard let index = conflicts.firstIndex(where: { $0.id == episode?.id }) else { return }
-            let remaining = conflicts[index].draft
-            var combined = remaining.merging(input)
-            combined.text = input.text + (input.text.isEmpty || remaining.text.isEmpty ? "" : "\n\n") + remaining.text
-            conflicts[index] = .init(id: conflicts[index].id, draft: combined)
+            // A captured send is independent of later composer snapshots.
+            // Keep it pinned too if the recovery transaction cannot commit.
+            if !submissions.contains(where: { $0.id == intent.id }) { submissions.append(intent) }
         }
     }
+    fileprivate func preservedSubmission(_ id: String) { lock.withLock { submissions.removeAll { $0.id == id } } }
     fileprivate func preserved(_ copy: SavedDraftConflict) { lock.withLock { conflicts.removeAll { $0 == copy } } }
     fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision); episode = nil } }
 }
@@ -282,9 +283,19 @@ actor MetadataStore {
         return copies
     }
     func preserveDraftConflicts(_ version: DraftVersion) throws {
-        for copy in version.unsavedConflicts {
-            try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id)
-            version.preserved(copy)
+        let copies = version.unsavedConflicts, submissions = version.unsavedSubmissions
+        try transaction {
+            for copy in copies { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
+            try preserveSubmissions(submissions)
+        }
+        for copy in copies { version.preserved(copy) }
+        for intent in submissions { version.preservedSubmission(intent.id) }
+    }
+    private func preserveSubmissions(_ submissions: [CommandIntent]) throws {
+        for intent in submissions {
+            let kind = "pending:" + intent.sessionID
+            // A retry must not roll an acknowledged command back to intent.
+            if try get(CommandIntent.self, kind: kind, id: intent.id) == nil { try put(intent, kind: kind, id: intent.id) }
         }
     }
     private func preserveConflict(_ draft: DraftRecord) throws {
@@ -294,9 +305,10 @@ actor MetadataStore {
     /// An explicit choice from the recovery banner. Preserve the current
     /// saved and live copies before replacing either; nothing is submitted.
     func restoreConflict(_ conflict: SavedDraftConflict, replacing live: DraftRecord, version: DraftVersion) throws {
-        let pending = version.unsavedConflicts
+        let pending = version.unsavedConflicts, submissions = version.unsavedSubmissions
         try transaction {
             for copy in pending { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
+            try preserveSubmissions(submissions)
             guard live.id == conflict.draft.id,
                   try get(DraftRecord.self, kind: "draft-conflict:" + live.id, id: conflict.id) == conflict.draft else { throw StoreError.staleRevision }
             if let saved = try get(DraftRecord.self, kind: "draft", id: live.id), !saved.hasSameContents(as: conflict.draft) { try preserveConflict(saved) }
@@ -307,6 +319,7 @@ actor MetadataStore {
             try remove(kind: "draft-conflict:" + live.id, id: conflict.id)
         }
         for copy in pending { version.preserved(copy) }
+        for intent in submissions { version.preservedSubmission(intent.id) }
     }
     func anchorVersion(id: String) throws -> AnchorVersion {
         let database = try ready()
@@ -908,17 +921,17 @@ actor MetadataStore {
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, kind, -1, transient); sqlite3_bind_int(statement, 3, Int32(max(0, keeping)))
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
-    /// A submission and the composer it left, in one commit (one sync of the
-    /// journal): the record that lets a crash flag or recover the message,
-    /// and the draft that no longer holds its text. Either both are on disk
-    /// or neither is, so the text is never in neither place.
+    /// A submission and the composer it left normally commit together. If
+    /// another instance won the draft, retain the captured input separately
+    /// beside the losing composer copy before reporting the conflict.
     func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil) throws {
         try transaction {
             do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion) } }
             catch StoreError.draftConflict {
-                // Its intent will roll back too. Keep the input that already
-                // left the composer, as well as the remaining draft.
-                draftVersion?.preservingSubmission(DraftRecord(id: intent.sessionID, text: intent.text, attachments: intent.attachments, skills: intent.skills))
+                // Roll back the draft write, then durably retain this intent
+                // beside its conflict copy. Debounces may replace only that
+                // composer copy; withdrawal/acknowledgement settles the input.
+                draftVersion?.preservingSubmission(intent)
                 throw StoreError.draftConflict
             }
             try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)

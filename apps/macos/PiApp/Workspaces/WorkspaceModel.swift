@@ -451,7 +451,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// The profile revision acknowledged by each runtime, including a queued
     /// change for its next turn. Credential updates share one writer per chat.
     var sessionProfileRevisions: [String: (connection: UUID?, revision: String)] = [:]
-    var sessionConfigurations: [String: (token: UUID, task: Task<Void, Error>)] = [:]
+    var sessionConfigurations: [String: (token: UUID, lease: SessionConfigurationLease, task: Task<Void, Error>)] = [:]
+    var sessionConfigurationGenerations: [String: UInt64] = [:]
     /// Runtimes opened solely to supply a saved side's budget, and explicit
     /// display releases that the helper may have refused while a side pinned it.
     var budgetDependencySessions: Set<String> = []

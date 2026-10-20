@@ -1454,3 +1454,316 @@ acceptance suites were not required for this round. `xcodegen generate --quiet`
 and `git diff --check` passed. Automatic result bundles and test clones under this
 workstream's build root were removed after the runs; text evidence and PNGs remain.
 Every acquired shared lock was released. Both assigned findings are resolved.
+
+## Round 6 — captured submissions and runtime configuration ownership
+
+Work continues on `dev/a130-workspace` from `128156ba`, without merging or
+fast-forwarding. Evidence is in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round6/`.
+All state, credentials and helper replies are generated fixtures. No installed
+app, real preferences, Keychain, user chats or paid providers were used.
+
+### Rejected submission overwritten by its conflict episode — confirmed and fixed
+
+`WorkspaceRaceTests.testConflictDuringOpeningKeepsCapturedSubmissionAfterEmptyDebounce`
+holds the initial `session.open`, accepts a message from a stale composer, then
+waits for its empty-composer debounce. An independent store reads the database
+before opening/recovery can finish. Before the fix (`failing-first.log`):
+
+```text
+XCTAssertEqual failed: ("[]") is not equal to ("[\"Captured input waiting for the helper\"]")
+Captured input must have its own durable record before opening finishes
+```
+
+The conflict copy was already empty, and there was no pending submission record.
+The captured `CommandIntent` now commits in its own existing `pending:<chat>`
+record, keyed by command ID, atomically with the losing composer copy after the
+failed canonical transaction rolls back. A debounce only replaces the composer
+copy. Its text, images, skills, turn/command identity and review tracking remain
+in the submission record. Preservation retries do not replace an existing intent
+or regress its acknowledgement. Failed preservation keeps both inputs pinned in
+the display's `DraftVersion` until the whole recovery transaction commits.
+
+**Retention rule:** Round 5's one-copy-per-winning-revision rule applies to composer
+snapshots only. Captured submissions are independent records, never episode
+updates. Existing command acceptance/receipt handling settles sent input;
+withdrawal removes an unsent record only with a committed restored draft, or an
+explicit Dismiss. A conflicting withdrawal leaves the record intact. Existing
+recovery menus expose the records after reload; no command is replayed. Conflict
+episodes remain unpruned and reachable through the chooser.
+
+`DraftConcurrencyTests` covers repeated empty/nonempty debounces, an independent
+store/reloaded display, explicit Insert/Dismiss, transaction rollback and a
+trigger-induced failure saving the captured input. The latter verifies atomic
+rollback, display pinning above the eviction limit, and retry preserving the
+original input. Round 4's release paths remain covered: eviction, chat switching,
+side close/transfer, window close, quit, update and helper loss. Each either keeps
+the unsaved version pinned or releases only after its input is durable.
+
+Sweep: normal sends and steering share `recordSubmission`; both inherit the fix.
+Recovery withdrawal retains its existing transaction, attachment reference scans
+already cover pending records, and explicit queued-message edits remain explicit
+input edits rather than composer snapshot writes. No additional persistence
+instance was found. Removing captured-intent preservation reproduces the missing
+record (`mutation-submission.log`).
+
+### Configuration shared across retired runtimes — confirmed and fixed
+
+`WorkspaceRaceTests.testReplacementOpeningDoesNotAwaitRetiredConfiguration`
+keeps an old configuration continuation suspended across helper loss, then opens
+the replacement before releasing it. The fixture holds the continuation outside
+the transport, modeling a credential read that does not settle when transport
+requests fail. Before the fix:
+
+```text
+XCTAssertTrue failed - Replacement opening must not wait for a retired configuration's credentials
+Retired configuration rejected the replacement: failure("The project host changed while opening this chat. Open it again to continue.")
+```
+
+A configuration task now carries its helper connection, workspace, chat/profile
+lease and runtime generation. Only a matching task is shared. Every resumed
+configuration validates ownership before configuring or recording a revision.
+Host loss and unload detach/cancel obsolete entries; token-checked completion
+cannot remove a new entry. Generations distinguish unload/reopen on the same
+helper with the same chat/profile IDs. The existing repeated-save and
+configure-before-next-send tests cover legitimate sharing and newer revisions.
+`testReconciliationDoesNotShareConfigurationFromAnotherLease` fails when the
+sharing comparison is removed (`mutation-sharing.log`).
+
+**Separate sweep instance:** an opening waiting for an obsolete configuration was
+still shared through `sessionOpenings`. The new
+`testReplacementOpeningDoesNotAwaitRetiredOpeningConfiguration` failed first
+with three assertions (`failing-opening-sweep.log`): replacement remained blocked,
+inherited the old error, and never became opened. Retirement now also detaches
+and cancels that opening. The test passed with the fix and failed again when only
+that retirement line was removed (`fixed-opening-sweep.log`,
+`mutation-opening.log`). Opening's existing connection checks and token cleanup
+continue protecting its late completion.
+
+### Configuration-failure cleanup reaches a replacement — confirmed and fixed
+
+`testRetiredConfigurationFailureCannotCloseReplacementHelper` and
+`testRetiredConfigurationFailureCannotCloseReassignedChat` hold a save's
+configuration continuation, replace the runtime, then release the old failure.
+Before the fix, both sent an extra close and cleared the replacement cache:
+
+```text
+XCTAssertEqual failed: ("1") is not equal to ("0") - A retired save must not close a replacement runtime
+XCTAssertTrue failed - A retired save must not clear replacement bookkeeping
+```
+
+`saveProfile` captures the runtime lease before reconciliation. Its fallback now
+checks that lease before `session.close`, after a successful close reply, and
+before release bookkeeping on a failed reply. A retired attempt is ignored;
+current idle runtimes still use the unsupported-configure fallback. Tests cover
+helper restart, chat reassignment, same-helper unload/reopen, successful and
+rejected late close replies, and a current idle runtime that must still close and
+reopen with the saved key. The late-reply cases are separate nearby instances of
+the same ownership pattern and are fenced in the same catch block.
+
+### Mutation evidence
+
+Every mutation was applied alone, tested, and restored from a disk backup. These
+are deliberate failing runs, not final-validation failures:
+
+| Run | Broken behavior | Failing tests | Assertion failures |
+|---|---|---:|---:|
+| `mutation-submission` | Drop captured input when preserving the conflict | 1 | 1 |
+| `mutation-sharing` | Share a task from another chat lease | 1 | 2 |
+| `mutation-close` | Close before checking the original runtime lease | 3 | 3 |
+| `mutation-close-reply` | Clear bookkeeping after a late successful close | 1 | 2 |
+| `mutation-close-failure` | Release bookkeeping after a late rejected close | 1 | 1 |
+| `mutation-opening` | Leave the obsolete opening available to new callers | 1 | 3 |
+
+The original three findings failed in four tests/seven assertions; the additional
+opening sweep failed in one test/three assertions. All source mutations were
+restored before final validation.
+
+### Adversarial self-review
+
+Reviewed each changed condition and suspension boundary against the final diff:
+
+- `hasUnsavedConflict` now also pins captured inputs whose independent write
+  failed. Durable inputs unpin only after commit; a failed transaction cannot
+  clear either pending collection. No release path needs a new exception.
+- `preservingSubmission` adds only an unseen command ID. Later composer snapshots
+  neither merge into nor replace it. A retry with the same ID retains the first
+  captured input. `preserveSubmissions` skips an existing record, preserving
+  acknowledgement/recovery state rather than replaying or downgrading it.
+- Conflict restoration commits any pinned input records before releasing their
+  in-memory copies. The selected composer snapshot's existing revision and
+  equality checks still apply; outgoing canonical/live drafts are still kept.
+- A configuration lease requires the current ready supervisor connection, the
+  current chat/profile lease, and the same runtime generation. Helper loss,
+  reassignment, deletion, shutdown, or same-helper unload therefore reject the
+  old task. An unchanged runtime retains the previous configure/retry behavior.
+- A shared task with a different lease is detached/cancelled instead of awaited.
+  Same-lease saves still serialize. The owner is checked before any map mutation
+  and after each credential/configuration await; old token cleanup cannot erase
+  a replacement entry.
+- Save fallback now skips missing/retired records and validates its original
+  runtime before close and on both reply paths. Current idle failures still
+  close; current busy/queued work keeps the existing refusal to close. No
+  suspended code may infer ownership from a reused session ID alone.
+- Retirement clears old revision/task/opening entries and advances the generation.
+  Host loss includes configured sides not yet in the durable chat list. Idle
+  unload and unload events use the same retirement. Late opening completion
+  remains guarded by its connection and cancellation checks.
+- The chooser's corner style is local to this banner. Recovery eligibility,
+  action IDs, menu contents, fixed 56 pt height, and retention rules are unchanged.
+
+### Chooser border and gallery inspection
+
+The lines in Round 5's `conflict-recovery-40-light-760.png` were border artifacts,
+not separator views. The recovery chooser now uses PiKit's existing circular
+corner option. No shared control implementation or menu behavior changed.
+
+Regenerated **20 PNGs** under `round6/gallery/` while holding the full-lane lock
+and inspected every image. All eight recovery scenes (1/40 copies × light/dark ×
+760/300 pt) have clean pill edges, a 56 pt recovery row, reachable chooser, and
+normal transcript space. The twelve model/draft/import error-banner control
+scenes retain their previous layout, including deliberate narrow text truncation
+with Copy/Dismiss available.
+
+**Separate visual follow-up, needs owner decision:** the same existing continuous
+capsule border artifact is visible on the composer's model/effort pills in the
+full-pane images (`apps/macos/PiApp/DesignKit/PiKitButtons.swift:188`, used by
+`PiKitChoices.swift:22`). Conservatively kept the geometry change local to the
+requested recovery chooser; a shared PiKit shape change needs its own parity and
+component-gallery review.
+
+### Final validation
+
+Final native validation: **755 passed, 0 failed, 0 skipped**, across
+**54 classes**. Release-helper wire checks: **36 passed**; concurrency:
+**4 passed**; acceptance: **3 passed**. No unrelated test failures were observed.
+PiAgentCore and the wire schema were unchanged, so the full Swift helper suite
+was not required; the Release-helper wire suites were rerun because native
+runtime orchestration changed. The lead retains the merged full-gate run.
+
+Focused model/host runs used this workstream's existing build root. All
+focus-changing runs, the gallery, and wire/concurrency/acceptance checks acquired
+and released the shared full-lane lock. Serial-lane classes ran individually,
+including LifecycleHelperTests. Automatic result bundles and any test-app clones
+were removed afterward; text logs and gallery PNGs remain the evidence.
+
+| Native class | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| `AutomaticContextTests` | 11 | 0 | 0 |
+| `BudgetOwnerUnloadTests` | 7 | 0 | 0 |
+| `CatalogSourceTests` | 9 | 0 | 0 |
+| `ConfigurationVaultTests` | 14 | 0 | 0 |
+| `ConnectionSettingsFlowTests` | 6 | 0 | 0 |
+| `ConnectionSwitchJournalTests` | 6 | 0 | 0 |
+| `ConversationPaneTests` | 83 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 34 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `FamilyDeletionTests` | 10 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoryEdgeTests` | 16 | 0 | 0 |
+| `HistoryEditTests` | 3 | 0 | 0 |
+| `HistoryExtentTests` | 25 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 7 | 0 | 0 |
+| `KeychainSettingsTimeoutTests` | 13 | 0 | 0 |
+| `LaunchSelectionTests` | 20 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `OnboardingTests` | 20 | 0 | 0 |
+| `PastedAttachmentTests` | 8 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SendImmediacyTests` | 14 | 0 | 0 |
+| `SettingsSaveTests` | 15 | 0 | 0 |
+| `SideBudgetInspectorLifetimeTests` | 2 | 0 | 0 |
+| `SideBudgetIntegrationTests` | 18 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 10 | 0 | 0 |
+| `SubagentOpeningTests` | 13 | 0 | 0 |
+| `SubagentOrganizationTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TranscriptKeptRowsTests` | 10 | 0 | 0 |
+| `UpdatePauseTests` | 7 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WorkspaceConcurrencyTests` | 10 | 0 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceFailureTests` | 6 | 0 | 0 |
+| `WorkspaceFollowupTests` | 9 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 49 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+| `WorkspaceValidationGalleryTests` | 1 | 0 | 0 |
+
+Exact final commands (from the evidence `.command` files; each has a matching
+text `.log` and exit `.status`):
+
+```sh
+# final-ConversationPaneTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+# final-HistoryEditTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryEditTests
+# final-InheritedSubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+# final-LifecycleHelperTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+# final-SideBudgetInspectorLifetimeTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideBudgetInspectorLifetimeTests
+# final-SubagentOpeningTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+# final-SubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+# final-WindowLifecycleTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+# final-followup
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceFailureTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/SendImmediacyTests -only-testing:PiAppTests/ConnectionSettingsFlowTests -only-testing:PiAppTests/WorkspaceFollowupTests -only-testing:PiAppTests/KeychainSettingsTimeoutTests
+# final-host
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceConcurrencyTests -only-testing:PiAppTests/WorkspaceTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/CatalogSourceTests -only-testing:PiAppTests/ConfigurationVaultTests -only-testing:PiAppTests/SettingsSaveTests -only-testing:PiAppTests/OnboardingTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/BudgetOwnerUnloadTests -only-testing:PiAppTests/SideBudgetIntegrationTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/AutomaticContextTests
+# final-model
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/PastedAttachmentTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/SubagentOrganizationTests -only-testing:PiAppTests/HistoryExtentTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests
+# final-ui
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/UpdatePauseTests -only-testing:PiAppTests/HistoryEdgeTests -only-testing:PiAppTests/TranscriptKeptRowsTests -only-testing:PiAppTests/ConnectionSwitchJournalTests
+# gallery
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round6/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+# release-helper-build
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace python3 scripts/build-bundle.py
+# wire
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+# concurrent
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+# acceptance
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-host/arm64-apple-macosx/release/pi-native-host
+```
+
+Exact failing-first and mutation commands:
+
+```sh
+# failing-first
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testConflictDuringOpeningKeepsCapturedSubmissionAfterEmptyDebounce -only-testing:PiAppTests/WorkspaceRaceTests/testReplacementOpeningDoesNotAwaitRetiredConfiguration -only-testing:PiAppTests/WorkspaceRaceTests/testRetiredConfigurationFailureCannotCloseReplacementHelper -only-testing:PiAppTests/WorkspaceRaceTests/testRetiredConfigurationFailureCannotCloseReassignedChat
+# failing-opening-sweep
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testReplacementOpeningDoesNotAwaitRetiredOpeningConfiguration
+# mutation-submission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testConflictDuringOpeningKeepsCapturedSubmissionAfterEmptyDebounce
+# mutation-sharing
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testReconciliationDoesNotShareConfigurationFromAnotherLease
+# mutation-close
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testRetiredConfigurationFailureCannotCloseReplacementHelper -only-testing:PiAppTests/WorkspaceRaceTests/testRetiredConfigurationFailureCannotCloseReassignedChat -only-testing:PiAppTests/WorkspaceRaceTests/testRetiredConfigurationFailureCannotCloseReopenedRuntime
+# mutation-close-reply
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testConfigurationCloseReplyCannotClearReopenedRuntime
+# mutation-close-failure
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testConfigurationCloseFailureCannotReleaseReopenedRuntime
+# mutation-opening
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceRaceTests/testReplacementOpeningDoesNotAwaitRetiredOpeningConfiguration
+```
+
+All requested findings are fixed. The separate shared-capsule visual follow-up
+above is recorded for an owner decision; no wider PiKit change is included.

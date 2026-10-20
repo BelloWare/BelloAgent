@@ -4,6 +4,12 @@
 
 ## 0.1.130
 
+- [x] Rejected submissions remain separate durable input records across conflict-episode edits and empty debounces. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Configuration tasks are shared only within their helper connection, chat lease and runtime generation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Retired configuration failures and late close replies cannot close or clear replacement runtimes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Replacement openings no longer wait for an old opening's retired configuration work. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] The Draft recovery chooser no longer draws vertical border artifacts beside its pill. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+
 - [x] Conflict restoration works with paused queues while protecting active sends and edits. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
 - [x] Each conflict episode updates one durable copy; a fixed recovery row offers every retained copy and interrupted submission through its chooser. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
 

@@ -5,7 +5,7 @@ extension WorkspaceModel {
     /// What an open or a send relies on: the connection, as long as it is
     /// not deleted, and the chat still on it, as long as it has not been
     /// moved to another (`connectionGenerations`).
-    struct ConnectionLease {
+    struct ConnectionLease: Equatable {
         let profileID: String
         let deletionGeneration: UInt64
         let chatID: String
@@ -33,6 +33,30 @@ extension WorkspaceModel {
         // A chat moving to another connection, or moved since, is not on this one.
         guard connectionSwitches[lease.chatID] == nil, connectionGenerations[lease.chatID, default: 0] == lease.chatGeneration,
               record(lease.chatID).map({ $0.profileID == lease.profileID }) ?? true else { throw connectionChanged }
+    }
+    struct SessionConfigurationLease: Equatable {
+        let connection: UUID?
+        let workspaceID: String
+        let chat: ConnectionLease
+        let generation: UInt64
+    }
+    func configurationLease(for item: ChatRecord, host: HostSupervisor) throws -> SessionConfigurationLease {
+        let lease = SessionConfigurationLease(connection: host.connectionID, workspaceID: item.workspaceID,
+                                              chat: try connectionLease(for: item), generation: sessionConfigurationGenerations[item.id, default: 0])
+        try requireConfiguration(lease, host: host)
+        return lease
+    }
+    func requireConfiguration(_ lease: SessionConfigurationLease, host: HostSupervisor) throws {
+        try requireHost(host, connection: lease.connection, workspaceID: lease.workspaceID)
+        try requireConnection(lease.chat)
+        guard sessionConfigurationGenerations[lease.chat.chatID, default: 0] == lease.generation else { throw CancellationError() }
+    }
+    func retireSessionConfiguration(_ id: String) {
+        sessionConfigurationGenerations[id, default: 0] &+= 1
+        sessionProfileRevisions.removeValue(forKey: id)
+        sessionConfigurations.removeValue(forKey: id)?.task.cancel()
+        // An opening may itself be waiting on that configuration task.
+        sessionOpenings.removeValue(forKey: id)?.task.cancel()
     }
     /// An open may acknowledge after deletion has already inspected the loaded
     /// sessions. Keep it tracked until its late runtime is actually closed.
@@ -250,14 +274,23 @@ extension WorkspaceModel {
         if !changedRoute {
             let sideSessions = sides.values.filter { $0.profileID == profile.id }.map { ($0.id, $0.workspaceID) }
             for (id, workspaceID) in affected.map({ ($0.id, $0.workspaceID) }) + sideSessions where opened.contains(id) {
-                guard let host = hosts[workspaceID], host.isReady else { continue }
+                guard let host = hosts[workspaceID], host.isReady, let item = record(id),
+                      let runtime = try? configurationLease(for: item, host: host) else { continue }
                 do {
-                    if let item = record(id) { try await reconcileSessionProfile(item, host: host) }
+                    try await reconcileSessionProfile(item, host: host)
                 } catch {
+                    // A retired save owns neither the replacement runtime nor
+                    // its bookkeeping, even when both use the same helper.
+                    guard (try? requireConfiguration(runtime, host: host)) != nil else { continue }
                     // A helper without the command: an idle session reopens with the new settings on its next turn.
                     if displays[id]?.hasWork != true {
-                        do { _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id) }
-                        catch { releaseHelperSession(id) }
+                        do {
+                            _ = try await host.request("session.close", sessionID: id)
+                            try requireConfiguration(runtime, host: host)
+                            helperSessionDidUnload(id)
+                        } catch {
+                            if (try? requireConfiguration(runtime, host: host)) != nil { releaseHelperSession(id) }
+                        }
                     }
                 }
             }
@@ -267,17 +300,17 @@ extension WorkspaceModel {
     /// Opening and saving share the same configuration writer. A save during
     /// an acknowledgement is reconciled again before this runtime is reused.
     func reconcileSessionProfile(_ item: ChatRecord, host: HostSupervisor) async throws {
-        let lease = try connectionLease(for: item), connection = host.connectionID
+        let lease = try configurationLease(for: item, host: host), connection = lease.connection
         while true {
             try Task.checkCancellation()
-            guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
-            try requireConnection(lease)
+            try requireConfiguration(lease, host: host)
             guard let profile = profiles.first(where: { $0.id == item.profileID }) else { throw connectionUnavailable }
-            if let pending = sessionConfigurations[item.id] {
+            if let pending = sessionConfigurations[item.id], pending.lease == lease {
                 try await pending.task.value
                 if sessionConfigurations[item.id]?.token == pending.token { sessionConfigurations.removeValue(forKey: item.id) }
                 continue
             }
+            sessionConfigurations.removeValue(forKey: item.id)?.task.cancel()
             guard let configured = sessionProfileRevisions[item.id], configured.connection != connection || configured.revision != profile.revision else { return }
             let token = UUID()
             let task = Task { [self] in
@@ -288,21 +321,19 @@ extension WorkspaceModel {
                     throw error
                 }
                 try Task.checkCancellation()
-                guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
-                try requireConnection(lease)
+                try requireConfiguration(lease, host: host)
                 guard profiles.first(where: { $0.id == item.profileID })?.revision == profile.revision else { return }
                 var wire = profile.wire.object ?? [:]
                 wire["headers"] = credential["headers"]
                 let result = try await host.request("session.configure", sessionID: item.id, params: ["profile": .object(wire), "apiKey": credential["apiKey"] ?? .string("")])
                 try Task.checkCancellation()
-                guard !isShutDown, host.isReady, host.connectionID == connection else { throw CancellationError() }
-                try requireConnection(lease)
+                try requireConfiguration(lease, host: host)
                 sessionProfileRevisions[item.id] = (connection, profile.revision)
                 if result.object?["applied"]?.bool == false {
                     displays[item.id]?.notice = "Settings saved. This run keeps the connection settings it started with; the next turn uses the new ones."
                 }
             }
-            sessionConfigurations[item.id] = (token, task)
+            sessionConfigurations[item.id] = (token, lease, task)
             defer { if sessionConfigurations[item.id]?.token == token { sessionConfigurations.removeValue(forKey: item.id) } }
             try await task.value
         }

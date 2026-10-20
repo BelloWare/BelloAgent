@@ -62,6 +62,8 @@ extension WorkspaceModel {
             self.boundHostConnections.removeValue(forKey: workspace.id)
             self.interruptSubagents(workspaceID: workspace.id)
             self.liveActivity.disconnect(workspace.id)
+            let configured = self.sessionConfigurations.filter { $0.value.lease.workspaceID == workspace.id }.map(\.key)
+            for id in Set(configured).union(self.chats.filter { $0.workspaceID == workspace.id }.map(\.id)) { self.retireSessionConfiguration(id) }
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.retireBudgetRead(chat.id)
@@ -201,7 +203,7 @@ extension WorkspaceModel {
                     if let self, self.hosts[item.workspaceID] === host, host.connectionID == connection {
                         self.retireBudgetRead(id)
                         self.opened.remove(id); self.budgetDependencySessions.remove(id); self.releasedHelperSessions.remove(id)
-                        self.sessionProfileRevisions.removeValue(forKey: id); self.sessionConfigurations[id]?.task.cancel()
+                        self.retireSessionConfiguration(id)
                         unloaded = true
                     }
                 } catch { /* A busy runtime remains loaded, including its tool mode. */ }
@@ -216,7 +218,7 @@ extension WorkspaceModel {
         retireBudgetRead(id)
         if record(id) == nil { budgetStates.removeValue(forKey:id) }
         opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
-        sessionProfileRevisions.removeValue(forKey: id); sessionConfigurations[id]?.task.cancel()
+        retireSessionConfiguration(id)
         releaseUnusedBudgetSessions()
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {

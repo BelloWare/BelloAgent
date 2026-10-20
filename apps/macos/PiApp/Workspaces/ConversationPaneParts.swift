@@ -155,6 +155,7 @@ import QuartzCore
 
     init() {
         super.init(frame: .zero)
+        chooser.circularCorners = true
         box.content = ShellStack(.horizontal, spacing: PiSpacing.sm, [
             .view(shellLine("Draft recovery", font: PiKit.Font.body, color: .labelColor), .flexible),
             .view(chooser),

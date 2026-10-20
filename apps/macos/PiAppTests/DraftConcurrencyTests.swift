@@ -103,10 +103,9 @@ import SQLite3
         let losing = DraftRecord(id: b.id, text: "Draft inside failed transaction")
         let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Message", state: "intent")
         do { try await second.store?.recordSubmission(intent, draft: losing, draftVersion: b.draftVersion); XCTFail("Must conflict") } catch { }
-        var kept = losing; kept.text = intent.text + "\n\n" + losing.text
-        try await assertConflictSaved(second, kept)
+        try await assertConflictSaved(second, losing)
         let savedIntent = try await second.store?.get(CommandIntent.self, kind: "pending:" + b.id, id: intent.id)
-        XCTAssertNil(savedIntent, "Preserving a conflict must not commit the failed submission")
+        XCTAssertEqual(savedIntent?.text, intent.text, "The failed draft write must still retain its captured input")
     }
 
     func testConflictCopyWriteFailurePinsTheDisplayDuringNavigation() async throws {
@@ -234,8 +233,58 @@ import SQLite3
         let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Accepted input waiting to send", state: "intent")
         do { try await second.store?.recordSubmission(intent, draft: DraftRecord(id: b.id, text: "Remaining input"), draftVersion: b.draftVersion); XCTFail("Must conflict") } catch { }
         let copies = try await second.store?.list(DraftRecord.self, kind: "draft-conflict:" + b.id)
-        XCTAssertEqual(copies?.count, 1, "One episode keeps the captured input and remaining draft together")
-        XCTAssertEqual(copies?.first?.text, intent.text + "\n\nRemaining input", "The rejected submission's input must be durable too")
+        XCTAssertEqual(copies?.map(\.text), ["Remaining input"])
+        // Empty debounces and continued typing replace only the episode copy.
+        for text in ["", "Later typing", ""] {
+            b.draft = text; second.draftChanged(b); await second.draftWrites.tasks[b.id]?.value
+        }
+        let reader = MetadataStore(url: second.root.appendingPathComponent("desktop.sqlite"))
+        let recovered = try await reader.selectionMetadata(id: b.id, draft: true, anchor: false)
+        XCTAssertEqual(recovered.recovered.map(\.text), [intent.text])
+        XCTAssertEqual(recovered.conflicts.map(\.draft.text), [""])
+        XCTAssertEqual(recovered.draft?.text, "Winning draft")
+        await reader.close()
+    }
+
+    func testRejectedSubmissionSettlesOnlyWhenRestoredOrDiscarded() async throws {
+        for insert in [true, false] {
+            let (first, a, second, b) = try await fixture()
+            a.draft = "Winning draft"; try await first.flushDrafts()
+            let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Captured input", state: "intent", draftReviewTracked: true)
+            do { try await second.store?.recordSubmission(intent, draft: DraftRecord(id: b.id, text: "Remaining input"), draftVersion: b.draftVersion); XCTFail("Must conflict") } catch { }
+            // Recreate the display without the losing process's in-memory input.
+            second.displays.removeAll()
+            await second.select(b.id, focusesComposer: false)
+            let reopened = try XCTUnwrap(second.displays[b.id])
+            XCTAssertEqual(reopened.recovered.map(\.id), [intent.id])
+            second.recoverDraft(intent, insert: insert)
+            await second.draftWrites.recoveries[b.id]?.value
+            let saved = try await second.store?.get(DraftRecord.self, kind: "draft", id: b.id)
+            XCTAssertEqual(saved?.text, insert ? "Winning draft\n\nCaptured input" : "Winning draft")
+            let pending = try await second.store?.list(CommandIntent.self, kind: "pending:" + b.id)
+            XCTAssertTrue(pending?.isEmpty == true)
+        }
+    }
+
+    func testFailedCapturedInputPreservationPinsUntilBothRecordsCommit() async throws {
+        let (first, a, second, b) = try await fixture()
+        a.draft = "Winning draft"; try await first.flushDrafts()
+        let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Captured input", state: "intent")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(second.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_input BEFORE INSERT ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(FAIL, 'generated failure'); END;", nil, nil, nil), SQLITE_OK)
+        do { try await second.store?.recordSubmission(intent, draft: DraftRecord(id: b.id, text: "Remaining input"), draftVersion: b.draftVersion); XCTFail("Must fail") } catch { }
+        XCTAssertTrue(b.draftVersion.hasUnsavedConflict, "An unsaved captured input pins its display")
+        let pendingCopies = try await second.store?.draftConflicts(id: b.id)
+        XCTAssertTrue(pendingCopies?.isEmpty == true, "The composer copy and captured input must commit together")
+        fillDisplayCache(second, oldest: b); second.releaseUnreadDisplays(keeping: "other-9")
+        XCTAssertTrue(second.displays[b.id] === b)
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_input", nil, nil, nil), SQLITE_OK)
+        b.draft = ""; second.draftChanged(b); await second.draftWrites.tasks[b.id]?.value
+        XCTAssertFalse(b.draftVersion.hasUnsavedConflict)
+        let pending = try await second.store?.list(CommandIntent.self, kind: "pending:" + b.id)
+        XCTAssertEqual(pending?.map(\.text), [intent.text])
     }
 
     func testConflictRecoveryAfterReloadKeepsWinnerAndFullLosingDraft() async throws {
