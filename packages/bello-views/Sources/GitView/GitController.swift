@@ -113,6 +113,9 @@ import AppKit
     @Published public private(set) var notice = ""
     @Published public var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
     @Published public private(set) var diff: [GitDiffFile] = []
+    /// The floating file list needs status and counts, never history or patches.
+    public let summaryOnly: Bool
+    @Published public private(set) var changeStats: [String: GitDiffStat] = [:]
     /// The Changes diff is being read for the reader. A read nobody asked for
     /// never sets it, and the History tab's commit reads have a flag of their
     /// own: one flag for both panes flashed a spinner on the pane not reading.
@@ -322,7 +325,8 @@ import AppKit
     private var commitCacheOrder: [String] = []
     private static let commitCacheLimit = 24
 
-    public init(roots: [String], service: GitService = .shared) {
+    public init(roots: [String], service: GitService = .shared, summaryOnly: Bool = false) {
+        self.summaryOnly = summaryOnly
         self.service = service; self.history = GitHistoryState(service: service)
         self.roots = roots; self.root = roots.first
     }
@@ -390,6 +394,7 @@ import AppKit
         selection = nil
         repositoryGeneration += 1; repository = RepositorySnapshot()
         diff = []; detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false
+        changeStats = [:]
         commits = []; historyExhausted = false; branches = []; stashes = []
         commitCache = [:]; commitCacheOrder = []
         applyChecked([]); checkedByReader = false
@@ -556,6 +561,7 @@ import AppKit
             guard publishRepository(nil, status: GitRepositoryStatus(), generation: generation) else { return }
             updateWatch(on: nil)
             publish(\.diff, []); publish(\.commits, [])
+            publish(\.changeStats, [:])
             publish(\.selection, nil); publish(\.selectedCommit, nil); publish(\.detail, nil); return
         }
         // SinceNow cannot recover a save made before the stream starts. Arm
@@ -574,6 +580,18 @@ import AppKit
             guard await resolveDraftOwner(top: top, folder: root, generation: generation) else { return }
             let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
+            if summaryOnly {
+                let stats = try await service.changeStats(in: top, entries: status.entries)
+                guard current(generation) else { return }
+                publish(\.changeStats, stats)
+                if let ignored = try? await service.ignoredPaths(in: top),
+                   current(generation), let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
+                    watcher.ignored.update(root: watcher.root, relative: ignored)
+                }
+                guard current(generation) else { return }
+                refreshesFinished += 1
+                return
+            }
             let paths = Set(status.entries.map(\.path))
             // Files arrive ticked until the reader says otherwise; once they
             // have, a refresh never ticks anything back on. Unticking every
@@ -642,6 +660,7 @@ import AppKit
             commitReadInterrupted = nil
             selection = nil; clearHistorySelection()
             diff = []; commits = []; branches = []; stashes = []
+            changeStats = [:]
             commitCache = [:]; commitCacheOrder = []; historyExhausted = false
             checkedByReader = false; applyChecked([])
             if repository.read {
@@ -668,7 +687,7 @@ import AppKit
     }
 
     private func reloadHistory(generation: Int? = nil, automatic: Bool = false) async {
-        guard let repositoryRoot, !closed, !suspended else { return }
+        guard !summaryOnly, let repositoryRoot, !closed, !suspended else { return }
         let generation = generation ?? self.generation
         let query = GitHistoryQuery(filter: logFilter, options: historyOptions)
         guard await history.reload(in: repositoryRoot, query: query, preservingCount: automatic),
@@ -943,6 +962,7 @@ import AppKit
     /// A silent read keeps the diff on screen, with no spinner, until the new
     /// one is ready, and replaces it only if it changed.
     public func startSelectedDiffLoad(silently: Bool = false) {
+        guard !summaryOnly else { return }
         selectedDiffTask?.cancel()
         selectedDiffStale = false
         guard let repositoryRoot, let selection else { publish(\.diff, []); publish(\.diffLoading, false); return }

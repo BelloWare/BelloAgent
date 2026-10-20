@@ -3,6 +3,78 @@ import XCTest
 @testable import GitView
 
 final class GitRepositoryStateTests: XCTestCase {
+    func testSummaryNeverFollowsAReplacedDirectoryOutsideTheRepository() async throws {
+        let root = try repository(), outside = try repository()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("replaced"), withDestinationURL: outside)
+        let entries = GitService.parseStatus(Data("? replaced/same.txt\0".utf8)).entries
+        let stats = try await GitService.shared.changeStats(in: root.path, entries: entries)
+        XCTAssertNil(stats["replaced/same.txt"], "A directory replaced after status was read must not escape the project")
+    }
+
+    @MainActor func testSummaryReadsCountsWithoutPatchesHistoryOrSelection() async throws {
+        let root = try repository()
+        try "new\nlast line".write(to: root.appendingPathComponent("new\nfile.txt"), atomically: true, encoding: .utf8)
+        try Data([0, 1, 2]).write(to: root.appendingPathComponent("binary.dat"))
+        let controller = GitController(roots: [root.path], summaryOnly: true)
+        defer { controller.letGo() }
+        XCTAssertFalse(controller.statusRead)
+        controller.setShown(true)
+        try await wait { controller.statusRead && !controller.loading }
+        XCTAssertEqual(controller.changeStats["same.txt"]?.added, 1)
+        XCTAssertEqual(controller.changeStats["same.txt"]?.removed, 1)
+        XCTAssertEqual(controller.changeStats["new\nfile.txt"]?.added, 2)
+        XCTAssertEqual(controller.changeStats["binary.dat"]?.binary, true)
+        XCTAssertNil(controller.selection); XCTAssertTrue(controller.diff.isEmpty); XCTAssertTrue(controller.commits.isEmpty)
+        XCTAssertTrue(controller.branches.isEmpty); XCTAssertTrue(controller.stashes.isEmpty)
+        XCTAssertTrue(controller.isWatching)
+        controller.setShown(false)
+        XCTAssertTrue(controller.suspended); XCTAssertFalse(controller.isWatching)
+    }
+
+    @MainActor func testSummaryCountsFollowTheDiffSideIncludingUnbornStagedAndRenamedFiles() async throws {
+        let root = try repository()
+        try git(["mv", "same.txt", "renamed.txt"], in: root)
+        try git(["add", "renamed.txt"], in: root)
+        let controller = GitController(roots: [root.path], summaryOnly: true)
+        defer { controller.letGo() }
+        controller.setShown(true)
+        try await wait { controller.statusRead && !controller.loading }
+        XCTAssertEqual(controller.changeStats["renamed.txt"]?.added, 1)
+        try "changed\nmore\n".write(to: root.appendingPathComponent("renamed.txt"), atomically: true, encoding: .utf8)
+        await controller.refresh()
+        XCTAssertTrue(controller.status.entries.first { $0.path == "renamed.txt" }?.unstaged == true)
+        XCTAssertEqual(controller.changeStats["renamed.txt"]?.added, 1, "The row opens the working-tree side, not index plus worktree")
+        XCTAssertEqual(controller.changeStats["renamed.txt"]?.removed, 0)
+        let unborn = root.appendingPathComponent("unborn")
+        try FileManager.default.createDirectory(at: unborn, withIntermediateDirectories: true)
+        try git(["init", "-qb", "main"], in: unborn)
+        try "first\n".write(to: unborn.appendingPathComponent("first.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: unborn)
+        controller.root = unborn.path
+        try await wait { controller.repositoryRoot == unborn.path && !controller.loading }
+        XCTAssertEqual(controller.changeStats.keys.sorted(), ["first.txt"])
+        XCTAssertEqual(controller.changeStats["first.txt"]?.added, 1)
+        XCTAssertTrue(controller.commits.isEmpty)
+    }
+
+    @MainActor func testHiddenOrSupersededSummaryCannotPublishOldCounts() async throws {
+        let first = try repository(), second = try repository()
+        try "one\ntwo\nthree\n".write(to: first.appendingPathComponent("same.txt"), atomically: true, encoding: .utf8)
+        let controller = GitController(roots: [first.path, second.path], summaryOnly: true)
+        defer { controller.letGo(); GitController.statusReadDelay = .zero }
+        GitController.statusReadDelay = .milliseconds(200)
+        controller.setShown(true)
+        try await wait { controller.loading }
+        controller.setShown(false)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertFalse(controller.statusRead); XCTAssertTrue(controller.changeStats.isEmpty)
+        controller.root = second.path; controller.setShown(true)
+        try await wait { controller.repositoryRoot == second.path && !controller.loading }
+        XCTAssertEqual(controller.changeStats["same.txt"]?.added, 1)
+        XCTAssertEqual(controller.changeStats["same.txt"]?.removed, 1)
+        XCTAssertTrue(controller.diff.isEmpty); XCTAssertTrue(controller.commits.isEmpty)
+    }
+
     private func repository() throws -> URL {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("git-state-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

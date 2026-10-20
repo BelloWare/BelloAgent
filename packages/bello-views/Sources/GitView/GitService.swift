@@ -507,6 +507,39 @@ public actor GitService {
         return stats
     }
 
+    /// Counts for the same side of each file that the compact list opens.
+    /// Two batched reads, no patches, external diff drivers or text conversion.
+    func changeStats(in root: String, entries: [GitStatusEntry]) async throws -> [String: GitDiffStat] {
+        guard !entries.isEmpty else { return [:] }
+        let arguments = ["diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames"]
+        async let worktree = run(arguments, in: root)
+        async let index = run(arguments + ["--cached"], in: root)
+        let working = Self.parseNumstat(try require(await worktree, "Reading change counts").stdout)
+        let staged = Self.parseNumstat(try require(await index, "Reading staged counts").stdout)
+        var stats: [String: GitDiffStat] = [:]
+        for entry in entries where !entry.untracked {
+            stats[entry.path] = entry.unstaged ? working[entry.path] : staged[entry.path]
+        }
+        let untracked = entries.filter(\.untracked).map(\.path)
+        let read = Task.detached(priority: .utility) {
+            var result: [String: GitDiffStat] = [:]
+            for path in untracked {
+                try Task.checkCancellation()
+                // Reuse the bounded reader: it rejects symlinks in every path
+                // component, as well as devices/FIFOs and files over 4 MiB.
+                guard let file = try? GitPatchFile.read(in: root, path: path) else { continue }
+                let binary = file.bytes.contains(0)
+                let lines = binary ? 0 : file.bytes.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
+                let trailing = !file.bytes.isEmpty && file.bytes.last != 10 ? 1 : 0
+                result[path] = GitDiffStat(added: binary ? 0 : lines + trailing, removed: 0, binary: binary)
+            }
+            return result
+        }
+        let added = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+        stats.merge(added) { _, new in new }
+        return stats
+    }
+
     /// The patch of one commit, or of one path inside it, already parsed.
     /// A commit's patch, against its first parent (the empty tree for the
     /// first commit, whatever log.showRoot says), all of it or one file's. A
