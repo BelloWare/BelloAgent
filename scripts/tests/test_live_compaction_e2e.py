@@ -57,6 +57,36 @@ def run_fixture(*extra):
 
 @unittest.skipUnless(HELPER, "no release helper is built (scripts/build-bundle.py builds one under $PI_BUILD_ROOT)")
 class FixtureRunTests(unittest.TestCase):
+    def test_inherited_home_skills_never_reach_the_fixture_gateway(self):
+        with tempfile.TemporaryDirectory(prefix="pi-home-fixture-") as folder:
+            root = pathlib.Path(folder)
+            inherited = root / "inherited-home"
+            skill = inherited / ".agents/skills/private/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            sentinel = "SYNTHETIC_PRIVATE_SKILL_DESCRIPTION_74AC"
+            skill.write_text(f"---\nname: private\ndescription: {sentinel}\n---\nSynthetic test instructions.\n")
+            output = io.StringIO()
+            with patch.dict(os.environ, {"HOME": str(inherited), "CFFIXED_USER_HOME": str(inherited),
+                                         "PI_BUILD_ROOT": str(root / "build")}), \
+                 patch.object(reasoning_gateway.ReasoningGateway, "input_tokens",
+                              wraps=reasoning_gateway.ReasoningGateway.input_tokens) as requests, \
+                 patch.object(harness.native_host_client.subprocess, "Popen", wraps=subprocess.Popen) as launches, \
+                 contextlib.redirect_stdout(output):
+                code = harness.main(["--fixture", "--helper", str(HELPER), "--scenario", "compact-now", "--scenario", "mid-run"])
+            self.assertEqual(code, 0, output.getvalue()[-6000:])
+            bodies = [json.dumps(call.args[0]) for call in requests.call_args_list]
+            self.assertGreater(len(bodies), 2, "the fixture must see summary and turn requests")
+            for text in (sentinel, str(skill)):
+                with self.subTest(leaked=text):
+                    self.assertFalse(any(text in body for body in bodies), f"gateway received inherited skill metadata: {text}")
+            environments = [call.kwargs["env"] for call in launches.call_args_list]
+            self.assertEqual(len(environments), 2)
+            for name in ("HOME", "CFFIXED_USER_HOME"):
+                with self.subTest(variable=name):
+                    self.assertTrue(all(env[name] != str(inherited) for env in environments), f"helper inherited {name}")
+                    self.assertEqual(len({env[name] for env in environments}), 2, "each helper needs its own home")
+            self.assertTrue(all(env["HOME"] == env["CFFIXED_USER_HOME"] for env in environments))
+
     def test_every_scenario_passes_against_a_model_that_reasons(self):
         done, report, written = run_fixture()
         self.assertEqual(done.returncode, 0, done.stdout[-6000:] + done.stderr[-3000:])
@@ -235,6 +265,87 @@ class SpendingFailureTests(unittest.TestCase):
                 self.assertEqual(run.spent, spent)
                 self.assertAlmostEqual(harness.Run.budget(run), 1.0 if spent == 0 else 0.50)
                 session.status.assert_called_once_with()
+
+
+class PollingAccountingTests(unittest.TestCase):
+    """Real polling and follow-up dispatch with a fake helper and no network."""
+
+    def compact(self, cost, *, mode="live", running=True, state="idle"):
+        cfg = harness.Config(mode=mode, max_cost=1.0, window=128_000)
+        run = Mock(cfg=cfg, spent=0.0, unreported=0, dearest=0.0, spend_unknown=False)
+        session = harness.Session.__new__(harness.Session)
+        session.run, session.cfg, session.id = run, cfg, "fake-session"
+        session.opened, session.watched = {}, set()
+        settled = {"state": state, "cost": cost}
+        statuses = [{"state": "running"}] if running else []
+
+        def command(method, *args, **kwargs):
+            if method == "session.status":
+                return statuses.pop(0) if statuses else settled
+            if method == "debug.list":
+                return {"attempts": [{"attemptId": "summary", "purpose": "compaction", "outcome": "running"}]}
+            return {}
+
+        session.helper = Mock()
+        session.helper.command.side_effect = command
+        history = Mock(messages=[])
+        history.tail_tokens.return_value = 0
+        result = harness.Result("compact-now", "fake compaction")
+        with patch.object(harness, "Session", return_value=session), \
+             patch.object(harness, "Helper", side_effect=AssertionError("no real helper")), \
+             patch("socket.socket", side_effect=AssertionError("no network")), patch.object(harness.time, "sleep"):
+            returned, status, stopped = harness.compaction_scenario(run, result, "compact-now", history, 4, 30)
+            self.assertIs(returned, session)
+            self.assertEqual(status, settled)
+            harness.count_spend(run, session, result)
+            harness.cost_check(result, run)
+        submits = [call for call in session.helper.command.call_args_list if call.args[0] == "turn.submit"]
+        return run, result, submits, stopped
+
+    def test_unpriced_summary_between_polls_blocks_follow_up(self):
+        for running in (True, False):
+            with self.subTest(running=running):
+                run, result, submits, stopped = self.compact({"spentUSD": 0.10, "unreportedRequests": 1}, running=running)
+                self.assertEqual(submits, [], "an unpriced summary must not authorize FOLLOW_UP")
+                self.assertIn("cost", stopped)
+                self.assertFalse(result.cost["spendKnown"])
+                self.assertIsNone(result.cost["runTotalUSD"])
+                self.assertEqual(harness.Run.budget(run), 0)
+
+    def test_missing_or_malformed_settled_accounting_blocks_follow_up(self):
+        for cost in (None, {}, [], ["invalid cost"], {"spentUSD": 0.10}, {"spentUSD": 0.10, "unreportedRequests": False},
+                     {"spentUSD": 0.10, "unreportedRequests": -1}, {"spentUSD": "0", "unreportedRequests": 0},
+                     {"spentUSD": float("nan"), "unreportedRequests": 0}, {"spentUSD": 10 ** 400, "unreportedRequests": 0}):
+            with self.subTest(cost=cost):
+                run, result, submits, stopped = self.compact(cost)
+                self.assertEqual(submits, [], "unknown settled accounting must not authorize FOLLOW_UP")
+                self.assertIn("cost", stopped)
+                self.assertIsNone(result.cost["runTotalUSD"])
+                self.assertEqual(harness.Run.budget(run), 0)
+
+    def test_unpriced_paused_or_error_status_is_not_successful_completion(self):
+        for state in ("paused", "error"):
+            with self.subTest(state=state):
+                _, result, submits, stopped = self.compact({"spentUSD": 0.0, "unreportedRequests": 1}, state=state)
+                self.assertEqual(submits, [])
+                self.assertIsNotNone(stopped)
+                self.assertIsNone(result.cost["runTotalUSD"])
+
+    def test_reported_summary_still_submits_one_follow_up(self):
+        for spent in (0, 0.10):
+            with self.subTest(spent=spent):
+                _, result, submits, stopped = self.compact({"spentUSD": spent, "unreportedRequests": 0})
+                self.assertEqual(len(submits), 1)
+                self.assertEqual(submits[0].args[1]["text"], harness.FOLLOW_UP)
+                self.assertIsNone(stopped)
+                self.assertTrue(result.passed)
+                self.assertEqual(result.cost["runTotalUSD"], spent)
+
+    def test_fixture_mode_keeps_its_existing_dispatch_policy(self):
+        _, result, submits, stopped = self.compact({"spentUSD": 0.0, "unreportedRequests": 1}, mode="fixture")
+        self.assertEqual(len(submits), 1)
+        self.assertIsNone(stopped)
+        self.assertIsNone(result.cost["runTotalUSD"])
 
 
 def summary_request(limit, effort="high"):
