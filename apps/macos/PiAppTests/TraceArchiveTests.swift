@@ -10,6 +10,66 @@ private actor TraceExportGate {
 }
 
 final class TraceArchiveTests: XCTestCase {
+    func testLargeManifestsRemainListableExportableAndClearable() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString, bytes = Data("generated retained request".utf8)
+        let metadata: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string("session"),
+            "usage": .object(["raw": .object(["vendor_details": .string(String(repeating: "v", count: 70_000))])]),
+            "request": .object(["state": .string("complete"), "retainedBytes": .number(Double(bytes.count))])]
+        // Seed an exported artifact independently, so the reader regression is
+        // exercised even when the exporter still rejects a large manifest.
+        let folder = root.appendingPathComponent(id)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var manifest = metadata; manifest["retainedAt"] = .number(Date().timeIntervalSince1970)
+        try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("manifest.json"))
+        try bytes.write(to: folder.appendingPathComponent("request.bin"))
+        let archive = TraceArchive(root: root)
+        let listed = try await archive.list(sessionID: "session")
+        XCTAssertEqual(listed.count, 1, "Reconciliation must not delete a valid large manifest")
+        guard listed.count == 1 else { return }
+        XCTAssertEqual(listed[0]["usage"], metadata["usage"])
+        let exported = try await archive.exportRetained(sessionID: "session", attemptID: id, destination: root.appendingPathComponent("export"))
+        XCTAssertEqual(try Data(contentsOf: exported.appendingPathComponent("request.bin")), bytes)
+        let copied = try JSONDecoder().decode([String: WireValue].self, from: Data(contentsOf: exported.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(copied["usage"], metadata["usage"])
+        try await archive.clear(sessionID: "session")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    func testLocalManifestBytesCountTowardQuotaButDestinationExportsHaveNoSizeCap() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TraceArchive(root: root, budget: 69_000)
+        let metadata: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "usage": .object(["raw": .object(["vendor_details": .string(String(repeating: "v", count: 70_000))])])]
+        do {
+            _ = try await archive.persist(metadata, read: { _, _ in XCTFail("No retained bodies"); return [:] }, verify: { metadata })
+            XCTFail("Local manifests must respect the configured disk quota")
+        } catch { guard case TraceError.budget = error else { return XCTFail("Expected quota, got \(error)") } }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        let saved = try await archive.persist(metadata, destination: root.appendingPathComponent("export"), read: { _, _ in [:] }, verify: { metadata })
+        let manifest = try JSONDecoder().decode([String: WireValue].self, from: Data(contentsOf: saved.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(manifest["usage"], metadata["usage"])
+    }
+
+    func testEveryAcceptedArtifactRemainsListableBeyondTenThousandDirectories() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<10_000 {
+            let id = String(format: "00000000-0000-0000-0000-%012d", index), folder = root.appendingPathComponent(id)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let manifest: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string("session"), "retainedAt": .number(Date().timeIntervalSince1970)]
+            try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("manifest.json"))
+        }
+        let archive = TraceArchive(root: root)
+        let next: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "sessionId": .string("session")]
+        _ = try await archive.persist(next, read: { _, _ in [:] }, verify: { next })
+        let listed = try await archive.list(sessionID: "session")
+        XCTAssertEqual(listed.count, 10_001)
+        try await archive.clear(sessionID: "session")
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
     func testMalformedRetainedLengthsCannotTrapOrPublishAnArtifact() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

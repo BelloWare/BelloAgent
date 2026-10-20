@@ -281,9 +281,16 @@ import AppKit
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
-        guard let url = await PiQuestion.shared.save(panel) else { return }
-        do { try Data(request.metadataText.utf8).write(to: url, options: .atomic); notice = "" } catch { notice = error.localizedDescription }
+        do {
+            guard request.metadataLoaded, request.metadata["attemptId"]?.string == row.id,
+                  request.metadata["sessionId"]?.string == (row.sessionID ?? inspector.scope.sessionID) else {
+                throw HostError.failure("This request's record is unavailable.")
+            }
+            let data = Data(request.metadataText.utf8)
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            try data.write(to: url, options: .atomic); notice = ""
+        } catch { notice = error.localizedDescription }
     }
 
     private func exportBodies(_ row: InspectorRequestRow) async {
@@ -312,6 +319,7 @@ import AppKit
     /// screen, shows the result, then saves it with a manifest that says so.
     private func exportRedacted(_ row: InspectorRequestRow) async {
         guard let copySource else { return }
+        let sourceView = request.raw.rawValue
         let ask = NSAlert(); ask.messageText = "Which literal should be redacted?"
         ask.informativeText = "Every occurrence is replaced with [REDACTED] in a copy of the view on screen. This is not a secret detector."
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); ask.accessoryView = field
@@ -330,7 +338,7 @@ import AppKit
             guard await PiQuestion.shared.ask(preview) == .alertFirstButtonReturn else { return }
             let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-redacted-view.json"
             guard let url = await PiQuestion.shared.save(panel) else { return }
-            let manifest: WireValue = .object(["attemptId": .string(row.id), "sourceView": .string(request.raw.rawValue), "byteExact": .bool(false),
+            let manifest: WireValue = .object(["attemptId": .string(row.id), "sourceView": .string(sourceView), "byteExact": .bool(false),
                                                "transformations": .array([.string("The displayed view with a reader-named literal replaced by [REDACTED]. Other sensitive data may remain.")]),
                                                "view": .string(transformed)])
             try Data(manifest.pretty.utf8).write(to: url, options: .atomic)

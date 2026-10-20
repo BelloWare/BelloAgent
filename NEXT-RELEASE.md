@@ -4,6 +4,13 @@
 
 ## 0.1.130
 
+- [x] Accepted capture metadata over 4 MiB remains readable, exportable and expirable after reopening. [Validation](docs/validation/a130-inspector-0.1.130.md#round-3-hunt).
+- [x] Session-memory exports keep complete large manifests; manifest readers accept the same sizes and local retention counts their actual bytes.
+- [x] Capture database readers no longer reject accepted results above 100,001 rows.
+- [x] Legacy trace artifacts remain listable and clearable beyond 10,000 directories.
+- [x] Export Metadata validates and freezes the selected request before opening the destination chooser.
+- [x] Redacted exports retain their original Raw part label when navigation changes during the chooser.
+
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
 - [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
