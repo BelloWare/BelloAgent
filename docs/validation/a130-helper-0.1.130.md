@@ -1025,4 +1025,104 @@ Regenerated **56 PNGs**: **32 Inspector** and **24 deletion/import** scenes. Ins
 
 One own native build tree (1.3 GiB), one debug-helper tree (409 MiB), and one Release-helper tree (95 MiB) were used. No clone directories remain. All owned lane locks were released; other workstreams' locks were left alone. No installed app, live/paid provider, real preference/chat/Keychain, or explicit result-bundle path was used. Text logs are the evidence.
 
-No new unresolved round-8 issue remains. The prior completed-external-export lifetime question remains **needs owner decision**; in-flight export ownership is protected. Only `dev/a130-helper` is committed/pushed; no merge, fast-forward, tag, release or history rewrite was performed.
+No new unresolved round-8 issue remains. The completed-external-export lifetime question was pending in round 8; the lead resolved it in Round 3 hunt below: Markdown stays text-only. In-flight export ownership remains protected. Only `dev/a130-helper` is committed/pushed; no merge, fast-forward, tag, release or history rewrite was performed.
+
+
+## Round 3 hunt
+
+Base: `fe734912` (the lead's merged/fast-forwarded worktree), branch `dev/a130-helper`, 2026-10-20. The three assigned findings are **confirmed and fixed**. This round uses newly built products and new text logs under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/round3-hunt`; no earlier-run evidence is counted. All inputs, journals, tools and gateways are generated fixtures. No installed app, real preferences/chats/Keychain, live capture or paid provider was used.
+
+**Lead decision closed:** Markdown export stays text-only. This supersedes the earlier “needs owner decision” notes about completed Markdown exports in this record. Export in flight remains protected; a completed external Markdown file does not acquire permanent ownership of app-managed output. No bundling or permanent external-export registry is added.
+
+### Findings, failing-first evidence and mutations
+
+1. **helper-sessions-6 — automatic compaction task time.** `CompactionTaskRegressionTests.testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen` uses a generated history that triggers automatic compaction, a 150 ms summary and a 50 ms answer. `compaction-failing-first.log` shows the live and reopened task both reporting **53.93 ms versus 208.17 ms** measured for the turn (`XCTAssertEqual failed`). The summary attempt's existing settlement defer now also adds its measured duration to the optional active task. It counts successful, failed and cancelled summary attempts, preserving the existing exclusion of retry backoff. Manual utility work still has no active task to charge; the existing manual-compaction test now asserts that the recent task records are unchanged and no active record appears. Removing this one task increment (`mutation-summary.log`) fails both live/reopened assertions again, **53.51 versus 210.78 ms**. Restored tests pass.
+
+2. **helper-sessions-7 — crash recovery retry time.** `RetryTests.testCrashAfterToolBoundaryPreservesSavedRetryTime` waits for a 150 ms failed request, a 50 ms successful retry and a completed fixture tool, then holds the next request while copying the journal as a crash fixture. Before the fix, `failing-first.log` reports **51.56 ms versus the saved 204.14 ms**. Recovery now preserves the saved aggregate and adds only assistant message durations whose journal spans are after that state record. It does not use the displayed last row as a watermark, which may fall outside a checkpoint's loaded window. `testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime` additionally holds a second tool after its assistant reply was journaled but before another state snapshot; its failing-first result was **106.09 versus 261.15 ms** (`recovery-suffix-failing-first.log`). Both fixtures assert no tool executes in the reopened runtime.
+
+   Three mutations are caught: restoring the old successful-row sum fails both tests (`mutation-recovery-old.log`); removing the byte-offset fence double-counts the earlier successful reply, **263.19 versus 209.37 ms** in the first fixture (`mutation-recovery-no-offset.log`); omitting all suffix reconciliation loses the later reply, **208.79 versus 260.39 ms** (`mutation-recovery-no-suffix.log`). No unrecorded duration is invented for the request still in flight at the crash.
+
+3. **Quadratic legacy timeline canonicalisation.** `ResponseTimelineTests.testFiveThousandLegacyPartsCanonicalizeWithinPagingBudget` took **26,598.70 ms**, failing its 2,000 ms budget before the fix (`failing-first.log`). Each canonical part has a unique output index and is already complete, so the implementation now constructs segments in one pass instead of invoking streaming reconciliation repeatedly. IDs, part metadata, text, completed state, zero revisions, coverage and terminal receipt stay identical. `testCanonicalMatchesOriginalAlgorithmForGeneratedParts` compares the complete value and encoded JSON with the original consume/finish algorithm over empty/single/multipart inputs, repeated call IDs, optional names, Unicode, empty text, all ordinary part kinds and unusual kinds/source IDs. The original algorithm passes this equivalence control before the fix. The final affected run canonicalises 5,000 parts in **2.90 ms** (`final/affected-helper.log`); the final full-suite measurement is **3.42 ms**. Restoring the old loop fails at **25,670.52 ms** (`mutation-canonical.log`).
+
+Representative failing-first output (path prefixes omitted):
+
+```text
+CompactionTaskRegressionTests.swift:36: error: -[PiAgentCoreTests.CompactionTaskRegressionTests testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen] : XCTAssertEqual failed: ("Optional(53.93258333392441)") is not equal to ("Optional(208.1676666662097)")
+RetryTests.swift:80: error: -[PiAgentCoreTests.RetryTests testCrashAfterToolBoundaryPreservesSavedRetryTime] : XCTAssertEqual failed: ("Optional(51.55520833283663)") is not equal to ("Optional(204.14437499828637)")
+RetryTests.swift:95: error: -[PiAgentCoreTests.RetryTests testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime] : XCTAssertEqual failed: ("Optional(106.08820833265781)") is not equal to ("Optional(261.14658333174884)")
+ResponseTimelineTests.swift:35: error: -[PiAgentCoreTests.ResponseTimelineTests testFiveThousandLegacyPartsCanonicalizeWithinPagingBudget] : XCTAssertLessThan failed: ("26598.69566666521") is not less than ("2000.0") - One legacy row must not stall history paging
+```
+
+The first timing fixture initially used an ephemeral seed without keeping it; its live assertion already reproduced the bug, but reopening had no path. The fixture was corrected to keep its generated journal and rerun before any production edit; `compaction-failing-first.log` is the complete live/reopen evidence.
+
+### Nearby sweep and adversarial self-review
+
+Reviewed the entire new diff against the merged base, including each changed condition and the conditions bypassed by direct canonical construction:
+
+| Change / newly selected states | Intended behavior and evidence |
+| --- | --- |
+| Summary settlement with an active task | Automatic threshold or overflow compaction, including retries, adoption failure and cancellation, now charges the same measured attempt time to task and turn. Backoff is outside `requestMs`; pre-dispatch cost/Stop guards still run before measurement. No provider, capture, permission or cost-admission condition changes. |
+| Summary settlement without an active task | Manual compaction and title/utility work retain the nil optional; no task is created or historical task altered. Manual-compaction control passes. |
+| Recovered valid nonterminal task with a saved state source | Preserve its aggregate (including retries and summaries) instead of replacing it with successful-row durations. Terminal receipts, invalid tasks and tasks absent from saved state still take their existing paths. The source offset is read from the replay, including checkpoint replay, not guessed from loaded row position. |
+| Reply span after the saved state, kind `message` | Add only that task execution's later journaled reply duration. The existing root/execution filter excludes other tasks. Both crash windows and the no-suffix mutation exercise this. |
+| Reply before/equal to state, missing span, or a presentation update | Do not charge it again. Presentation-only updates cannot become a second request. The no-offset mutation proves the saved boundary matters. A state with no comparable source retains its aggregate conservatively; ordinary decoded state/branch/checkpoint paths provide the source. |
+| Canonical construction bypasses `consume`/`finish` | Every input index creates a distinct completed segment: no existing part, streamed continuation, terminal correction or duplicate event can occur. Empty input still has canonical coverage and terminal `completed`. The generated equivalence test compares every field and encoded JSON. Live observed timelines still use the unchanged reconciliation path. |
+
+State sweep: idle/manual utility, active streaming/automatic compaction, retries, paused/cancelled requests, reopening, and concurrent sibling tasks retain their existing lifecycle and ownership. Timing belongs to the session actor's active execution; there is no shared counter. Off/memory/persist capture do not participate in either timing fix or canonical reconstruction. No new await or UI action was introduced. No native view or layout code changed, and canonical timeline fields remain identical. Corrected task totals use the existing presentation; native consumer classes are rerun below without changing gallery scenes.
+
+Validation self-review also found that `scripts/test-lanes.py` labels `TranscriptGeometryCacheTests` and `TranscriptTurnFoldTests` parallel even though their fixtures call `makeKeyAndOrderFront` (lines 138 and 590). The preliminary 50-test native run used that classification and lacked the shared focus lock. It is not used as final native evidence: the whole group is repeated under the lock, as is `TranscriptBugRegressionTests` (its `findFixture` opens a key window at line 1047). No other workstream’s lock is removed. The lane classifier’s missing key-window pattern is recorded for the lead rather than changed outside this task.
+
+Other timing producers: `completeWithRetries` already settles turn/session/task together; no other producer or recovery site rebuilds task model time from successful rows. The legacy fallback in `ChatMessage.view`, the native `TranscriptMessage` decoder, and shortened-timeline restoration all call the corrected canonical function. No separate legacy reconstruction loop needed a fix.
+
+**Separate bug found, not fixed under this scope:** `packages/swift-host/Sources/PiAgentCore/ProviderDisplayEvents.swift:80` feeds every terminal provider event through the live `ResponseTimeline.consume` reconciler. A generated JSON response with 1,000/2,000 function-call items took **807.73/3,168.36 ms** (`provider-terminal-sweep.log`; retained fixture in `provider-terminal-probe.txt`). This is the live provider reconciliation path, which must retain observed ordering/corrections; applying the legacy-only shortcut there would be incorrect. Per scope discipline, record it for a separate fix instead of refactoring that reconciler here. The temporary measurement test was removed after the probe.
+
+Self-review caught and fixed a newly introduced actor-initializer capture warning: the recovery reduction now reads a local value copy of the span dictionary, without capturing the session actor. Its inputs and arithmetic are unchanged. The existing unrelated Swift 6 migration warnings remain outside this scope. The suffix-reconciliation test and two extra recovery mutations specifically guard the incorrect alternatives of preserving the aggregate without later work, or adding every reply to it. The final affected-helper build has no warning message absent from the unchanged failing-first baseline. All affected/helper/wire checks are rerun on the final source below; final self-review found no further issue in this diff.
+
+### Validation commands and results
+
+All commands run at the worktree root unless stated otherwise. `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper`; `L=$B/logs/round3-hunt`.
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'CompactionTaskRegressionTests.testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen|RetryTests.testCrashAfterToolBoundaryPreservesSavedRetryTime|ResponseTimelineTests.testCanonicalMatchesOriginalAlgorithmForGeneratedParts|ResponseTimelineTests.testFiveThousandLegacyPartsCanonicalizeWithinPagingBudget'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'CompactionTaskRegressionTests.testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'RetryTests.testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime'
+# Each mutation runs the same swift test prefix with its filter:
+# summary: CompactionTaskRegressionTests.testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen
+# recovery old / no offset: RetryTests.testCrash
+# recovery no suffix: RetryTests.testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime
+# canonical: ResponseTimelineTests.testFiveThousandLegacyPartsCanonicalizeWithinPagingBudget
+python3 "$B/round3-hunt-mutations.py"
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'CompactionTaskRegressionTests|RetryTests|ResponseTimelineTests|TaskPresentationTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'Compaction|RetryTests|ResponseTimelineTests|TaskPresentationTests|CrashAuditTests|JournalCheckpointTests|JournalCloneTests|JournalSlimmingTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --skip StreamingCostTests
+```
+
+- Failing-first: all three assigned regressions fail; generated equivalence control passes. The additional recovery-suffix regression fails separately.
+- Mutations: **5/5 caught** by assertions; fixed source restored after each. Repeated all five after the initializer-capture correction: **5/5 caught** again (`final/mutation-*.log`, `python3 "$B/round3-hunt-final-mutations.py"`).
+- Focused timing/timeline/task run: **58 passed, 0 failed** (`targeted-fixed.log`; filter also selects IncompleteRetryTests and AgentSteeringRetryTests).
+- Expanded affected helper classes: **182 passed, 0 failed**, repeated on final source (`affected-helper.log`, `final/affected-helper.log`), including all compaction, retry, crash, checkpoint, clone and slimming matches.
+- Full helper: **1,135 passed, 7 opt-in tests skipped, 0 failed**: isolated `StreamingCostTests` **5/5**, then the remaining suite **1,130 passed / 1,137 discovered**, 7 skipped (`final/streaming-cost.log`, `final/full-helper.log`; the earlier complete pass also passed). The skips are the fork-fixture writer, large-fork benchmark, rapid-scroll measurement and four explicitly configured session open/memory/slimming benchmarks. No unrelated test failed. The final full run also measured the 5,000-part case at **3.42 ms**.
+- Preliminary native timeline consumers: **50 passed, 0 failed** (`native-timeline.log`), excluded as final evidence because of the locking correction above. The locked rerun is recorded below.
+- Release helper rebuilt successfully after the final-source correction. Wire **40/40**, concurrent **4/4**, acceptance **3/3**, all with **0 failures** (`final/release-helper.log`, `final/wire.log`, `final/concurrent.log`, `final/acceptance.log`).
+- Locked native validation: **166 passed, 0 failed**. `TranscriptBugRegressionTests` ran alone: **116/116** (`final/native-transcript-bugs.log`). The repeated timeline group passed **50/50**: ResponseTimelinePresentationTests **13**, TimelineStreamingFastPathTests **2**, TranscriptGeometryCacheTests **7**, TranscriptRowChangeTests **4**, TranscriptTurnFoldTests **24** (`final/native-timeline.log`). `round3-hunt-final-native.py` held the shared full-lane lock across these serial invocations; `final/native-lane.log` records matching acquisition/release. No other workstream’s lock was cleared.
+
+```sh
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+H="$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$H"
+python3 scripts/test-concurrent-native-host.py "$H"
+python3 scripts/test-native-acceptance.py "$H"
+# Holding the shared full-lane lock for the complete native invocation:
+PI_BUILD_ROOT="$B" scripts/test-macos.sh \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/TranscriptGeometryCacheTests \
+  -only-testing:PiAppTests/TranscriptRowChangeTests \
+  -only-testing:PiAppTests/TranscriptTurnFoldTests
+# Alone, holding the shared full-lane lock for this run:
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -only-testing:PiAppTests/TranscriptBugRegressionTests
+```
+
+
+Final source hashes for the six changed Swift files are recorded in `final/source-sha256.json` and match the files being committed. `git diff --check` passes. One existing native build tree and the existing Debug/Release helper trees were reused under this workstream's build root; no extra DerivedData tree was created and no clone folders remain. No explicit result-bundle path was used; text logs are the evidence. No assigned finding remains unresolved. The separate live-provider scaling issue and native lane-classifier gap above are recorded for the lead. Only `dev/a130-helper` is committed/pushed; no merge, fast-forward, release, tag or history rewrite is performed.

@@ -121,9 +121,13 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
     }
     public static func canonical(_ parts: [(kind:String,text:String,callID:String?,name:String?)], sourceID:String) -> Self {
         var result = ResponseTimeline(); result.coverage="canonical"
-        for (index,part) in parts.enumerated() {
-            result.consume(ResponsePartEvent(attemptID:"canonical:"+sourceID,ordinal:index,itemID:"part-\(index)",outputIndex:index,partIndex:0,kind:part.kind,update:"replace",text:part.text,callID:part.callID,name:part.name,evidence:"canonical"))
+        let attemptID="canonical:"+sourceID
+        // Each canonical part has a distinct output index and is complete;
+        // no streaming reconciliation or search through earlier parts is needed.
+        result.segments=parts.enumerated().map { index, part in
+            let metadata=ResponsePartEvent(attemptID:attemptID,ordinal:index,itemID:"part-\(index)",outputIndex:index,partIndex:0,kind:part.kind,update:"replace",text:"",callID:part.callID,name:part.name,evidence:"canonical")
+            return Segment(id:"\(attemptID):\(index)",part:metadata,text:part.text,state:"completed")
         }
-        result.finish("completed"); return result
+        result.terminal="completed"; return result
     }
 }

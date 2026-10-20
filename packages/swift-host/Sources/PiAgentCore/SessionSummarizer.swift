@@ -53,7 +53,11 @@ extension AgentSession {
             // The request's own duration is model time; the back-off
             // before a retry, below, is not.
             let start=nowMS(); var requestMs: Double?
-            defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
+            defer {
+                let ms=requestMs ?? (nowMS()-start)
+                turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms)
+                activeTaskPresentation?.modelMs += ms
+            }
             do {
                 let lifecycle=try await requestLifecycle(turnID:currentTurnID,purpose:"compaction")
                 let client=self.client, apiKey=self.apiKey, sessionID=id, cacheSessionID=promptCacheSessionID, turnID=currentTurnID
