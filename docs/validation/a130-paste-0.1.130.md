@@ -930,7 +930,33 @@ measured descriptor peaks (**3 / 32**) and scan counts (**2 / 6**).
 `r5-timing-final.log`: **1/1 passed**; the malformed HTML case took **1.177 ms**
 text-first and **0.149 ms** image-first.
 
-Pending-chat projects, Edit-menu routing and gallery reruns are queued under
-the shared full-lane lock. No clone folders or workstream test lock remain
-after the focused runs. No helper or wire code changed, so their full suites
-were not rerun.
+The remaining classes each ran alone under the shared full-lane lock:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PendingChatProjectTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteRoutingTests
+TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-r5-paste" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteGalleryTests
+```
+
+| Final run | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| Paste/attachment/draft/workspace classes (`r5-regressions-final.log`) | 107 | 1 existing | 0 |
+| HTML timing (`r5-timing-final.log`) | 1 | 0 | 0 |
+| Pending-chat projects (`r5-pending-project-final.log`) | 24 | 0 | 0 |
+| Real Edit-menu paste routing (`r5-menu-final.log`) | 6 | 0 | 0 |
+| Refusal gallery (`r5-gallery-final.log`) | 1 | 0 | 0 |
+| **Total** | **139** | **1** | **0** |
+
+Regenerated and inspected `gallery-r5-paste/paste-refusal-{light,dark,narrow}.png`.
+The complete notice and Copy/Dismiss remain visible, the composer controls
+remain usable, and the draft is preserved. The narrow footer still truncates
+its duplicate notice while the full top notice wraps.
+
+All final runs used the code committed as `43b4b54b`; the completion update
+changes documentation only. The runner released its own shared lock. No clone
+folders or workstream test lock remain. No helper or wire code changed, so
+their full suites were not rerun. Neither round-5 issue remains unresolved.
