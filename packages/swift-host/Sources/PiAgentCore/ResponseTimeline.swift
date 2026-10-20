@@ -31,11 +31,53 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
         public var revision: Int = 0
     }
     public var version = 1
-    public var segments: [Segment] = []
+    private var storedSegments: [Segment] = []
+    public var segments: [Segment] {
+        get { storedSegments }
+        set { storedSegments = newValue; reconciliation = nil }
+        _modify { reconciliation = nil; yield &storedSegments }
+    }
     public var coverage: String = "observed"
     public var omittedEvents = 0
     public var terminal: String?
+    private enum CodingKeys: String, CodingKey {
+        case version, storedSegments = "segments", coverage, omittedEvents, terminal
+    }
+    private struct CorrectionKey: Hashable, Sendable {
+        let attempt: String, part: String
+    }
+    /// Derived lookups never travel in saved/display timelines. External edits
+    /// invalidate them; decoding and canonical construction build them lazily.
+    private struct ReconciliationIndex: Sendable {
+        struct Part: Sendable {
+            let first: Int
+            var text = ""
+        }
+        var parts: [String: Part] = [:]
+        var corrections: [CorrectionKey: Int] = [:]
+        var streaming: [String: Set<Int>] = [:]
+        mutating func insert(_ segment: Segment, at index: Int, key: String) {
+            parts[key, default: Part(first:index)].text += segment.text
+            if segment.state == "streaming" { streaming[key, default: []].insert(index) }
+            if segment.part.kind == "correction", let reconciles = segment.part.reconcilesPartKey {
+                corrections[CorrectionKey(attempt:segment.part.attemptID,part:reconciles)] = index
+            }
+        }
+    }
+    private var reconciliation: ReconciliationIndex?
     public init() {}
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.version == rhs.version && lhs.storedSegments == rhs.storedSegments &&
+            lhs.coverage == rhs.coverage && lhs.omittedEvents == rhs.omittedEvents && lhs.terminal == rhs.terminal
+    }
+    private mutating func indexSegments() {
+        guard reconciliation == nil else { return }
+        var index = ReconciliationIndex()
+        for (offset, segment) in storedSegments.enumerated() {
+            index.insert(segment,at:offset,key:segment.part.partKey)
+        }
+        reconciliation = index
+    }
     public var supported: Bool {
         version == 1 && omittedEvents >= 0 &&
             Set(segments.map(\.id)).count == segments.count &&
@@ -49,55 +91,70 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
     /// Coalesce only adjacent contributions. A/B/A becomes three stable
     /// segments. End/usage events never move an already displayed segment.
     @discardableResult public mutating func consume(_ event: ResponsePartEvent) -> Bool {
+        indexSegments()
+        let key = event.partKey
         if event.update == "end" {
-            var ended = false
-            for index in segments.indices where segments[index].part.partKey == event.partKey && segments[index].state == "streaming" {
-                segments[index].state = "completed"; segments[index].revision += 1; ended = true
+            let opened = reconciliation!.streaming.removeValue(forKey:key) ?? []
+            for index in opened {
+                storedSegments[index].state = "completed"; storedSegments[index].revision += 1
             }
             // A second `.done` for a part already closed changes nothing.
-            return ended
+            return !opened.isEmpty
         }
         if event.update == "replace" {
-            if let corrected=segments.last(where: { $0.part.kind == "correction" && $0.part.attemptID == event.attemptID && $0.part.reconcilesPartKey == event.partKey }), corrected.text == event.text { return false }
-            let existing = segments.filter { $0.part.partKey == event.partKey }
-            if !existing.isEmpty, existing.map(\.text).joined() == event.text { return false }
-            if let index = segments.firstIndex(where: { $0.part.partKey == event.partKey }), existing.allSatisfy({ $0.text.isEmpty }) {
-                segments[index].text=event.text
-                segments[index].truncated=false
-                segments[index].state="completed"; segments[index].revision += 1
-                return true
-            }
-            if !existing.isEmpty {
+            if let corrected = reconciliation!.corrections[CorrectionKey(attempt:event.attemptID,part:key)],
+               storedSegments[corrected].text == event.text { return false }
+            if let existing = reconciliation!.parts[key] {
+                if existing.text == event.text { return false }
+                if existing.text.isEmpty {
+                    let index = existing.first
+                    storedSegments[index].text=event.text
+                    storedSegments[index].truncated=false
+                    storedSegments[index].state="completed"; storedSegments[index].revision += 1
+                    reconciliation!.parts[key]?.text = event.text
+                    reconciliation!.streaming[key]?.remove(index)
+                    return true
+                }
                 var correction = event; correction.kind = "correction"; correction.update = "begin"
-                correction.evidence = "terminal-correction"; correction.reconcilesPartKey = event.partKey
+                correction.evidence = "terminal-correction"; correction.reconcilesPartKey = key
                 return consume(correction)
             }
         }
-        if event.update == "begin", segments.contains(where: { $0.part.partKey == event.partKey }), event.text.isEmpty { return false }
+        if event.update == "begin", reconciliation!.parts[key] != nil, event.text.isEmpty { return false }
         if event.update == "append", event.text.isEmpty { return false }
-        if let index = segments.indices.last, segments[index].part.partKey == event.partKey,
-           segments[index].state == "streaming", event.update == "append" {
-            segments[index].text += event.text
-            segments[index].revision += 1
+        if let index = storedSegments.indices.last, storedSegments[index].part.partKey == key,
+           storedSegments[index].state == "streaming", event.update == "append" {
+            storedSegments[index].text += event.text
+            storedSegments[index].revision += 1
+            reconciliation!.parts[key]?.text += event.text
             return true
         }
         // A continuation is a new segment. The earlier native text owner no
         // longer has a streaming caret, even while its provider part is open.
-        if let last = segments.indices.last, segments[last].state == "streaming" { segments[last].state = "continued"; segments[last].revision += 1 }
+        if let last = storedSegments.indices.last, storedSegments[last].state == "streaming" {
+            storedSegments[last].state = "continued"; storedSegments[last].revision += 1
+            reconciliation!.streaming[storedSegments[last].part.partKey]?.remove(last)
+        }
         var metadata = event; metadata.text = ""
-        segments.append(Segment(id: "\(event.attemptID):\(event.ordinal)", part: metadata,
-                                text: event.text,
-                                state: event.update == "replace" ? "completed" : "streaming"))
+        let segment = Segment(id: "\(event.attemptID):\(event.ordinal)", part: metadata, text: event.text,
+                              state: event.update == "replace" ? "completed" : "streaming")
+        reconciliation!.insert(segment,at:storedSegments.count,key:key)
+        storedSegments.append(segment)
         if event.evidence != "observed", coverage == "observed" { coverage = event.evidence }
         return true
     }
     public mutating func finish(_ outcome: String) {
         terminal = outcome
-        for index in segments.indices where segments[index].state == "streaming" { segments[index].state = outcome; segments[index].revision += 1 }
+        for index in storedSegments.indices where storedSegments[index].state == "streaming" { storedSegments[index].state = outcome; storedSegments[index].revision += 1 }
+        reconciliation = nil
     }
     /// Display pagination limits how many rows travel together, never the
     /// content of an individual response. Large results use chunked IPC.
-    public func projected() -> Self { self }
+    public func projected() -> Self {
+        var result = self
+        result.reconciliation = nil
+        return result
+    }
 
     /// Older builds saved shortened timeline parts but kept the full message.
     /// Recover canonical order without inventing the lost arrival chronology.
