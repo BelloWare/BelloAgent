@@ -4495,3 +4495,267 @@ any test clone folders were cleaned from this build root; text logs and PNGs
 remain the evidence. No named xcresult was requested. The three assigned
 findings and the confirmed nearby settlement gaps are fixed; the conservative
 legacy ownership policy above is the only item flagged for an owner decision.
+
+
+## Round 15 — retry and reading-position ownership
+
+Base: `1df7f7edae587336a6191dec6d60cddcc7c168a4`, branch
+`dev/a130-workspace`. All tests use generated state roots, in-memory vaults,
+fake helper replies and injected SQLite failures. No installed app, real user
+state/credentials or paid provider was used. The helper and wire contract are
+unchanged; helper/wire suites are not required for these desktop-only changes.
+
+Evidence root:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round15-save-retry-anchor/`.
+Each run retains its exact `.command`, text `.log` and process `.status`.
+
+### Findings and failing-first evidence
+
+All three reported findings are **confirmed and fixed**. Before any production
+change, `failing-first.log` ran the three regressions: **3 failed tests,
+22 assertion failures, exit 65**. No build failure is counted as reproduction.
+
+1. **Unresolved queued Save lost on retry persistence failure.**
+   `SubmissionPersistenceTests.testFailedQueuedSaveRetryKeepsTheEarlierOutcomeForCancelAndChangedSave`
+   sends a Save with missing reply/status responses, injects a pending-record
+   INSERT failure on its identical retry, then exercises both Cancel and a
+   changed Save. The old operation/digest must survive in memory **and** the
+   saved queued-edit draft. Failing excerpt:
+   `XCTAssertEqual failed: ("nil") is not equal to ("Optional("save")") — Local failure cannot settle the original helper request`;
+   Cancel sent `queue.edit.cancel` instead of `queue.edit.status` and returned
+   the confirmed rewrite as unsent. The fix restores the operation/digest from
+   before this attempt, not unconditional nil. A first attempt still restores
+   nil and keeps its captured input independently recoverable.
+
+2. **The local publisher could not Retry its own registration.**
+   `SubmissionPersistenceTests.testLocalSidePublicationCanRetryRegistrationWithoutDroppingItsNotice`
+   publishes an actual generated side journal, fails its chat INSERT, obtains
+   the existing issue through `applySideStatus`, retries while failure remains,
+   then retries after removing the trigger. Failing excerpts:
+   `Failed Retry must leave its actionable notice` (actual issues `[]`), and
+   `The publication owner must be able to retry its own settled failure`
+   (no saved chat; keep intent still present). Local settled publications now
+   reuse their held lifetime lease; foreign owners still require a successful
+   nonblocking lease probe. Skipped work retains any matching existing notice.
+
+3. **Outstanding anchor writes did not retain their display.**
+   `DraftOrderingTests.testOutstandingAnchorWritePinsDisplayAndReopenAdoptsItsCommittedRevision`
+   holds an anchor predecessor, exceeds the eight-display budget, revisits,
+   releases the old write, then scrolls and clears. Failing excerpts:
+   `A predecessor wait must not make an outstanding anchor evictable`,
+   `Later scrolls cannot silently lose against this instance's older write`,
+   and `Return to latest must still clear the saved position`.
+   An outstanding task now prevents eviction. Its identity token clears that
+   task only on its own completion, so a canceled predecessor cannot clear a
+   newer writer. Completed idle displays remain evictable. The final eviction
+   assertion explicitly sets the revisited display's last-use time to oldest.
+
+With the three fixes, `fixed-regressions.log`: **3 passed, 0 failed**.
+
+### Nearby sweep and ownership rules
+
+- **Additional confirmed instance in the same queued-edit function:** a retry
+  refused with `session_missing` also cleared an earlier unanswered Save.
+  `testRefusedQueuedSaveRetryDoesNotSettleTheEarlierUnknownOutcome` failed first
+  in `sweep-regressions.log` (**1 failed / 4 run, 4 assertions**): it lost the
+  original operation/digest, sent Cancel directly, and retained confirmed
+  input. This catch now also restores prior state. Its notice explicitly says
+  the earlier request remains unconfirmed. Accepted replies and matching
+  status digests still settle and retire captured input; an authoritative
+  active status still permits a new request. Different-operation reconciliation,
+  hydrated queued edits and Cancel/Remove settlement retain their existing
+  digest/identity gates.
+- `testInitialQueuedSaveStorageFailureDoesNotInventAnUnansweredRequest`
+  proves a failed **first** local Save leaves no pending helper request, allows
+  Cancel directly, and retains the unsent rewrite through the recovery chooser.
+- **Local publication ownership** covers all four intent writers:
+  `publishPendingSide` (including first Send), `performKeepSide`, `closeSide`
+  when keeping, and `createFork`. They register their ID before publication
+  can suspend and release it in `defer` on success, refusal, storage failure or
+  cancellation. `testOwnLivePublicationIsNotReconciledByAnyPublicationRoute`
+  holds each helper reply with a valid journal already present, preserves an
+  earlier issue, and verifies local Retry cannot preempt publication or offer
+  its input to the parent. Completion then registers exactly that chat and
+  clears the issue. Cross-instance live/crashed-owner and legacy-intent tests
+  from Round 14 are rerun unchanged.
+- **Deferred helper publication** also owns a Keep after the local request
+  task ends. A review of the new local branch caught its need to check existing
+  `keeping` / `keepRequested` flags. Before that guard,
+  `testDeferredLocalKeepWaitsForTheHelpersPublication` failed both flag cases
+  (`deferred-keep-first.log`: **1 failed, 2 assertions**), incorrectly creating
+  a recovery notice. The guard now waits for the helper's publication status;
+  the final saved snapshot registers normally. No helper behavior changed.
+- The adversarial review then checked that deferred ownership ends on helper
+  loss, even when captured input pins the display. The new deferred guard
+  initially blocked that settled registration too.
+  `testLostHelperReleasesDeferredKeepOwnershipEvenWhenInputPinsItsDisplay`
+  failed first (`retired-keep-first.log`: **1 failed, 4 assertions**) for both
+  flags: the display survived correctly, but its valid journal could not
+  register. `discardLostSides` now clears the ended helper's Keep flags before
+  its existing input-retention guard. The current-host check in `onLoss` still
+  fences this cleanup against replacement helpers; other workspaces and saved
+  sides are excluded. Pinned input remains in the display or its committed
+  independent record. The dedicated fixed and mutation runs verify both
+  lifetime boundaries without starting another helper.
+- **Anchor ownership** begins synchronously when `anchorChanged` assigns its
+  task, includes waiting for its predecessor and for the metadata actor, and
+  ends only when that exact task finishes. Before baseline hydration the
+  existing `anchorWritePending` flag still owns it. Revision reservation/CAS
+  remains in the ordered writer. `testSupersededAnchorCompletionCannotReleaseTheNewerWritersDisplay`
+  releases a canceled predecessor while the replacement waits on a held
+  metadata actor; eviction must still retain the display, and the final saved
+  anchor must be the replacement's position.
+- **Release-path sweep:** main-chat and subagent-reader cache eviction both use
+  `releaseUnreadDisplays` and gain the task guard. Saved-side Close and
+  quit/update `flushDrafts` already await anchor tasks before their direct
+  ordered writes. Helper loss retains saved displays; the removed ephemeral
+  side paths never admit anchor writes. Explicit chat/family deletion removes
+  the chat itself and is not a reopen path. Unsent pending-chat and background
+  title-task disposal do not own a saved reading-position baseline. No other
+  revision reset or direct anchor writer was added.
+
+The conservative Round-14 policy for **legacy missing-journal keep intents
+without an owner lease** is unchanged: retain them with their existing review
+notice. Its recorded owner-decision follow-up is not expanded in this round.
+
+### Adversarial self-review
+
+Every changed conditional/state boundary was checked against both sides:
+
+| Boundary | States that now differ | Intended result / evidence |
+| --- | --- | --- |
+| Save persistence catch restores prior state | Identical retry with unanswered predecessor | Keeps original operation/digest; Cancel/changed Save queries status first. First Save still restores nil. |
+| Definitive retry refusal | Prior unanswered request versus first request | Refusal proves only this attempt failed; earlier outcome stays unknown. First-attempt refusal retains its existing notice and clearing behavior. |
+| Local owner identity | Own lease versus foreign live/dead owner | Own settled registration can retry; foreign live lease is not acquired/waited on; dead owner's recovery remains guarded by its acquired lease. |
+| Local publication admission | Active side open/keep/close/fork or deferred helper Keep versus settled failure | Active work is skipped without retiring input; settled failure registers. All four task scopes and both deferred flags are covered. |
+| Skipped-issue retention | Matching prior notice versus a normal live publication with no issue | Existing notice remains until actual resolution; a live publication does not gain a new notice. |
+| Helper-loss Keep flags | Unkept side retained by pinned input versus a live Keep | Ended helper flags clear even when the display stays; a live helper keeps its flags. The existing current-host and workspace guards remain in force. |
+| Eviction checks outstanding anchor task | Hydrated display with a waiting/writing task versus completed task | Loaded baseline stays with its only writer. Completion restores normal cache eviction. |
+| Anchor cleanup token equality | Current task versus superseded predecessor | Only current completion clears task ownership; prior completion cannot unpin its replacement. |
+
+No submission acceptance predicate, durable record layout, revision/CAS rule,
+permission, capture, tool, vault or data boundary changed. The retained-input
+chooser continues to exclude live submissions and accepted commands.
+
+The first complete headless pass (`pre-review-headless.log`) passed **333
+native tests**. Its orchestrator was stopped while waiting for another
+workstream's focus lock, before any window lane began, to test the helper-loss
+boundary above. No running native test or foreign lock was interrupted. Final
+counts below come from the subsequent full rerun of the final source.
+
+### Final validation
+
+**513 distinct native tests passed across 29 classes; zero failures or skips.**
+Every Round-14 class was rerun. Counts exclude failing-first, exploratory and
+mutation runs. Focus/window/gallery runs held the shared full-lane lock;
+serial classes ran alone. All builds used this workstream’s single build root.
+
+| Class | Passed | Evidence log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 85 | `final-conversation.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless.log` |
+| `DraftLoadingTests` | 15 | `final-headless.log` |
+| `DraftOrderingTests` | 19 | `final-headless.log` |
+| `FamilyDeletionTests` | 10 | `final-headless.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless.log` |
+| `PendingChatProjectTests` | 24 | `final-headless.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless.log` |
+| `RecoveredDraftTests` | 13 | `final-headless.log` |
+| `RunHoldTests` | 18 | `final-headless.log` |
+| `SendBookkeepingTests` | 12 | `final-headless.log` |
+| `SessionOrganizationTests` | 9 | `final-headless.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless.log` |
+| `SubagentDeletionTests` | 19 | `final-headless.log` |
+| `SubmissionPersistenceTests` | 52 | `final-headless.log` |
+| `TitleGenerationTests` | 12 | `final-title.log` |
+| `ToolOutputProducerTests` | 13 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless.log` |
+| `WorkspaceValidationGalleryTests` | 5 | `final-gallery.log` |
+
+Exact final commands (also retained in the matching `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/QueuedEditPresentationTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/SessionOrganizationTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceRaceTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/HistoricalEditFocusTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TitleGenerationTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round15-save-retry-anchor/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+The three reported fixes and each ownership guard were mutation-checked.
+`mutations.py` temporarily restores pending-state loss, own-lease refusal and
+anchor eviction, then removes the live-publication and replacement-task guards.
+`retired-keep.py` separately removes helper-loss flag cleanup. Every script
+restores exact source in `finally`; the final runs use that restored source.
+
+| Mutation log | Failed regression tests | Assertion failures |
+| --- | ---: | ---: |
+| `mutation-ownership.log` | 3 | 12 |
+| `mutation-primary.log` | 4 | 20 |
+| `mutation-retired-keep.log` | 1 | 4 |
+
+All **8 mutation regressions** failed as expected (exit 65). These are assertion failures, not compiler failures.
+The additional focused pass (`fixed-affected.log`) passed 70 tests before the
+helper-loss sweep; `retired-keep-fixed.log` passed its later regression.
+The source manifest `tested-source-sha256.json` matches all final tested Swift
+and generated project sources. `git diff --check` passes. Every failed run is
+accounted for above; no unrelated failing test is ignored.
+
+The serial gallery generated **56 PNGs**, covering the 52 prior scenes and four
+new queued-retry notices (light/dark, 760/300 points), under the shared focus
+lock. The four new scenes were visually inspected at native point dimensions:
+the earlier-outcome warning wraps readably, the recovery chooser remains one
+row and reachable, and the transcript keeps its space. The 300-point stress
+scene retains the existing composer toolbar minimum-width overflow documented
+in `ComposerInput.swift:450–476`; no toolbar or composer geometry changed.
+
+Original captures:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round15-save-retry-anchor/gallery/`.
+The inspected new scenes are `queued-save-retry-refused-{light,dark}-{760,300}.png`.
+Labeled sheets are `gallery-inspection/queued-save-retry-refused-{light,dark}.png`.
+
+Pixel comparison with Round 14: **48 of 52 existing scenes are identical**.
+The other four differ only within the existing Edit/Copy/Details toolbar
+(310×46 pixels at x=1162, y=135, or a smaller rectangle within it). Their
+before/after crops were visually inspected in
+`gallery-inspection/toolbar-comparison.png`; the control geometry is unchanged.
+All pixels outside that toolbar match. `gallery-pixel-comparison.json` records
+every image's count and difference bounds; the inspection manifest maps all
+56 captures to their labeled sheets.
+
+The workstream's shared focus lock and build mutex were released. Automatic
+Xcode result bundles were removed from this build root, no test clone folders
+remained, and approximately 11.6 GiB remained free (`cleanup.json`). Text logs and
+PNG evidence are retained; no named xcresult was requested. No new owner
+product decision or unresolved assigned finding remains. The existing legacy
+no-lease recovery-policy follow-up remains as recorded in Round 14.

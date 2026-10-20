@@ -3,6 +3,35 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testFailedQueuedSaveRetryInLightDarkAndNarrowLayouts() async throws {
+        guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                let pane = try ConversationPaneTests.Pane(messages: [
+                    TranscriptMessage(id: "question", role: "user", text: "Keep the earlier Save's outcome until the helper can confirm it.", turn: "turn"),
+                    TranscriptMessage(id: "answer", role: "assistant", text: "The rewrite and the draft set aside remain available while that request is checked.", turn: "turn")
+                ], width: width, height: 620)
+                defer { pane.close() }
+                pane.model.prewarmsHelpers = false; pane.hosted.appearance = NSAppearance(named: appearance)
+                pane.session.queueEditingID = "queued"; pane.session.queueEditID = "edit"; pane.session.queueEditOriginal = "Original"
+                pane.session.draftBeforeQueueEdit = DraftRecord(id: pane.chat.id, text: "Parked draft")
+                pane.session.draft = "Earlier Save"
+                pane.session.queueEditPendingOperation = "save"; pane.session.queueEditSentDigest = QueuedEditDraft.digest(pane.session.draft)
+                pane.model.queueEditOperation = { _, _, _ in throw HostError.rejected("session_missing", "The replacement helper has not opened this chat yet.") }
+                pane.model.saveQueuedEdit(sessionID: pane.chat.id)
+                try await eventually("Retry refused") { !pane.session.queueEditResolving && pane.session.submittingCommands.isEmpty }
+                XCTAssertEqual(pane.session.queueEditPendingOperation, "save")
+                XCTAssertTrue(pane.session.queueEditNotice.contains("earlier request is still unconfirmed"))
+                await pane.settle()
+                let image = try XCTUnwrap(pane.hosted.bitmapImageRepForCachingDisplay(in: pane.hosted.bounds))
+                pane.hosted.cacheDisplay(in: pane.hosted.bounds, to: image)
+                try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("queued-save-retry-refused-\(theme)-\(Int(width)).png"))
+            }
+        }
+    }
+
     @MainActor func testConfirmedQueuedSaveRecoveryInLightDarkAndNarrowLayouts() async throws {
         guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

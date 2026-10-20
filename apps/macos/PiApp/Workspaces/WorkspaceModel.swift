@@ -341,6 +341,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Held for this model's lifetime, including shutdown task unwinding.
     /// Its file stays: another instance must lock the same inode to recover.
     var sidePublicationOwnership: (id: UUID, lock: WorkspaceLock)?
+    /// Local publication tasks, distinct from the lifetime lease that also
+    /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
+    var sidePublications: Set<String> = []
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
     @Published var configurationLoaded = false

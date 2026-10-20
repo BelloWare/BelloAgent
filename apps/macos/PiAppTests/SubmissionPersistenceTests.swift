@@ -4,6 +4,202 @@ import Darwin
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
+    func testFailedQueuedSaveRetryKeepsTheEarlierOutcomeForCancelAndChangedSave() async throws {
+        for changedSave in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let text = "Saved rewrite with an unanswered reply", digest = QueuedEditDraft.digest(text)
+            view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+            view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked"); view.draft = text
+            model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated lost reply") }
+            model.saveQueuedEdit(sessionID: view.id)
+            try await eventually("First Save unanswered") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+            try RecoveredDraftTests.sql("CREATE TRIGGER fail_retry BEFORE INSERT ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'generated retry failure'); END", root: model.root)
+            model.saveQueuedEdit(sessionID: view.id)
+            try await eventually("Retry persistence failed") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+            XCTAssertEqual(view.queueEditPendingOperation, "save", "Local failure cannot settle the original helper request")
+            XCTAssertEqual(view.queueEditSentDigest, digest)
+            await model.draftWrites.tasks[view.id]?.value
+            let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+            XCTAssertEqual(saved?.queuedEdit?.pending, "save")
+            XCTAssertEqual(saved?.queuedEdit?.sentDigest, digest, "Relaunch must also reconcile the original digest")
+            try RecoveredDraftTests.sql("DROP TRIGGER fail_retry", root: model.root)
+            var methods: [String] = []
+            model.queueEditOperation = { method, _, _ in
+                methods.append(method)
+                guard method == "queue.edit.status" else { throw HostError.rejected("queue_edit_saved", "Already saved") }
+                return ["state": .string("saved"), "textDigest": .string(digest)]
+            }
+            if changedSave { view.draft = "Newer typing"; model.saveQueuedEdit(sessionID: view.id) }
+            else { model.cancelQueuedEdit(sessionID: view.id) }
+            try await eventually("Earlier Save reconciled") { view.queueEditID == nil }
+            XCTAssertEqual(methods, ["queue.edit.status"], "A different operation cannot cross an unanswered Save")
+            XCTAssertEqual(view.draft, changedSave ? "Newer typing\n\nParked" : "Parked")
+            XCTAssertTrue(view.recoverableSubmissions.isEmpty, "Confirmed input must not be returned as unsent")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testLocalSidePublicationCanRetryRegistrationWithoutDroppingItsNotice() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let info = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[info.id])
+        view.snapshotInFlight = true; view.draft = "First side input"
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_registration BEFORE INSERT ON records WHEN NEW.kind='chat' AND NEW.id<>'chat' BEGIN SELECT RAISE(ABORT, 'generated registration failure'); END", root: model.root)
+        model.send(sessionID: info.id)
+        try await eventually("Local publication failed registration") { !view.loading && view.submittingCommands.isEmpty }
+        let stored = try await store.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
+        let intent = try XCTUnwrap(stored)
+        XCTAssertEqual(intent.publicationOwner, model.sidePublicationOwnership?.id.uuidString)
+        await model.applySideStatus(id: info.id, result: ["ephemeral": .bool(false), "path": .string(try XCTUnwrap(intent.chat.path))])
+        XCTAssertEqual(model.sideKeepIssues.map(\.id), [info.id])
+        await model.reconcileSideKeeps()
+        XCTAssertEqual(model.sideKeepIssues.map(\.id), [info.id], "Failed Retry must leave its actionable notice")
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_registration", root: model.root)
+        await model.reconcileSideKeeps()
+        let saved = try await store.get(ChatRecord.self, kind: "chat", id: info.id)
+        let pending = try await store.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
+        XCTAssertNotNil(saved, "The publication owner must be able to retry its own settled failure")
+        XCTAssertNil(pending); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+        XCTAssertTrue(model.sides[parent.id]?.kept == true)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testRefusedQueuedSaveRetryDoesNotSettleTheEarlierUnknownOutcome() async throws {
+        let (model, view, wire) = try await fixture()
+        let text = "Earlier Save", digest = QueuedEditDraft.digest(text)
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked"); view.draft = text
+        model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated lost reply") }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("First Save unanswered") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        model.queueEditOperation = { _, _, _ in throw HostError.rejected("session_missing", "Generated replacement runtime") }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Retry refused") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        XCTAssertEqual(view.queueEditPendingOperation, "save", "Refusing this retry cannot determine what the earlier runtime saved")
+        XCTAssertEqual(view.queueEditSentDigest, digest)
+        var methods: [String] = []
+        model.queueEditOperation = { method, _, _ in
+            methods.append(method)
+            return ["state": .string("saved"), "textDigest": .string(digest)]
+        }
+        model.cancelQueuedEdit(sessionID: view.id)
+        try await eventually("Original outcome checked") { view.queueEditID == nil }
+        XCTAssertEqual(methods, ["queue.edit.status"])
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty)
+        XCTAssertEqual(view.draft, "Parked")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testInitialQueuedSaveStorageFailureDoesNotInventAnUnansweredRequest() async throws {
+        let (model, view, wire) = try await fixture()
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked"); view.draft = "Unsent rewrite"
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_save BEFORE INSERT ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'generated first Save failure'); END", root: model.root)
+        model.queueEditOperation = { _, _, _ in XCTFail("Failed local persistence cannot dispatch"); return [:] }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("First Save failed locally") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        XCTAssertNil(view.queueEditPendingOperation); XCTAssertNil(view.queueEditSentDigest)
+        XCTAssertEqual(view.recoverableSubmissions.map(\.text), ["Unsent rewrite"])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_save", root: model.root)
+        model.queueEditOperation = { method, _, _ in XCTAssertEqual(method, "queue.edit.cancel"); return [:] }
+        model.cancelQueuedEdit(sessionID: view.id)
+        try await eventually("Cancel completed") { view.queueEditID == nil }
+        XCTAssertEqual(view.draft, "Parked")
+        XCTAssertEqual(view.recoverableSubmissions.map(\.text), ["Unsent rewrite"])
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testOwnLivePublicationIsNotReconciledByAnyPublicationRoute() async throws {
+        for method in ["side.open", "side.keep", "side.close", "session.fork"] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            wire.heldMethod = method
+            var fork: Task<ChatRecord, Error>?
+            if method == "session.fork" { fork = Task { try await model.createFork(parentID: parent.id) } }
+            else {
+                model.openSide(parentID: parent.id)
+                let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+                view.snapshotInFlight = true
+                if method == "side.open" { view.draft = "Live first input"; model.send(sessionID: side.id) }
+                else {
+                    model.sides[parent.id]?.pending = false
+                    if method == "side.keep" { model.keepSide(side.id) } else { model.closeSide(side.id) }
+                }
+            }
+            try await eventually("Publication reply held") { wire.held != nil }
+            let intents = try await store.list(SideKeepIntent.self, kind: "side-keep")
+            let intent = try XCTUnwrap(intents.first)
+            XCTAssertEqual(model.sidePublications, [intent.chat.id])
+            // The file may already exist before the helper's reply. Neither
+            // that fact nor an earlier Retry notice retires live publication.
+            let path = URL(fileURLWithPath: try XCTUnwrap(intent.chat.path))
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try SideKeepRecoveryTests.journal(id: intent.chat.id).write(to: path)
+            await model.reportSideKeepFailure(id: intent.chat.id, title: intent.chat.title, error: StoreError.unavailable)
+            let issue = try XCTUnwrap(model.sideKeepIssues.first)
+            await model.reconcileSideKeeps()
+            let registered = try await store.get(ChatRecord.self, kind: "chat", id: intent.chat.id)
+            XCTAssertNil(registered, "Local reconciliation must not overtake \(method)")
+            XCTAssertEqual(model.sideKeepIssues, [issue], "Waiting for the owner does not settle an existing notice")
+            XCTAssertTrue(parent.recoverableSubmissions.isEmpty)
+            wire.release()
+            if let fork { _ = try await fork.value }
+            try await eventually("Publication settled") { model.sidePublications.isEmpty && model.displays[intent.chat.id]?.loading != true }
+            XCTAssertNotNil(model.chats.first { $0.id == intent.chat.id }); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testDeferredLocalKeepWaitsForTheHelpersPublication() async throws {
+        for keeping in [false, true] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let owner = UUID(), url = model.sidePublicationLeaseURL(owner)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            model.sidePublicationOwnership = (owner, try WorkspaceLock(url: url))
+            var side = SideRecord(id: "side", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Deferred Keep")
+            side.keeping = keeping; side.keepRequested = !keeping
+            model.sides[parent.id] = side
+            let view = SessionDisplay(id: side.id); view.selectionMetadataLoaded = true; model.displays[side.id] = view
+            var chat = side.chat; chat.path = model.root.appendingPathComponent("side_deferred.jsonl").path
+            try await store.put(SideKeepIntent(chat: chat, publicationOwner: owner.uuidString), kind: "side-keep", id: side.id)
+            await model.reconcileSideKeeps()
+            XCTAssertTrue(model.sideKeepIssues.isEmpty, "A Keep still held by the helper must not offer recovery")
+            let pending = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+            XCTAssertNotNil(pending)
+            try SideKeepRecoveryTests.journal(id: side.id).write(to: URL(fileURLWithPath: try XCTUnwrap(chat.path)))
+            await model.applySideStatus(id: side.id, result: ["ephemeral": .bool(false), "keeping": .bool(false), "keepRequested": .bool(false), "path": .string(chat.path!)])
+            XCTAssertTrue(model.sides[parent.id]?.kept == true); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testLostHelperReleasesDeferredKeepOwnershipEvenWhenInputPinsItsDisplay() async throws {
+        for keeping in [false, true] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let owner = UUID(), url = model.sidePublicationLeaseURL(owner)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            model.sidePublicationOwnership = (owner, try WorkspaceLock(url: url))
+            var side = SideRecord(id: "side", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Interrupted Keep")
+            side.keeping = keeping; side.keepRequested = !keeping
+            model.sides[parent.id] = side
+            let view = SessionDisplay(id: side.id); view.selectionMetadataLoaded = true; model.displays[side.id] = view
+            let input = CommandIntent(id: "retained", sessionID: side.id, turnID: "turn", text: "Pinned input", state: "intent")
+            view.draftVersion.preservingSubmission(input)
+            var chat = side.chat; chat.path = model.root.appendingPathComponent("side_interrupted.jsonl").path
+            try SideKeepRecoveryTests.journal(id: side.id).write(to: URL(fileURLWithPath: chat.path!))
+            try await store.put(SideKeepIntent(chat: chat, publicationOwner: owner.uuidString), kind: "side-keep", id: side.id)
+            try await wire.host.shutdownAndWait()
+            model.discardLostSides(workspaceID: "w")
+            XCTAssertTrue(model.displays[side.id] === view, "Pinned input still owns its display")
+            XCTAssertFalse(model.sides[parent.id]?.keeping == true)
+            XCTAssertFalse(model.sides[parent.id]?.keepRequested == true, "A retired helper cannot keep owning publication")
+            await model.reconcileSideKeeps()
+            let saved = try await store.get(ChatRecord.self, kind: "chat", id: side.id)
+            XCTAssertNotNil(saved, "The surviving journal can register without restarting the dead helper")
+            let durable = try await store.list(CommandIntent.self, kind: "pending:" + side.id)
+            XCTAssertTrue((durable + view.draftVersion.unsavedSubmissions).contains { $0.id == input.id })
+        }
+    }
+
     func testEarlierQueuedSaveConfirmationRetiresItsCapturedInput() async throws {
         let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
         view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
@@ -1058,13 +1254,18 @@ import Darwin
             result = ["seq": .number(Double(snapshotSequence)), "state": .string("running"), "queue": .array([]), "queueEditRevision": .number(0),
                       "commands": .array(receipts.map(WireValue.object))]
         }
-        if frame["method"]?.string == "side.open", rejectedMethod != "side.open", let id = frame["params"]?.object?["sideSessionId"]?.string {
-            let path = root.appendingPathComponent("Workspaces/w/Sessions/side_\(id).jsonl")
+        let method = frame["method"]?.string ?? ""
+        let publishing = ["side.open", "side.keep", "side.close", "session.fork"].contains(method)
+        let publishedID = method == "side.open" ? frame["params"]?.object?["sideSessionId"]?.string
+            : method == "session.fork" ? frame["params"]?.object?["forkSessionId"]?.string : frame["sessionId"]?.string
+        if publishing, rejectedMethod != method, let id = publishedID {
+            let prefix = method == "session.fork" ? "fork_" : "side_"
+            let path = root.appendingPathComponent("Workspaces/w/Sessions/\(prefix)\(id).jsonl")
             do {
                 try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let header: [String: WireValue] = ["type": .string("session"), "version": .number(3), "id": .string(id)]
                 var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to: path)
-                result = ["sessionId": .string(id), "path": .string(path.path)]
+                result = ["sessionId": .string(id), "path": .string(path.path), "ephemeral": .bool(false)]
             } catch { XCTFail("Generated side could not be written: \(error)") }
         }
         guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }

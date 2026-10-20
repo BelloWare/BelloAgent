@@ -254,8 +254,14 @@ extension WorkspaceModel {
         guard let store else { return }
         let anchor = view.scrollAnchor, previous = view.anchorWrite
         let write = store.draftWriter.capture(view.id, payload: .anchor)
+        let token = UUID(); view.anchorWriteToken = token
         view.anchorWrite = Task {
-            defer { store.draftWriter.finish(write) }
+            defer {
+                store.draftWriter.finish(write)
+                // A cancelled predecessor cannot release the replacement
+                // write's display while it still owns the loaded revision.
+                if view.anchorWriteToken == token { view.anchorWrite = nil; view.anchorWriteToken = nil }
+            }
             await previous?.value
             guard !Task.isCancelled else { return }
             try? await store.putAnchor(anchor, id: view.id, version: view.anchorVersion, write: write)

@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] A failed queued-Save retry preserves the earlier operation and digest, so Cancel or changed Save still checks its outcome. [Validation](docs/validation/a130-workspace-0.1.130.md#round-15--retry-and-reading-position-ownership).
+- [x] Local side registration Retry works under its own lifetime lease; live publication remains protected and unresolved notices stay actionable.
+- [x] Outstanding reading-position writes retain their display and loaded revision until they finish; obsolete task cleanup cannot release a replacement writer.
+- [x] A refused retry cannot settle an earlier unanswered queued operation; deferred Keep When Finished stays protected until publication settles or its helper ends.
+
 - [x] Confirming an earlier queued Save settles its captured input while preserving newer typing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-14--confirmed-input-settlement-and-publication-ownership).
 - [x] Confirmed queued input retires retry pins with its durable record; failed cleanup stays suppressed and retries safely.
 - [x] Side/fork publication records carry a lifetime lease, so another instance cannot recover live input; crashed publishers remain recoverable.

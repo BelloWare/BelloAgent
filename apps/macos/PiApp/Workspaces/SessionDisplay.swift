@@ -724,6 +724,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var scrollAnchor: TranscriptAnchor?
     var anchorVersion = AnchorVersion()
     var anchorWrite: Task<Void, Never>?
+    var anchorWriteToken: UUID?
     @Published var viewportRequest = 0
     /// Whether the newest `viewportRequest` opens the chat — its first page
     /// read in, or its rows shown again on a revisit — rather than taking

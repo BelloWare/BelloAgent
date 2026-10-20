@@ -191,6 +191,7 @@ extension WorkspaceModel {
     /// entered after Return emptied it.
     func publishPendingSide(_ info: SideRecord, view: SessionDisplay, submission: CommandIntent? = nil) async throws {
         guard let store else { throw StoreError.unavailable }
+        sidePublications.insert(info.id); defer { sidePublications.remove(info.id) }
         let outputUse = beginToolOutputUse(.sidePublication)
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
@@ -531,8 +532,10 @@ extension WorkspaceModel {
     private func performKeepSide(_ id: String, whenFinished: Bool) {
         guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, let host = hosts[info.workspaceID] else { return }
         view.loading = true
+        sidePublications.insert(id)
         let outputUse = beginToolOutputUse(.keep)
         Task { defer {
+            sidePublications.remove(id)
             finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
@@ -647,14 +650,29 @@ extension WorkspaceModel {
                 var issues: [SideKeepIssue] = []
                 for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
                     do {
-                        // A local missing display says nothing about another
-                        // instance. Probe its lifetime lease without waiting;
-                        // hold it through recovery so observers cannot race.
+                        // The lifetime lease protects other instances, while
+                        // local task ownership distinguishes publication from
+                        // a settled failure that Retry can register.
                         let ownership: WorkspaceLock?
                         if let owner = intent.publicationOwner {
                             guard let id = UUID(uuidString: owner) else { throw StoreError.invalidRecord }
-                            guard let lease = try? WorkspaceLock(url: sidePublicationLeaseURL(id)) else { continue }
-                            ownership = lease
+                            if let local = sidePublicationOwnership, local.id == id {
+                                let localSide = side(intent.chat.id)
+                                guard !sidePublications.contains(intent.chat.id), localSide?.keeping != true, localSide?.keepRequested != true else {
+                                    if let issue = sideKeepIssues.first(where: { $0.chat == intent.chat }) { issues.append(issue) }
+                                    continue
+                                }
+                                ownership = local.lock
+                            } else {
+                                // Never wait for a live publisher or another
+                                // recovery. An existing notice stays until its
+                                // intent is actually settled.
+                                guard let lease = try? WorkspaceLock(url: sidePublicationLeaseURL(id)) else {
+                                    if let issue = sideKeepIssues.first(where: { $0.chat == intent.chat }) { issues.append(issue) }
+                                    continue
+                                }
+                                ownership = lease
+                            }
                         } else { ownership = nil }
                         defer { withExtendedLifetime(ownership) {} }
                         guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
@@ -688,8 +706,10 @@ extension WorkspaceModel {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }
         if info.pending { if !discardPendingSideNow(info) { Task { await discardPendingSide(info) } }; return }
         view.loading = true
+        sidePublications.insert(id)
         let outputUse = beginToolOutputUse(.sideClose)
         Task { defer {
+            sidePublications.remove(id)
             finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
@@ -752,6 +772,7 @@ extension WorkspaceModel {
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
         let id = UUID().uuidString
+        sidePublications.insert(id); defer { sidePublications.remove(id) }
         let title = atMessageID == nil ? parent.title + " — fork" : parent.title + " · fork"
         var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String(title.prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         fork.topicID = effectiveTopicID(for: parent)
@@ -792,6 +813,9 @@ extension WorkspaceModel {
     func discardLostSides(workspaceID: String) {
         // A draft side has nothing on the helper to lose: it stays, with its text.
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
+            // Pinned input may keep this display, but the ended helper no
+            // longer owns its deferred Keep. Its journal can be reconciled.
+            sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false
             // Failed conflict-copy writes still own their original display.
             guard displays[info.id]?.draftVersion.hasUnsavedConflict != true, displays[info.id]?.sideInputPendingTransfer != true,
                   displays[info.id]?.recovered.isEmpty != false, displays[info.id]?.submittingCommands.isEmpty != false else { continue }

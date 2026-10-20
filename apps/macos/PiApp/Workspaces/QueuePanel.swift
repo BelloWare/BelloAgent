@@ -346,6 +346,7 @@ extension WorkspaceModel {
             }) }
             return
         }
+        let previousOperation = view.queueEditPendingOperation, previousDigest = view.queueEditSentDigest
         view.queueEditResolving = true; view.queueEditPendingOperation = operation; view.queueEditSentDigest = sentDigest
         draftChanged(view)
         var params: [String: WireValue] = ["editId": .string(editID)]
@@ -375,7 +376,9 @@ extension WorkspaceModel {
                     try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write)
                     pendingIntentsChanged(view.id)
                 } catch {
-                    view.queueEditResolving = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
+                    // This attempt never reached the helper. It says nothing
+                    // about an earlier identical Save that lost its reply.
+                    view.queueEditResolving = false; view.queueEditPendingOperation = previousOperation; view.queueEditSentDigest = previousDigest
                     view.queueEditNotice = "The rewrite could not be saved locally. " + error.localizedDescription
                     draftChanged(view)
                     return
@@ -396,9 +399,13 @@ extension WorkspaceModel {
                 queuedEditEndedElsewhere(view, keepAlways: operation == "save" || code == "command_conflict", reason: reason)
             } catch let error where Self.definitive(error) {
                 guard view.queueEditID == editID else { return }
-                view.queueEditResolving = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
-                view.queueEditNotice = (operation == "save" ? "The rewrite was not saved" : operation == "cancel" ? "The edit was not cancelled" : "The message was not removed")
-                    + "; the queue is still paused. " + error.localizedDescription
+                view.queueEditResolving = false; view.queueEditPendingOperation = previousOperation; view.queueEditSentDigest = previousDigest
+                if previousOperation != nil {
+                    view.queueEditNotice = "This retry was refused; the earlier request is still unconfirmed. " + error.localizedDescription
+                } else {
+                    view.queueEditNotice = (operation == "save" ? "The rewrite was not saved" : operation == "cancel" ? "The edit was not cancelled" : "The message was not removed")
+                        + "; the queue is still paused. " + error.localizedDescription
+                }
                 draftChanged(view)
             } catch {
                 guard view.queueEditID == editID else { return }

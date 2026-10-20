@@ -145,6 +145,62 @@ extension MetadataStore {
         }
     }
 
+    func testOutstandingAnchorWritePinsDisplayAndReopenAdoptsItsCommittedRevision() async throws {
+        let (model, view, store) = try await fixture(), gate = AsyncGate()
+        let baseline = TranscriptAnchor(id: "baseline", offset: 1, followsBottom: false)
+        try await store.putAnchor(baseline, id: view.id, version: view.anchorVersion)
+        view.scrollAnchor = baseline; view.used = .distantPast
+        view.anchorWrite = Task { await gate.wait() }
+        let changed = TranscriptAnchor(id: "changed", offset: 2, followsBottom: false)
+        view.scrollAnchor = changed; model.anchorChanged(view)
+        let pending = view.anchorWrite
+        for index in 0..<8 {
+            let extra = SessionDisplay(id: "other-\(index)")
+            extra.selectionMetadataLoaded = true; model.displays[extra.id] = extra
+        }
+        model.releaseUnreadDisplays(keeping: "other-7")
+        XCTAssertTrue(model.displays[view.id] === view, "A predecessor wait must not make an outstanding anchor evictable")
+        // Revisit before the old write commits, as navigation can do.
+        let revisit = model.displays[view.id] ?? SessionDisplay(id: view.id)
+        if revisit !== view { try await model.loadDraftBaseline(revisit); model.displays[view.id] = revisit }
+        await gate.open(); await pending?.value
+        XCTAssertEqual(revisit.anchorVersion.snapshot.anchor, changed, "The current display must own the committed baseline")
+        let next = TranscriptAnchor(id: "next", offset: 3, followsBottom: false)
+        revisit.scrollAnchor = next; model.anchorChanged(revisit); await revisit.anchorWrite?.value
+        var saved = try await store.anchorVersion(id: view.id).snapshot.anchor
+        XCTAssertEqual(saved, next, "Later scrolls cannot silently lose against this instance's older write")
+        revisit.scrollAnchor = nil; model.anchorChanged(revisit); await revisit.anchorWrite?.value
+        saved = try await store.anchorVersion(id: view.id).snapshot.anchor
+        XCTAssertNil(saved, "Return to latest must still clear the saved position")
+        revisit.used = .distantPast
+        let extra = SessionDisplay(id: "last"); extra.selectionMetadataLoaded = true; model.displays[extra.id] = extra
+        model.releaseUnreadDisplays(keeping: extra.id)
+        XCTAssertNil(model.displays[view.id], "Completed anchor tasks must not pin idle displays forever")
+    }
+
+    func testSupersededAnchorCompletionCannotReleaseTheNewerWritersDisplay() async throws {
+        let (model, view, store) = try await fixture(), predecessor = AsyncGate()
+        view.used = .distantPast
+        view.anchorWrite = Task { await predecessor.wait() }
+        view.scrollAnchor = TranscriptAnchor(id: "older", offset: 1, followsBottom: false)
+        model.anchorChanged(view); let old = view.anchorWrite
+        let newest = TranscriptAnchor(id: "newest", offset: 2, followsBottom: false)
+        view.scrollAnchor = newest; model.anchorChanged(view); let new = view.anchorWrite
+        let gate = DraftBaselineGate(expectation(description: "Metadata writer held"))
+        let blocker = Task { await store.holdDraftBaseline(gate) }
+        await fulfillment(of: [gate.entered], timeout: 5)
+        defer { gate.resume.signal() }
+        await predecessor.open(); await old?.value
+        XCTAssertNotNil(view.anchorWrite, "A superseded completion cannot clear the newer write's ownership")
+        for index in 0..<8 { model.displays["other-\(index)"] = SessionDisplay(id: "other-\(index)") }
+        model.releaseUnreadDisplays(keeping: "other-7")
+        XCTAssertTrue(model.displays[view.id] === view)
+        gate.resume.signal(); await blocker.value; await new?.value
+        XCTAssertNil(view.anchorWrite); XCTAssertNil(view.anchorWriteToken)
+        let saved = try await store.anchorVersion(id: view.id).snapshot.anchor
+        XCTAssertEqual(saved, newest)
+    }
+
     func testEveryDirectDraftWriterSupersedesAPendingDebounce() async throws {
         for writer in ["put", "reviews", "submission", "withdrawal", "restore", "keep", "handoff", "remove"] {
             let (model, view, store) = try await fixture(), gate = AsyncGate()
