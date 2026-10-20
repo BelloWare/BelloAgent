@@ -708,3 +708,41 @@ Read-only adversarial review checked that the additional retirement result does 
 ### Integration with dev/next
 
 Committed the fixes as `bb3ebe8d`, then ran `git fetch origin` and `git merge --no-ff --no-commit origin/dev/next`. The incoming tip is `649ea623291c9417443d61d3bb55314d8a2f5d9a`. The sole conflict is concurrent additions to `NEXT-RELEASE.md`; all entries from both sides are retained. Source files merge cleanly. The automatic `Sessions.swift` merge retains both the conversation snapshot cache and upstream's saved task-time recovery. Upstream's response-timeline indexing/canonicalization, compaction timing and sidebar metadata eligibility changes are preserved without modification. The merge is a two-parent commit on `dev/a130-wire`, with no rebase, fast-forward, history rewrite or change to `dev/next`.
+
+### Merged-result validation
+
+The tested merge is `0255fcb494c77f2861832be40d7eec5e7b1e54e9`. Commands use the same build root and fixture-only inputs:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/SidebarSearchScopeTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round5-review/copy" \
+  "$B/logs/round5-review/native-lane.sh" native-copy-merged -only-testing:PiAppTests/ConversationCopyTests
+"$B/logs/round5-review/native-lane.sh" native-workspace-merged -only-testing:PiAppTests/WorkspaceTests
+"$B/logs/round5-review/native-lane.sh" native-transcript-merged -only-testing:PiAppTests/TranscriptBugRegressionTests
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+Each `test-macos.sh` run invokes `PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py` and `xcodegen generate` before the native checks. Staging is serialized. The headless run builds the merged Release helper before the wire suites; subsequent native runs reuse that same unchanged helper. Window/gallery classes run alone under the shared full-lane lock, released with an owner-token check after each run.
+
+`native-headless-merged.log`: **52 passed / 1 opt-in performance skip / 0 failures**, 53 executed in 5.742 s (ContentSearch 7, Hardening 12, HistoryIndexFiles 3 + 1 skip, HistoryReaderCheckpoint 7, StorageTruth 11, incoming SidebarSearchScope 12).
+
+`wire-merged.log`: **40 passed**, 39.644 s. `concurrent-merged.log`: **4 passed**, 23.924 s. `acceptance-merged.log`: **3 passed**, 3.500 s. Release helper SHA-256: `2d7d73aa94abfcef1d027e9927a8064f60efa9ce7436c973551eb19865adcb3f`.
+
+`helper-merged.log`: **1,148 passed / 7 opt-in skips / 0 failures**, 1,155 executed in 425.347 s. The merged 16 MiB regression again exports **1,025 pages / 16,777,232 bytes**, reads exactly **16,777,232 bytes**, and measures **0.030 s** after snapshot construction.
+
+`native-copy-merged.log`: **12 passed / 0 skips / 0 failures**, 9.203 s. Inspected all three regenerated images in `gallery-round5-review/copy`: light and dark at 1080 × 700 points, narrow at 900 × 700 points. Source previews, message counts, range fields and copy/export controls are legible, correctly placed and unobscured; long row previews use the existing ellipsis. `native-workspace-merged.log`: **17 passed / 0 skips / 0 failures**, 0.520 s.
+
+`native-transcript-merged.log`: **116 passed / 0 skips / 0 failures**, 141.625 s. **Final native total: 197 passed / 1 opt-in performance skip / 0 failures**, 198 executed.
+
+`helper-cost-merged.log`: **5 passed / 0 failures**, 3.393 s, in its own process after the other helper and native runs finished. **Final helper total: 1,153 passed / 7 opt-in skips / 0 failures**, 1,160 executed. All wire/concurrent/acceptance suites pass as listed above.
+
+The merged native runs retain the previously observed SQLite “vnode unlinked while in use” fixture-cleanup diagnostics: **18** in the incoming SidebarSearchScope fixtures (`native-headless-merged.log`), **15** in WorkspaceTests, and **8** in TranscriptBugRegressionTests. These concern generated search-scope, native-fixture and wide-search databases removed before every database handle closes (for example, `SidebarSearchScopeTests.swift:10`, `WorkspaceTests.swift:238`, and `TranscriptBugRegressionTests.swift:625`). All associated tests pass. This unrelated test-cleanup follow-up is recorded without changing another workstream's fixtures.
+
+Final read-only adversarial review rechecked the merged adapters, runtime-retirement classification, cache locking/lifetime/cancellation, unchanged shared page boundaries, recovery/adoption precedence, and upstream timeline serialization. No further assigned defect remains. `git diff --check` passes, the generated project matches, and `source-hashes.txt` / `release-helper-sha256.txt` still match the exact production files and Release binary used by the merged tests. All three mutations are restored. The shared lock was released after every window/gallery run; no foreign lock was removed. Removed only this build root's final autogenerated result bundle; no test clone directories remained (`cleanup.txt`). Text logs and the three inspected PNGs are retained. No installed app, real preferences/chats, Keychain, live capture or paid provider was used.
