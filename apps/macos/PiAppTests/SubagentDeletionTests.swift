@@ -59,13 +59,21 @@ final class SubagentDeletionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath:pendingOutput.path),"A pending keep also owns its particular copy")
         XCTAssertEqual(try Data(contentsOf:external),row)
         try await model.finishFamilyDeletion(members)
-        try await model.recycleUnreferencedToolOutputs()
+        while let cleanup = model.toolOutputCleanup { await cleanup.value }
         XCTAssertTrue(FileManager.default.fileExists(atPath:pendingOutput.path),"Finishing deletion must not drop a different pending copy's ownership")
         let copies = try await store.list(SideKeepIntent.self,kind:SideKeepIntent.retainedKind)
         XCTAssertTrue(copies.contains { $0.chat == pending },"The independent pending copy must transfer to durable retained ownership")
     }
 
     @MainActor func testDeletingMatchingPendingCopyReleasesItsOutput() async throws {
+        try await checkDeletingMatchingPendingCopy(interrupted: false)
+    }
+
+    @MainActor func testRetiredKeepReclaimsOutputEvenWhenLaterMetadataCleanupFails() async throws {
+        try await checkDeletingMatchingPendingCopy(interrupted: true)
+    }
+
+    @MainActor private func checkDeletingMatchingPendingCopy(interrupted: Bool) async throws {
         let root = scratchRoot("matching-pending-output"), model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model,root:root)
         try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
@@ -79,11 +87,41 @@ final class SubagentDeletionTests: XCTestCase {
         let members = [SessionDeletionRecord(id:pending.id,ownerID:pending.id,workspaceID:pending.workspaceID,path:pending.path,repairCompleted:true)]
         try await store.beginFamilyDeletion(members,repairCompleted:true)
         model.familyFileRecycler = { for file in $0 { try FileManager.default.removeItem(at:file) } }
-        try await model.finishFamilyDeletion(members)
-        try await model.recycleUnreferencedToolOutputs()
-        XCTAssertFalse(FileManager.default.fileExists(atPath:output.path))
+        model.familyDeletionStep = { if interrupted, $0 == "metadata:" + pending.id { throw StoreError.unavailable } }
+        do {
+            try await model.finishFamilyDeletion(members)
+            XCTAssertFalse(interrupted)
+        } catch {
+            XCTAssertTrue(interrupted); XCTAssertEqual(error as? StoreError, .unavailable)
+        }
+        try await eventually("deletion's automatic final output collection", timeout:.seconds(2)) {
+            !FileManager.default.fileExists(atPath:output.path)
+        }
         let copies = try await store.list(SideKeepIntent.self,kind:SideKeepIntent.retainedKind)
         XCTAssertFalse(copies.contains { $0.chat == pending },"The exact deleted journal has no surviving reference")
+    }
+
+    @MainActor func testDeletingImportedReferenceAutomaticallyReclaimsOutput() async throws {
+        let root = scratchRoot("deleted-import-output"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.prewarmsHelpers = false
+        try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        let store = try XCTUnwrap(model.store), sessions = try model.subagentDirectory("pane-project")
+        let folder = try ToolOutputOwnership.directory(root: sessions.appendingPathComponent("tool-output"), sessionID: "deleted", create: true)
+        let output = folder.appendingPathComponent("result.log"), journal = root.appendingPathComponent("external.jsonl")
+        try Data("IMPORTED-REFERENCE".utf8).write(to: output)
+        var row = try JSONEncoder().encode(["text": output.path]); row.append(10); try row.write(to: journal)
+        let chat = ChatRecord(id: "imported", workspaceID: "pane-project", title: "Imported", path: journal.path, profileID: "fixture", imported: true)
+        try await store.put(chat, kind: "chat", id: chat.id)
+        let members = [SessionDeletionRecord(id: "deleted", ownerID: "deleted", workspaceID: chat.workspaceID, path: nil, repairCompleted: true)]
+        try await store.beginFamilyDeletion(members, repairCompleted: true)
+        try await store.rememberDeletedToolOutputOwners(members)
+        model.familyFileRecycler = { for file in $0 { try FileManager.default.removeItem(at: file) } }
+        model.chats = [chat]; model.selectedID = chat.id; model.questions.answer = { _ in true }
+        model.deleteChat()
+        try await eventually("the imported index removal") { model.record(chat.id) == nil }
+        try await eventually("import deletion's automatic output collection", timeout: .seconds(2)) { !FileManager.default.fileExists(atPath: output.path) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journal.path), "The external original stays in place")
     }
 
     @MainActor func testFailedAndCancelledSweepsDoNotStrandLaterCleanup() async throws {

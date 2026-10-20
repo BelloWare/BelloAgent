@@ -139,6 +139,30 @@ import XCTest
         }
     }
 
+    func testImportRecoveryAndHandoffRefuseNavigationDuringCollection() async throws {
+        for kind in [ToolOutputProducer.importChat, .recovery, .handoff] {
+            let f = try await fixture("navigation-" + kind.rawValue), model = f.model
+            let gate = AsyncGate(); var entered = false, questions = 0
+            model.questions.answer = { _ in questions += 1; return false }
+            model.toolOutputProducerStep = { producer in
+                if producer == kind { entered = true; await gate.wait() }
+            }
+            var task: Task<Void, Never>?
+            if kind == .importChat {
+                task = Task { await model.importChat(from: URL(fileURLWithPath: f.chat.path!), workspaceID: f.chat.workspaceID, store: f.store) }
+            } else if kind == .recovery { model.recoverCopy(f.chat.id) }
+            else { model.portableHandoff() }
+            try await wait("Waiting for " + kind.rawValue) { entered }
+            model.selectedID = "another-chat"; model.page = .report
+            await gate.open(); await task?.value
+            try await wait("Finishing " + kind.rawValue) { model.toolOutputProducers.isEmpty }
+            XCTAssertEqual(model.selectedID, "another-chat", kind.rawValue)
+            XCTAssertEqual(model.page, .report, kind.rawValue)
+            XCTAssertEqual(questions, 0, kind.rawValue + " must not ask about a selection that was left during collection")
+            XCTAssertTrue(model.hosts.isEmpty, kind.rawValue + " must not start a helper after navigation cancels preparation")
+        }
+    }
+
     func testDisplacedAndQueuedDraftWritesRemainReferencesWithoutTheirDisplay() async throws {
         for queued in [false,true] {
             let f = try await fixture(queued ? "queued" : "displaced"), model = f.model

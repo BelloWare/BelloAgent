@@ -397,6 +397,10 @@ extension WorkspaceModel {
             try familyDeletionStep?("files:" + member.id)
         }
         try await recycleUnreferencedToolOutputs()
+        // Missing pending-keep journals retain candidates during the first
+        // pass. Retiring those ownership rows needs a fresh pass, also when
+        // later metadata cleanup fails or another cleanup is already running.
+        defer { toolOutputCollectionDeferred = true; scheduleToolOutputCleanup() }
         // Keep the owner's retry entry/repair proof until child metadata and
         // intents are gone too. Retrying never needs a deleted child journal.
         for member in members.sorted(by: { (rank($0), $0.id) > (rank($1), $1.id) }) {

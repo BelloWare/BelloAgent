@@ -885,3 +885,144 @@ The final reviewed Swift sources matched their recorded hashes after every mutat
 The remaining native skip is `ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer`: this test host has no Conversation menu. It is recorded in `native-submission-races.txt`, and no installed application was launched to bypass that isolation.
 
 The earlier completed-external-export ownership question remains **needs owner decision**; in-flight exports are protected here. No new unresolved issue remains in this review scope. Only `dev/a130-helper` is committed/pushed; no merge or fast-forward was performed.
+
+## Round 8 review — export identity and final collection
+
+Base: `9fff7915950f0561c59114fded64ca50580db24a`, on `dev/a130-helper`; no merge or fast-forward. Evidence uses the existing build root, with text logs in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper/logs/round8-review-20261020/`. All fixtures are generated and all helper services are loopback; credentials use `MemoryVaultStorage`.
+
+### Findings and failing-first evidence
+
+The October 18 run was interrupted by a laptop restart during an export mutation. On October 20 the mutation (`isCurrent` returning `true`) was identified and restored before validation. Its logs are superseded: the own native, debug-helper and Release-helper build trees were cleared, and failing-first, fixed, mutation and final suites were rerun from fresh builds. Only the new `round8-review-20261020` evidence counts below.
+
+| Item | Confirmation, regression and fix |
+| --- | --- |
+| Export selection — **confirmed + fixed** | The real Raw menu action waits behind a collection task; the test changes both request and physical session before releasing it. `testRedactedExportRefusesSelectionChangesAcrossCleanupAndQuestions` fails before the fix at cleanup, literal, preview and save boundaries. `testMetadataExportRefusesSelectionChangesAcrossCleanupAndSave` confirms the nearby metadata instance; `testRetainedExportRefusesSelectionChangesAcrossCleanupAndQuestions` catches the obsolete retained-body dialog. `inspector-failing-first.txt`: **4 tests, 3 failed, 13 assertions**; unchanged-selection export succeeds. Excerpts: `redacted exported a changed selection after cleanup`, `metadata exported a changed selection after save`, and `bodies must refuse a changed selection before opening an export question`. All three export paths now capture their source, physical session, request ID and raw part before the collector await. Redacted export also captures its document/format; metadata captures its text. Identity is checked after collection, dialogs and rendering, and before writing. The manifest uses the captured identity. |
+| Final ownership collection — **confirmed + fixed** | Removed the manual second sweep from `testDeletingMatchingPendingCopyReleasesItsOutput`. `ownership-navigation-failing-first.txt`: the matching-keep test fails, `deletion's automatic final output collection`, followed by XCTest reporting the thrown timeout (2 failures). The family deletion defers a fresh cleanup request until after ownership retirement, including error exits after partial metadata cleanup. Setting the existing deferred flag also preserves the request if cleanup is already running. The test now only observes the file disappearing; it never invokes that sweep. The separate `testRetiredKeepReclaimsOutputEvenWhenLaterMetadataCleanupFails` covers an error after the keep row was retired. |
+| Imported-index deletion sweep — **confirmed + fixed** | `testDeletingImportedReferenceAutomaticallyReclaimsOutput` drives ordinary Delete, waits for index removal, then checks automatic log reclamation while the external journal remains. `ownership-navigation-failing-first.txt`: `import deletion's automatic output collection` (1 failed test / timeout reported twice). The imported deletion path now also requests collection after retiring its ownership rows. |
+| Import/recovery/handoff UI sweep — **confirmed + fixed** | `testImportRecoveryAndHandoffRefuseNavigationDuringCollection` changes chat and page while each real action waits. `ownership-navigation-failing-first.txt`: **1 failed test, 5 assertions**. Import selected `chat-parent` instead of `another-chat` and changed Reports back to Chats; recovery opened a question; portable handoff opened a question and started a helper. Each action now captures navigation/project and its source before waiting, checks it before subsequent preparation/publication, and keeps its original configuration selection. Import and completed recovery/handoff commits do not override newer navigation. |
+
+The October 18 compile typo and passing runs were discarded as evidence after the restart. Fresh commands and final counts are recorded below. The October 20 failing-first ownership run also includes the interrupted-metadata variant, which must reclaim output after the keep row is retired even if a later step fails. Together that run executes **4 tests, all failed, with 11 failures (3 unexpected timeout errors)**.
+
+One October 20 native run was also discarded: stopping its controller after it advanced left a child running, overlapping a second native build in this workstream's build root. `ownership-fixed-overlap-discarded.txt` preserves **36 tests / 3 failures (1 unexpected)**: the clone/copy test could not find a compatible helper bundle, and `testEnumerationFailureKeepsDeletionIntentAndRetriesAfterRepair` had two failed retry assertions. Xcode also reported result-bundle import errors. `self-review-failing-first-overlap-discarded.txt` preserves the overlapping self-review reproduction. Neither is counted as validation. After verifying that no child remained, the waiting controller was stopped and all remaining native builds ran through one serial controller. The self-review reproduction and ownership suite were repeated in isolation; both ownership tests pass there and in the final class run.
+
+The redacted regression was then expanded to cover changing only the raw part or document format, clearing the capture, and closing the Inspector while collection waits. The normal control still writes the original request ID, `sourceView: request` and the expected redacted text. Retained-body export checks identity immediately before starting the archive/helper operation: after the destination is approved, that operation stays bound to the captured request even if navigation changes during its disk work; only its stale completion notice is suppressed.
+
+### Audit of every collector await added in round 7
+
+The 19 producer kinds from the previous section remain registered through their complete asynchronous operation. Navigation-sensitive actions below snapshot before their first suspension; actions explicitly addressed to an ID continue for that original ID rather than consulting a later selection. No collector wait releases the producer early.
+
+| UI/action path | Captured identity and validation after suspension |
+| --- | --- |
+| Inspector metadata / retained bytes / redacted view | Fixed here: request ID, physical session, raw part, capture revisions, text/body source, document format, archive/workspace and manifest fields. Checks at each collector/dialog/render boundary. Request completion may update metadata without changing the selected identity; frozen metadata remains a valid snapshot. |
+| Conversation copy / Markdown export | `source`, source revision, range/total and destination window are captured before waiting. Page reads validate the revision; `PayloadTaskScope` rejects completion after cancellation/replacement. The captured source owns its request identity, not the current composer selection. |
+| Editable side handoff | Immutable `session.id`, model, text and lifetime token are captured. After waiting, the token must still match; dismissal/unmount retires it. `bringBack` resolves the original side/parent, and the synchronous transfer cannot read another selected chat. |
+| Journal import | Fixed here: URL, requested workspace, profile and navigation/project snapshot. Native-owner lookup retains ancestry and rechecks chat revisions; navigation is rechecked after lookup/read and before selection. An external metadata commit that already started remains registered but cannot select over later navigation. |
+| Recovery / portable handoff | Fixed here: source item/path/project, profile, navigation/project snapshot. Checks follow collection, confirmation and helper setup/preview. Recovery already published by the helper is registered under its returned copy identity even if navigation changed; its source is not recreated and selection is not stolen. |
+| `send` / `sendEdit` | Captured `Submission` or edit message ID, text, attachments, skills, command/turn IDs, saved draft, original display and archive revision. Connection/archival admission is rechecked before dispatch. Original explicit submissions can continue while another chat is selected; they cannot use that chat's composer. |
+| `editMessage` / queued edit commands | Original session/message or turn/edit ID and parameters. Edit generation and saved draft reject stale preparation; queue results check edit/hold identity and revision. `QueueEditFocus` rejects obsolete focus changes. |
+| `draftChanged` / recovery / materialization | Captured draft/session/revision token, original intent/display, or pending chat record/project reservation. Canceled debounces, accepted/retired intents and discarded placeholders are rejected by their existing checks. Recovery deliberately merges current typing from the same original display after waiting. |
+| `flushDrafts` | Global flush, not a selected-row action. After pending recoveries settle, it inventories the then-current retained displays by their own IDs; it never redirects one draft to another selection. |
+| `moveSideDraft` | Original side holder and parent ID captured before waiting. Serial per-side transfer and the parent's saved/loaded state are rechecked after every read/write. It intentionally includes typing accumulated on that same side while collection waits. |
+| `openSide` / `publishPendingSide` | Original side ID, parent ID, project, display and initial question/submission draft. Parent lookup/open and returned side ID validate the source; replacement-side checks prevent stale publication/rollback from altering another side. No selected-ID lookup supplies the source after waiting. |
+| Keep / close / registration / dismissal | Original side ID/info/display/host or immutable keep issue and path. Durable intent, canonical journal identity and expected-copy transaction validate registration/dismissal; close checks the side ID before removing its panel. Other selected chats are not consulted. |
+| Whole/reply fork | Original parent record, parent ID and optional message ID; helper validates that source and returned fork ID. Durable keep registration validates the path/intent. Existing caller navigation guards prevent selection stealing. |
+
+### Adversarial self-review
+
+Reviewed the new diff from `9fff7915` and the prior producer awaits as a hostile reviewer. The sweep findings above were reproduced before fixes. Changed-condition inventory:
+
+| Changed condition / state that now takes the other branch | Intended result |
+| --- | --- |
+| Export identity no longer matches request/physical session/raw part | Refuse before asking, rendering or writing; never combine the newer body with the older manifest. Covers switching to another child request as well as ordinary chat requests. |
+| Relevant capture revision, redacted document ID or format changed | Refuse the stale export. Purged bodies and a different displayed format cannot silently supply or label its bytes. A growing stream that has not replaced the selected document still exports its captured snapshot. Redacted views check only their own body revision; retained-byte/metadata export checks both bodies. |
+| Inspector inactive or task cancelled | Release the producer without writing or updating another selection's notice. A save with unchanged identity still succeeds. |
+| Import/recovery/handoff navigation revision or selected project changed | Stop preparation before helper work or publication; captured inputs never follow the newly selected chat/project. Source path changed/removed likewise refuses recovery/handoff preparation. |
+| Navigation changes after a metadata/publication commit began | Preserve the already-created original copy and its durable references, but do not select it. This avoids creating an unregistered published recovery merely to cancel a UI action. |
+| Cleanup is already running when ownership rows retire | The deferred flag records another scan instead of losing the scheduling request to the existing-task guard. A queued scan that starts later sees the retired rows directly; an already-started scan gets another pass. |
+| Metadata cleanup throws after retiring keep ownership | The deferred request still runs. A still-present or unreadable ownership row remains conservative and retains output; no damaged reference is interpreted as permission to recycle. |
+| Producer is active during that final pass | Existing producer admission defers collection until the last holder releases. Concurrent sibling work remains protected through the entire asynchronous recycler. |
+| Shutdown/restart | Shutdown does not start opportunistic work; durable deleted-owner records make restart eligible for the normal post-restoration cleanup. Pending deletion retry still retains its repair proof. |
+
+Off/memory/persist capture selection, streaming/idle/paused conversations, failed/cancelled preparation, restarted ownership and concurrent sibling references retain their existing boundaries. The collector does not infer deletion of retained copies from an ID tombstone, copy files, change quotas, or bypass capture availability. Independent retained copies still survive the automatic post-deletion pass; its previous manual sweep was replaced with awaiting the already-scheduled cleanup.
+
+Self-review additionally reproduced two edge cases in the initial export patch (`self-review-failing-first-isolated.txt`: **2 tests / 3 failures, including 1 unexpected missing-file error**). Restoring both fixes gives **6/6 passing** export regressions and controls in `inspector-fixed.txt`:
+
+- `testMetadataExportNeverWritesAnUnloadedSource`: metadata is empty when export starts, then finishes loading while collection waits. Freezing that empty string wrote a zero-byte file (`An unloaded source must not export an empty metadata file` and a missing `attemptId`). Metadata export now refuses that unavailable snapshot before showing the save panel. Loaded metadata still exports normally.
+- `testRedactedExportSurvivesLossOfTheOtherBody`: the response expires while a request export waits. Checking the entire revision dictionary incorrectly cancelled the still-readable request export (missing output file, Cocoa error 260). Redacted export now checks its selected body's revision plus document/format identity. This preserves the approved per-body retirement behavior. Retained-byte export still checks both bodies.
+
+These are additional changed branches: an initially empty metadata snapshot now returns without writing; loss of an unrelated body no longer cancels a valid redacted view. The selected body's loss, navigation, format replacement and cancellation still refuse it. No layout or new control was introduced.
+
+### Mutation checks
+
+Each mutation was compiled and tested independently, then restored before the next mutation. Every failure below is an actual XCTest regression failure, not a compiler/build failure. `mutations-restored.json` confirms restoration; each of the three production files also matched its pre-mutation byte-for-byte backup. The fixed export selection/edge-case tests pass **6/6**, and the isolated ownership/producer/workspace-durability classes pass **36/36** (`inspector-fixed.txt`, `ownership-fixed.txt`).
+
+| Log | Mutation and result |
+| --- | --- |
+| `mutation-retired-keep.txt` | Remove the family's deferred final cleanup request. Both matching-keep and interrupted-metadata tests fail: **2 tests / 4 failures (2 thrown timeouts)**, `deletion's automatic final output collection`. |
+| `mutation-import-reclamation.txt` | Remove the imported-index deletion's final cleanup request. **1 test / 2 failures (1 thrown timeout)**, `import deletion's automatic output collection`. |
+| `mutation-navigation.txt` | Weaken the three captured navigation equality checks to `>=`. **1 test / 5 assertions**: stale import selects its chat/page; recovery and handoff ask obsolete questions; handoff starts a helper. |
+| `mutation-export-identity.txt` | Make `isCurrent` always return true. All three changed-selection export tests fail: **3 tests / 20 assertions**, including exports after part/format/capture/Inspector changes and obsolete retained-byte destinations. |
+| `mutation-unloaded-metadata.txt` | Remove the nonempty metadata-snapshot guard. **1 test / 2 assertions**: empty file and missing `attemptId`. |
+| `mutation-other-body.txt` | Compare all capture revisions for a redacted source. **1 test / 1 unexpected missing-file error**: expiry of Response wrongly cancels the Request export. |
+
+All six mutation runs exit 65 as expected. Their exact focused selectors and commands are recorded in `native-wire-results.json`; the command prefix for each is `PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO`, followed by `-only-testing:PiAppTests/<Class>/<test>` for the tests named above. Focus-changing export tests hold the shared lane; headless ownership/navigation tests do not change focus.
+
+### Fresh validation after the restart
+
+All commands run from this worktree, with the following build root. The helper suite follows `verify-release.sh`'s isolated streaming-cost process and remaining-suite split; it covers the complete helper suite once.
+
+```sh
+BUILD=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-helper
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$BUILD/swift-verify" --skip-build --skip StreamingCostTests
+```
+
+`helper-streaming-cost.txt`: **5/5 passed**. `helper-full.txt`: **1,049 executed, 1,042 passed, 7 skipped, 0 failures**. Combined: **1,054 executed, 1,047 passed, 7 skipped, 0 failures**. The skips are opt-in fixture/performance probes: `ForkCloneTests.testWriteTheSharedForkFixture`, `ForkPerformanceTests.testForkingAVeryLargeChat`, `HistoryReadCancellationTests.testRapidSupersessionMeasurement`, and the four `SessionOpenPerformanceTests` measurements (`testMemoryOfOneOpenChat`, `testOpeningAKeptJournal`, `testOpeningALongChat`, `testSlimmingAKeptJournal`). `helper-results.json` records both exact commands and successful exit codes.
+
+Release helper and wire validation:
+
+```sh
+PI_BUILD_ROOT="$BUILD" python3 scripts/build-bundle.py
+HOST="$BUILD/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+```
+
+Release bundle build passed. Wire **36/36**, concurrent wire **4/4**, and acceptance **3/3** passed with no skips or failures (`wire.txt`, `concurrent-wire.txt`, `acceptance.txt`).
+
+Final focused native commands (each focus/gallery run holds the shared lane; serial-lane classes run separately):
+
+```sh
+LOGS="$BUILD/logs/round8-review-20261020"
+native() { PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO "$@"; }
+native -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/SubagentCostTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/SessionOrganizationTests -only-testing:PiAppTests/SubagentDiscoveryTests -only-testing:PiAppTests/DeferredCreationTests
+native -only-testing:PiAppTests/LifecycleHelperTests
+native -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/WorkspaceFollowupTests -only-testing:PiAppTests/LaunchSelectionTests
+native -only-testing:PiAppTests/ConversationPaneTests
+TEST_RUNNER_PI_APP_INSPECTOR_STORAGE_GALLERY="$LOGS/inspector-gallery" native -only-testing:PiAppTests/InspectorStorageTests
+native -only-testing:PiAppTests/InspectorNativeControlTests
+native -only-testing:PiAppTests/InspectorNativeParityTests
+native -only-testing:PiAppTests/CaptureDrainTests
+TEST_RUNNER_PI_APP_CHAT_DELETION_GALLERY="$LOGS/deletion-gallery" native -only-testing:PiAppTests/ChatDeletionGalleryTests
+```
+
+| Final native log | Passing counts by class |
+| --- | --- |
+| `native-ownership-final.txt` | SubagentDeletion **19/19**, ToolOutputProducer **8/8**, WorkspaceDurability **9/9**, FamilyDeletion **10/10**, MetadataDurability **10/10**, SubagentCost **11/11**, WorkspaceRace **20/20**, SessionOrganization **9/9**, SubagentDiscovery **15/15**, DeferredCreation **4/4**; **115/115** total. |
+| `native-lifecycle-final.txt` | LifecycleHelper **11/11**, run alone. |
+| `native-surviving-references-final.txt` | SideKeepRecovery **15/15**, SideKeepOrdering **12/12**, WorkspaceFollowup **9/9**, LaunchSelection **21/21**; **57/57** total. |
+| `native-conversation-final.txt` | ConversationPane **81/81**. |
+| `native-inspector-final.txt` | InspectorStorage **23/23**, including both opt-in gallery tests. |
+| `native-inspector-controls-final.txt` | InspectorNativeControl **12/12**, run alone. |
+| `native-inspector-parity-final.txt` | InspectorNativeParity **7/7**, run alone. |
+| `native-capture-drain-final.txt` | CaptureDrain **6/6**, run alone. |
+| `native-deletion-gallery-final.txt` | ChatDeletionGallery **2/2**, run alone with its gallery environment. |
+
+Final native total: **314/314 passed, no skips or failures**, excluding the earlier focused controls and intentional failing-first/mutation runs. `native-final-summary.json` retains the class counts; `native-wire-results.json` retains exact argument lists, gallery environment variables and exit codes. No code changed after the final runs. `reviewed-source-sha256.json` matches every changed Swift file, and `git diff --check` passes.
+
+Regenerated **56 PNGs**: **32 Inspector** and **24 deletion/import** scenes. Inspected Request and Response toolbars in light/dark at 485- and 1000-point pane widths: part/format selectors, Copy and the capture menu remain visible, and body/status text fits. Also inspected narrow light/dark family deletion sheets at 340 points, a wide family sheet at 1240, narrow import notices at 320 and a wide notice at 720: confirmation controls remain visible, summaries wrap, long side names truncate within their rows, and notices retain Copy/Dismiss. The inspected images match the hashes recorded in `gallery-sha256.json`. No layout or control was changed by this round.
+
+One own native build tree (1.3 GiB), one debug-helper tree (409 MiB), and one Release-helper tree (95 MiB) were used. No clone directories remain. All owned lane locks were released; other workstreams' locks were left alone. No installed app, live/paid provider, real preference/chat/Keychain, or explicit result-bundle path was used. Text logs are the evidence.
+
+No new unresolved round-8 issue remains. The prior completed-external-export lifetime question remains **needs owner decision**; in-flight export ownership is protected. Only `dev/a130-helper` is committed/pushed; no merge, fast-forward, tag, release or history rewrite was performed.

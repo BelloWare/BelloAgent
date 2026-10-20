@@ -4,6 +4,14 @@
 
 ## 0.1.130
 
+- [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
+- [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.
+- [x] Redacted exports remain valid when only the other capture body expires.
+- [x] Deletion schedules collection after retiring keep and import ownership rows, reclaiming last-reference output without a later deletion or relaunch.
+- [x] Journal import preserves its original project/profile and refuses navigation changes during preparation.
+- [x] Recovery cancels stale preparation and registers completed copies without overriding later navigation.
+- [x] Portable handoff checks its original source and navigation through preview and confirmation.
+
 - [x] Tool-output collection fences in-flight draft transfers, saves, editable handoffs, keep/fork/recovery publication and exports. [Validation](docs/validation/a130-helper-0.1.130.md#round-6-review--transient-output-ownership-and-deletion).
 - [x] Independently retained copies preserve their referenced output despite another copy's chat-ID tombstone.
 - [x] Deletion transfers a different pending keep copy to durable retained ownership before clearing its intent.
