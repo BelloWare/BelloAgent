@@ -82,6 +82,7 @@ public actor NativeHostService {
     var afterSessionUnload: (@Sendable () async -> Void)?
     var beforeJournalDiskWork: (@Sendable () -> Void)?
     var beforeChildTerminalMirror: (@Sendable () -> Void)?
+    var beforeRecoveryPublication: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -568,8 +569,8 @@ public actor NativeHostService {
             let before = beforeJournalDiskWork
             return try await Task.detached(priority:.userInitiated) { before?(); return try Self.portable(params) }.value
         case "session.recover":
-            let before = beforeJournalDiskWork
-            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.recoverCopy(params,directory:directory) }.value
+            let before = beforeJournalDiskWork, publication = beforeRecoveryPublication
+            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.recoverCopy(params,directory:directory,beforePublication:publication) }.value
         case "journal.slim":
             // A chat's journal without the run-state records that repeated its
             // receipts (`JournalSlimming`), for a chat not open here.
@@ -577,7 +578,8 @@ public actor NativeHostService {
             let url=canonical(try required(params["path"],"journal path"))
             guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals are slimmed") }
             guard sessions[id] == nil, slimming[id] == nil else { return JournalSlimming.Outcome(reason:"session-open").json }
-            let task=Task.detached(priority:.utility) { try JournalSlimming.slim(url:url,id:id) }
+            let before = beforeJournalDiskWork
+            let task=Task.detached(priority:.utility) { before?(); return try JournalSlimming.slim(url:url,id:id) }
             slimming[id]=task
             defer { slimming[id]=nil }
             return try await task.value.json
@@ -606,6 +608,9 @@ public actor NativeHostService {
                 return ["accepted":true,"released":.array(released)]
             }
         case "session.forget":
+            // Deletion may remove the journal as soon as this acknowledges.
+            // Wait outside the runtime gate so unrelated chats stay available.
+            if let slim=slimming[id] { _=await slim.result }
             try await withRuntimeGate {
                 let family = try await loadedBudgetFamily(id,directory:directory)
                 // Preflight the whole family before detaching any writer.
@@ -1006,7 +1011,7 @@ public actor NativeHostService {
         if before != target.binding, var stored=journal.resumedFrom { stored.rebinds=journal.rebinds.map(\.check); try? stored.write(for:url) }
         return ["rebound":JSON(before != target.binding)]
     }
-    private static func recoverCopy(_ params:JSON, directory:URL) throws -> JSON {
+    private static func recoverCopy(_ params:JSON, directory:URL, beforePublication: (@Sendable () -> Void)? = nil) throws -> JSON {
         let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))
         guard within(source,sessions) else { throw AgentError("invalid_path","Only this project's own chats can be recovered") }
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
@@ -1049,9 +1054,14 @@ public actor NativeHostService {
                 "data":["relationship":"recovered-copy","sourceSessionId":JSON(sourceID)]]
             var line = try provenance.data(); line.append(10); try file.write(contentsOf:line); count += 1
         }
-        try reader.checkUnchanged()
         try file.synchronize(); try file.close()
+        beforePublication?()
+        try reader.checkUnchanged(at:source)
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
+        // If deletion won between the check and link, withdraw the copy.
+        // Once published, surviving-journal scans can see its references.
+        do { try reader.checkUnchanged(at:source) }
+        catch { try? FileManager.default.removeItem(at:destination); throw error }
         // A reply the helper was streaming goes with the copy, which then
         // opens with it as the original would have.
         try? PartialReplyLog.carry(from:source,to:destination,shift:shift)

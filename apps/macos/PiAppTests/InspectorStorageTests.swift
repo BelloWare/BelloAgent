@@ -48,6 +48,132 @@ import XCTest
         try? await fixture.1.close(); try? FileManager.default.removeItem(at: fixture.0)
     }
 
+    func testRedactedExportRefusesSelectionChangesAcrossCleanupAndQuestions() async throws {
+        for stage in ["cleanup", "part", "format", "purge", "closed", "literal", "preview", "save"] { try await checkExport("redacted", changedAt: stage) }
+    }
+
+    func testMetadataExportRefusesSelectionChangesAcrossCleanupAndSave() async throws {
+        for stage in ["cleanup", "save"] { try await checkExport("metadata", changedAt: stage) }
+    }
+
+    func testRetainedExportRefusesSelectionChangesAcrossCleanupAndQuestions() async throws {
+        for stage in ["cleanup", "confirm", "save"] { try await checkExport("bodies", changedAt: stage) }
+    }
+
+    func testExportsKeepTheirSourceWhenSelectionIsUnchanged() async throws {
+        for kind in ["metadata", "bodies", "redacted"] { try await checkExport(kind, changedAt: nil) }
+    }
+
+    func testRedactedExportSurvivesLossOfTheOtherBody() async throws {
+        try await checkExport("redacted", changedAt: "other-purge")
+    }
+
+    func testMetadataExportNeverWritesAnUnloadedSource() async throws {
+        let fixture = try await fixture(), inspector = fixture.2, request = inspector.request, raw = fixture.3
+        defer { fixture.4.close() }
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        let workspace = makeWorkspaceModel(stateRoot: fixture.0.appendingPathComponent("workspace"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { workspace.shutdown() }
+        inspector.workspace = workspace; request.workspace = workspace
+        let metadataGate = AsyncGate(), collectionGate = AsyncGate()
+        let recycling = Task<Void, Error> { await collectionGate.wait() }
+        workspace.toolOutputRecycling = (UUID(), recycling)
+        defer { workspace.toolOutputRecycling = nil; Task { await metadataGate.open(); await collectionGate.open() } }
+        var row = try XCTUnwrap(request.row); row.id = "metadata-pending"
+        request.metadataOverride = { _ in await metadataGate.wait(); return ["attemptId": .string("metadata-pending")] }
+        request.open(row, predecessor: nil, previousLabel: nil); raw.refresh()
+        XCTAssertTrue(request.metadataText.isEmpty)
+        let destination = fixture.0.appendingPathComponent("metadata.json"), question = PiQuestion.shared, oldFiles = PiQuestion.shared.chooseFiles
+        defer { question.chooseFiles = oldFiles }
+        question.chooseFiles = { [destination] }
+        let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+        let action = try XCTUnwrap(menu.entries().compactMap { if case .item(let item) = $0 { return item }; return nil }.first { $0.identifier == "inspector-export-metadata" })
+        action.perform()
+        try await eventually("the unloaded metadata export waiting for collection") { workspace.toolOutputProducers.values.contains(.export) }
+        await metadataGate.open()
+        try await eventually("metadata loading while export waits") { request.metadataLoaded }
+        await collectionGate.open()
+        try await eventually("the metadata export finishing") { workspace.toolOutputProducers.isEmpty }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            let data = try Data(contentsOf: destination)
+            XCTAssertFalse(data.isEmpty, "An unloaded source must not export an empty metadata file")
+            let value = try? JSONDecoder().decode(WireValue.self, from: data)
+            XCTAssertEqual(value?.object?["attemptId"]?.string, row.id)
+        }
+    }
+
+    private func checkExport(_ kind: String, changedAt stage: String?) async throws {
+        let fixture = try await fixture(), inspector = fixture.2, request = inspector.request, raw = fixture.3
+        defer { fixture.4.close() }
+        addTeardownBlock { @MainActor in await self.close(fixture) }
+        let workspace = makeWorkspaceModel(stateRoot: fixture.0.appendingPathComponent("workspace"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { workspace.shutdown() }
+        inspector.workspace = workspace; request.workspace = workspace
+        let original = try XCTUnwrap(request.row), gate = AsyncGate()
+        let recycling = Task<Void, Error> { await gate.wait() }
+        workspace.toolOutputRecycling = (UUID(), recycling)
+        defer { workspace.toolOutputRecycling = nil; Task { await gate.open() } }
+        let destination = fixture.0.appendingPathComponent("export")
+        if kind == "bodies" { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
+        var questions = 0
+        func changeSelection() {
+            var other = original; other.id = "other-request"; other.sessionID = "other-session"
+            request.sourceOverride = { _, _ in InspectorRequestModelTests.source({ Data("{\"text\":\"OTHER-REQUEST-BODY\"}".utf8) }) }
+            request.metadataOverride = { _ in ["attemptId": .string(other.id), "sessionId": .string("other-session")] }
+            request.open(other, predecessor: nil, previousLabel: nil); request.raw = .response; raw.refresh()
+        }
+        let question = PiQuestion.shared, oldAlert = question.answerAlert, oldFiles = question.chooseFiles
+        defer { question.answerAlert = oldAlert; question.chooseFiles = oldFiles }
+        question.answerAlert = { alert in
+            questions += 1
+            let current: String
+            if let field = alert.accessoryView as? NSSecureTextField { field.stringValue = "message"; current = "literal" }
+            else { current = alert.messageText == "Redacted view" ? "preview" : "confirm" }
+            if stage == current { changeSelection() }
+            return .alertFirstButtonReturn
+        }
+        question.chooseFiles = {
+            questions += 1
+            if stage == "save" { changeSelection() }
+            return [destination]
+        }
+        let menu = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.MenuControl.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-menu" })
+        let action = try XCTUnwrap(menu.entries().compactMap { if case .item(let item) = $0 { return item }; return nil }.first { $0.identifier == "inspector-export-" + kind })
+        XCTAssertTrue(action.enabled); action.perform()
+        try await eventually("the export waiting for collection") { workspace.toolOutputProducers.values.contains(.export) }
+        if stage == "cleanup" {
+            changeSelection()
+            try await eventually("the new request's body") { request.metadataLoaded && self.copyButton(raw)?.isEnabled == true }
+        } else if stage == "part" { request.raw = .response; raw.refresh() }
+        else if stage == "format" { try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: raw).first).setFormat(.hex) }
+        else if stage == "purge" { request.capturesCleared() }
+        else if stage == "closed" { inspector.setVisible(false) }
+        else if stage == "other-purge" {
+            var metadata = request.metadata
+            metadata["response"] = .object(["state": .string("purged"), "retainedBytes": .number(0)])
+            let updated = metadata
+            request.metadataOverride = { _ in updated }; request.refresh()
+            try await eventually("the other capture expiring") { request.captureRevisions["response", default: 0] > 0 }
+            raw.refresh(); XCTAssertTrue(copyButton(raw)?.isEnabled == true)
+        }
+        await gate.open()
+        try await eventually("the export releasing its ownership") { workspace.toolOutputProducers.isEmpty }
+        if let stage, stage != "other-purge" {
+            if ["cleanup", "part", "format", "purge", "closed"].contains(stage) { XCTAssertEqual(questions, 0, "\(kind) must refuse a changed selection before opening an export question") }
+            if kind == "bodies" { XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty) }
+            else { XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path), "\(kind) exported a changed selection after \(stage)") }
+        } else if kind == "bodies" {
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+        } else {
+            let value = try JSONDecoder().decode(WireValue.self, from: Data(contentsOf: destination)).object
+            XCTAssertEqual(value?["attemptId"]?.string, original.id)
+            if kind == "redacted" {
+                XCTAssertEqual(value?["sourceView"]?.string, "request")
+                XCTAssertTrue(value?["view"]?.string?.contains("[REDACTED] 0") == true)
+            }
+        }
+    }
+
     func testClearThenRefreshRetiresLoadedBodiesWithoutNavigation() async throws {
         let fixture = try await fixture(), archive = fixture.1, inspector = fixture.2, raw = fixture.3
         addTeardownBlock { @MainActor in await self.close(fixture) }

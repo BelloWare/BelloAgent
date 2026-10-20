@@ -87,6 +87,7 @@ enum JournalSlimming {
         let directory = url.deletingLastPathComponent()
         var outcome = Outcome()
         let plan = try Plan(url)
+        let source = try JournalRecordReader(url)
         outcome.bytesBefore = plan.size
         guard plan.removableBytes >= minimumSaving else { outcome.reason = "little-to-gain"; return outcome }
         let before = try AgentSession.replay(original, url: url, id: id, binding: binding, spendTracked: false, resume: false)
@@ -117,7 +118,15 @@ enum JournalSlimming {
                 outcome.reason = "discard-failed"; return outcome
             }
             try? FileManager.default.removeItem(at: kept)
-            guard rename(copy.path, url.path) == 0 else { throw AgentError("session_damaged", "The slimmed journal could not take the original's place") }
+            do { try source.checkUnchanged(at: url) }
+            catch { removeCopy(); outcome.reason = "source-changed"; return outcome }
+            // Exchange requires both names to exist: deletion between the
+            // identity check and publication must not recreate the source.
+            guard renameatx_np(AT_FDCWD, copy.path, AT_FDCWD, url.path, UInt32(RENAME_SWAP)) == 0 else {
+                if errno == ENOENT { removeCopy(); outcome.reason = "source-changed"; return outcome }
+                throw AgentError("session_damaged", "The slimmed journal could not take the original's place")
+            }
+            try? FileManager.default.removeItem(at: copy)
             // The metadata file follows the new journal, as a full open writes it.
             if let captured = after.captured { try? captured.write(for: url) } else { JournalCheckpoint.remove(for: url) }
             closeCopy()

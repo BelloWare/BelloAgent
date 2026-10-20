@@ -117,6 +117,16 @@ final class JournalRecordReader {
         guard fstat(file.fileDescriptor, &info) == 0, info.st_size >= 0, UInt64(info.st_size) == size else { throw Self.changed() }
     }
 
+    /// A copy may publish only while its source still names the file read.
+    /// An open descriptor alone survives moving the source to Trash.
+    func checkUnchanged(at url: URL) throws {
+        try checkUnchanged()
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              UInt64(info.st_dev) == device, UInt64(info.st_ino) == inode,
+              info.st_size >= 0, UInt64(info.st_size) == size else { throw Self.changed() }
+    }
+
     private static func changed() -> AgentError {
         AgentError("session_damaged", "The source journal changed while it was being read")
     }

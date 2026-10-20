@@ -7,6 +7,27 @@
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
+- [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
+- [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.
+- [x] Redacted exports remain valid when only the other capture body expires.
+- [x] Deletion schedules collection after retiring keep and import ownership rows, reclaiming last-reference output without a later deletion or relaunch.
+- [x] Journal import preserves its original project/profile and refuses navigation changes during preparation.
+- [x] Recovery cancels stale preparation and registers completed copies without overriding later navigation.
+- [x] Portable handoff checks its original source and navigation through preview and confirmation.
+
+- [x] Tool-output collection fences in-flight draft transfers, saves, editable handoffs, keep/fork/recovery publication and exports. [Validation](docs/validation/a130-helper-0.1.130.md#round-6-review--transient-output-ownership-and-deletion).
+- [x] Independently retained copies preserve their referenced output despite another copy's chat-ID tombstone.
+- [x] Deletion transfers a different pending keep copy to durable retained ownership before clearing its intent.
+- [x] Importing an unlisted native side loads its budget ancestors before selection, including archived sides.
+- [x] Chat deletion waits for background slimming; slimming cannot recreate a deleted source or overwrite a replaced source after discard.
+
+- [x] Concurrent deletions serialize shared tool-output recycling, preserving both deletion receipts. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-review-follow-up).
+- [x] Opportunistic retained-output cleanup runs after the remembered chat is restored.
+- [x] Import selects an existing native chat instead of registering an alias; another project's journal is refused with a notice.
+- [x] Recovery refuses a source deleted or replaced before publication and withdraws a copy if deletion wins during publication.
+
+- [x] Deleting a chat preserves full tool output referenced by surviving forks, sides and saved drafts, then reclaims it after the last reference is removed. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-compat-2--shared-retained-tool-output-ownership).
+
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
 - [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
 - [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.

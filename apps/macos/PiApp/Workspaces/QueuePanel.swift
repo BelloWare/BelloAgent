@@ -153,6 +153,9 @@ extension WorkspaceModel {
     }
     /// One `queue.edit.*` command to the chat's helper.
     func queueEditRequest(_ method: String, sessionID: String, params: [String: WireValue]) async throws -> [String: WireValue] {
+        let outputUse = beginToolOutputUse(.queuedEdit)
+        defer { finishToolOutputUse(outputUse) }
+        try await prepareToolOutputUse(outputUse)
         if let queueEditOperation { return try await queueEditOperation(method, sessionID, params) }
         guard let item = record(sessionID) else { throw HostError.failure("This chat is no longer open.") }
         let host = try await open(item)

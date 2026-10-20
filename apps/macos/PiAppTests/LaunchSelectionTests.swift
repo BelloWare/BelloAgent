@@ -9,6 +9,33 @@ import AppKit
 /// `WorkspaceModel` over the same state directory, restored the way the app
 /// restores it, and every quit goes through the app's own quit path.
 final class LaunchSelectionTests: XCTestCase {
+    @MainActor func testRetainedOutputCleanupWaitsUntilRememberedChatIsRestored() async throws {
+        let fixture = try await fixture(), model = unrestoredModel(fixture)
+        let store = try XCTUnwrap(model.store)
+        try await store.put(RememberedSelection(chatID:fixture.b2.id,projectID:fixture.second.id),kind:RememberedSelection.recordKind,id:RememberedSelection.recordID)
+        let members = [SessionDeletionRecord(id:"deleted",ownerID:"deleted",workspaceID:fixture.first.id,path:nil)]
+        try await store.beginFamilyDeletion(members,repairCompleted:true)
+        try await store.rememberDeletedToolOutputOwners(members)
+        try await store.remove(kind:SessionDeletionRecord.kind,id:"deleted")
+        let folder = try ToolOutputOwnership.directory(root:model.subagentDirectory(fixture.first.id).appendingPathComponent("tool-output"),sessionID:"deleted",create:true)
+        try Data("unreferenced".utf8).write(to:folder.appendingPathComponent("result.log"))
+        let gate = AsyncGate()
+        var cleanupStarted = false, restored = false
+        model.familyFileRecycler = { files in
+            cleanupStarted = true
+            XCTAssertFalse(model.launching,"Orphan collection must not block launch")
+            XCTAssertEqual(model.selectedID,fixture.b2.id,"Restore the remembered reader before sweeping old histories")
+            await gate.wait()
+            for file in files { try FileManager.default.removeItem(at:file) }
+        }
+        let launch = Task { await model.restore(); restored = true }
+        await waitFor("Cleanup never started") { cleanupStarted }
+        // The disk worker is held: restoration must still complete.
+        for _ in 0..<50 where !restored { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertTrue(restored,"A slow cleanup is outside the restore critical path")
+        await gate.open(); await launch.value; await model.toolOutputCleanup?.value
+    }
+
     /// Two projects and three chats. `a` sorts first, so it is what every
     /// launch opened before the open chat was remembered; `b2`, the second
     /// chat of the second project, has three long turns of history.

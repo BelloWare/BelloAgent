@@ -64,15 +64,17 @@ extension WorkspaceModel {
             }) { view.notice = PiQuestion.busyNotice }
             return
         }
+        let outputUse = beginToolOutputUse(.submission)
         let submission = acceptSubmission(item, view: view, store: store, steer: steer)
         sendSteps?("accepted")
         Task {
+            defer { finishToolOutputUse(outputUse) }
             // A send that failed before any snapshot leaves the helper's busy
             // mark to be worked out again here (a failed first message of a
             // draft side had marked it busy for good).
             defer { view.loading = false; updateHostActivity(workspaceID: item.workspaceID) }
             var progress = SendProgress()
-            do { try await deliverSubmission(submission, progress: &progress) }
+            do { try await prepareToolOutputUse(outputUse); try await deliverSubmission(submission, progress: &progress) }
             catch { await recoverFailedSubmission(submission, from: error, progress: progress) }
         }
         if submission.accepted {
