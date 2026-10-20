@@ -50,7 +50,8 @@ enum SessionPanelLayout {
     private var project: WorkspaceRecord?
     private var root: String?
     private var repository: String?
-    private var repositoryChecked = false
+    private(set) var repositoryChecked = false
+    private var repositoryWatch: GitStateWatch?
     private var discovery: Task<Void, Never>?
     private var discoveryToken = UUID()
     private(set) var agents: AgentFamilyPopoverView?
@@ -93,6 +94,7 @@ enum SessionPanelLayout {
         guard self.model !== model || chatID != chat.id || project != next || self.enabled != enabled else { return }
         self.model = model; self.enabled = enabled
         if chatID != chat.id {
+            invalidateNegativeRepository()
             chatID = chat.id
             scroll.documentView = nil; agents = nil
         }
@@ -123,8 +125,15 @@ enum SessionPanelLayout {
         if let first = PiKit.controls(in: tabs).first { window?.makeFirstResponder(first) }
     }
     private var active: Bool { presented && enabled && window != nil && !isHiddenOrHasHiddenAncestor }
+    private func invalidateNegativeRepository() {
+        guard repository == nil else { return }
+        discovery?.cancel(); discovery = nil; discoveryToken = UUID()
+        repositoryChecked = false
+    }
     private func suspend() {
         discovery?.cancel(); discovery = nil; discoveryToken = UUID()
+        if repository == nil { repositoryChecked = false }
+        repositoryWatch?.stop(); repositoryWatch = nil
         changes?.controller.setShown(false)
         files?.browser.stop(); filesActive = false
     }
@@ -133,6 +142,17 @@ enum SessionPanelLayout {
     override func viewDidUnhide() { super.viewDidUnhide(); refresh() }
 
     func refresh() {
+        if active, repository == nil, repositoryWatch?.isWatching != true, let root {
+            // Watch before the read so git init cannot fall between a negative
+            // snapshot and arming the stream. No status or file reads are added.
+            let watch = GitStateWatch(root: root, discoveringRepository: true) { [weak self] in
+                guard let self, self.active, self.root == root, self.repository == nil else { return }
+                self.invalidateNegativeRepository(); self.refresh()
+            }
+            repositoryWatch = watch; watch.start()
+        } else if repository != nil {
+            repositoryWatch?.stop(); repositoryWatch = nil
+        }
         if active, !repositoryChecked, discovery == nil, let root {
             let token = UUID(); discoveryToken = token
             // Only repository discovery is eager. Status/counts and directory
@@ -147,7 +167,8 @@ enum SessionPanelLayout {
         let tab = selectedTab
         tabs.items = availableTabs.map { ($0, $0.rawValue) }; tabs.selection = tab
         collapse.isEnabled = enabled
-        for (control, item) in zip(PiKit.controls(in: tabs), availableTabs) {
+        for item in availableTabs {
+            guard let control = tabs.tab(item) else { continue }
             control.isEnabled = enabled
             control.setAccessibilityLabel(item.rawValue)
             control.setAccessibilityIdentifier("session-panel-tab-" + item.rawValue.lowercased())
@@ -184,7 +205,11 @@ enum SessionPanelLayout {
                 let tab = model.openFile(url, project: project.id)
                 model.quickOpen.focusAfterOpening(tab)
             }
-            browser.changed = { [weak self, weak files] in files?.refresh(); self?.contentSizeChanged() }
+            browser.changed = { [weak self, weak files] in
+                guard let self, let files, self.files === files else { return }
+                files.refresh(); self.contentSizeChanged()
+                if self.repository == nil { self.invalidateNegativeRepository(); self.refresh() }
+            }
             self.files = files; content.addSubview(files)
         }
         files?.isHidden = tab != .files

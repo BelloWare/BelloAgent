@@ -171,6 +171,90 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         XCTAssertNil(pane.sessionPanel.changes); XCTAssertNil(pane.sessionPanel.files)
     }
 
+    @MainActor func testTabAccessibilityFollowsIdentityWhenDiffIsInsertedAfterFiles() async throws {
+        let (_, pane, _, _) = try fixture(gitRepository: true)
+        let panel = pane.sessionPanel
+        XCTAssertEqual(panel.availableTabs, [.agents, .files])
+        let files = try XCTUnwrap(panel.tabs.tab(.files))
+        XCTAssertEqual(files.accessibilityIdentifier(), "session-panel-tab-files")
+        try await eventually("Diff inserted between retained tabs") { panel.availableTabs == [.agents, .diff, .files] }
+        XCTAssertTrue(panel.tabs.tab(.files) === files)
+        // Retained AppKit subviews need not follow the new visual tab order.
+        XCTAssertEqual(PiKit.controls(in: panel.tabs).compactMap { ($0 as? PiKit.ButtonBase)?.title }, ["Agents", "Files", "Diff"])
+        for tab in panel.availableTabs {
+            let control = try XCTUnwrap(panel.tabs.tab(tab))
+            XCTAssertEqual(control.title, tab.rawValue)
+            XCTAssertEqual(control.accessibilityLabel(), tab.rawValue)
+            XCTAssertEqual(control.accessibilityIdentifier(), "session-panel-tab-" + tab.rawValue.lowercased())
+            control.onPress?()
+            XCTAssertEqual(panel.selectedTab, tab)
+        }
+    }
+
+    @MainActor func testNegativeRepositoryDiscoveryRetriesOnReactivation() async throws {
+        for transition in ["collapse", "hidden ancestor", "disabled"] {
+            let (_, pane, _, root) = try fixture()
+            let panel = pane.sessionPanel
+            try await eventually("negative discovery", timeout: 5) { panel.repositoryChecked }
+            XCTAssertFalse(panel.availableTabs.contains(.diff))
+            if transition == "collapse" { panel.collapse.onPress?() }
+            else if transition == "hidden ancestor" { pane.isHidden = true }
+            else { pane.inheritedEnabled = false }
+            XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 0)
+            try start(root)
+            if transition == "collapse" { pane.agentFamilyHeader.button.onPress?() }
+            else if transition == "hidden ancestor" { pane.isHidden = false }
+            else { pane.inheritedEnabled = true }
+            XCTAssertFalse(panel.repositoryChecked, "Reactivation invalidates the negative result before any filesystem event arrives")
+            try await eventually("Diff after " + transition, timeout: 5) { panel.availableTabs.contains(.diff) }
+            XCTAssertNil(panel.changes, "Reactivation discovers only the repository")
+        }
+    }
+
+    @MainActor func testNegativeRepositoryDiscoveryRetriesOnSameProjectChatSwitch() async throws {
+        let (model, pane, _, root) = try fixture()
+        let panel = pane.sessionPanel
+        try await eventually("negative discovery", timeout: 5) { panel.repositoryChecked }
+        try start(root)
+        var chat = model.chats[0]; chat.id = "another-main"; model.chats.append(chat)
+        let display = SessionDisplay(id: chat.id); display.historyState = .ready
+        pane.show(session: display, chat: chat)
+        XCTAssertFalse(panel.repositoryChecked, "Chat switching invalidates the negative result before any filesystem event arrives")
+        try await eventually("Diff in the next chat", timeout: 5) { panel.availableTabs.contains(.diff) }
+    }
+
+    @MainActor func testNegativeRepositoryDiscoveryObservesGitInitWhilePanelIsOpen() async throws {
+        let (_, pane, _, root) = try fixture()
+        let panel = pane.sessionPanel
+        try await eventually("negative discovery", timeout: 5) { panel.repositoryChecked }
+        for _ in 0..<3 {
+            panel.refresh()
+            XCTAssertTrue(panel.repositoryChecked, "Ordinary refreshes retain the negative snapshot until a real invalidation")
+        }
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 1)
+        XCTAssertNil(panel.files); XCTAssertNil(panel.changes)
+        try start(root)
+        try await eventually("Diff after git init without a UI transition", timeout: 5) { panel.availableTabs.contains(.diff) }
+        XCTAssertEqual(panel.selectedTab, .agents)
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 0, "Discovery lets go once Git is found; the Diff reader remains lazy")
+        XCTAssertNil(panel.files); XCTAssertNil(panel.changes)
+    }
+
+    @MainActor func testNegativeRepositoryDiscoveryRetriesOnFolderBrowserChanges() async throws {
+        let (_, pane, _, root) = try fixture()
+        let panel = pane.sessionPanel
+        panel.select(.files)
+        let browser = try XCTUnwrap(panel.files?.browser)
+        try await eventually("negative discovery and folder listing", timeout: 5) {
+            panel.repositoryChecked && browser.snapshot(root) != nil && !browser.isLoading(root)
+        }
+        try start(root)
+        browser.expand(root)
+        XCTAssertFalse(panel.repositoryChecked, "Folder events invalidate the negative result before the Git watch delivers")
+        try await eventually("Diff after folder refresh", timeout: 5) { panel.availableTabs.contains(.diff) }
+        XCTAssertEqual(panel.selectedTab, .files)
+    }
+
     @MainActor func testDiffCountsAndClickOpenExistingChangesTab() async throws {
         let (model, pane, _, _) = try fixture(gitRepository: true)
         try await eventually("repository discovered") { pane.sessionPanel.availableTabs.contains(.diff) }

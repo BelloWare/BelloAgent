@@ -259,3 +259,186 @@ repository-context acceptance check. No remaining feature regression was found.
 The unrelated topic-search failure and independent-child-pill decision above
 remain open. The lead's separate review and owner screenshot judgment remain
 outside this workstream's sign-off.
+
+## Follow-up review 2026-10-20
+
+The three requested review corrections are scoped to the floating panel and
+its summary reader:
+
+- Tab accessibility metadata is assigned through `tabs.tab(identity)`.
+  The regression mounts Agents and Files first, inserts Diff, keeps the
+  original Files control, and verifies each title, label, identifier and
+  action while the retained subviews remain ordered Agents / Files / Diff.
+- A negative repository result is invalidated on collapse/reopen, inherited
+  hiding or disabling, same-project chat switches, Git state events and
+  folder-browser changes. Ordinary panel refreshes keep the negative snapshot;
+  there is no polling on layout or scroll. A single existing `GitStateWatch`
+  starts before discovery, coalesces events at 0.5 seconds, and stops on
+  suspension or successful discovery. Status/counts and Files remain lazy.
+  Superseded discovery tasks are cancelled and their publication token retired.
+- Untracked paths remove any tracked counts before the bounded read.
+  Symlink, oversized and disappeared replacements now have unavailable counts;
+  a readable replacement still reports its own three additions and zero deletions.
+
+Adversarial review of the new retry path also checked the pre-discovery watch:
+it must not resolve a `.git` file or external `commondir` before Git confirms
+the repository. The watcher now has an opt-in discovery mode that watches only
+the project folder and recognizes the `.git` marker itself as well as the
+existing HEAD/index/ref events. Ordinary Git/linked-worktree watches keep their
+existing behavior. A generated invalid marker pointing at another generated
+folder tests that no external metadata is resolved, that ordinary saves and
+object writes are ignored, and that the marker event triggers discovery.
+
+Text evidence for this follow-up is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r1/`.
+The first native compilation caught a test-only `NSControl.title` cast error;
+`panel-test-compile.log` records it. It was corrected before the genuine red run.
+
+### Failing-first evidence
+
+| Log | Tests | Expected failed assertions |
+| --- | ---: | ---: |
+| `panel-red.log` | 5 | 13 |
+| `git-red.log` | 1 | 3 |
+| `discovery-watch-red.log` | 1 | 3 |
+
+The first row covers retained-tab accessibility and all four negative-discovery
+invalidation paths; reactivation covers collapse, hidden ancestor and disabled
+state. The live event regression runs `git init` after the panel has published
+a negative discovery, without changing chat or tab. The count regression
+covers staged deletion plus symlink, over-4-MiB and removed-after-status
+replacements, with a readable positive control. The watcher red run used the
+new optional initializer argument without its behavior, demonstrating the
+metadata-resolution and missing-marker failures before implementing that mode.
+
+### Mutation controls
+
+All **8/8 independent mutations were detected**, then restored. The native
+mutation runner stopped once before changing a file because its search string
+also matched the folder callback; the selector was narrowed and the remaining
+checks resumed. This was a harness assertion, not a test or product failure.
+
+| Removed or broken behavior | Target test | Text log |
+| --- | --- | --- |
+| Identity-based tab metadata | `SessionPanelTests/testTabAccessibilityFollowsIdentityWhenDiffIsInsertedAfterFiles` | `mutation-tab-identity.log` |
+| Negative invalidation on suspension | `SessionPanelTests/testNegativeRepositoryDiscoveryRetriesOnReactivation` | `mutation-reactivation.log` |
+| Same-project chat invalidation | `SessionPanelTests/testNegativeRepositoryDiscoveryRetriesOnSameProjectChatSwitch` | `mutation-chat-switch.log` |
+| Git event invalidation | `SessionPanelTests/testNegativeRepositoryDiscoveryObservesGitInitWhilePanelIsOpen` | `mutation-git-event.log` |
+| Folder event invalidation | `SessionPanelTests/testNegativeRepositoryDiscoveryRetriesOnFolderBrowserChanges` | `mutation-folder-event.log` |
+| Skip unverified external metadata | `GitWorkingTreeWatcherTests/testDiscoveryWatchUsesOnlyTheProjectAndNoticesTheGitMarker` | `mutation-discovery-metadata.log` |
+| Recognize the `.git` marker | `GitWorkingTreeWatcherTests/testDiscoveryWatchUsesOnlyTheProjectAndNoticesTheGitMarker` | `mutation-discovery-marker.log` |
+| Clear tracked counts before untracked reads | `GitRepositoryStateTests/testSummaryNeverKeepsDeletionCountsForUnreadableUntrackedReplacements` | `mutation-untracked-counts.log` |
+
+### Commands
+
+Commands run from this worktree, using only its build root:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel
+
+swift test --package-path packages/bello-views \
+  --scratch-path "$PI_BUILD_ROOT/views" --filter GitViewTests
+swift test --package-path packages/bello-views \
+  --scratch-path "$PI_BUILD_ROOT/views" --filter GitRepositoryStateTests
+swift test --package-path packages/bello-views \
+  --scratch-path "$PI_BUILD_ROOT/views" \
+  --filter GitRepositoryStateTests/testSummaryNeverKeepsDeletionCountsForUnreadableUntrackedReplacements
+
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ChangesTabTests \
+  -only-testing:PiAppTests/GitPanelShownTests \
+  -only-testing:PiAppTests/GitPanelRedrawTests \
+  -only-testing:PiAppTests/GitPanelAuditTests \
+  -only-testing:PiAppTests/GitRenameTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ChangesTabFrameTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitRepositorySwitchTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileFolderTests
+
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY="$PI_BUILD_ROOT/screenshots/review-r1" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionPanelGalleryTests
+```
+
+Each native mutation and the discovery-watch red run use the same native
+command prefix with `-only-testing:PiAppTests/<target test>` from the table.
+The initial `panel-red.log` selects all five `SessionPanelTests` targets in
+that table, with one `-only-testing` argument each. The count red and mutation
+use the last package command. Each native invocation holds the shared UI
+lane lock, releasing only its own lock on success or failure. Serial-lane
+classes run alone. Native command lines are also recorded at the start of
+each text log.
+
+### Restored validation
+
+Every row below uses the restored fixes. All have **0 failures and 0 skips**;
+repeated positive controls are excluded from the totals.
+
+| Suite / class | Passed | Text log |
+| --- | ---: | --- |
+| `SessionPanelTests` | 22 | `panel-final.log` |
+| `GitWorkingTreeWatcherTests` | 17 | `watcher-final.log` |
+| `ChangesTabTests` | 8 | `git-app-final.log` |
+| `GitPanelShownTests` | 13 | `git-app-final.log` |
+| `GitPanelRedrawTests` | 4 | `git-app-final.log` |
+| `GitPanelAuditTests` | 8 | `git-app-final.log` |
+| `GitRenameTests` | 6 | `git-app-final.log` |
+| `ChangesTabFrameTests` | 7 | `changes-frames-final.log` |
+| `GitRepositorySwitchTests` | 17 | `repository-switch-final.log` |
+| `FileFolderTests` | 19 | `files-final.log` |
+| `SessionPanelGalleryTests` | 1 | `gallery-final.log` |
+| `GitViewTests` package suite | 178 | `git-final.log` |
+
+The native behavioral classes total **121 passed**: panel 22, Git/Changes 80,
+Files 19. The package total includes `GitRepositoryStateTests` **17/17** and
+`GitStateWatchTests` **1/1** (including ordinary saves and linked-worktree
+notifications). The earlier full package run also passed 178/178
+(`git-full.log`); its final repeat covers the discovery-mode addition.
+There are no helper or wire changes, so those suites were not rerun.
+
+### Screenshots and final review
+
+The gallery passes **1/1**, adding one to the native total (**122/122**).
+All 14 regenerated PNGs were opened and visually inspected: both themes of
+Agents at 1440 and 1180, narrow pill fallback, Diff, Files, empty Agents and
+the main chat beside an open side. Text, controls, tree indentation, status
+counts and composer separation remain intact. All 14 PNGs are byte-identical
+to the prior gallery (`screenshot-hashes.json` records SHA-256 comparisons);
+there is no layout or styling change in this follow-up. The original images
+under owner review were preserved.
+
+Directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r1/`.
+
+```text
+agents-1440x900-light.png
+agents-1440x900-dark.png
+agents-1180x800-light.png
+agents-1180x800-dark.png
+pill-960x700-light.png
+pill-960x700-dark.png
+diff-1440x900-light.png
+diff-1440x900-dark.png
+files-1440x900-light.png
+files-1440x900-dark.png
+empty-1440x900-light.png
+empty-1440x900-dark.png
+side-open-1600x900-light.png
+side-open-1600x900-dark.png
+```
+
+Final adversarial self-review checked retained control identity, independent
+invalidation triggers, cancellation/publication races, stale folder callbacks,
+watcher lifecycle and project boundaries, lazy readers, linked-worktree
+compatibility, and count ownership for unreadable replacements. No further
+in-scope regression was found. The earlier unrelated topic-search failure and
+independent-child-pill owner decision remain recorded above; neither was changed
+or treated as resolved. Owner visual approval remains separate.
+Generated gallery fixture directories were cleaned by teardown; no additional
+DerivedData root or test clone folders were created.

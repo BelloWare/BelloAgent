@@ -3,6 +3,33 @@ import XCTest
 @testable import GitView
 
 final class GitRepositoryStateTests: XCTestCase {
+    func testSummaryNeverKeepsDeletionCountsForUnreadableUntrackedReplacements() async throws {
+        for replacement in ["symlink", "oversized", "removed after status", "readable"] {
+            let root = try repository(), file = root.appendingPathComponent("same.txt")
+            try git(["rm", "-f", "same.txt"], in: root)
+            if replacement == "symlink" {
+                let target = root.appendingPathComponent("target.txt")
+                try "generated target\n".write(to: target, atomically: true, encoding: .utf8)
+                try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
+            } else if replacement == "oversized" {
+                try Data(repeating: 10, count: (4 << 20) + 1).write(to: file)
+            } else {
+                try "replacement\nhas\nthree lines\n".write(to: file, atomically: true, encoding: .utf8)
+            }
+            let entries = try await GitService.shared.status(in: root.path).entries
+            XCTAssertTrue(entries.contains { $0.path == "same.txt" && $0.staged })
+            XCTAssertTrue(entries.contains { $0.path == "same.txt" && $0.untracked })
+            if replacement == "removed after status" { try FileManager.default.removeItem(at: file) }
+            let stats = try await GitService.shared.changeStats(in: root.path, entries: entries)
+            if replacement == "readable" {
+                XCTAssertEqual(stats["same.txt"]?.added, 3)
+                XCTAssertEqual(stats["same.txt"]?.removed, 0)
+            } else {
+                XCTAssertNil(stats["same.txt"], replacement + " must not inherit the staged deletion's counts")
+            }
+        }
+    }
+
     func testSummaryNeverFollowsAReplacedDirectoryOutsideTheRepository() async throws {
         let root = try repository(), outside = try repository()
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("replaced"), withDestinationURL: outside)

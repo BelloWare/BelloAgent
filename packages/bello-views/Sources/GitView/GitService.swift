@@ -521,6 +521,8 @@ public actor GitService {
             stats[entry.path] = entry.unstaged ? working[entry.path] : staged[entry.path]
         }
         let untracked = entries.filter(\.untracked).map(\.path)
+        // The working-tree replacement owns this row even if it cannot be read.
+        for path in untracked { stats.removeValue(forKey: path) }
         let read = Task.detached(priority: .utility) {
             var result: [String: GitDiffStat] = [:]
             for path in untracked {
