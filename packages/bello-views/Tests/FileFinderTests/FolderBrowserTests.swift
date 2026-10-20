@@ -1,8 +1,32 @@
 import XCTest
 @testable import FileFinder
 import GitProcessSafety
+import Darwin
 
 final class FolderBrowserTests: XCTestCase {
+    @MainActor func testTrustedFinderInventorySharesCancellationAndDeadline() async throws {
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { _ in true }
+        defer { GitReadProcess.resolveTrust = previous }
+        for cancel in [false, true] {
+            let root = try fixture(), git = try TestGit(fixture())
+            try file("README", at: root); try git.run(["init", "-q"], in: root); try git.run(["add", "README"], in: root)
+            _ = try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, environment: git.environment)
+            let fifo = root.appendingPathComponent(".git/slow-config")
+            XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+            try git.run(["config", "include.path", fifo.path], in: root)
+            let descriptor = open(fifo.path, O_RDWR | O_NONBLOCK)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { try? FileManager.default.removeItem(at: fifo); close(descriptor) }
+            let start = ProcessInfo.processInfo.systemUptime
+            let task = Task { try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, timeout: cancel ? 20 : 0.15, environment: git.environment) }
+            if cancel { try await Task.sleep(for: .milliseconds(100)); task.cancel() }
+            do { _ = try await task.value; XCTFail("Obsolete listing completed") }
+            catch { if cancel { XCTAssertTrue(error is CancellationError, "\(error)") } }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.7)
+        }
+    }
+
     @MainActor func testTrustedListingsUseGlobalMonitorButNeverLocalMonitor() async throws {
         let root = try fixture(), git = try TestGit(fixture())
         try file("README", at: root)

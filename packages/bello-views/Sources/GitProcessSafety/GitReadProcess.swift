@@ -2,22 +2,33 @@ import Foundation
 
 /// Untrusted folders run only Git, with no network or writes outside scratch.
 /// Trusted projects keep user-configured programs; local/worktree program
-/// settings are overridden using Git's scope/origin inventory before each read.
+/// settings are overridden using Git's stamp-checked scope/origin inventory.
 public struct GitReadProcess {
-    @MainActor public static var resolveTrust: (String) -> Bool = { _ in false }
-    @MainActor public static func isTrusted(_ directory: String) -> Bool { resolveTrust(directory) }
+    @MainActor public static var resolveTrust: (String) -> Bool = { _ in false } {
+        didSet { GitConfiguration.invalidate(); trust.removeAll() }
+    }
+    @MainActor private static var trust: [String: Bool] = [:]
+    @MainActor public static func isTrusted(_ directory: String) -> Bool {
+        let value = resolveTrust(directory)
+        if let previous = trust[directory], previous != value { GitConfiguration.invalidate() }
+        trust[directory] = value
+        return value
+    }
     private let scratch: URL?
-    public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false) throws {
+    private let configuration: GitConfiguration?
+    public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false, invocation: GitInvocation = GitInvocation()) throws {
         let git = try Self.git.get()
         var environment = environment
         if trusted, let directory = process.currentDirectoryURL {
-            let configuration = try GitConfiguration(in: directory, environment: environment)
-            let options = try configuration.readOptions(in: directory, environment: environment, submodules: arguments.contains("status") || arguments.contains("diff"))
+            let configuration = try GitConfiguration(in: directory, environment: environment, invocation: invocation)
+            self.configuration = configuration
+            let options = try configuration.readOptions(in: directory, environment: environment, submodules: arguments.contains("status") || arguments.contains("diff"), invocation: invocation)
             scratch = nil
             process.executableURL = git
             process.arguments = ["--no-pager"] + options + arguments
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
         } else {
+            configuration = nil
             let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bello-git-read-" + UUID().uuidString).resolvingSymlinksInPath()
             self.scratch = scratch
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -37,7 +48,12 @@ public struct GitReadProcess {
             throw GitConfiguration.Failure("Git has too many program settings for a safe read-only query.")
         }
     }
-    public func remove() { if let scratch { try? FileManager.default.removeItem(at: scratch) } }
+    public func remove() {
+        if let scratch { try? FileManager.default.removeItem(at: scratch) }
+        // An invalidation may evict the cache while a child Git is still about
+        // to read its conditional override file.
+        withExtendedLifetime(configuration) {}
+    }
 
     private static let profile = """
     (version 1)

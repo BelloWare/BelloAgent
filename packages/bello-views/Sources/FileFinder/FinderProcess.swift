@@ -34,7 +34,7 @@ enum FinderProcess {
     /// output, at most `limit` bytes (more is a failure, never a cut list).
     static func git(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval = 60,
                     environment: [String: String] = FinderProcess.environment, input: Data? = nil) async throws -> Output {
-        let handle = Running()
+        let handle = GitInvocation(timeout: timeout)
         let trusted = await GitReadProcess.isTrusted(directory)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
@@ -49,38 +49,16 @@ enum FinderProcess {
 
     private static let queue = DispatchQueue(label: "BelloViews.finder.git", qos: .userInitiated, attributes: .concurrent)
 
-    /// The process a listing runs, so a listing no longer wanted stops it.
-    private final class Running: @unchecked Sendable {
-        private let lock = NSLock()
-        private var process: Process?
-        private var stopped = false
-        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-        /// False when the listing was already given up: nothing is started.
-        func adopt(_ value: Process) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            guard !stopped else { return false }
-            process = value; return true
-        }
-        func stop() {
-            lock.lock(); stopped = true
-            let running = process; lock.unlock()
-            guard let running, running.isRunning else { return }
-            running.terminate()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                if running.isRunning { kill(running.processIdentifier, SIGKILL) }
-            }
-        }
-    }
-
     private static func execute(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval,
-                                environment: [String: String], input: Data?, handle: Running, trusted: Bool) throws -> Output {
+                                environment: [String: String], input: Data?, handle: GitInvocation, trusted: Bool) throws -> Output {
+        try handle.check()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-c", "core.quotepath=off"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         // A sparse index can load a missing tree and invoke a promisor remote,
         // even for ls-files/check-ignore. The shared read policy covers that too.
-        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment, trusted: trusted && arguments.first != "config")
+        let confinement = try GitReadProcess(process, arguments: process.arguments!, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle)
         defer { confinement.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
@@ -101,7 +79,7 @@ enum FinderProcess {
         for descriptor in descriptors { _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) }
         var kept = Data(), ended = [false, false]
         var failure: String?, exitedAt: TimeInterval?
-        let deadline = ProcessInfo.processInfo.systemUptime + max(0.01, timeout)
+        let deadline = handle.deadline
         var scratch = [UInt8](repeating: 0, count: 65_536)
         while true {
             let now = ProcessInfo.processInfo.systemUptime

@@ -1,5 +1,6 @@
 import Foundation
 import CoreServices
+import GitProcessSafety
 
 /// Watches a repository for changes nobody in the panel made: a file saved in
 /// an editor, a commit or a checkout from a terminal.
@@ -102,7 +103,9 @@ import CoreServices
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }) else { return }
+            let configurationChanged = GitConfiguration.invalidate(paths: paths)
+            if moved { GitConfiguration.invalidate() }
+            guard moved || configurationChanged || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }) else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else { self.changed() }

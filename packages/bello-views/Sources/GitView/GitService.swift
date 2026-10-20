@@ -140,37 +140,6 @@ public actor GitService {
     static let patchOutputLimit = 16 * 1024 * 1024
     static let diagnosticOutputLimit = 65_536
 
-    /// The running process, so a read whose result is no longer wanted is
-    /// actually stopped. Clicking through history must not leave a queue of
-    /// `git show` processes computing patches nobody will read.
-    private final class RunningProcess: @unchecked Sendable {
-        private let lock = NSLock()
-        private var process: Process?
-        private var stopped = false
-        private var signalled = false
-        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-        /// False when the read was already cancelled, so nothing is launched.
-        func adopt(_ value: Process) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            guard !stopped else { return false }
-            process = value; return true
-        }
-        func stop() {
-            lock.lock(); stopped = true
-            guard !signalled, let running = process, running.isRunning else { lock.unlock(); return }
-            signalled = true; lock.unlock()
-            if running.isRunning {
-                let pid = running.processIdentifier
-                if getpgid(pid) == pid { kill(-pid, SIGTERM) } else { running.terminate() }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                    if running.isRunning {
-                        if getpgid(pid) == pid { kill(-pid, SIGKILL) } else { kill(pid, SIGKILL) }
-                    }
-                }
-            }
-        }
-    }
-
     /// Git's environment, given the app's. Only what git needs, never the
     /// app's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or the like.
     static func gitEnvironment(from app: [String: String], home: String = NSHomeDirectory()) -> [String: String] {
@@ -184,6 +153,7 @@ public actor GitService {
     /// The environment every git this service runs starts from.
     private let environment: [String: String]
     private let trusted: Bool?
+    public nonisolated static func invalidateConfiguration() { GitConfiguration.invalidate() }
     @MainActor public static var resolveTrust: (String) -> Bool {
         get { GitReadProcess.resolveTrust }
         set { GitReadProcess.resolveTrust = newValue }
@@ -192,16 +162,17 @@ public actor GitService {
     init(environment: [String: String], trusted: Bool? = nil) { self.environment = environment; self.trusted = trusted }
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
-                                            timeout: TimeInterval, handle: RunningProcess,
+                                            timeout: TimeInterval, handle: GitInvocation,
                                             environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true, trusted: Bool = false) throws -> Output {
+        try handle.check()
         let process = Process()
         process.executableURL = executable
         // Every parsed patch, including show and no-index, uses the parser's
         // a/ and b/ names regardless of the reader's display preferences.
         let directory = URL(fileURLWithPath: root, isDirectory: true)
         let transport = gitOptions && !readOnly && ["fetch", "pull", "push"].contains(arguments.first ?? "")
-        let redirects = transport ? try GitConfiguration(in: directory, environment: environment)
-            .redirectOptions(for: arguments[0], in: directory, environment: environment) : (options: [], protected: false)
+        let redirects = transport ? try GitConfiguration(in: directory, environment: environment, invocation: handle)
+            .redirectOptions(for: arguments[0], in: directory, environment: environment, invocation: handle) : (options: [], protected: false)
         let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
                                 "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + redirects.options + arguments
         // Foundation raises an uncaught Objective-C exception past its own
@@ -210,7 +181,7 @@ public actor GitService {
         process.arguments = all
         process.currentDirectoryURL = directory
         process.environment = environment
-        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config") : nil
+        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle) : nil
         defer { confinement?.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
@@ -235,8 +206,7 @@ public actor GitService {
         for fd in fds { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
         var streams = [Data(), Data()], eof = [false, false]
         var failure: String?, exitedAt: TimeInterval?
-        let started = ProcessInfo.processInfo.systemUptime
-        let deadline = started + (timeout.isFinite ? min(600, max(0.01, timeout)) : 20)
+        let deadline = handle.deadline
         var scratch = [UInt8](repeating: 0, count: 65_536)
         while true {
             let now = ProcessInfo.processInfo.systemUptime
@@ -319,7 +289,7 @@ public actor GitService {
     private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
                                        environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil, readOnly: Bool = true,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
-        let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess(), base = self.environment
+        let executable = override ?? executable, gitOptions = override == nil, handle = GitInvocation(timeout: timeout), base = self.environment
         await acquireProcess()
         defer { releaseProcess() }
         let trusted = if let trusted { trusted } else { await GitReadProcess.isTrusted(root) }

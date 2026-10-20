@@ -6,7 +6,10 @@ import GitView
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability() } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet {
+        if oldValue != workspaces { GitService.invalidateConfiguration() }
+        sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability()
+    } }
     /// The tabs beside the chats and in windows of their own: the window's,
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.

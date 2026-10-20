@@ -21,6 +21,15 @@
 - [x] SECURITY-BOUNDARIES-2d: Private-header redirect protection recognises mixed-case HTTP URL schemes. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2e: Private-header redirect protection checks the HTTP address inside Git's explicit transport-helper URL form. [Validation](docs/validation/a130-security-0.1.130.md).
 
+- [x] SECURITY-BOUNDARIES-2f: Private-header Git pushes resolve push-only rewrites, push URLs and branch/default destinations. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2g: Git HTTP wildcard scopes match concrete destinations without breaking ordinary redirects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2h: Equivalent Git HTTP URL scopes cannot override private-header redirect refusal through argument ordering. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2i: Legacy Git remote definitions receive the same private-header push redirect protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1l: Trusted submodule reads retain each repository’s own conditional global filters while suppressing local programs. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1m: Git inventory and cache work share the read’s cancellation and timeout, including folder/Quick Open queries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1n: Git safety inventories reuse config/submodule metadata with origin/index/HEAD stamps, watcher invalidation and trust-change eviction. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1o: A config edit during a cold inventory cannot become a cached permission for a repository program. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
 - [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).
