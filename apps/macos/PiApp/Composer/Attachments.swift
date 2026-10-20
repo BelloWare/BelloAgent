@@ -4,20 +4,35 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// The app owns clipboard bytes, unlike files the reader chose. A launch's
-/// prefix protects pastes still being converted or waiting in an unsaved side
-/// while old, unreferenced files are swept after restoration.
+/// lease protects pastes still being converted or waiting in an unsaved draft,
+/// including from another app instance's sweep after restoration.
 struct PastedImageStorage: Sendable {
     let root: URL
-    let generation = UUID().uuidString
+    private let lifetime = GenerationLease()
+    var generation: String { lifetime.generation }
     var directory: URL { root.appendingPathComponent("PastedImages", isDirectory: true) }
     var prefix: String { "pasted-" + generation + "-" }
+    init(root: URL) { self.root = root }
     func write(_ bytes: Data) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try lifetime.acquire(in: directory)
         let file = directory.appendingPathComponent(prefix + UUID().uuidString + ".png")
         try bytes.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return file
     }
+    /// Copies held by background conversions share ownership with the model.
+    /// Acquire before publishing the first image; the kernel releases on crash.
+    private final class GenerationLease: @unchecked Sendable {
+        let generation = UUID().uuidString
+        private let mutex = NSLock()
+        private var ownership: WorkspaceLock?
+        func acquire(in directory: URL) throws {
+            mutex.lock(); defer { mutex.unlock() }
+            if ownership == nil { ownership = try WorkspaceLock(url: directory.appendingPathComponent("pasted-" + generation + ".lock")) }
+        }
+    }
+    /// Candidates only: another generation may still have a live owner.
     func oldFiles() throws -> [URL] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
@@ -205,8 +220,7 @@ extension WorkspaceModel {
         var names = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
         guard try await store.pastedImageReferencesUnchanged(inventory.token), pastedImageCleanupIsSafe else { return }
         // From this check through unlink, no MainActor suspension: typing,
-        // imports and sends cannot acquire a new reference in between. SQLite
-        // has one app writer; in-flight producers defer this sweep instead.
+        // imports and sends cannot acquire a new local reference in between.
         for view in displays.values {
             names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(view.savedDraft)))
             names.formUnion(view.attachments.map { URL(fileURLWithPath: $0.path).lastPathComponent })
@@ -214,7 +228,18 @@ extension WorkspaceModel {
                 names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
             }
         }
-        for file in files where !names.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+        // Another instance's pending/side drafts need not be persisted. Check
+        // its generation lease after every suspension and hold it through unlink.
+        let generations = Dictionary(grouping: files.filter { !names.contains($0.lastPathComponent) }) {
+            String($0.lastPathComponent.prefix("pasted-".count + 36))
+        }
+        for (generation, files) in generations {
+            guard let lease = try? WorkspaceLock(url: storage.directory.appendingPathComponent(generation + ".lock")) else { continue }
+            try withExtendedLifetime(lease) {
+                for file in files where FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            }
+            // Keep the sidecar's inode stable for other nonblocking sweepers.
+        }
     }
     private var pastedImageCleanupIsSafe: Bool {
         !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&

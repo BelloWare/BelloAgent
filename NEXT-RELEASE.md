@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] A live app instance's unsent pasted images survive another instance's startup sweep; per-generation lifetime leases protect conversion and drafts while abandoned generations remain collectable. [Validation](docs/validation/a130-paste-0.1.130.md#cross-instance-pasted-image-ownership--2026-10-20).
 - [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).

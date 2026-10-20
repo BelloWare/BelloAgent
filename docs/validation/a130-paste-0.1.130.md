@@ -531,3 +531,163 @@ No clone folders were left under this workstream's build root.
   lead-approved text-first caption choice preserve their existing outcomes.
 - The HTML scanner and normalization code are unchanged. No additional
   out-of-scope bug or owner decision was identified.
+
+## Cross-instance pasted-image ownership — 2026-10-20
+
+Assignment: **CONCURRENCY-LIFECYCLE-3 / PERSISTENCE-COMPAT-2**, based on merged
+`dev/next` **`688f8751`**, continuing on `dev/a130-paste`.
+
+### Cause and ownership
+
+Every storage instance had a different generation UUID. The sweep excluded
+only its own generation and checked only its own in-memory references and work.
+A second instance therefore treated a live first instance's unsent paste as an
+orphan. Pending New Chat drafts are deliberately absent from the database;
+failure to acquire the separate capture archive writer lock does not prevent
+the pasted-image sweep. Neither existing boundary establishes paste ownership.
+
+`PastedImageStorage` now owns a shared reference to a generation lease. Before
+publishing its first image it acquires an exclusive, nonblocking `flock` through
+the existing `WorkspaceLock`, at `PastedImages/pasted-<generation>.lock`.
+The descriptor is close-on-exec and the path is opened without following a
+symlink. Copies passed to background conversion/import share that ownership
+with the model. A small mutex serializes first acquisition; the lease remains
+held until the last storage owner releases it. Process death releases the
+kernel lock without needing application cleanup.
+
+The existing inventory still identifies candidate images and retains all
+database/journal/local-display references. Immediately before unlink, after
+every suspension, cleanup groups unreferenced candidates by generation and
+tries each generation's lock without waiting. A busy or unverifiable lease
+leaves the generation untouched. The lock remains held throughout deletion.
+Competing sweepers tolerate files already collected. Empty lease sidecars stay
+in place so all contenders use the same inode; they contain no image/user data.
+
+The filenames, image bytes, attachment limits, pending/side-draft ephemerality,
+restoration timing and persistent-reference policy are unchanged. Legacy
+orphan generations without a sidecar remain collectable under the existing
+reference inventory. Older application versions cannot advertise these new
+leases; the live-generation guarantee applies to cooperating builds.
+
+### Failing-first evidence
+
+All new tests use generated PNG bytes, isolated state roots and memory vaults.
+They never launch the installed app, use the real clipboard, or access actual
+chats/preferences/Keychain. A generated Python child holds/probes real kernel
+locks against the same fixture root; this is a process-boundary test, not a
+mock lock or a claim to have run a second production app.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-paste
+xcodegen generate --quiet
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests
+```
+
+`lease-failing-first.log`: **5 tests, 6 assertion failures, 0 unexpected**.
+
+| Regression | Before fix |
+| --- | --- |
+| Actual second-model restore/startup with a first model's pending, unpersisted draft | Image deleted while its attachment record remained |
+| Real child holds the generation lock; sweep runs, then child is SIGKILLed and a new model sweeps | Live image deleted; legacy orphan control collected |
+| Storage copied, original released, child probes; last copy then released | Child incorrectly acquired the live generation's lock |
+| Generation lock cannot be created | Image published without protection (two failed assertions) |
+| Generation lock is an unverifiable symlink | Image deleted instead of retaining it; generated sentinel remained intact |
+
+After the fix, `lease-fixed.log` passed **13/13**: **5** lease tests and the
+**8** existing `PastedAttachmentTests`. The latter now create old-generation
+fixtures in a function whose storage owner has ended; tests claiming an
+abandoned launch must not accidentally hold a live lease. Their persisted,
+historical, queued, missing-journal and in-flight reference assertions remain.
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests \
+  -only-testing:PiAppTests/PastedAttachmentTests
+```
+
+### Mutations and adversarial review
+
+Both mutations were built and executed, then restored:
+
+| Mutation | Selectors after `PiAppTests/PastedImageLeaseTests/` | Result |
+| --- | --- | --- |
+| Omit writer lease acquisition before image publication | `testSecondModelStartupKeepsAnUnpersistedPendingDraftImage`, `testStorageCopiesHoldOneLeaseUntilTheLastOwnerIsReleased`, `testLeaseFailureCannotPublishAnUnprotectedImage` | 3 tests, 4 assertion failures, 0 unexpected |
+| Bypass the sweeper's generation lock | `testChildLeaseProtectsLiveImagesAndCrashMakesThemCollectable`, `testSecondModelStartupKeepsAnUnpersistedPendingDraftImage`, `testCleanupLeavesImagesWhenTheLeaseCannotBeVerified` | 3 tests, 3 assertion failures, 0 unexpected |
+
+Commands use `scripts/test-macos.sh -parallel-testing-enabled NO` with one
+`-only-testing:` argument per selector. Logs are `lease-mutation-writer.log`
+and `lease-mutation-sweeper.log`: **2/2 mutations caught at runtime**. An
+initial sweeper mutant had an unused-variable build error; that invalid attempt
+is retained as `lease-mutation-sweeper-invalid-build.log`, excluded from the
+mutation count, and was corrected before the runtime check.
+
+- Publication cannot precede acquisition. Failure creates no unprotected PNG.
+  The storage copy test probes the actual flock from another process, then
+  proves it becomes available after the final storage reference ends.
+- Collector acquisition is after reference scanning and the final local
+  activity/reference check; there is no suspension between acquisition and
+  unlink. `withExtendedLifetime` prevents early release under optimization.
+- The child remains alive after the sweep, proving cleanup does not wait for
+  its lease. SIGKILL exercises kernel release without application teardown.
+- No cleaner removes a lease sidecar, avoiding replacement-lock inode races.
+  A symlink/unavailable sidecar retains the candidate, and a failed inventory
+  retains everything as before. Current generations and all durable-reference
+  protections remain in force.
+
+### Related-cleanup audit
+
+| Path | Ownership / outcome |
+| --- | --- |
+| `NativeComposer.writePastedImage` and `preparePastedFiles` | Clipboard decoding, large screenshots and Finder-format conversion all publish through this same storage lease; no separate conversion-generation sweep |
+| `HostService.swift:1028` recovery staging | Unique `.recover-<UUID>` path; only that operation's defer removes it |
+| `SessionPersistence.swift:79,230,464` fork/side staging | Unique temporary paths with journal ownership; failed operations remove their own paths |
+| `SessionJournal.swift:424` fork leftovers | Already acquires a nonblocking writer lock and checks file/lock identity before deleting abandoned staging |
+| `JournalCheckpoint.swift:100` checkpoint temporaries | Called under the corresponding journal's writer lock (`SessionJournal.swift:76`) |
+| `PayloadArchive.swift:94,800` retained capture garbage | Archive writer lock is acquired before database opening/reconciliation; failed ownership does not enter this sweep |
+| `TraceArchive.swift:121` partial exports | Production exporter root is unique per model (`WorkspaceModel.swift:561`); reconciliation scans that root, not another model's or an explicit export destination |
+| `HistoryIndexFiles.swift:17` temporary indexes | Already excludes live owner PIDs and open inodes; no pasted-generation assumption |
+| `HistoryReader.swift:481,497` temporary byte storage | Removes only its own file, including unlinking its own open temporary file |
+| `WorkspaceConnectionProbe.swift:81` probe directories | Unique probe session directory removed only after its own helper has stopped |
+
+Separate helper migration finding for routing: `JournalSlimming.swift:155–161`
+uses only a one-hour modification-age cutoff when deleting `.slim-` and
+`.pre-slim-` files. A helper suspended beyond that cutoff can still own/use
+those files; the sweep does not check its lock. This is outside the pasted
+generation fix and remains unchanged pending coordination with the helper
+workstream. No other shared per-launch image/import-generation sweep was found.
+
+### Final focused validation
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests \
+  -only-testing:PiAppTests/ClipboardImageTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/ComposerSubmissionTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/CatalogImageInputTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardHTMLPerformanceTests
+```
+
+`lease-regressions-final.log`: **85 executed, 84 passed, 1 existing skip,
+0 failures**. Per-class passes: PastedImageLease **5**, ClipboardImage **19**,
+ComposerAttachmentDestination **2**, ComposerImportSubmission **11**,
+ComposerSubmission **6** (+ **1** existing missing-Conversation-menu skip),
+PastedAttachment **8**, QueuedAttachmentLimit **2**, CatalogImageInput **2**,
+DraftSize **2**, DraftMark **5**, RecoveredDraft **13**,
+QueuedEditPresentation **9**.
+
+`lease-timing-final.log`: **1/1 passed**. The malformed HTML case took
+**1.357 ms** text-first and **0.397 ms** image-first, below the 50 ms limit.
+No helper or wire source changed, so their full suites were not rerun.
+
+The serial menu/gallery reruns are queued behind the shared focus lock.
+Their results will be recorded after they run; they are not counted above.
