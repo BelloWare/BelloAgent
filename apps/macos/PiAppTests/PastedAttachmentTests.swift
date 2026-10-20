@@ -143,11 +143,19 @@ final class PastedAttachmentTests: XCTestCase {
 final class PastedJournalPause: @unchecked Sendable {
     private let lock = NSLock(), releaseRead = DispatchSemaphore(value: 0)
     private var began = false
+    private var skipped: Int
+    private let afterReading: Bool
+    init(skippingReads: Int = 0, afterReading: Bool = false) { skipped = skippingReads; self.afterReading = afterReading }
     var entered: Bool { lock.lock(); defer { lock.unlock() }; return began }
     func read(_ path: String) throws -> Set<String> {
-        lock.lock(); began = true; lock.unlock()
-        releaseRead.wait()
-        return try PastedImageStorage.names(inJournal: path)
+        let snapshot = afterReading ? try PastedImageStorage.names(inJournal: path) : nil
+        lock.lock()
+        let pause = skipped == 0 && !began
+        if skipped > 0 { skipped -= 1 }
+        if pause { began = true }
+        lock.unlock()
+        if pause { releaseRead.wait() }
+        return try snapshot ?? PastedImageStorage.names(inJournal: path)
     }
     func release() { releaseRead.signal() }
 }

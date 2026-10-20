@@ -34,6 +34,7 @@ final class PastedImageLeaseTests: XCTestCase {
         try await model.cleanupPastedImages()
         XCTAssertTrue(child.process.isRunning, "The sweep must not wait for the live lease to end")
         XCTAssertEqual(try? Data(contentsOf: file), bytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lockURL(for: file).path), "A live generation keeps its sidecar")
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
         child.stop()
         XCTAssertEqual(child.process.terminationReason, .uncaughtSignal)
@@ -41,6 +42,7 @@ final class PastedImageLeaseTests: XCTestCase {
         let next = secondModel(root: root)
         try await next.cleanupPastedImages()
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "Kernel-released leases must not pin crashed generations")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL(for: file).path), "An empty crashed generation leaves no sidecar")
     }
 
     @MainActor func testStorageCopiesHoldOneLeaseUntilTheLastOwnerIsReleased() async throws {
@@ -85,7 +87,7 @@ final class PastedImageLeaseTests: XCTestCase {
     @MainActor func testSweepClaimsAbandonedGenerationsBeforeReadingReferences() async throws {
         let root = scratchRoot("paste-inventory-lease"), model = makeWorkspaceModel(stateRoot: root)
         let file = try PastedImageStorage(root: root).write(ClipboardImageTests.image())
-        let journal = root.appendingPathComponent("saved.jsonl"), pause = PastedJournalPause()
+        let journal = root.appendingPathComponent("saved.jsonl"), pause = PastedJournalPause(skippingReads: 1)
         try Data("{}\n".utf8).write(to: journal)
         try await model.store?.put(ChatRecord(id: "saved", workspaceID: "w", title: "Saved", path: journal.path, profileID: "p"),
                                    kind: "chat", id: "saved")
@@ -99,6 +101,117 @@ final class PastedImageLeaseTests: XCTestCase {
         XCTAssertEqual(result, "busy", "Ownership must precede the inventory, not be inferred after a producer can commit and exit")
         contender.stop(); pause.release(); try await sweep.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @MainActor func testRetainedGenerationsDoNotConsumeSweepDescriptors() async throws {
+        let root = scratchRoot("paste-many-retained"), model = makeWorkspaceModel(stateRoot: root)
+        let bytes = try ClipboardImageTests.image()
+        let retained = try (0..<96).map { _ in try PastedImageStorage(root: root).write(bytes) }
+        let garbage = try (0..<3).map { _ in try PastedImageStorage(root: root).write(bytes) }
+        _ = try await savedJournal(retaining: retained, model: model)
+        let probe = SweepReadProbe(directory: model.pastedImages.directory)
+        model.pastedImageRead = { try probe.read($0) }
+        try await model.cleanupPastedImages()
+        let measured = probe.measurements
+        XCTAssertGreaterThan(measured.peak, 0, "Measure actual sweep descriptors during the journal scan")
+        XCTAssertLessThanOrEqual(measured.peak, 32, "Retained pasting launches must not exhaust the process descriptor limit")
+        XCTAssertLessThanOrEqual(measured.peak, garbage.count, "The pre-pass must skip wholly retained generations")
+        XCTAssertLessThanOrEqual(measured.reads, 2, "Retained generations must not cause a full scan per batch")
+        for file in retained { XCTAssertTrue(FileManager.default.fileExists(atPath: file.path)) }
+        for file in garbage { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path)) }
+        print("PASTE_LEASE_RETAINED peak=\(measured.peak) scans=\(measured.reads)")
+    }
+
+    @MainActor func testGarbageGenerationsAreClaimedInBoundedBatches() async throws {
+        let root = scratchRoot("paste-many-orphans"), model = makeWorkspaceModel(stateRoot: root)
+        let bytes = try ClipboardImageTests.image()
+        let files = try (0..<70).map { _ in try PastedImageStorage(root: root).write(bytes) }
+        _ = try await savedJournal(retaining: [], model: model)
+        let probe = SweepReadProbe(directory: model.pastedImages.directory)
+        model.pastedImageRead = { try probe.read($0) }
+        try await model.cleanupPastedImages()
+        XCTAssertEqual(files.filter { FileManager.default.fileExists(atPath: $0.path) }.count, 38, "Leave excess generations for a later bounded sweep")
+        XCTAssertLessThanOrEqual(probe.measurements.peak, 32)
+        try await model.cleanupPastedImages(); try await model.cleanupPastedImages()
+        XCTAssertLessThanOrEqual(probe.measurements.peak, 32)
+        XCTAssertLessThanOrEqual(probe.measurements.reads, 6, "At most two journal scans per sweep")
+        for file in files { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path)) }
+        print("PASTE_LEASE_GARBAGE peak=\(probe.measurements.peak) scans=\(probe.measurements.reads)")
+    }
+
+    @MainActor func testEmptyLiveGenerationKeepsSidecarUntilOwnerEnds() async throws {
+        let root = scratchRoot("paste-empty-generation"), model = makeWorkspaceModel(stateRoot: root)
+        var owner: PastedImageStorage? = PastedImageStorage(root: root)
+        let file = try XCTUnwrap(owner).write(ClipboardImageTests.image()), lock = lockURL(for: file)
+        try FileManager.default.removeItem(at: file)
+        try await model.cleanupPastedImages()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lock.path), "No files does not mean no live owner")
+        withExtendedLifetime(owner) {}; owner = nil
+        let unknown = file.deletingPathExtension().appendingPathExtension("unfinished")
+        try Data("Preserve unrecognized generation files".utf8).write(to: unknown)
+        try await model.cleanupPastedImages()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lock.path), "Retire a sidecar only when every generation file is gone")
+        try FileManager.default.removeItem(at: unknown)
+        try await model.cleanupPastedImages()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path), "Collect sidecars left after the last image disappeared")
+    }
+
+    @MainActor func testProducerCommitAndExitAfterPrepassSurvivesClaimedRescan() async throws {
+        let root = scratchRoot("paste-prepass-commit"), model = makeWorkspaceModel(stateRoot: root)
+        var producer: PastedImageStorage? = PastedImageStorage(root: root)
+        let bytes = try ClipboardImageTests.image(), file = try XCTUnwrap(producer).write(bytes)
+        let journal = try await savedJournal(retaining: [], model: model)
+        let pause = PastedJournalPause(afterReading: true)
+        model.pastedImageRead = { try pause.read($0) }
+        defer { pause.release() }
+        let sweep = Task { try await model.cleanupPastedImages() }
+        try await eventually("pre-pass captured before commit") { pause.entered }
+        try JSONEncoder().encode([file.path]).write(to: journal)
+        withExtendedLifetime(producer) {}; producer = nil
+        pause.release(); try await sweep.value
+        XCTAssertEqual(try? Data(contentsOf: file), bytes, "Only the inventory read after claiming can authorize deletion")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lockURL(for: file).path), "Retained files keep their generation's sidecar")
+    }
+
+    @MainActor func testWriterRejectsReplacedGenerationSidecar() throws {
+        let root = scratchRoot("paste-replaced-sidecar"), storage = PastedImageStorage(root: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try ClipboardImageTests.image(), file = try storage.write(bytes), lock = lockURL(for: file)
+        // Model an opener that was paused while a collector retired its inode.
+        try FileManager.default.removeItem(at: lock); try Data().write(to: lock)
+        XCTAssertThrowsError(try storage.write(bytes), "An unlinked descriptor cannot protect a new image")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: storage.directory.path).filter { $0.hasSuffix(".png") }.count, 1)
+    }
+
+    @MainActor private func savedJournal(retaining files: [URL], model: WorkspaceModel) async throws -> URL {
+        let journal = model.root.appendingPathComponent("saved.jsonl")
+        try (JSONEncoder().encode(files.map(\.path)) + Data([10])).write(to: journal)
+        try await model.store?.put(ChatRecord(id: "saved", workspaceID: "w", title: "Saved", path: journal.path, profileID: "p"),
+                                   kind: "chat", id: "saved")
+        return journal
+    }
+
+    private final class SweepReadProbe: @unchecked Sendable {
+        private let directory: URL, mutex = NSLock()
+        private var reads = 0, peak = 0
+        init(directory: URL) { self.directory = directory }
+        var measurements: (reads: Int, peak: Int) {
+            mutex.lock(); defer { mutex.unlock() }; return (reads, peak)
+        }
+        func read(_ path: String) throws -> Set<String> {
+            // Observe only this generated fixture's real open lease descriptors.
+            let prefix = directory.resolvingSymlinksInPath().path + "/"
+            let count = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").filter { name in
+                guard let descriptor = Int32(name) else { return false }
+                var path = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
+                let result = path.withUnsafeMutableBytes { buffer in fcntl(descriptor, F_GETPATH, buffer.baseAddress!) }
+                guard result == 0 else { return false }
+                let file = URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }, as: UTF8.self)).resolvingSymlinksInPath().path
+                return file.hasPrefix(prefix) && file.hasSuffix(".lock")
+            }.count
+            mutex.lock(); reads += 1; peak = max(peak, count); mutex.unlock()
+            return try PastedImageStorage.names(inJournal: path)
+        }
     }
 
     private func lockURL(for image: URL) -> URL {

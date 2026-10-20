@@ -778,3 +778,159 @@ validation documentation only. Both focus-lock holders released their own
 lock. No clone folders or workstream test lock remain in this build root.
 No helper or wire code changed, so their full suites were not rerun. The
 separate journal-migration staging finding above remains for lead routing.
+
+## Round 5 — bounded sweep leases and sidecar retirement
+
+Review of `c6723fa7` found that the collector retained one descriptor for every
+old generation, including generations whose images all remained in saved
+journals. The live-owner fix therefore allowed ordinary retained history to
+consume the process's file-descriptor budget. Empty sidecars also remained
+indefinitely after their images were collected.
+
+The collector now lists generations without retaining lock descriptors, then
+reads references once to exclude wholly retained generations. That pre-pass
+can only skip cleanup; its result never authorizes deletion. The collector
+claims at most **32** remaining generations without waiting, obtains a **fresh**
+metadata/journal inventory while holding those claims, and retains the claims
+through the existing revision/activity/local-draft checks and deletion.
+Excess candidates wait for later startup sweeps. This deliberately caps a
+launch at **two journal scans**, rather than repeating a full scan for every
+32-generation batch. Retained-only generations do not consume the batch,
+so ordinary saved history cannot repeatedly crowd garbage out of cleanup.
+
+After deletion, a fresh directory listing determines whether any generation
+files remain, including unrecognized files. An empty abandoned generation's
+sidecar is unlinked while its lease is still held. Empty live generations
+keep their sidecars; sidecars with retained images remain too. Sidecars left
+without any PNG by a failed write or earlier cleanup are also discoverable.
+This supersedes round 4's decision to keep every sidecar indefinitely.
+
+Retiring a sidecar creates an inode race if an opener pauses between `open`
+and `flock`: it could later acquire the old, unlinked inode. Producers and
+collectors therefore compare the held descriptor's device/inode with the
+named file after acquisition; deletion checks that identity again. A writer
+whose existing sidecar was replaced cannot publish another unprotected image.
+`WorkspaceLock.matchesFile` adds that check without changing its constructor's
+behavior for other callers.
+
+Pending/side drafts remain ephemeral. Reference retention, image limits,
+permission/capture/vault boundaries and composer behavior are unchanged.
+No helper or wire source changed. The separate helper migration finding from
+round 4 remains recorded for the lead; no additional workstream was changed.
+
+### Failing-first evidence and measurements
+
+All fixtures are generated, with isolated roots, memory vaults and the existing
+child-process flock probe. The descriptor test inspects `/dev/fd` with
+`F_GETPATH` and counts only canonical paths to this fixture's `.lock` files
+while the real journal scan is running and every candidate claim is held.
+It does not mock lock counts or lower the Xcode test process's global limit.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-paste
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testRetainedGenerationsDoNotConsumeSweepDescriptors \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testGarbageGenerationsAreClaimedInBoundedBatches \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testChildLeaseProtectsLiveImagesAndCrashMakesThemCollectable \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testEmptyLiveGenerationKeepsSidecarUntilOwnerEnds \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testWriterRejectsReplacedGenerationSidecar
+```
+
+`r5-lease-baseline-final.log`: the final regression tests against the original
+`c6723fa7` production files produced **5 tests, 9 assertion failures,
+0 unexpected**:
+
+- **96 retained generations + 3 garbage generations:** **99** simultaneous
+  sweep descriptors, exceeding both the 32 cap and the 3 useful candidates.
+- **70 garbage generations:** **70** descriptors; all generations collected
+  at once instead of deferring excess work.
+- A real child held its live sidecar correctly, but the sidecar remained
+  after SIGKILL and collection of the crashed generation's final image.
+- A generation with no image still left its sidecar after its owner ended.
+- Replacing a writer's sidecar allowed it to publish a second image under
+  the unlinked descriptor.
+
+The first probe (`r5-lease-failing-first.log`) omitted canonicalization of
+descriptor paths and measured zero, which its own nonzero assertion caught.
+That instrumentation attempt is excluded from descriptor evidence. The
+corrected probe first reproduced **99 / 70** descriptors in
+`r5-lease-failing-first-measured.log`, then the final baseline run above
+repeated those measurements with all final assertions.
+
+`r5-lease-fixed.log` passed **18/18** lease/attachment tests. After adding
+the producer-commit race and unknown-file retention checks,
+`r5-lease-race-fixed.log` passed **36/36**: PastedImageLease **11**,
+PastedAttachment **8**, Workspace **17**.
+
+Fixed measurements: **3** peak descriptors and **2** scans for 96 retained +
+3 garbage generations; **32** peak descriptors and **6** scans over three
+sweeps for 70 garbage generations (32, then 32, then 6 collected).
+
+### Mutation checks and adversarial review
+
+Each command uses `scripts/test-macos.sh -parallel-testing-enabled NO` and
+`-only-testing:PiAppTests/PastedImageLeaseTests/<selector>` for the selectors
+below. All mutations were restored before final regression runs.
+
+| Mutation | Test selector(s) | Runtime result |
+| --- | --- | --- |
+| Raise the cap to 1024 | `testGarbageGenerationsAreClaimedInBoundedBatches` | 1 test, 3 assertion failures; peak 70 |
+| Remove the retained-generation filter | `testRetainedGenerationsDoNotConsumeSweepDescriptors` | 1 test, 2 assertion failures; peak 32, garbage left behind |
+| Reuse pre-pass names for deletion instead of scanning after claiming | `testProducerCommitAndExitAfterPrepassSurvivesClaimedRescan` | 1 test, 2 assertion failures; committed image and sidecar deleted |
+| Omit sidecar unlink | `testChildLeaseProtectsLiveImagesAndCrashMakesThemCollectable`, `testEmptyLiveGenerationKeepsSidecarUntilOwnerEnds` | 2 tests, 2 assertion failures |
+| Omit the writer's inode check | `testWriterRejectsReplacedGenerationSidecar` | 1 test, 2 assertion failures |
+
+Logs: `r5-mutation-{bound,filter,inventory,sidecar,inode}.log`.
+**5/5 mutations caught at runtime; 0 unexpected errors.**
+
+The authoritative-inventory test still probes the held claim from a child
+process; its pause now skips the non-authoritative pre-pass. The new producer
+test pauses after that pre-pass has read an empty journal, persists the image
+reference, releases the producer lease, then lets the collector continue.
+Only the post-claim inventory can preserve that reference, as the mutation
+demonstrates.
+
+Busy or unverifiable leases remain nonblocking and fail closed. A failed
+reference scan still retains files. Empty-sidecar collection requires a held,
+current lease and checks all names, so an unrecognized generation file prevents
+retirement. The generation UUID is not reused, and stale openers must validate
+the named inode before they can act. Storage copies still share the producer
+lease and process death still releases it.
+
+### Final focused validation
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests \
+  -only-testing:PiAppTests/ClipboardImageTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/ComposerSubmissionTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/CatalogImageInputTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardHTMLPerformanceTests
+```
+
+`r5-regressions-final.log`: **108 executed, 107 passed, 1 existing skip,
+0 failures**. Per-class passes: PastedImageLease **11**, ClipboardImage **19**,
+ComposerAttachmentDestination **2**, ComposerImportSubmission **11**,
+ComposerSubmission **6** (+ **1** existing missing-Conversation-menu skip),
+PastedAttachment **8**, QueuedAttachmentLimit **2**, CatalogImageInput **2**,
+DraftSize **2**, DraftMark **5**, RecoveredDraft **13**,
+QueuedEditPresentation **9**, Workspace **17**. The final run repeats the
+measured descriptor peaks (**3 / 32**) and scan counts (**2 / 6**).
+
+`r5-timing-final.log`: **1/1 passed**; the malformed HTML case took **1.177 ms**
+text-first and **0.149 ms** image-first.
+
+Pending-chat projects, Edit-menu routing and gallery reruns are queued under
+the shared full-lane lock. No clone folders or workstream test lock remain
+after the focused runs. No helper or wire code changed, so their full suites
+were not rerun.

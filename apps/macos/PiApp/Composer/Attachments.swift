@@ -29,28 +29,61 @@ struct PastedImageStorage: Sendable {
         private var ownership: WorkspaceLock?
         func acquire(in directory: URL) throws {
             mutex.lock(); defer { mutex.unlock() }
-            if ownership == nil { ownership = try WorkspaceLock(url: directory.appendingPathComponent("pasted-" + generation + ".lock")) }
+            let url = directory.appendingPathComponent("pasted-" + generation + ".lock")
+            let lease = try ownership ?? WorkspaceLock(url: url)
+            guard lease.matchesFile(at: url) else { throw StoreError.unavailable }
+            ownership = lease
         }
     }
-    struct OldFiles: Sendable { let files: [URL]; let leases: [WorkspaceLock] }
-    /// Claim abandoned generations before inventory reads. Retain the claims
-    /// through deletion so a producer cannot commit and exit after the inventory.
-    func oldFiles() throws -> OldFiles {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return OldFiles(files: [], leases: []) }
-        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
+    struct OldFiles: Sendable { let files: [URL]; let leases: [String: WorkspaceLock] }
+    static let sweepGenerationLimit = 32
+    /// Include empty sidecars left by interrupted writes or earlier sweeps.
+    /// Listing acquires no descriptors that survive this call.
+    func oldGenerations() throws -> [String: [URL]] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
+        var generations: [String: [URL]] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) {
             let name = file.lastPathComponent
-            guard !name.hasPrefix(prefix), Self.names(in: Data(name.utf8)).contains(name) else { return false }
+            guard !name.hasPrefix(prefix), name != "pasted-" + generation + ".lock" else { continue }
+            let image = Self.names(in: Data(name.utf8)).contains(name)
+            let sidecar = name.hasPrefix("pasted-") && name.hasSuffix(".lock") && name.count == 48 &&
+                UUID(uuidString: String(name.dropFirst(7).dropLast(5))) != nil
+            guard image || sidecar else { continue }
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            return values.isRegularFile == true && values.isSymbolicLink != true
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let generation = String(name.prefix(43))
+            if image { generations[generation, default: []].append(file) }
+            else if generations[generation] == nil { generations[generation] = [] }
         }
-        let generations = Dictionary(grouping: files) { String($0.lastPathComponent.prefix("pasted-".count + 36)) }
-        var abandoned: [URL] = [], leases: [WorkspaceLock] = []
-        for (generation, files) in generations {
-            guard let lease = try? WorkspaceLock(url: directory.appendingPathComponent(generation + ".lock")) else { continue }
-            leases.append(lease); abandoned.append(contentsOf: files)
+        return generations
+    }
+    /// A pre-pass can only exclude work. Every claimed generation still needs
+    /// a fresh inventory before deletion, with its lease held throughout.
+    func claimOldFiles(_ generations: [String: [URL]], excluding names: Set<String>) -> OldFiles {
+        var abandoned: [URL] = [], leases: [String: WorkspaceLock] = [:]
+        for generation in generations.keys.sorted() {
+            guard leases.count < Self.sweepGenerationLimit else { break }
+            let files = generations[generation]!
+            guard files.isEmpty || files.contains(where: { !names.contains($0.lastPathComponent) }) else { continue }
+            let url = directory.appendingPathComponent(generation + ".lock")
+            guard let lease = try? WorkspaceLock(url: url), lease.matchesFile(at: url) else { continue }
+            leases[generation] = lease; abandoned.append(contentsOf: files)
         }
-        // Sidecars stay in place so all contenders use the same lock inode.
         return OldFiles(files: abandoned, leases: leases)
+    }
+    func remove(_ candidates: OldFiles, keeping names: Set<String>) throws {
+        for file in candidates.files where !names.contains(file.lastPathComponent) {
+            let generation = String(file.lastPathComponent.prefix(43)), lock = directory.appendingPathComponent(generation + ".lock")
+            guard candidates.leases[generation]?.matchesFile(at: lock) == true else { continue }
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        }
+        // The generation cannot publish again. Keep the lease through unlink,
+        // and check fresh directory contents, including unrecognized files.
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        for (generation, lease) in candidates.leases where !remaining.contains(where: { $0.hasPrefix(generation + "-") }) {
+            let lock = directory.appendingPathComponent(generation + ".lock")
+            if lease.matchesFile(at: lock) { try FileManager.default.removeItem(at: lock) }
+        }
     }
     private static let pattern = try! NSRegularExpression(pattern: "pasted-[A-Fa-f0-9-]{36}-[A-Fa-f0-9-]{36}\\.png")
     static func names(in data: Data) -> Set<String> {
@@ -213,23 +246,17 @@ extension WorkspaceModel {
     }
     func cleanupPastedImages() async throws {
         guard let store, pastedImageCleanupIsSafe else { return }
-        let storage = pastedImages, read = pastedImageRead
-        let candidates = try await Task.detached(priority: .utility) { try storage.oldFiles() }.value
+        let storage = pastedImages
+        let generations = try await Task.detached(priority: .utility) { try storage.oldGenerations() }.value
+        guard !generations.isEmpty else { return }
+        let preliminary = try await store.pastedImageReferences(root: root)
+        let retained = try await scanPastedImageReferences(preliminary, files: generations.values.flatMap { $0 })
+        guard pastedImageCleanupIsSafe else { return }
+        let candidates = await Task.detached(priority: .utility) { storage.claimOldFiles(generations, excluding: retained) }.value
         defer { withExtendedLifetime(candidates) {} }
-        let files = candidates.files
-        guard !files.isEmpty else { return }
+        guard !candidates.leases.isEmpty else { return }
         let inventory = try await store.pastedImageReferences(root: root)
-        let scan = Task.detached(priority: .utility) {
-            var names = inventory.names
-            let candidates = Set(files.map(\.lastPathComponent))
-            for path in inventory.journals {
-                try Task.checkCancellation()
-                if candidates.isSubset(of: names) { break }
-                names.formUnion(try read(path))
-            }
-            return names
-        }
-        var names = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
+        var names = try await scanPastedImageReferences(inventory, files: candidates.files)
         guard try await store.pastedImageReferencesUnchanged(inventory.token), pastedImageCleanupIsSafe else { return }
         // From this check through unlink, no MainActor suspension: typing,
         // imports and sends cannot acquire a new local reference in between.
@@ -240,9 +267,21 @@ extension WorkspaceModel {
                 names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
             }
         }
-        for file in files where !names.contains(file.lastPathComponent) && FileManager.default.fileExists(atPath: file.path) {
-            try FileManager.default.removeItem(at: file)
+        try storage.remove(candidates, keeping: names)
+    }
+    private func scanPastedImageReferences(_ inventory: PastedImageReferences, files: [URL]) async throws -> Set<String> {
+        let read = pastedImageRead
+        let scan = Task.detached(priority: .utility) {
+            var names = inventory.names
+            let candidates = Set(files.map(\.lastPathComponent))
+            for path in inventory.journals {
+                try Task.checkCancellation()
+                if candidates.isSubset(of: names) { break }
+                names.formUnion(try read(path))
+            }
+            return names
         }
+        return try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
     }
     private var pastedImageCleanupIsSafe: Bool {
         !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&
