@@ -11,12 +11,18 @@
 - [x] Panel counts ignore diff ordering files and report unavailable reads; repository removal/recreation revalidates discovery and restores Diff without switching chats. [Evidence](docs/validation/a130-panel-0.1.130.md#ordering-and-repository-lifecycle-follow-up-2026-10-20).
 - [x] Untracked count snapshots split case-colliding files and directories; ambiguous Unicode keys and attribute aliases report unavailable counts without overwriting another path. [Evidence](docs/validation/a130-panel-0.1.130.md#snapshot-name-collisions--round-8-2026-10-20).
 
+- [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
 - [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.
 - [x] Legacy response timelines build in linear time, preserving the original segment metadata and order.
 
+- [x] Native lane detection preserves complete multiline declarations, including attributes, generics/where clauses and default closures. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-13-review--declarations-and-intermittent-native-tests).
+- [x] Preview tests use a scoped project resolver, so earlier workspace fixtures cannot disable their change notifications.
+- [x] Sheet lifetime checks precisely exempt the detached AppKit system cursor retained by framework observers, while still rejecting attached cursors, app subclasses and retained content.
+
+- [x] Native lanes follow actual shared-fixture dependencies and serialize visible-window/focus contention while keeping offscreen responder work parallel; Python guards cover both cases. [Validation](docs/validation/a130-gitfiles-0.1.130.md#focus-lane-cost-review).
 - [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
 - [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
 - [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.

@@ -2181,3 +2181,1056 @@ Adversarial review of the whole new diff:
 | Existing boundaries | The original fixture plist stays unchanged; metadata checks stay fixture-local; all app/helper home and scratch overrides remain as before. No shipping path or helper behavior changes. |
 
 No unresolved failure or owner decision remains in this change.
+
+
+## Native focus lane audit
+
+Base `fe734912`, fast-forwarded by the lead before this work, on
+`dev/a130-gitfiles`. No merge or further fast-forward was performed here.
+
+### Findings and scope
+
+The audit covered **all 461 native test classes**, their bases/extensions and
+helpers across **520 Swift files**, including 79 nested reference files, plus
+`apps/macos/TestSupport`. An independent test-case declaration scan found no
+omitted declaration and no duplicate top-level class name. The before/after
+class sets are identical. Evidence is in this workstream's
+`build-a130-gitfiles/evidence/lanes-*` text/JSON/TSV files; `lanes-audit.tsv`
+records every class's old/new Debug and Release lane and its final reasons.
+
+- Confirmed: `TranscriptGeometryCacheTests` and `TranscriptTurnFoldTests`
+  were parallel despite `makeKeyAndOrderFront` in their fixtures.
+- `TranscriptBugRegressionTests` was already serial for pasteboard/timing
+  reasons on this base. Its `findFixture` still opens a key window, and now
+  independently gets a `focus` reason. No existing serial class was demoted.
+- The nearby sweep found direct, inherited and same-file focus use throughout
+  the suite, plus shared fixtures such as `LongChatScroll`, `PiKitParity`,
+  `ReviewConcurrentInteractionLoad`, `WireChat`, and nested fixtures such as
+  `ConversationPaneTests.Pane`. Cross-file helpers and nested source folders
+  were previously outside the detector's reach.
+- Indirect app entry points also raise windows. `WorkspaceInspector.swift:18`
+  calls the Inspector window manager, whose `SessionInspectorWindow.swift:47`
+  makes the window key and activates the app. `TabHost.swift:304` creates a
+  controller and can call `showWindow`; `TabWindows.swift:37` brings it forward.
+  Inspector/Details and pop-out/bring-forward calls now count as focus use,
+  including tests that dispatch through a row action or a button.
+
+The detector recognizes app activation/state, key/main window changes/state,
+first-responder interaction, window/application event dispatch, key equivalents,
+modal/sheet presentation, Core Graphics event posting and pointer movement.
+Whitespace-separated calls are covered. Event construction and direct local
+view handlers alone remain parallel; notification posting is not mistaken for
+posting input. Responder interaction is deliberately conservative: a class is
+serial even if its current fixture uses an offscreen/non-key window.
+
+Shared test types are considered as whole fixtures, including their methods and
+file-local helpers. Thus some calls to a currently non-focusing member of a
+fixture that also uses focus are conservatively serialized. Private names do
+not spread to unrelated files. Transitive traversal terminates on cycles and
+includes fixtures nested in other test classes. Classes with only inherited
+test methods are also classified. Shared traversal contributes focus checks;
+it does not promote a class merely because a shared file defines
+`releaseBudget` or an unrelated timing assertion. Cached identifier extraction
+keeps the audit bounded; all 461 classifications were identical before/after
+that cache (measured cached source scan: 7.946 s).
+
+This is a source heuristic, not a Swift runtime call-graph proof. Dynamic or
+external focus operations still need `SerialTestLane`; the handoff documents
+that boundary. No native test or production Swift behavior was changed.
+
+### Failing-first and mutation evidence
+
+New `scripts/tests/test_test_lanes.py` executes only Python source checks and
+synthetic Swift source fixtures; it never compiles/runs these native fixtures.
+The repository guard checks actual `serial`/`parallel` CLI selections in both
+Debug and Release against an independently declared focus API audit. Separate
+one-API cases and transitive-fixture cases prevent weakening the detector from
+silently weakening the repository check.
+
+Before the fix (`lanes-before.log`):
+
+```text
+test_known_native_fixture_users_have_a_focus_reason ...
+  (name='TranscriptGeometryCacheTests') ... FAIL
+  (name='TranscriptTurnFoldTests') ... FAIL
+AssertionError: 'focus' not found in []
+test_no_parallel_native_class_uses_focus_apis ...
+  (configuration='Debug') ... FAIL
+  (configuration='Release') ... FAIL
+Ran 8 tests in 2.815s
+FAILED (failures=66)
+```
+
+A separate extension-helper regression first failed once
+(`lanes-extension-before.log`). During the audit, tests also caught an initial
+implementation that propagated unrelated timing/budget helpers and the old
+omission of inherited-only test classes: **2 methods / 3 failures**
+(`lanes-audit-before.log`). They were fixed before final validation.
+The additional cross-test-class fixture and app-window entry-point regressions
+failed first with **3 methods / 14 failures** (`lanes-indirect-before.log`).
+
+The restored focused suite passes **13/13**. The mutation driver restores the
+script in `finally`; all **8/8** changes are caught by assertion failures:
+
+| Mutation | Failing assertions | Log suffix |
+| --- | ---: | --- |
+| Restore the old focus pattern | 58 | `apis` |
+| Stop following shared helpers | 1 | `shared` |
+| Scan only the top-level directory | 1 | `recursive` |
+| Omit shared extension builders | 1 | `extension` |
+| Omit inherited-only test classes | 1 | `inherited` |
+| Propagate unrelated timing/budget helpers | 2 | `scope` |
+| Omit fixtures nested in other test classes | 1 | `test-fixture` |
+| Treat private helpers as cross-file exports | 1 | `private` |
+
+Logs are `lanes-mutation-<suffix>.log`, aggregated in `lanes-validation.log`.
+
+### Reclassified classes
+
+| Configuration | Before serial / parallel | After serial / parallel | Newly serial |
+| --- | --- | --- | ---: |
+| Debug (normal gate) | 132 / 329 | 320 / 141 | 188 |
+| Release | 147 / 314 | 321 / 140 | 174 |
+
+All newly serial classes have a focus reason. No class is removed from either
+configuration's combined selection. The following is the complete Debug list.
+Direct, inherited, same-file or app-window entry-point detection (**117**):
+
+```text
+AppShellPerformanceTests  ArchiveSwitchTests
+BackgroundRequestsTests  BlockingAlertTests
+CancelDefaultQuestionTests  CapturedBodyTests
+ChangesTabTests  ChatFileLinkTests
+CompactTurnReportTests  ComposerSubmissionTests
+ConnectionSwitchJournalTests  ContextReadingTests
+ConversationPaneRetentionTests  CostLimitTests
+FileBlameTests  FileReviewGalleryTests
+FileReviewStateTests  FileTabTests
+FiveSessionWorkspacePerformanceTests  GitChangelistReadTests
+GitConfirmationSheetTests  GitDiscardQuestionTests
+GitHistoryFilterTests  GitHunkReviewTests
+GitIntegratedHistoryGalleryTests  GitIntegratedHistoryTests
+GitOperationSafetyTests  GitPanelAuditTests
+GitPanelDiffCaptureTests  GitPanelLayoutTests
+GitPanelRedrawTests  GitPanelShownTests
+GitPanelWidthTests  GitPathBoundaryTests
+GitRenameTests  GitSafetyGalleryTests
+HistoricalEditingTests  HistoryEdgeTests
+InlineSkillPillTests  InlineSkillTests
+InspectorEntryPointTests  InspectorExpandInPlaceTests
+InspectorFollowTests  InspectorWindowControlTests
+LaunchSelectionTests  LazyListAppKitControlTests
+LiveWorkingIndicatorTests  MarkdownSourceReconciliationTests
+MessageDetailTests  MessageVersionTranscriptTests
+MiniModelSettingsTests  ModelCatalogEndpointTests
+NativeCodeTextTests  NativeMarkdownSurfaceStreamingTests
+NativeMarkdownViewportTests  NativeTranscriptDocumentTests
+NativeTranscriptScrollTests  NativeTranscriptScrollingPerformanceTests
+NativeWorkListViewportTests  PendingChatProjectTests
+PerformanceBaselineTests  PiKitControlTests
+PiQuestionSheetTests  PiSheetCancelTests
+PiSheetWindowTests  ReportNavigationTests
+ReportPageTests  ResponseChronologyTests
+SendImmediacyTests  SendLatencyTests
+SessionStatsPopoverTests  SessionTimingTests
+SessionUsageTests  ShellSheetTests
+SideKeepRecoveryTests  SideRelaunchTests
+SidebarAppearanceTests  SidebarListedOrderTests
+SidebarScalePerformanceTests  SidebarSideClickTests
+SmoothHoverAndMotionTests  SmoothPaneAndKeyboardTests
+SmoothReadingPositionTests  StableToolPresentationTests
+StreamingMarkdownStabilityTests  TabHostTests
+TabPaneTests  TerminalCaptureTests
+TerminalCursorAlignmentTests  TerminalPanelAuditTests
+TranscriptBugGalleryTests  TranscriptDisclosureTests
+TranscriptFindTests  TranscriptFrameBudgetTests
+TranscriptGeometryCacheTests  TranscriptKeptRowsTests
+TranscriptNativeMessageKindBehaviourTests  TranscriptNativeWorkBehaviourTests
+TranscriptPageStressTests  TranscriptQuoteSelectionTests
+TranscriptRealAppStreamingTests  TranscriptRowGalleryTests
+TranscriptScrollBudgetTests  TranscriptStreamingStressTests
+TranscriptSwitchBudgetTests  TranscriptSwitchFirstFrameTests
+TranscriptTurnFoldTests  TranscriptUpdateIsolationTests
+TranscriptVisibilityTests  TranscriptWidthChangeTests
+TurnAccountingTests  UpdatePauseTests
+WireContractTests  WorkspaceManagerSheetTests
+WorkspaceMotionTests  WorkspaceRedrawTests
+WorkspaceTests
+```
+
+Shared fixture detection (**71**, including conservative whole-type ownership):
+
+```text
+AccountingScaleTests  AppControlAccessibilityTests
+BudgetOwnerUnloadTests  CaptureMacIntegrationTests
+ComposerImportSubmissionTests  ContentSearchTests
+ConversationFamilyTests  CostPausePresentationTests
+FamilyDeletionTests  ForkFromReplyTests
+FreshPresentationTests  GitHunkGalleryTests
+HardeningTests  HistoryExtentTests
+InspectorRequestModelTests  InspectorSummaryRequestTests
+MarkdownStreamingCorrectnessTests  MarkdownStreamingTests
+MarkdownTextSurfaceTests  NativeTranscriptSafetyTests
+NestedFenceIdentityTests  PastedAttachmentTests
+PayloadArchiveTests  PayloadSearchTests
+PendingChatProjectGalleryTests  PiMenuTests
+QueuePanelGalleryTests  ReleaseConfigurationTests
+ReplyFileLinkTests  ReplySourceTests
+ReportMessageNavigationTests  ResponseTimelinePresentationTests
+SideBudgetIntegrationTests  SideKeepOrderingTests
+SidebarMetricsLayoutTests  SidebarSearchIndexTests
+SidebarSearchScopeTests  SidebarSearchSidebarTests
+SubagentCostTests  SubagentDeletionTests
+SubagentDiscoveryTests  SubagentDisplayTests
+SubagentEffortTests  SubagentInspectorTests
+SubagentOrganizationTests  SubagentPanelTests
+SubagentSteeringInspectorTests  SubagentSteeringPresentationTests
+SubagentSteeringWorkspaceTests  SubagentTranscriptTests
+TimelineStreamingFastPathTests  ToolOutputProducerTests
+TranscriptActionsForwardingTests  TranscriptFollowOwnershipTests
+TranscriptHeightSamplingTests  TranscriptMarkdownTests
+TranscriptNativeEverywhereTests  TranscriptNativePaneBehaviourTests
+TranscriptNativeRowBehaviourTests  TranscriptNativeRowParityTests
+TranscriptNativeTurnParityTests  TranscriptNativeWorkParityTests
+TranscriptRevealTests  TranscriptStreamingScrollTests
+TranscriptTextCalibrationTests  TranscriptViewEqualityTests
+TranscriptWorkRowTests  TurnInfoTests
+WebhookTests  WorkspaceDurabilityTests
+WorkspaceRefreshLifecycleTests
+```
+
+Release moves the same classes except these **14**, already serial for other
+reasons in Release:
+
+```text
+FreshPresentationTests  GitPanelLayoutTests
+NativeMarkdownSurfaceStreamingTests  SessionStatsPopoverTests
+SmoothHoverAndMotionTests  TranscriptFrameBudgetTests
+TranscriptPageStressTests  TranscriptRealAppStreamingTests
+TranscriptScrollBudgetTests  TranscriptStreamingScrollTests
+TranscriptStreamingStressTests  TranscriptSwitchBudgetTests
+TranscriptWidthChangeTests  TranscriptWorkRowTests
+```
+
+### Expected gate duration
+
+The normal gate gains 188 serial classes (1,719 statically counted zero-argument
+test methods) and removes them from the eight-clone lane. The class selections
+are exact; the method count is a source count, not fresh XCTest discovery.
+If their total standalone duration is `S`, an ideally balanced eight-worker
+lane previously paid `S/8`, while the serial lane pays `S`: nominal net increase
+is **7S/8**, plus two source scans (about 16 s at the measured load).
+Actual scheduling, overlap and contention can change that estimate.
+
+This workstream's existing passing native text logs cover only **153 methods
+in 15 moved classes**. Excluding mutation, failing-first and gallery logs, the
+sum of per-method medians is **233.906 s**; their nominal contribution to the
+increase is **204.668 s (about 3.4 minutes)**. This is a partial estimate, not a
+whole-gate prediction or a measured speed comparison. The remaining 173 classes
+lack timings in this build root, and the subset is not representative enough
+to extrapolate responsibly. Expect a materially longer serial lane; the lead's
+next merged gate is needed for a defensible total. No full native timing run
+was added to this script-only task. `lanes-timing-coverage.json` lists the
+covered classes, method counts and median sums.
+
+### Commands, results and adversarial review
+
+Commands from this worktree:
+
+```sh
+python3 -m unittest scripts.tests.test_test_lanes -v
+python3 -m unittest discover -s scripts/tests
+python3 scripts/test-lanes.py serial --configuration Debug
+python3 scripts/test-lanes.py parallel --configuration Debug
+python3 scripts/test-lanes.py serial --configuration Release
+python3 scripts/test-lanes.py parallel --configuration Release
+xcodegen generate --quiet
+python3 -m py_compile scripts/test-lanes.py scripts/tests/test_test_lanes.py
+git diff --check
+```
+
+Python test commands ran through the existing `run-home-review.py` evidence
+wrapper with generated HOME/CFFIXED_USER_HOME/CODEX_HOME and this workstream's
+PI_BUILD_ROOT/Release PI_NATIVE_HOST. The mutation/final run was:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  lanes-validation python3 \
+  /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/lanes-validation.py
+```
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Focused lane tests | 13 pass, 0 fail, 52.845 s | `lanes-focused.log` |
+| Full script tests | 131 pass, 0 fail, 0 skips, 108.066 s | `lanes-python.log` |
+| Mutations | 8/8 caught | `lanes-validation.log` |
+| Both configurations' native-class audit | 461 classes, no flagged parallel class | `lanes-audit.tsv`, focused/full tests |
+| Project generation, syntax and diff | Pass | `lanes-static.log` |
+
+The full script suite uses generated data/loopback fixtures, including its
+previously authorized launchperf-only UserDefaults probe. No native app, live
+benchmark, gallery, capture, paid/live provider request or Keychain operation
+ran. No focus changed and no shared full-lane lock was acquired or removed.
+Signing retry messages in the Python log are from stubs. No helper/wire source
+changed, so no helper or wire gate was required for this change.
+
+Adversarial review:
+
+- Each new API alternative moves only its source owners/users to serial.
+  Direct event construction, view-local delivery, ordinary tab activation and
+  notification posting remain outside the focus patterns. Conservatively
+  serializing responder and whole-fixture use is an explicit scheduling choice.
+- Recursive scanning keeps relative paths, avoiding collisions between nested
+  files with the same basename. Current test-class names have no collisions.
+- Exports preserve file-private scope. Public fixtures carry their own private
+  helpers; unrelated private fixtures cannot taint another file. Shared
+  extension methods and cross-test-class fixtures have separate regressions.
+- The traversal tracks visited names and included chunks, so recursive fixtures
+  terminate without losing downstream focus use. Caching only reuses immutable
+  identifier sets within one scan; before/after classifications match exactly.
+- The inherited-test filter runs after collecting bases. Existing 461-class
+  coverage is unchanged, while a synthetic inherited-only subclass is no longer
+  silently left in the default parallel selection.
+- Focus-free shared helpers do not change the defaults/pasteboard/timing rules.
+  In both configurations every previous serial class stays serial, and every
+  newly serial class has a focus reason. Serial inclusions equal parallel skips.
+
+No failing check remains. Whole-gate elapsed time remains unmeasured as above.
+
+
+## Focus lane cost review
+
+Base `0cb23387`, on `dev/a130-gitfiles`; no merge or fast-forward here. This
+supersedes the preceding audit's broad focus rule and partial timing estimate.
+The lead supplied the complete parallel log for a comparable measurement.
+
+### Confirmed over-classification and revised rule
+
+The earlier detector treated offscreen first-responder operations and local
+window/view event delivery as cross-process contention. Its shared-helper
+traversal also imported unrelated declarations from a fixture's file, entire
+test classes when only a static data builder was used, and unused base-class
+window builders. These are confirmed by failing-first generated Swift fixtures.
+
+The new rule serializes window visibility/key/main operations (`orderFront*`
+included), app activation/hiding and focus state, application/global input,
+modal runs, and window-opening Inspector/tab entry points. Offscreen responder
+assignment/inspection, direct view/window handlers and key equivalents stay
+parallel. A sheet attached to an offscreen parent alone does not contend; a
+fixture that also shows its parent is serial through that visibility operation.
+
+Focus traversal starts at test/lifecycle methods and fixture properties and
+follows referenced declarations, including private helpers, extensions, nested
+types, qualified static members and inherited members. A data builder does not
+pull in the same type's unrelated UI tests. Comments and string contents are
+masked, preserving executable Swift interpolation expressions. Constructed
+fixture types are inspected as whole types; runtime-only paths still need
+`SerialTestLane`. This is a source heuristic, not a general Swift interpreter.
+
+The existing `TabHost.showsWindows = false` seam is recognized for local hosts
+and factories returning a proven offscreen host. Unknown hosts, conditional
+assignments, computed settings, reassignment and re-enabling do not exempt a
+pop-out. This keeps `FileTabTests` and `TabHostTests` offscreen without weakening
+real pop-out coverage. The existing defaults/pasteboard/timing rules retain
+their original source scope. No production Swift or native fixture changed.
+
+### Failing-first and mutation evidence
+
+`lanes-narrow-before.log`, before changing the implementation:
+
+```text
+test_offscreen_responders_and_local_delivery_remain_parallel ... FAIL
+test_visible_nonkey_windows_require_serial (api='orderFront') ... FAIL
+test_visible_nonkey_windows_require_serial (api='orderFrontStandardWindow') ... FAIL
+test_unrelated_shared_helpers_do_not_open_windows ... FAIL
+test_shared_type_members_do_not_pull_in_other_members_or_tests ... FAIL
+test_comments_and_string_contents_are_not_focus_calls_or_dependencies ... FAIL
+Ran 5 tests in 0.005s
+FAILED (failures=6)
+```
+
+Additional failing-first cases:
+
+- Explicit offscreen pop-out hosts/factories: 1 failure,
+  `lanes-narrow-popouts-before.log`.
+- Unused base fixture versus called fixture/lifecycle hook: 1 failure,
+  `lanes-narrow-base-before.log`.
+- Qualified inherited data builder versus visible fixture: 1 failure,
+  `lanes-narrow-qualified-before.log`.
+- Self-review found that a computed `showsWindows` reset could retain a prior
+  false exemption, and `false || flag` could be mistaken for literal false:
+  2 failures in `lanes-narrow-settings-before.log`, then fixed. The exemption
+  now requires a literal statement and invalidates unknown resets.
+
+All 12 final mutations are caught by assertion failures, restoring the source
+in `finally` (`lanes-narrow-validation.log`; individual
+`lanes-narrow-mutation-*.log` files):
+
+| Mutation | Regression |
+| --- | --- |
+| Serialize offscreen `makeFirstResponder` again | Offscreen responder fixture |
+| Omit ordinary `orderFront*` | Visible non-key windows |
+| Keep comment/string contents | Nonexecuting examples |
+| Drop interpolation code | Executing string interpolation |
+| Import unrelated shared declarations | Data-only shared helper |
+| Import an entire unused base | Called versus unused base fixture |
+| Drop qualified inherited-member resolution | Inherited data builder |
+| Exempt every pop-out | Default/re-enabled/conditional/computed hosts |
+| Remove the offscreen pop-out exemption | Explicit offscreen hosts/factories |
+| Keep stale state after conditional re-enabling | Conditional reset |
+| Export unrelated private helpers | Private-name collision |
+| Omit extension members | Shared XCTestCase fixture builder |
+
+### Comparable measurement and complete class lists
+
+Source: `/Users/admin/Library/Caches/BelloSwiftWork/build-lead/verify-logs/suite-parallel.log`.
+This log was read only. The measurement sums each matching non-skipped test's
+reported duration, without medians or extrapolation. It reproduces the lead's
+original 1,627 tests / 1,926.895 s (32.115 min). The baseline is `fe734912`'s
+classification, before the broad audit. All 461 class names remain covered.
+
+| Debug measurement | Broad audit | Revised |
+| --- | ---: | ---: |
+| Newly serial classes | 188 | 133 |
+| Non-skipped tests moved | 1,627 | 1,163 |
+| Sum added to serial lane | 1926.895 s / 32.115 min | 1214.656 s / 20.244 min |
+| Total serial / parallel classes | 320 / 141 | 265 / 196 |
+
+The reduction is **11.871 minutes** of serial test time. **65** broad-audit classes return to parallel; **10** newly detected
+ordinary `orderFront` users join serial. No pre-audit serial class is demoted.
+Release selects 267 serial / 194 parallel classes (120 newly serial);
+its comparable moved-test subtotal is 1,057 tests / 1103.221 s.
+The release gate itself runs the native lanes in Debug, so the Debug figures
+above are the requested gate comparison. Full per-class reasons and both
+configurations are in `lanes-narrow-audit.tsv`; measurements and selections
+are in `lanes-narrow-measurements.json` and `lanes-narrow-*.args`.
+
+Newly serial relative to the original gate (complete list):
+
+```text
+AppControlAccessibilityTests
+AppShellPerformanceTests
+ArchiveSwitchTests
+BackgroundRequestsTests
+BlockingAlertTests
+CancelDefaultQuestionTests
+CaptureMacIntegrationTests
+CapturedBodyTests
+ChangesTabTests
+ChatFileLinkTests
+CompactTurnReportTests
+ConnectionSwitchJournalTests
+ContextReadingTests
+ConversationPaneRetentionTests
+CostLimitTests
+FileBlameTests
+FileReviewStateTests
+FiveSessionWorkspacePerformanceTests
+ForkFromReplyTests
+FreshPresentationTests
+GitBranchesGalleryTests
+GitBranchesInteractionTests
+GitConfirmationSheetTests
+GitDiscardQuestionTests
+GitHunkGalleryTests
+GitHunkReviewTests
+GitIntegratedHistoryGalleryTests
+GitIntegratedHistoryTests
+GitOperationSafetyTests
+GitPanelDiffCaptureTests
+GitPanelLayoutTests
+GitPanelRedrawTests
+GitPanelShownTests
+GitPanelWidthTests
+GitSafetyGalleryTests
+HistoricalEditingTests
+HistoryEdgeTests
+HistoryExtentTests
+InlineSkillPillTests
+InlineSkillTests
+InspectorEntryPointTests
+InspectorExpandInPlaceTests
+InspectorFollowTests
+InspectorSummaryRequestTests
+InspectorWindowControlTests
+LaunchSelectionTests
+LazyListAppKitControlTests
+LiveMonitorTests
+LivePopupTests
+LiveWorkingIndicatorTests
+MarkdownSourceReconciliationTests
+MarkdownTextSurfaceTests
+MenuBarPresentationTests
+MessageDetailTests
+MessageVersionTranscriptTests
+MiniModelSettingsTests
+ModelCatalogEndpointTests
+NativeCodeTextTests
+NativeMarkdownSurfaceStreamingTests
+NativeMarkdownViewportTests
+NativeTranscriptDocumentTests
+NativeTranscriptScrollTests
+NativeTranscriptScrollingPerformanceTests
+NativeWorkListViewportTests
+PendingChatProjectGalleryTests
+PendingChatProjectTests
+PerformanceBaselineTests
+PiControlAccessibilityTests
+PiKitControlTests
+PiMenuTests
+PiQuestionSheetTests
+PiSheetCancelTests
+PiSheetWindowTests
+QueuePanelGalleryTests
+QuickOpenPlacementTests
+ReplySourceTests
+ReportPageTests
+ResponseChronologyTests
+SendImmediacyTests
+SendLatencyTests
+SessionStatsPopoverTests
+SessionTimingTests
+SessionUsageTests
+SettingsUnsavedTests
+ShellSheetTests
+SideRelaunchTests
+SidebarAppearanceTests
+SidebarListedOrderTests
+SidebarScalePerformanceTests
+SidebarSideClickTests
+SmoothHoverAndMotionTests
+SmoothPaneAndKeyboardTests
+SmoothReadingPositionTests
+StableToolPresentationTests
+StreamingMarkdownStabilityTests
+TabPaneTests
+TerminalCaptureTests
+TerminalPanelAuditTests
+TerminalSessionsTests
+TimelineStreamingFastPathTests
+TranscriptBugGalleryTests
+TranscriptDisclosureTests
+TranscriptFindTests
+TranscriptFollowOwnershipTests
+TranscriptFrameBudgetTests
+TranscriptGeometryCacheTests
+TranscriptHeightSamplingTests
+TranscriptKeptRowsTests
+TranscriptNativeMessageKindBehaviourTests
+TranscriptNativeWorkBehaviourTests
+TranscriptPageStressTests
+TranscriptQuoteSelectionTests
+TranscriptRealAppStreamingTests
+TranscriptRevealTests
+TranscriptScrollBudgetTests
+TranscriptStreamingStressTests
+TranscriptSwitchBudgetTests
+TranscriptSwitchFirstFrameTests
+TranscriptTurnFoldTests
+TranscriptUpdateIsolationTests
+TranscriptVisibilityTests
+TranscriptWidthChangeTests
+TranscriptWorkRowTests
+TurnAccountingTests
+TurnInfoTests
+UpdatePauseTests
+WebhookTests
+WireContractTests
+WorkspaceFollowupTests
+WorkspaceManagerSheetTests
+WorkspaceMotionTests
+WorkspaceRedrawTests
+WorkspaceRefreshLifecycleTests
+```
+
+Returned to parallel relative to the broad audit (complete list):
+
+```text
+AccountingScaleTests
+BudgetOwnerUnloadTests
+ComposerImportSubmissionTests
+ComposerSubmissionTests
+ContentSearchTests
+ConversationFamilyTests
+CostPausePresentationTests
+FamilyDeletionTests
+FileReviewGalleryTests
+FileTabTests
+GitChangelistReadTests
+GitHistoryFilterTests
+GitPanelAuditTests
+GitPathBoundaryTests
+GitRenameTests
+HardeningTests
+InspectorRequestModelTests
+MarkdownStreamingCorrectnessTests
+MarkdownStreamingTests
+NativeTranscriptSafetyTests
+NestedFenceIdentityTests
+PastedAttachmentTests
+PayloadArchiveTests
+PayloadSearchTests
+ReleaseConfigurationTests
+ReplyFileLinkTests
+ReportMessageNavigationTests
+ReportNavigationTests
+ResponseTimelinePresentationTests
+SideBudgetIntegrationTests
+SideKeepOrderingTests
+SideKeepRecoveryTests
+SidebarMetricsLayoutTests
+SidebarSearchIndexTests
+SidebarSearchScopeTests
+SidebarSearchSidebarTests
+SubagentCostTests
+SubagentDeletionTests
+SubagentDiscoveryTests
+SubagentDisplayTests
+SubagentEffortTests
+SubagentInspectorTests
+SubagentOrganizationTests
+SubagentPanelTests
+SubagentSteeringInspectorTests
+SubagentSteeringPresentationTests
+SubagentSteeringWorkspaceTests
+SubagentTranscriptTests
+TabHostTests
+TerminalCursorAlignmentTests
+ToolOutputProducerTests
+TranscriptActionsForwardingTests
+TranscriptMarkdownTests
+TranscriptNativeEverywhereTests
+TranscriptNativePaneBehaviourTests
+TranscriptNativeRowBehaviourTests
+TranscriptNativeRowParityTests
+TranscriptNativeTurnParityTests
+TranscriptNativeWorkParityTests
+TranscriptRowGalleryTests
+TranscriptStreamingScrollTests
+TranscriptTextCalibrationTests
+TranscriptViewEqualityTests
+WorkspaceDurabilityTests
+WorkspaceTests
+```
+
+The ten additions beyond the broad audit are: `GitBranchesGalleryTests`, `GitBranchesInteractionTests`, `LiveMonitorTests`, `LivePopupTests`, `MenuBarPresentationTests`, `PiControlAccessibilityTests`, `QuickOpenPlacementTests`, `SettingsUnsavedTests`, `TerminalSessionsTests`, `WorkspaceFollowupTests`.
+
+### Validation and adversarial review
+
+All evidence is under this workstream's
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/`.
+Python commands use the existing generated-home `run-home-review.py` wrapper:
+
+```sh
+python3 -m unittest scripts.tests.test_test_lanes -v
+python3 -m unittest discover -s scripts/tests
+python3 -m py_compile scripts/test-lanes.py scripts/tests/test_test_lanes.py
+git diff --check
+```
+
+The two requested native runs use `lanes-narrow-native.py`, generated
+HOME/CFFIXED_USER_HOME/CODEX_HOME, and the existing own `native-tests` build
+folder. It takes the shared full-lane lock, rebuilds the bundle helper and
+Debug test host, runs only the newly serial selection once with parallelism
+OFF, then runs the remaining parallel selection once with eight workers.
+There is no full-gate invocation or retry. Commands, exit codes and elapsed
+times are in `lanes-narrow-native-results.json`; text logs are the evidence.
+Two lock-waiting processes were canceled before any build/test started, first
+to shorten polling and then to wake on directory deletion. Their
+`KeyboardInterrupt` logs (`lanes-narrow-queued*.log`) are queue cancellations,
+not test failures; the other workstream retained its lock throughout. The
+notification adapter also needed an explicit `kqueue.close()` because the
+installed Python does not provide its context-manager protocol
+(`lanes-narrow-queued-notify.log`); that correction preceded all builds/tests.
+No installed app or paid/live provider path is launched. New result bundles
+and own parallel clone folders are removed after the runs; the owned lock is
+released in `finally`.
+
+| Check | Result | Text evidence |
+| --- | --- | --- |
+| Final lane unit cases (included in script discovery) | 21 pass, 0 fail | `lanes-narrow-python.log` |
+| Full script suite, final source | 139 pass, 0 fail, 0 skips (117.547 s) | `lanes-narrow-python.log` |
+| Mutations | 12/12 caught | `lanes-narrow-validation.log` |
+| Project / Release helper / Debug test build | All exit 0; generated project unchanged | `lanes-narrow-project.log`, `lanes-narrow-bundle.log`, `lanes-narrow-build.log` |
+| Native serial, 133 classes | 1,169 passed, 23 skipped, 1 failed test (2 assertion failures); exit 65; 1185.957 s wall time | `lanes-narrow-serial.log` |
+| Native parallel, 196 classes | 1,578 passed, 23 skipped, 2 failed tests; exit 65; 341.776 s wall time | `lanes-narrow-parallel.log` |
+
+The serial run executed 1,193 unique tests; the eight-worker run executed 1,603.
+There are no duplicate result rows. The fresh serial selection has seven more
+non-skipped tests than the supplied historical log; the historical duration
+sum is not extrapolated to those tests. `lanes-narrow-native-counts.json`
+contains the counts and failed identifiers. Both lanes ran once. Newly created
+automatic result bundles were removed, and the final scan found no own clone
+folders. The runner released its lock before another workstream acquired it.
+
+Exact native command structure (under the generated-home wrapper and lock):
+
+```sh
+lane_build=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+lane_evidence="$lane_build/evidence"
+PI_BUILD_ROOT="$lane_build" python3 scripts/build-bundle.py
+lane_xcode=(-project PiApp.xcodeproj -scheme PiApp -destination 'platform=macOS,arch=arm64'
+            -derivedDataPath "$lane_build/native-tests" CODE_SIGNING_ALLOWED=NO)
+xcodebuild "${lane_xcode[@]}" build-for-testing COMPILER_INDEX_STORE_ENABLE=NO
+xcodebuild "${lane_xcode[@]}" test-without-building -parallel-testing-enabled NO \
+  $(cat "$lane_evidence/lanes-narrow-serial.args")
+xcodebuild "${lane_xcode[@]}" test-without-building -parallel-testing-enabled YES \
+  -parallel-testing-worker-count 8 $(cat "$lane_evidence/lanes-narrow-parallel.args")
+```
+
+
+The requested zero-failure native result was **not achieved**. The unchanged
+`PiSheetWindowTests.testEveryWorkspaceSheetIsAWindowOfTheAppsOwn` failed its
+final release wait at `apps/macos/PiAppTests/PiSheetWindowTests.swift:384` and
+`:388`:
+
+```text
+failed - Never every closed sheet's views to be let go of
+failed - Closed sheets' views still alive:
+["NSTextInsertionIndicator window=none superview=none": 1]
+... failed (41.014 seconds).
+```
+
+`lanes-narrow-sheet-failure.log` preserves the complete case excerpt. The test
+already exempts `_NSText*` survivors but does not exempt this class; the retained
+owner of the detached indicator has not been established. The same test's final
+view-release wait failed in the earlier
+[0.1.127 validation](git-safety-final-integration-0.1.127.md), which also left its
+cause unresolved. No sheet implementation/assertion or timeout was changed,
+and the failed test was not retried. It remains a separate existing test issue,
+not a passing gate or a reason to put visible sheets back in parallel.
+
+The parallel run also failed two unchanged tests:
+
+| Test | Source / scenario | Evidence and limit |
+| --- | --- | --- |
+| `SubagentPanelTests.testTopicCountsOnlyMainChatsAndMatchingTopicDoesNotHideChildSearchHits` | `apps/macos/PiAppTests/SubagentPanelTests.swift:23`; generated model, topic counts and filtered child rows | Failed after 0.043 s. This uses a data builder and creates no key/visible window. It was parallel before the broad audit, over-classified by importing all of `ConversationPaneTests`, and is parallel again. |
+| `FilePreviewRefreshTests.testSiblingNotificationsLetTheActivePreviewPublish` | `apps/macos/PiAppTests/FilePreviewRefreshTests.swift:7`; generated BMP, held preview reads and repeated notifications | Failed after 10.254 s. This class stayed parallel before, during and after the audit; it does not contend for window focus. |
+
+The console preserves both failed identifiers and durations, but not their
+assertion messages. The runner's temporary-result cleanup completed before an
+attempted text export of those details. The export supervisor detected that
+another workstream already owned the lock and aborted before signaling any
+process (`lanes-narrow-failure-details.log`); no other owner's lock/process was
+touched. The exact causes of these two failures therefore remain unresolved,
+and neither was rerun or reclassified to conceal the failure. All three failed
+test files and their production paths are unchanged by this work.
+
+Adversarial self-review of every changed condition:
+
+- Visibility, activation, global input and focus-state checks still select
+  serial; dropping offscreen responder/local-handler alternatives only affects
+  process-local work. Both sides have generated fixtures and mutations.
+- Removing comments/literal contents avoids accidental API/dependency matches;
+  keeping interpolation code prevents actual operations from being hidden.
+- Test/lifecycle/property roots keep setup and inherited tests reachable.
+  Resolving called base and qualified inherited members avoids both unused
+  builder imports and omitted real window builders. Cycles terminate.
+- File-private declarations stay private, local names do not resolve to
+  unrelated globals, and extension helpers are followed only when referenced.
+- The offscreen pop-out exemption requires positive fixture evidence; conditional
+  or unknown resets invalidate it. Real pop-outs still classify serial.
+- Existing defaults/pasteboard/timing scope is independent of narrowed focus
+  traversal. No original serial class is demoted in either configuration.
+- The CLI's serial inclusions equal its parallel exclusions. Both configurations
+  pass the independent focus-API guard and the known fixture-user checks.
+
+## Round 13 review — declarations and intermittent native tests
+
+Scope: review of `ce511cde`; no merge or fast-forward. All changes are in the
+lane detector, test fixtures and documentation. Production app/helper behavior,
+permission checks and preview deadlines are unchanged. Evidence below is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence` (`E`);
+`B` is that workstream's build root, without `/evidence`.
+
+### Complete Swift declarations — confirmed and fixed
+
+`blocks()` previously stopped at the first signature line unless that line
+already opened a body. This dropped `TranscriptStreamingScrollTests.stream`
+and `TranscriptRowGalleryTests.capture` from their callers' focus graph.
+The replacement reads balanced attribute/argument groups and the complete
+signature/body before creating nodes, including multiline generic and `where`
+clauses, default closures, bodyless protocol requirements, and property bodies
+or initializer continuations. Graph nodes receive the parsed body separately;
+a parameter's default closure cannot be mistaken for the declaration's body.
+
+Failing first (`lanes-r13-parser-before.log`): four test methods, eight failed
+subcases, including multiline signatures, attributes, generics/where, nested
+default arguments and the two real transcript classes:
+
+```text
+AssertionError: 'focus' not found in []
+... (name='TranscriptStreamingScrollTests')
+... (name='TranscriptRowGalleryTests')
+Ran 4 tests in 8.859s
+FAILED (failures=8)
+```
+
+Permanent coverage is in `scripts/tests/test_test_lanes.py`:
+
+- `test_complete_helper_signatures_keep_their_bodies`
+- `test_signature_closures_are_not_the_declaration_body`
+- `test_declaration_boundaries_include_attributes_generics_and_defaults`
+- `test_multiline_inheritance_and_attributes_keep_test_declarations`
+- `test_string_properties_and_protocol_requirements_do_not_eat_neighbors`
+- `test_multiline_property_bodies_and_initializers_keep_focus_calls`
+- The existing real-class audit now explicitly requires both reported classes
+  to have a `focus` reason in Debug.
+
+Nearby sweep: string initializers must not consume a following declaration;
+multiline computed properties and trailing initializer closures must retain
+executable bodies too. Each got a failing fixture before correction
+(`r13-parser-neighbor-before.log`, `r13-parser-property-before.log`). Offscreen
+neighboring helpers remain parallel. Six mutations all fail their targeted
+fixtures: truncate multiline signatures; stop balancing attribute arguments;
+misread parameter default braces as the body; omit generic delimiter handling;
+consume a neighboring declaration; drop multiline property continuations.
+`r13-parser-check.py`, `r13-parser-mutations.log` and the six
+`r13-parser-mutation-*.log` files preserve the mutations and results.
+
+The repository inventory retains all 461 native test classes. Relative to
+`ce511cde`, the signature fix adds precisely `TranscriptStreamingScrollTests`
+and `TranscriptRowGalleryTests` to Debug's serial lane; only the latter is newly
+serial in Release, where streaming already had a budget reason. No formerly
+serial class becomes parallel. The focus rule itself has not broadened.
+
+### Preview timeout — test isolation, confirmed and fixed
+
+The failure was order-dependent, rather than a slow image decode. In the prior
+parallel log, worker **66725** ran `SessionReferenceTests` immediately before
+`FilePreviewRefreshTests`. That fixture constructs a `WorkspaceModel`, whose
+initializer installs `FileTab.resolveProject = { [weak self] ... ?? .removed }`.
+After the model dies, even a standalone (`projectID == nil`) tab constructed
+through that inherited resolver is unreadable. Its direct `preview.load()` can
+complete, but `FileTab.followChange()` correctly refuses notifications for the
+unreadable tab. The test then waits forever for the queued metadata recheck.
+
+A clean-process stress run did **128/128** executions successfully, with eight
+workers and eight CPU burners. Adding continuous generated sibling-directory
+creation/removal (1 ms cadence) and 64 iterations gave **1,024/1,024** passes.
+Neither run needed a longer deadline. Logs: `r13-preview-load-before.log` and
+`r13-preview-churn-before.log`.
+
+The new regression creates a real generated `WorkspaceModel` with an in-memory
+vault, shuts it down, closes its stores, drops the last reference, confirms its
+weak reference is nil and the inherited resolver is unavailable, then invokes
+the original preview scenario. Before fixing the fixture this fails at:
+
+```text
+FilePreviewRefreshTests.swift:25: ... failed - queued metadata recheck entered
+```
+
+The first isolated reproduction failed one test (`r13-preview-owner-before.log`).
+Its initial diagnostic fixture omitted creating its unused state directory;
+cleanup also produced a misleading Cocoa error while propagating the expected
+timeout. The directory is now explicitly generated. With that correction and
+**no resolver fix**, eight workers under the same CPU/directory load failed
+**8/8**, all with `queued metadata recheck entered`
+(`r13-preview-expired-load-before-summary.json`). This reproduces the original
+failure under load while identifying the missing precondition.
+
+The original test now saves, installs and restores its own standalone-file
+resolver, following `FileReviewFixture`'s existing pattern. The permanent
+`testSiblingNotificationsAfterAWorkspaceFixtureIsReleased` proves that setup
+survives an expired predecessor and restores the unavailable resolver afterward.
+It also restores all other global callbacks/policy installed by its temporary
+workspace. No production trust fallback or watcher/preview condition changed.
+
+With the fix, eight temporary subclasses ran all three class methods 64 times:
+**1,536/1,536 passes, zero skips/failures**, with eight workers, eight CPU burners
+and continuing sibling churn (`r13-preview-fixed-load.log`). The temporary
+subclasses were removed and the original class remains `final`.
+
+Nearby sweep: `FileReviewFixture` already saves/restores and installs its own
+resolver. `FileTabTests.setUp` currently resets that resolver in teardown only
+(`FileTabTests.swift:221`); a first test after an expired workspace is a similar
+setup risk, recorded for follow-up rather than widening this assigned fix.
+The earlier unrelated `SubagentPanelTests` failure is outside this request.
+
+### Sheet survivor — AppKit ownership, confirmed and precisely exempted
+
+Three isolated repetitions of the old check passed: their only weak survivors
+were `_NSTextSelectionView`, `_NSTextContentView` and `_NSTextViewportElementView`,
+which the check already exempts (`r13-sheet-probe.log`,
+`r13-sheet-objects-{1,2,3}.log`). Requesting activation of the generated test
+host also exercised the macOS 14 system cursor accessory and reproduced the
+reported survivor. After the sheet roots were cleared and two run-loop seconds
+elapsed, the tracked objects consisted of those same three framework views
+plus a detached `NSTextInsertionIndicator`; no tracked sheet-owned view survived.
+
+Ownership evidence, **only in our generated test host**, while holding the
+full-lane lock:
+
+- `r13-sheet-active-objects-1.log`: test-host PID 59689, indicator `0x130895eb0`.
+- `/usr/bin/leaks --noContent --traceTree=0x130895eb0 59689`:
+  `r13-sheet-active-owner-1.log`. A direct **strong block capture** retains the
+  indicator. That block is registered in a notification center rooted through
+  AppKit `NSRemoteView`, ViewBridge and an XPC connection. The graph also shows
+  the system `TextInputUIMacHelper`/`TUINSCursorUIController` machinery and a
+  framework autorelease-pool reference.
+- A read-only LLDB inspection of the capturing block's invoke pointer
+  (`0x600002f14930 + 16`) resolved it to
+  **AppKit’s `__22-[NSView _commonAwake]_block_invoke`**
+  (`r13-sheet-block-symbol.log`). The debugger detached immediately afterward.
+  Arbitrary interior-pointer/Swift-metadata paths in the conservative heap
+  graph are not used as ownership evidence.
+- App production sources do not instantiate, retain or name this indicator.
+  All tracked app/text views are gone; the remaining cursor's `window` and
+  `superview` are nil.
+
+Apple documents this system cursor and its accessory behavior in
+[Adopting the system text cursor](https://developer.apple.com/documentation/appkit/adopting-the-system-text-cursor-in-custom-text-views).
+The ownership conclusion above comes from the fixture's reference trace and
+resolved AppKit block, rather than assuming every view with a text-related name
+is a framework survivor.
+
+The diagnostic retained the old filter and failed:
+
+```text
+failed - Never every closed sheet's views to be let go of
+failed - Closed sheets' views still alive:
+  ["NSTextInsertionIndicator window=none superview=none": 1]
+```
+
+`r13-sheet-active-before.log` also contains a separate failed *diagnostic*
+`NSApp.isActive` wait: the activation request exercised the accessory without
+that property settling. That extra wait and the ownership-probe delay are not
+part of the final fixture. The activation request remains, in this already
+serial window test; no new focus deadline is asserted.
+
+`isFrameworkTextSurvivor` preserves the existing `_NSText*` exception and adds
+only the exact AppKit `NSTextInsertionIndicator` class **with no window and no
+superview**. It does not exempt its app subclasses, attached indicators,
+`NSTextView`, ordinary views, or all `NSText*` names. All original per-sheet
+window/descendant checks and the requirement that the app's content deallocate
+remain intact. A new unit case exercises each side of this boundary.
+The survivor poll still returns type names from its autorelease pool, avoiding
+retaining views across an asynchronous wait.
+
+### Commands, final checks and adversarial review
+
+Every native invocation used the existing own build root and
+`scripts/test-macos.sh`; it rebuilt the Release bundle helper and generated the
+project before the focused app build. All native runs, diagnostics, activation
+and gallery captures held `full-lane.lock`, released only by their owner, even
+on a failed test. The parent command also received generated `HOME`,
+`CFFIXED_USER_HOME` and `CODEX_HOME` through `E/run-home-review.py`; the scheme's
+test-host guard verified its separate data home and fixture defaults domain.
+No installed app, live provider, real account resource or real app preferences
+were used. No named result bundle or additional DerivedData tree was created.
+Automatic result summaries were exported to text/JSON before bundle cleanup.
+
+Exact focused command pattern (the wrapper acquires/releases the lock):
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+E="$B/evidence"
+python3 "$E/run-home-review.py" r13-streaming-driver \
+  python3 "$E/r13-locked.py" r13-streaming scripts/test-macos.sh \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptStreamingScrollTests
+TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT="$E/r13-transcript-gallery" \
+  python3 "$E/run-home-review.py" r13-gallery-driver \
+  python3 "$E/r13-locked.py" r13-gallery scripts/test-macos.sh \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptRowGalleryTests
+python3 "$E/run-home-review.py" r13-sheet-fixed-driver \
+  python3 "$E/r13-locked.py" r13-sheet-fixed scripts/test-macos.sh \
+  -parallel-testing-enabled NO -test-iterations 3 -only-testing:PiAppTests/PiSheetWindowTests
+python3 "$E/run-home-review.py" r13-python-final \
+  python3 -m unittest discover -s scripts/tests
+```
+
+Stress commands used the same wrapper with `--load`,
+`TEST_RUNNER_PI_APP_SCRATCH_ROOT="$E/r13-preview-scratch"`,
+`-parallel-testing-enabled YES -parallel-testing-worker-count 8`, and
+`-only-testing:PiAppTests/PreviewLoad0Tests` through `PreviewLoad7Tests`.
+The first run used `-test-iterations 8`, the churn and fixed runs used 64.
+The expired-owner red run selected only
+`testSiblingNotificationsAfterAWorkspaceFixtureIsReleased` in each of the eight
+classes, once. Exact argument arrays, exits and elapsed times are in their
+`r13-*-driver.log` files. The synthetic loads and scratch churn are implemented
+in `r13-locked.py`; all child load processes are terminated in its `finally`.
+
+Final validation, with no skips or unexpected failures in the fixed runs:
+
+| Suite / run | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `python3 -m unittest discover -s scripts/tests` | 145 | 0 | 0 |
+| `PiSheetWindowTests`, 12 methods × 3 iterations | 36 | 0 | 0 |
+| `FilePreviewRefreshTests`, permanent class after stress scaffolding removal | 3 | 0 | 0 |
+| `TranscriptStreamingScrollTests` | 3 | 0 | 0 |
+| `TranscriptRowGalleryTests`, capture environment enabled | 2 | 0 | 0 |
+| Sheet exemption unit after all mutations were restored | 1 | 0 | 0 |
+| Preview stress, eight workers × three methods × 64 iterations | 1,536 | 0 | 0 |
+
+The streaming class has three methods; the fourth test method in its source
+file belongs to the separate `TranscriptStreamingCadenceTests`. The gallery
+produced 12 PNGs (six scenes, light/dark), all opened and visually inspected:
+folded/open work, folded/open turns, stopped reply, saved response details.
+Visible text and disclosure layouts were intact. Images are in
+`E/r13-transcript-gallery/screenshots`; no UI implementation changed.
+
+Six parser mutations and four native mutations were all caught (**10/10**).
+The native mutations, run alone under the shared lock, were:
+
+1. Remove the fixture resolver override: the expired-workspace regression
+   again times out at `queued metadata recheck entered`.
+2. Remove the exact indicator exemption: the detached-indicator positive checks
+   fail.
+3. Broaden exact-class membership to `isKind(of:)`: the app-subclass negative
+   check fails.
+4. Remove the detached-state restriction: the attached-indicator negative
+   check fails.
+
+Each mutated invocation exited 65 with the intended assertion, never a compile
+failure. `r13-native-mutations.py`, `r13-native-mutations.log`, and the four
+`r13-mutation-*.log` files preserve exact source substitutions and commands.
+The script restores source in `finally`, then runs the permanent preview class
+and sheet boundary unit separately with:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FilePreviewRefreshTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PiSheetWindowTests/testTextSurvivorExemptionRequiresTheExactDetachedAppKitIndicator
+```
+
+`r13-counts.json` contains the text-log counts; `r13-python-final.log` records
+145 passes in 143.007 seconds. Native commands used this workstream's generated
+home wrapper and build root as above. Final Python compilation and `git diff
+--check` pass. No clone folders remained in the own products tree. The final
+lane inventory (`r13-parser-lanes-final.json`) is Debug **267 serial / 194
+parallel**, Release **268 / 193**, with no missing classes or serial demotions.
+No helper/wire behavior changed, so their full suites were not rerun.
+
+Three initially queued diagnostic commands exited before any build/test because
+the scratch lock wrapper tried to read `owner` during another owner's lock
+publication/removal gap. It now tolerates that race; those queue-only logs are
+retained as `r13-*-driver-queue-race.log`. No other owner's lock was removed or
+process interrupted. All actual runs and their expected failing-first/mutation
+outcomes remain separately recorded.
+
+Adversarial review of changed conditions:
+
+- A newline inside a signature now continues to the actual body; balanced
+  attribute/default groups keep their nested braces in the header. Actual body
+  delimiters and following declarations still stop traversal at the right
+  scope. Positive focus fixtures and offscreen neighbors cover both directions.
+- Generic delimiters/where constraints no longer become inheritance names or
+  cut property types short. Bodyless requirements and string properties cannot
+  consume the next member. Nested/private/extension resolution and the existing
+  offscreen-popout proof remain unchanged.
+- The fixture's explicit resolver affects only its generated standalone file;
+  non-nil project IDs still resolve to removed, and the predecessor's resolver
+  is restored even on failure. The regression restores every workspace-installed
+  global it changes; no production guard now admits a different state.
+- The sheet filter's only newly accepted state is an exact, detached framework
+  indicator. An app subclass, attached cursor, parent text view, or ordinary
+  retained content still fails. Framework references are checked inside the
+  same autorelease-pool boundaries as before; no deadline was extended.
+- The activation request exercises an existing serial UI path. It introduces
+  no `isActive` assertion or dependency on activation completing within a fixed
+  interval. Diagnostics and generated stress subclasses are not shipped.
+
+The test-lane parser remains a source-based named-declaration traversal, not a
+full Swift type checker; dynamic-only dispatch still needs the documented
+`SerialTestLane` marker. No scope expansion into production code was needed.

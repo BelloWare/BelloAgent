@@ -546,8 +546,11 @@ final class GitRepositoryStateTests: XCTestCase {
             let opened = try XCTUnwrap(files.first { $0.path == entry.path }, entry.path, file: file, line: line)
             XCTAssertEqual(stats[entry.path], try Self.gitCounts(entry, in: root), entry.path + " must count Git's diff", file: file, line: line)
             XCTAssertEqual(stats[entry.path], expected[entry.path], entry.path, file: file, line: line)
-            XCTAssertEqual(GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary),
-                expected[entry.path], entry.path + " must count the opened preview", file: file, line: line)
+            XCTAssertEqual(opened.binary, expected[entry.path]?.binary, file: file, line: line)
+            if entry.untracked {
+                XCTAssertEqual(GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary),
+                    expected[entry.path], entry.path + " must count the opened preview", file: file, line: line)
+            }
         }
     }
 

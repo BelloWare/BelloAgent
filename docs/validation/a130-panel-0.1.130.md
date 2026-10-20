@@ -1937,7 +1937,7 @@ the successful probe; no image was created by that rejected invocation.
 
 The APFS fixture tests leaf aliases (`A.txt`/`a.txt`), directory aliases
 (`Dir/x.txt`/`dir/x.txt`), distinct children under aliased parents with different
-`.gitattributes`, both file/directory collision orders, and ordinary siblings
+`.gitattributes`, file/directory aliases, and ordinary siblings
 sharing one directory. Every available row is compared with Git's own numstat
 and the opened preview, with distinct expected counts. A separate real-volume
 test covers `.GITATTRIBUTES` aliasing a tracked `.gitattributes` while an
@@ -1985,3 +1985,191 @@ file-versus-directory aliases, independent attribute scopes, canonical Unicode
 keys, unrelated sibling counts, and cleanup on test failure. The collision
 checks never consume the path before retrying it in a fresh batch; invalid
 source reads retain the existing bounded-reader behavior.
+
+
+### Integration and merged validation
+
+Committed the correction as `976c970410c2cad4ee697d77dacb411643f96354`, then ran
+`git fetch origin` and
+`git -c commit.gpgsign=false merge --no-ff --no-commit origin/dev/next`.
+The merged upstream is `688f8751a936cf8982c26b2e5a4dcb4b046578aa`, including
+the paste fixes, focus-aware lane classification, and scoped preview-test
+resolver. Only `NEXT-RELEASE.md` conflicted; all completed entries from both
+sides were retained. Ran `xcodegen generate --quiet`. The production correction
+is unchanged by the merge; no helper source or behavior was authored here.
+`merge-audit.json` records source and release-entry checks.
+
+The first merged package invocation ran **342 tests: 338 passed, 3 skipped,
+1 failed** (`package-merged.log`, 547.408 seconds). This exposed a test-only
+assertion added during this round: the shared parity helper compared parsed
+patch line counts for a dirty-only gitlink, whose Git numstat is deliberately
+0/0 even though its short patch has a `-dirty` suffix. The existing test
+explicitly documents that Git behavior. Self-review identified the mistake
+while the already-built suite was running; the failure confirms it. The new
+full preview-count assertion is now limited to untracked entries, retaining
+the existing Git-count and binary assertions for every row. Production code
+was not changed in response. The full `GitRepositoryStateTests` class was
+rerun on that correction; its result is recorded below. Initial failures and
+logs are retained, not folded into an entirely failure-free first run.
+
+The package command and focused correction rerun are:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter 'GitViewTests|FileViewTests|FileFinderTests'
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter GitRepositoryStateTests
+```
+
+The merged `scripts/test-lanes.py list` output is retained in
+`native-lanes.txt`. The focused native plan covers **30 classes** in **19
+invocations**: each of the **18 serial classes runs alone**, and the **12
+parallel classes** run together. This includes `FilePreviewRefreshTests` with
+other file/search/Git fixtures so upstream's expired-resolver regression is
+also checked in a mixed host. The lock wrapper uses only this build root and
+releases only its own shared lane on success or failure.
+
+
+The corrected repository-state class passed **40/40** in **136.138 seconds**
+(`repository-state-merged-restored.log`), including all three new regressions,
+the original dirty-submodule expectation, and the earlier grouping/count tests.
+Final package coverage uses that class rerun plus the unchanged classes from
+the full merged run, without counting duplicate executions:
+
+| Suite | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| GitViewTests | 201 | 0 | 0 |
+| FileViewTests | 100 | 0 | 0 |
+| FileFinderTests | 38 | 0 | 3 |
+
+The three skips are the existing opt-in `FINDER_PERF=1` scale benchmarks.
+`package-final-classes.json` maps each count to its actual log;
+`package-final-modules.json` aggregates the suites. The test-only correction
+leaves all four mutation controls applicable: their untracked-row assertions
+and the production protection under test are unchanged.
+
+
+The initial native wrapper was still waiting for another workstream's lock
+when it was interrupted; no test had started (`focused-run-split.json`).
+Applied the shared rules' focused-run exception to the 12 classes classified
+parallel by the merged lane detector. Their single invocation ran without
+the lock and passed **62 tests**, with **1 optional skip** and **0 failures**
+(`native-parallel-merged.log`). The 18 serial classes remain separate
+invocations under the shared lane. No other workstream's lock was removed.
+
+`FilePreviewRefreshTests` passed **3/3** in the mixed group, including
+`testSiblingNotificationsAfterAWorkspaceFixtureIsReleased`. This validates
+the upstream scoped-resolver fix for the round-7 preview timeout. The new
+explicit expired-workspace fixture and the original notification-burst test
+both passed in 0.331 seconds; the overwrite test passed in 0.086 seconds.
+The native skip is the existing real-repository commit-browsing benchmark
+(`PI_APP_GIT_BENCH_REPO` unset).
+
+
+### Native watcher exception retained
+
+The first serial `GitWorkingTreeWatcherTests` invocation passed **16 tests**
+and failed **1** (`GitWorkingTreeWatcherTests-merged-first-failure.log`,
+52.080 seconds). At
+`apps/macos/PiAppTests/GitWorkingTreeWatcherTests.swift:277`,
+`testWritesIntoAnIgnoredFolderCauseNoRefresh` observed **2** automatic
+refreshes after creating a new ignored directory, against a limit of **1**.
+Its already-known ignored-path and subsequent steady-state assertions passed.
+The class ran alone under the owned shared lane. The wrapper released the lane
+on failure and the failed log was copied before any rerun.
+
+The test, watcher and controller are byte-identical to round-7 commit
+`d475cae9` (`native-initial-failure.json`). This test creates the regular
+Changes controller (`summaryOnly` defaults to false); the untracked count
+reader changed in this round is invoked only in the summary-only branch.
+No source or test assertion was changed in response. The class was rerun
+unchanged before the remaining floating-panel class. The cause of the extra
+refresh is undetermined; the observation is retained rather than ignored or
+attributed to the collision correction.
+
+
+The unchanged watcher rerun passed **17/17** in **50.034 seconds**
+(`GitWorkingTreeWatcherTests-merged.log`). `SessionPanelTests` then passed
+**29/29** in **31.045 seconds**. Both ran alone under the shared lane, which
+was released afterward. No source or assertion was changed to obtain the
+watcher pass. Its initial extra refresh remains an undetermined intermittent
+observation for the lead's merged gate, not a failure hidden by these totals.
+
+### Final merged native counts and commands
+
+Final native coverage passed **255 tests** across **30 classes**, with
+**0 failures and 1 optional skip**. These counts use the successful watcher
+class rerun and exclude its duplicate initial executions. The initial failure
+and the unrelated package test-only correction are preserved above. Per-class
+results and exact commands follow; every log is under this round's evidence
+folder.
+
+| Class | Passed | Failed | Skipped | Text log |
+| --- | ---: | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | 0 | `ChangesTabFrameTests-merged.log` |
+| ChangesTabTests | 8 | 0 | 0 | `ChangesTabTests-merged.log` |
+| ContentSearchTests | 7 | 0 | 0 | `native-parallel-merged.log` |
+| ConversationSearchPagingTests | 1 | 0 | 0 | `native-parallel-merged.log` |
+| FileHiddenReadTests | 5 | 0 | 0 | `native-parallel-merged.log` |
+| FilePageReadTests | 3 | 0 | 0 | `native-parallel-merged.log` |
+| FilePreviewRefreshTests | 3 | 0 | 0 | `native-parallel-merged.log` |
+| GitBranchesInteractionTests | 20 | 0 | 0 | `GitBranchesInteractionTests-merged.log` |
+| GitChangelistReadTests | 2 | 0 | 0 | `native-parallel-merged.log` |
+| GitCommitBrowsingTests | 3 | 0 | 1 | `native-parallel-merged.log` |
+| GitConfirmationSheetTests | 7 | 0 | 0 | `GitConfirmationSheetTests-merged.log` |
+| GitDiffTableTests | 19 | 0 | 0 | `GitDiffTableTests-merged.log` |
+| GitDiscardQuestionTests | 2 | 0 | 0 | `GitDiscardQuestionTests-merged.log` |
+| GitHistoryFilterTests | 14 | 0 | 0 | `native-parallel-merged.log` |
+| GitHunkReviewTests | 9 | 0 | 0 | `GitHunkReviewTests-merged.log` |
+| GitIntegratedHistoryTests | 10 | 0 | 0 | `GitIntegratedHistoryTests-merged.log` |
+| GitOperationSafetyTests | 12 | 0 | 0 | `GitOperationSafetyTests-merged.log` |
+| GitPanelAuditTests | 8 | 0 | 0 | `native-parallel-merged.log` |
+| GitPanelLayoutTests | 4 | 0 | 0 | `GitPanelLayoutTests-merged.log` |
+| GitPanelNarrowParityTests | 8 | 0 | 0 | `GitPanelNarrowParityTests-merged.log` |
+| GitPanelRedrawTests | 4 | 0 | 0 | `GitPanelRedrawTests-merged.log` |
+| GitPanelShownTests | 13 | 0 | 0 | `GitPanelShownTests-merged.log` |
+| GitPanelTimingTests | 4 | 0 | 0 | `GitPanelTimingTests-merged.log` |
+| GitPanelWidthTests | 3 | 0 | 0 | `GitPanelWidthTests-merged.log` |
+| GitPathBoundaryTests | 5 | 0 | 0 | `native-parallel-merged.log` |
+| GitRenameTests | 6 | 0 | 0 | `native-parallel-merged.log` |
+| GitRepositorySwitchTests | 17 | 0 | 0 | `GitRepositorySwitchTests-merged.log` |
+| GitToolTests | 5 | 0 | 0 | `native-parallel-merged.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 | `GitWorkingTreeWatcherTests-merged.log` |
+| SessionPanelTests | 29 | 0 | 0 | `SessionPanelTests-merged.log` |
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/ConversationSearchPagingTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/FilePageReadTests -only-testing:PiAppTests/FilePreviewRefreshTests -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitPanelAuditTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitRenameTests -only-testing:PiAppTests/GitToolTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabFrameTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitConfirmationSheetTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiffTableTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiscardQuestionTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitHunkReviewTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitIntegratedHistoryTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitOperationSafetyTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelLayoutTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelRedrawTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelShownTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelWidthTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+```
+
+Final adversarial review checked fresh-batch progress, byte-exact parent reuse,
+leaf/directory and attribute aliases, Unicode-key ambiguity, unrelated counts,
+source/read boundaries, and all release-note entries from both merge parents.
+The production fix is byte-identical to `976c9704`; the only test-code follow-up
+scopes preview counts to untracked rows as recorded above. No additional issue
+was found in the changed production paths. The observed watcher timing failure
+is outside this round's count-reader path and remains recorded for follow-up.
+
+`git diff --check` and `git diff --cached --check` pass, with no unresolved
+merge conflicts. No native clone directory or fixture disk image remains.
+The final automatic Xcode result bundle was removed after preserving text logs
+(`cleanup-final.json`); no named result bundle was requested. The owned shared
+lane is released. `tested-source-hashes.json` identifies the tested production,
+test and generated-project bytes. Only this record was completed after the
+final checks. The integration is a two-parent merge commit, with no rebase or
+history rewriting, pushed only to `dev/a130-panel`.
