@@ -256,7 +256,11 @@ public struct GitConfiguration {
                 try invocation.check()
                 let markers = ["HEAD", "config", "commondir"].map { child.appendingPathComponent($0).path }
                 if markers.contains(where: { GitFileStamp($0).exists }) {
-                    if children.contains(where: { resolved($0.gitDirectory) == resolved(child.path) }) { continue }
+                    // Foundation encodes environment values like argv too.
+                    do { try Self.requireUnchangedBytes([child.path]) }
+                    catch { throw ConfinementRequired() }
+                    // A symlink spelling can activate other gitdir includes.
+                    if children.contains(where: { $0.gitDirectory.utf8.elementsEqual(child.path.utf8) }) { continue }
                     // Relative root config paths depend on a missing
                     // checkout's cwd, which this metadata query cannot prove.
                     guard ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"].allSatisfy({
@@ -395,10 +399,14 @@ public struct GitConfiguration {
                 let name = entry.name.lowercased()
                 return name == "http.extraheader" || (name.hasPrefix("http.") && name.hasSuffix(".extraheader"))
             }
-            let names = Set(entries.compactMap { entry -> Data? in
+            let configured = Set(entries.compactMap { entry -> Data? in
                 let name = entry.name.lowercased()
                 return name.hasPrefix("http.") && name.hasSuffix(".followredirects") ? Data(entry.name.utf8) : nil
-            }).union([Data("http.followredirects".utf8)])
+            })
+            // Without headers, preserve each repository's own stricter
+            // settings instead of propagating a weaker -c into children.
+            if !protected, !configured.isEmpty { return ([], false) }
+            let names = configured.union([Data("http.followredirects".utf8)])
             guard !names.contains(where: { $0.contains(61) || $0.contains(10) }) else {
                 throw Failure("Git HTTP configuration contains a URL that cannot be overridden safely.")
             }

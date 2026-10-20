@@ -16,7 +16,7 @@
 - [x] SECURITY-BOUNDARIES-1j: Local Git program keys containing an override separator select confinement; global-only settings remain usable. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1k: Git program inventory preserves byte-distinct Unicode names and confines reads whose overrides macOS would rewrite. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2: Webhook redirects fail at the configured endpoint without forwarding payloads or custom headers. [Validation](docs/validation/a130-security-0.1.130.md).
-- [x] SECURITY-BOUNDARIES-2b: Git repositories with any http.extraHeader key refuse all redirects, including URL-scoped overrides; repositories without header keys use initial redirects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2b: Git repositories with any http.extraHeader key refuse all redirects, including URL-scoped overrides; header-free repositories keep configured redirect settings and Git’s initial default. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2c: Git refuses redirect-policy overrides that would change Unicode bytes before private headers can be sent. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2d: Private-header Git redirect protection covers mixed-case HTTP URL schemes without Bello parsing destinations. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2e: Private-header Git redirect protection also covers explicit transport-helper URLs. [Validation](docs/validation/a130-security-0.1.130.md).
@@ -54,16 +54,25 @@
 - [x] SECURITY-BOUNDARIES-1ai: Gitdir patterns escape glob punctuation even beside combining marks, preventing local programs from escaping their conditional overrides. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1aj: Generated Git subsection/value quoting preserves quotes and backslashes beside combining marks under Git's own parser. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-2l: Git redirect inventory includes deinitialized and nested stored modules, with stamped discovery and refusal when reachable configuration cannot be checked. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2m: Header-free Git commands preserve existing parent/child redirect settings instead of weakening a child’s refusal through inherited initial overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2n: Stored-module metadata refuses Git directory values whose Unicode bytes Foundation would rewrite, preserving conditional-header protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2o: Stored-module aliases retain their own conditional headers; inventories deduplicate only identical Git-directory spellings. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1ak: Git inventory removes exactly one LF byte from path output, preserving trusted repository names ending in CR. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1al: FileFinder preserves trailing whitespace in repository and global ignore-file paths returned by Git. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1am: Stash common-directory and hunk index paths preserve trailing whitespace from Git output. [Validation](docs/validation/a130-security-0.1.130.md).
 
+- [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
 - [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.
 - [x] Legacy response timelines build in linear time, preserving the original segment metadata and order.
 
+- [x] Native lane detection preserves complete multiline declarations, including attributes, generics/where clauses and default closures. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-13-review--declarations-and-intermittent-native-tests).
+- [x] Preview tests use a scoped project resolver, so earlier workspace fixtures cannot disable their change notifications.
+- [x] Sheet lifetime checks precisely exempt the detached AppKit system cursor retained by framework observers, while still rejecting attached cursors, app subclasses and retained content.
+
+- [x] Native lanes follow actual shared-fixture dependencies and serialize visible-window/focus contention while keeping offscreen responder work parallel; Python guards cover both cases. [Validation](docs/validation/a130-gitfiles-0.1.130.md#focus-lane-cost-review).
 - [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
 - [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
 - [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.

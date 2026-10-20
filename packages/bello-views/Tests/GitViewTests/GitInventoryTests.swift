@@ -96,6 +96,86 @@ final class GitInventoryTests: XCTestCase {
         }
     }
 
+    func testStoredModuleDoesNotWeakenHeaderFreeRedirectPolicy() throws {
+        let stored = root.appendingPathComponent(".git/modules/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        try git(["config", "--file", stored.appendingPathComponent("config").path, "http.followRedirects", "false"])
+        for parent in ["false", "true"] {
+            try git(["config", "http.followRedirects", parent])
+            let policy = try GitConfiguration(in: root, environment: environment).redirectOptions()
+            XCTAssertFalse(policy.protected)
+            var childEnvironment = environment!
+            childEnvironment["GIT_DIR"] = stored.path; childEnvironment["GIT_WORK_TREE"] = stored.path
+            let child = try GitConfiguration.query(policy.options + ["config", "--get", "http.followRedirects"],
+                                                    in: stored, environment: childEnvironment)
+            XCTAssertEqual(child.status, 0)
+            XCTAssertEqual(child.data, Data("false\n".utf8))
+            let own = try GitConfiguration.query(policy.options + ["config", "--get", "http.followRedirects"],
+                                                  in: root, environment: environment)
+            XCTAssertEqual(own.data, Data((parent + "\n").utf8))
+        }
+    }
+
+    func testStoredModuleAliasKeepsItsOwnConditionalHeaders() throws {
+        let child = root.appendingPathComponent("child"), modules = root.appendingPathComponent(".git/modules")
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try git(["init", "-q", "--template="], in: child)
+        let commit = String(try git(["rev-parse", "HEAD"]).dropLast())
+        try git(["update-index", "--add", "--cacheinfo", "160000," + commit + ",child"])
+        try FileManager.default.createDirectory(at: modules, withIntermediateDirectories: true)
+        let alias = modules.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: child.appendingPathComponent(".git"))
+        try write("module-policy", "[http]\nextraHeader = X-Fixture: alias\n[core]\nfsmonitor = " + (try monitor()) + "\n")
+        try git(["config", "includeIf.gitdir:*/modules/alias.path", root.appendingPathComponent("module-policy").path], in: child)
+        var storedEnvironment = environment!
+        storedEnvironment["GIT_DIR"] = alias.path; storedEnvironment["GIT_WORK_TREE"] = alias.path
+        let included = try GitConfiguration.query(["config", "--get", "http.extraHeader"], in: alias, environment: storedEnvironment)
+        XCTAssertEqual(included.status, 0)
+        XCTAssertEqual(included.data, Data("X-Fixture: alias\n".utf8))
+        let policy = try GitConfiguration(in: root, environment: environment).redirectOptions()
+        XCTAssertTrue(policy.protected, "A stored spelling can activate different includes from its populated checkout")
+        XCTAssertTrue(policy.options.contains("http.followredirects=false"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testStoredModuleEnvironmentCannotRewriteGitdirConditions() throws {
+        // Python passes the fixture's composed UTF-8 bytes directly to Git;
+        // Foundation would decompose them while creating its argv/envp.
+        let script = #"""
+        import os, subprocess, sys
+        root = os.path.realpath(sys.argv[1])
+        stored = root + '/.git/modules/caf\u00e9'
+        subprocess.run(['/usr/bin/git', 'init', '-q', '--bare', '--template=', stored], check=True)
+        included = root + '/module-policy'
+        with open(included, 'w') as f:
+            f.write('[http]\nextraHeader = X-Fixture: unicode\n[core]\nfsmonitor = ' + root + '/monitor\n')
+        subprocess.run(['/usr/bin/git', 'config', '--file', stored + '/config', 'includeIf.gitdir:' + stored + '.path', included], check=True)
+        result = subprocess.check_output(['/usr/bin/git', '--git-dir=' + stored, 'config', '--get', 'http.extraHeader'])
+        with open(root + '/module-header', 'wb') as f: f.write(result)
+        """#
+        try write("create-module.py", script)
+        _ = try monitor()
+        let generator = Process()
+        generator.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        generator.arguments = [root.appendingPathComponent("create-module.py").path, root.path]
+        generator.environment = environment; generator.standardInput = FileHandle.nullDevice
+        generator.standardOutput = FileHandle.nullDevice; generator.standardError = FileHandle.nullDevice
+        try generator.run(); generator.waitUntilExit(); XCTAssertEqual(generator.terminationStatus, 0)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("module-header")), Data("X-Fixture: unicode\n".utf8))
+        do {
+            let policy = try GitConfiguration(in: root, environment: environment).redirectOptions()
+            XCTAssertTrue(policy.protected, "The metadata context lost a Git-active conditional include")
+        } catch is GitConfiguration.ConfinementRequired { }
+        let process = Process(); process.currentDirectoryURL = root
+        let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+        defer { read.remove() }
+        XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
     func testStoredModuleRelativeConfigRootsFailClosed() throws {
         let stored = root.appendingPathComponent(".git/modules/child")
         try git(["init", "-q", "--bare", "--template=", stored.path])

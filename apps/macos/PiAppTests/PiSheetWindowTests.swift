@@ -309,6 +309,7 @@ final class PiSheetWindowTests: XCTestCase {
     /// own, at the size SwiftUI gave it, and Escape closes each, clears what
     /// asked for it, and lets go of its views.
     @MainActor func testEveryWorkspaceSheetIsAWindowOfTheAppsOwn() async throws {
+        NSApp.activate(ignoringOtherApps: true)
         let root = scratchRoot("workspace-sheets")
         let project = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -378,14 +379,37 @@ final class PiSheetWindowTests: XCTestCase {
         // The window and hosting view each sheet keeps for next time go with
         // the view that presents them, and nothing of any closed sheet is
         // left: nothing but the few views TextKit keeps of the Resources
-        // sheet's text view, which AppKit holds after the text view has gone.
+        // sheet's text view and its detached system cursor, which AppKit
+        // holds after the text view has gone.
         autoreleasepool { window.contentView = NSView() }
-        let survivors = { autoreleasepool { everything.compactMap { $0() }.map { String(describing: type(of: $0)) }.filter { !$0.hasPrefix("_NSText") } } }
+        let survivors = { autoreleasepool { everything.compactMap { $0() }.filter { !Self.isFrameworkTextSurvivor($0) }.map { String(describing: type(of: $0)) } } }
         try await eventually("every closed sheet's views to be let go of", seconds: allowance) { survivors().isEmpty }
         // Which views a closed sheet left alive, and in what, says what kept them.
-        let left = autoreleasepool { everything.compactMap { $0() }.filter { !String(describing: type(of: $0)).hasPrefix("_NSText") }
+        let left = autoreleasepool { everything.compactMap { $0() }.filter { !Self.isFrameworkTextSurvivor($0) }
             .map { "\(type(of: $0)) window=\($0.window.map { String(describing: type(of: $0)) } ?? "none") superview=\($0.superview.map { String(describing: type(of: $0)) } ?? "none")" } }
         if !left.isEmpty { XCTFail("Closed sheets' views still alive: \(Dictionary(left.map { ($0, 1) }, uniquingKeysWith: +))") }
+    }
+
+    @MainActor private static func isFrameworkTextSurvivor(_ view: NSView) -> Bool {
+        if String(describing: type(of: view)).hasPrefix("_NSText") { return true }
+        // macOS 14's cursor accessory leaves a detached indicator retained by
+        // AppKit's NSView._commonAwake notification block (round-13 validation).
+        // Its sheet/text view must still die; attached indicators and app
+        // subclasses receive no exemption.
+        return view.isMember(of: NSTextInsertionIndicator.self) && view.window == nil && view.superview == nil
+    }
+
+    @MainActor func testTextSurvivorExemptionRequiresTheExactDetachedAppKitIndicator() {
+        final class AppIndicator: NSTextInsertionIndicator {}
+        let indicator = NSTextInsertionIndicator(frame: .zero), parent = NSView()
+        XCTAssertTrue(Self.isFrameworkTextSurvivor(indicator))
+        parent.addSubview(indicator)
+        XCTAssertFalse(Self.isFrameworkTextSurvivor(indicator), "an attached cursor is still owned by its sheet's view tree")
+        indicator.removeFromSuperview()
+        XCTAssertTrue(Self.isFrameworkTextSurvivor(indicator))
+        XCTAssertFalse(Self.isFrameworkTextSurvivor(AppIndicator(frame: .zero)), "an app-owned subclass must be released")
+        XCTAssertFalse(Self.isFrameworkTextSurvivor(NSTextView()), "the text view itself must be released")
+        XCTAssertFalse(Self.isFrameworkTextSurvivor(NSView()), "ordinary retained sheet content must still fail")
     }
 
     /// A sheet opened again opens in the same window and hosting view, filled
