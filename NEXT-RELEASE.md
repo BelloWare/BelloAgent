@@ -40,6 +40,10 @@
 - [x] SECURITY-BOUNDARIES-1x: Unrecognized nested Git candidates bypass inventory caching, including later activation through an external `commondir`. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1y: Changes to a gitdir/common directory's `objects` or `refs` identity revalidate repository discovery before reusing its policy. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1z: Repeated hunk reviews share scoped Git configuration across private indexes; actual Git commands retain their supplied index. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aa: Dynamic/non-regular Git includes force confined reads at every scope and depth, including inactive conditional branches; inventory never consumes live config streams. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ab: File blame passes its displayed snapshot through a private file, preventing stdin-backed config from consuming or executing viewed content. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ac: Folder ignore queries pass bounded paths after `--`, preserving unusual filenames without exposing them to stdin-backed config. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ad: Include inspection preserves Git-reported Unicode origins and falls back to confinement when an unseen path cannot be passed unchanged. [Validation](docs/validation/a130-security-0.1.130.md).
 
 - [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
 - [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).

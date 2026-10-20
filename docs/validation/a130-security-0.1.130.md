@@ -8,7 +8,7 @@ The owner decisions below supersede the initial `fc82085a` policies. Earlier evi
 
 1. **SECURITY-BOUNDARIES-1a (P0), folder tree/menu and Quick Open:** outside/untrusted folders retain the confined Git launcher and `core.fsmonitor=false`. Trusted folders use stamp-checked, cached Git scope/origin metadata to override local/worktree programs, preserving global/system fsmonitor.
 2. **SECURITY-BOUNDARIES-1b, Git status/index queries:** the same policy covers Changes, ignored paths, snapshots, preflight and blame. Every read forces non-recursive submodule output; explicitly opening a submodule applies its own global/system policy. Parent status still reports changed gitlink IDs, without inspecting child worktree dirtiness.
-3. **SECURITY-BOUNDARIES-1c, executable content filters:** trusted reads run without an execution sandbox. Local/worktree clean/smudge/process commands are neutralised; matching user-owned settings are restored from global/system scope. Repository attributes may select global filters, including required conversions. Outside/untrusted reads retain the execution/network/write sandbox and surface failed conversions.
+3. **SECURITY-BOUNDARIES-1c, executable content filters:** trusted reads with proven static configuration run without an execution sandbox. Local/worktree clean/smudge/process commands are neutralised; matching user-owned settings are restored from global/system scope. Repository attributes may select global filters, including required conversions. Dynamic/non-regular includes force the same execution/network/write sandbox used outside/untrusted projects, and failed conversions are surfaced.
 4. **SECURITY-BOUNDARIES-1d, textconv:** working/staged/untracked/history/stash/hunk diffs and commit statistics retain their no-textconv/no-external-diff switches. Trusted configuration overrides also cover local diff drivers.
 5. **SECURITY-BOUNDARIES-1e, implicit promisor fetch:** every read sets `GIT_NO_LAZY_FETCH=1` and `GIT_ALLOW_PROTOCOL=`; the latter also defeats per-protocol config allowances. Outside/untrusted queries additionally have no network or non-Git executables.
 6. **SECURITY-BOUNDARIES-1f, sparse-index folder queries:** FileFinder uses the same launcher; missing sparse trees cannot start a remote helper. Metadata inventory uses `ls-files --stage --sparse` under confinement.
@@ -33,6 +33,10 @@ Round-4 rules (verbatim; supersede the earlier recursive-submodule implementatio
 >
 > 2. Bello's own read-only Git commands never spawn child Git processes that could run repository-configured programs: force non-recursive submodule output on every read path (e.g. `-c diff.submodule=short` / `--submodule=short`, `--ignore-submodules` where content is not shown) for show/log/diff/status/blame alike; audit every read command for other child-spawning options.
 
+Round-5 rule (verbatim; qualifies permission for unconfined trusted reads):
+
+> General rule to apply (not only for /dev/stdin): a trusted read may run without confinement only if the inventory can prove that the final command reads exactly the configuration bytes it inspected. Any include (direct or conditional, at any depth) that resolves to something other than a regular file — character/block devices, FIFOs, sockets, /dev/*, /dev/fd/*, process-substitution style paths, or anything whose content can depend on the command's own stdin/arguments/environment — makes that repository's reads fall back to the untrusted confinement (sandbox) for that query; never run them unconfined. Also make sure no read command feeds attacker-influenced data on stdin while repository config could reference stdin (blame/check-ignore/etc.): prefer passing paths as arguments with `--` where Git supports it.
+
 **Explicit writes:** Stage/Unstage/Discard, branch mutations, stash mutations, fetch/pull/push, commit/amend/reword and hunk publication retain normal hooks, filters, signing and transports after trusted admission. Reword's hook-path query remains a confined data query and returns the actual configured path. Read overrides never reach a later write. No new entitlement, preference, helper capability or production test bypass is added. Minimum/current macOS packaging compatibility remains part of the lead's release gate.
 
 ## Subprocess sweep
@@ -44,14 +48,14 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | FileFinder tool availability | `/usr/bin/xcode-select -p` | Inherited app directory; no repository lookup | Xcode selection only, no Git config/hook/filter/pager/editor/transport. |
 | FileFinder repository detection | `git rev-parse --show-toplevel` | Arbitrary browsed folder, outside projects allowed; also nested repositories | Reads local/included config; no object/index conversion. Local fsmonitor is overridden; global/system fsmonitor is allowed only in trusted folders. Outside/untrusted paths remain confined. |
 | Quick Open recursive listing | `git ls-files -z --cached --others --exclude-standard` | Project folders and nested repositories/submodules; nested repos need not be independently trusted | Index can invoke fsmonitor (fixed). No clean/smudge/process conversion, diff driver, hook or editor is requested. Sparse-index expansion cannot fetch: lazy-fetch/protocol guards apply in both trust states. |
-| Folder tree and breadcrumb menus | `git check-ignore -z --stdin`, repository detection | Arbitrary folder reached from a file card, including absent/untrusted project | Index fsmonitor (fixed); ignore decisions are data. No diff/conversion, hooks or editor. Sparse-index missing-tree transport is disabled in both trust states. Shared FolderDirectory covers both tree and menu. |
+| Folder tree and breadcrumb menus | `git check-ignore -- <bounded paths>`, repository detection | Arbitrary folder reached from a file card, including absent/untrusted project | Index fsmonitor (fixed); ignore decisions are data. No diff/conversion, hooks or editor. Paths never enter stdin; C-quoted output preserves control characters and unusual filenames. Sparse-index missing-tree transport is disabled in both trust states. Shared FolderDirectory covers both tree and menu. |
 | Non-repository ignore fallback | `git config --path --get core.excludesFile` | Walked folder, outside projects allowed | Reads global/local includes as data; uses configured ignore file without executing programs. |
 | Scope/origin and redirect inventory | `config --null --list --includes --show-scope --show-origin`, a second `--name-only` inventory and final config-data verification, `config --type=path --get-regexp` for include targets, `config --system --no-includes --list --show-origin` to locate the selected Git's default system root, `ls-files --stage --sparse --full-name -z`, `rev-parse --absolute-git-dir/--git-common-dir/--show-toplevel/--git-path`, `symbolic-ref --no-recurse` for onbranch dependencies, `remote get-url --all [--push]`, `ls-remote --get-url`, `config --get-urlmatch http.extraHeader` | Selected repository and initialized submodules; inventory itself always confined, including trusted projects | Fixed data queries only. No index monitor or transport may execute while identifying config. Scope is inherited through includes; origin/name records must match between inventories. Git resolves named/legacy remote URLs and URL-matched headers. Literal push defaults apply Git’s longest-prefix `pushInsteadOf` rule before the fetch-only fallback. Reuse requires resolved identity, discovery/config/include/index/HEAD stamps and readable path ancestors. |
 | Git read-only tool resolution | `/usr/bin/xcrun --find git` | `/`, clean environment, once per process | Selects developer Git; no repository-controlled PATH, cwd, `DEVELOPER_DIR`, or config. |
 | Git root/state/index | `rev-parse`, `symbolic-ref`, `status --porcelain=v2`, `ls-files` | Selected project root; public library root can be arbitrary. File blame also uses this service | Local/worktree fsmonitor and filters, including submodule programs, are overridden. Global/system programs run only for trusted reads. Optional index locks and implicit Git transports remain disabled. |
 | Git history and branch catalog | `log`, `show`, `for-each-ref`, `rev-list`, `merge-base`, `reflog show`, `branch --list`, `remote`, `worktree list`, `check-ref-format` | Project/repository root | Textconv/external diff disabled for patches/stats; signature display disabled. Missing-object fetch, SSH/credential/remote helpers blocked; pager forced off, no editor. Includes and branch config still read as data. |
 | Changes panel and file history diffs | `diff` (working, cached, no-index), `show` | Project root; no-index untracked path under the same root | External diff/difftool and textconv disabled; trusted global/system clean/process conversions remain available; local/worktree commands are overridden. Outside/untrusted conversions remain confined. No smudge requested. |
-| File viewer blame | `blame --no-textconv --contents -`, `log`, `rev-parse` | The file's repository; outside configured projects can be viewed | Content filters, fsmonitor and missing objects covered. No file bytes are handed to helper/model by this path. |
+| File viewer blame | `blame --no-textconv --contents <private snapshot> -- <path>`, `log`, `rev-parse` | The file's repository; outside configured projects can be viewed | Content filters, fsmonitor and missing objects covered. The displayed bytes remain in a private snapshot until the query completes; stdin is empty, including when config references it. No file bytes are handed to helper/model by this path. |
 | Stash inspection | `stash list`, `diff`, `show`, `ls-tree`, `rev-parse`, `config --get extensions.refStorage` | Project root | Internal Git child for `stash list` is allowed; local program settings are overridden in trusted reads, and outside/untrusted reads stay confined. Textconv/external diff disabled; implicit remote access blocked. |
 | Commit preview and hunk review | status/index reads; `diff --check`, `check-attr`, `cat-file`, `ls-tree`; raw `diff --no-index` in private scratch | Project root or generated temporary patch directory | No commit hooks during preflight. Filters/driver/fsmonitor use the trust/scope policy; implicit fetch is disabled. Hunk content-attribute refusal is retained. Raw diff uses isolated config and no external driver/textconv. |
 | Watchers, Files and folder menus | FSEvents/vnode callbacks -> launchers above; GitWatcher reads `.git`/`commondir` metadata directly | Watched repository/file roots; folder browser may be outside projects | No additional subprocess launcher. Refresh queries inherit the same policy. |
@@ -958,3 +962,188 @@ The final adversarial review rechecked all changed production code after the met
 All four final production-source hashes match `round4-final-source-hashes.json` after validation, and the first native build log confirms compilation from this worktree's GitProcessSafety sources. `git diff --check` passes. The completed generated large-repository fixture and baseline export were removed; text logs, source-proof JSON and gallery PNGs remain under this workstream's build root. No native Clone directory remained. Default XCTest result bundles were deleted after recording their text results; no named result bundle was requested. Every lock owned by this workstream was released.
 
 Round 4 is complete: the three review findings and separately listed discovery/performance instances are fixed, with failing-first evidence, 14 killed mutations, 44 passing focused tests, the full package/native validation and a source-verified latency comparison within budget. No owner decision remains for this workstream. The branch is ready for the lead's review and merge; no merge or fast-forward to `dev/next` was performed.
+
+## Round 5: process-dependent configuration and stdin isolation
+
+The review P1 is **confirmed** against round-4 commit `1fbd0dca6f1021b66f280e08c30c7da5bd5f42c3`. The old inventory saw empty stdin, while blame handed the viewed bytes to the actual Git process. An include of `/dev/stdin` or `/dev/fd/0` interpreted those bytes as config and ran the fixture fsmonitor. Disabling cache reuse did not prevent execution. A generated FIFO also supplied benign inventory bytes and hostile command bytes, demonstrating the same mismatch independently of blame.
+
+### Fixed instances and adjacent sweep
+
+| Instance | Change | Boundary/compatibility |
+| --- | --- | --- |
+| 1aa: dynamic config sources | Trusted launch now requires a separate `permitsUnconfinedRead` proof. An uncacheable inventory is no longer sufficient permission. Stream/device failures in metadata select the existing sandbox. | Applies at every scope, including global/system includes. Ordinary static global filters and fsmonitor remain allowed. Dynamic sources never enter the inventory cache. |
+| 1aa: nested/inactive sources | Git expands include paths; the inventory also parses inactive conditional include branches with `config --file <path> --no-includes`, recursively inspecting their include targets. File type, resolved path ancestors, absent targets and pre-read stamps are checked. Unresolved or excessive include graphs use confinement. | No handwritten `~`, named-user or conditional pathname expansion. `/dev`, `/dev/fd`, `/proc`, FIFOs, sockets, devices, dangling links and unreadable types cannot authorize an unconfined read. |
+| 1aa: metadata consuming live streams | Metadata processes add a sandbox rule permitting regular-file/directory reads and the null device, while denying reads from other vnode types. | A FIFO cannot block inventory or feed it a different first payload. The final confined command can still read a valid FIFO producer under its normal cancellation/deadline. |
+| 1ab: blame stdin | The displayed bytes are written into a private 0700 snapshot directory, passed using `--contents <snapshot> -- <path>`, and removed on return/cancellation. | Preserves the displayed snapshot even if the underlying file changes. Neither config nor blame shares an attacker-influenced stdin. |
+| 1ac: folder stdin | `check-ignore` takes bounded batches after `--`; its C-quoted output is decoded. | Same tracked-file/ignore semantics, including leading options, Unicode, quotes, backslashes and every Git control-byte escape. No filename bytes enter config stdin. |
+
+The selected empty **root** configuration `/dev/null` remains a stable, known-empty source (used by isolated fixtures); this exception never applies to an **include** directive, including `include.path=/dev/null`. Existing repository discovery, include/ancestor stamps, byte confirmation, trust invalidation and read deadlines remain in force. Metadata failures caused by dynamic sources are caught only at the read launcher; cancellation, timeout and malformed override errors are not swallowed. Explicit transport writes still require a successful header inventory before starting.
+
+The stdin sweep found only two production read-payload callers, blame and folder ignore queries; both are fixed. The remaining actual payload call is the explicitly admitted `post-rewrite` hook's old/new hashes (`readOnly: false`), unchanged. Generic optional-input plumbing has no remaining production read caller. Evidence: `round5-stdin-sweep.txt` and `round5-launcher-sweep.txt`.
+
+Git's argument and stdin forms of `check-ignore` call the same path matching routine. Its implementation rejects `-z` without `--stdin` and writes C-quoted paths in argument mode, which is why the decoder is required. [Git check-ignore implementation](https://raw.githubusercontent.com/git/git/v2.39.5/builtin/check-ignore.c). Include path expansion and relative-origin handling continue to use Git's parser. [Git config implementation](https://raw.githubusercontent.com/git/git/v2.39.5/config.c).
+
+### Failing-first and mutation evidence
+
+All six regressions ran with the four changed production files temporarily restored byte-for-byte from `1fbd0dca`; tests remained new. **6 tests failed, 48 assertions failed, 0 unexpected failures.** Every fixture program only creates its generated marker and emits a fixture fsmonitor token. `round5-before-all-six.log` is the complete authoritative baseline; earlier four-case reproductions remain in `round5-before{,-complete}.log`.
+
+Representative baseline assertions (the `XCTAssertFalse` checks the marker file):
+
+```text
+testStdinIncludesCannotExecuteBlameContents: XCTAssertFalse failed - /dev/stdin
+testStdinIncludesCannotExecuteBlameContents: XCTAssertFalse failed - /dev/fd/0
+testFIFOIncludeUsesConfinementForChangingContent: XCTAssertEqual failed: ("8") is not equal to ("0") - Inventory must not consume a live config stream
+testFIFOIncludeUsesConfinementForChangingContent: XCTAssertFalse failed
+```
+
+| Regression | Failing assertions before the fix | Fixed behavior |
+| --- | ---: | --- |
+| `testStdinIncludesCannotExecuteBlameContents` | 4 | Both stdin/fd0 includes preserve two displayed blame lines; no marker. |
+| `testDynamicIncludeSourcesAlwaysUseConfinement` | 8 | Direct, alias, nested, active/inactive conditional, null-device and missing-descriptor targets select sandbox-exec. Valid inputs read successfully. |
+| `testFIFOIncludeUsesConfinementForChangingContent` | 3 | Inventory consumes zero stream payloads; final status reads the hostile fixture under confinement, succeeds and creates no marker. |
+| `testWarmRegularIncludeRetargetedToStdinLosesExecutionPermission` | 2 | A static trusted read runs the fixture global monitor; retargeting the include to stdin removes execution permission and still permits status. |
+| `testSocketIncludeUsesConfinementEvenWhenInactive` | 1 | A generated inactive socket include selects confinement; status succeeds. |
+| `testStdinIncludesDoNotConsumeFolderPaths` | 30 | Both includes produce an unwarned listing with all 14 unusual ignored names dimmed and the tracked README visible. |
+
+The nonexistent descriptor `/dev/fd/999` selects confinement but retains Git's expected status 128: there is no readable source to make that malformed repository succeed. All valid stdin, FIFO, inactive socket and alias fixtures succeed under confinement.
+
+| Mutation | Selected tests | Failed assertions |
+| --- | ---: | ---: |
+| Ignore `permitsUnconfinedRead` and authorize any completed inventory | 2 | 3 |
+| Allow metadata to consume non-regular streams | 1 | 1 |
+| Restore blame's `--contents -` and stdin payload | 1 | 2 |
+| Restore folder `check-ignore --stdin` | 1 | 30 |
+| Skip recursive include-target inspection | 2 | 3 |
+| Accept every configuration source type | 1 | 2 |
+
+**All 6 mutations killed, 41 failed assertions, 0 unexpected failures.** Production bytes were restored after every mutation, including on runner errors. Logs: `round5-mutation-{permission-gate,metadata-stream,blame-stdin,folder-stdin,include-depth,source-kind}.log`; machine-readable totals in `round5-mutations.json`. The harness initially mistook XCTest's `failed -` text for an absent assertion; it was corrected and the complete sequence rerun. This was a harness check, not a surviving mutation.
+
+Focused surrounding validation passed **81/81**: FolderBrowserTests 19, GitBlameTests 13, GitInventoryTests 37, GitRepositorySecurityTests 12 (`round5-focused-fixed.log`). This includes allowed global programs, blocked local programs, non-recursive history, discovery/include invalidation, cancellation and timeouts. Two preliminary build-only errors are retained: an incremental linker mismatch after changing the public initializer signature (`round5-fixed-initial.log`, corrected by preserving that signature), and the socket fixture needing `Darwin.bind` qualification (`round5-focused.log`). Neither run executed tests.
+
+Exact focused command (all full/focused package runs use the generated home and empty root global config):
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+env CFFIXED_USER_HOME="$B/round5-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests|GitRepositorySecurityTests|GitBlameTests|FolderBrowserTests'
+```
+
+The failing-first six-case selection is:
+
+```text
+GitInventoryTests/testStdinIncludes|GitInventoryTests/testDynamicIncludeSources|GitInventoryTests/testFIFOInclude|GitInventoryTests/testWarmRegularIncludeRetargeted|GitInventoryTests/testSocketInclude|FolderBrowserTests/testStdinIncludes
+```
+
+Mutation commands use the same `swift test` prefix and the corresponding case(s) in the table; exact selections and restoration are recorded in `$B/round5-mutations.py`.
+
+### Self-review correction: Unicode include paths
+
+The first complete package run passed **374 executed / 370 passed / 4 skipped / 0 failures**, but the source review found a compatibility edge in the newly added per-file parser. Foundation would rewrite a composed Unicode filename when passing `--file`; the existing byte-preservation guard correctly refused that argument, but the new traversal propagated the failure even when Git had already safely reported the file's complete scoped contents.
+
+`testUnicodeIncludePathsKeepReadPolicy` reproduced **1 failed test / 2 failed assertions** on that implementation (`round5-unicode-before.log`): an active, regular global include containing a permitted fixture monitor failed, and an unseen inactive Unicode include containing a nested stdin include failed instead of selecting confinement. Both cases now pass. The inventory reuses the complete include expansion for files already reported as origins; only unseen conditional branches need another parse. If such a path cannot be passed unchanged, the read uses confinement. This also avoids redundant metadata processes for active includes.
+
+Two additional mutations independently remove known-origin reuse and the unrepresentable-path fallback. The first produces **2 failed assertions**; the second produces **1** (`round5-mutation-unicode-{known-origin,unresolved}.log`). All six earlier mutations were repeated after this correction. Final total: **8 mutations killed / 44 failed assertions / 0 unexpected failures**.
+
+The preliminary package log is retained as `round5-pre-unicode-final-views-full.log`. The performance coordinator was stopped while waiting for another workstream's lock; no measurement had started and no foreign lock was touched. Final package, benchmark and native validation are restarted with the corrected source and the seventh regression. The final results below supersede that preliminary package run.
+
+### Adversarial source review
+
+Reviewed the complete branch's production diff and the round-5 changes (`round5-reviewed-branch.diff`, `round5-reviewed-source.diff`), then re-enumerated every Git launcher and stdin caller. The review checked direct/nested/inactive includes, resolved-device aliases, missing descriptors, non-regular roots, immutable empty root config versus null-device includes, cold and warm inventories, regular-file retargeting, byte-preserving include parsing, and the distinction between permission to execute and permission to cache.
+
+The regular-file restriction is installed before any inventory subprocess starts. Every metadata subprocess still adopts the originating invocation; the final confined process shares its deadline and cancellation handle. The fallback catches only the dedicated confinement-required result. Valid static global/system programs retain their positive tests; local/worktree programs retain their negative tests. The snapshot lifetime spans the asynchronous blame call and all exits remove its private directory. Folder batches retain their existing count/byte limits and decode Git's quoting without interpreting paths as shell input.
+
+The nearby sweep found no other production read that feeds repository-controlled stdin. Non-recursive read flags, lazy-fetch prevention, private-header redirects, live trust checks for writes, and webhook redirect refusal are unchanged. No helper/wire production or test file changed in round 5, so the conditional helper/wire/concurrent/acceptance reruns are not required for this round. No additional unresolved finding or owner-policy question was identified.
+
+### Final round-5 validation and latency
+
+Full bello-views package: **375 executed, 371 passed, 4 skipped, 0 failures** (`round5-final-views-full.log`). The skips are the existing opt-in scale/benchmark cases; the benchmark is explicitly executed below. The full run follows all mutation restorations, and all six changed source/test hashes match `round5-tested-source-hashes.json`.
+
+The final focused rerun also passed **82/82**: FolderBrowserTests 19, GitBlameTests 13, GitInventoryTests 38, GitRepositorySecurityTests 12 (`round5-final-focused.log`). This includes all seven round-5 regressions after all eight mutations were restored.
+
+```sh
+env CFFIXED_USER_HOME="$B/round5-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests"
+```
+
+The full package run, performance runs and native/gallery runs each hold the shared full-lane lock. The initial package run waited for the panel workstream to release it; no other workstream's lock or build products were changed.
+
+The freshly fetched baseline is pinned `origin/dev/next` **3249aa24c32ae29c83da6537dddf23f1fd6a6594**. Its package is exported with `git archive`, without checking out or integrating that branch. The same generated fixture contains **50,001 ordinary tracked entries plus 20 initialized submodules**; there is one changed tracked file. Each variant takes **25 warmed samples** of status and a complete Changes refresh including selected diff and hunk review.
+
+| Variant | Status median / p95 (ms) | Changes including hunk review median / p95 (ms) | Median versus baseline |
+| --- | ---: | ---: | --- |
+| baseline | 252.85 / 263.75 | 2171.18 / 2209.41 | baseline |
+| branch | 166.53 / 173.82 | 2023.26 / 2085.86 | status -34.14%; Changes -6.81% |
+| branch-repeat | 165.76 / 173.65 | 1940.07 / 1960.53 | status -34.45%; Changes -10.64% |
+
+Both branch runs meet the 5% budget. All three benchmark executions pass (1/1 each). Text logs: `round5-final-verified-perf-{branch,baseline,branch-repeat}.log`; source-proof records: `round5-final-verified-build-{branch,baseline,branch-repeat}.json`. Before each build, only this workstream's `views-tests` products are removed. Each run verifies the compile-time variant marker, actual compiled source paths, and GitService bytes/hash; the baseline GitService must exactly match its pinned commit. The branch also verifies its GitProcessSafety source paths and GitConfiguration hash. The baseline receives the identical benchmark source and only a test-target `BELLO_GIT_BENCHMARK_BASELINE` define.
+
+Exact measurement command, executed for branch, baseline, then branch again after the per-variant clean:
+
+```sh
+env CFFIXED_USER_HOME="$B/round5-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  BELLO_GIT_INVENTORY_BENCHMARK="$B/round5-large-fixture" BELLO_GIT_BENCHMARK_SAMPLES=25 \
+  swift test --package-path "$PACKAGE" --scratch-path "$B/views-tests" --filter GitInventoryPerformanceTests
+```
+
+`PACKAGE` is this worktree's `packages/bello-views`, then `$B/round5-baseline/packages/bello-views`, then the worktree package again. `$B/round5-final-performance.py` records the exact export/build-proof sequence.
+
+Native: **41 classes, 375 executed, 373 passed, 2 skipped, 0 failures**. The skips remain the opt-in commit-browsing and diff-capture cases. Every invocation uses `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1 PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO`, with `-only-testing:PiAppTests/<Class>` for each selected class. The host uses the generated `PiAppTests-Home`; the extra variables keep direct test Git subprocesses off the real global/system config too. The class batches and serial-alone selections are identical to the explicit round-4 list above; fresh round-5 evidence follows.
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `round5-final-native-ChangesTabFrameTests.log` |
+| ChangesTabTests | 8 | 0 | `round5-final-native-file-git.log` |
+| CrashAuditRegressionTests | 12 | 0 | `round5-final-native-CrashAuditRegressionTests.log` |
+| FileBlameTests | 10 | 0 | `round5-final-native-file-git.log` |
+| FileFindTabTests | 16 | 0 | `round5-final-native-FileFindTabTests.log` |
+| FileFolderTests | 20 | 0 | `round5-final-native-FileFolderTests.log` |
+| FileHiddenReadTests | 5 | 0 | `round5-final-native-file-git.log` |
+| FilePageReadTests | 3 | 0 | `round5-final-native-file-git.log` |
+| FilePreviewRefreshTests | 2 | 0 | `round5-final-native-FilePreviewRefreshTests.log` |
+| FileReviewStateTests | 20 | 0 | `round5-final-native-file-git.log` |
+| FileTabTests | 16 | 0 | `round5-final-native-file-git.log` |
+| GitBranchesInteractionTests | 20 | 0 | `round5-final-native-file-git.log` |
+| GitChangelistReadTests | 2 | 0 | `round5-final-native-file-git.log` |
+| GitCommitBrowsingTests | 3 | 1 | `round5-final-native-file-git.log` |
+| GitConfirmationSheetTests | 7 | 0 | `round5-final-native-file-git.log` |
+| GitDiffTableTests | 19 | 0 | `round5-final-native-GitDiffTableTests.log` |
+| GitDiscardQuestionTests | 2 | 0 | `round5-final-native-file-git.log` |
+| GitHistoryFilterTests | 14 | 0 | `round5-final-native-file-git.log` |
+| GitHunkReviewTests | 9 | 0 | `round5-final-native-file-git.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `round5-final-native-file-git.log` |
+| GitOperationSafetyTests | 12 | 0 | `round5-final-native-GitOperationSafetyTests.log` |
+| GitPanelAuditTests | 8 | 0 | `round5-final-native-file-git.log` |
+| GitPanelDiffCaptureTests | 0 | 1 | `round5-final-native-file-git.log` |
+| GitPanelLayoutTests | 4 | 0 | `round5-final-native-file-git.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `round5-final-native-GitPanelNarrowParityTests.log` |
+| GitPanelRedrawTests | 4 | 0 | `round5-final-native-file-git.log` |
+| GitPanelShownTests | 13 | 0 | `round5-final-native-file-git.log` |
+| GitPanelTimingTests | 4 | 0 | `round5-final-native-GitPanelTimingTests.log` |
+| GitPanelWidthTests | 3 | 0 | `round5-final-native-file-git.log` |
+| GitPathBoundaryTests | 5 | 0 | `round5-final-native-file-git.log` |
+| GitRenameTests | 6 | 0 | `round5-final-native-file-git.log` |
+| GitRepositoryPermissionTests | 4 | 0 | `round5-final-native-boundaries.log` |
+| GitRepositorySwitchTests | 17 | 0 | `round5-final-native-GitRepositorySwitchTests.log` |
+| GitSafetyGalleryTests | 1 | 0 | `round5-final-native-GitSafetyGalleryTests.log` |
+| GitToolTests | 5 | 0 | `round5-final-native-file-git.log` |
+| GitWorkingTreeWatcherTests | 16 | 0 | `round5-final-native-GitWorkingTreeWatcherTests.log` |
+| QuickOpenPlacementTests | 1 | 0 | `round5-final-native-file-git.log` |
+| QuickOpenTests | 17 | 0 | `round5-final-native-QuickOpenTests.log` |
+| WebhookExchangeTests | 5 | 0 | `round5-final-native-boundaries.log` |
+| WebhookTests | 18 | 0 | `round5-final-native-boundaries.log` |
+| WorkspaceTests | 17 | 0 | `round5-final-native-boundaries.log` |
+
+Gallery regenerated **112 PNGs**, using:
+
+```sh
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY="$B/round5-final-gallery" PI_BUILD_ROOT="$B" \
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1 \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+Visually inspected the eight `http-redirect-{light,dark}-{920x600,310x600}.png` and `untrusted-{light,dark}-{920x600,310x600}.png` scenes. Both themes retain the expected redirect refusal or trust notice; narrow notices use the existing ellipsis, and the file list/diff remain available. The gallery also asserts the complete notice text. The image hashes are in `round5-final-gallery-inspection.json`.
+
+Final source review and hash checks match the tested bytes after all mutations and the Unicode correction. `git diff --check` passes. The fixture index was independently counted before cleanup: 50,001 ordinary entries and 20 submodules (`round5-fixture-counts.json`). The generated baseline export, large fixture and default XCTest result bundle were removed; no native Clone directories remained. Text logs, source-proof records and gallery PNGs are retained under this workstream's build root. All locks owned by this workstream were released; another workstream's subsequent lock was left untouched.
+
+Round 5 is complete: the review P1 and separately recorded stdin/Unicode instances are fixed, with seven failing-first regressions, eight killed mutations, 82 passing focused tests, complete package/native/gallery validation, and three source-verified measurements within budget. No unresolved finding or owner decision remains in this workstream. No merge or fast-forward to `dev/next` was performed.

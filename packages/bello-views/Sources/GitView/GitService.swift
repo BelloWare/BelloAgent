@@ -923,8 +923,16 @@ public actor GitService {
         // blame takes one file, not a pathspec: after "--" its name is read
         // as written, patterns and magic included. --root: a first commit is
         // a commit like any other, not a boundary.
-        let arguments = ["blame", "--porcelain", "--root", "--no-textconv", "--contents", "-", "--", path]
-        var blame = try await detached(arguments, in: root, timeout: 60, input: contents) { output in
+        try Task.checkCancellation()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bello-git-blame-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let snapshot = folder.appendingPathComponent("contents")
+        try contents.write(to: snapshot)
+        // A repository include may name stdin. Keep the reviewed bytes in a
+        // private file so config cannot consume or interpret them as settings.
+        let arguments = ["blame", "--porcelain", "--root", "--no-textconv", "--contents", snapshot.path, "--", path]
+        var blame = try await detached(arguments, in: root, timeout: 60) { output in
             guard output.status == 0 else {
                 let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 if detail.contains("no such path") || detail.contains("not in HEAD") || detail.contains("does not have a commit") {

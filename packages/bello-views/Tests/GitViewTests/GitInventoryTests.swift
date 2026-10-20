@@ -35,6 +35,165 @@ final class GitInventoryTests: XCTestCase {
         return path
     }
 
+    func testStdinIncludesCannotExecuteBlameContents() async throws {
+        let contents = Data("[core]\nfsmonitor = \(try monitor())\n".utf8)
+        for source in ["/dev/stdin", "/dev/fd/0"] {
+            try git(["config", "include.path", source])
+            do {
+                let result = try await GitService(environment: environment, trusted: true).blame(path: "file", contents: contents, in: root.path)
+                XCTAssertEqual(result.lines.count, 2, source)
+            } catch { XCTFail("Blame must still read the displayed snapshot: \(source): \(error)") }
+            let marker = root.appendingPathComponent("hostile-ran")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), source)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
+    func testDynamicIncludeSourcesAlwaysUseConfinement() throws {
+        let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)
+        try write("inner", "[include]\npath = /dev/fd/0\n")
+        try write("outer", "[include]\npath = inner\n")
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("alias").path, withDestinationPath: "/dev/stdin")
+        for (name, section, target) in [
+            ("stdin", "include", "/dev/stdin"), ("fd", "include", "/dev/fd/0"),
+            ("missing fd", "include", "/dev/fd/999"), ("null include", "include", "/dev/null"),
+            ("alias", "include", "../alias"), ("nested", "include", "../outer"),
+            ("conditional", "includeIf \"onbranch:main\"", "../outer"),
+            ("inactive conditional", "includeIf \"onbranch:absent\"", "../outer")
+        ] {
+            try (original + Data("\n[\(section)]\npath = \(target)\n".utf8)).write(to: config)
+            let process = Process(); process.currentDirectoryURL = root
+            do {
+                let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+                defer { policy.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec", name)
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                try process.run(); process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, name == "missing fd" ? 128 : 0, name)
+            } catch { XCTFail("Cannot prepare a confined read: \(name): \(error)") }
+        }
+    }
+
+    func testFIFOIncludeUsesConfinementForChangingContent() throws {
+        let fifo = root.appendingPathComponent("config-pipe")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        let producer = ConfigPipe(fifo.path)
+        defer { producer.stop() }
+        try write("inner", "[include]\npath = config-pipe\n")
+        try git(["config", "include.path", "../inner"])
+        let process = Process(); process.currentDirectoryURL = root
+        let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment,
+                                        trusted: true, invocation: GitInvocation(timeout: 5))
+        defer { policy.remove() }
+        XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+        XCTAssertEqual(producer.writes, 0, "Inventory must not consume a live config stream")
+        producer.set("[core]\nfsmonitor = \(try monitor())\n")
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testWarmRegularIncludeRetargetedToStdinLosesExecutionPermission() throws {
+        let include = root.appendingPathComponent("included"), marker = root.appendingPathComponent("hostile-ran")
+        try write("included", "# regular fixture\n")
+        try write("global", "[core]\nfsmonitor = \(try monitor())\n")
+        try git(["config", "include.path", "../included"])
+        for dynamic in [false, true] {
+            if dynamic {
+                try FileManager.default.removeItem(at: include)
+                try FileManager.default.createSymbolicLink(atPath: include.path, withDestinationPath: "/dev/stdin")
+            }
+            let process = Process(); process.currentDirectoryURL = root
+            let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+            defer { policy.remove() }
+            XCTAssertEqual(process.executableURL?.lastPathComponent, dynamic ? "sandbox-exec" : "git")
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: marker.path), !dynamic)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
+    func testSocketIncludeUsesConfinementEvenWhenInactive() throws {
+        let path = "/tmp/bello-config-socket-" + UUID().uuidString
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor); try? FileManager.default.removeItem(atPath: path) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX); address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: Array(path.utf8) + [0])
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        XCTAssertEqual(bound, 0)
+        try git(["config", "includeIf.onbranch:absent.path", path])
+        let process = Process(); process.currentDirectoryURL = root
+        let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+        defer { policy.remove() }
+        XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
+    func testUnicodeIncludePathsKeepReadPolicy() throws {
+        let name = "caf\u{e9}", path = root.path + "/" + name
+        let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)
+        let marker = root.appendingPathComponent("hostile-ran"), command = try monitor()
+        for inactive in [false, true] {
+            try write(name, inactive ? "[include]\npath = /dev/stdin\n" : "[core]\nfsmonitor = \(command)\n")
+            try write("global", inactive ? "[core]\nfsmonitor = \(command)\n" : "[include]\npath = \(path)\n")
+            if inactive {
+                try (original + Data("\n[includeIf \"onbranch:absent\"]\npath = \(path)\n".utf8)).write(to: config)
+            }
+            let process = Process(); process.currentDirectoryURL = root
+            do {
+                let policy = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+                defer { policy.remove() }
+                XCTAssertEqual(process.executableURL?.lastPathComponent, inactive ? "sandbox-exec" : "git")
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                try process.run(); process.waitUntilExit()
+                XCTAssertEqual(process.terminationStatus, 0)
+                XCTAssertEqual(FileManager.default.fileExists(atPath: marker.path), !inactive)
+                try? FileManager.default.removeItem(at: marker)
+            } catch { XCTFail("Unicode include must preserve the read policy (inactive: \(inactive)): \(error)") }
+        }
+    }
+
+    private final class ConfigPipe: @unchecked Sendable {
+        private let lock = NSLock(), finished = DispatchSemaphore(value: 0)
+        private var content = Data("# fixture\n".utf8), stopped = false, count = 0
+        var writes: Int { lock.withLock { count } }
+        init(_ path: String) {
+            DispatchQueue.global().async { [self] in
+                defer { finished.signal() }
+                while true {
+                    let (done, bytes) = lock.withLock { (stopped, content) }
+                    if done { return }
+                    let descriptor = open(path, O_WRONLY | O_NONBLOCK)
+                    if descriptor >= 0 {
+                        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+                        let written = bytes.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+                        if written > 0 { lock.withLock { count += 1 } }
+                        close(descriptor)
+                    }
+                    usleep(5_000)
+                }
+            }
+        }
+        func set(_ text: String) { lock.withLock { content = Data(text.utf8) } }
+        func stop() { lock.withLock { stopped = true }; finished.wait() }
+    }
+
     func testPrivateIndexesDoNotInvalidateOrInterruptInventory() async throws {
         try git(["config", "core.fsmonitor", try monitor()])
         let service = GitService(environment: environment, trusted: true)

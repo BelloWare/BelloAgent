@@ -56,7 +56,8 @@ public struct FolderDirectory: Sendable {
         var ignored = Set<String>()
         if FileListing.gitAvailable, try await FileListing.repositoryTop(of: folder.path, environment: environment) != nil {
             // check-ignore keeps tracked files, just as Quick Open's ls-files
-            // does. Bounded NUL-delimited batches also handle embedded newlines.
+            // does. Pass bounded batches after "--": config includes must
+            // never consume repository-controlled filenames from stdin.
             var start = 0
             while start < entries.count {
                 try Task.checkCancellation()
@@ -66,11 +67,10 @@ public struct FolderDirectory: Sendable {
                     if !batch.isEmpty, bytes + name.utf8.count + 1 > 32_768 { break }
                     batch.append(name); bytes += name.utf8.count + 1; start += 1
                 }
-                let input = Data((batch.joined(separator: "\0") + "\0").utf8)
-                let result = try await FinderProcess.git(["check-ignore", "-z", "--stdin"], in: folder.path,
-                    limit: 1_048_576, timeout: 20, environment: environment, input: input)
+                let result = try await FinderProcess.git(["check-ignore", "--"] + batch, in: folder.path,
+                    limit: 1_048_576, timeout: 20, environment: environment)
                 if result.status == 0 || result.status == 1 {
-                    for name in result.stdout.split(separator: 0) { ignored.insert(String(decoding: name, as: UTF8.self)) }
+                    for name in result.stdout.split(separator: 10) { ignored.insert(unquoted(name)) }
                 } else { warn("Ignore rules could not be applied.") }
             }
         } else {
@@ -106,5 +106,32 @@ public struct FolderDirectory: Sendable {
         }
         try Task.checkCancellation()
         return FolderDirectory(entries: entries, warning: warnings.isEmpty ? nil : warnings.joined(separator: " "))
+    }
+
+    // check-ignore permits NUL output only with --stdin. Its argument form
+    // C-quotes control bytes, quotes and backslashes, including odd filenames.
+    private static func unquoted(_ value: Data.SubSequence) -> String {
+        guard value.first == 34, value.last == 34, value.count >= 2 else { return String(decoding: value, as: UTF8.self) }
+        var rest = value.dropFirst().dropLast(), bytes: [UInt8] = []
+        while let byte = rest.popFirst() {
+            guard byte == 92, let next = rest.popFirst() else { bytes.append(byte); continue }
+            switch next {
+            case 97: bytes.append(7)
+            case 98: bytes.append(8)
+            case 116: bytes.append(9)
+            case 110: bytes.append(10)
+            case 118: bytes.append(11)
+            case 102: bytes.append(12)
+            case 114: bytes.append(13)
+            case 48...55:
+                var octal = Int(next - 48)
+                for _ in 0..<2 {
+                    if let digit = rest.first, (48...55).contains(digit) { octal = octal * 8 + Int(digit - 48); rest.removeFirst() }
+                }
+                bytes.append(UInt8(truncatingIfNeeded: octal))
+            default: bytes.append(next)
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

@@ -15,6 +15,7 @@ public struct GitConfiguration {
     let stamps: [GitFileStamp]
     let identity: Data
     let cacheable: Bool
+    let permitsUnconfinedRead: Bool
     private let directory: URL
     private let gitDirectory: String
     private let children: [GitConfiguration]
@@ -42,7 +43,7 @@ public struct GitConfiguration {
         let options = ["config", "--null", "--list", "--includes", "--show-scope", "--show-origin"]
         let output = try Self.query(options, in: directory, environment: environment, invocation: invocation)
         let names = try Self.query(options + ["--name-only"], in: directory, environment: environment, invocation: invocation)
-        guard output.status == 0, names.status == 0 else { throw Failure("Git configuration could not be checked safely.") }
+        guard output.status == 0, names.status == 0 else { throw ConfinementRequired() }
         guard String(data: output.data, encoding: .utf8) != nil, String(data: names.data, encoding: .utf8) != nil else {
             throw Failure("Git configuration contains invalid UTF-8; its program settings cannot be overridden safely.")
         }
@@ -86,6 +87,7 @@ public struct GitConfiguration {
         // Unresolved repository/worktree identity is safe to query afresh, but
         // cannot be a reusable inventory (including a non-repository folder).
         var canCache = !top.isEmpty && !gitDirectory.isEmpty && !common.isEmpty
+        var canReadUnconfined = true
         var ancestor = directory.path
         while canCache, ancestor != resolved(top) {
             // An unrecognized candidate below the selected root can become a
@@ -97,6 +99,7 @@ public struct GitConfiguration {
             ancestor = (ancestor as NSString).deletingLastPathComponent
         }
         var files = entries.compactMap { $0.origin.hasPrefix("file:") ? absolute(String($0.origin.dropFirst(5))) : nil }
+        let readFiles = Set(files.map { Data($0.utf8) })
         let home = environment["HOME"] ?? NSHomeDirectory()
         files.append(absolute(environment["GIT_CONFIG_GLOBAL"] ?? home + "/.gitconfig"))
         if environment["GIT_CONFIG_GLOBAL"] == nil {
@@ -122,7 +125,10 @@ public struct GitConfiguration {
                 } else { canCache = false }
             }
         }
+        var configurationFiles = files
         if !gitDirectory.isEmpty {
+            configurationFiles += [gitDirectory + "/config", gitDirectory + "/config.worktree"]
+            if !common.isEmpty { configurationFiles.append(common + "/config") }
             files += [gitDirectory + "/config", gitDirectory + "/config.worktree", gitDirectory + "/commondir",
                       gitDirectory + "/gitdir", gitDirectory + "/index", gitDirectory + "/HEAD"]
             if !common.isEmpty { files += [common + "/config", common + "/packed-refs"] }
@@ -137,6 +143,7 @@ public struct GitConfiguration {
         if !top.isEmpty { files.append(top + "/.gitmodules") }
         if let index = environment["GIT_INDEX_FILE"], !index.isEmpty { files.append(absolute(index)) }
         let includes = entries.filter { $0.name == "include.path" || ($0.name.hasPrefix("includeif.") && $0.name.hasSuffix(".path")) }
+        var includeFiles: [String] = []
         if !includes.isEmpty {
             // --type=path uses Git's own ~, ~user and %(prefix) expansion,
             // including includeIf directives whose condition is not active.
@@ -144,25 +151,63 @@ public struct GitConfiguration {
                                            "--get-regexp", "^(include\\.path|includeif\\..*\\.path)$"],
                                           in: directory, environment: environment, invocation: invocation)
             let fields = expanded.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
-            if expanded.status != 0 || expanded.data.last != 0 || fields.count != includes.count * 3 { canCache = false }
+            if expanded.status != 0 || expanded.data.last != 0 || fields.count != includes.count * 3 {
+                canCache = false; canReadUnconfined = false
+            }
             else {
                 for (index, entry) in includes.enumerated() {
                     try invocation.check()
                     let record = fields[index * 3 + 2], prefix = Data((entry.name + "\n").utf8)
                     guard fields[index * 3].elementsEqual(entry.scope.utf8), fields[index * 3 + 1].elementsEqual(entry.origin.utf8),
                           record.starts(with: prefix), let target = String(data: record.dropFirst(prefix.count), encoding: .utf8) else {
-                        canCache = false; continue
+                        canCache = false; canReadUnconfined = false; continue
                     }
-                    if target.hasPrefix("/") { files.append(target) }
+                    if target.hasPrefix("/") { includeFiles.append(target) }
                     else if entry.origin.hasPrefix("file:") {
                         let source = absolute(String(entry.origin.dropFirst(5)))
                         // Preserve symlink/.. semantics; lexical normalization
                         // can watch a different file from the one Git opens.
-                        files.append(String(source[...source.lastIndex(of: "/")!]) + target)
-                    } else { canCache = false }
+                        includeFiles.append(String(source[...source.lastIndex(of: "/")!]) + target)
+                    } else { canCache = false; canReadUnconfined = false }
                 }
             }
         }
+        // Inspect inactive conditional branches too. Their include targets
+        // must be regular files even when Git did not read them this time.
+        var includeStamps: [GitFileStamp] = [], seen = Set<Data>(), cursor = 0
+        while cursor < includeFiles.count, canReadUnconfined {
+            try invocation.check()
+            let file = includeFiles[cursor]; cursor += 1
+            guard seen.insert(Data(file.utf8)).inserted else { continue }
+            let stamp = GitFileStamp(file); includeStamps.append(stamp)
+            guard seen.count <= 256, Self.staticConfiguration(file) else { canReadUnconfined = false; break }
+            if !stamp.exists { continue }
+            // Git already expanded every directive in reported origins.
+            // Only unseen conditional branches need a separate parse; never
+            // let Process rewrite an include filename for that query.
+            if readFiles.contains(Data(file.utf8)) { continue }
+            do { try Self.requireUnchangedBytes([file]) }
+            catch { canReadUnconfined = false; break }
+            let arguments = ["config", "--file", file, "--no-includes", "--null"]
+            let pattern = "^(include\\.path|includeif\\..*\\.path)$"
+            let names = try Self.query(arguments + ["--name-only", "--get-regexp", pattern],
+                                       in: directory, environment: environment, invocation: invocation)
+            if names.status == 1 { continue }
+            let expanded = try Self.query(arguments + ["--type=path", "--get-regexp", pattern],
+                                          in: directory, environment: environment, invocation: invocation)
+            let keys = names.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
+            let values = expanded.data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
+            guard names.status == 0, expanded.status == 0, names.data.last == 0, expanded.data.last == 0,
+                  keys.count == values.count else { canReadUnconfined = false; break }
+            for (key, value) in zip(keys, values) {
+                let prefix = key + Data([10])
+                guard value.starts(with: prefix), let target = String(data: value.dropFirst(prefix.count), encoding: .utf8) else {
+                    canReadUnconfined = false; break
+                }
+                includeFiles.append(target.hasPrefix("/") ? target : String(file[...file.lastIndex(of: "/")!]) + target)
+            }
+        }
+        files += includeFiles
         var branchStamps: [GitFileStamp] = []
         if includes.contains(where: { $0.name.hasPrefix("includeif.onbranch:") }) {
             // onbranch follows the entire symbolic HEAD chain. Stamp each
@@ -205,7 +250,7 @@ public struct GitConfiguration {
             indexStamp?.path == path ? indexStamp! : GitFileStamp(path)
         }
         stamps += Set(files).flatMap { GitFileStamp.parents(of: $0) }
-        stamps += discovery + branchStamps
+        stamps += discovery + branchStamps + includeStamps
         stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
         if !top.isEmpty { stamps.append(GitFileStamp(top + "/.git", directoryIdentity: true)) }
         // Hunk reads create private indexes in .git. Those do not change its
@@ -215,13 +260,32 @@ public struct GitConfiguration {
         }
         stamps += children.flatMap(\.stamps)
         self.stamps = Array(Set(stamps))
-        cacheable = canCache && self.stamps.allSatisfy(\.cacheable) && children.allSatisfy(\.cacheable)
+        permitsUnconfinedRead = canReadUnconfined && configurationFiles.allSatisfy { Self.staticConfiguration($0, allowNull: true) }
+        cacheable = permitsUnconfinedRead && canCache && self.stamps.allSatisfy(\.cacheable) && children.allSatisfy(\.cacheable)
         // Recheck the data after capturing origins, including missing include
         // files. Filesystem timestamps need not share Date's clock precision.
         let confirmed = try Self.query(options, in: directory, environment: environment, invocation: invocation)
         guard confirmed.status == 0, confirmed.data == output.data, self.stamps.allSatisfy({ !$0.cacheable || $0.unchanged }) else {
             throw Failure("Git configuration changed while its inventory was being read. Try again.")
         }
+    }
+
+    private static func staticConfiguration(_ path: String, allowNull: Bool = false) -> Bool {
+        let paths = [GitFileStamp(path)] + GitFileStamp.parents(of: path)
+        // Check ancestors as well: /tmp/fd-link/0 may resolve through /dev/fd,
+        // whose descriptor can refer to a different file in the next process.
+        for stamp in paths where stamp.watchedPath == "/dev" || stamp.watchedPath.hasPrefix("/dev/")
+            || stamp.watchedPath == "/proc" || stamp.watchedPath.hasPrefix("/proc/") {
+            // The explicitly selected empty root config is stable. This
+            // exception never applies to an include directive, even /dev/null.
+            if allowNull, paths[0].watchedPath == "/dev/null" { continue }
+            return false
+        }
+        var value = stat()
+        if stat(path, &value) == 0 { return value.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) || (allowNull && paths[0].watchedPath == "/dev/null") }
+        guard errno == ENOENT || errno == ENOTDIR else { return false }
+        // A dangling link cannot prove the kind of its eventual target.
+        return lstat(path, &value) != 0 && (errno == ENOENT || errno == ENOTDIR)
     }
 
     func readOptions(in directory: URL, environment: [String: String], submodules: Bool, invocation: GitInvocation) throws -> [String] {
@@ -403,7 +467,7 @@ public struct GitConfiguration {
         try requireUnchangedBytes(arguments)
         let process = Process(), pipe = Pipe()
         process.currentDirectoryURL = directory
-        let confinement = try GitReadProcess(process, arguments: arguments, environment: environment, invocation: invocation)
+        let confinement = try GitReadProcess(process, arguments: arguments, environment: environment, regularFilesOnly: true, invocation: invocation)
         defer { confinement.remove() }
         process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = diagnostics ? pipe : FileHandle.nullDevice
         let reader = pipe.fileHandleForReading
@@ -435,5 +499,8 @@ public struct GitConfiguration {
         let message: String
         init(_ message: String) { self.message = message }
         var errorDescription: String? { message }
+    }
+    struct ConfinementRequired: LocalizedError {
+        var errorDescription: String? { "Git configuration depends on a source that cannot be checked safely." }
     }
 }

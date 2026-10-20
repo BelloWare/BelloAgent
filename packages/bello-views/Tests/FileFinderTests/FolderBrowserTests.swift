@@ -4,6 +4,26 @@ import GitProcessSafety
 import Darwin
 
 final class FolderBrowserTests: XCTestCase {
+    @MainActor func testStdinIncludesDoNotConsumeFolderPaths() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        let names = ["ordinary.tmp", "-option.tmp", "space name.tmp", "line\nbreak.tmp", "tab\tname.tmp", "quote\"name.tmp", "back\\slash.tmp",
+                     "café.tmp", "bell\u{7}.tmp", "backspace\u{8}.tmp", "vertical\u{b}.tmp", "form\u{c}.tmp", "carriage\r.tmp", "delete\u{7f}.tmp"]
+        for name in names { try file(name, at: root) }
+        try file(".gitignore", at: root, text: "*.tmp\n")
+        try file("README", at: root); try git.run(["add", "README"], in: root)
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { $0 == root.path }
+        defer { GitReadProcess.resolveTrust = previous }
+        for source in ["/dev/stdin", "/dev/fd/0"] {
+            try git.run(["config", "include.path", source], in: root)
+            let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+            XCTAssertNil(listing.warning, source)
+            for name in names { XCTAssertEqual(listing.entries.first { $0.name == name }?.isDimmed, true, name) }
+            XCTAssertEqual(listing.entries.first { $0.name == "README" }?.isDimmed, false)
+        }
+    }
+
     @MainActor func testTrustedFinderInventorySharesCancellationAndDeadline() async throws {
         let previous = GitReadProcess.resolveTrust
         GitReadProcess.resolveTrust = { _ in true }

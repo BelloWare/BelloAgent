@@ -16,29 +16,43 @@ public struct GitReadProcess {
     }
     private let scratch: URL?
     private let configuration: GitConfiguration?
-    public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false, invocation: GitInvocation = GitInvocation()) throws {
+    public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false,
+                invocation: GitInvocation = GitInvocation()) throws {
+        try self.init(process, arguments: arguments, environment: environment, trusted: trusted, regularFilesOnly: false, invocation: invocation)
+    }
+    init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false,
+         regularFilesOnly: Bool, invocation: GitInvocation = GitInvocation()) throws {
         let git = try Self.git.get()
         let arguments = Self.nonrecursive(arguments)
         var environment = environment
+        var checked: GitConfiguration?
+        var configurationEnvironment = environment
+        configurationEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
         if trusted, let directory = process.currentDirectoryURL {
             // Non-recursive read policy depends on config, not the private
             // index a hunk review supplies. The Git command keeps that index.
-            var configurationEnvironment = environment
-            configurationEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
-            let configuration = try GitConfiguration(in: directory, environment: configurationEnvironment, invocation: invocation)
-            self.configuration = configuration
+            do {
+                let value = try GitConfiguration(in: directory, environment: configurationEnvironment, invocation: invocation)
+                if value.permitsUnconfinedRead { checked = value }
+            } catch is GitConfiguration.ConfinementRequired {
+                // A stream/device can return different config to this command.
+                // An uncached inventory alone is not permission to execute.
+            }
+        }
+        configuration = checked
+        if let configuration = checked, let directory = process.currentDirectoryURL {
             let options = try configuration.readOptions(in: directory, environment: configurationEnvironment, submodules: false, invocation: invocation)
             scratch = nil
             process.executableURL = git
             process.arguments = ["--no-pager"] + options + arguments
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
         } else {
-            configuration = nil
             let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bello-git-read-" + UUID().uuidString).resolvingSymlinksInPath()
             self.scratch = scratch
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            process.arguments = ["-D", "GIT=" + git.path, "-D", "TEMP=" + scratch.path, "-p", Self.profile, git.path,
+            let profile = Self.profile + (regularFilesOnly ? Self.regularFileProfile : "")
+            process.arguments = ["-D", "GIT=" + git.path, "-D", "TEMP=" + scratch.path, "-p", profile, git.path,
                                  "--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false"] + arguments
             environment["TMPDIR"] = scratch.path + "/"
         }
@@ -89,6 +103,15 @@ public struct GitReadProcess {
     (deny network*)
     (deny file-write*)
     (allow file-write* (literal "/dev/null") (subpath (param "TEMP")))
+    """
+
+    // Inventory must not consume a FIFO or a process-specific device before
+    // deciding whether the eventual command needs confinement.
+    private static let regularFileProfile = """
+
+    (deny file-read-data
+        (require-not (require-any (vnode-type REGULAR-FILE)
+                                 (vnode-type DIRECTORY) (literal "/dev/null"))))
     """
 
     /// xcrun uses the selected developer tools, never PATH or repository config.
