@@ -75,10 +75,12 @@ extension WorkspaceModel {
         if renderedAgentProse {
             let view = displays[id]
             let presented = view?.versionView == nil ? view?.presentedMessages ?? [] : []
+            let rawReplies = view?.disclosure.rawReplies ?? []
+            let fetchedInputs = view?.toolInputs.snapshot() ?? [:]
             if let path = item.path {
-                return try await history.searchContent(path: path, query: query, start: start, renderedAgentProse: true, managedChild: item.isSubagent, presented: presented)
+                return try await history.searchContent(path: path, query: query, start: start, renderedAgentProse: true, managedChild: item.isSubagent, presented: presented, rawReplies: rawReplies, fetchedInputs: fetchedInputs, agentPresentation: view?.agentPresentation)
             }
-            return try await history.searchPresented(presented, query: query, start: start)
+            return try await history.searchPresented(presented, query: query, start: start, rawReplies: rawReplies, fetchedInputs: fetchedInputs)
         }
         if opened.contains(id), let host = hosts[item.workspaceID] {
             let value = try await host.request("session.content.search", sessionID: id, params: ["query": .string(query), "start": .number(Double(start))])

@@ -2,9 +2,9 @@ import Foundation
 
 // Copy targets for a markdown message: the introduction, each heading's
 // section (through its nested subsections, not its peers) and each code
-// block's exact source without fences or container prefixes. A line scanner
-// finds them in the source itself, so what reaches the clipboard is the
-// author's bytes, never a re-rendering.
+// block's exact source without fences or container prefixes. Sections use
+// the renderer's top-level headings and source offsets; a line scanner finds
+// code bytes. Neither re-renders the author's Markdown for the clipboard.
 
 struct MarkdownCopyTarget: Equatable, Sendable {
     enum Kind: Equatable, Sendable { case introduction, whole, section(level: Int), code }
@@ -68,29 +68,6 @@ enum TranscriptCopy {
         while let p = expected.first, let t = remaining.first, p == t || (p == " " && t == "\t") { expected = expected.dropFirst(); remaining = remaining.dropFirst() }
         return remaining
     }
-    private static func atxHeading(_ text: Substring) -> (level: Int, title: String)? {
-        let body = text.dropFirst(min(3, indentation(text)))
-        let level = body.prefix { $0 == "#" }.count
-        guard (1...6).contains(level) else { return nil }
-        let after = body.dropFirst(level)
-        guard after.isEmpty || after.first == " " || after.first == "\t" else { return nil }
-        var title = after.trimmingCharacters(in: .whitespaces)
-        while title.hasSuffix("#") { title.removeLast() }
-        return (level, title.trimmingCharacters(in: .whitespaces))
-    }
-    private static func setextUnderline(_ text: Substring) -> Int? {
-        let body = text.dropFirst(min(3, indentation(text))).trimmingCharacters(in: .whitespaces)
-        guard let first = body.first, first == "=" || first == "-", body.allSatisfy({ $0 == first }) else { return nil }
-        return first == "=" ? 1 : 2
-    }
-    private static func isContainerLine(_ text: Substring) -> Bool {
-        let trimmed = text.drop { $0 == " " }
-        if trimmed.first == ">" { return true }
-        if let first = trimmed.first, first == "-" || first == "*" || first == "+", trimmed.dropFirst().first == " " { return true }
-        if let digits = trimmed.firstIndex(where: { !$0.isNumber }), digits > trimmed.startIndex, digits < trimmed.endIndex, trimmed[digits] == "." || trimmed[digits] == ")", trimmed.index(after: digits) < trimmed.endIndex, trimmed[trimmed.index(after: digits)] == " " { return true }
-        return false
-    }
-
     private final class CachedTargets: Sendable {
         let targets: [MarkdownCopyTarget]
         init(_ targets: [MarkdownCopyTarget]) { self.targets = targets }
@@ -109,7 +86,11 @@ enum TranscriptCopy {
     }
     private static func scan(_ source: String) -> [MarkdownCopyTarget] {
         let lines = lines(of: source)
-        var headings: [Heading] = []
+        let headings: [Heading] = TranscriptMarkdown.locatedBlocks(source, style: .prose).compactMap { located in
+            guard case .heading(let level, _, let title) = located.block else { return nil }
+            let start = source.utf8.index(source.utf8.startIndex, offsetBy: located.offset)
+            return Heading(level: level, title: title, start: start)
+        }
         var codes: [String] = []
         var index = 0
         var previousBlank = true
@@ -154,14 +135,6 @@ enum TranscriptCopy {
                 previousBlank = false
                 continue
             }
-            if !isContainerLine(line.text) {
-                if let heading = atxHeading(line.text), !blank {
-                    headings.append(Heading(level: heading.level, title: heading.title, start: line.start))
-                } else if !blank, !previousBlankIsHeadingBoundary(lines, index), index + 1 < lines.count, let level = setextUnderline(lines[index + 1].text), !lines[index + 1].text.isEmpty, !isContainerLine(lines[index + 1].text) {
-                    headings.append(Heading(level: level, title: line.text.trimmingCharacters(in: .whitespaces), start: line.start))
-                    index += 2; previousBlank = false; continue
-                }
-            }
             previousBlank = blank
             index += 1
         }
@@ -179,6 +152,4 @@ enum TranscriptCopy {
         for code in codes { targets.append(MarkdownCopyTarget(kind: .code, label: "Copy code", text: code)) }
         return targets
     }
-    /// A setext underline needs a paragraph line right above it; a line that is itself a heading never becomes one.
-    private static func previousBlankIsHeadingBoundary(_ lines: [Line], _ index: Int) -> Bool { atxHeading(lines[index].text) != nil }
 }

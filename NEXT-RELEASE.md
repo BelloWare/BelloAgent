@@ -137,6 +137,70 @@
 - [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
 - [x] Round-12 seventh follow-up: generation-fenced pause messages and a two-phase Resume preserve the family through late publications, Stop, new pauses and failed acceptance writes. Stale-message matrix, transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-7--generation-fences-and-two-phase-resume).
 - [x] Round-12 eighth follow-up: side membership changes survive unload and restart through durable acknowledgments; automatic retirement includes applied but unpublished pauses, and recovered transfers stay root-owned. Lifecycle audit, warning comparison and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-8--durable-membership-intents-and-runtime-retirement).
+- [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and list-fence comments and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Heading Copy preserves CR, CRLF and mixed source line endings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches formatted exposed reasoning and opens matching folded timeline prose, including opaque/correction parts, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find follows View Raw in saved and unsaved replies and in completed timeline segments while later segments stream; arriving segments keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Refreshing Find after a source-view change preserves the reader's newest Next/Previous selection without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find shares the native Markdown text builder, preserving visible list numbers, headings, code, links and table previews in saved/live replies and agent prose. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Tool Find uses the native card model's formatted JSON and decoded command/edit/read content, preserving saved/live input presentation and searchable file/agent labels. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Pending Find navigation keeps its match identity when refreshed results change its index. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find exposes and lays out an expanded tool-card body before counting matches, including quoted edit text beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps the existing highlight when rendered counts clamp its occurrence, without a new navigation request. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved user/status Find searches displayed text, including image-only labels and display overrides, without export headings; source export stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens compaction summaries using the saved row's exact display prefix. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens execution parts while preserving the visible caption, including executions with no timeline body. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches displayed branch, failure, version and request details without adding export headings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Managed-child Find preserves the first task's rendered presentation and later user messages' literal text. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved agent Find retains visible attribution and omits absent-note separators. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Agent cards with unavailable attribution search their displayed notice. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find distinguishes standalone Markdown tool-result rows from literal results paired with their call cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find consumes the transcript planner's normalized rows, including orphan request ledgers, legacy recovery prose/reasoning and unfinished-operation notices. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find suppresses superseded ledgers and duplicate checkpoints using the active history branch, including dependencies across decoding windows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps paired tool inputs/results in their displayed card format without duplicate output, including distant receipts and unsupported-timeline recovery rows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find preserves the captured completed-row presentation when a final reply is appended during a search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find resolves captured tool output ownership across history-page boundaries, preserving one occurrence per displayed payload and highlighting an already-loaded card without fetching its receipt. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reconciliation keeps call-input occurrences separate from receipt-owned output, including partially loaded tool cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves the first managed task's agent attribution after it leaves the loaded page. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Unloaded agent rows and distant tool receipts share the display's agent presentation, including child numbers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find uses cached full tool arguments in retained, unsaved and folded cards, keyed by reply and call. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Arriving full arguments refresh Find without creating navigation focus. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find refreshes preserve an already-pending reader navigation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find opens closed cards using their cached full arguments when locating a match. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find expands fetched edit content using the actual native card model, including matches beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find retains the displayed file header on linked I/O fallback cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Fetched sub-agent task bodies keep the original visible row heading in Find. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find dependency lookups index active-branch positions, bounding reused tool-call IDs without scanning and sorting every reuse. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields between bounded scan batches so history paging can finish while a search runs. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Cancelling Find preserves the warm paging index; failed old searches do not discard a newer cached snapshot. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Read/diff card expansion belongs to the tool occurrence and survives native-host eviction without stale row heights. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Reordered full-table cells show and copy the value from the clicked column's stable identity. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find charges primary, captured and dependency reads to one yielding 16 MiB budget and memoizes each issuer/receipt by source offset with bounded cache memory. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses issuer ownership for tool-start rows and indexed presence for recovery/operation dependencies, avoiding repeated large-peer decoding. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Wide agent tool rounds normalize each receipt’s own card without repeatedly parsing its siblings’ arguments or stalling history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find keeps the displayed first error line of failed edit/write cards searchable, with receipt ownership and hidden details preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses bounded dependency summaries across continuation pages of the same query, journal revision and display state; replacement and cancellation release them. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide legacy tool rounds consume ordered card fragments without retaining or joining all receipt bodies; transient spill files are anonymous and close with the issuer. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide receipt joins plan only their own timeline segments, preserving the full issuer’s canonical display order. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields after receipt projection, including large standalone Markdown results, so source-byte budgets also leave time for history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find batches unanswered-call ownership lookups and card projections even when there are no receipt decodes to trigger a yield. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find snippets have a UTF-8 byte bound as well as a character bound, keeping the match visible beside oversized combining-character sequences. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves and focuses failed edit/write diff inputs when their error summaries belong to separate receipts. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Repeated read/diff cards share the occurrence’s stored expansion value through clicks, Find, refresh and remount, without adding fold animation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find searches selection-copy text, normalizing Markdown list markers, block/table breaks and preview chrome, with exact rendered highlight mapping and literal raw/code whitespace preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Copy and Find apply every marked block separator independently of color/style runs, keeping cached matches stable through syntax coloring. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 
