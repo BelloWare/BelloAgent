@@ -5,6 +5,20 @@ import XCTest
 @testable import PiApp
 
 final class FileReviewStateTests: XCTestCase {
+    @MainActor func testAFileFixtureThatFailsToOpenPreservesItsCallersResolver() throws {
+        let root = scratchRoot("file-review-init")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data("fixture".utf8).write(to: blocked)
+        let previous = FileTab.resolveProject
+        FileTab.resolveProject = { _ in .untrusted(name: "outer fixture") }
+        defer { FileTab.resolveProject = previous }
+        XCTAssertThrowsError(try FileReviewFixture(root: blocked.appendingPathComponent("child")))
+        XCTAssertEqual(FileTab.resolveProject(nil), .untrusted(name: "outer fixture"),
+                       "A failed fixture has no close() to restore its caller's resolver")
+    }
+
     @MainActor func testNestedFileHistoryKeepsSingleProjectRepositoryReachable() async throws {
         try await checkNestedHistoryRepositoryChoices(multipleRoots: false)
     }
@@ -506,13 +520,13 @@ final class FileReviewStateTests: XCTestCase {
     let tab: FileTab
     let window: NSWindow
     private let projectResolver: (String?) -> FileProjectState
-    init() throws {
-        projectResolver = FileTab.resolveProject
-        FileTab.resolveProject = { $0 == nil ? .none : .removed }
-        root = scratchRoot("file-review")
+    init(root: URL = scratchRoot("file-review")) throws {
+        self.root = root
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         url = root.appendingPathComponent("Reader.swift")
         try (0..<500).map { "// PRIVATE FIXTURE CONTENT row \($0)" }.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        projectResolver = FileTab.resolveProject
+        FileTab.resolveProject = { $0 == nil ? .none : .removed }
         tab = FileTab(url: url, projectID: nil)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

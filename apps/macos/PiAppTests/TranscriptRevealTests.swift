@@ -6,6 +6,12 @@ import AppKit
 /// loaded or not — a place in it marked and shown, the newest of quick
 /// requests winning, and a finished turn that folded the message opening.
 final class TranscriptRevealTests: XCTestCase {
+    @MainActor override func setUp() async throws { installSidebarRevealHook(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkSidebarRevealSetup(self) { try await self.setUp() }
+    }
+
     @MainActor private func chat(turns: Int = 120, bigOutputTurn: Int? = nil) async throws -> LongChatScroll {
         let chat = try await LongChatScroll(turns: turns, bigOutputTurn: bigOutputTurn)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)

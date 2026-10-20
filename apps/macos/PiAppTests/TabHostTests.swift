@@ -9,6 +9,12 @@ import SwiftUI
 /// without closing; and brought back after a relaunch, windows where they
 /// were, kinds unknown left out.
 final class TabHostTests: XCTestCase {
+    @MainActor override func setUp() async throws { installStandaloneFileResolver(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     /// A tab's content fills the room its pane or window gives it, whatever
     /// size its own content asks for, and never sizes the pane.
     @MainActor func testTabContentFillsItsRoomWithoutItsContentsIntrinsicSize() throws {
@@ -343,6 +349,7 @@ final class TabHostTests: XCTestCase {
 
         let again = host(defaults)
         again.restore()
+        XCTAssertTrue(again.allTabs.compactMap { $0 as? FileTab }.allSatisfy(\.readable), "Restored standalone files keep their readable fixture context")
         XCTAssertEqual(again.pane.tabs.map(\.key), files[0...2].map { FileTab.key(for: $0) }, "the pane's, in order, the unknown left out")
         XCTAssertEqual(again.pane.activeTab?.key, FileTab.key(for: files[1]))
         XCTAssertTrue(again.pane.sideShown)

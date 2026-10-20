@@ -6,6 +6,12 @@ import XCTest
 // The shared-pass byte counts depend on concurrent requests reaching the
 // reader together. Competing test hosts change that batching window.
 final class FileSyntaxTests: XCTestCase, SerialTestLane {
+    @MainActor override func setUp() async throws { installStandaloneFileResolver(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     @MainActor func testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine() async throws {
         try await paintProvisionalLine(beforeOpen: true)
     }
