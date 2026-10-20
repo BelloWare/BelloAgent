@@ -167,7 +167,8 @@ extension AgentSession {
         result["revision"] = JSON(contentRevision)
         if params["retained"].flag == true {
             result["digest"] = JSON(content.digest); result["incarnation"] = JSON(displayEpoch)
-            result["revision"] = JSON("\(contentRevision):\(sequence)")
+            result["rowHashes"] = JSON(content.encodedRowHashes)
+            result["revision"] = JSON(content.revision)
         }
         return result
     }
@@ -182,15 +183,26 @@ extension AgentSession {
         if let incarnation = params["incarnation"].text, incarnation != displayEpoch { throw AgentError("history_changed", "The conversation runtime changed; validate the retained selection") }
         let first = try boundedInt(params["first"], fallback: 1, maximum: 100000), last = try boundedInt(params["last"], maximum: 100000)
         let index = try boundedInt(params["index"], fallback: 1, maximum: 100000), offset = try boundedInt(params["offset"], maximum: 128*1024*1024)
-        let content = try await retainedContent()
-        func validate() throws {
-            guard content.key == contentKey, [contentRevision, "\(contentRevision):\(sequence)"].contains(params["revision"].text ?? "") else {
+        let digest = params["digest"].text
+        if digest != nil, params["incarnation"].text != displayEpoch { throw AgentError("history_changed", "The conversation runtime changed; validate the retained selection") }
+        while true {
+            let key = contentKey
+            let content: RetainedContent
+            do { content = try await retainedContent() }
+            catch let error as AgentError where digest != nil && error.code == "history_changed" { continue }
+            catch is CancellationError where digest != nil && !Task.isCancelled && key != contentKey { continue }
+            // Legacy readers bind the whole snapshot. Range-aware readers carry
+            // their original row identities, so an unrelated row may change.
+            if digest == nil, ![contentRevision, content.revision].contains(params["revision"].text ?? "") {
                 throw AgentError("history_changed", "History changed; refresh the selection")
             }
+            let page = try await BlockingWorkExecutor.shared.run { try content.page(first: first, last: last, index: index, offset: offset, digest: digest, cancellation: $0) }
+            try throwIfClosed(); try Task.checkCancellation()
+            if content.key != contentKey {
+                if digest != nil { continue }
+                throw AgentError("history_changed", "History changed; refresh the selection")
+            }
+            return page
         }
-        try validate()
-        let page = try await BlockingWorkExecutor.shared.run { try content.page(first: first, last: last, index: index, offset: offset, cancellation: $0) }
-        try throwIfClosed(); try Task.checkCancellation(); try validate()
-        return page
     }
 }

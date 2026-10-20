@@ -23,8 +23,18 @@ private final class ContentReadBytes: @unchecked Sendable {
     func add(_ count: Int) { lock.withLock { bytes += count } }
 }
 
+private actor ContentStreamClient: ModelClient {
+    private var callback: (@Sendable (StreamDelta) async throws -> Void)?
+    var ready: Bool { callback != nil }
+    func emit(_ delta: StreamDelta) async throws { try await callback?(delta) }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        callback = onDelta
+        while true { try await Task.sleep(for: .milliseconds(10)) }
+    }
+}
+
 final class ConversationReadTests: XCTestCase {
-    private func fixture(rows: Int = 130) async throws -> AgentSession {
+    private func fixture(rows: Int = 130, client: (any ModelClient)? = nil) async throws -> AgentSession {
         let root = try temporaryDirectory(), path = root.appendingPathComponent("copy.jsonl"), profile = try fixtureProfile()
         do {
             let journal = try SessionJournal(url: path, id: "copy", cwd: root, binding: profile.binding, create: true)
@@ -34,10 +44,105 @@ final class ConversationReadTests: XCTestCase {
             }
             try journal.synchronize()
         }
-        let session = try AgentSession(id: "copy", profile: profile, apiKey: "fixture", cwd: root, directory: root, readOnly: true,
-            resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: path.path)
+        let session = try AgentSession(id: "copy", profile: profile, apiKey: "fixture", cwd: root, directory: root, readOnly: client == nil,
+            resources: Resources(cwd: root, home: root), client: client ?? ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: path.path)
         addTeardownBlock { await session.close(); try? FileManager.default.removeItem(at: root) }
         return session
+    }
+
+    func testStreamingDeltaBetweenSearchAndFirstCopyPageKeepsSelection() async throws {
+        try await copyWhileStreaming(betweenPages: false)
+    }
+    func testStreamingDeltaBetweenCopyPagesKeepsSelection() async throws {
+        try await copyWhileStreaming(betweenPages: true)
+    }
+    private func copyWhileStreaming(betweenPages: Bool) async throws {
+        let client = ContentStreamClient(), session = try await fixture(rows: 2, client: client)
+        let body = String(repeating: "Retained 🌍 text ", count: 4000), expected = "## assistant\n\n" + body + "\n\n"
+        await session.copyFixtureContent([textBlock(body)])
+        _ = try await session.submit(Submission(commandID: "stream", turnID: "stream", text: "Continue"), steer: false)
+        try await eventually { await client.ready }
+        let found = try await session.contentSearch(["retained": true]), generation = await session.contentGeneration
+        let row = Data("2:r0\(expected.utf8.count):\(expected)".utf8)
+        let digest = sha256(Data(SHA256.hash(data: row)))
+        var params: JSON = ["first": 1, "last": 1, "index": 1, "offset": 0, "revision": found["revision"],
+            "incarnation": found["incarnation"], "digest": JSON(digest)]
+        var copied = ""
+        if betweenPages {
+            let first = try await session.contentPage(params)
+            copied = first["text"].text ?? ""
+            params["offset"] = first["next"]["offset"]
+            XCTAssertFalse(first["next"].isNull)
+        }
+        let sequence = await session.sequence
+        try await client.emit(.text("A real unretained streaming delta"))
+        let advanced = await session.sequence, retained = await session.contentGeneration
+        XCTAssertGreaterThan(advanced, sequence); XCTAssertEqual(retained, generation)
+        while true {
+            let page = try await session.contentPage(params)
+            copied += page["text"].text ?? ""
+            if page["next"].isNull { break }
+            params["offset"] = page["next"]["offset"]
+        }
+        XCTAssertEqual(copied, expected)
+    }
+    func testRangeIdentityIgnoresOtherRowsAndRejectsSelectedEdits() async throws {
+        let session = try await fixture(rows: 2)
+        let found = try await session.contentSearch(["retained": true])
+        let page = try await session.contentPage(["first": 1, "last": 1, "revision": found["revision"]])
+        let text = try XCTUnwrap(page["text"].text), row = Data("2:r0\(text.utf8.count):\(text)".utf8)
+        let digest = sha256(Data(SHA256.hash(data: row)))
+        let params: JSON = ["first": 1, "last": 1, "revision": found["revision"], "incarnation": found["incarnation"], "digest": JSON(digest)]
+        await session.copyFixtureContent([textBlock("Outside the selection")], index: 1)
+        let unchanged = try await session.contentPage(params)
+        XCTAssertEqual(unchanged["text"], page["text"])
+        await session.copyFixtureContent([textBlock("Changed selected row")])
+        do { _ = try await session.contentPage(params); XCTFail("Accepted changed selected text") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "history_changed") }
+    }
+    func testSupersededSnapshotLoadRetriesAnUnchangedSelectedRange() async throws {
+        let session = try await fixture(rows: 2)
+        let found = try await session.contentSearch(["retained": true])
+        let page = try await session.contentPage(["first": 1, "last": 1, "revision": found["revision"]])
+        let text = try XCTUnwrap(page["text"].text), row = Data("2:r0\(text.utf8.count):\(text)".utf8)
+        let params: JSON = ["first": 1, "last": 1, "revision": found["revision"],
+            "incarnation": found["incarnation"], "digest": JSON(sha256(Data(SHA256.hash(data: row))))]
+        await session.copyFixtureContent([textBlock("Other row changes")], index: 1)
+        let gate = ContentReadGate()
+        await session.noteHistoryPageSteps { gate.step($0) }
+        let copy = Task { try await session.contentPage(params) }
+        defer { gate.open(); copy.cancel() }
+        try await eventually { gate.count > 0 }
+        await session.copyFixtureContent([textBlock("Other row changes again")], index: 1)
+        let search = Task { try await session.contentSearch(["retained": true]) }
+        defer { search.cancel() }
+        try await eventually { gate.count > 1 }
+        gate.open()
+        _ = try await search.value
+        let result = try await copy.value
+        XCTAssertEqual(result["text"], page["text"])
+    }
+    func testLargeRangeIdentityUsesBoundedDisplayTransfer() throws {
+        let messages = (0..<25_000).map { _ in ChatMessage(role: "assistant", content: [textBlock("fixture")]) }
+        let content = try RetainedContent.build(key: .init(generation: 0, revision: "fixture"), older: nil,
+            visible: messages, url: nil, cancellation: BlockingWorkCancellation(), step: nil)
+        let payload: JSON = ["rowHashes": JSON(content.encodedRowHashes), "revision": JSON(content.revision)]
+        XCTAssertGreaterThan(try payload.data().count, HostProtocol.frameBytes)
+        var transfers = DisplayResultTransfers()
+        let output = NativeHostService.boundedReply(epoch: "fixture", "copy", .success(payload), transfer: { try transfers.insert($0) })
+        guard case .encoded(let frame) = output else { return XCTFail("Expected a bounded encoded reply") }
+        XCTAssertLessThanOrEqual(frame.count, HostProtocol.frameBytes)
+        let result = try JSON.parse(frame)["result"], id = try XCTUnwrap(result["id"].text)
+        var offset = 0, bytes = Data()
+        while true {
+            let part = try transfers.read(id, offset: offset)
+            XCTAssertLessThan(try part.data().count, HostProtocol.frameBytes)
+            bytes.append(try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(part["data"].text))))
+            if part["next"].isNull { break }
+            offset = try XCTUnwrap(part["next"].int)
+        }
+        XCTAssertEqual(try JSON.parse(bytes), payload)
+        XCTAssertEqual(Data(base64Encoded: content.encodedRowHashes)?.count, messages.count * 32)
     }
 
     func testEmptyAndUncoveredTimelinesKeepCanonicalAnswer() throws {
@@ -204,8 +309,8 @@ final class ConversationReadTests: XCTestCase {
 }
 
 private extension AgentSession {
-    func copyFixtureContent(_ blocks: [JSON]) {
-        visible[0].content = blocks; history[0].content = blocks
+    func copyFixtureContent(_ blocks: [JSON], index: Int = 0) {
+        visible[index].content = blocks; history[index].content = blocks
         invalidateDisplay()
     }
 }

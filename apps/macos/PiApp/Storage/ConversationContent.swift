@@ -14,6 +14,7 @@ struct ContentSearch: Codable, Sendable {
     struct Source: Codable, Sendable { var sessionID: String; var workspaceID: String; var path: String?; var hostEpoch: String? }
     var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String
     var digest: String? = nil, incarnation: String? = nil
+    var rowHashes: Data? = nil
     var source: Source? = nil
 }
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }

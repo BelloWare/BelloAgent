@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// The app and helper adapt their JSON values; all retained copy/search text
 /// is formatted here, independently of the rendered transcript.
@@ -10,6 +11,20 @@ protocol RetainedConversationValue: Encodable {
 
 enum RetainedConversation {
     static let edit = "## Edit\n\nEdited from here · earlier replies stay in the journal\n\n"
+
+    /// Fixed-size row identities let a sheet choose any retained range after
+    /// searching, including after its helper source disappears.
+    static func fingerprint(id: String, text: String) -> Data {
+        var hash = SHA256()
+        for value in [id, text] {
+            hash.update(data: Data("\(value.utf8.count):".utf8)); hash.update(data: Data(value.utf8))
+        }
+        return Data(hash.finalize())
+    }
+    static func rangeDigest(_ rows: Data, first: Int, last: Int) -> String? {
+        guard rows.count % 32 == 0, first >= 1, last >= first, last <= rows.count / 32 else { return nil }
+        return SHA256.hash(data: rows.subdata(in: (first - 1) * 32..<last * 32)).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// The same recovery presentation used by journal replay and saved-source
     /// copy/search. It marks the receipt gap without inventing a saved outcome.

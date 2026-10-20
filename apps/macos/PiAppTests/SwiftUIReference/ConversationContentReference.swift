@@ -132,9 +132,10 @@ struct ConversationContentReference: View {
     }
     private func collect(first: Int, last: Int, limit: Int, failure: String) async throws -> Data {
         let selection = result
+        guard let hashes = selection.rowHashes, let digest = await model.history.contentRangeDigest(hashes, first: first, last: last) else { throw StoreError.invalidRecord }
         var bytes = Data(), cursor: ContentCursor? = .init(index: first, offset: 0)
         while let next = cursor {
-            let page = try await model.conversationPage(sessionID, first: first, last: last, cursor: next, selection: selection)
+            let page = try await model.conversationPage(sessionID, first: first, last: last, cursor: next, selection: selection, digest: digest)
             guard bytes.count + page.text.utf8.count <= limit else { throw HostError.failure(failure) }
             bytes.append(contentsOf: page.text.utf8); cursor = page.next
         }

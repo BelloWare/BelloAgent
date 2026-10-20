@@ -3,7 +3,7 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class ConversationCopyTests: XCTestCase, SerialTestLane {
-    private func fixture(omitArguments: Bool = false) async throws -> (WorkspaceModel, ChatRecord, HostSupervisor, String) {
+    private func fixture(omitArguments: Bool = false, streaming: Bool = false) async throws -> (WorkspaceModel, ChatRecord, HostSupervisor, String) {
         let setup = try await gatewayWorkspace("conversation-copy", projectID: "copy")
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
         registerWorkspaceFixtureTeardown(model, root: setup.root)
@@ -17,8 +17,8 @@ import XCTest
         _ = try await host.request("session.close", sessionID: item.id)
         model.helperSessionDidUnload(item.id)
         let records = try Data(contentsOf: URL(fileURLWithPath: path)).split(separator: 10).map { try JSONDecoder().decode(WireValue.self, from: Data($0)) }
-        var call: [String: WireValue] = ["type": .string("toolCall"), "id": .string("call"), "name": .string("echo")]
-        if !omitArguments { call["arguments"] = .object(["text": .string("COPY-ARGUMENT")]) }
+        var call: [String: WireValue] = ["type": .string("toolCall"), "id": .string("call"), "name": .string(streaming ? "read" : "echo")]
+        if !omitArguments { call["arguments"] = .object([streaming ? "path" : "text": .string("COPY-ARGUMENT")]) }
         let message: WireValue = .object(["role": .string("assistant"), "content": .array([
             .object(["type": .string("text"), "text": .string("COPY-TEXT " + String(repeating: "🌍 retained text ", count: 4000))]),
             .object(["type": .string("thinking"), "thinking": .string("COPY-REASONING")]),
@@ -27,7 +27,7 @@ import XCTest
         let row: [String: WireValue] = ["type": .string("message"), "id": .string("answer"), "parentId": try XCTUnwrap(records.last?.object?["id"]), "message": message]
         try ContentSearchTests.append(JSONEncoder().encode(row) + Data([10]), to: path)
         for (id, parent, value) in [
-            ("receipt", "answer", WireValue.object(["role": .string("toolResult"), "toolCallId": .string("call"), "toolName": .string("echo"), "content": .string("COPY-RESULT")])),
+            ("receipt", "answer", WireValue.object(["role": .string("toolResult"), "toolCallId": .string("call"), "toolName": .string(streaming ? "read" : "echo"), "content": .string("COPY-RESULT")])),
             ("final", "receipt", WireValue.object(["role": .string("assistant"), "content": .string("COPY-FINAL")]))
         ] {
             try ContentSearchTests.append(JSONEncoder().encode(WireValue.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent), "message": value])) + Data([10]), to: path)
@@ -48,6 +48,86 @@ import XCTest
         model.scheduleIdle(workspaceID: chat.workspaceID, host: host)
         try await eventually("The idle helper retired") { !host.isReady && !model.opened.contains(chat.id) }
         try await host.shutdownAndWait()
+    }
+    func testCompletedRangeSurvivesStreamingAndDiskHandoffDuringTheResponse() async throws {
+        try await copyDuringResponse(handoffFirst: false)
+    }
+    func testCompletedRangeHandsOffWithAnActiveUnselectedLedger() async throws {
+        try await copyDuringResponse(handoffFirst: true)
+    }
+    private func copyDuringResponse(handoffFirst: Bool) async throws {
+        let (model, chat, host, expected) = try await fixture(streaming: true)
+        let gatewayRoot = model.root.deletingLastPathComponent()
+        func waitForDelta(_ step: Int) async throws {
+            try await eventually("The real gateway delta \(step) reaches the helper") {
+                let snapshot = try await host.request("session.snapshot", sessionID: chat.id)
+                if let failure = snapshot.object?["preflightError"]?.string { throw HostError.failure(failure) }
+                return snapshot.object?["messages"]?.array?.contains { message in
+                    message.object?["text"]?.string?.contains("COPY-STREAM-\(step)") == true
+                } == true
+            }
+        }
+        func release(_ step: Int) throws { try Data().write(to: gatewayRoot.appendingPathComponent("release-copy-\(step)")) }
+        _ = try await host.request("turn.submit", sessionID: chat.id, params: ["text": .string("copy selection streaming fixture"), "clientTurnId": .string("copy-stream")])
+        try await waitForDelta(1)
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id), found = try await source.search("", 0)
+        if handoffFirst {
+            model.opened.remove(chat.id); defer { model.opened.insert(chat.id) }
+            let copied = try await collect(source, result: found)
+            XCTAssertEqual(copied, expected)
+            let snapshot = try await host.request("session.snapshot", sessionID: chat.id)
+            XCTAssertEqual(snapshot.object?["state"], .string("running"))
+            for step in 1...3 { try release(step) }
+            return
+        }
+        try release(1); try await waitForDelta(2)
+        let first = try await source.page(1, 1, .init(index: 1, offset: 0), found.revision)
+        var cursor = try XCTUnwrap(first.next), copied = first.text
+        try release(2); try await waitForDelta(3)
+        let second = try await source.page(1, 1, cursor, found.revision)
+        cursor = try XCTUnwrap(second.next); copied += second.text
+        // Retire the reader's helper source while the physical response remains
+        // at its final barrier. The active ledger is outside this selected row.
+        model.opened.remove(chat.id); defer { model.opened.insert(chat.id) }
+        while true {
+            let page = try await source.page(1, 1, cursor, found.revision)
+            copied += page.text
+            guard let next = page.next else { break }; cursor = next
+        }
+        XCTAssertEqual(copied, expected)
+        let snapshot = try await host.request("session.snapshot", sessionID: chat.id)
+        XCTAssertEqual(snapshot.object?["state"], .string("running"))
+        try release(3)
+    }
+    func testSavedSelectionsValidateOnlyTheirRange() async throws {
+        for selected in [1, 3] {
+            let (model, chat, host, answer) = try await fixture()
+            try await retire(model, chat: chat, host: host)
+            let source = ConversationContentSource.workspace(model, sessionID: chat.id), found = try await source.search("", 0)
+            let path = URL(fileURLWithPath: try XCTUnwrap(chat.path))
+            let outside = selected == 1 ? "COPY-FINAL" : "COPY-TEXT"
+            var saved = try String(contentsOf: path, encoding: .utf8)
+            try Data(saved.replacingOccurrences(of: outside, with: "EDIT-OTHER").utf8).write(to: path)
+            var cursor: ContentCursor? = .init(index: selected, offset: 0), copied = "", appended = false
+            while let next = cursor {
+                let page = try await source.page(selected, selected, next, found.revision)
+                copied += page.text; cursor = page.next
+                if cursor != nil, !appended {
+                    let records = try LifecycleHelperTests.records(path.path)
+                    let row: WireValue = .object(["type": .string("message"), "id": .string("later"),
+                        "parentId": records.last?["id"] ?? .null,
+                        "message": .object(["role": .string("user"), "content": .string("Appended outside the selection")])])
+                    try ContentSearchTests.append(JSONEncoder().encode(row) + Data([10]), to: path.path)
+                    appended = true
+                }
+            }
+            XCTAssertEqual(copied, selected == 1 ? answer : "## assistant\n\nCOPY-FINAL\n\n")
+            saved = try String(contentsOf: path, encoding: .utf8)
+            let inside = selected == 1 ? "COPY-TEXT" : "COPY-FINAL"
+            try Data(saved.replacingOccurrences(of: inside, with: "EDIT-INSIDE").utf8).write(to: path)
+            do { _ = try await source.page(selected, selected, .init(index: selected, offset: 0), found.revision); XCTFail("Accepted changed selected bytes") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("History changed"), error.localizedDescription) }
+        }
     }
     func testLiveAndDiskCopyRetainTheSameCompleteAssistantRange() async throws {
         for omitArguments in [false, true] {

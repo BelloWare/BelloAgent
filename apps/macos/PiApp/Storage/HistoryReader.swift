@@ -809,7 +809,7 @@ actor HistoryReader {
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
-    func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
+    func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, retained: Bool = false, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
                        agentPresentation: AgentTranscriptPresentation? = nil) async throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
@@ -889,6 +889,7 @@ actor HistoryReader {
             cursor += 1
         }
         try searchReadObserver?(.scanned)
+        let hashes = retained && !renderedAgentProse ? try contentRowHashes(path: path, file: file, identity: identity, branch: branch) : nil
         if let prefix {
             try validateSearchSnapshot(file, path: path, identity: identity, digest: prefix)
             searchDigests[path] = (identity, prefix)
@@ -899,7 +900,7 @@ actor HistoryReader {
         if generation == searchGeneration, cursor < total {
             searchContinuation = .init(scope: scope, next: cursor, cache: cache)
         }
-        return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity))
+        return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity), rowHashes: hashes)
     }
     /// An unsent side or a delegated-task placeholder has no journal yet.
     func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:]) throws -> ContentSearch {
@@ -914,30 +915,62 @@ actor HistoryReader {
         }
         return .init(hits: hits, total: rows.count, next: cursor < rows.count ? cursor : nil, revision: "presented")
     }
-    private var contentHandoff: (path: String, digest: String, revision: String)?
-    /// Reacquire positions only when the ordered identities and complete copy
-    /// text still match. Runtime/state-only writes do not invalidate a selection.
-    func rebindContent(path: String, sessionID: String, digest: String) throws -> String {
+    private var contentHashes: (path: String, stamp: Stamp, rows: Data)?
+    private func contentRowHashes(path: String, file: FileHandle, identity: Stamp, branch: HistoryOffsetIndex) throws -> Data {
+        if let contentHashes, contentHashes.path == path, contentHashes.stamp == identity { return contentHashes.rows }
+        var hashes = Data()
+        for position in 0..<branch.count {
+            try Task.checkCancellation()
+            let ref = try branch.at(position)
+            hashes.append(try autoreleasepool { RetainedConversation.fingerprint(id: ref.id, text: try content(ref, file: file)) })
+        }
+        guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
+        contentHashes = (path, identity, hashes)
+        return hashes
+    }
+    func contentRangeDigest(_ rows: Data, first: Int, last: Int) -> String? {
+        RetainedConversation.rangeDigest(rows, first: first, last: last)
+    }
+    private var contentHandoff: (path: String, first: Int, last: Int, digest: String, revision: String)?
+    /// Only the selected identities and copy text determine validity. A live
+    /// ledger or a newly appended reply outside the range does not participate.
+    private func rebindContent(path: String, sessionID: String, first: Int, last: Int, digest: String) throws -> String {
         let file = try open(path); defer { try? file.close() }
         if let held = contentHandoff, held.path == path, held.digest == digest,
+           held.first == first, held.last == last,
            let index = indexes[path], !index.partial, index.sessionID == sessionID,
            revision(index.stamp) == held.revision, try stamp(file) == index.stamp { return held.revision }
         let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path], index.sessionID == sessionID,
               try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
-        var hash = SHA256()
-        for position in 0..<index.branch.count {
+        guard first >= 1, last >= first, last <= index.branch.count else { throw HostError.failure("History changed. Refresh the range before copying") }
+        var hashes = Data()
+        for position in (first - 1)..<last {
             try Task.checkCancellation()
-            let ref = try index.branch.at(position), text = try autoreleasepool { try content(ref, file: file) }
-            for value in [ref.id, text] {
-                hash.update(data: Data("\(value.utf8.count):".utf8)); hash.update(data: Data(value.utf8))
-            }
+            let ref = try index.branch.at(position)
+            hashes.append(try autoreleasepool { RetainedConversation.fingerprint(id: ref.id, text: try content(ref, file: file)) })
         }
-        guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest,
+        guard RetainedConversation.rangeDigest(hashes, first: 1, last: last - first + 1) == digest,
               try stamp(file) == index.stamp else { throw HostError.failure("History changed. Refresh the range before copying") }
         let revision = revision(index.stamp)
-        contentHandoff = (path, digest, revision)
+        contentHandoff = (path, first, last, digest, revision)
         return revision
+    }
+    func retainedContentPage(path: String, sessionID: String, first: Int, last: Int, cursor: ContentCursor, digest: String) throws -> ContentPage {
+        while true {
+            try Task.checkCancellation()
+            let identity = try open(path); defer { try? identity.close() }
+            let captured = try stamp(identity)
+            do {
+                let revision = try rebindContent(path: path, sessionID: sessionID, first: first, last: last, digest: digest)
+                return try copyContentPage(path: path, first: first, last: last, cursor: cursor, revision: revision)
+            } catch {
+                // A writer can append between validation and paging. Retry
+                // against the next snapshot rather than invalidate its rows.
+                let current = try open(path); defer { try? current.close() }
+                if try stamp(current) == captured { throw error }
+            }
+        }
     }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
         // Positions count every shown row, as the search that gave them did.

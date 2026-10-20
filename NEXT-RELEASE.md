@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Copy/export selections validate only their selected retained rows, surviving streaming deltas and saved-history handoff during a running response. [Validation](docs/validation/a130-wire-0.1.130.md#round-6-review).
+- [x] Retained-range copies recover when another reader supersedes their snapshot build, while preserving caller cancellation and closure checks.
 - [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
 - [x] Large live conversation exports reuse one decoded row across pages, avoiding repeated full-row reads and allocations.
 - [x] Live and saved conversation copies share one formatter; empty or incomplete timeline evidence keeps the canonical answer. [Validation](docs/validation/a130-wire-0.1.130.md#round-4-review).

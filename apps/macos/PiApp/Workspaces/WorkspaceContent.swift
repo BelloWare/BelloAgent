@@ -5,19 +5,32 @@ import AppKit
 @MainActor final class ConversationCopyReader {
     let model: WorkspaceModel, sessionID: String
     private var searchID = UUID(), selection: (token: String, result: ContentSearch)?
+    private var range: (first: Int, last: Int, digest: String)?
     init(model: WorkspaceModel, sessionID: String) { self.model = model; self.sessionID = sessionID }
     func search(_ query: String, start: Int) async throws -> ContentSearch {
         let id = UUID(); searchID = id
         let result = try await model.searchConversation(sessionID, query: query, start: start)
         guard searchID == id, !Task.isCancelled else { throw CancellationError() }
         let token = UUID().uuidString
-        selection = (token, result)
+        selection = (token, result); range = nil
         var published = result; published.revision = token
         return published
     }
     func page(first: Int, last: Int, cursor: ContentCursor, revision: String) async throws -> ContentPage {
         guard let selection, selection.token == revision else { throw HostError.failure("History changed. Refresh the range before copying") }
-        return try await model.conversationPage(sessionID, first: first, last: last, cursor: cursor, selection: selection.result)
+        let digest: String
+        if let range, range.first == first, range.last == last { digest = range.digest }
+        else {
+            guard let hashes = selection.result.rowHashes,
+                  let value = await model.history.contentRangeDigest(hashes, first: first, last: last) else { throw HostError.failure("History changed. Refresh the range before copying") }
+            try Task.checkCancellation()
+            guard self.selection?.token == revision else { throw CancellationError() }
+            digest = value; range = (first, last, digest)
+        }
+        let page = try await model.conversationPage(sessionID, first: first, last: last, cursor: cursor, selection: selection.result, digest: digest)
+        try Task.checkCancellation()
+        guard self.selection?.token == revision else { throw CancellationError() }
+        return page
     }
 }
 
@@ -111,34 +124,29 @@ extension WorkspaceModel {
             return result
         }
         guard let path = item.path else { return .init(hits: [], total: 0, next: nil, revision: "empty") }
-        var result = try await history.searchContent(path: path, query: query, start: start)
+        var result = try await history.searchContent(path: path, query: query, start: start, retained: true)
         result.source = .init(sessionID: id, workspaceID: item.workspaceID, path: path, hostEpoch: nil)
         return result
     }
-    func conversationPage(_ id: String, first: Int, last: Int, cursor: ContentCursor, selection: ContentSearch) async throws -> ContentPage {
+    func conversationPage(_ id: String, first: Int, last: Int, cursor: ContentCursor, selection: ContentSearch, digest: String) async throws -> ContentPage {
         guard let item = record(id), let source = selection.source, source.sessionID == id,
               source.workspaceID == item.workspaceID, source.path == item.path else { throw StoreError.invalidRecord }
         let host = hosts[item.workspaceID]
         if let epoch = source.hostEpoch, opened.contains(id), let host, host.isReady, host.epoch == epoch {
             do {
-                let value = try await host.request("session.content.page", sessionID: id, params: ["first": .number(Double(first)), "last": .number(Double(last)), "index": .number(Double(cursor.index)), "offset": .number(Double(cursor.offset)), "revision": .string(selection.revision), "incarnation": selection.incarnation.map(WireValue.string) ?? .null])
+                let value = try await host.request("session.content.page", sessionID: id, params: ["first": .number(Double(first)), "last": .number(Double(last)), "index": .number(Double(cursor.index)), "offset": .number(Double(cursor.offset)), "revision": .string(selection.revision), "incarnation": selection.incarnation.map(WireValue.string) ?? .null, "digest": .string(digest)])
                 return try JSONDecoder().decode(ContentPage.self, from: JSONEncoder().encode(value))
             } catch {
                 // A runtime can unload or retire while its page is awaiting IPC.
-                // Rebinding still verifies the complete original selection.
+                // Rebinding still verifies the complete selected range.
                 if case HostError.rejected(let code, _) = error, ["history_changed", "session_missing", "session_closed"].contains(code) { }
                 else if host.isReady, host.epoch == epoch, opened.contains(id) { throw error }
             }
         }
         try Task.checkCancellation()
         guard let path = source.path else { throw StoreError.invalidRecord }
-        var revision = selection.revision
-        if source.hostEpoch != nil {
-            try await host?.settleCaptureIfStopping()
-            guard let digest = selection.digest else { throw HostError.failure("History changed. Refresh the range before copying") }
-            revision = try await history.rebindContent(path: path, sessionID: id, digest: digest)
-        }
-        return try await history.copyContentPage(path: path, first: first, last: last, cursor: cursor, revision: revision)
+        if source.hostEpoch != nil { try await host?.settleCaptureIfStopping() }
+        return try await history.retainedContentPage(path: path, sessionID: id, first: first, last: last, cursor: cursor, digest: digest)
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
