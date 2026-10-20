@@ -22,6 +22,28 @@
 
 
 - [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
+- [x] Saved copy/export pages verify each decoded row against the held selection's fingerprints, rejecting in-place rewrites without rehashing the range per page. [Validation](docs/validation/a130-wire-0.1.130.md#round-10).
+- [x] Saved copy handoffs and canceled searches register their indexes with the eight-entry LRU, closing and removing evicted index files. [Validation](docs/validation/a130-wire-0.1.130.md#round-9).
+- [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
+- [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.
+- [x] Search readers reuse fingerprints for a matching snapshot; Next Results sends a new manifest only when the reader needs it.
+- [x] Copy/export returns an already validated selected-range page without retrying for unrelated appends.
+- [x] Copy/export selections validate only their selected retained rows, surviving streaming deltas and saved-history handoff during a running response. [Validation](docs/validation/a130-wire-0.1.130.md#round-6-review).
+- [x] Retained-range copies recover when another reader supersedes their snapshot build, while preserving caller cancellation and closure checks.
+- [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+- [x] Large live conversation exports reuse one decoded row across pages, avoiding repeated full-row reads and allocations.
+- [x] Live and saved conversation copies share one formatter; empty or incomplete timeline evidence keeps the canonical answer. [Validation](docs/validation/a130-wire-0.1.130.md#round-4-review).
+- [x] Kept sides normalize inherited compaction rows identically, preserving copy/export selections after helper retirement.
+- [x] Saved conversation copy and search reflect durably adopted compaction progress, matching the live helper's retained text.
+- [x] Retained conversation formatting and hashing run off the session actor and are cached per snapshot for search and copy pages.
+- [x] Live conversation source search includes the reasoning and tool arguments retained by saved-history search and Copy Conversation.
+- [x] Saved conversation copy/search applies the same recovery presentation as helper replay for unfinished request and compaction rows. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+
+- [x] Live Copy Conversation includes retained reasoning, tool arguments and message boundaries, matching saved-history copies. [Validation](docs/validation/a130-wire-0.1.130.md#round-3-hunt).
+- [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
+- [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
+- [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).

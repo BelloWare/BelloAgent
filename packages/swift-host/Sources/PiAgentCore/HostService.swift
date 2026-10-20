@@ -1075,7 +1075,7 @@ public actor NativeHostService {
         var next=try reader.next()
         // Native journals are linear. Replay as a stream, discarding old
         // presentation/state snapshots instead of retaining the complete file.
-        if next?["customType"].text == JournalRecordKind.marker {
+        if JournalRecordKind.isMarker(next?["customType"].text) {
             var replay=try ConversationReplay(), branch=JournalChainCheck()
             while let item=next {
                 let id=try identity(item["id"])
@@ -1099,7 +1099,7 @@ public actor NativeHostService {
         var chain:[JSON]=[],cursor=leaf
         while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
         chain.reverse()
-        if chain.contains(where: { $0["customType"].text == JournalRecordKind.marker }) {
+        if chain.contains(where: { JournalRecordKind.isMarker($0["customType"].text) }) {
             let replay = try ConversationReplay(chain)
             let messages = replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
             let text = messages.suffix(40).joined(separator: "\n\n"), retained = preview(text, bytes: 65536)

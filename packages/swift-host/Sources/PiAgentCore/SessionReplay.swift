@@ -321,10 +321,6 @@ extension AgentSession {
     /// A progress row the journal holds no terminal receipt for, as a replay
     /// leaves it: interrupted, with the gap said. False for any other row.
     static func endWithoutReceipt(_ message: inout ChatMessage) -> Bool {
-        guard ["execution","requestLedger"].contains(message.kind ?? ""), message.responseTimeline?.terminal == nil else { return false }
-        message.responseTimeline?.finish("interrupted")
-        message.responseTimeline?.coverage = "partial"
-        message.detail = (message.kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
-        return true
+        RetainedConversation.endWithoutReceipt(kind: message.kind, timeline: &message.responseTimeline, detail: &message.detail)
     }
 }

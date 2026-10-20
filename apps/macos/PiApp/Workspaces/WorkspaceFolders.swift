@@ -85,9 +85,10 @@ extension WorkspaceModel {
         catch { self.error = error.localizedDescription }
     }
 
-    /// True while chats or unkept sides of this workspace are running, queued or loading.
+    /// Includes Inspector work until its result retention is acknowledged.
     func workspaceHasActiveWork(_ workspaceID: String) -> Bool {
         workspaceChangesInFlight.contains(workspaceID)
+            || resourceInvocations[workspaceID] != nil
             || sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending }
             || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }

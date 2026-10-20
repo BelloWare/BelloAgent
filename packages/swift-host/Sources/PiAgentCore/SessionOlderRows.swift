@@ -11,8 +11,8 @@ import Foundation
 // load every row (`ensureFullHistory`).
 
 /// Where the rows a chat did not load are in its journal.
-struct OlderRows {
-    struct Entry {
+struct OlderRows: Sendable {
+    struct Entry: Sendable {
         var span: JournalCheckpoint.Row
         var user: Bool
     }
