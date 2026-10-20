@@ -18,13 +18,12 @@ spec.loader.exec_module(lanes)
 # repository audit as well as the generated one-API fixtures below.
 WINDOW_APIS = (
     "makeKeyAndOrderFront", "makeKey", "makeMain", "becomeKey", "becomeMain",
-    "resignKey", "resignMain", "orderFrontRegardless", "isKeyWindow", "isMainWindow",
-    "makeFirstResponder", "becomeFirstResponder", "resignFirstResponder", "firstResponder",
-    "sendEvent", "postEvent", "performKeyEquivalent", "showWindow", "beginSheet", "runModal",
+    "resignKey", "resignMain", "orderFront", "orderFrontRegardless", "isKeyWindow", "isMainWindow",
+    "showWindow", "runModal",
 )
 AUDIT_FOCUS = re.compile(
     r"\.\s*(?:" + "|".join(WINDOW_APIS) + r")\b"
-    r"|\b(?:NSApp|NSApplication\s*\.\s*shared)\s*\.\s*(?:activate|isActive|keyWindow|mainWindow|hide|unhide|deactivate)\b"
+    r"|\b(?:NSApp|NSApplication\s*\.\s*shared)\s*\.\s*(?:activate|isActive|keyWindow|mainWindow|hide|unhide|deactivate|sendEvent|postEvent)\b"
     r"|\.\s*activate\s*\(\s*(?:ignoringOtherApps|options)\s*:"
     r"|\b(?:CGWarpMouseCursorPosition|CGAssociateMouseAndMouseCursorPosition|CGEventPost|CGEventPostToPid)\s*\("
     r"|\.\s*(?:postToPid\s*\(|post\s*\(\s*(?:tap|toPid)\s*:)"
@@ -43,7 +42,145 @@ class TestLaneTests(unittest.TestCase):
             with patch.object(lanes, "TESTS", root):
                 return lanes.classes()
 
-    def test_window_and_responder_apis_require_serial(self):
+    def test_offscreen_responders_and_local_delivery_remain_parallel(self):
+        source = """
+        let window = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: false)
+        window.makeFirstResponder(editor)
+        XCTAssertTrue(window.firstResponder === editor)
+        editor.becomeFirstResponder(); editor.resignFirstResponder()
+        window.sendEvent(key)
+        window.performKeyEquivalent(with: key)
+        window.beginSheet(sheet)
+        """
+        self.assertEqual(lanes.reasons([], source, "Debug"), [])
+        self.assertIn("focus", lanes.reasons([], source + "\nwindow.makeKeyAndOrderFront(nil)", "Debug"))
+
+    def test_visible_nonkey_windows_require_serial(self):
+        for api in ("orderFront", "orderFrontRegardless", "orderFrontStandardWindow"):
+            with self.subTest(api=api):
+                self.assertIn("focus", lanes.reasons([], "window." + api + "(nil)", "Debug"))
+
+    def test_unrelated_shared_helpers_do_not_open_windows(self):
+        classes = self.fixture_classes({
+            "Tests.swift": """
+                class Offscreen: XCTestCase { func testValue() { generatedRoot() } }
+                class Visible: XCTestCase { func testView() { openWindow() } }
+            """,
+            "Helpers.swift": """
+                func generatedRoot() { return "/fixture" }
+                func openWindow() { window.makeKeyAndOrderFront(nil) }
+            """,
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_shared_type_members_do_not_pull_in_other_members_or_tests(self):
+        classes = self.fixture_classes({
+            "Tests.swift": """
+                class Offscreen: XCTestCase { func testValue() { SharedTests.data() } }
+                class Visible: XCTestCase { func testView() { SharedTests.Window() } }
+            """,
+            "Shared.swift": """
+                class SharedTests: XCTestCase {
+                    static func data() { return seed() }
+                    private static func seed() { return 1 }
+                    struct Window { init() { window.makeKeyAndOrderFront(nil) } }
+                    func testWindow() { Window() }
+                }
+            """,
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_comments_and_string_contents_are_not_focus_calls_or_dependencies(self):
+        classes = self.fixture_classes({
+            "Tests.swift": r'''
+                class Offscreen: XCTestCase {
+                    func testValue() {
+                        // VisibleFixture() uses window.makeKeyAndOrderFront(nil).
+                        let example = "VisibleFixture().window.makeKeyAndOrderFront(nil)"
+                        XCTAssertTrue(example.contains("makeKeyAndOrderFront"))
+                    }
+                }
+                class Visible: XCTestCase {
+                    func testValue() { let value = "\(VisibleFixture())" }
+                }
+            ''',
+            "Fixture.swift": "struct VisibleFixture { init() { window.makeKeyAndOrderFront(nil) } }",
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_popouts_respect_explicit_offscreen_hosts_and_factories(self):
+        classes = self.fixture_classes({
+            "Tests.swift": """
+                class Offscreen: XCTestCase {
+                    private func host() -> TabHost {
+                        let host = TabHost()
+                        host.showsWindows = false
+                        return host
+                    }
+                    func testFactory() { let first = host(); first.popOut(tab) }
+                    func testLocal() { model.tabs.showsWindows = false; model.tabs.popOut(tab) }
+                }
+                class Visible: XCTestCase { func testView() { let host = TabHost(); host.popOut(tab) } }
+                class Reenabled: XCTestCase {
+                    func testView() { host.showsWindows = false; host.showsWindows = true; host.popOut(tab) }
+                }
+                class Conditional: XCTestCase {
+                    func testView() { if flag { host.showsWindows = false }; host.popOut(tab) }
+                }
+                class ConditionalReset: XCTestCase {
+                    func testView() { host.showsWindows = false; if flag { host.showsWindows = true }; host.popOut(tab) }
+                }
+                class UnknownReset: XCTestCase {
+                    func testView() { host.showsWindows = false; host.showsWindows = flag; host.popOut(tab) }
+                }
+                class Expression: XCTestCase {
+                    func testView() { host.showsWindows = false || flag; host.popOut(tab) }
+                }
+            """,
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        for name in ("Visible", "Reenabled", "Conditional", "ConditionalReset", "UnknownReset", "Expression"):
+            with self.subTest(name=name):
+                self.assertIn("focus", lanes.reasons(*classes[name], "Debug"))
+
+    def test_only_called_base_fixtures_and_lifecycle_hooks_contend(self):
+        classes = self.fixture_classes({
+            "Tests.swift": """
+                class Base: XCTestCase {
+                    func mount() { window.makeKeyAndOrderFront(nil) }
+                    func data() { return 1 }
+                }
+                class Offscreen: Base { func testValue() { data() } }
+                class Visible: Base { func testView() { self.mount() } }
+                class SetUp: XCTestCase {
+                    override func setUp() { window.orderFront(nil) }
+                    func testValue() { XCTAssertTrue(true) }
+                }
+            """,
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        for name in ("Visible", "SetUp"):
+            self.assertIn("focus", lanes.reasons(*classes[name], "Debug"))
+
+    def test_qualified_inherited_data_builder_does_not_import_visible_tests(self):
+        classes = self.fixture_classes({
+            "Tests.swift": """
+                class Base: XCTestCase {
+                    static func data() { return 1 }
+                    struct Window { init() { window.makeKeyAndOrderFront(nil) } }
+                }
+                class Derived: Base { func testView() { Window() } }
+                class Offscreen: XCTestCase { func testValue() { Derived.data() } }
+                class Visible: XCTestCase { func testView() { Derived.Window() } }
+            """,
+        })
+        self.assertEqual(lanes.reasons(*classes["Offscreen"], "Debug"), [])
+        self.assertIn("focus", lanes.reasons(*classes["Visible"], "Debug"))
+
+    def test_window_visibility_and_focus_apis_require_serial(self):
         for api in WINDOW_APIS:
             for separator in (".", "\n  . "):
                 with self.subTest(api=api, separator=separator):
@@ -55,6 +192,7 @@ class TestLaneTests(unittest.TestCase):
             "NSApp.activate()", "NSApplication.shared.activate(ignoringOtherApps: true)",
             "NSApp . isActive", "NSApplication . shared . keyWindow", "NSApp.mainWindow",
             "NSApp.hide(nil)", "NSApp.unhide(nil)", "NSApp.deactivate()",
+            "NSApp.sendEvent(key)", "NSApp.postEvent(mouse, atStart: false)",
             "application.activate (ignoringOtherApps: true)", "running.activate(options: [])",
             "event.post(tap: .cghidEventTap)", "event?.post (tap: .cgSessionEventTap)",
             "event.postToPid(pid)", "CGEventPost(.cghidEventTap, event)", "CGEventPostToPid(pid, event)",
@@ -183,11 +321,15 @@ class TestLaneTests(unittest.TestCase):
             "TranscriptGeometryCacheTests", "TranscriptTurnFoldTests", "TranscriptBugRegressionTests",
             "TranscriptRevealTests", "PiChartParityTests", "CaptureMacIntegrationTests",
             "SubagentDisplayGalleryTests", "CostLimitTests",
-            "FileTabTests", "FileReviewStateTests", "PendingChatProjectTests", "MessageDetailTests",
+            "FileReviewStateTests", "PendingChatProjectTests", "MessageDetailTests",
             "InspectorFollowTests", "InspectorWindowControlTests", "MessageVersionTranscriptTests",
         ):
             with self.subTest(name=name):
                 self.assertIn("focus", lanes.reasons(*classes[name], "Debug"))
+        for name in ("AccountingScaleTests", "FileTabTests", "TabHostTests", "WorkspaceTests",
+                     "TerminalCursorAlignmentTests", "MarkdownStreamingCorrectnessTests"):
+            with self.subTest(offscreen=name):
+                self.assertNotIn("focus", lanes.reasons(*classes[name], "Debug"))
 
     def test_no_parallel_native_class_uses_focus_apis(self):
         classes = lanes.classes()
@@ -199,7 +341,7 @@ class TestLaneTests(unittest.TestCase):
                 commands[command] = {line.split("/")[-1] for line in output.splitlines()}
             self.assertEqual(commands["serial"], commands["parallel"], "serial classes must be skipped by parallel clones")
             missed = sorted(name for name, (_, source) in classes.items()
-                            if AUDIT_FOCUS.search(source) and name not in commands["parallel"])
+                            if AUDIT_FOCUS.search(source.focus) and name not in commands["parallel"])
             with self.subTest(configuration=configuration):
                 self.assertEqual(missed, [], "parallel classes use focus APIs: " + ", ".join(missed))
 

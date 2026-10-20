@@ -58,17 +58,18 @@ come from the test sources, so a new test lands in one by what it uses. A
 class runs in the serial lane when its source (its body, its extensions, the
 test classes it inherits from, and the helper declarations in those files):
 
-- activates the app, raises a key window, reads focus state, uses responders,
-  or injects input (`makeKeyAndOrderFront`, `makeKey`, `orderFrontRegardless`,
-  `NSApp.activate`, `isKeyWindow`, `firstResponder`, `makeFirstResponder`,
-  `sendEvent`/`postEvent`, Core Graphics event posting/pointer movement): one
-  window server gives focus to one process at a time. Focus checks follow
-  referenced shared fixtures, including nested types in other test classes and
-  nested source folders. Inspector and popped-out-tab entry points are included
-  because they raise windows inside app code. Responder use is conservatively
-  serial even when one fixture currently uses a non-key window. Constructing
-  event values or calling a view's local input handler alone does not require
-  serialization;
+- activates/hides the app, shows or raises a window, depends on focus state,
+  or posts input (`makeKeyAndOrderFront`, `makeKey`, `orderFront*`,
+  `NSApp.activate`, `isKeyWindow`, `NSApp.keyWindow`, application event dispatch,
+  Core Graphics event posting/pointer movement): one window server gives focus
+  to one process at a time. Focus checks follow referenced declarations,
+  including shared/nested fixtures and inherited members. Inspector and
+  popped-out-tab entry points count because they show windows inside app code;
+  a proven `showsWindows = false` host or factory is exempt from the pop-out
+  rule. Unknown or re-enabled hosts still count. A responder assignment/check,
+  direct event/key-equivalent delivery, or a sheet on a never-shown window is
+  local to that process and stays parallel. If the fixture also shows the
+  window, its visibility operation makes the class serial;
 - writes the standard user defaults (`UserDefaults.standard`,
   `WindowChrome.adjustStoredSidebarWidth`), which every test host shares;
 - uses the general or the drag pasteboard, which every test host shares;
@@ -92,16 +93,18 @@ ever measured with the machine to itself. The parallel lane skips the serial
 classes rather than naming its own, so a class the script cannot read still
 runs.
 
-The source detector is conservative about a referenced fixture type: all its
-methods and its file's helpers are considered. The Python lane tests reject a
-parallel selection containing focus APIs and exercise indirect fixture paths.
-Runtime-only focus behavior that cannot be seen in source needs an explicit
-`SerialTestLane` marker. Shared helper traversal adds focus checks, without
-changing the existing defaults/pasteboard/timing rules for unrelated helpers.
+Focus traversal starts at test/lifecycle methods and fixture properties.
+Uncalled base helpers, unrelated declarations in the same file, and other
+members of a qualified static helper do not count. Constructed fixture types
+are inspected as whole types. Comments and string contents are excluded;
+Swift interpolation expressions still count. The Python lane tests guard both
+configurations and cover contending and offscreen fixtures. Runtime-only focus
+behavior that cannot be seen in source needs an explicit `SerialTestLane`
+marker. The defaults/pasteboard/timing rules keep their existing source scope.
 
 Several classes separate behavior and timing tests over a shared, test-free
-base. Such a split still runs serially if that base or a shared fixture uses
-focus: `GitPanelTestCase` (`GitPanelTimingTests`),
+base. Such a split still runs serially if the tests use a focus-dependent
+fixture from that base: `GitPanelTestCase` (`GitPanelTimingTests`),
 `TranscriptStressTestCase` (`TranscriptStreamingSerialTests`),
 `SmoothShellTestCase` (`SmoothShellTests`), `AppShellTestCase`
 (`AppShellTimingTests`), `HistoryEdgeTestCase` (`HistoryEdgeTimingTests`,

@@ -6,11 +6,12 @@ lanes"): most classes in parallel clones of the test host, then the rest in
 one host with the machine to itself. A class runs alone when its source does
 any of the things below. Its source is its body, its extensions, the test
 classes it inherits from, and the other declarations (helper types and
-functions) in the files where those are written. Focus checks also follow
-referenced shared test helpers transitively, including nested source folders.
+functions) in the files where those are written. Focus checks instead follow
+the referenced declarations, including shared fixtures and nested source folders.
 
-  focus     changes/reads app or window focus, uses responders or dispatches
-            native input: one window server gives focus to one process at a time
+  focus     shows windows, changes/depends on app focus, or posts global input:
+            one window server gives focus to one process at a time. Offscreen
+            responders and direct local event delivery do not contend
   defaults  writes the standard user defaults, which every host shares
   pasteboard  uses the general or the drag pasteboard, which every host shares
   timing    asserts on elapsed time in this configuration: an elapsed-time
@@ -40,6 +41,7 @@ import pathlib
 import re
 import sys
 import textwrap
+from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "apps/macos/PiAppTests"
@@ -47,11 +49,10 @@ TARGET = "PiAppTests"
 
 PATTERNS = {
     "focus": re.compile(
-        r"\b(?:NSApp|NSApplication\s*\.\s*shared)\s*\.\s*(?:activate|isActive|keyWindow|mainWindow|hide|unhide|deactivate|sendAction)\b"
+        r"\b(?:NSApp|NSApplication\s*\.\s*shared)\s*\.\s*(?:activate|isActive|keyWindow|mainWindow|hide|unhide|deactivate|sendEvent|postEvent)\b"
         r"|\.\s*activate\s*\(\s*(?:ignoringOtherApps|options)\s*:"
         r"|\.\s*(?:makeKeyAndOrderFront|makeKey|makeMain|becomeKey|becomeMain|resignKey|resignMain|orderFrontRegardless"
-        r"|isKeyWindow|isMainWindow|makeFirstResponder|becomeFirstResponder|resignFirstResponder|firstResponder"
-        r"|sendEvent|postEvent|performKeyEquivalent|showWindow|beginSheet|runModal)\b"
+        r"|orderFront\w*|isKeyWindow|isMainWindow|showWindow|runModal\w*)\b"
         r"|\b(?:CGWarpMouseCursorPosition|CGAssociateMouseAndMouseCursorPosition|CGEventPost|CGEventPostToPid)\s*\("
         r"|\.\s*(?:postToPid\s*\(|post\s*\(\s*(?:tap|toPid)\s*:)"
         r"|\bNSEvent\s*\.\s*mouseLocation\b"
@@ -66,8 +67,220 @@ MARKER = "SerialTestLane"
 MODIFIERS = r"^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:final|open|public|internal|private|fileprivate|nonisolated)\s+)*"
 DECLARATION = re.compile(MODIFIERS + r"class\s+(\w+)\s*:\s*([^{]+)\{")
 EXTENSION = re.compile(MODIFIERS + r"extension\s+(\w+)\b[^{]*\{")
-HELPER = re.compile(MODIFIERS + r"(?:class|struct|enum|actor|protocol|func|let|var|typealias)\s+(\w+)")
-IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
+HELPER = re.compile(MODIFIERS + r"(?:(?:static|class|mutating|override|convenience|required)\s+)*"
+                    r"(class|struct|enum|actor|protocol|func|let|var|typealias)\s+(\w+)")
+REFERENCE = re.compile(r"(?<![\w.])\b[A-Za-z_]\w*(?:\s*\??\.\s*[A-Za-z_]\w*)*")
+
+
+class Sources(NamedTuple):
+    local: str
+    focus: str
+
+
+def swift_code(text):
+    """Mask comments/string contents, retaining code in Swift interpolations."""
+    out = list(text)
+
+    def blank(start, end):
+        out[start:end] = ["\n" if char == "\n" else " " for char in text[start:end]]
+
+    def scan(i, closing=None):
+        while i < len(text):
+            if closing and text[i] == closing:
+                return i + 1
+            if text.startswith("//", i):
+                end = text.find("\n", i)
+                end = len(text) if end < 0 else end
+                blank(i, end); i = end
+            elif text.startswith("/*", i):
+                start, depth = i, 1
+                i += 2
+                while i < len(text) and depth:
+                    if text.startswith("/*", i):
+                        depth += 1; i += 2
+                    elif text.startswith("*/", i):
+                        depth -= 1; i += 2
+                    else:
+                        i += 1
+                blank(start, i)
+            elif text[i] in '"#' and (match := re.match(r'(#+)?("""|")', text[i:i + 32])):
+                hashes, quote = match.group(1) or "", match.group(2)
+                end, escape = quote + hashes, "\\" + hashes
+                blank(i, i + len(match[0])); i += len(match[0])
+                while i < len(text):
+                    if text.startswith(end, i):
+                        blank(i, i + len(end)); i += len(end)
+                        break
+                    if text.startswith(escape + "(", i):
+                        blank(i, i + len(escape))
+                        i = scan(i + len(escape) + 1, ")")
+                    else:
+                        stop = min(len(text), i + len(escape) + 1) if text.startswith(escape, i) else i + 1
+                        blank(i, stop); i = stop
+            elif text[i] == "(":
+                i = scan(i + 1, ")")
+            else:
+                i += 1
+        return i
+
+    scan(0)
+    return "".join(out)
+
+
+RECEIVER = r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*"
+WINDOW_SETTING = re.compile(
+    r"(?P<brace>[{}])"
+    rf"|(?P<setting>{RECEIVER})\s*\.\s*showsWindows\s*=\s*(?P<value>true|false)\b(?=[ \t]*(?:[;}}\n]|$))"
+    rf"|(?P<assignment>{RECEIVER})\s*=(?!=)"
+    rf"|(?P<popout>{RECEIVER})\s*\.\s*popOut\s*\("
+    rf"|\breturn\s+(?P<returned>{RECEIVER})")
+
+
+def offscreen_popouts(text, is_factory=lambda name: False):
+    """Honor TabHost's existing opt-out only when a scoped assignment proves it.
+
+    Unknown hosts stay serial. Conditional assignments do not escape their
+    block as proof, and reassigning/re-enabling a host removes the exemption.
+    """
+    states, returns, masked = [{}], [], list(text)
+    for match in WINDOW_SETTING.finditer(text):
+        if match["brace"] == "{":
+            states.append(dict(states[-1]))
+        elif match["brace"] == "}":
+            if len(states) > 1:
+                child = states.pop()
+                for key in states[-1].keys() & child.keys():
+                    if states[-1][key] != child[key]:
+                        states[-1][key] = None
+        elif match["setting"]:
+            states[-1][re.sub(r"\s+", "", match["setting"])] = match["value"] == "true"
+        elif match["assignment"]:
+            receiver = re.sub(r"\s+", "", match["assignment"])
+            if receiver.endswith(".showsWindows"):
+                states[-1][receiver.removesuffix(".showsWindows")] = None
+            for key in list(states[-1]):
+                if key == receiver or key.startswith(receiver + "."):
+                    states[-1][key] = None
+            call = re.match(rf"\s*(?:try[?!]?\s+)?({RECEIVER})\s*\(", text[match.end():])
+            if call and is_factory(re.sub(r"\s+", "", call[1])):
+                states[-1][receiver] = False
+        elif match["popout"]:
+            receiver = re.sub(r"\s+", "", match["popout"])
+            if states[-1].get(receiver) is False:
+                start = text.rfind("popOut", match.start(), match.end())
+                masked[start:start + 6] = " " * 6
+        elif match["returned"]:
+            returns.append(states[-1].get(re.sub(r"\s+", "", match["returned"])) is False)
+    return "".join(masked), bool(returns) and all(returns)
+
+
+def focus_sources(paths):
+    """Follow actual named declarations, not every helper sharing their file.
+
+    A constructed fixture is inspected as a whole type. A qualified static
+    member (e.g. ConversationPaneTests.workbench) includes only that member,
+    so data builders do not import unrelated window fixtures or test methods.
+    """
+    nodes, names, containers, parents, members, kinds = [], {}, set(), {}, {}, {}
+
+    def add(text, file, scope="", inherited_private=False):
+        for kind, name, inherits, chunk in blocks(text):
+            extension = EXTENSION.match(chunk)
+            declaration = HELPER.match(chunk)
+            if not declaration and not extension:
+                continue
+            member = extension[1] if extension else declaration[2]
+            qualified = scope + "." + member if scope else member
+            private = inherited_private or bool(re.search(r"\b(?:private|fileprivate)\b", chunk.split("{", 1)[0]))
+            index = len(nodes)
+            nodes.append((qualified, file, chunk, scope, private))
+            names.setdefault(qualified, []).append(index)
+            members.setdefault(scope, []).append(index)
+            kinds[index] = "extension" if extension else declaration[1]
+            if kind == "class":
+                parents.setdefault(qualified, set()).update(inherits)
+            if not extension:
+                containers.add(qualified)
+            if extension or declaration[1] in ("class", "struct", "enum", "actor", "protocol"):
+                if "{" in chunk:
+                    body = textwrap.dedent(chunk[chunk.index("{") + 1:chunk.rfind("}")]).strip()
+                    add(body, file, qualified, private)
+
+    for path in paths:
+        add(swift_code(path.read_text()), str(path))
+
+    def accessible(key, file, seen=()):
+        if key in seen:
+            return []
+        if key in containers:
+            return [index for index in names.get(key, ()) if not nodes[index][4] or nodes[index][1] == file]
+        # A qualified fixture member can be inherited from a test-free base.
+        # Resolve it before falling back to the derived class as a whole.
+        parts = key.split(".")
+        for size in range(len(parts) - 1, 0, -1):
+            for parent in sorted(parents.get(".".join(parts[:size]), ())):
+                if found := accessible(".".join([parent] + parts[size:]), file, seen + (key,)):
+                    return found
+        return []
+
+    def resolve(index, parts, local=()):
+        qualified, file, _, scope, _ = nodes[index]
+        if parts[0] in ("self", "Self") and len(parts) > 1:
+            parts = parts[1:]
+        # An extension builder can be called without spelling XCTestCase.
+        scopes = [qualified, scope]
+        while scopes[-1] and "." in scopes[-1]:
+            scopes.append(scopes[-1].rsplit(".", 1)[0])
+        for prefix in scopes:
+            scopes.extend(parent for parent in sorted(parents.get(prefix, ())) if parent not in scopes and parent != "XCTestCase")
+        scopes += ["XCTestCase", ""]
+        candidates = [prefix for prefix in scopes if prefix] if parts[0] in local else scopes
+        for prefix in candidates:
+            for size in range(len(parts), 0, -1):
+                key = ".".join(([prefix] if prefix else []) + parts[:size])
+                if resolved := accessible(key, file):
+                    return resolved
+        return []
+
+    def references(index):
+        text = nodes[index][2]
+        found = set()
+        local = set(re.findall(r"\b(?:let|var|func)\s+(\w+)", text))
+        for match in REFERENCE.finditer(text):
+            parts = re.split(r"\s*\??\.\s*", match[0])
+            # A local receiver's members are reached through its fixture type,
+            # never through an unrelated global with the same variable name.
+            found.update(resolve(index, parts, local))
+        return found
+
+    edges = {index: references(index) for index in range(len(nodes))}
+    factories = {index for index, node in enumerate(nodes)
+                 if re.search(r"\bfunc\b[^{}]*->\s*TabHost\s*\{", node[2].split("{", 1)[0] + "{")
+                 and offscreen_popouts(node[2])[1]}
+
+    def is_factory(index, name):
+        resolved = resolve(index, name.split("."))
+        return bool(resolved) and all(target in factories for target in resolved)
+
+    texts = [offscreen_popouts(node[2], lambda name, i=index: is_factory(i, name))[0] if "popOut" in node[2] else node[2]
+             for index, node in enumerate(nodes)]
+
+    def collect(lineage):
+        # An unused base-class window builder does not open a window. Start
+        # with runnable methods, lifecycle hooks and stored fixture properties.
+        pending = [index for name in lineage for index in members.get(name, ())
+                   if kinds[index] in ("let", "var")
+                   or (kinds[index] == "func" and re.match(r"(?:test\w*|setUp\w*|tearDown\w*)$", nodes[index][0].rsplit(".", 1)[-1]))]
+        visited = set()
+        while pending:
+            index = pending.pop()
+            if index in visited:
+                continue
+            visited.add(index)
+            pending.extend(edges[index] - visited)
+        return "\n".join(texts[index] for index in sorted(visited))
+
+    return collect
 
 
 def blocks(text):
@@ -149,15 +362,9 @@ def asserts_elapsed_time(text):
 
 def classes():
     declared, extended, files, helpers = {}, {}, {}, {}
-    exports, extensions = {}, []
-
-    def export(text, file):
-        # Private helpers belong only to their own file. Referencing a public
-        # helper includes its file's private helpers too, just as a test does.
-        if (match := HELPER.match(text)) and not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
-            exports.setdefault(match.group(1), set()).add(file)
-
-    for path in sorted(TESTS.rglob("*.swift")):
+    paths = sorted(TESTS.rglob("*.swift"))
+    collect_focus = focus_sources(paths)
+    for path in paths:
         file = str(path.relative_to(TESTS))
         for kind, name, inherits, text in blocks(path.read_text()):
             if kind == "class":
@@ -166,10 +373,8 @@ def classes():
             elif kind == "extension":
                 extended.setdefault(name, []).append(text)
                 files.setdefault(name, set()).add(file)
-                extensions.append((name, text, file))
             else:
                 helpers.setdefault(file, []).append(text)
-                export(text, file)
 
     def is_test_case(name, seen=()):
         if name == "XCTestCase":
@@ -184,19 +389,8 @@ def classes():
             for file in files.get(name, ()):
                 helpers.setdefault(file, []).append(text)
                 helpers[file].extend(extended.get(name, []))
-                export(text, file)
 
-    # Shared extension methods (notably XCTestCase fixture builders) are
-    # followed by member name, rather than attaching every builder to every test.
-    for name, text, file in extensions:
-        if name == "XCTestCase" or not is_test_case(name):
-            body = textwrap.dedent(text[text.index("{") + 1:text.rfind("}")]).strip()
-            for _, _, _, member in blocks(body):
-                helpers.setdefault(file, []).append(member)
-                if not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
-                    export(member, file)
-
-    roots, test_helpers = {}, {}
+    result = {}
     for name, (inherits, text) in declared.items():
         if not is_test_case(name):
             continue
@@ -210,48 +404,17 @@ def classes():
         has_tests = any(re.search(r"\bfunc test\w*\s*\(", part) for part in source)
         for file in sorted(set().union(*(files.get(member, set()) for member in lineage))):
             source.extend(helpers.get(file, []))
-        # Fixtures also live inside test classes (ConversationPaneTests.Pane,
-        # for example); another class can use them without inheriting the tests.
-        if not re.search(r"\b(?:private|fileprivate)\b", text.split("{", 1)[0]):
-            test_helpers[name] = source
         if has_tests:
-            roots[name] = (inherits, source)
-
-    available = exports.keys() | test_helpers.keys()
-    references = {}
-    result = {}
-    for name, (inherits, own) in roots.items():
-        source = list(own)
-        # A helper can call another fixture or refer back to its caller. Visit
-        # each exported name once so those chains are complete and cycles stop.
-        pending, visited, included = list(source), set(), set(source)
-        while pending:
-            chunk = pending.pop()
-            if chunk not in references:
-                references[chunk] = set(IDENTIFIER.findall(chunk)) & available
-            referenced = references[chunk] - visited
-            for helper in sorted(referenced):
-                visited.add(helper)
-                chunks = list(test_helpers.get(helper, []))
-                for file in sorted(exports.get(helper, ())):
-                    chunks.extend(helpers.get(file, []))
-                for chunk in chunks:
-                    if chunk not in included:
-                        # Do not turn a shared releaseBudget definition or
-                        # an unrelated helper's timing check into a new rule.
-                        if PATTERNS["focus"].search(chunk):
-                            source.append(chunk)
-                        pending.append(chunk)
-                        included.add(chunk)
-        result[name] = (inherits, "\n".join(source))
+            result[name] = (inherits, Sources("\n".join(source), collect_focus(lineage)))
     return result
 
 
 def reasons(inherits, source, configuration):
-    found = [name for name, pattern in PATTERNS.items() if pattern.search(source)]
-    if MARKER in inherits or asserts_elapsed_time(source):
+    local, focus = source if isinstance(source, Sources) else (source, swift_code(source))
+    found = [name for name, pattern in PATTERNS.items() if pattern.search(focus if name == "focus" else local)]
+    if MARKER in inherits or asserts_elapsed_time(local):
         found.append("timing")
-    if configuration == "Release" and BUDGET.search(source):
+    if configuration == "Release" and BUDGET.search(local):
         found.append("budget")
     return found
 
