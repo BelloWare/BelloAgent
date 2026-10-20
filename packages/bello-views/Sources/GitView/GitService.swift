@@ -51,6 +51,39 @@ public struct GitRepositoryStatus: Equatable, Sendable {
     public var head: String?
     public var entries: [GitStatusEntry] = []
     public var stagedCount: Int { entries.filter(\.staged).count }
+    var changeOptions = GitChangeOptions()
+}
+
+/// Status owns grouping. Diff requests preserve each reported row, without
+/// interpreting Git's configuration precedence in the app.
+struct GitChangeOptions: Equatable, Sendable {
+    var renameSimilarity: Int?
+    var statusArguments: [String] {
+        ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"]
+            + (renameSimilarity.map { ["--find-renames=\($0)%"] } ?? [])
+    }
+    func diffArguments(staged: Bool, entry: GitStatusEntry? = nil) -> [String] {
+        var arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff",
+            "--no-textconv", "--submodule=short", "--ita-invisible-in-index"]
+        if let entry {
+            let state = staged ? entry.indexState : entry.worktreeState
+            if entry.originalPath != nil, state == "R" || state == "C" {
+                // Git already matched this pair. A config change or a configured
+                // rename limit must not turn its preview into a whole addition.
+                arguments += state == "C" ? ["--find-copies=1%", "--find-copies-harder"] : ["--find-renames=1%"]
+            } else { arguments += ["--no-renames"] }
+        }
+        // Status has already decided whether to show this gitlink. Read its
+        // short patch, including dirty content, without hiding a reported row.
+        arguments += [staged ? "--ignore-submodules=dirty" : "--ignore-submodules=none"]
+        if staged { arguments += ["--cached"] }
+        return arguments
+    }
+    func paths(for entry: GitStatusEntry, staged: Bool) -> [String] {
+        let state = staged ? entry.indexState : entry.worktreeState
+        if let original = entry.originalPath, state == "R" || state == "C" { return [original, entry.path] }
+        return [entry.path]
+    }
 }
 
 public struct GitCommit: Identifiable, Equatable, Sendable {
@@ -328,6 +361,28 @@ public actor GitService {
         if !current.isEmpty { batches.append(current) }
         return batches
     }
+    /// A reported rename/copy needs both paths in the same request. Shared
+    /// copy sources cost one argument per batch; an oversized pair stays whole.
+    static func pairedBatches(of groups: [[String]], prefix: [String]) -> [[String]] {
+        let countLimit = 512, byteLimit = 128 * 1024
+        let base = prefix.reduce(0) { $0 + $1.utf8.count + 1 }
+        var batches: [[String]] = [], current: [String] = [], seen: Set<String> = [], bytes = base
+        for group in groups {
+            var unique: Set<String> = []
+            let paths = group.filter { unique.insert($0).inserted }
+            var additions = paths.filter { !seen.contains($0) }
+            let size = additions.reduce(0) { $0 + $1.utf8.count + 1 }
+            if !current.isEmpty, current.count + additions.count > countLimit || bytes + size > byteLimit {
+                batches.append(current); current = []; seen = []; bytes = base
+                additions = paths
+            }
+            current += additions
+            seen.formUnion(additions)
+            bytes += additions.reduce(0) { $0 + $1.utf8.count + 1 }
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
     /// Git reads every path after `--` as a pattern: "[id].txt" also names
     /// "i.txt", "*.md" every Markdown file, and a leading ":" is magic. Each
     /// path is marked literal on its own, at the command line: the global
@@ -367,9 +422,12 @@ public actor GitService {
         return top.isEmpty ? nil : top
     }
 
-    func status(in root: String) async throws -> GitRepositoryStatus {
-        let output = try require(await run(["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"], in: root), "Reading status")
-        return Self.parseStatus(output.stdout)
+    func status(in root: String, renameSimilarity: Int? = nil) async throws -> GitRepositoryStatus {
+        let options = GitChangeOptions(renameSimilarity: renameSimilarity)
+        let output = try require(await run(options.statusArguments, in: root), "Reading status")
+        var status = Self.parseStatus(output.stdout)
+        status.changeOptions = options
+        return status
     }
 
     static func parseStatus(_ data: Data) -> GitRepositoryStatus {
@@ -486,6 +544,12 @@ public actor GitService {
     /// counts field ends after its tabs with the old and new paths following.
     static func parseNumstat(_ data: Data) -> [String: GitDiffStat] {
         var stats: [String: GitDiffStat] = [:]
+        for record in numstatRecords(data) { stats[record.path] = record.counts }
+        return stats
+    }
+
+    private static func numstatRecords(_ data: Data) -> [(path: String, original: String?, counts: GitDiffStat)] {
+        var records: [(path: String, original: String?, counts: GitDiffStat)] = []
         let fields = data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
         var index = 0
         while index < fields.count {
@@ -496,15 +560,192 @@ public actor GitService {
             guard parts.count >= 2 else { continue }
             let binary = parts[0] == "-" || parts[1] == "-"
             var path = parts.count >= 3 ? parts[2...].joined(separator: "\t") : ""
+            var original: String?
             if path.isEmpty {
                 guard index + 1 < fields.count else { break }
-                index += 1                      // the old path of a rename or copy
+                original = fields[index]; index += 1
                 path = fields[index]; index += 1
             }
             guard !path.isEmpty else { continue }
-            stats[path] = GitDiffStat(added: Int(parts[0]) ?? 0, removed: Int(parts[1]) ?? 0, binary: binary)
+            records.append((path, original, GitDiffStat(added: Int(parts[0]) ?? 0, removed: Int(parts[1]) ?? 0, binary: binary)))
         }
+        return records
+    }
+
+    /// Counts for the side each compact row opens. Ordinary paths share two
+    /// numstat reads; reported pairs are checked before accepting batch counts.
+    func changeStats(in root: String, status: GitRepositoryStatus) async throws -> [String: GitDiffStat] {
+        let entries = status.entries
+        guard !entries.isEmpty else { return [:] }
+        let options = status.changeOptions, format = ["-O/dev/null", "--numstat", "-z"]
+        let untracked = entries.filter(\.untracked).map(\.path)
+        async let additions = untrackedStats(in: root, paths: untracked)
+        async let worktree = run(options.diffArguments(staged: false) + ["--no-renames"] + format, in: root)
+        async let index = run(options.diffArguments(staged: true) + ["--no-renames"] + format, in: root)
+        let working = Self.parseNumstat(try require(await worktree, "Reading change counts").stdout)
+        let staged = Self.parseNumstat(try require(await index, "Reading staged counts").stdout)
+        var stats: [String: GitDiffStat] = [:]
+        var pairs: [GitStatusEntry] = []
+        for entry in entries where !entry.untracked {
+            let cached = !entry.unstaged && entry.staged
+            if options.paths(for: entry, staged: cached).count == 2 { pairs.append(entry) }
+            else { stats[entry.path] = cached ? staged[entry.path] : working[entry.path] }
+        }
+        // Batch reported pairs too, but accept a count only when Git matched
+        // the exact same source and destination. Ambiguous matches fall back
+        // to the isolated two-path request used by the opened preview.
+        for cached in [false, true] {
+            let side = pairs.filter { (!$0.unstaged && $0.staged) == cached }
+            guard !side.isEmpty else { continue }
+            let prefix = options.diffArguments(staged: cached) + ["--find-copies=1%", "--find-copies-harder"] + format + ["--"]
+            let groups = side.map { Self.literal(options.paths(for: $0, staged: cached)) }
+            for batch in Self.pairedBatches(of: groups, prefix: prefix) {
+                let output = try require(await run(prefix + batch, in: root), "Reading paired counts")
+                for record in Self.numstatRecords(output.stdout) {
+                    if side.contains(where: { $0.path == record.path && $0.originalPath == record.original }) {
+                        stats[record.path] = record.counts
+                    }
+                }
+            }
+        }
+        try await withThrowingTaskGroup(of: (String, GitDiffStat?).self) { group in
+            for entry in pairs where stats[entry.path] == nil {
+                group.addTask {
+                    let cached = !entry.unstaged && entry.staged
+                    let arguments = options.diffArguments(staged: cached, entry: entry) + format + ["--"]
+                        + Self.literal(options.paths(for: entry, staged: cached))
+                    let output = try await self.run(arguments, in: root)
+                    let counts = Self.parseNumstat(try await self.require(output, "Reading paired counts").stdout)
+                    return (entry.path, counts[entry.path])
+                }
+            }
+            for try await (path, count) in group { stats[path] = count }
+        }
+        // The working-tree replacement owns this row even if it cannot be read.
+        for path in untracked { stats.removeValue(forKey: path) }
+        stats.merge(try await additions) { _, new in new }
         return stats
+    }
+
+    private func untrackedStats(in root: String, paths: [String]) async throws -> [String: GitDiffStat] {
+        guard !paths.isEmpty else { return [:] }
+        async let directory = run(["rev-parse", "--absolute-git-dir"], in: root)
+        async let configured = run(["config", "--path", "--get", "core.attributesFile"], in: root)
+        let gitDirectory = try require(await directory, "Finding the repository").path
+        let attributes = try await configured
+        if attributes.status != 1 { _ = try require(attributes, "Reading the attributes path") }
+        var configuration: [String] = []
+        if attributes.status == 0, !attributes.path.isEmpty, !attributes.path.hasPrefix("/") {
+            // Git resolves this path from the original cwd. Keep that location
+            // when reading private copies; Git still owns its effective value.
+            let path = URL(fileURLWithPath: attributes.path, relativeTo: URL(fileURLWithPath: root, isDirectory: true)).path
+            configuration = ["-c", "core.attributesFile=" + path]
+        }
+        // String keys equate Unicode normalization variants. Neither spelling
+        // may inherit the other's count when the source can store both.
+        var spellings: [String: Data] = [:], ambiguous: Set<String> = []
+        for path in paths {
+            let spelling = Data(path.utf8)
+            if let previous = spellings[path], previous != spelling { ambiguous.insert(path) }
+            spellings[path] = spelling
+        }
+        var remaining = paths.filter { !ambiguous.contains($0) }[...], counts: [String: GitDiffStat] = [:]
+        while !remaining.isEmpty {
+            try Task.checkCancellation()
+            let batch = try await untrackedStats(in: root, gitDirectory: gitDirectory, configuration: configuration, paths: remaining)
+            counts.merge(batch.counts) { _, new in new }
+            remaining = remaining.dropFirst(batch.consumed)
+        }
+        return counts
+    }
+
+    private func untrackedStats(in root: String, gitDirectory: String, configuration: [String], paths: ArraySlice<String>) async throws
+        -> (counts: [String: GitDiffStat], consumed: Int) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bello-counts-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let tree = folder.appendingPathComponent("tree"), empty = folder.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: false)
+        let read = Task.detached(priority: .utility) {
+            var accepted: [String] = [], attributes: Set<String> = []
+            var directories: Set<Data> = []
+            var consumed = 0, bytes = 0
+            let limit = 32 << 20
+            for path in paths {
+                try Task.checkCancellation()
+                // Git sees only these bounded bytes, never a subsequently
+                // replaced file or parent symlink in the live working tree.
+                guard let file = try? GitPatchFile.read(in: root, path: path) else { consumed += 1; continue }
+                if bytes + file.bytes.count > limit { break }
+                let destination = tree.appendingPathComponent(path)
+                let components = path.split(separator: "/")
+                let parents = (1..<components.count).map { components.prefix($0).joined(separator: "/") }
+                // The private volume may fold names the source distinguishes.
+                // Reuse only byte-identical directories; retry aliases in a
+                // fresh batch before consuming or writing the colliding path.
+                if FileManager.default.fileExists(atPath: destination.path) || parents.contains(where: {
+                    FileManager.default.fileExists(atPath: tree.appendingPathComponent($0).path)
+                        && !directories.contains(Data($0.utf8))
+                }) { break }
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try file.bytes.write(to: destination)
+                directories.formUnion(parents.map { Data($0.utf8) })
+                consumed += 1; bytes += file.bytes.count
+                accepted.append(path)
+                var parts = path.split(separator: "/").dropLast().map(String.init)
+                while true {
+                    attributes.insert((parts + [".gitattributes"]).joined(separator: "/"))
+                    if parts.isEmpty { break }
+                    parts.removeLast()
+                }
+            }
+            // Keep Git's path-based attributes as well as its real config and
+            // info/attributes. Nothing in the source index or worktree is written.
+            let selected = Set(accepted)
+            var unavailable: Set<String> = [], attributeBytes = 0
+            for path in attributes.sorted() where !selected.contains(path) {
+                try Task.checkCancellation()
+                guard let file = try? GitPatchFile.read(in: root, path: path), attributeBytes + file.bytes.count <= limit else {
+                    if FileManager.default.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent(path).path) {
+                        unavailable.insert(String(path.dropLast(".gitattributes".count)))
+                    }
+                    continue
+                }
+                let destination = tree.appendingPathComponent(path)
+                guard !FileManager.default.fileExists(atPath: destination.path) else {
+                    unavailable.insert(String(path.dropLast(".gitattributes".count)))
+                    continue
+                }
+                attributeBytes += file.bytes.count
+                try file.bytes.write(to: destination)
+            }
+            return (accepted.filter { path in !unavailable.contains(where: { path.hasPrefix($0) }) }, consumed)
+        }
+        let (accepted, consumed) = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+        let selected = Set(accepted)
+        // A directory no-index diff emits a /dev/null pair for each added
+        // file. Keep relative paths intact so anchored attributes still match.
+        let operands = Set(accepted.map { String($0.split(separator: "/")[0]) })
+        let counts = try await withThrowingTaskGroup(of: [String: GitDiffStat].self) { group in
+            for operand in operands {
+                group.addTask {
+                    let directory = accepted.contains { $0.hasPrefix(operand + "/") }
+                    // Ordering cannot affect counts, and a relative orderFile
+                    // belongs to the real tree, not these private copies.
+                    let arguments = configuration + ["--git-dir=" + gitDirectory, "--work-tree=" + tree.path]
+                        + GitChangeOptions().diffArguments(staged: false)
+                        + ["--no-index", "--no-renames", "-O/dev/null", "--numstat", "-z", "--", directory ? empty.path : "/dev/null", operand]
+                    let output = try await self.run(arguments, in: tree.path)
+                    if output.status > 1 { _ = try await self.require(output, "Reading untracked counts") }
+                    return Self.parseNumstat(output.stdout).filter { selected.contains($0.key) }
+                }
+            }
+            var result: [String: GitDiffStat] = [:]
+            for try await counts in group { result.merge(counts) { _, new in new } }
+            return result
+        }
+        return (counts, consumed)
     }
 
     /// The patch of one commit, or of one path inside it, already parsed.
@@ -528,12 +769,12 @@ public actor GitService {
     /// The working-tree or staged patch of one path, already parsed. A renamed
     /// file is asked for under both its names: given only the new one, git has
     /// nothing to match against and reports the whole file as added.
-    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
-        var arguments: [String]
-        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false,
+                   options: GitChangeOptions? = nil, entry: GitStatusEntry? = nil) async throws -> [GitDiffFile] {
+        let resolved = options ?? GitChangeOptions()
+        var arguments = resolved.diffArguments(staged: staged, entry: entry) + ["-U3"]
+        if untracked, let path = paths.last { arguments += ["--no-index", "--", "/dev/null", path] }
         else {
-            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "-U3", "--find-renames"]
-            if staged { arguments.append("--cached") }
             if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }
         let allowed: Int32 = untracked ? 1 : 0

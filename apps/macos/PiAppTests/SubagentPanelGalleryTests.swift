@@ -102,7 +102,9 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                 let header = try XCTUnwrap(root.conversation?.agentFamilyHeader)
                 XCTAssertEqual(header.button.title, "3 sides · 3 agents")
                 header.open(); await settle(window)
-                let content = try XCTUnwrap(header.popover.popover?.contentViewController?.view), popup = try XCTUnwrap(content.window)
+                let main = try XCTUnwrap(root.conversation)
+                let content = try XCTUnwrap(main.sessionPanel.isHidden ? header.popover.popover?.contentViewController?.view : main.sessionPanel.agents)
+                let popup = try XCTUnwrap(content.window)
                 let rows = ConversationPaneTests.views(FamilyPickerRow.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("open-") }
                 XCTAssertEqual(rows.map(\.depth), [0, 1, 2, 3, 2, 0])
                 XCTAssertGreaterThanOrEqual(popup.frame.minX, window.frame.minX); XCTAssertLessThanOrEqual(popup.frame.maxX, window.frame.maxX)
@@ -156,7 +158,7 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     fixture.child.runStatus = done ? "idle" : "streaming"
                     root.refresh(); await settle(window)
                     let main = try XCTUnwrap(root.conversation)
-                    XCTAssertFalse(main.agentFamilyHeader.isHidden)
+                    XCTAssertEqual(main.agentFamilyHeader.isHidden, !main.sessionPanel.isHidden)
                     XCTAssertEqual(main.agentFamilyHeader.button.title, "2 sides · 4 agents")
                     XCTAssertEqual(ConversationPaneTests.views(PiSpinnerView.self, in: main.agentFamilyHeader).count, done ? 0 : 1)
                     if let parentRow = root.sidebar.list.views["chat|chat-parent"] as? SidebarChatRowView {
@@ -165,13 +167,13 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     let base = "\(done ? "done" : "running")-\(theme)-\(Int(size.width))x\(Int(size.height))"
                     try capture([window], to: folder.appendingPathComponent(base + "-closed.png")); files.append(base + "-closed.png")
                     main.agentFamilyHeader.open(); await settle(window)
-                    let popup = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view.window)
+                    let content = try XCTUnwrap(main.sessionPanel.isHidden ? main.agentFamilyHeader.popover.popover?.contentViewController?.view : main.sessionPanel.agents)
+                    let popup = try XCTUnwrap(content.window)
                     XCTAssertGreaterThanOrEqual(popup.frame.minX, window.frame.minX)
                     XCTAssertLessThanOrEqual(popup.frame.maxX, window.frame.maxX, "The picker stays inside its owning window")
                     XCTAssertGreaterThanOrEqual(popup.frame.minY, window.frame.minY)
                     XCTAssertLessThanOrEqual(popup.frame.maxY, window.frame.maxY)
                     try capture([popup, window], to: folder.appendingPathComponent(base + "-open.png")); files.append(base + "-open.png")
-                    let content = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view)
                     let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: content).first { $0.accessibilityIdentifier() == "open-agent-child-0" })
                     XCTAssertTrue(open.accessibilityLabel()?.contains("Sub-agent 1") == true)
                     let list = try XCTUnwrap(ConversationPaneTests.views(AgentFamilyPopoverView.self, in: content).first)
