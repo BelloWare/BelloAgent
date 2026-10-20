@@ -653,9 +653,12 @@ mutation count, and was corrected before the runtime check.
 Separate helper migration finding for routing: `JournalSlimming.swift:155–161`
 uses only a one-hour modification-age cutoff when deleting `.slim-` and
 `.pre-slim-` files. A helper suspended beyond that cutoff can still own/use
-those files; the sweep does not check its lock. This is outside the pasted
-generation fix and remains unchanged pending coordination with the helper
-workstream. No other shared per-launch image/import-generation sweep was found.
+those files; the sweep does not check its lock. The `.pre-slim-` hard link also
+inherits its source journal's old modification time, so that staging path can
+qualify immediately. This is separate journal-migration staging, outside the
+pasted-generation fix, and remains unchanged pending coordination with the
+helper workstream. No other shared per-launch image/import-generation sweep
+was found.
 
 ### Initial focused validation (`40cdb7ba`)
 
@@ -738,4 +741,40 @@ PastedImageLease now passes **6** tests.
 
 `lease-inventory-timing-final.log` — **1/1 passed**; malformed HTML took
 **1.243 ms** text-first and **0.187 ms** image-first.
-The menu/gallery reruns are queued behind the shared focus lock.
+
+The audit also found a storage-write call in `PendingChatProjectTests`, so
+that full class was rerun to cover pending-chat project switches with
+attachments. Each focus-dependent class below ran alone, under the shared
+full-lane lock, using only this workstream's build root:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PendingChatProjectTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteRoutingTests
+TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-lease-inventory-review" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteGalleryTests
+```
+
+| Final run | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| Focused paste/attachment/draft classes (`lease-inventory-regressions-final.log`) | 85 | 1 existing | 0 |
+| HTML timing (`lease-inventory-timing-final.log`) | 1 | 0 | 0 |
+| Pending-chat projects (`lease-pending-project-final.log`) | 24 | 0 | 0 |
+| Real Edit-menu paste routing (`lease-inventory-menu-final.log`) | 6 | 0 | 0 |
+| Refusal gallery (`lease-inventory-gallery-final.log`) | 1 | 0 | 0 |
+| **Total** | **117** | **1** | **0** |
+
+The routing run covers main, pending, side, earlier-message and queued-edit
+composers, plus the read-only child reader. Regenerated and inspected
+`gallery-lease-inventory-review/paste-refusal-{light,dark,narrow}.png`: the full
+notice wraps visibly, Copy/Dismiss and composer controls remain usable, and
+the draft stays intact. The narrow footer truncates its duplicate notice while
+the complete top notice remains visible, as before.
+
+All final runs used the source committed as `ff421bf1`; subsequent changes are
+validation documentation only. Both focus-lock holders released their own
+lock. No clone folders or workstream test lock remain in this build root.
+No helper or wire code changed, so their full suites were not rerun. The
+separate journal-migration staging finding above remains for lead routing.
