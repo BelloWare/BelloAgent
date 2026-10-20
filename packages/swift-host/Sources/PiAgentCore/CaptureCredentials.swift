@@ -70,6 +70,62 @@ struct CaptureCredentials: Sendable {
     }
     // Fixed schema keys are protocol, even when a configured header happens
     // to contain one. Only provider-controlled dictionaries opt into key masking.
+    func resourceMetadata(_ value: JSON) -> JSON {
+        var safe = value
+        for field in ["path", "text"] where !value[field].isNull { safe[field] = metadata(value[field]) }
+        return safe
+    }
+    /// The prepared request has protocol discriminators beside model-facing
+    /// payloads. Mask the payloads without turning its roles/types into hashes.
+    func requestMetadata(_ value: JSON, definitions: [ToolDefinition] = []) -> JSON {
+        func item(_ value: JSON) -> JSON {
+            var safe = metadata(value)
+            let enums: [String: Set<String>] = ["type":["message", "function_call", "function_call_output", "reasoning", "input_text", "output_text", "input_image", "summary_text", "refusal"],
+                "role":["system", "developer", "user", "assistant"], "status":["completed"], "phase":["commentary", "final_answer"], "detail":["auto"]]
+            for (field, values) in enums where value[field].text.map(values.contains) == true { safe[field] = value[field] }
+            for field in ["content", "output", "summary"] { if case .array(let values) = value[field] { safe[field] = .array(values.map(item)) } }
+            return safe
+        }
+        func schema(_ value: JSON) -> JSON {
+            var safe = metadata(value)
+            let types: Set<String> = ["object", "array", "string", "number", "integer", "boolean", "null"]
+            if value["type"].text.map(types.contains) == true { safe["type"] = value["type"] }
+            if case .array(let values) = value["type"], values.allSatisfy({ $0.text.map(types.contains) == true }) { safe["type"] = value["type"] }
+            for field in ["properties", "$defs", "definitions"] where value[field].isObject {
+                safe[field] = .object(Dictionary(value[field].map.map { (metadataText($0.key), schema($0.value)) },uniquingKeysWith:{ _, last in last }))
+            }
+            for field in ["items", "additionalProperties", "not"] where value[field].isObject { safe[field] = schema(value[field]) }
+            for field in ["allOf", "anyOf", "oneOf", "prefixItems"] { if case .array(let values) = value[field] { safe[field] = .array(values.map(schema)) } }
+            return safe
+        }
+        func configuredModels(_ value: JSON) -> JSON {
+            var safe = value
+            if !value["properties"]["model"]["enum"].isNull { safe["properties"]["model"]["enum"] = metadata(value["properties"]["model"]["enum"]) }
+            for field in ["allOf", "anyOf", "oneOf"] { if case .array(let variants) = value[field] { safe[field] = .array(variants.map(configuredModels)) } }
+            return safe
+        }
+        var safe = metadata(value)
+        if case .array(let inputs) = value["input"] { safe["input"] = .array(inputs.map(item)) }
+        if case .array(let tools) = value["tools"] {
+            safe["tools"] = .array(tools.map { tool in
+                // Native and delegation tool definitions are helper-owned.
+                // Only offered model names come from configuration. A body
+                // override must match the actual definition before trusting it.
+                if tool["type"].text == "function", let definition = definitions.first(where: { $0.name == tool["name"].text }),
+                   tool["description"].text == definition.description, tool["parameters"] == definition.schema {
+                    var safe = metadata(tool)
+                    safe["type"] = "function"; safe["name"] = JSON(definition.name); safe["description"] = JSON(definition.description)
+                    safe["parameters"] = configuredModels(definition.schema); return safe
+                }
+                var safe = metadata(tool)
+                if tool["type"].text == "function" { safe["type"] = "function"; safe["parameters"] = schema(tool["parameters"]) }
+                return safe
+            })
+        }
+        if value["include"] == ["reasoning.encrypted_content"] { safe["include"] = value["include"] }
+        if value["reasoning"]["summary"].text == "auto" { safe["reasoning"]["summary"] = "auto" }
+        return safe
+    }
     func metadata(_ value: JSON) -> JSON { metadata(value, includingKeys: false) }
     func metadata(_ value: JSON, includingKeys: Bool) -> JSON {
         switch value {

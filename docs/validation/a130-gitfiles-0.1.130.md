@@ -835,3 +835,1349 @@ scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/File
 # proportional-split-tabs-and-files.log
 scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TabPaneTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/SmoothPaneAndKeyboardTests
 ```
+
+## Round 2 hunt
+
+Work starts from merged `6fc551e1` on `dev/a130-gitfiles`, in the same
+worktree and build root. The earlier split fixes are already in that base.
+All six assigned findings are confirmed. No helper implementation, wire
+contract, project trust, permission, capture, vault, or production path changes.
+
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/round2-*`.
+Native runs use the isolated test host and this workstream's existing
+`native-tests` directory, with text logs. Each native run, including the
+galleries, acquires the shared full-lane lock and releases only its own lock
+in `finally`. Serial-lane classes run alone. The installed app was never opened.
+
+### Findings and failing-first evidence
+
+**GIT-FILES-5 — confirmed and fixed.**
+`testResizingTheAlternateScreenPreservesTheHiddenShellAndCursor` feeds the
+reported 10×4 sequence and shrinks to two rows while mode 1049 is active.
+Before the fix (`round2-terminal-before.log`):
+
+```text
+XCTAssertEqual failed: (["one", "two"]) is not equal to (["three", "four"])
+XCTAssertEqual failed: ([]) is not equal to (["one", "two"])
+```
+
+The hidden normal screen now uses the same row-resize routine as the visible
+normal screen: discard blank rows below the cursor first, archive displaced
+top rows, and restore history when growing. Wrap boundaries and history
+accounting travel with the cells. Its active and saved cursors move with the
+rows before clamping to the new bounds. Alternate-screen rows never enter
+normal scrollback.
+
+Nearby sweep: `testHiddenNormalResizeMatchesVisibleResizeIncludingHistoryAndWraps`
+compares visible and hidden resizing across modes 47/1047/1049, shrink/grow
+sequences, blank tails, existing history, styled text, wide characters and
+soft wraps. The old code failed the comparison; together with the mode-47
+save test, `round2-terminal-sweep-before.log` records 2 failing tests and
+61 failed assertions. This covers the hidden growth path as well as shrinking.
+
+**GIT-FILES-6 — confirmed and fixed.**
+`testAlternateCursorSavesDoNotOverwriteTheNormalCursor` runs the exact
+reported sequence, plus the equivalent CSI `s` and DEC mode 1048 saves.
+`testAlternateCursorSavesDoNotOverwriteTheNormalAttributes` checks normal
+foreground/bold attributes and autowrap after an alternate save. Before fixing:
+
+```text
+XCTAssertEqual failed: (["maiX", "", ""]) is not equal to (["main", "X", ""])
+XCTAssertEqual failed: (TerminalCursor(x: 4, y: 0)) is not equal to (TerminalCursor(x: 1, y: 1))
+XCTAssertFalse failed                 # normal autowrap was overwritten
+```
+
+The three original terminal regressions produced 11 failed assertions.
+Saved cursor position, style, origin, autowrap, pending wrap and character
+sets now belong to each screen. Mode 1049 saves before entering and restores
+after leaving the alternate screen, so its normal save cannot be overwritten
+there. CSI `s`/`u` retain their existing position-only semantics.
+This matches the per-screen save/restore storage in
+[xterm's cursor implementation](https://raw.githubusercontent.com/ThomasDickey/xterm-snapshots/master/cursor.c).
+
+Nearby sweep: `testEachScreenKeepsItsSavedCursorAcrossMode47Switches` failed
+both position and foreground assertions before the fix. It now checks that
+both screens retain their own saves across repeated mode-47 entries.
+The resize matrix also checks that the normal saved row follows history
+restoration, rather than jumping back to its pre-growth coordinate.
+
+Separate, trivial same-function sweep fix: `reset()` used to clear saved
+position/style while retaining saved origin, autowrap, pending wrap and
+character sets. `testResetClearsSavedCursorModesAndCharsetsOnBothScreens`
+saves nondefault modes and DEC graphics on both screens, feeds RIS (`ESC c`),
+then restores each save. `round2-terminal-reset-before.log` has 1 failing test
+and 6 failed assertions: autowrap stayed off, origin stayed on, and `q` drew
+as `─` in each screen. Reset now creates fresh saved states for both screens.
+
+Separate same-function sweep fix: `switchScreen` unconditionally cleared
+pending wrap after restoring it. `testLeavingTheAlternateScreenRestoresTheNormalsPendingWrap`
+fills a four-column normal line with `main`, enters/leaves 1049, then prints
+`X`, with no alternate save and with each supported save form. It failed all
+8 assertions: `maiX` instead of `main` / `X`. The before log is
+`round2-terminal-wrap-before.log` (the other 68 tests in that run passed).
+1049 now preserves pending wrap when the grid was not resized. A companion
+comparison, `testAlternateResizeKeepsTheNormalScreensExistingWrapBehavior`,
+caught 8 assertions where simply preserving wrap would change existing resize
+behavior. The hidden grid records whether a real resize occurred; actual
+resizes still clear pending wrap exactly as a visible normal resize does,
+including resizing away and back. A no-op resize preserves the saved wrap.
+Evidence: `round2-terminal-resized-wrap-before.log`.
+
+**GIT-FILES-7 — confirmed and fixed.**
+`testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine` holds `Options.beforeOpen`,
+mounts and paints the actual `FileTab`, verifies its syntax callback was
+invoked, and lets the initial syntax task settle before releasing the reader.
+After `.ready`, it checks keyword and number ranges and colours for
+`let value = 1\n`. The nearby growing-line case uses four-byte chunks and
+holds the second chunk in `testPaintingAGrowingLineDoesNotCacheItsPartialTokens`.
+Both failed before fixing (`round2-syntax-before.log`, 2 tests, 6 assertions):
+
+```text
+XCTAssertTrue failed - syntax fixture did not finish
+XCTAssertEqual failed: ([]) is not equal to ([{0, 3}, {12, 1}])
+```
+
+Syntax work now starts only for `isLineFinal` lines. Completed lines remain
+cached across indexing arrivals; provisional lines cannot install stale
+tokens even though indexing leaves the document generation unchanged.
+The bounded reader, checkpoints, suspension and generation checks are unchanged.
+
+**TOOLING-CONFIG-1 — confirmed and fixed, tested only with fakes.**
+`SpendingFailureTests` exercises the real scenario loop, polling and report
+writer in process with fake sessions, histories and corpus. `Helper` and
+`socket.socket` are patched to fail if reached; no live CLI, real helper,
+credential, user data or provider call runs in these tests.
+The fake polling sequence observes a billed $0.80 response and then loses the
+helper. All three scenario entry points are covered. Before fixing
+(`round2-spending-before.log`, 4 tests, 9 failing subtests):
+
+```text
+AssertionError: Lists differ: ['compact-now', 'mid-run', 'too-large'] != ['compact-now']
+AssertionError: None != 0.8             # failed scenario had no cost record
+AssertionError: 3 != 1                 # later scenarios still dispatched
+```
+
+Each scenario keeps ownership through exception accounting and closes in
+`finally`. A settled, numeric, finite, non-negative cost is counted once before
+disposal. If request collection failed, its whole recovered spend supplies a
+conservative request-size reserve. Missing, invalid or still-running accounting
+sets a sticky unknown-spend flag: the budget becomes zero, further live
+scenarios stop, and the JSON total is `null` with a separately labelled known
+subtotal. Text reports say `unknown`, including the cost-check detail.
+Recovered helper unreported-request counts also stop further dispatch, even
+when request collection never completed; their total is also unknown while
+the reported subtotal is retained. Successful accounting keeps the
+previous whole-run budget and largest-request reserve.
+
+Nearby sweep covers all three early-close paths, failure during final status
+accounting, unknown/invalid costs, and a broken pipe during session disposal.
+The broken-pipe test failed with `BrokenPipeError: fake closed pipe` before
+adding `OSError` to that close handler. Two review regressions caught Python's
+`False` being accepted as a numeric zero and a cost-check detail printing a zero
+run total for unknown spend; both were fixed before final validation. A third
+report check rejects treating the recovered reported subtotal as the whole
+total when other requests have no price.
+Malformed status/cost objects, overflowed numbers and invalid/missing request
+counters also fail closed. The expanded regression initially failed 8 subtests
+(`round2-spending-malformed-before.log`); these accounting failures now mark
+spending unknown rather than escaping accounting and leaving the budget intact.
+
+**TOOLING-CONFIG-2 — confirmed and fixed.**
+`PerformanceWrapperTests.test_an_earlier_failed_invocation_is_not_masked_by_later_success`
+uses a fake `xcodebuild` that returns 65 once, then zero. Before fixing:
+
+```text
+AssertionError: 0 == 0
+exit 65 Executed 1 tests
+exit 0 Executed 1 tests
+done
+```
+
+The wrapper retains the first nonzero status while still running later rounds,
+and exits with it. The same check covers a failing soak followed by successful
+`soakdraw`, including its temporary `ROUNDS=1` override. Successful runs still
+return zero. Generated `.xctestrun` products pass the real test-host isolation
+validator; the fake command never launches a native test or app.
+
+**TOOLING-CONFIG-3 — confirmed and fixed.**
+`test_relative_output_runs_tests_and_writes_logs_directly_in_that_folder`
+invokes the wrapper from a temporary working directory with `results`.
+Before fixing, the fake command was never invoked:
+
+```text
+AssertionError: False is not true
+results/baseline-1.log: No such file or directory
+```
+
+Both derived-data and output paths are resolved before changing directory;
+creation and navigation failures terminate immediately. Nearby regressions
+also reproduced relative derived-data failure and a non-directory output
+returning zero. The original wrapper suite had 4 failures out of 5 tests;
+the sixth test adds soak status coverage. Spaces in generated paths are covered.
+Self-review added a seventh regression for an output directory ending in a
+newline, with a separate sibling log containing a sentinel. The initial
+`$(pwd)` normalization trimmed that newline and overwrote the sibling's
+generated log (`round2-perf-whitespace-before.log`). Prefixing relative paths
+with the shell's absolute working directory preserves their bytes and avoids
+that regression; the target log now appears in the requested directory only.
+
+### Round 2 mutation checks and focused validation
+
+All mutations are temporary and restored in `finally`; failures must contain
+the named XCTest assertion failures or unittest failure summary, not merely a
+build failure. The final focused runs use the restored fixes.
+
+| Finding | Mutation | Result / text log |
+| --- | --- | --- |
+| GIT-FILES-5 | Replace hidden row resizing with the old prefix fit | Both regressions fail, 59 assertions; `round2-terminal-resize-mutation.log` |
+| GIT-FILES-5 sweep | Remove the hidden normal saved-cursor row adjustment | Resize matrix fails 3 cursor assertions; `round2-terminal-cursor-resize-mutation.log` |
+| GIT-FILES-6 | Make both screens use saved-cursor slot zero | All 3 cursor/attribute/mode-47 tests fail, 13 assertions; `round2-terminal-cursor-save-mutation.log` |
+| GIT-FILES-6 Reset sweep | Restore position/style-only Reset | Test fails 6 assertions; `round2-terminal-reset-mutation.log` |
+| GIT-FILES-6 pending-wrap sweep | Restore the unconditional pending-wrap clear | Test fails 8 assertions; `round2-terminal-wrap-mutation.log` |
+| GIT-FILES-6 resize preservation | Forget that the hidden grid was resized | Test fails 8 assertions; `round2-terminal-resized-wrap-mutation.log` |
+| GIT-FILES-7 | Remove the final-line guard | Both opening/growing tests fail, 6 assertions; `round2-syntax-mutation.log` |
+| TOOLING-CONFIG-1 | Remove exception accounting, unknown-spend blocking, status/counter validation, settled-state requirement, fallback reserve, pipe handling or unknown-total reporting | All 13 final mutations rejected; `round2-spending-final-*-mutation.log` |
+| TOOLING-CONFIG-2 | Force final exit zero | Baseline and soak regressions both fail; `round2-perf-final-exit-mutation.log` |
+| TOOLING-CONFIG-3 | Remove output/product path normalization; reintroduce newline-trimming normalization | Each targeted regression fails; `round2-perf-final-{output,products,whitespace}-mutation.log` |
+
+The native failing-first selectors were:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+
+# round2-terminal-before.log: 3 tests fail, 11 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testResizingTheAlternateScreenPreservesTheHiddenShellAndCursor \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateCursorSavesDoNotOverwriteTheNormalCursor \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateCursorSavesDoNotOverwriteTheNormalAttributes
+
+# round2-terminal-sweep-before.log: 2 tests fail, 61 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testHiddenNormalResizeMatchesVisibleResizeIncludingHistoryAndWraps \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testEachScreenKeepsItsSavedCursorAcrossMode47Switches
+
+# round2-syntax-before.log: 2 tests fail, 6 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileSyntaxTests/testPaintingBeforeOpenDoesNotCacheAnEmptyFirstLine \
+  -only-testing:PiAppTests/FileSyntaxTests/testPaintingAGrowingLineDoesNotCacheItsPartialTokens
+
+# round2-terminal-reset-before.log: 1 test fails, 6 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testResetClearsSavedCursorModesAndCharsetsOnBothScreens
+
+# round2-terminal-resized-wrap-before.log: 1 test fails, 8 assertions
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests/testAlternateResizeKeepsTheNormalScreensExistingWrapBehavior
+```
+
+The pending-wrap regression first failed in the full terminal command below:
+`round2-terminal-wrap-before.log` has 69 tests, 68 passed and that one failed
+with 8 assertions. Its mutation runs only
+`TerminalEmulatorTests/testLeavingTheAlternateScreenRestoresTheNormalsPendingWrap`.
+
+Mutation commands use the same selectors named in the table; the full exact
+invocations are also retained in `evidence/split-commands.txt` and
+`evidence/round2-final-commands.txt`. Each Python mutation log starts with its
+exact unittest command. The original tooling failures used:
+
+```sh
+python3 -m unittest scripts.tests.test_live_compaction_e2e.SpendingFailureTests -v
+python3 -m unittest scripts.tests.test_perf_transcript -v
+```
+
+Final focused commands (same worktree/build root, lock held per native run):
+
+```sh
+# round2-terminal-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests \
+  -only-testing:PiAppTests/TerminalSoftWrapTests \
+  -only-testing:PiAppTests/TerminalViewportTests \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests \
+  -only-testing:PiAppTests/TerminalHistoryDrawingTests \
+  -only-testing:PiAppTests/TerminalCursorAlignmentTests \
+  -only-testing:PiAppTests/TerminalPreciseScrollTests \
+  -only-testing:PiAppTests/TerminalInverseTests
+
+# round2-terminal-panel.log (serial lane, alone)
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelSerialTests
+
+# round2-terminal-audit.log (existing normal-resize/history coverage)
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelAuditTests
+
+# round2-file-views.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FileTextViewTests
+
+# round2-syntax-gallery-final.log (serial lane, alone)
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+
+# round2-terminal-gallery-final.log
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalCaptureTests
+
+# round2-tooling-final.log: 18 tests pass, no skips
+python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e.SpendingFailureTests \
+  scripts.tests.test_live_compaction_e2e.SummaryPromptTests \
+  scripts.tests.test_live_compaction_e2e.ConfigurationTests \
+  scripts.tests.test_perf_transcript -v
+
+bash -n scripts/perf-transcript.sh
+xcodegen generate --quiet
+git diff --check
+```
+
+Final counts (all restored fixes, no unexpected failures):
+
+| Suite / class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| TerminalEmulatorTests | 25 | 0 | 0 |
+| TerminalSoftWrapTests | 11 | 0 | 0 |
+| TerminalViewportTests | 7 | 0 | 0 |
+| TerminalSelectionScrollTests | 4 | 0 | 0 |
+| TerminalHistoryDrawingTests | 4 | 0 | 0 |
+| TerminalCursorAlignmentTests | 14 | 0 | 0 |
+| TerminalPreciseScrollTests | 4 | 0 | 0 |
+| TerminalInverseTests | 1 | 0 | 0 |
+| TerminalPanelSerialTests | 18 | 0 | 0 |
+| TerminalPanelAuditTests | 8 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FileTabTests | 16 | 0 | 0 |
+| FileTextViewTests | 45 | 0 | 0 |
+| FileSyntaxTests, gallery enabled | 14 | 0 | 0 |
+| TerminalCaptureTests, Round 2 gallery enabled | 1 | 1 | 0 |
+| SpendingFailureTests, fakes only | 7 | 0 | 0 |
+| SummaryPromptTests | 2 | 0 | 0 |
+| ConfigurationTests | 2 | 0 | 0 |
+| PerformanceWrapperTests, fake xcodebuild | 7 | 0 | 0 |
+
+Native aggregate: **177 passed, 1 skipped, 0 failed**. The skipped test is the
+separate legacy terminal capture, whose `PI_APP_UI_SCREENSHOT_ROOT` opt-in is
+unset; the new generated-byte gallery passed. Tooling aggregate: **18 passed,
+0 skipped, 0 failed**. All 24 final targeted mutation runs failed their
+regression assertions as intended; none was accepted on a build failure.
+
+The harness's real-helper fixture class and live CLI were not run: this
+finding was explicitly restricted to fakes/stubs. The helper and wire
+implementation did not change, so full helper and wire/concurrent/acceptance
+lanes are not required for this diff. Python compile checks and Bash syntax
+checks pass. Xcodegen leaves the project unchanged. No extra DerivedData or
+clone folders were created; the existing build root is reused.
+
+### Round 2 galleries and adversarial self-review
+
+Generated and visually inspected all eight PNGs in
+`$PI_BUILD_ROOT/evidence/round2-gallery`, holding the shared full-lane lock
+through each capture run:
+
+- `syntax-{light,dark}-{800,420}.png`: the initially held file now shows the
+  first-line keyword and number colours after loading, in both appearances
+  and at the narrow width. The file controls remain visible.
+- `terminal-restored-{light,dark}-{760,360}.png`: after alternate-screen
+  resizing, `three` and green `four!` are visible with the cursor after `!`.
+  Normal attributes survive the alternate red save. The assertions also
+  verify `one` and `two` remain in scrollback.
+
+One unassigned renderer issue is recorded, not changed: in all syntax captures,
+the plain `value =` following `let` inherits the keyword's purple, although
+the regression verifies that colour runs cover only `let` and `1`.
+`packages/bello-views/Sources/FileView/FileTextView.swift:248–251` leaves plain
+runs using foreground-from-context while assigning explicit token colours;
+`:777–791` sets the context foreground once before drawing the mixed line.
+This is the likely cause of the colour bleed. That renderer and the completed
+line's colour runs are unchanged by this fix. No separate baseline native
+experiment was run for this out-of-scope observation.
+
+Adversarial self-review covers the new diff from `6fc551e1`, including every
+changed production condition:
+
+| Condition / state change | States now handled differently; intended result |
+| --- | --- |
+| Saved-cursor screen index | Alternate saves/restores use their own slot. Normal saves, position-only CSI saves, and mode-47 live-style behavior retain their existing semantics. Mode 1049 switches back to normal before restoring. |
+| Hidden-screen resize branch | A saved normal grid now runs the existing cursor-aware row algorithm. The active grid's shrink/grow/blank-tail conditions are unchanged; only the hidden normal grid newly accesses normal history. |
+| `normal` history checks | The active screen gets the same `!alternateScreen` value as before. Hidden normal rows archive/restore; alternate rows still cannot enter scrollback. Limits and byte/cell accounting use the existing history routines. |
+| Cursor bounds after hidden row movement | A displaced saved row can now become negative; it is clamped to zero, and the saved 1049 row shifts with restored history. Ordinary nonnegative active saves keep their prior bounds. |
+| Reset of saved states | Previously saved nondefault modes/character sets now return to initial defaults on RIS, in both screens. This is the separately tested trivial same-function sweep fix. |
+| Pending wrap after screen restoration | Only a cursor-restoring exit with no actual grid resize retains the saved pending wrap. Entry, non-restoring exit and any real resize keep the old clearing behavior; no-op resizing does not change it. The resize flag resets on entry and RIS, and survives a resize away and back. |
+| Syntax final-line guard | Initial empty and growing provisional lines defer syntax work. Finished lines, empty final lines, suspension, generation changes and completed-line cache reuse retain their existing paths. |
+| Accounting recovery and validation | Missing/dead/malformed replies, running snapshots, invalid prices or missing/invalid unreported counters mark spend unknown. Settled numeric zero and positive costs with valid counters remain accepted. Ordinary recovery exceptions cannot escape without closing the budget. |
+| Failed-scenario ownership | Every constructed scenario session is counted before exceptional disposal. Constructors do not dispatch model requests. Successful scenarios still account in `run_scenario`, once. |
+| Request reserve fallback | Collected requests retain the previous largest-request calculation. A failed collection with recovered spending reserves the whole scenario amount conservatively. |
+| Unreported aggregation and budget/loop checks | Missing request collection can no longer conceal the helper's unreported counter. Unknown or unreported spending blocks dispatch; fully reported spending keeps the prior budget calculation. |
+| Cost-check and report conditions | Unknown/unpriced totals cannot pass the cost check or print zero; JSON totals are null and reported subtotals remain labelled separately. Successful fully priced reports remain numeric. |
+| Session-close exception handling | A broken helper pipe no longer prevents process disposal. Other session and helper ownership remains unchanged. |
+| Absolute-path checks | Only relative arguments gain the current-directory prefix. Absolute paths and all path whitespace retain their bytes; mkdir/cd failures stop the wrapper. The real test-host guard still runs before any test command. |
+| Performance failure accumulation | The first nonzero invocation status survives later successes, across rounds and soak functions. All-success runs still exit zero and later rounds still execute after failure. |
+
+The review added regressions for Reset state, pending wrap and its resize
+interaction, malformed accounting, explicit unknown totals and output-path
+newline preservation, and checked each fix with mutation. No unresolved
+assigned finding or owner product decision remains. The separate renderer
+colour-bleed observation above remains unassigned.
+
+## Round 2 review — selection coordinates and plain syntax ink
+
+Base: `8cb055b9`, still on `dev/a130-gitfiles`. No merge or fast-forward to
+`dev/next`. Build root and evidence remain this workstream's own. Only generated
+VT bytes and file fixtures are used; no installed app, real preferences,
+Keychain, live capture, real credentials or provider calls. All native and
+package UI test runs, including captures, hold the shared full-lane lock and
+release only their own lock. The helper and wire are unchanged.
+
+### Confirmations, fixes and nearby sweep
+
+**Review finding — confirmed and fixed.**
+`TerminalSelectionScrollTests.testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth`
+selects two alternate rows (`ALT` / `NEXT`) above a full four-row hidden normal
+screen, then shrinks to two and grows back. It checks all three screen modes
+47/1047/1049, both view-driven resizing and direct emulator resizing followed by
+refresh, and a one-line history limit that forces eviction. Before the fix,
+`round2-review-before.log` records 36 failed selection assertions:
+
+```text
+XCTAssertEqual failed: (Optional("")) is not equal to (Optional("ALT\nNEXT"))
+# after growing with capped history:
+XCTAssertEqual failed: (Optional("ALT")) is not equal to (Optional("ALT\nNEXT"))
+```
+
+Selection endpoints now move by the change in the alternate screen's absolute
+origin: `trimmedLines + scrollback.count`. Both `fitGrid()` and `refresh()`
+apply that shift before adopting the new origin, so a subsequent refresh does
+not apply it twice. Normal-screen selections retain their absolute history
+coordinates. Screen switches and history clearing retain their existing
+selection invalidation.
+
+Nearby sweep found the same coordinate issue in the active drag anchor.
+`testAnAlternateDragAnchorFollowsHiddenHistory` begins at column 3 of `ALTword`,
+resizes while dragging, then extends and shortens the selection. The focused
+before run (`round2-review-anchor-before.log`, one failure) returned `ALTwor`
+instead of `wor`. The anchor now moves with both endpoints. The history-cap
+variant also proves that checking only `scrollback.count` misses movement
+when old history is evicted. `testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing`
+is an unchanged-behaviour control and passed before fixing.
+
+**Syntax colour bleed — confirmed and fixed.** This resolves the previously
+unassigned renderer observation in the Round 2 hunt section.
+`FileTextViewTests.testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances`
+paints `let value = 1` in light, dark, then light again using the same view.
+Before fixing, all three captures had zero pixels matching the plain text
+colour in `value =` (`round2-review-before.log`):
+
+```text
+XCTAssertGreaterThan failed: (0) is not greater than (5)
+- plain value = must use plain ink in NSAppearanceNameAqua
+- plain value = must use plain ink in NSAppearanceNameDarkAqua
+```
+
+`testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid` also found plain
+CoreText runs still using foreground-from-context. It covers short lines,
+multiple pieces and the long-line grid (13, 3,000 and 70,000 UTF-16 units),
+including pieces with no coloured tokens. Mixed syntax lines now assign the
+host's plain text colour to the whole piece before applying token colours.
+Files without a syntax callback keep the existing context-colour path and
+appearance-independent layout reuse. Existing syntax appearance invalidation
+rebuilds mixed lines when the theme changes.
+
+Nearby sweep: the gutter's context-colour runs have one colour per draw and
+no mixed syntax tokens, so they do not have this bug. The shared piece builder
+handles ordinary and grid pieces; the regression checks both. Style changes
+already replace metrics and layouts, so the new plain colour follows the
+host's style without a new invalidation rule.
+
+### Mutation and focused evidence
+
+The before run selected the three new terminal tests and the two new file
+rendering tests: 5 tests, 3 failed, 67 assertion failures; the normal-selection
+control and the initial zero-column drag variant passed. The strengthened
+nonzero-column drag test then failed alone before any production fix.
+Test setup also corrected a CoreFoundation cast rejected by the compiler and
+then read the AppKit foreground attribute key from CoreText's retained
+attributes (the wrong key produced 14 test-assertion failures). Those setup
+logs are retained as `round2-review-test-build-error.log` and
+`round2-review-attribute-key-error.log`; the pixel oracle was unchanged.
+
+The immediate fixed run passed all 9 selected tests. Six temporary mutations
+were then rejected by the named regression assertions, not by build failures;
+each source was restored in `finally` before the final runs:
+
+| Mutation | Failed tests / assertions | Log under `evidence/` |
+| --- | --- | --- |
+| Remove the post-resize rebase | 1 / 18 | `round2-review-mutation-fit.log` |
+| Remove the refresh rebase | 1 / 18 | `round2-review-mutation-refresh.log` |
+| Do not rebase the drag anchor | 1 / 1 | `round2-review-mutation-anchor.log` |
+| Ignore trimmed history in the origin | 1 / 24 | `round2-review-mutation-trimmed.log` |
+| Rebase normal selections as well | 1 / 2 | `round2-review-mutation-normal.log` |
+| Restore context ink for plain runs, with explicit token ink only | 2 / 31 | `round2-review-mutation-ink.log` |
+
+Every native invocation below uses:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+# Each invocation acquires/releases the shared full-lane lock.
+```
+
+Before / immediate-after selectors and exact mutation commands are in
+`evidence/split-commands.txt`; final commands, including gallery variables and
+the package scratch directory, are in `evidence/round2-review-commands.txt`.
+The initial failing command was:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAlternateSelectionsFollowHiddenHistoryThroughShrinkAndGrowth \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testNormalSelectionsKeepTheirAbsoluteHistoryCoordinatesWhenResizing \
+  -only-testing:PiAppTests/FileTextViewTests/testPlainTextAfterSyntaxTokensKeepsItsOwnInkInBothAppearances \
+  -only-testing:PiAppTests/FileTextViewTests/testSyntaxPiecesGivePlainRunsExplicitInkIncludingTheGrid
+
+# Nonzero-column drag, before fixing:
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests/testAnAlternateDragAnchorFollowsHiddenHistory
+```
+
+Final commands (serial-lane classes are separate):
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TerminalEmulatorTests \
+  -only-testing:PiAppTests/TerminalSelectionScrollTests \
+  -only-testing:PiAppTests/TerminalViewportTests \
+  -only-testing:PiAppTests/TerminalSoftWrapTests \
+  -only-testing:PiAppTests/TerminalHistoryDrawingTests \
+  -only-testing:PiAppTests/TerminalCursorAlignmentTests \
+  -only-testing:PiAppTests/TerminalPreciseScrollTests \
+  -only-testing:PiAppTests/TerminalInverseTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelSerialTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalPanelAuditTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/FileTextViewTests \
+  -only-testing:PiAppTests/FileTabTests \
+  -only-testing:PiAppTests/FileHiddenReadTests \
+  -only-testing:PiAppTests/FileFindTabTests \
+  -only-testing:PiAppTests/FilePageReadTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+TEST_RUNNER_PI_ROUND2_GITFILES_GALLERY="$PI_BUILD_ROOT/evidence/round2-review-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TerminalCaptureTests
+swift build --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" --build-tests
+CFFIXED_USER_HOME="$PI_BUILD_ROOT/views-test-home" swift test \
+  --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-verify" \
+  --filter 'FileTextStyleTests|FileFindTests|FileDocumentTests'
+xcodegen generate --quiet
+git diff --check
+```
+
+Final restored-source counts:
+
+| Run / class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| TerminalEmulatorTests | 25 | 0 | 0 |
+| TerminalSelectionScrollTests | 7 | 0 | 0 |
+| TerminalViewportTests | 7 | 0 | 0 |
+| TerminalSoftWrapTests | 11 | 0 | 0 |
+| TerminalHistoryDrawingTests | 4 | 0 | 0 |
+| TerminalCursorAlignmentTests | 14 | 0 | 0 |
+| TerminalPreciseScrollTests | 4 | 0 | 0 |
+| TerminalInverseTests | 1 | 0 | 0 |
+| TerminalPanelSerialTests | 18 | 0 | 0 |
+| TerminalPanelAuditTests | 8 | 0 | 0 |
+| FileTextViewTests | 47 | 0 | 0 |
+| FileTabTests | 16 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FilePageReadTests | 3 | 0 | 0 |
+| FileSyntaxTests, gallery enabled | 14 | 0 | 0 |
+| TerminalCaptureTests, generated-byte gallery enabled | 1 | 1 | 0 |
+| Package FileDocumentTests | 35 | 0 | 0 |
+| Package FileFindTests | 14 | 0 | 0 |
+| Package FileTextStyleTests | 3 | 0 | 0 |
+
+Native: **201 passed, 1 skipped, 0 failed**. BelloViews package: **52 passed,
+0 skipped, 0 failed**. The skip is the separate legacy terminal-capture opt-in;
+the new captures all ran. Text logs are `round2-review-{terminal,panel,audit,files}-final.log`,
+`round2-review-{syntax,terminal}-gallery.log` and `round2-review-views-final.log`.
+No final unrelated test failures. Package build, `xcodegen generate --quiet`
+and `git diff --check` pass; the generated project is unchanged. No clone
+folders remain and no extra DerivedData copy was created. The package uses
+`views-verify` under this build root. No helper or wire code changed, so the
+full helper/wire/concurrent/acceptance lanes were not needed.
+
+### Galleries and adversarial self-review
+
+Regenerated and visually inspected all 12 images under
+`$PI_BUILD_ROOT/evidence/round2-review-gallery`, with the lock held for captures:
+
+- `syntax-{light,dark}-{800,420}.png`: `let` stays purple, `1` stays blue, and
+  `value =` now draws in the host's plain text colour at both widths. The old
+  purple bleed is gone in both appearances.
+- `terminal-selected-{light,dark}-{760,360}.png`: both selected alternate rows
+  remain highlighted after shrinking, matching the asserted `ALT\nNEXT` copy
+  text. Text contrasts with the selection background at both widths.
+- `terminal-restored-{light,dark}-{760,360}.png`: the earlier restoration
+  scene still shows `three`, green `four!`, and the cursor after `!`.
+
+Image hashes are retained in `evidence/round2-review-gallery-inspected-hashes.json`.
+
+Every changed production condition and coordinate update was reviewed:
+
+| Change | States affected and preservation check |
+| --- | --- |
+| Alternate-screen guard in selection rebasing | Only alternate selections move with hidden history; normal selections keep absolute coordinates, covered by the normal control and guard mutation. |
+| Origin delta includes trimmed history | Growing gives a negative shift; shrinking gives a positive shift even at a full history cap. No movement gives zero. Both endpoints and the active anchor receive the same shift. |
+| Rebase after resize, before updating `producedLines` | View-driven resizing applies the change immediately; refresh sees the adopted origin and cannot double-shift. |
+| Rebase in refresh after clear/switch handling | Direct emulator resizing is covered. Clear/switch handling first removes old selections and anchors, so they cannot migrate between screens. |
+| `syntax != nil` piece branch | Mixed pieces receive explicit default ink, even when a piece has no tokens. Syntax-free files retain context-colour reuse. Empty pieces remain valid zero-length attributed strings. |
+| Existing token range guard | Unchanged: only valid ranges override the default ink. Glyph metrics, source reads, selection, paging and line-piece bounds are unchanged. |
+| Existing style/appearance invalidation | Host style changes rebuild metrics/layouts. Theme changes rebuild syntax layouts; the light→dark→light pixel test covers reuse across appearances. |
+
+The complete new diff from `8cb055b9` was reviewed adversarially, including the
+test oracles and the six mutations above. Both assigned items are confirmed
+and fixed. No unresolved finding or owner decision remains in this follow-up.
+
+## Round 3 hunt
+
+Base: `28dbfb30`, on `dev/a130-gitfiles` after the lead's fast-forward. Only
+the live-compaction harness, its Python tests and the two release records
+changed. Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+The Release helper was rebuilt after the laptop restart. No live harness
+invocation or paid provider call was made: real helper processes used only
+`--fixture`, generated homes/workspaces and the loopback reasoning gateway.
+The live-policy tests use a fake helper, with helper construction and socket
+creation explicitly blocked. No installed app, real preferences, chats,
+credentials or Keychain were accessed. These checks do not change focus and
+need neither a gallery nor the full-lane lock.
+
+### TOOLING-CONFIG-4 — confirmed and fixed
+
+`FixtureRunTests.test_inherited_home_skills_never_reach_the_fixture_gateway`
+creates an inherited synthetic home with a valid implicit skill at
+`.agents/skills/private/SKILL.md`. It runs both `compact-now` and `mid-run`
+against the actual fixture gateway and inspects its decoded outgoing request
+bodies, along with both helper launch environments. Before changing the
+harness, `round3-before.log` showed four failed assertions:
+
+```text
+AssertionError: True is not false : gateway received inherited skill metadata: SYNTHETIC_PRIVATE_SKILL_DESCRIPTION_74AC
+AssertionError: True is not false : gateway received inherited skill metadata: .../inherited-home/.agents/skills/private/SKILL.md
+AssertionError: False is not true : helper inherited HOME
+AssertionError: False is not true : helper inherited CFFIXED_USER_HOME
+```
+
+Each scenario now creates `home` alongside its existing temporary `codex`,
+workspace and sessions directories. `Helper` requires that home and sets both
+child environment variables before process launch. This covers Foundation's
+independent `.agents/skills` scan while retaining the explicit `codexHome`
+override. The parent environment and the existing `PI_LIVE_*` filtering are
+unchanged. The directories follow the existing temporary-run cleanup/`--keep`
+policy. The passing test checks that neither metadata sentinel nor inherited
+skill path reaches any accepted fixture request, and that the two helpers have
+distinct homes with matching HOME/CFFIXED_USER_HOME values.
+
+Nearby sweep: this harness has one helper construction site and one launch
+implementation, shared by all three scenarios; there is no alternate launch
+that bypasses the new home requirement. Session reopening reuses the same
+isolated helper. The separate `codexHome` override remains in place.
+
+### TOOLING-CONFIG-5 — confirmed and fixed
+
+`PollingAccountingTests.test_unpriced_summary_between_polls_blocks_follow_up`
+drives the real `Session.wait`, `compaction_scenario`, `Session.submit` and final
+accounting. The fake helper first returns a running summary and then idle with
+`spentUSD: 0.10, unreportedRequests: 1`. It also checks a summary that is already
+idle on the first poll. Both cases failed before the fix:
+
+```text
+AssertionError: Lists differ: [call('turn.submit', ... 'text': 'E2E follow-up. ...', 'fake-session')] != []
+... : an unpriced summary must not authorize FOLLOW_UP
+```
+
+Live polling now validates settled accounting before returning success.
+Unreported requests produce a cost stop, so the existing scenario guard sends
+no follow-up. The tests also assert that final `runTotalUSD` stays null,
+`spendKnown` is false, and the next-scenario budget is zero. Reported zero-cost
+and positive-cost summaries still submit exactly one follow-up. Fixture-mode
+dispatch remains unchanged.
+
+Nearby instance, fixed in the same polling branch: missing or malformed
+settled accounting also allowed the follow-up before final accounting rejected
+it. `test_missing_or_malformed_settled_accounting_blocks_follow_up` reproduced
+this with missing fields, invalid types, negative counters and non-finite
+spending. The initial eight cases each failed on the unexpected `turn.submit`;
+coverage also includes a nonempty invalid cost list and integer-to-float
+overflow. The existing final-accounting validation is shared through
+`settled_spend`, retaining its exact validity predicate and exception handling.
+Polling now uses that same criterion and returns a cost stop when validation
+fails. Unpriced paused/error statuses are also explicitly reported as cost
+stops, rather than successful completion; their existing no-follow-up behavior
+is preserved.
+
+The running-attempt polling, loop limits, timeout/Stop path, final accounting,
+once-only spend aggregation, request reserve and outer scenario budget gate
+were reviewed. Only the settled-success return previously bypassed the cost
+check. No helper or wire implementation changed.
+
+### Commands, results and mutations
+
+All commands ran from this worktree. `PI_BUILD_ROOT` below is
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles`.
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 scripts/build-bundle.py
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e.FixtureRunTests.test_inherited_home_skills_never_reach_the_fixture_gateway \
+  scripts.tests.test_live_compaction_e2e.PollingAccountingTests -v
+
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/round3-mutations.py
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e -v
+
+python3 -m py_compile scripts/live-compaction-e2e.py scripts/tests/test_live_compaction_e2e.py
+git diff --check
+```
+
+| Check | Result and evidence |
+| --- | --- |
+| Release helper rebuild | Pass, 75.49 s; `round3-helper-build.log`. Existing Swift 6 isolation warnings remain in unrelated helper initialization. |
+| Failing-first focused run | 6 tests: 2 pass, 4 failing test methods / 16 subtest assertion failures; `round3-before.log`. |
+| Fixed focused run | 6 pass, 0 fail; `round3-after.log`. |
+| Entire affected harness module | 24 pass, 0 fail, 0 skip in 5.443 s; `round3-harness-tests.log`. |
+| Syntax / whitespace | Both Python files compile; `git diff --check` passes. |
+
+The full module comprises FixtureRunTests **3**, PollingAccountingTests **5**,
+SpendingFailureTests **7**, ReasoningGatewayTests **5**, SummaryPromptTests **2**
+and ConfigurationTests **2**. The fixture tests include all three scenarios and
+the intentionally capped-summary negative control. No native app class or
+helper source changed, so full native/helper/wire/concurrent/acceptance suites
+are outside this change's affected tests. No new DerivedData or test-host clones
+were created.
+
+The external mutation driver restores the original source after each run and
+in `finally`. It runs `python3 -m unittest <selector> -v` with this build root;
+the home mutants select the inherited-home test, and the accounting mutants
+select PollingAccountingTests. Every failure was a test assertion, not a
+syntax error or process failure:
+
+| Mutation | Result (`round3-mutation-<name>.log`) |
+| --- | --- |
+| `home`: remove the HOME override, retain CFFIXED_USER_HOME | Killed: 2 assertions fail. |
+| `cfhome`: remove CFFIXED_USER_HOME, retain HOME | Killed: 4 assertions fail, including leaked sentinel/path. |
+| `unreported`: bypass the settled unreported-request guard | Killed: 4 assertions fail. |
+| `unknown`: bypass the unknown-accounting guard | Killed: 9 assertions fail. |
+| `fixture`: apply the new live guard to fixture dispatch too | Killed: 1 assertion fails. |
+
+`round3-mutations.log` records all five results. The final full-module run above
+ran after restoration and includes the additional malformed-accounting and
+zero-cost controls.
+
+### Adversarial self-review and separate observation
+
+Reviewed the complete new diff from `28dbfb30`, including every changed
+production condition and its changed states:
+
+| Change | States affected and preservation check |
+| --- | --- |
+| Required `home` argument / child environment override | All harness helper launches now resolve home resources inside the generated scenario. All callers were checked. The parent environment, supplied key, explicit codex directory and resource permission policy stay unchanged. |
+| New home directory in the existing creation loop | The directory exists before launch and is owned by the existing temporary-run lifecycle. No real directory is created or removed. |
+| Settled-state branch | Running polls still take the original path. Idle, paused and error snapshots are checked before they can be returned as successful live completion. |
+| `mode == "live"` guard | Only live-policy completion requires this new admission check. The fixture dispatch control and its mutation pin the existing fixture behavior. |
+| Accounting exception / `not known` | Missing, malformed, negative, non-finite and overflowing accounting now stops live completion. Valid numeric zero remains known; booleans remain invalid. No exception grants follow-up admission. |
+| `if unreported` | A valid positive count now blocks live completion. Zero retains the prior priced-success path. The mutation reproduces the extra follow-up. |
+| Shared settled accounting predicate | The final-accounting predicate, tuple values and exception fallback are unchanged. All seven prior spending-failure tests pass, including failure before disposal, unknown totals, reserve and exactly-once aggregation. |
+| Existing follow-up guard | Unchanged: it requires idle and no stop reason. It now receives the cost stop before dispatch, rather than learning of unknown spending during final reporting. |
+
+Separate source-level observation, not changed under this harness assignment:
+`scripts/test-native-host.py:419` and
+`scripts/test-concurrent-native-host.py:46` still launch their loopback fixture
+helpers without an explicit environment; acceptance reuses the former at
+`scripts/test-native-acceptance.py:37`. Direct callers without an isolated home
+can therefore expose inherited skills to their local fixtures through the same
+Resources discovery path. These are loopback clients, not live provider paths;
+this observation was not runtime-reproduced or changed here and is recorded for
+the lead's scope decision.
+
+Both assigned Round 3 findings are confirmed and fixed. No assigned finding or
+owner product decision remains unresolved.
+
+## Fixture helper homes — Round 3 follow-up
+
+Base `fa18c41e`, still `dev/a130-gitfiles`. The lead merged the prior work and
+fast-forwarded this worktree. Evidence remains under this workstream's
+`build-a130-gitfiles/evidence`; no other workstream's products are used.
+All helper calls here use synthetic resources and loopback gateways, or process
+stubs that only report selected environment variables. No live provider,
+installed app, real user resource or Keychain access is used; live-policy
+accounting tests retain their fake helper and blocked network boundaries.
+
+### Confirmed script leaks and shared fix
+
+`HelperHomeFixtureTests.test_every_peer_excludes_inherited_skills_and_codex_instructions`
+uses the actual wire, concurrent, acceptance and raw shared peer constructors
+against the Release helper. Its synthetic inherited home contains an implicit
+skill with description `SYNTHETIC_INHERITED_SKILL_47CF`, and a separate inherited
+CODEX_HOME contains `AGENTS.md` with `SYNTHETIC_INHERITED_CODEX_47CF`. Each peer is
+tested both with an explicit generated `resources.codexHome` and with the
+helper's default Codex discovery. Every case sends a real loopback request and
+checks the request bytes for inherited descriptions, instructions and paths.
+
+Before the fix, all four peers sent the home skill in both configurations;
+all four also sent inherited Codex instructions when no resource override was
+specified. The launch-boundary probe additionally confirmed that default and
+custom environments inherited all three roots. `home-isolation-before.log`
+records 2 failing test methods / 33 assertion failures, including:
+
+```text
+AssertionError: True is not false : fixture received inherited resource: SYNTHETIC_INHERITED_SKILL_47CF
+AssertionError: True is not false : fixture received inherited resource: SYNTHETIC_INHERITED_CODEX_47CF
+... HOME was inherited
+... CFFIXED_USER_HOME was inherited
+... CODEX_HOME was inherited
+```
+
+The common `native_host_client.HostPeer` now creates a fresh generated home for
+each peer, including restarts and calls supplying a custom environment. Shared
+`isolated_environment` sets HOME and CFFIXED_USER_HOME to that home and
+CODEX_HOME to its generated `.codex` directory. The rest of a supplied
+environment, including PATH and synthetic fault-injection flags, remains intact;
+the caller's dictionary is copied, not mutated. Explicit `resources.codexHome`
+values in these scripts already name generated workspace directories and remain
+unchanged. `Resources.swift` reads precisely these home inputs; tool/MCP process
+environments derive HOME from the now-isolated helper environment.
+
+Default homes are removed after the helper exits, and also if process launch
+fails. The live compaction harness passes its already-owned generated home into
+the same implementation, retaining its existing cleanup/`--keep` ownership and
+PI_LIVE credential filtering. Its private root is never deleted by HostPeer.
+
+The sweep found `smoke-native-bundle.py` launching a helper directly. Its new
+stub-package regression failed first with 4 assertions in
+`home-isolation-smoke-before.log`: each root remained inherited, and CODEX_HOME
+was outside the helper's HOME. That launcher now uses the same environment
+builder under its existing temporary directory. The test stubs `lipo` and the
+helper and never launches an app.
+
+### Script mutation evidence and completed helper suites
+
+`home-isolation-mutations.py` lives in the evidence folder, changes one source
+expression at a time, and restores every source in `finally`. It runs
+`python3 -m unittest scripts.tests.test_helper_home -v` for the three root
+mutations, the custom-environment test for the explicit-env mutation, and the
+smoke test for the smoke mutation. All failures below were assertions, not
+compiler or launch errors:
+
+| Mutation | Result (`home-isolation-mutation-<name>.log`) |
+| --- | --- |
+| `home`: omit HOME from the shared override | Killed, 7 assertion failures. |
+| `cfhome`: omit CFFIXED_USER_HOME | Killed, 23 assertion failures, including fixture skill leakage. |
+| `codex`: omit CODEX_HOME | Killed, 15 assertion failures, including fixture Codex instruction leakage. |
+| `explicit-env`: bypass isolation when a custom environment is supplied | Killed, 5 assertion failures. |
+| `smoke`: restore the direct launch's inherited environment | Killed, 4 assertion failures. |
+
+The initial focused run of the new fixture/environment tests and the entire
+live-compaction test module passed **27/27** (`home-isolation-focused.log`).
+Subsequent coverage adds failed-launch cleanup and asserts successful, validated
+fixture responses, so suppressing all requests or failing preflight cannot
+satisfy the leak regression.
+
+Commands from this worktree, with
+`PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles`:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+```
+
+| Suite | Result | Text evidence |
+| --- | --- | --- |
+| Release helper rebuild | Pass | `home-isolation-build.log` |
+| Wire | 39 pass, 0 fail, 36.381 s | `home-isolation-wire.log` |
+| Concurrent | 4 pass, 0 fail, 25.441 s | `home-isolation-concurrent.log` |
+| Acceptance | 3 pass, 0 fail, 3.546 s | `home-isolation-acceptance.log` |
+
+### Launch-path sweep
+
+| Launch path | Finding / disposition |
+| --- | --- |
+| Wire Peer, ConcurrentPeer, acceptance setup and restart | Shared HostPeer default now isolates all roots. The actual constructors are covered by the loopback regression. |
+| `test-subagent-{cache,crashes,downgrade,streaming,steering-crashes,steering-streaming}.py` | All use HostPeer and are covered by its unconditional isolation, including explicit environments containing fixture fault flags. No six-script rewrite is needed. |
+| `live-compaction-e2e.py` | Now shares the same implementation, with retained-home ownership and credential filtering preserved. All existing harness tests cover it. |
+| `smoke-native-bundle.py` | Direct helper launch fixed and independently mutation-tested. |
+| `test-macos.sh`, `verify-release.sh`, `check-next.sh`, `perf-transcript.sh` | Native tests use the dedicated test-host target and its guard. Stored performance products are already checked for the dedicated host and fixed home. |
+| `apps/macos/TestSupport/TestIsolationGuard.m` | Found a further child-environment hole, documented below. |
+| Build, signing, signature verification and measurement utilities | No additional Bello helper/app launch; no signing, release, real capture or process measurement was invoked here. |
+| `test-keychain-identity.py` | Separate opt-in signing/Keychain probe; not invoked and not part of unittest discovery. |
+| `perf-launch.sh` | Separate opt-in launch benchmark; not invoked. It supplies a generated HOME/CFFIXED_USER_HOME to its copied fixture app; descendant handling is noted below. |
+
+### Native test-host child environments — sweep finding fixed
+
+The existing guard verified Foundation's fixed home, but left the parent HOME
+and CODEX_HOME environment variables inherited. An explicit `Process.environment`
+could also discard the fixed home. In particular, the app's helper launcher
+supplies HOME without CFFIXED_USER_HOME. A Foundation-only process probe, which
+opened no resource files, confirmed that HOME alone does **not** control
+NSHomeDirectory on this Mac (`home-isolation-foundation-probe.json`).
+
+`TestHostIsolationTests.testChildProcessesCannotRestoreInheritedHomeRoots`
+first failed in the actual native test host, using only `/usr/bin/env` and
+synthetic explicit paths. `home-isolation-native-before-fixed-probe.log`
+contains 1 failed test / 4 assertions: supplied child roots remained
+`/synthetic/inherited`, an empty child environment had none of the three roots,
+the parent HOME still named the account home, and parent CODEX_HOME was nil.
+No helper or resource discovery ran in this failing-first native test. An
+earlier prototype used macOS `printenv`, which returns only one named variable;
+the probe was corrected to parse the explicit environment before recording this
+final failing-first run.
+
+After the existing host/home safety validation, TestIsolationGuard now installs
+the three roots in the parent process and protects NSTask's environment setter.
+Explicit, empty and nil environments retain the same verified generated home;
+unrelated supplied variables remain intact. Children launched without an
+explicit environment inherit the protected parent roots. The host and test
+bundle can both install the guard: a runtime marker prevents installing the
+setter twice. Failure to install the boundary stops before application services.
+This file is still compiled only into PiAppTestHost/PiAppTests, never the
+shipping application; the existing project-configuration test verifies that.
+
+`TestIsolationGuardTests.test_child_environments_keep_fixed_home_and_codex_root`
+also compiles a Foundation-only probe from this same guard, installs it twice,
+and starts a generated child for explicit/empty/nil/inherited cases. It checks
+all three environment roots, the child's actual NSHomeDirectory, and preservation
+of an unrelated fixture flag. Paths are resolved before comparison because
+Foundation and Python spell `/var` / `/private/var` aliases differently. No
+preferences, skill contents, Keychain or UI are read by this probe.
+
+| Guard mutation | Result |
+| --- | --- |
+| Omit the root override in the NSTask setter | Killed: 2 Foundation probe assertions fail (`home-isolation-mutation-guard-child.log`). |
+| Omit the parent `setenv` updates | Killed: the inherited-child case fails (`home-isolation-mutation-guard-parent.log`). |
+| Omit guard installation from the real test-host constructor | Killed: the native regression again fails all 4 assertions (`home-isolation-native-mutation.log`). |
+
+`home-isolation-guard-mutations.py` restores the source in `finally`, then runs
+the complete affected native class. Both the first fixed class run and the final
+restored run pass **5/5**; final evidence is
+`home-isolation-native-final.log`. All native invocations acquired the shared
+full-lane lock and released only their own lock in `finally`, including failures.
+No lock was held while editing or waiting for another owner. No gallery was
+needed because no UI changed.
+
+### Final checks and adversarial self-review
+
+In addition to the three passing Release-helper suites above, the final complete
+Python discovery passed **111 tests, 0 failures, 0 skips** in 51.267 s
+(`home-isolation-python.log`). It includes the four new helper-home tests, the
+entire 24-test live harness module and the expanded test-guard probes. An initial
+discovery before adding the Foundation child probe passed 110/110; its log is
+retained as `home-isolation-python-initial.log`. Signing-retry messages in these
+logs come from stubbed signing tests; no signing or Keychain operation ran.
+
+The exact final commands were:
+
+```sh
+# Held the shared full-lane lock for each native invocation:
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles scripts/test-macos.sh \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/TestHostIsolationTests
+
+python3 -m unittest discover -s scripts/tests
+xcodegen generate --quiet
+git diff --check
+```
+
+Python discovery ran with PI_BUILD_ROOT and PI_NATIVE_HOST naming this build
+root/Release helper, and HOME/CFFIXED_USER_HOME/CODEX_HOME pointing into a fresh
+`TemporaryDirectory(prefix="python-home-", dir=build_root / "evidence")`, with
+CODEX_HOME its `.codex` child. That also isolates nested script probes such as
+the stubbed release gate's diagnostic-report lookup. The directory is removed
+after discovery. The focused native regression and its mutation use the same
+native command with the selector extended by
+`/testChildProcessesCannotRestoreInheritedHomeRoots`.
+
+Project generation produced no project diff. No extra DerivedData root or
+parallel test-host clones were created; an explicit scan found no clone folders
+to remove under this workstream's native-tests root. All eight mutations failed
+their intended assertions, and all sources were restored before final checks.
+No packages/swift-host source or wire implementation changed, so no separate
+Swift helper-unit run was required. The three requested Release wire suites
+were run in full as recorded above.
+
+Reviewed the complete new diff from `fa18c41e` adversarially:
+
+| Changed condition / boundary | States now handled and preservation evidence |
+| --- | --- |
+| `home is None` | Default peers receive distinct generated homes. The live harness's explicit generated home remains owned by its run, preserving retained artifacts. |
+| `env is None` | Both inherited and explicit dictionaries pass through the same three-root override. Empty dictionaries remain otherwise empty; fixture fault flags and PATH survive. The supplied dictionary is copied. |
+| Launch exception / owned-home cleanup | A new temporary home is removed if launch fails and after successful disposal. Caller-owned homes are not removed. Failed-launch and two-peer cleanup probes pass. |
+| Live harness forwarding | The same explicit generated home now reaches shared HostPeer; PI_LIVE filtering, private-IPC credentials and workspace codexHome remain unchanged. All 24 harness tests pass. |
+| Smoke launch | Only the child roots change; bundle checks and handshake assertions remain intact. Its independent stub test and mutation exercise the actual script entry point. |
+| Guard installation after isolation validation | Unsafe host identities, real-home aliases and unsafe storage paths still refuse before mutation or data access. Existing guard tests remain green. |
+| Parent environment updates | Inherited or missing HOME/CODEX_HOME now point into the already-verified home. A failed `setenv` refuses the test host. The native parent assertions and inherited-child mutation cover this boundary. |
+| Explicit versus nil NSTask environment | Explicit dictionaries retain non-home fields; nil uses the protected parent environment. Empty dictionaries also receive the three roots. All four process modes verify effective Foundation home. |
+| Runtime installation marker | First installation records the original setter; subsequent installation does not wrap it again. Double-installation probes and the two native Mach-O guards pass without recursion. A missing setter refuses the test host. |
+| Build scope | TestSupport remains absent from PiApp. Shipping app permissions, vault, capture, tool and data behavior are unchanged. |
+
+Separate observation, outside the requested fixture-client/test-host fix:
+`scripts/perf-launch.sh:54` isolates its copied `PI_LAUNCH_FIXTURE` app, but that
+app is not PiAppTestHost and does not include TestIsolationGuard.
+`apps/macos/PiApp/Host/HostSupervisor.swift:119` supplies only HOME to its helper;
+the Foundation probe above shows why reopening a fixture chat can still discover
+account-home resources in that descendant. The benchmark also stats the account's
+preferences file at `scripts/perf-launch.sh:37`/`:71`. This opt-in benchmark was
+not run; its production-source descendant path and metadata probe are recorded
+for separate follow-up, not silently changed here.
+
+The assigned script isolation issue and the native test-host sweep finding are
+fixed. There are no failing checks or unresolved owner product decisions in
+these changes; the separate opt-in benchmark observation remains as noted.
+
+## Fixture isolation review — relative paths and launch benchmarks
+
+**Preference-reset correction:** the file-only reset and the prohibition on
+fixture-domain `defaults` calls recorded below were incorrect. The owner's
+clarification and the real UserDefaults regression in
+[the follow-up](#fixture-preferences-review--effective-per-trial-reset)
+supersede that conclusion and its `preferences-reset` mutation expectation.
+
+Base `14cc0893`, on `dev/a130-gitfiles`; no merge, fast-forward or history rewrite.
+This resolves both the relative-path review and the opt-in benchmark observation
+above. Evidence is under this workstream's
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`,
+prefixed `home-review-`. No live or paid requests, installed app launch,
+Keychain access, real preferences/resource reads or metadata probes were used.
+
+### Relative helper paths — confirmed and fixed
+
+`HelperPathTests.test_relative_helper_and_build_root_launch_all_fixture_peers`
+creates a generated build-tree symlink to this workstream's Release helper. It
+runs the actual home-isolation fixture class in a subprocess twice: once with
+relative `PI_NATIVE_HOST`, then with relative `PI_BUILD_ROOT` and no
+`PI_NATIVE_HOST`. Each child exercises all four peers, both with and without an
+explicit generated `codexHome`, and must finish without skipping.
+
+Failing first (`home-review-relative-before.log`): both subprocesses failed;
+each had eight `FileNotFoundError`s, because the validated relative executable
+was then interpreted under the peer's temporary workspace:
+
+```text
+(variable='PI_NATIVE_HOST') ... FAIL
+(variable='PI_BUILD_ROOT') ... FAIL
+FileNotFoundError: [Errno 2] No such file or directory:
+  '../../../../../../var/folders/.../pi-relative-helper-.../swift-host/arm64-apple-macosx/release/pi-native-host'
+Ran 1 test in 0.505s
+FAILED (errors=8)
+```
+
+The selected path now calls `.resolve()` before either existence check or peer
+override. Precedence and missing-helper skip behavior remain unchanged.
+Removing this call reproduces both failures (`home-review-mutation-relative.log`).
+The restored regression passes as part of the focused and full Python runs.
+
+Nearby sweep: both standalone wire runners already resolve their executable;
+acceptance reuses the wire runner. `test_live_compaction_e2e.release_helper`
+can return a relative path, but its callers pass it to the harness in the same
+working directory, and `load_config` resolves it before helper construction.
+It does not have this directory-change bug; no change there.
+
+### Launch benchmark isolation — confirmed and fixed
+
+`PerfLaunchTests.test_launch_and_preference_checks_stay_in_the_fixture` executes
+the real shell entry point over a generated fixture and fake bundle, using a
+fake `belloperf` that never executes the app. `stat`, `defaults` and `sysctl`
+are spies; no preference query, purge, window, capture or actual benchmark runs.
+Its inherited HOME/CFFIXED_USER_HOME/CODEX_HOME and scratch paths are synthetic.
+The test observes one prime and one warm trial, the harness environment, app
+arguments, copied preference removal and the original fixture's unchanged plist.
+
+`LaunchHelperEnvironmentTests` compiles the actual helper environment builder
+three ways: shipping, `PI_LAUNCH_FIXTURE`, and `PI_TEST_HOST`. The original
+six-key dictionary was extracted unchanged from `HostSupervisor` to the small
+Foundation-only `HostEnvironment.swift` before adding the fix. This lets the
+regression exercise the fixture compilation condition without a GUI app or the
+native test-host guard masking the bug. Its generated child only returns
+environment/home path strings; it never opens or stats the returned paths.
+
+The final failing-first probe (`home-review-perf-before-normalized.log`) recorded
+**2 failing methods / 10 assertions**:
+
+```text
+(variable='CFFIXED_USER_HOME', condition='PI_LAUNCH_FIXTURE') ... FAIL
+AssertionError: None != '/var/folders/.../pi-launch-helper-.../home'
+(variable='CODEX_HOME', condition='PI_LAUNCH_FIXTURE') ... FAIL
+AssertionError: None != '/var/folders/.../pi-launch-helper-.../home/.codex'
+... foundationHome and fileManagerHome did not name the generated home
+(preferences='metadata') ... FAIL
+... inherited/Library/Preferences/com.belloware.PiApp.plist
+    != fixture/home/Library/Preferences/com.belloware.PiApp.launchperf.plist
+(preferences='defaults') ... FAIL
+AssertionError: True is not false : do not contact the invoking account preferences service
+```
+
+The shipping allowlist control passed before and after the fix. An earlier
+prototype compared `/private/var` and Foundation's `/var` spelling literally;
+the probe was corrected and rerun before the fix. The normalization is a string
+operation, not a filesystem lookup on any unexpected returned home.
+
+Changes:
+
+- `perf-launch.sh` supplies generated HOME, CFFIXED_USER_HOME, CODEX_HOME,
+  TMPDIR and PI_APP_SCRATCH_ROOT to both the harness and its app arguments,
+  creating the Codex and scratch directories before launch.
+- Only `PI_LAUNCH_FIXTURE` and `PI_TEST_HOST` builds add CFFIXED_USER_HOME and
+  CODEX_HOME to the helper environment. Both derive from the app's effective
+  generated Foundation home, including an inherited CODEX_HOME override case.
+  Shipping builds retain exactly the prior six-key environment.
+- The preferences timestamp check names the original fixture's launchperf
+  plist. Per-trial reset removes only the copied fixture plist. Neither reset
+  nor final cleanup calls the account's `defaults` service.
+
+The sweep also found that `WorkspaceModel` can use an inherited
+`PI_APP_BENCHMARK_STATE_ROOT` when benchmark output enables instrumentation;
+inherited `PI_APP_BENCHMARK_OUTPUT` and `BELLO_CONTEXT_DIAGNOSTICS` can likewise
+direct writes outside the generated run. Extending the shell regression with
+these synthetic paths first failed both trial assertions
+(`home-review-override-before.log`). The same launcher now unsets these three
+inherited overrides before calling the harness. The default application-support
+and resource paths derive from the fixed home; any harness-created diagnostic
+output remains owned by that harness.
+
+App/resource sweep: `WorkspaceResources` defaults `codexHome` to the effective
+Foundation home's `.codex`; the generated LaunchFixtureWriter vault has no
+external resource overrides. `Resources.swift` uses `NSHomeDirectory`,
+CODEX_HOME or explicit `codexHome`; these are covered by the fixture boundary.
+`LaunchFixtureVault` still supplies only the generated configuration and does
+not use Keychain. No production permission, capture, tool, vault, resource
+discovery or wire implementation changed.
+
+### Mutation checks
+
+`home-review-mutations.py` (evidence folder) mutates one boundary at a time and
+restores all files in `finally`. It runs the relevant relative-path, compiled
+environment or stub benchmark test for each mutation. All **11/11** were caught:
+
+| Mutation | Failing assertions / evidence suffix |
+| --- | --- |
+| Remove helper-path `.resolve()` | 2; `relative` (each child reports 8 launch errors) |
+| Omit helper CFFIXED_USER_HOME | 4; `helper-cfhome` |
+| Omit helper CODEX_HOME | 2; `helper-codex` |
+| Enable the override in shipping builds | 2; `shipping-gate` |
+| Drop PI_TEST_HOST from the compilation condition | 3; `test-host-gate` |
+| Omit launcher/harness CODEX_HOME | 2; `launch-codex` |
+| Omit launcher/harness CFFIXED_USER_HOME | 2; `launch-cfhome` |
+| Restore the invoking account's preferences path | 1; `preferences-stat` (stat spy only) |
+| Restore account defaults reset | 3; `preferences-reset` (defaults spy only) |
+| Retain inherited benchmark/diagnostic paths | 2; `optional-roots` |
+| Drop generated scratch roots | 2; `scratch` |
+
+Logs are `home-review-mutation-<suffix>.log`, with the aggregate in
+`home-review-mutations.log`. The executable-path mutant intentionally reproduces
+the reported launch failure; all other mutations fail assertions after their
+probes compile and run. No mutation is accepted merely for a build/syntax error.
+All sources were restored before the full validation runs.
+
+### Validation commands and adversarial review
+
+Commands from this worktree:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 scripts/build-bundle.py
+python3 -m unittest scripts.tests.test_helper_home scripts.tests.test_perf_launch -v
+python3 -m unittest discover -s scripts/tests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles scripts/test-macos.sh \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/HostSupervisorTests \
+  -only-testing:PiAppTests/HostTransportTests -only-testing:PiAppTests/TestHostIsolationTests
+xcodegen generate --quiet
+bash -n scripts/perf-launch.sh
+git diff --check
+```
+
+Python commands run through the evidence driver `run-home-review.py`, with
+PI_BUILD_ROOT/PI_NATIVE_HOST naming this build root and its Release helper, and
+HOME/CFFIXED_USER_HOME/CODEX_HOME in a generated `review-home-*` temporary
+directory removed after each command. The benchmark script test uses only its
+stubs, and all model requests elsewhere use loopback fixtures.
+
+| Suite | Result | Text evidence |
+| --- | --- | --- |
+| Release helper rebuild/staging | Pass | `home-review-build.log` |
+| Focused helper-home and benchmark probes | 8 pass | `home-review-focused.log` |
+| Full Python discovery, including the subsequent override regression | 115 pass, 0 skips, 55.250 s | `home-review-python.log` |
+| Wire | 39 pass, 35.351 s | `home-review-wire.log` |
+| Concurrent | 4 pass, 25.827 s | `home-review-concurrent.log` |
+| Acceptance | 3 pass, 3.476 s | `home-review-acceptance.log` |
+| HostSupervisorTests | 10 pass, 0 fail | `home-review-native.log` |
+| HostTransportTests | 8 pass, 0 fail | `home-review-native.log` |
+| TestHostIsolationTests | 5 pass, 0 fail | `home-review-native.log` |
+
+The native run rebuilt this worktree's test host/products and passed **23/23**,
+with no compiler warnings. It waited for the shared full-lane lock, held it
+only for the run and released its own lock in `finally`. No focus-changing
+probe ran outside that lock. The benchmark unit probes never launched an app
+and needed no gallery. There are no test-runner clones to remove under this
+build root, and no extra DerivedData root was created.
+
+The Python log's signing retry messages are from stubbed signing tests, not
+actual signing or Keychain calls. No `packages/swift-host` or wire source
+changed, so the Swift helper unit suite was not required; all three requested
+Release-helper black-box suites ran in full.
+
+Adversarial review of every changed behavior/condition:
+
+| Boundary | States that change; preservation check |
+| --- | --- |
+| Relative versus absolute selected helper | Relative paths now bind in the invoking directory before peers switch cwd. Absolute paths retain their destination; native-host override, build-root fallback and missing-helper skip precedence are unchanged. Both relative selectors execute all eight actual fixture cases. |
+| `PI_LAUNCH_FIXTURE || PI_TEST_HOST` | Only these two compiled environments gain fixed Foundation/Codex roots. The shipping configuration, including benchmark enabled/disabled, exactly matches the old six-key allowlist. Dropping the test-host condition and making the condition unconditional are independently caught. |
+| Fixture helper home construction | The child's fixed home and Codex root derive from the parent's effective Foundation home, rather than forwarding a potentially unrelated inherited CODEX_HOME. PATH, language, app version, benchmark flag and existing scratch selection retain their values. The child probe checks both Foundation home APIs. |
+| Benchmark harness/app inheritance | Missing, inherited or conflicting home/scratch roots now name the generated run. Both the harness's own environment and its explicit app overrides are asserted; directory creation precedes launch. Trial scheduling, labels and timing arguments are unchanged. |
+| Optional state/diagnostic overrides | Previously inherited external paths are now absent at harness startup, so app defaults remain under the fixed home and inherited diagnostics cannot write elsewhere. The synthetic poison-path regression and mutation cover this state. |
+| Preference reset and timestamp check | Present copied launchperf preferences are removed; absent files remain harmless. The original generated fixture plist is only checked, and remains byte-equivalent in the test. The account plist is never inspected, and no account defaults service is invoked. Both boundaries have independent mutants. |
+| Source extraction / generated project | Only the existing environment dictionary moved into a Foundation-only builder, allowing direct tests of fixture and shipping compilation without an app launch. The supervisor uses that builder; XcodeGen adds it to the same app/test-host source sets. |
+
+No product decision or production behavior change is needed for these fixes.
+
+## Fixture preferences review — effective per-trial reset
+
+Base `88137210`, on `dev/a130-gitfiles`. The review finding is **confirmed and
+fixed**. The benchmark's `com.belloware.PiApp.launchperf` domain is generated
+fixture state, even when cfprefsd stores it in the account Preferences directory.
+The owner explicitly permits resetting this exact domain. The real app's domain
+and every other non-fixture domain remain outside the test boundary.
+
+### Failing first and fix
+
+`PerfLaunchTests.test_each_trial_resets_the_effective_fixture_defaults` runs
+the actual shell entry point with a generated bundle and fake `belloperf`.
+For each of two labels' prime and warm trials, the harness starts a separate
+Foundation-only executable. It reads the fixture's persistent domain through
+`UserDefaults`, writes a distinct marker and synchronizes it. No app executes.
+The regression requires every trial's initial marker to be absent.
+
+Before changing the script, `defaults-review-before.log` showed:
+
+```text
+FAIL: test_each_trial_resets_the_effective_fixture_defaults
+AssertionError: Lists differ:
+[None, 'fixture-prime-0', 'second-prime-0', 'fixture-warm-1']
+!= [None, None, None, None]
+UserDefaults retained a previous trial
+Ran 4 tests in 4.587s
+FAILED (failures=9)
+```
+
+The other eight failures were the five non-fixture target cases, the two
+reset-error cases, and the missing reset calls in the existing launch-boundary
+test. Those cases use spies exclusively; they never query a non-fixture domain.
+
+`perf-launch.sh` now checks the exact fixture domain before any paths or
+preferences are accessed, then makes it readonly. Before each trial it invokes
+`defaults` under the trial's generated HOME, CFFIXED_USER_HOME and CODEX_HOME.
+It writes one fixture marker before deleting the domain, so an initially absent
+domain is handled without suppressing a genuine write/delete failure. Either
+failure stops the script before the harness launches. Normal completion also
+clears the domain before removing the run directory.
+
+The copied fixture plist is still removed, and the original fixture plist's
+metadata check remains confined to the fixture. Home/scratch isolation, helper
+environments, trial ordering and timing arguments are unchanged.
+
+For the real preference probe, the defaults proxy permits only the exact
+fixture marker write and fixture-domain delete, then calls `/usr/bin/defaults`.
+The Foundation probe hardcodes that same suite and uses `persistentDomain`,
+never `UserDefaults.standard` or a merged preference search. Cleanup clears the
+fixture domain in `finally`. Unsafe-domain cases include the real app ID, an
+unrelated ID, a fixture-prefix lookalike, `-g`, and the empty string; all are
+refused before any spy observes a preference operation or launch.
+
+Nearby sweep: `rg` over `scripts/` and `apps/macos/TestSupport` for defaults
+writes/deletes, preference plist resets and persistent-domain removal found no
+additional file-only reset to fix. No Swift app/helper or wire source changed.
+
+### Mutation checks
+
+The evidence driver `defaults-review-validation.py` changes one line at a time,
+runs the indicated method and restores the script in `finally`. All **5/5**
+mutations fail assertions after their probes run successfully:
+
+| Mutation | Test / failure | Log suffix |
+| --- | --- | --- |
+| Remove per-trial reset | Effective-defaults regression sees prior trial markers; 1 failure | `per-trial` |
+| Bypass exact-domain guard | Non-fixture-domain regression; 5 failures | `domain-guard` |
+| Ignore failed marker write | Reset-error regression observes a launch; 1 failure | `failed-write` |
+| Ignore failed domain delete | Reset-error regression observes a launch; 1 failure | `failed-delete` |
+| Remove final reset | Effective-defaults regression reads `second-warm-1` after the run; 1 failure | `cleanup` |
+
+An initial final-cleanup mutation survived because the inspection used a home
+directory already removed by the launcher. The probe now recreates that same
+generated home before inspection, matching a subsequent trial. The final
+mutation then failed with:
+
+```text
+AssertionError: 'second-warm-1' is not None :
+  the fixture domain is cleared after the run
+Ran 1 test in 3.554s
+FAILED (failures=1)
+```
+
+The initial result is retained as
+`defaults-review-mutation-cleanup-initial.log`; it is not counted as a caught
+mutation. Final logs use `defaults-review-mutation-<suffix>.log`.
+
+### Validation and adversarial review
+
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+Commands from this worktree:
+
+```sh
+python3 -m unittest scripts.tests.test_perf_launch.PerfLaunchTests -v
+python3 -m unittest scripts.tests.test_perf_launch -v
+python3 -m unittest discover -s scripts/tests
+bash -n scripts/perf-launch.sh
+python3 -m py_compile scripts/tests/test_perf_launch.py
+git diff --check
+```
+
+Python commands use the existing evidence wrapper `run-home-review.py`, which
+sets generated HOME/CFFIXED_USER_HOME/CODEX_HOME and this workstream's
+PI_BUILD_ROOT/Release PI_NATIVE_HOST. The complete fixed/mutation/final run was:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  defaults-review-validation python3 \
+  /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/defaults-review-validation.py
+```
+
+| Suite | Result | Text evidence |
+| --- | --- | --- |
+| Focused launch/environment probes | 6 pass, 0 fail, 9.938 s | `defaults-review-focused.log` |
+| Full Python discovery | 118 pass, 0 fail, 0 skips, 58.779 s | `defaults-review-python.log` |
+| Mutations | 5/5 caught | `defaults-review-validation.log` |
+| Shell/Python syntax and diff checks | Pass | `defaults-review-static.log` |
+
+These Foundation-only and stub tests do not launch a GUI app or change focus;
+they ran independently of the native lane and did not alter another workstream's
+lock. No opt-in benchmark, paid/live request, installed app, real app preferences,
+other non-fixture domain, real journal or Keychain access was used. The full
+Python suite's signing retry messages come from its signing stubs. No new
+DerivedData root, test clone or named xcresult was created.
+
+Adversarial review of the whole new diff:
+
+| Changed condition/step | States that now differ and intended result |
+| --- | --- |
+| Exact-domain guard | Only the fixed fixture ID proceeds; other IDs, aliases and empty values fail before any preference access or launch. The readonly assignment prevents a later target change. Wrong-target tests always use spies. |
+| Seed then delete | An absent domain is created and deleted successfully; an existing domain loses all prior trial values through cfprefsd. Failed writes or deletes abort instead of allowing contaminated timings. Both error branches have independent mutations. |
+| Per-trial reset | Prime, warm and cold trials share the same reset path. Values from any previous label/trial are removed; launch ordering and arguments are unchanged. Separate UserDefaults processes demonstrate persistence before and absence after the fix. |
+| Final reset and probe cleanup | Successful runs clear the last trial's values while the home still exists. The probe recreates its generated home before final inspection and clears the exact fixture domain even after assertion failure. |
+| Test dispatch/real defaults boundary | Real calls require an explicit per-test flag plus an exact argument allowlist. Inherited probe/failure flags are removed. Non-fixture cases cannot reach real defaults even with the production guard mutated away. The fake app is not executable. |
+| Existing boundaries | The original fixture plist stays unchanged; metadata checks stay fixture-local; all app/helper home and scratch overrides remain as before. No shipping path or helper behavior changes. |
+
+No unresolved failure or owner decision remains in this change.

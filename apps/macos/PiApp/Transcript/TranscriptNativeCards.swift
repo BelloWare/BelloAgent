@@ -41,6 +41,8 @@ enum TranscriptCardFaces {
     let panel = TranscriptPanel()
     private(set) var environment = TranscriptRowEnvironment()
     private(set) var link: (() -> Void)?
+    var expansionChanged: ((Bool) -> Void)?
+    func restoreExpansion(_ expanded: Bool) {}
     var rightToLeft: Bool { environment.layoutDirection == .rightToLeft }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
@@ -601,10 +603,12 @@ enum TranscriptCardFaces {
     required init?(coder: NSCoder) { nil }
     /// Shows every line, or the head and the tail again, as the more-lines button does.
     func setExpanded(_ value: Bool) {
-        expanded = value
-        configureLines()
+        guard expanded != value else { return }
+        restoreExpansion(value)
         invalidatePlans()
+        expansionChanged?(value)
     }
+    override func restoreExpansion(_ value: Bool) { guard expanded != value else { return }; expanded = value; configureLines() }
     override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .diff(request, pathText, outcome, added, removed) = card else { return }
         self.request = request
@@ -873,7 +877,13 @@ enum TranscriptCardFaces {
         more.perform = { [weak self] in self?.setExpanded(!(self?.expanded ?? false)) }
     }
     required init?(coder: NSCoder) { nil }
-    func setExpanded(_ value: Bool) { expanded = value; configureLines(); invalidatePlans() }
+    func setExpanded(_ value: Bool) {
+        guard expanded != value else { return }
+        restoreExpansion(value)
+        invalidatePlans()
+        expansionChanged?(value)
+    }
+    override func restoreExpansion(_ value: Bool) { guard expanded != value else { return }; expanded = value; configureLines() }
     override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .read(text, firstLine, pathText, failed) = card else { return }
         let window = TranscriptReadCardText.window(of: text)

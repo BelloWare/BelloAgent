@@ -160,7 +160,11 @@ enum ConversationSearchPaging {
     private func copy(first: Int, last: Int) {
         guard work.isActive, !busy, inheritedEnabled else { return }; busy = true; status.text = "Reading retained text…"
         let source = source, revision = result.revision
-        work.run({ try await Self.collect(source: source, revision: revision, first: first, last: last, limit: 8 * 1024 * 1024, failure: "This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.") }) { [weak self] outcome in
+        let model = model, outputUse = model.beginToolOutputUse(.export)
+        work.run({
+            try await model.prepareToolOutputUse(outputUse)
+            return try await Self.collect(source: source, revision: revision, first: first, last: last, limit: 8 * 1024 * 1024, failure: "This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.")
+        }, finally: { model.finishToolOutputUse(outputUse) }) { [weak self] outcome in
             guard let self else { return }; defer { self.busy = false }
             switch outcome {
             case .success(let bytes):
@@ -179,12 +183,14 @@ enum ConversationSearchPaging {
         panel.message = "Save the retained conversation as Markdown text."
         let source = source, revision = result.revision, total = result.total, window = window
         busy = true
+        let model = model, outputUse = model.beginToolOutputUse(.export)
         work.run({ [weak window] in
+            try await model.prepareToolOutputUse(outputUse)
             guard let url = await PiQuestion.shared.save(panel, over: window) else { return nil as (URL, Data)? }
             try Task.checkCancellation()
             let bytes = try await Self.collect(source: source, revision: revision, first: 1, last: total, limit: 64 * 1024 * 1024, failure: "This conversation exceeds 64 MiB. Copy explicit ranges instead. No file was written.")
             return (url, bytes)
-        }) { [weak self] outcome in
+        }, finally: { model.finishToolOutputUse(outputUse) }) { [weak self] outcome in
             guard let self else { return }; defer { self.busy = false }
             switch outcome {
             case .success(let value):

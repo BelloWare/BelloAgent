@@ -38,13 +38,14 @@ struct SidebarChatEntry: Identifiable {
     private var entryLists: [EntryKey: [SidebarChatEntry]] = [:]
     private var chatOrder: [String]?
     private var managedByOwner: [String: [ChatRecord]]?
+    private var filterMatches: (query: String, ids: Set<String>)?
     /// How many of these answers were actually computed rather than reused.
     /// A sidebar pass must not grow this with the number of rows it draws.
     private(set) var computations = 0
 
     func invalidate() {
         PerformanceProbe.shared.count("sidebarIndexInvalidations")
-        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil; managedByOwner = nil
+        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil; managedByOwner = nil; filterMatches = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
         if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true) }
         // An empty project was grouped too, even though it has no buckets.
@@ -91,6 +92,10 @@ struct SidebarChatEntry: Identifiable {
         computations += 1
         let value = build(); chatOrder = value; return value
     }
+    func matches(_ query: String, _ build: () -> Set<String>) -> Set<String> {
+        if let filterMatches, filterMatches.query == query { return filterMatches.ids }
+        let ids = build(); filterMatches = (query, ids); return ids
+    }
     func subagents(of owner: String, in chats: [ChatRecord]) -> [ChatRecord] {
         if managedByOwner == nil {
             managedByOwner = Dictionary(grouping: chats.filter { $0.isSubagent && $0.delegationIssue == nil }, by: { $0.delegation!.budgetOwnerSessionID })
@@ -114,7 +119,7 @@ extension WorkspaceModel {
             if sidebarListsFlat {
                 return (archive ? [false, true] : [false]).flatMap { archived in
                     SidebarSessionPresentation.filtered(sidebarFlatEntries(archived: archived, collapsed: []), by: query,
-                        contentMatches: query.isEmpty ? [] : sidebarFlatMatches(query: query))
+                        contentMatches: query.isEmpty ? [] : sidebarFilterMatches(query: query))
                         .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                         .map(\.chat.id)
                 }
@@ -125,7 +130,7 @@ extension WorkspaceModel {
                     return lists.flatMap { archived in
                         SidebarSessionPresentation
                             .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query,
-                                      contentMatches: query.isEmpty ? [] : sidebarContentMatches, includingMainChats: includingMainChats)
+                                      contentMatches: query.isEmpty ? [] : sidebarFilterMatches(query: query), includingMainChats: includingMainChats)
                             .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                             .map(\.chat.id)
                     }
@@ -189,18 +194,28 @@ extension WorkspaceModel {
         }
     }
 
-    /// Matching project/topic tags work like matching a folder in Topics.
-    /// Build lookup sets once per pass, never scan all chats for each row.
-    func sidebarFlatMatches(query: String) -> Set<String> {
-        let projects = Set(sidebarProjects.filter { $0.name.localizedCaseInsensitiveContains(query) }.map(\.id))
-        let namedTopics = Dictionary(grouping: topics.filter { $0.title.localizedCaseInsensitiveContains(query) }, by: \.workspaceID)
-            .mapValues { Set($0.map(\.id)) }
-        var matches = sidebarContentMatches
-        for chat in chats where projects.contains(chat.workspaceID)
-            || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true) {
-            matches.insert(chat.id)
+    /// Resolve displayed metadata once per filter pass, shared by Topics,
+    /// Flat, keyboard navigation and the topic visibility check.
+    func sidebarFilterMatches(query: String) -> Set<String> {
+        sidebarIndex.matches(query) {
+            let projects = Set(sidebarProjects.filter { $0.name.localizedCaseInsensitiveContains(query) }.map(\.id))
+            let namedTopics = Dictionary(grouping: topics.filter { $0.title.localizedCaseInsensitiveContains(query) }, by: \.workspaceID)
+                .mapValues { Set($0.map(\.id)) }
+            let connections = Set(profiles.filter { $0.name.localizedCaseInsensitiveContains(query) }.map(\.id))
+            let models = Dictionary(profiles.map { ($0.id, $0.modelId) }, uniquingKeysWith: { first, _ in first })
+            var matches = sidebarContentMatches
+            // Metadata follows the normal main-chat list. Family rows still
+            // appear for their own title, task or full-chat content matches.
+            for chat in chats where !chat.isBackgroundTask && !chat.isSubagent && sideFamilyOwner(chat) == nil {
+                if projects.contains(chat.workspaceID)
+                    || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true)
+                    || connections.contains(chat.profileID)
+                    || (chat.model ?? models[chat.profileID])?.localizedCaseInsensitiveContains(query) == true {
+                    matches.insert(chat.id)
+                }
+            }
+            return matches
         }
-        return matches
     }
 
     /// The chats of one sidebar group, sorted. Filtering before sorting keeps a

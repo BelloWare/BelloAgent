@@ -87,11 +87,13 @@ import Combine
     private let body = HandoffBody()
     private let footer: SheetFooterRow
     private let sheet: PiKit.Sheet
+    private var outputUse: ToolOutputUse?
     /// The window's disabled state, from the SwiftUI sheet around it.
     var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { refresh() } } }
 
     init(model: WorkspaceModel, session: SessionDisplay, dismiss: @escaping () -> Void) {
         self.model = model; self.session = session; self.dismiss = dismiss
+        outputUse = model.beginToolOutputUse(.sideHandoff)
         let text = session.messages.last(where: { $0.role == "assistant" && !$0.isStreaming })?.text ?? ""
         editor = NativeCodeEditorView(text: text, accessibilityLabel: "Editable side summary")
         footer = SheetFooterRow(leading: [copy], trailing: [replace, insert])
@@ -104,20 +106,52 @@ import Combine
         body.addSubview(notice)
         addSubview(sheet)
         editor.onChange = { [weak self] _ in self?.refresh() }
-        cancel.onPress = { [weak self] in self?.dismiss() }
-        sheet.dismiss = { [weak self] in self?.dismiss() }
+        cancel.onPress = { [weak self] in self?.finishAndDismiss() }
+        sheet.dismiss = { [weak self] in self?.finishAndDismiss() }
         copy.onPress = { [weak self] in
             guard let self else { return }
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(self.editor.text, forType: .string)
+            let text = self.editor.text
+            self.whenOutputReady { _ in
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            }
         }
         replace.onPress = { [weak self] in self?.bringBack(replace: true) }
         insert.onPress = { [weak self] in self?.bringBack(replace: false) }
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    deinit {
+        if let outputUse {
+            let model = model
+            Task { @MainActor in model.finishToolOutputUse(outputUse) }
+        }
+    }
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { Self.size }
     override func layout() { super.layout(); sheet.frame = bounds }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { finishOutputUse() }
+        else if outputUse == nil { outputUse = model.beginToolOutputUse(.sideHandoff) }
+    }
+
+    private func finishOutputUse() {
+        guard let use = outputUse else { return }
+        outputUse = nil; model.finishToolOutputUse(use)
+    }
+    private func finishAndDismiss() { finishOutputUse(); dismiss() }
+    private func whenOutputReady(_ action: @escaping @MainActor (SideHandoffView) -> Void) {
+        guard let use = outputUse else { return }
+        guard use.recycling != nil else { action(self); return }
+        let model = model
+        Task { [weak self] in
+            do {
+                try await model.prepareToolOutputUse(use)
+                guard let self, self.outputUse?.id == use.id else { return }
+                action(self)
+            } catch { /* A dismissed handoff has no remaining publication. */ }
+        }
+    }
 
     private func refresh() {
         let empty = editor.text.isEmpty
@@ -129,8 +163,11 @@ import Combine
         body.needsLayout = true
     }
     private func bringBack(replace: Bool) {
-        do { try model.bringBack(editor.text, from: session.id, replace: replace); dismiss() }
-        catch { notice.text = error.localizedDescription; refresh() }
+        let text = editor.text
+        whenOutputReady { view in
+            do { try view.model.bringBack(text, from: view.session.id, replace: replace); view.finishAndDismiss() }
+            catch { view.notice.text = error.localizedDescription; view.refresh() }
+        }
     }
 
     /// The editor in its inset, filling the room, the error under it

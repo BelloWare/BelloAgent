@@ -316,6 +316,7 @@ enum TranscriptSkillPillMetrics {
 /// One part of a response as its row reads it (`TimelinePartRow`): the
 /// message it stands for, its title, icon and state.
 struct TranscriptTimelinePart {
+    static let completionNotRecorded = "Completion not recorded"
     let part: ResponseTimeline.Segment
     let message: TranscriptMessage
     var source: TranscriptMessage {

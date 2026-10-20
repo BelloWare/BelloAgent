@@ -4,6 +4,46 @@ import XCTest
 /// The built-in tools: what they return to the model, and what happens to a
 /// command that outlives its deadline while a child still holds the pipes.
 final class NativeToolTests: XCTestCase {
+    func testRetainedTwentyMiBShellLogCanBeReadInSmallPages() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let outputs = root.appendingPathComponent("out"), tools = NativeTools(cwd:root,outputs:outputs,mcp:MCPManager(cwd:root))
+        let shell = try await tools.invoke(ToolCall(id:"large",name:"bash",arguments:["command":"/usr/bin/awk 'BEGIN { for (i=1; i<=1048576; i++) printf \"%019d\\n\", i }'","timeout":30]),readOnly:false)
+        XCTAssertFalse(shell["isError"].flag ?? true)
+        let log = try XCTUnwrap(FileManager.default.contentsOfDirectory(at:outputs,includingPropertiesForKeys:nil).first { $0.pathExtension == "log" })
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath:log.path)[.size] as? Int,20 * 1024 * 1024)
+        XCTAssertTrue(shell["content"].list.first?["text"].text?.contains("Use read with offset/limit") == true)
+        for offset in [1, 1_048_557] {
+            do {
+                let page = try await tools.invoke(ToolCall(id:"page",name:"read",arguments:["path":JSON(log.path),"offset":JSON(offset),"limit":20]),readOnly:true)
+                let expected = (offset..<(offset+20)).map { String(format:"%019d",$0) }.joined(separator:"\n")
+                XCTAssertTrue(page["content"].list.first?["text"].text?.hasPrefix(expected) == true)
+                XCTAssertEqual(page["stats"]["line"].int,offset); XCTAssertEqual(page["stats"]["lastLine"].int,offset+19)
+            } catch { XCTFail("Page \(offset) failed: \(error)") }
+        }
+    }
+
+    func testStreamedTextPagesKeepExistingUTF8AndViewerLineSemantics() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root)), file = root.appendingPathComponent("text.txt")
+        let texts = ["", "a\nb\n", "a\rb\nc\rd", "a\r\nb\r\nc", String(repeating:"x",count:4099)+"🙂\nend", String(repeating:"x",count:32767)+"🙂\nend", String(repeating:"x",count:69635)+"🙂\r\nend"]
+        for text in texts {
+            try Data(text.utf8).write(to:file)
+            for offset in [1,2,4] { for count in [1,2,2000] {
+                let page = try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":JSON(file.path),"offset":JSON(offset),"limit":JSON(count)]),readOnly:true)
+                let lines = text.components(separatedBy:"\n"), selected = lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded = preview(selected,bytes:32768)
+                let expected = bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : "")
+                XCTAssertEqual(page["content"].list.first?["text"].text,expected)
+                let shown = ViewerLines.read(text,lines:lines,offset:offset,count:count,bound:32768)
+                XCTAssertEqual(page["stats"]["line"].int,shown?.lowerBound); XCTAssertEqual(page["stats"]["lastLine"].int,shown?.upperBound)
+            } }
+        }
+        for bytes in [Data([0x61,0x0a,0xff]), Data(repeating:0x61,count:69635)+Data([0xf0,0x9f,0x99])] {
+            try bytes.write(to:file)
+            do { _ = try await tools.invoke(ToolCall(id:"binary",name:"read",arguments:["path":JSON(file.path),"limit":1]),readOnly:true); XCTFail("Invalid UTF-8 outside or after the page must still fail") }
+            catch let error as AgentError { XCTAssertEqual(error.code,"binary_file") }
+        }
+    }
+
     func testSessionOwnsShortShellAndOversizedToolOutputsBeforeRecordingResults() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let outputs = root.appendingPathComponent("tool-output"), profile = try fixtureProfile()
@@ -252,4 +292,79 @@ final class NativeToolTests: XCTestCase {
 private actor UpdateRecorder {
     var sizes: [Int] = []
     func record(_ update: JSON) { sizes.append(update["content"].list.first?["text"].text?.utf8.count ?? 0) }
+}
+
+extension NativeToolTests {
+    func testToolOutputReferencesKeepOnlySharedFilesAndReleaseTheLastReference() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("Workspaces/w/Sessions"), outputs = sessions.appendingPathComponent("tool-output")
+        let owner = try ToolOutputOwnership.directory(root: outputs, sessionID: "original", create: true)
+        let live = try ToolOutputOwnership.directory(root: outputs, sessionID: "live", create: true)
+        let log = owner.appendingPathComponent(UUID().uuidString + ".log"), mcp = owner.appendingPathComponent(UUID().uuidString + ".txt"), unused = owner.appendingPathComponent(UUID().uuidString + ".log")
+        for file in [log, mcp, unused, live.appendingPathComponent(UUID().uuidString + ".log")] {
+            try Data((String(repeating: "preview line\n", count: 5000) + "RETAINED-SENTINEL\n").utf8).write(to: file)
+        }
+        let fork = sessions.appendingPathComponent("fork_copy.jsonl"), side = sessions.appendingPathComponent("side_kept.jsonl")
+        let row: JSON = ["type":"message", "message":["content":[["type":"text", "text":JSON(String(repeating:"padding",count:10_000)+" Full output: "+log.path)]]]]
+        // Both valid JSON escape spellings and a record spanning read chunks.
+        try Data((row.encoded().replacingOccurrences(of:"tool-output",with:"tool-\\u006futput").replacingOccurrences(of:"/",with:"\\/")+"\n").utf8).write(to: fork)
+        try Data((JSON.object(["type":"branch", "historical":["text":JSON(mcp.path)]]).encoded()+"\n").utf8).write(to: side)
+        let inventory = try ToolOutputOwnership.inventory(appRoot: root, deleted: ["w": ["original"]])
+        let refs = try ToolOutputOwnership.references(in: inventory.journals, candidates: inventory.keys)
+        XCTAssertEqual(inventory.recyclable(keeping: refs.keys).map(\.lastPathComponent),[unused.lastPathComponent])
+        XCTAssertTrue(inventory.unchanged); XCTAssertTrue(refs.unchanged)
+        for file in inventory.recyclable(keeping: refs.keys) { try FileManager.default.removeItem(at: file) }
+        let tools = NativeTools(cwd: root, outputs: outputs, mcp: MCPManager(cwd: root))
+        for file in [log,mcp] {
+            let page = try await tools.invoke(ToolCall(id:"read",name:"read",arguments:["path":JSON(file.path),"offset":5001,"limit":1]),readOnly:true)
+            XCTAssertTrue(page.encoded().contains("RETAINED-SENTINEL"))
+        }
+        try FileManager.default.removeItem(at: fork); try FileManager.default.removeItem(at: side)
+        let final = try ToolOutputOwnership.inventory(appRoot: root, deleted: ["w": ["original"]])
+        let last = try ToolOutputOwnership.references(in: final.journals, candidates: final.keys)
+        XCTAssertEqual(final.recyclable(keeping: last.keys).map(\.lastPathComponent),[owner.lastPathComponent])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.path),"No authority to reclaim a live owner")
+    }
+
+    func testToolOutputReferencesFailClosedAndDetectConcurrentPublication() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("Workspaces/w/Sessions"), outputs = sessions.appendingPathComponent("tool-output")
+        let owner = try ToolOutputOwnership.directory(root: outputs, sessionID: "original", create: true)
+        let file = owner.appendingPathComponent(UUID().uuidString + ".txt"); try Data("private".utf8).write(to: file)
+        let journal = sessions.appendingPathComponent("survivor.jsonl")
+        try Data("{\"type\":\"session\"}\n".utf8).write(to: journal)
+        let inventory = try ToolOutputOwnership.inventory(appRoot: root, deleted: ["w": ["original"]])
+        let before = try ToolOutputOwnership.references(in: inventory.journals, candidates: inventory.keys)
+        try Data("{\"unfinished\":".utf8).write(to: journal)
+        XCTAssertFalse(before.unchanged,"An append/replacement invalidates the proof")
+        let unknown = try ToolOutputOwnership.references(in: inventory.journals, candidates: inventory.keys)
+        XCTAssertEqual(unknown.keys,inventory.keys,"A damaged or in-flight record cannot authorize deletion")
+        try Data("{}\n".utf8).write(to: sessions.appendingPathComponent("fork_new.jsonl"))
+        XCTAssertFalse(inventory.unchanged,"A newly published fork invalidates the directory inventory")
+        let missing = try ToolOutputOwnership.references(in: [sessions.appendingPathComponent("missing.jsonl")], candidates: inventory.keys)
+        XCTAssertEqual(missing.keys,inventory.keys)
+        let cancelled = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try ToolOutputOwnership.references(in: [journal], candidates: inventory.keys)
+        }
+        do { _ = try await cancelled.value; XCTFail("Cancellation cannot authorize deletion") }
+        catch is CancellationError { }
+    }
+
+    func testToolOutputInventoryRejectsSymlinksAndKeepsUnknownFiles() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let outputs = root.appendingPathComponent("Workspaces/w/Sessions/tool-output")
+        let owner = try ToolOutputOwnership.directory(root: outputs, sessionID: "original", create: true)
+        let unknown = owner.appendingPathComponent("not-a-helper-output.data"); try Data("untouched".utf8).write(to:unknown)
+        let inventory = try ToolOutputOwnership.inventory(appRoot:root,deleted:["w": ["original"]])
+        XCTAssertTrue(inventory.recyclable(keeping:[]).isEmpty)
+        let external = root.appendingPathComponent("outside.txt"); try Data("outside".utf8).write(to:external)
+        let link = owner.appendingPathComponent(UUID().uuidString+".txt")
+        try FileManager.default.createSymbolicLink(at:link,withDestinationURL:external)
+        XCTAssertThrowsError(try ToolOutputOwnership.inventory(appRoot:root,deleted:["w": ["original"]]))
+        try FileManager.default.removeItem(at:link)
+        try FileManager.default.createSymbolicLink(at:root.appendingPathComponent("Workspaces/linked"),withDestinationURL:root)
+        XCTAssertThrowsError(try ToolOutputOwnership.inventory(appRoot:root,deleted:["w": ["original"]]))
+        XCTAssertEqual(try String(contentsOf:external,encoding:.utf8),"outside")
+    }
 }

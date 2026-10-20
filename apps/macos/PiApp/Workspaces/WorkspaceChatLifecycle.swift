@@ -69,6 +69,8 @@ extension WorkspaceModel {
     /// archive, connection change or helper session needs it.
     func materializeChat(_ id: String) async throws {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
+        let outputUse = beginToolOutputUse(.draftMaterialization)
+        defer { finishToolOutputUse(outputUse) }
         // A first use owns the project even if its write fails and the chat
         // becomes eligible again. Never revive a choice made before that use.
         pendingChatProjectChoices[id] = nil
@@ -78,6 +80,7 @@ extension WorkspaceModel {
             let remaining = pendingChatSaveCounts[id, default: 1] - 1
             pendingChatSaveCounts[id] = remaining > 0 ? remaining : nil
         }
+        try await prepareToolOutputUse(outputUse)
         try await store.put(item, kind: "chat", id: id)
         PerformanceProbe.shared.count("pendingChatCreationWrites")
         // Navigation can discard a still-empty placeholder while this actor
@@ -141,15 +144,51 @@ extension WorkspaceModel {
         guard let workspaceID = selectedWorkspaceID else { pickWorkspace(); return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before importing."; return }
         if !questions.chooseOne(message: "Open a Pi JSONL session read-only. The original file will remain unchanged.", directories: false, { [weak self] url in
-            self?.importChat(from: url, workspaceID: workspaceID, store: store)
+            Task { await self?.importChat(from: url, workspaceID: workspaceID, store: store) }
         }) { error = PiQuestion.busyNotice }
     }
-    private func importChat(from url: URL, workspaceID: String, store: MetadataStore) {
-        Task { do {
+    func importChat(from url: URL, workspaceID: String, store: MetadataStore) async {
+        let navigation = organizationNavigationRevision, workspaceSelection = selectedWorkspaceID, profileID = profileChoice
+        func currentSelection() -> Bool { !Task.isCancelled && organizationNavigationRevision == navigation && selectedWorkspaceID == workspaceSelection }
+        let outputUse = beginToolOutputUse(.importChat)
+        defer { finishToolOutputUse(outputUse) }
+        do {
+            try await prepareToolOutputUse(outputUse)
+            guard currentSelection() else { return }
+            var owner: ChatRecord?
+            while true {
+                let revision = chatsRevision
+                owner = try await store.nativeChat(forJournal: url, root: root)
+                if let owner, owner.workspaceID == workspaceID { try await retainBudgetAncestors(for: owner) }
+                // Ancestor loading yields. Re-read ownership after deletion or
+                // registration changes, rather than exposing a stale native row.
+                if revision == chatsRevision { break }
+            }
+            guard currentSelection() else { return }
+            if let existing = owner {
+                guard existing.workspaceID == workspaceID else {
+                    error = "This chat belongs to another project. Open it there."; return
+                }
+                guard !deletingFamilies.contains(existing.id) else { throw StoreError.staleRevision }
+                if let index = chats.firstIndex(where: { $0.id == existing.id }) { chats[index].path = chats[index].path ?? existing.path }
+                else { chats.insert(existing, at: 0) }
+                await select(existing.id); return
+            }
+            let owned = root.appendingPathComponent("Workspaces")
+            var relationship = FileManager.URLRelationship.other
+            if FileManager.default.fileExists(atPath: owned.path) {
+                try FileManager.default.getRelationship(&relationship, ofDirectoryAt: owned, toItemAt: url.resolvingSymlinksInPath())
+            }
+            guard relationship == .other else {
+                error = "This saved chat could not be found. Import was refused."; return
+            }
             let page = try await history.read(path: url.path)
-            let item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: url.deletingPathExtension().lastPathComponent, path: url.path, profileID: profileChoice, imported: true)
-            try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0); await select(item.id); selected?.notice = page.notice ?? "Imported original · Read-only. No historical HTTP capture is available."
-        } catch { self.error = "Import could not be read. The original was preserved." } }
+            guard currentSelection() else { return }
+            let item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: url.deletingPathExtension().lastPathComponent, path: url.path, profileID: profileID, imported: true)
+            try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0)
+            if currentSelection() { await select(item.id) }
+            displays[item.id]?.notice = page.notice ?? "Imported original · Read-only. No historical HTTP capture is available."
+        } catch { self.error = "Import could not be read. The original was preserved." }
     }
     /// Makes a new chat from every complete record of one whose last record
     /// was cut off while it was written (a power loss, a full disk). The
@@ -158,7 +197,12 @@ extension WorkspaceModel {
     func recoverCopy(_ id: String) {
         guard let item = record(id), let source = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }) else { error = "This chat has no saved file to recover."; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        Task { do {
+        let navigation = organizationNavigationRevision, workspaceSelection = selectedWorkspaceID
+        func currentSelection() -> Bool { !Task.isCancelled && organizationNavigationRevision == navigation && selectedWorkspaceID == workspaceSelection }
+        let outputUse = beginToolOutputUse(.recovery)
+        Task { defer { finishToolOutputUse(outputUse) }; do {
+            try await prepareToolOutputUse(outputUse)
+            guard currentSelection(), record(id)?.path == source else { return }
             // Asked before anything is created or a helper is started, and as
             // a sheet, so the chats behind it keep running.
             switch await questions.confirm(Self.recoveredCopy, about: item.id) {
@@ -166,22 +210,31 @@ extension WorkspaceModel {
             case .no: return
             case .busy: self.error = PiQuestion.busyNotice; return
             }
+            guard currentSelection(), record(id)?.path == source else { return }
             let host = try await host(for: workspace), copyID = UUID().uuidString
+            guard currentSelection(), record(id)?.path == source else { return }
             let result = try await host.request("session.recover", params: ["path": .string(source), "newSessionId": .string(copyID)]).object ?? [:]
             guard let path = result["sessionFile"]?.string else { throw StoreError.invalidRecord }
             var copy = ChatRecord(id: copyID, workspaceID: item.workspaceID, title: String((item.title + " — recovered").prefix(120)), path: path, profileID: item.profileID, toolMode: item.toolMode, model: item.model, thinkingLevel: item.thinkingLevel, contextWindow: item.contextWindow, maxOutputTokens: item.maxOutputTokens, modelOutputLimit: item.modelOutputLimit, outputBudgetVersion: item.outputBudgetVersion)
             copy.topicID = effectiveTopicID(for: item)
-            try await store.put(copy, kind: "chat", id: copy.id); chats.insert(copy, at: 0); await select(copy.id)
+            try await store.put(copy, kind: "chat", id: copy.id); chats.insert(copy, at: 0)
+            if currentSelection() { await select(copy.id) }
         } catch { self.error = "The chat could not be recovered. Its file was left as it was. \(error.localizedDescription)" } }
     }
     func portableHandoff() {
         guard let item = chat, let path = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }), requestProfiles.contains(where: { $0.id == profileChoice }) else { error = "Choose a source history and a Responses connection"; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        let profileID = profileChoice
-        Task { do {
+        let profileID = profileChoice, navigation = organizationNavigationRevision, workspaceSelection = selectedWorkspaceID
+        func currentSelection() -> Bool { !Task.isCancelled && organizationNavigationRevision == navigation && selectedWorkspaceID == workspaceSelection }
+        let outputUse = beginToolOutputUse(.handoff)
+        Task { defer { finishToolOutputUse(outputUse) }; do {
+            try await prepareToolOutputUse(outputUse)
+            guard currentSelection(), record(item.id)?.path == path else { return }
             let host = try await host(for: workspace)
+            guard currentSelection(), record(item.id)?.path == path else { return }
             let value = try await host.request("session.portable.preview", params: ["path": .string(path)]).object ?? [:]
             guard let text = value["draft"]?.string else { throw StoreError.invalidRecord }
+            guard currentSelection(), record(item.id)?.path == path else { return }
             // The preview is ready; the question about it is a sheet, and this
             // task waits on the answer rather than the whole app.
             switch await questions.confirm(Self.portableDraft, about: item.id) {
@@ -189,10 +242,12 @@ extension WorkspaceModel {
             case .no: return
             case .busy: self.error = PiQuestion.busyNotice; return
             }
+            guard currentSelection(), record(item.id)?.path == path else { return }
             var copy = ChatRecord(id: UUID().uuidString, workspaceID: item.workspaceID, title: item.title + " — portable handoff", path: nil, profileID: profileID, toolMode: item.toolMode)
             copy.topicID = effectiveTopicID(for: item)
             try await store.commitPortableHandoff(copy, draft: DraftRecord(id: copy.id, text: text), provenance: value["provenance"])
-            chats.insert(copy, at: 0); await select(copy.id)
+            chats.insert(copy, at: 0)
+            if currentSelection() { await select(copy.id) }
         } catch { self.error = error.localizedDescription } }
     }
     var canDeleteCommandChat: Bool {
@@ -257,6 +312,7 @@ extension WorkspaceModel {
             try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)
+            defer { toolOutputCollectionDeferred = true; scheduleToolOutputCleanup() }
             for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)
             try await store.removeAll(kind: "receipt:\(item.id)")

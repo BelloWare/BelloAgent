@@ -876,6 +876,28 @@ struct TranscriptVersionView: Equatable, Sendable {
     var accountingReadFor: UUID?
     var messageAccounting: [String: GatewayTotals] = [:]
     var lastSequence: Double = -1
+    var snapshotEpoch: String?
+    private var retiredSnapshotEpochs: Set<String> = []
+    /// Follow-ups can replace a child's runtime under the same session ID.
+    /// Sequence numbers and projection revisions belong to that runtime only.
+    func adoptSnapshotEpoch(_ epoch: String?) -> Bool {
+        guard let epoch else { return true }
+        guard !retiredSnapshotEpochs.contains(epoch) else { return false }
+        if let previous = snapshotEpoch, previous != epoch {
+            retiredSnapshotEpochs.insert(previous)
+            lastSequence = -1; projectionRevision = nil; projectedRows = []
+            receipts = []; commandsRevision = nil
+            taskPresentation = nil; taskPresentationDecoder = TaskPresentationDecoder()
+            monitoringEpoch = nil; monitoringCursor = nil
+            footer.contextStateRevision = nil; footer.contextObservationRevision = nil; footerUpdatedAt = 0
+            queueEditHoldRevision = -1; queuePresentedEditRevision = -1
+            presentation.cancel(); finishHistoryPresentation(presentation.readGeneration)
+            presentation.readGeneration = UUID()
+            olderPage.loading = false; newerPage.loading = false; loadingEarlier = false
+        }
+        snapshotEpoch = epoch
+        return true
+    }
     /// The finished tasks of the last task presentation, decoded once.
     var taskPresentationDecoder = TaskPresentationDecoder()
     /// The command receipts of the last snapshot that carried them, and the

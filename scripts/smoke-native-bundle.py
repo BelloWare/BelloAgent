@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from native_host_client import isolated_environment
 
 app = Path(sys.argv[1]).resolve()
 helper = app / 'Contents/Helpers/pi-native-host'
@@ -21,7 +22,8 @@ subprocess.run(['lipo', str(helper), '-verify_arch', 'arm64'], check=True)
 assert not (app / 'Contents/Helpers/node').exists()
 assert not list((app / 'Contents/Resources/Host').rglob('node_modules'))
 with tempfile.TemporaryDirectory(prefix='pi-native-smoke-') as scratch:
-    process = subprocess.Popen([str(helper)], cwd=scratch, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen([str(helper)], cwd=scratch, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=isolated_environment(Path(scratch) / 'home'))
     frames = queue.Queue()
     def read_frames():
         try:

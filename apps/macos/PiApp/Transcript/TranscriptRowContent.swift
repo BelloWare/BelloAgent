@@ -12,6 +12,7 @@ struct TranscriptRowInputs {
     let environment: TranscriptRowEnvironment
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
+    var setOpen: (TranscriptDisclosure.Part, Bool) -> Void = { _, _ in }
     /// What this turn's work list measured last time it was open.
     var workListHeight: CGFloat? = nil
     var workListMeasured: (CGFloat) -> Void = { _ in }

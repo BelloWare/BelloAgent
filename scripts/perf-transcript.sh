@@ -5,8 +5,11 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DD=$1 OUT=$2 ROUNDS=${3:-3} SOAK=${4:-122} MAXLOAD=${5:-4}
-mkdir -p "$OUT"
-cd "$OUT"
+[[ "$DD" = /* ]] || DD="$PWD/$DD"
+[[ "$OUT" = /* ]] || OUT="$PWD/$OUT"
+mkdir -p "$OUT" || exit 1
+cd "$OUT" || exit 1
+STATUS=0
 RUN=$(ls "$DD"/Build/Products/*.xctestrun | head -1)
 # Old build-for-testing products hosted tests in the shipping app. Never
 # execute those, even when the source checkout has since gained isolation.
@@ -24,7 +27,9 @@ run() { # name, env..., -- tests...
     quiet
     echo "== $name round $r, load $(sysctl -n vm.loadavg)" | tee -a "$OUT/load.txt"
     env "${envs[@]}" xcodebuild test-without-building "${X[@]}" -parallel-testing-enabled NO "${only[@]}" > "$log" 2>&1
-    echo "   exit $? $(grep -E 'Executed [0-9]+ tests' "$log" | tail -1)" | tee -a "$OUT/load.txt"
+    local status=$?
+    if [ "$STATUS" -eq 0 ] && [ "$status" -ne 0 ]; then STATUS=$status; fi
+    echo "   exit $status $(grep -E 'Executed [0-9]+ tests' "$log" | tail -1)" | tee -a "$OUT/load.txt"
   done
 }
 [ -z "${ONLY:-}" ] || [ "$ONLY" = probe ] && run probe TEST_RUNNER_PI_REDRAW_PROBE=1 PI_REDRAW_PROBE=1 -- \
@@ -42,3 +47,4 @@ if [ "$SOAK" -gt 0 ] && { [ -z "${ONLY:-}" ] || [ "$ONLY" = soak ]; }; then
 fi
 grep -hE "^(PERF|REDRAW|SWITCH|TYPING|KEPT|SCROLL PERF|SCROLL PERCENTILES|SOAK|DRAW)" "$OUT"/*.log > "$OUT/lines.txt" || true
 echo done
+exit "$STATUS"

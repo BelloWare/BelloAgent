@@ -1,6 +1,6 @@
 # 0.1.130 security boundaries
 
-Workstream `dev/a130-security`, based on `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`. Worktree `/Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security`; build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`. macOS 14.8 (23J21), Apple Git 2.39.5, Xcode 16.1. Generated repositories and ephemeral loopback servers only; no installed-app launch, real credentials, Keychain, live capture, paid calls, release, tag, or upstream integration.
+Workstream `dev/a130-security`, based on `6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`; round 7 integrates the explicitly requested `origin/dev/next` merge. Worktree `/Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security`; build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`. macOS 14.8 (23J21), Apple Git 2.39.5, Xcode 16.1. Generated repositories and ephemeral loopback servers only; no installed-app launch, real credentials, Keychain, live capture, paid calls, release or tag.
 
 ## Fixed instances and policy
 
@@ -87,7 +87,7 @@ Scope: all production process launch sites in `apps/macos/PiApp`, `packages/bell
 | ProviderClient (main/side/subagent/title/summary/compaction) | POST model requests, messages/tool context/images, Authorization and configured headers | Existing HTTPStream delegate rejects all redirects; pooled tasks explicitly set that delegate | New HTTPRedirectTests covers pooled and unpooled streams across all five redirect codes, preserving original status and zero sink requests. |
 | ConnectionProbe | Synthetic model probe with configured credentials | Uses ProviderClient/HTTPStream above | Same transport coverage; no separate networking launcher. |
 | MCP HTTP | JSON-RPC POST initialize/list/invoke/notifications/server replies; configured headers and MCP session/protocol headers | Existing unpooled HTTPStream delegate refuses redirects | New HTTPRedirectTests exercises real MCPManager setup for 307 and 308 across two ports; no RPC/header reaches sink. |
-| Explicit Git fetch/pull/push | Git protocol body, credential-helper results, configured HTTP headers | Per-URL refusal when effective extra headers exist; otherwise `initial`. Existing URL-scoped redirect overrides are neutralised too. Git read transports are disabled. | `GitRepositoryPermissionTests.testGitFetchNeverForwardsPrivateHeadersAcrossOrigins`: two ports, 301/302/303/307/308, real system Git, zero sink requests. Review tests add URL-scoped overrides, all config scopes and a successful same-host rename. |
+| Explicit Git fetch/pull/push | Git protocol body, credential-helper results, configured HTTP headers | Repository-wide refusal when any effective extraHeader key exists; otherwise `initial`. Existing URL-scoped redirect overrides are neutralised too. Git read transports are disabled. | `GitRepositoryPermissionTests.testGitFetchNeverForwardsPrivateHeadersAcrossOrigins`: two ports, 301/302/303/307/308, real system Git, zero sink requests. Review tests add URL-scoped overrides, all config scopes and a successful same-host rename. |
 | Update checks outside Sparkle | None found | Sparkle owns the appcast update path; no separate app/helper HTTP updater | Source enumeration of URLRequest/URLSession/HTTPStream and launch sites. |
 
 No other production HTTP client was found in these targets. Browser/external-link opening and intentionally configured stdio MCP/bash processes are separate user-authorized execution surfaces, not another internal HTTP transport.
@@ -1355,6 +1355,8 @@ This Mac's APFS refuses an attempted raw non-UTF-8 repository filename (`reposit
 
 Exact regression/mutation commands, with `$B` still the workstream build root:
 
+The initial scripts ran with `HEAD=b8fd59e5470beac6506dbc19d0b0942374a38716`; that is their original-code baseline, not the later merge commit. The additional scalar mutation script pins `afffdcfe71bbcc30fc977caa278c277eab3f40a8` explicitly.
+
 ```sh
 python3 "$B/round7-original-and-fixed.py"
 # The script runs original and restored production with:
@@ -1372,4 +1374,175 @@ env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CON
   --filter 'GitInventoryTests|GitRepositorySecurityTests|GitHTTPRedirectTests|GitBlameTests|FolderBrowserTests'
 ```
 
-Adversarial review checked both encoder grammars, literal backslashes/quotes and glob characters, duplicate settings, partial-file cleanup on encoding failure, strict UTF-8 decoding, the fallback's placement, retained override lifetimes and the network/read distinction. A throwing override never assigns the unconfined options, and the process's executable is selected only after that decision. No new process, permission or production test bypass was introduced. Normal cached reads add no config subprocess. No further finding emerged from this review.
+Adversarial review checked both encoder grammars, literal backslashes/quotes and glob characters, duplicate settings, partial-file cleanup on encoding failure, strict UTF-8 decoding, the fallback's placement, retained override lifetimes and the network/read distinction. A throwing override never assigns the unconfined options, and the process's executable is selected only after that decision. No new process, permission or production test bypass was introduced. Normal cached reads add no config subprocess. The additional scalar-level review below found and fixed two adjacent instances before final validation.
+
+### Merge and validation scope
+
+Committed the round-7 fix as `afffdcfe71bbcc30fc977caa278c277eab3f40a8`, then fetched and merged `origin/dev/next` at `649ea623291c9417443d61d3bb55314d8a2f5d9a` with `git -c commit.gpgsign=false merge --no-ff --no-commit origin/dev/next`, as explicitly requested for this round. No rebase, fast-forward or published-history rewrite was used. The only conflict was the adjacent additions under `## 0.1.130` in `NEXT-RELEASE.md`; both sets of entries were retained. Upstream's completed cost-pause entry supersedes its old unresolved entry. `WorkspaceModel` retains upstream's sidebar/resource/producer changes together with this branch's trust resolution and configuration invalidation.
+
+Ran `xcodegen generate --quiet` after integration. The five fixed implementation/test file hashes still match the restored pre-merge test run. `round7-merged-tested-sources.json` records 1,399 implementation, test, fixture, script and project input hashes before the merged validation. The final review compares these hashes again; validation-only prose changes do not alter the tested inputs.
+
+Merged validation uses this workstream's existing `views-tests`, `swift-tests`, `swift-host` and `native-tests` build roots. The full package, three large-repository measurements, helper build/tests and loopback wire suites ran sequentially under the shared full-lane lock. The native portion was stopped after its active command completed when the scalar-level review found the adjacent cases below; no active test was interrupted, and the lock was released in `finally`. The affected package, native and latency checks are rerun on the final code. Because integration imports upstream helper changes, the helper and wire suites are included even though the round-7 security fix itself only changes shared views. Test configuration excludes the user's global/system Git settings, and the native test scheme and wire harness use isolated fixture homes. No installed app, real preferences/chats, Keychain, live capture or provider request is used.
+
+### Initial merged latency measurement (before the scalar sweep)
+
+The generated index contains **50,001 ordinary entries (50,000 files plus `.gitmodules`) and 20 gitlinks**, independently counted in `round7-fixture-counts.json`. Each variant uses 25 warm status samples and 25 Changes refresh samples, including selected-file hunk review. Baseline is the fetched merge parent `649ea623291c9417443d61d3bb55314d8a2f5d9a`. The same benchmark source is copied into its package export; its compile-time baseline define selects the original service interface.
+
+`views-tests` is deleted between variants to prevent SwiftPM from reusing a build plan from the other source directory. Each result checks the test's compile-time source marker and the compiled `GitService.swift` source path; the baseline implementation bytes are compared to the pinned Git commit. The branch builds also verify their compiled GitProcessSafety source. Evidence: `round7-merged-build-{branch,baseline,branch-repeat}.json`, `round7-merged-perf-*.log`, `round7-merged-performance.json`.
+
+| Variant | Status median / p95 (ms) | Changes median / p95 (ms) | Median change vs baseline (status / Changes) |
+| --- | ---: | ---: | ---: |
+| baseline | 256.27 / 266.88 | 2180.03 / 3366.36 | — |
+| branch | 166.09 / 177.74 | 2053.03 / 2886.88 | -35.19% / -5.83% |
+| branch-repeat | 172.19 / 184.14 | 2075.03 / 2705.80 | -32.81% / -4.82% |
+
+Both source-verified branch measurements meet the approximately 5% latency budget. The baseline and both branch samples run consecutively under this workstream's full-lane lock.
+
+Exact per-variant command (`$PACKAGE` is the branch's `packages/bello-views`, the exported `$B/round7-baseline/packages/bello-views`, then the branch again):
+
+```sh
+env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  BELLO_GIT_INVENTORY_BENCHMARK="$B/round7-large-fixture" BELLO_GIT_BENCHMARK_SAMPLES=25 \
+  swift test --package-path "$PACKAGE" --scratch-path "$B/views-tests" --filter GitInventoryPerformanceTests
+```
+
+### Adversarial scalar sweep — two adjacent encoding instances
+
+While the merged validation ran, a scalar-level review found two additional instances in the same override writer:
+
+- `GitInventoryCache.swift`, gitdir pattern construction: Swift `Character` iteration groups a combining mark with the preceding bracket/backslash. Testing that combined character against the ASCII glob-punctuation string misses the punctuation. A generated `checkout[\u{0301}x]fixture` repository and a backslash-plus-combining-mark repository both executed their local fsmonitor markers because the resulting condition failed to match.
+- `GitInventoryCache.swift`, both subsection and value encoders: Foundation's default `replacingOccurrences` also skips quote/backslash punctuation followed by a combining mark. Git therefore reads different bytes or refuses the generated config. This violates the owner's exact-round-trip rule even though each scalar is individually representable.
+
+All three escaping loops now inspect Unicode scalars, escaping the exact ASCII punctuation while retaining the following combining scalars unchanged. The separate subsection/value encoders and their control-character confinement checks remain. This is a minimal correction inside the same writer; it adds no subprocess or cache lookup.
+
+`testCombiningMarksInGitdirKeepLocalProgramsDisabled` covers bracket, backslash, quote, asterisk, question-mark and closing-bracket clusters, using two real status reads for each generated marker fixture. `testCombiningMarksInOverridesRoundTripThroughGitParsing` asks Git to parse scratch subsections/values and their effective conditional origins for quote/backslash clusters.
+
+The two new tests fail against the initial round-7 fix (`afffdcfe`): **20 failed assertions, 0 unexpected failures** (`round7-combining-failing-first.log`), including four marker assertions on bracket/backslash paths. The other failures expose malformed or changed config bytes. After the scalar fix, the **8 encoding tests pass** (`round7-combining-fixed.log`). The independent generated Git probe is retained in `round7-combining-probe.json`.
+
+| Additional mutation | Selected tests | Failed assertions |
+| --- | ---: | ---: |
+| Restore Character-based glob escaping | 2 | 4 |
+| Restore Foundation replacement in the subsection encoder | 2 | 10 |
+| Restore Foundation replacement in the value encoder | 2 | 8 |
+
+**3 additional mutations killed, 22 failed assertions, 0 unexpected failures**. `round7-combining-mutations.py` restores the source after each mutation and in its outer `finally`; **8/8 pass after restoration** (`round7-combining-restored.log`). Together with the earlier checks, round 7 kills eight mutations. Commands:
+
+```sh
+env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests.testCombiningMarks'
+python3 "$B/round7-combining-mutations.py"
+# Fixed/restored selection:
+env CFFIXED_USER_HOME="$B/round7-views-home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  swift test --package-path packages/bello-views --scratch-path "$B/views-tests" \
+  --filter 'GitInventoryTests.test(CombiningMarks|ControlCharacters|QuotedGitdir|GeneratedOverrides|UnsafeGenerated|InvalidConfigBytes)'
+```
+
+The first merged run's full package, latency, helper, wire and completed native results remain recorded as intermediate evidence. Its driver was deliberately paused while the active FileFindTabTests command finished successfully, then stopped before another command began; `round7-driver-stop.json` and the normal `TEST SUCCEEDED` text in `round7-merged-native-FileFindTabTests.log` distinguish that orchestration stop from a test failure. The full helper and wire evidence remains final because only the override writer and its package tests changed afterward. `round7-final-tested-sources.json` freezes the final 1,399 inputs; only those two files differ from the earlier input record.
+
+### Final scalar-fix latency measurement
+
+The same 50,001-entry/20-submodule fixture, 25 samples per operation, clean builds and pinned baseline were used again after the scalar fix, under the full-lane lock. Compiled-source proof is in `round7-final-build-*.json`; measurements are in `round7-final-performance.json`.
+
+| Variant | Status median / p95 (ms) | Changes median / p95 (ms) | Median change vs baseline (status / Changes) |
+| --- | ---: | ---: | ---: |
+| baseline | 254.36 / 262.49 | 2189.28 / 2217.35 | — |
+| branch | 174.81 / 183.74 | 2060.54 / 2094.60 | -31.27% / -5.88% |
+| branch-repeat | 173.80 / 185.33 | 2071.37 / 2811.38 | -31.67% / -5.39% |
+
+Both final branch runs meet the approximately 5% median budget. The per-variant command is the same as the earlier latency block; all three final logs carry the `round7-final-perf-` prefix. Changes p95 varied from 2,094.60 ms on the first branch run to 2,811.38 ms on the repeat, versus 2,217.35 ms baseline. The budget verdict uses median latency; the table and raw samples retain that tail variability.
+
+### Final merged validation
+
+Every command below uses `$B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`. The complete sequential invocation record (including arguments, extra environment, elapsed time and exit status) is `round7-final-validation.json`; unchanged helper/wire commands are in `round7-merged-validation.json`. The final lock acquisition/release and phase order are in `round7-final-orchestration.log`. All suite commands exited zero. Counts distinguish passed tests from opt-in skips.
+
+| Suite | Passed | Skipped | Failed | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| bello-views full | 384 | 4 | 0 | `round7-final-views.log` |
+| Helper StreamingCostTests, alone | 5 | 0 | 0 | `round7-merged-helper-cost.log` |
+| Helper, excluding the separate cost class | 1139 | 7 | 0 | `round7-merged-helper.log` |
+| wire against Release helper | 40 | 0 | 0 | `round7-merged-wire.log` |
+| concurrent against Release helper | 4 | 0 | 0 | `round7-merged-concurrent.log` |
+| acceptance against Release helper | 3 | 0 | 0 | `round7-merged-acceptance.log` |
+| Native, 41 classes including safety gallery | 373 | 2 | 0 | `round7-final-native-*.log` |
+| Source-verified latency variants | 3 | 0 | 0 | `round7-final-perf-*.log` |
+
+The four package skips are the three opt-in FileFinder measurements and the separately executed inventory benchmark. The seven helper skips are opt-in fixture export/large-history measurements. The native skips are the existing opt-in large-history and diff-capture measurements, not security regressions. The helper's buffered progress log paused during the 2,640-scenario side-budget deletion/crash matrix; a read-only sample confirmed active fixture work, and the suite completed normally without interruption (`round7-helper-progress-sample.txt`). Release/staged-helper hashes are recorded in `round7-merged-release-helper.json`.
+
+Exact package/helper/wire commands:
+
+```sh
+export PI_BUILD_ROOT="$B" CFFIXED_USER_HOME="$B/round7-views-home"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1
+swift test --package-path packages/bello-views --scratch-path "$B/views-tests"
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path "$B/swift-tests" --build-tests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" --skip-build --skip StreamingCostTests
+HOST="$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+```
+
+Native runs use `scripts/test-macos.sh -parallel-testing-enabled NO` and one `-only-testing:PiAppTests/<Class>` argument for each selected class. The four boundary classes share one focused run. The 24 file/Git classes run with `-parallel-testing-enabled YES -parallel-testing-worker-count 4`, after checking that none belongs to the repository’s serial lane. Every serial class is invoked alone. The default, automatically named result bundle supplies supplementary summary/test JSON for accurate parallel-run counts; no named result bundle is created or retained. Exact batch membership and commands are also in the invocation JSON.
+
+| Native class | Passed | Skipped | Log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `round7-final-native-ChangesTabFrameTests.log` |
+| ChangesTabTests | 8 | 0 | `round7-final-native-file-git.log` |
+| CrashAuditRegressionTests | 12 | 0 | `round7-final-native-CrashAuditRegressionTests.log` |
+| FileBlameTests | 10 | 0 | `round7-final-native-file-git.log` |
+| FileFindTabTests | 16 | 0 | `round7-final-native-FileFindTabTests.log` |
+| FileFolderTests | 20 | 0 | `round7-final-native-FileFolderTests.log` |
+| FileHiddenReadTests | 5 | 0 | `round7-final-native-file-git.log` |
+| FilePageReadTests | 3 | 0 | `round7-final-native-file-git.log` |
+| FilePreviewRefreshTests | 2 | 0 | `round7-final-native-FilePreviewRefreshTests.log` |
+| FileReviewStateTests | 20 | 0 | `round7-final-native-file-git.log` |
+| FileTabTests | 16 | 0 | `round7-final-native-file-git.log` |
+| GitBranchesInteractionTests | 20 | 0 | `round7-final-native-file-git.log` |
+| GitChangelistReadTests | 2 | 0 | `round7-final-native-file-git.log` |
+| GitCommitBrowsingTests | 3 | 1 | `round7-final-native-file-git.log` |
+| GitConfirmationSheetTests | 7 | 0 | `round7-final-native-file-git.log` |
+| GitDiffTableTests | 19 | 0 | `round7-final-native-GitDiffTableTests.log` |
+| GitDiscardQuestionTests | 2 | 0 | `round7-final-native-file-git.log` |
+| GitHistoryFilterTests | 14 | 0 | `round7-final-native-file-git.log` |
+| GitHunkReviewTests | 9 | 0 | `round7-final-native-file-git.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `round7-final-native-file-git.log` |
+| GitOperationSafetyTests | 12 | 0 | `round7-final-native-GitOperationSafetyTests.log` |
+| GitPanelAuditTests | 8 | 0 | `round7-final-native-file-git.log` |
+| GitPanelDiffCaptureTests | 0 | 1 | `round7-final-native-file-git.log` |
+| GitPanelLayoutTests | 4 | 0 | `round7-final-native-file-git.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `round7-final-native-GitPanelNarrowParityTests.log` |
+| GitPanelRedrawTests | 4 | 0 | `round7-final-native-file-git.log` |
+| GitPanelShownTests | 13 | 0 | `round7-final-native-file-git.log` |
+| GitPanelTimingTests | 4 | 0 | `round7-final-native-GitPanelTimingTests.log` |
+| GitPanelWidthTests | 3 | 0 | `round7-final-native-file-git.log` |
+| GitPathBoundaryTests | 5 | 0 | `round7-final-native-file-git.log` |
+| GitRenameTests | 6 | 0 | `round7-final-native-file-git.log` |
+| GitRepositoryPermissionTests | 4 | 0 | `round7-final-native-boundaries.log` |
+| GitRepositorySwitchTests | 17 | 0 | `round7-final-native-GitRepositorySwitchTests.log` |
+| GitSafetyGalleryTests | 1 | 0 | `round7-final-native-GitSafetyGalleryTests.log` |
+| GitToolTests | 5 | 0 | `round7-final-native-file-git.log` |
+| GitWorkingTreeWatcherTests | 16 | 0 | `round7-final-native-GitWorkingTreeWatcherTests.log` |
+| QuickOpenPlacementTests | 1 | 0 | `round7-final-native-file-git.log` |
+| QuickOpenTests | 17 | 0 | `round7-final-native-QuickOpenTests.log` |
+| WebhookExchangeTests | 5 | 0 | `round7-final-native-boundaries.log` |
+| WebhookTests | 18 | 0 | `round7-final-native-boundaries.log` |
+| WorkspaceTests | 17 | 0 | `round7-final-native-boundaries.log` |
+
+The gallery command is:
+
+```sh
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY="$B/round7-final-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+Regenerated **112 PNGs** and visually inspected eight fresh redirect/trust-notice images: `http-redirect-{light,dark}-{920x600,310x600}.png` and `untrusted-{light,dark}-{700x640,310x600}.png`. Both notices remain visible in normal and narrow layouts in both themes, with the existing ellipsis in limited space. File rows and commit controls remain usable. The gallery asserts the complete redirect notice including `http.extraHeader`; image hashes and dimensions are in `round7-final-gallery-inspection.json`.
+
+The final adversarial review rechecked the merged trust resolver, all generated condition/subsection/value sites, strict byte decoding, quote/backslash/glob parsing, duplicate credential-helper values, failed-policy cleanup and lifetime, and confinement before executable selection. The full merged run retains all prior cache/redirect/submodule/cancellation regressions. The project was regenerated, both merge sides were preserved, and all 1,399 recorded implementation/test/fixture/script/project inputs remained unchanged through validation (`round7-final-source-verification.json`). No new finding emerged.
+
+All eight round-7 mutations were killed, and the final scalar-based fix passed the complete merged package and native validation. No unresolved security finding or owner-policy decision remains. The sole fixture limitation is APFS refusing a raw non-UTF-8 filename with EILSEQ; invalid config/include bytes and confinement are tested as documented above. The lead's full merged release gate remains separate.
+
+Removed the generated large repository, exported baseline package and final default XCTest result bundle after recording their evidence. No Clone directories remained. Text logs, JSON records and the 112 gallery PNGs remain under this workstream’s build root (`round7-cleanup.json`). The final validation driver released its own full-lane lock; other workstreams’ locks and build products were untouched. Final log scans found no failed or retried-failed test cases, and `git diff --check HEAD` passed.

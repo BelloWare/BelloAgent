@@ -47,11 +47,11 @@ actor SubagentCoordinator {
     var retainedJobCount: Int { jobs.count + rejected.count }
     init(register: @escaping Register = { _, _, _, _ in }, settled: @escaping Settled = { _ in },
          listingSnapshot: @escaping ListingSnapshot = { await $0.subagentListingSnapshot() },
-         openSteering: AgentSteeringCoordinator.Open? = nil) {
+         openSteering: AgentSteeringCoordinator.Open? = nil, retireSteering: AgentSteeringCoordinator.Retire? = nil) {
         steering = AgentSteeringCoordinator(open:openSteering ?? { env, plan in
             let child = try AgentSteeringCoordinator.makeChild(env,plan)
             try await register(child,env.profile,env.apiKey,env.parent); return child
-        }, settled:settled)
+        }, settled:settled, retire:retireSteering ?? { parent, plan, turn in try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:parent.directory) })
         self.register = register; self.settled = settled; self.listingSnapshot = listingSnapshot
     }
 

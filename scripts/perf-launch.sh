@@ -15,11 +15,23 @@
 #            rust/docs/validation/swift-rust-performance-2026-10-10/harness).
 # WARM, COLD trials per app (default 8 and 5); cold runs `sudo -n purge` first.
 #
-# Every trial starts from a fresh copy of the fixture's state, with HOME and
-# CFFIXED_USER_HOME pointing into it, and trials alternate between the apps.
+# Every trial starts from a fresh copy of the fixture's state, with all home
+# roots and scratch storage pointing into it; trials alternate between apps.
 # Results: <out>/raw/<label>-<warm|cold>-<n>.json; summarize with the
 # harness's analyze-launch.py <out>.
 set -euo pipefail
+DOMAIN=com.belloware.PiApp.launchperf
+[ "$DOMAIN" = com.belloware.PiApp.launchperf ] || { echo "Refusing non-fixture preferences domain: $DOMAIN" >&2; exit 1; }
+readonly DOMAIN
+reset_fixture_preferences() {
+  local fixture_home="$1"
+  # cfprefsd can ignore the fixed home. Seed the fixture domain so an absent
+  # domain is harmless, while any write/delete failure still stops the run.
+  env HOME="$fixture_home" CFFIXED_USER_HOME="$fixture_home" CODEX_HOME="$fixture_home/.codex" \
+    defaults write "$DOMAIN" BelloLaunchFixtureReset -bool true
+  env HOME="$fixture_home" CFFIXED_USER_HOME="$fixture_home" CODEX_HOME="$fixture_home/.codex" \
+    defaults delete "$DOMAIN" >/dev/null
+}
 FIXTURE=$(cd "$1" && pwd) OUT=$(mkdir -p "$2" && cd "$2" && pwd); shift 2
 # The fixture's records name its journals and projects by absolute path, and
 # its search index keys each journal by path and file identity: a copied
@@ -32,10 +44,9 @@ journals() { find "$FIXTURE/home" -name '*.jsonl' -exec stat -f '%N %m %z' {} + 
 before_journals=$(journals)
 : "${BELLOPERF:?Set BELLOPERF to the belloperf binary}"
 WARM=${WARM:-8} COLD=${COLD:-5} IDLE=${IDLE:-2}
-DOMAIN=com.belloware.PiApp.launchperf
 mkdir -p "$OUT/raw" "$OUT/apps"
-OWNER_PREFS="$HOME/Library/Preferences/com.belloware.PiApp.plist"
-owner_mark=$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)
+FIXTURE_PREFS="$FIXTURE/home/Library/Preferences/$DOMAIN.plist"
+before_preferences=$(stat -f %m "$FIXTURE_PREFS" 2>/dev/null || echo none)
 labels=() exes=()
 for spec in "$@"; do
   label=${spec%%=*} app=${spec#*=}
@@ -48,10 +59,16 @@ done
 trial() { # label exe kind index
   local run="$OUT/run"
   rm -rf "$run"; ditto "$FIXTURE" "$run"
-  defaults delete "$DOMAIN" >/dev/null 2>&1 || true
+  mkdir -p "$run/home/.codex" "$run/tmp"
+  rm -f "$run/home/Library/Preferences/$DOMAIN.plist"
+  reset_fixture_preferences "$run/home"
   local cold=(); [ "$3" = cold ] && cold=(--cold)
-  "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" ${cold[@]+"${cold[@]}"} \
-    --env HOME="$run/home" --env CFFIXED_USER_HOME="$run/home" --env PI_APP_LAUNCH_FIXTURE_VAULT="$run/vault.json" \
+  env -u PI_APP_BENCHMARK_STATE_ROOT -u PI_APP_BENCHMARK_OUTPUT -u BELLO_CONTEXT_DIAGNOSTICS \
+    HOME="$run/home" CFFIXED_USER_HOME="$run/home" CODEX_HOME="$run/home/.codex" \
+    TMPDIR="$run/tmp" PI_APP_SCRATCH_ROOT="$run/tmp" \
+    "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" ${cold[@]+"${cold[@]}"} \
+    --env HOME="$run/home" --env CFFIXED_USER_HOME="$run/home" --env CODEX_HOME="$run/home/.codex" \
+    --env TMPDIR="$run/tmp" --env PI_APP_SCRATCH_ROOT="$run/tmp" --env PI_APP_LAUNCH_FIXTURE_VAULT="$run/vault.json" \
     --out "$OUT/raw/$1-$3-$4.json" -- "$2" | grep -E '^'"$1"' trial' | grep -oE '"(windowMs|settledMs)": [0-9.]+' | tr '\n' ' '
   echo " load $(sysctl -n vm.loadavg)"
 }
@@ -63,9 +80,7 @@ for kind in warm cold; do
     for i in "${order[@]}"; do printf '%s %s %d: ' "${labels[$i]}" $kind $n; trial "${labels[$i]}" "${exes[$i]}" $kind $n; done
   done
 done
+reset_fixture_preferences "$OUT/run/home"
 rm -rf "$OUT/run" "$OUT/raw/"*-prime-*.json
-defaults delete "$DOMAIN" >/dev/null 2>&1 || true
 [ "$(journals)" = "$before_journals" ] || echo "WARNING: a fixture journal changed during the run" >&2
-# Stat only: the independently running installed app can still change it.
-# XCTest now uses com.belloware.PiAppTests.Host; this probe uses launchperf.
-[ "$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)" = "$owner_mark" ] || echo "WARNING: $OWNER_PREFS changed during the run" >&2
+[ "$(stat -f %m "$FIXTURE_PREFS" 2>/dev/null || echo none)" = "$before_preferences" ] || echo "WARNING: fixture preferences changed during the run" >&2

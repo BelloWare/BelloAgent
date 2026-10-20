@@ -72,10 +72,17 @@ final class TerminalEmulator {
     // Screen state
     @exclusivity(unchecked) private var wrapNext = false
     private var tabStops: Set<Int> = []
-    private var savedCursor = TerminalCursor(), savedStyle = CellStyle.plain, savedOrigin = false, savedAutowrap = true, savedWrapNext = false, savedCharset = 0, savedCharsets: [Int] = [0, 0]
+    private struct SavedCursor {
+        var cursor = TerminalCursor(), style = CellStyle.plain
+        var origin = false, autowrap = true, wrapNext = false
+        var charset = 0, charsets = [0, 0]
+    }
+    private var savedCursors = [SavedCursor(), SavedCursor()]
+    private var savedCursorIndex: Int { alternateScreen ? 1 : 0 }
     private var savedMainScreen: [[TerminalCell]]? = nil
     private var savedMainWrapColumns: [Int?]?
     private var savedMainCursor = TerminalCursor()
+    private var savedMainWasResized = false
     /// G0 and G1 designations: 0 ASCII, 1 DEC special graphics. `charset` picks the active one (SI/SO).
     @exclusivity(unchecked) private var charsets = [0, 0]
     @exclusivity(unchecked) private var charset = 0
@@ -346,9 +353,9 @@ final class TerminalEmulator {
         case 0x6d: selectGraphicRendition()                                          // SGR
         case 0x6e: deviceStatus(parameter(0))                                        // DSR
         case 0x72: setScrollRegion(top: parameter(0, default: 1) - 1, bottom: parameter(1, default: rows) - 1)  // DECSTBM
-        case 0x73: savedCursor = cursor                                              // SCOSC
+        case 0x73: savedCursors[savedCursorIndex].cursor = cursor                    // SCOSC
         case 0x74: windowOperation(parameter(0))                                     // XTWINOPS
-        case 0x75: let previous = cursor.y; cursor = savedCursor; wrapNext = false; clampCursor(); markDirty(previous); markDirty(cursor.y)  // SCORC
+        case 0x75: let previous = cursor.y; cursor = savedCursors[savedCursorIndex].cursor; wrapNext = false; clampCursor(); markDirty(previous); markDirty(cursor.y)  // SCORC
         default: break
         }
     }
@@ -401,6 +408,7 @@ final class TerminalEmulator {
         if alternate {
             if save { saveCursor() }
             savedMainScreen = screen; savedMainCursor = cursor
+            savedMainWasResized = false
             savedMainWrapColumns = screenWrapColumns
             screen = Array(repeating: Array(repeating: .blank, count: columns), count: rows)
             screenWrapColumns = Array(repeating: nil, count: rows)
@@ -414,7 +422,7 @@ final class TerminalEmulator {
             alternateScreen = false
             if save { restoreCursor() }
         }
-        wrapNext = false
+        if alternate || !save || savedMainWasResized { wrapNext = false }
         markAllDirty()
     }
 
@@ -445,13 +453,14 @@ final class TerminalEmulator {
         markDirty(previous); markDirty(cursor.y)
     }
     private func saveCursor() {
-        savedCursor = cursor; savedStyle = style; savedOrigin = originMode; savedAutowrap = autowrap; savedWrapNext = wrapNext
-        savedCharset = charset; savedCharsets = charsets
+        savedCursors[savedCursorIndex] = SavedCursor(cursor: cursor, style: style, origin: originMode, autowrap: autowrap,
+                                                    wrapNext: wrapNext, charset: charset, charsets: charsets)
     }
     private func restoreCursor() {
         let previous = cursor.y
-        cursor = savedCursor; style = savedStyle; originMode = savedOrigin; autowrap = savedAutowrap; wrapNext = savedWrapNext
-        charset = savedCharset; charsets = savedCharsets
+        let saved = savedCursors[savedCursorIndex]
+        cursor = saved.cursor; style = saved.style; originMode = saved.origin; autowrap = saved.autowrap; wrapNext = saved.wrapNext
+        charset = saved.charset; charsets = saved.charsets
         clampCursor(); markDirty(previous); markDirty(cursor.y)
     }
     private func tab() {
@@ -810,40 +819,55 @@ final class TerminalEmulator {
     func resize(columns newColumns: Int, rows newRows: Int) {
         let newColumns = max(2, newColumns), newRows = max(1, newRows)
         guard newColumns != columns || newRows != rows else { return }
-        if newRows < rows {
-            var remove = rows - newRows
-            // Prefer dropping blank lines below the cursor; then push lines from the top into the scrollback.
-            while remove > 0, screen.count > cursor.y + 1, Self.text(of: screen[screen.count - 1]).isEmpty {
-                screen.removeLast(); screenWrapColumns.removeLast(); remove -= 1
-                if !screenWrapColumns.isEmpty { screenWrapColumns[screenWrapColumns.count - 1] = nil }
-            }
-            while remove > 0, !screen.isEmpty {
-                let line = screen.removeFirst()
-                let wrappedAt = screenWrapColumns.removeFirst()
-                if !alternateScreen { pushScrollback(line, wrappedAt: wrappedAt) }
-                cursor.y -= 1; remove -= 1
-            }
-        } else if newRows > rows {
-            var add = newRows - rows
-            while add > 0, !alternateScreen, let line = scrollback.popLast() {
-                scrollbackCells -= line.cellCount
-                scrollbackBytes -= line.retainedBytes
-                screen.insert(line.cells, at: 0); cursor.y += 1; add -= 1   // fitted to the new columns below
-                screenWrapColumns.insert(line.wrappedAt, at: 0)
-            }
-            while add > 0 { screen.append(Array(repeating: .blank, count: columns)); screenWrapColumns.append(nil); add -= 1 }
+        resizeRows(&screen, wraps: &screenWrapColumns, cursor: &cursor, rows: newRows, normal: !alternateScreen)
+        if var main = savedMainScreen {
+            savedMainWasResized = true
+            var wraps = savedMainWrapColumns ?? Array(repeating: nil, count: rows)
+            let oldRow = savedMainCursor.y
+            resizeRows(&main, wraps: &wraps, cursor: &savedMainCursor, rows: newRows, normal: true)
+            // 1049 restores this save after restoring the hidden screen.
+            savedCursors[0].cursor.y += savedMainCursor.y - oldRow
+            savedMainScreen = Self.fit(main, columns: newColumns, rows: newRows)
+            savedMainWrapColumns = Self.fitWraps(wraps, columns: newColumns, rows: newRows)
         }
         columns = newColumns; rows = newRows
         screen = Self.fit(screen, columns: columns, rows: rows)
         screenWrapColumns = Self.fitWraps(screenWrapColumns, columns: columns, rows: rows)
-        if let main = savedMainScreen { savedMainScreen = Self.fit(main, columns: columns, rows: rows) }
-        if let wraps = savedMainWrapColumns { savedMainWrapColumns = Self.fitWraps(wraps, columns: columns, rows: rows) }
         scrollTop = 0; scrollBottom = rows - 1
-        clampCursor(); savedCursor.x = min(savedCursor.x, columns - 1); savedCursor.y = min(savedCursor.y, rows - 1)
-        savedMainCursor.x = min(savedMainCursor.x, columns - 1); savedMainCursor.y = min(savedMainCursor.y, rows - 1)
+        clampCursor()
+        for index in savedCursors.indices {
+            savedCursors[index].cursor.x = min(savedCursors[index].cursor.x, columns - 1)
+            savedCursors[index].cursor.y = min(max(0, savedCursors[index].cursor.y), rows - 1)
+        }
+        savedMainCursor.x = min(savedMainCursor.x, columns - 1); savedMainCursor.y = min(max(0, savedMainCursor.y), rows - 1)
         wrapNext = false
         resetTabStops()
         markAllDirty()
+    }
+    private func resizeRows(_ screen: inout [[TerminalCell]], wraps: inout [Int?], cursor: inout TerminalCursor, rows newRows: Int, normal: Bool) {
+        if newRows < rows {
+            var remove = rows - newRows
+            // Prefer dropping blank lines below the cursor; then push lines from the top into the scrollback.
+            while remove > 0, screen.count > cursor.y + 1, Self.text(of: screen[screen.count - 1]).isEmpty {
+                screen.removeLast(); wraps.removeLast(); remove -= 1
+                if !wraps.isEmpty { wraps[wraps.count - 1] = nil }
+            }
+            while remove > 0, !screen.isEmpty {
+                let line = screen.removeFirst()
+                let wrappedAt = wraps.removeFirst()
+                if normal { pushScrollback(line, wrappedAt: wrappedAt) }
+                cursor.y -= 1; remove -= 1
+            }
+        } else if newRows > rows {
+            var add = newRows - rows
+            while add > 0, normal, let line = scrollback.popLast() {
+                scrollbackCells -= line.cellCount
+                scrollbackBytes -= line.retainedBytes
+                screen.insert(line.cells, at: 0); cursor.y += 1; add -= 1   // fitted to the new columns below
+                wraps.insert(line.wrappedAt, at: 0)
+            }
+            while add > 0 { screen.append(Array(repeating: .blank, count: columns)); wraps.append(nil); add -= 1 }
+        }
     }
     private static func fit(_ lines: [[TerminalCell]], columns: Int, rows: Int) -> [[TerminalCell]] {
         var result = lines.prefix(rows).map { line -> [TerminalCell] in
@@ -865,9 +889,10 @@ final class TerminalEmulator {
         screen = Array(repeating: Array(repeating: .blank, count: columns), count: rows)
         screenWrapColumns = Array(repeating: nil, count: rows)
         savedMainWrapColumns = nil
-        savedMainScreen = nil; alternateScreen = false
+        savedMainScreen = nil; savedMainWasResized = false; alternateScreen = false
         breakWrap(before: 0)
-        cursor = TerminalCursor(); savedCursor = TerminalCursor(); style = .plain; savedStyle = .plain
+        cursor = TerminalCursor(); style = .plain
+        savedCursors = [SavedCursor(), SavedCursor()]
         scrollTop = 0; scrollBottom = rows - 1
         cursorVisible = true; cursorShape = .block; originMode = false; autowrap = true; insertMode = false; newlineMode = false
         applicationCursorKeys = false; applicationKeypad = false; bracketedPaste = false; focusReporting = false; mouseReporting = false

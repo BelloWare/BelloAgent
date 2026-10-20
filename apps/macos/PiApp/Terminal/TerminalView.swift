@@ -211,6 +211,7 @@ import CoreText
         refresh()
         let bottom = CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - scrolledBackPoints
         emulator.resize(columns: columns, rows: rows)
+        rebaseAlternateSelection()
         if isScrolledBack {
             setScrollDistance(CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - bottom)
         }
@@ -236,6 +237,13 @@ import CoreText
     /// Lines the emulator has ever pushed out of the screen, so new output can
     /// be told from lines the scrollback has dropped.
     private var producedLines = 0
+    private func rebaseAlternateSelection() {
+        guard emulator.alternateScreen else { return }
+        // Hidden normal history can move without moving the selected alternate rows.
+        let shift = emulator.trimmedLines + emulator.scrollback.count - producedLines
+        selection?.start.line += shift; selection?.end.line += shift
+        selectionAnchor?.line += shift
+    }
     /// Redraws what the emulator changed since the last refresh.
     func refresh() {
         let produced = emulator.trimmedLines + emulator.scrollback.count
@@ -262,6 +270,7 @@ import CoreText
             stopSelectionAutoscroll()
             needsDisplay = true
         }
+        rebaseAlternateSelection()
         if isScrolledBack {
             let previousFirst = producedLines - scrollOffset - partialRow
             let previousFraction = scrollFraction

@@ -47,6 +47,31 @@ final class GitInventoryTests: XCTestCase {
         }
     }
 
+    func testCombiningMarksInGitdirKeepLocalProgramsDisabled() throws {
+        for text in ["[\u{301}x]", "\\\u{301}", "\"\u{301}", "*\u{301}", "?\u{301}", "]\u{301}"] {
+            try overridePathFixture("checkout" + text + "fixture", confined: false)
+        }
+    }
+
+    func testCombiningMarksInOverridesRoundTripThroughGitParsing() throws {
+        let gitDirectory = String(try git(["rev-parse", "--absolute-git-dir"]).dropLast())
+        for (name, value) in [("filter.quote\"\u{301}.clean", "value"), ("filter.slash\\\u{301}.clean", "value"),
+                              ("filter.safe.clean", "\"\u{301}"), ("filter.safe.clean", "\\\u{301}")] {
+            let overrides = try GitReadOverrides(gitDirectory: gitDirectory, options: ["-c", name + "=" + value])
+            defer { withExtendedLifetime(overrides) {} }
+            let file = overrides.directory.appendingPathComponent("config").path
+            let parsed = try GitConfiguration.query(["config", "--file", file, "--no-includes", "--null", "--list"],
+                                                    in: root, environment: environment)
+            XCTAssertEqual(parsed.status, 0)
+            XCTAssertEqual(parsed.data, Data((name + "\n" + value + "\0").utf8))
+            let effective = try GitConfiguration.query(["-c", overrides.argument, "config", "--includes", "--null",
+                                                        "--show-origin", "--get-regexp", "^filter\\."],
+                                                       in: root, environment: environment)
+            XCTAssertEqual(effective.status, 0)
+            XCTAssertEqual(effective.data, Data(("file:" + file + "\0" + name + "\n" + value + "\0").utf8))
+        }
+    }
+
     private func overridePathFixture(_ name: String, confined: Bool) throws {
         let directory = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

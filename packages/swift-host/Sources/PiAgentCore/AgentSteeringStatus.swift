@@ -65,13 +65,45 @@ extension AgentSteeringCoordinator {
 
 extension AgentSteeringCoordinator {
     func stop(parent: AgentSession, target: AgentTurnTarget, human: Bool) async throws {
-        let state = await parent.agentState()
-        guard state.turns[target.id] != nil else { throw AgentError("subagent_scope", "Unknown child turn") }
-        if human, state.latest(target.childID)?.turn == target.turn, var run = state.run {
-            if !run.heldChildren.contains(target.childID) { run.heldChildren.append(target.childID) }
-            try await parent.appendAgentRecord(JournalRecordKind.familyRun,run)
+        // Signal live work first; parked/queued turns and terminal writes
+        // still use the gate. Provider compaction never holds that gate.
+        if let job = jobs[target.id], job.owner === parent, job.allocated, !job.parking {
+            await stop(owner:parent.id,target:target,human:human)
         }
-        await stop(owner:parent.id,target:target,human:human)
+        var retired: (SubagentPlan,AgentChildTurn,AgentSession?)?
+        let lock = gate(parent.id); try await lock.acquire()
+        do {
+            let state = await parent.agentState()
+            guard var turn = state.turns[target.id] else { throw AgentError("subagent_scope", "Unknown child turn") }
+            if human, state.latest(target.childID)?.turn == target.turn, var run = state.run {
+                if !run.heldChildren.contains(target.childID) { run.heldChildren.append(target.childID) }
+                try await parent.appendAgentRecord(JournalRecordKind.familyRun,run)
+            }
+            // Parking and Stop share the gate. A command in flight before
+            // the pause may arrive after the runner went; it still seals.
+            if human, jobs[target.id] == nil || jobs[target.id]?.parking == true {
+                guard let plan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == target.childID }) else { throw SubagentRecovery.damaged() }
+                if !turn.status.terminal {
+                    let began = await parent.accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == target.childID && $0.admission?["scope"]["childTurn"].int == target.turn && $0.admission?["state"].text == "dispatched" }
+                    turn.status = began || turn.status == .running || turn.status == .stopping ? .interrupted : .notExecuted
+                    turn.result = SubagentToolResult(plan:plan,status:turn.status,error:AgentError("subagent_stopped", "Stopped by the reader. Accepted work was not restarted."),accountingRevision:await parent.accounting.revision,began:began)
+                    turn.normalizeResult()
+                }
+                // A terminal may be only the first durable part of a seal.
+                // Retry repairs its report and every undelivered notice too.
+                try await seal(turn:turn,parent:parent,task:plan.origin.description,child:nil)
+                jobs[target.id]?.sealed = true
+            } else { await stop(owner:parent.id,target:target,human:human) }
+            if human, jobs[target.id] == nil || jobs[target.id]?.parking == true, turn.status.terminal,
+               let plan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == target.childID }) { retired = (plan,turn,jobs[target.id]?.child) }
+            await lock.release()
+        } catch { await lock.release(); throw error }
+        // The terminal is durable. Resolve the retained/cold writer outside
+        // the family gate: host reader opens/deletes use their runtime gate.
+        if let (plan,turn,child) = retired {
+            if let child, try await child.retireParkedAgentTurn(turn) { return }
+            try await retire(parent,plan,turn)
+        }
     }
 }
 
@@ -85,11 +117,11 @@ extension AgentSteeringCoordinator {
     /// A parked turn's job is gone: its card and the family's discovery
     /// revision change now, so no reader keeps the queued row it read while
     /// the turn was parking.
-    func publishParked(_ job: Job) async {
+    func publishParked(_ job: Job, generation: CostPauseGeneration) async {
         let state = await job.owner.agentState()
         guard let latest = state.latest(job.turn.childID), latest.id == job.turn.id, !latest.status.terminal else { return }
         let paused = await job.owner.costPaused
-        await job.owner.subagentChanged(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:latest.status,revision:state.revision,tools:job.plan.origin.tools,turn:latest.turn,executionID:latest.executionID,progressEpoch:await job.owner.displayEpoch,effort:latest.effort ?? job.plan.origin.model.thinkingLevel,costPaused:Self.listsPaused(owner:paused,status:latest.status,running:false) ? true : nil))
+        await job.owner.publishParkedSummary(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:latest.status,revision:state.revision,tools:job.plan.origin.tools,turn:latest.turn,executionID:latest.executionID,progressEpoch:await job.owner.displayEpoch,effort:latest.effort ?? job.plan.origin.model.thinkingLevel,costPaused:Self.listsPaused(owner:paused,status:latest.status,running:false) ? true : nil),generation:generation)
     }
     func progress(_ target: AgentTurnTarget) async {
         guard let job = jobs[target.id], !job.sealed, let child = job.child else { return }

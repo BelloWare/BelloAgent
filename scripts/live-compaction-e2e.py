@@ -254,11 +254,11 @@ class HelperError(Exception):
 class Helper(native_host_client.HostPeer):
     """The release helper, driven as the app drives it (scripts/native_host_client.py)."""
 
-    def __init__(self, binary, cwd, stderr_path):
+    def __init__(self, binary, cwd, stderr_path, *, home):
         # The helper takes the key over its wire protocol only.
         environment = {name: value for name, value in os.environ.items() if not name.startswith("PI_LIVE_")}
         self.stderr = open(stderr_path, "wb")
-        super().__init__(binary, cwd, env=environment, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
+        super().__init__(binary, cwd, env=environment, home=home, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
         try:
             try:
                 ready = self.hello(20)
@@ -585,10 +585,11 @@ class Session:
         self.run, self.name, self.cfg = run, name, run.cfg
         self.root = run.temp / name
         self.workspace, self.directory = self.root / "workspace", self.root / "sessions"
-        for folder in (self.workspace, self.directory, self.root / "codex"):
+        home = self.root / "home"
+        for folder in (self.workspace, self.directory, self.root / "codex", home):
             folder.mkdir(parents=True, exist_ok=True)
         self.markers = workspace(self.workspace) if workspace else {}
-        self.helper = Helper(self.cfg.helper, self.workspace, self.cfg.out / f"{name}-helper-stderr.log")
+        self.helper = Helper(self.cfg.helper, self.workspace, self.cfg.out / f"{name}-helper-stderr.log", home=home)
         self.id, self.path, self.turn, self.watched = f"e2e-{name}-{uuid.uuid4().hex[:8]}", None, None, set()
         try:
             self.helper.command("workspace.open", {"cwd": str(self.workspace), "directory": str(self.directory),
@@ -642,6 +643,15 @@ class Session:
         while True:
             status = self.status()
             if status["state"] in ("idle", "paused", "error"):
+                if self.cfg.mode == "live":
+                    try:
+                        _, _, unreported, known = settled_spend(status)
+                    except Exception:
+                        unreported, known = None, False
+                    if not known:
+                        return status, "cost: final spending could not be recovered, so the cost cap cannot hold"
+                    if unreported:
+                        return status, "cost: the gateway reported no cost for a completed request, so the cost cap cannot hold"
                 return status, None
             summaries, requests, unpriced = 0, 0, 0
             for attempt in self.listed():
@@ -691,7 +701,7 @@ class Session:
     def close(self):
         try:
             self.helper.command("session.close", {}, self.id, timeout=30)
-        except (HelperError, Failure):
+        except (HelperError, Failure, OSError):
             pass
         self.helper.close()
 
@@ -862,22 +872,39 @@ def common_checks(result, status, stopped, bound, run):
                  + (f"; {stopped}" if stopped else ""))
 
 
+def settled_spend(status):
+    """The same settled accounting is required before follow-up and disposal."""
+    cost = status.get("cost") or {}
+    spent, unreported = cost.get("spentUSD"), cost.get("unreportedRequests")
+    known = (status.get("state") in ("idle", "paused", "error")
+             and type(spent) in (int, float) and math.isfinite(spent) and spent >= 0
+             and type(unreported) is int and unreported >= 0)
+    return cost, spent, unreported, known
+
+
 def count_spend(run, session, result):
     """Adds this chat's spend, as the helper counted it, to the run's: once,
     also when the scenario stopped early, so the next chat's budget is right."""
     if result.cost:
         return
     try:
-        cost = session.status().get("cost") or {}
-    except (Failure, HelperError):
-        cost = {}
-    spent = cost.get("spentUSD") or 0.0
-    unreported = sum(row["costUnreported"] for row in result.requests)
-    run.spent += spent
+        cost, spent, unreported, known = settled_spend(session.status())
+    except Exception:  # Failed or malformed accounting must not reset the budget.
+        cost, spent, unreported, known = {}, None, None, False
+    unreported = max(unreported if type(unreported) is int else 0, sum(row["costUnreported"] for row in result.requests))
+    if known:
+        run.spent += spent
+    else:
+        run.spend_unknown = True
     run.unreported += unreported
-    run.dearest = max([run.dearest] + [row["costUSD"] or 0 for row in result.requests])
-    result.cost = {"spentUSD": spent, "reportedRequests": cost.get("reportedRequests"), "unreportedRequests": cost.get("unreportedRequests"),
-                   "completedWithoutCost": unreported, "limitUSD": cost.get("limitUSD"), "runTotalUSD": run.spent}
+    # A failed scenario may not have collected requests. Reserve its whole
+    # spend then, rather than forgetting the possible size of its last bill.
+    run.dearest = max([run.dearest] + ([row["costUSD"] or 0 for row in result.requests]
+                                     if result.requests else [spent if known else 0]))
+    result.cost = {"spentUSD": spent if known else None, "spendKnown": known and not unreported,
+                   "reportedRequests": cost.get("reportedRequests"), "unreportedRequests": cost.get("unreportedRequests"),
+                   "completedWithoutCost": unreported, "limitUSD": cost.get("limitUSD"),
+                   "runTotalUSD": None if run.spend_unknown or run.unreported else run.spent}
 
 
 def cost_check(result, run):
@@ -885,9 +912,11 @@ def cost_check(result, run):
     cost is spend the cap cannot see."""
     cost, unreported = result.cost, result.cost.get("completedWithoutCost", 0)
     result.check(f"reported cost under the {dollars(run.cfg.max_cost)} cap",
-                 run.spent < run.cfg.max_cost and not unreported,
-                 f"this scenario {dollars(cost.get('spentUSD'))} over {cost.get('reportedRequests')} requests; run total {dollars(run.spent)}"
-                 + (f"; {unreported} completed requests reported no cost, so the cap cannot hold" if unreported else ""))
+                 run.spent < run.cfg.max_cost and not unreported and not run.spend_unknown,
+                 f"this scenario {dollars(cost.get('spentUSD'))} over {cost.get('reportedRequests')} requests; "
+                 f"run total {dollars(run.spent) if not (run.spend_unknown or run.unreported) else 'unknown'}"
+                 + (f"; {unreported} requests reported no cost, so the cap cannot hold" if unreported else "")
+                 + ("; final spending could not be recovered" if run.spend_unknown else ""))
 
 
 # -- scenarios ------------------------------------------------------------------------
@@ -907,7 +936,10 @@ def compaction_scenario(run, result, name, history, bound, timeout):
             status, stopped = session.wait(bound, timeout)
         return session, status, stopped
     except BaseException:
-        session.close()
+        try:
+            count_spend(run, session, result)
+        finally:
+            session.close()
         raise
 
 
@@ -935,7 +967,10 @@ def run_too_large(run, result):
         status, stopped = session.wait(0, 120 if cfg.mode == "fixture" else 600)
         return session, status, stopped, 0
     except BaseException:
-        session.close()
+        try:
+            count_spend(run, session, result)
+        finally:
+            session.close()
         raise
 
 
@@ -954,7 +989,10 @@ def run_mid_run(run, result):
         status, stopped = session.wait(10, 240 if cfg.mode == "fixture" else 2_700)
         return session, status, stopped, 10
     except BaseException:
-        session.close()
+        try:
+            count_spend(run, session, result)
+        finally:
+            session.close()
         raise
 
 
@@ -1077,6 +1115,7 @@ class Run:
     def __init__(self, cfg, out):
         self.cfg, self.out = cfg, out
         self.spent, self.unreported, self.dearest, self.gateway = 0.0, 0, 0.0, None
+        self.spend_unknown = False
         self.temp = pathlib.Path(tempfile.mkdtemp(prefix="pi-live-e2e-"))
         self.corpus = Corpus()
         self.base_url = cfg.base_url
@@ -1086,7 +1125,7 @@ class Run:
         less its dearest request so far. The helper stops a chat before its next
         request once the spend reaches the limit, but a request already sent
         finishes, so one request can pass the limit; this keeps it under the cap."""
-        return self.cfg.max_cost - self.spent - self.dearest
+        return 0.0 if self.spend_unknown or self.unreported else self.cfg.max_cost - self.spent - self.dearest
 
 
 def main(argv=None):
@@ -1123,8 +1162,8 @@ def main(argv=None):
                 f"thinking {cfg.thinking} · cost cap {dollars(cfg.max_cost)} · threshold {cfg.threshold:,} · helper {cfg.helper}")
         for name in cfg.scenarios:
             results.append(run_scenario(run, name))
-            if cfg.mode == "live" and run.unreported:
-                out.say("Stopping: the gateway reported no cost for some requests, so the cost cap cannot be enforced.")
+            if cfg.mode == "live" and (run.unreported or run.spend_unknown):
+                out.say("Stopping: final spending is unknown or some requests have no reported cost, so the cost cap cannot be enforced.")
                 break
     except Failure as error:
         out.say(f"live-compaction-e2e: {error}")
@@ -1137,14 +1176,15 @@ def main(argv=None):
             else:
                 out.say(f"kept the temporary workspaces in {run.temp}")
     passed = bool(results) and len(results) == len(cfg.scenarios) and all(result.passed for result in results)
-    total = sum((result.cost or {}).get("spentUSD") or 0 for result in results)
+    known_total = sum((result.cost or {}).get("spentUSD") or 0 for result in results)
+    total = None if run is not None and (run.spend_unknown or run.unreported) else known_total
     out.say(f"\n{'PASSED' if passed else 'FAILED'}: {sum(result.passed for result in results)} of {len(cfg.scenarios)} scenarios passed · "
-            f"reported cost {dollars(total)} of the {dollars(cfg.max_cost)} cap · {time.monotonic() - began:,.0f} s")
+            f"reported cost {dollars(total) if total is not None else 'unknown'} of the {dollars(cfg.max_cost)} cap · {time.monotonic() - began:,.0f} s")
     report = {"version": 1, "mode": cfg.mode, "started": cfg.stamp, "passed": passed, "seconds": round(time.monotonic() - began, 1),
               "helper": str(cfg.helper), "gateway": cfg.base_url if cfg.mode == "live" else "loopback fixture (fixtures/native/reasoning_gateway.py)",
               "model": cfg.model, "contextWindow": cfg.window, "contextWindowSource": cfg.window_source, "modelOutputLimit": cfg.limit,
               "modelOutputLimitSource": cfg.limit_source, "thinking": cfg.thinking, "threshold": cfg.threshold, "summaryRoomRequired": cfg.summary_room("history"),
-              "costCapUSD": cfg.max_cost, "costUSD": total, "fixtureSummaryLimit": cfg.summary_limit,
+              "costCapUSD": cfg.max_cost, "costUSD": total, "knownCostUSD": known_total, "fixtureSummaryLimit": cfg.summary_limit,
               "scenarios": [result.json() for result in results]}
     out.write(cfg.out / "report.json", json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     out.say(f"report: {cfg.out / 'report.txt'} and report.json")

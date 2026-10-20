@@ -27,12 +27,12 @@ extension WorkspaceModel {
                                                            focusesComposer: focusesComposer)
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
         releaseUnreadDisplays(keeping: id)
-        let generation = view.presentationGeneration
+        let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
         PerformanceProbe.shared.observe("selectionLoadingFeedbackMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
             await self.loadSelectedChat(id, item: item, into: view, selection: selection, generation: generation, heldRows: heldRows,
-                                        focusesComposer: focusesComposer)
+                                        focusesComposer: focusesComposer, navigation: navigation)
         }
         navigationTask = task; view.presentation.navigation = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
@@ -49,6 +49,19 @@ extension WorkspaceModel {
     func resumeVisibleReaders() {
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.isShutDown else { return }
+            for view in self.displays.values where self.transcriptShows(view.id) && view.needsVisibleHistoryLoad {
+                // Runtime retirement keeps a reload's explicit destination;
+                // ordinary selection still resumes from its held position.
+                guard let reload = view.presentation.reload else { continue }
+                guard reload.navigation.isCurrent(in: self) else {
+                    view.presentation.reload = nil
+                    continue
+                }
+                switch reload.target {
+                case .latest: self.reloadHistory(view.id, navigation: reload.navigation)
+                case .message(let id): self.reloadHistory(view.id, around: id, navigation: reload.navigation)
+                }
+            }
             for tab in self.tabs.allTabs.compactMap({ $0 as? SubagentTab }) where self.subagentTabIsShown(tab.key) {
                 tab.ensureLoaded()
                 self.displays[tab.key]?.findHost?.resumeFindNavigation()
@@ -58,11 +71,12 @@ extension WorkspaceModel {
             if let side = self.sides[id], self.transcriptShows(side.id) { self.displays[side.id]?.findHost?.resumeFindNavigation() }
             if let view = self.displays[id], view.needsVisibleHistoryLoad,
                let item = self.record(id), !item.isSubagent {
-                let held = view.beginHistoryPresentation(), generation = view.presentationGeneration, selection = self.selectionRevision
+                let held = view.beginHistoryPresentation(), generation = view.presentation.readGeneration, selection = self.selectionRevision
+                let navigation = self.transcriptNavigation(id)
                 let task = Task { [weak self, weak view] in
                     guard let self, let view else { return }
                     await self.loadSelectedChat(id, item: item, into: view, selection: selection,
-                        generation: generation, heldRows: held, focusesComposer: false)
+                        generation: generation, heldRows: held, focusesComposer: false, navigation: navigation)
                 }
                 view.presentation.navigation = task
             }
@@ -70,9 +84,12 @@ extension WorkspaceModel {
                let child = self.record(side.id), let view = self.displays[side.id],
                view.needsVisibleHistoryLoad {
                 view.beginHistoryPresentation()
-                let generation = view.presentationGeneration
+                let generation = view.presentation.readGeneration, navigation = self.transcriptNavigation(child.id)
                 Task { [weak self, weak view] in
-                    guard let self, let view, self.transcriptShows(child.id), view.presentationGeneration == generation else { return }
+                    guard let self, let view else { return }
+                    guard navigation.isCurrent(in: self), self.transcriptShows(child.id), view.presentation.readGeneration == generation else {
+                        view.finishHistoryPresentation(generation); self.resumeVisibleReaders(); return
+                    }
                     await self.loadSideDisplay(child, view: view)
                 }
             }
@@ -164,10 +181,10 @@ extension WorkspaceModel {
             // earlier visit's request: the chat takes the cursor, or whoever
             // opened the chat for this side gives it to the side.
             sideView.composerFocusSettled = sideView.composerFocusRequest
-            let sideGeneration = sideView.presentationGeneration
+            let sideGeneration = sideView.presentation.readGeneration
             Task { [weak self, weak sideView] in
                 guard let self, let sideView, self.selectedID == id, self.sides[id]?.id == child.id,
-                      self.selectionRevision == selection, sideView.presentationGeneration == sideGeneration else { return }
+                      self.selectionRevision == selection, sideView.presentation.readGeneration == sideGeneration else { return }
                 await self.loadSideDisplay(child, view: sideView)
             }
         }
@@ -191,13 +208,14 @@ extension WorkspaceModel {
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
     func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
-                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, reader: HostedReaderToken? = nil) async {
-        let navigation = transcriptNavigation(id)
+                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, reader: HostedReaderToken? = nil,
+                                  navigation: TranscriptNavigationToken? = nil) async {
+        let navigation = navigation ?? transcriptNavigation(id)
         // However this ends, nothing is reading the chat any more.
         defer { view.finishHistoryPresentation(generation); resumeVisibleReaders() }
         @MainActor func current() -> Bool {
             !Task.isCancelled && navigation.isCurrent(in: self) && (reader.map { $0.isCurrent && self.subagentTab(id) === $0.reader } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
-                self.displays[id] === view && view.presentationGeneration == generation
+                self.displays[id] === view && view.presentation.readGeneration == generation
         }
         do {
             await readInheritedSubagents(item, current: current)

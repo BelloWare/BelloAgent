@@ -2,6 +2,8 @@
 """Deterministic stdio MCP tool server; no external network or credentials."""
 import json
 import sys
+import pathlib
+import time
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request:
@@ -12,6 +14,12 @@ for line in sys.stdin:
     elif method == 'tools/list':
         result = {'tools': [{'name': 'echo', 'description': 'Echo test input', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text']}}]}
     elif method == 'tools/call':
+        if len(sys.argv) == 2:
+            barrier = pathlib.Path(sys.argv[1])
+            (barrier / 'mcp-arrived').touch()
+            deadline = time.monotonic() + 45
+            while not (barrier / 'mcp-release').exists() and time.monotonic() < deadline:
+                time.sleep(.01)
         result = {'content': [{'type': 'text', 'text': request['params']['arguments']['text']}], 'isError': False}
     else:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'Unsupported fixture method'}}), flush=True)

@@ -209,8 +209,9 @@ final class GitReadOverrides: @unchecked Sendable {
         }
         try Data(content.utf8).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        let pattern = gitDirectory.reduce(into: "") { result, character in
-            if "\\*?[]".contains(character) { result.append("\\") }; result.append(character)
+        let pattern = gitDirectory.unicodeScalars.reduce(into: "") { result, scalar in
+            // A combining mark must not hide Git's glob punctuation.
+            if "\\*?[]".unicodeScalars.contains(scalar) { result.append("\\") }; result.unicodeScalars.append(scalar)
         }
         let include = directory.appendingPathComponent("include")
         try Data(("[includeIf " + Self.subsection("gitdir:" + pattern) + "]\npath = " + Self.value(file.path) + "\n").utf8).write(to: include)
@@ -224,13 +225,23 @@ final class GitReadOverrides: @unchecked Sendable {
     private static func subsection(_ text: String) throws -> String {
         // Subsections do not support value escapes such as \n, \t or \b.
         guard text.rangeOfCharacter(from: .controlCharacters) == nil else { throw GitConfiguration.ConfinementRequired() }
-        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        var result = "\""
+        for scalar in text.unicodeScalars {
+            if scalar == "\\" || scalar == "\"" { result.append("\\") }
+            result.unicodeScalars.append(scalar)
+        }
+        return result + "\""
     }
 
     private static func value(_ text: String) throws -> String {
         // Keep generated values in the same conservative printable subset;
         // quotes/backslashes round-trip, and no unsupported escape is emitted.
         guard text.rangeOfCharacter(from: .controlCharacters) == nil else { throw GitConfiguration.ConfinementRequired() }
-        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        var result = "\""
+        for scalar in text.unicodeScalars {
+            if scalar == "\\" || scalar == "\"" { result.append("\\") }
+            result.unicodeScalars.append(scalar)
+        }
+        return result + "\""
     }
 }
