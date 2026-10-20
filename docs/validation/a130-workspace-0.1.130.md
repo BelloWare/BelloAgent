@@ -4759,3 +4759,278 @@ remained, and approximately 11.6 GiB remained free (`cleanup.json`). Text logs a
 PNG evidence are retained; no named xcresult was requested. No new owner
 product decision or unresolved assigned finding remains. The existing legacy
 no-lease recovery-policy follow-up remains as recorded in Round 14.
+
+## Round 16 — recovery reconciliation ownership
+
+Reviewed baseline: `186cc3cff8d082b629b4bd0eab761597f87ffbf8` on
+`dev/a130-workspace`. This round changes desktop recovery reconciliation only.
+No helper, wire contract, storage schema, submission dispatch, permission,
+capture, tool, vault or data boundary changes. Generated fixture databases,
+journals and fake helper replies are the only inputs. No installed app,
+credentials, user state or provider calls were used.
+
+Text evidence for this round is under:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round16-recovery-reconciliation/`.
+
+### Findings and failing-first evidence
+
+Both reported findings are **confirmed and fixed**. The first five new tests
+ran against the unchanged Round-15 production code in `failing-first.log`:
+**5 failed, 9 assertion failures** (exit 65).
+
+1. **Queue confirmation lost across later awaits.**
+   `SubmissionPersistenceTests.testQueuedSaveConfirmationSurvivesLaterReconciliationAwaits`
+   holds the history acceptance read after queue status confirms the exact
+   digest and its pending record is removed. A snapshot then prunes the now
+   unowned acknowledgement. Failing excerpts: `A later await cannot re-offer
+   the confirmed queued rewrite` and `Confirmed input has no recovery action`
+   (Insert incorrectly restores the confirmed text). Reconciliation now keeps
+   its own confirmation evidence across all awaits and reloads invalidated
+   inventories before publishing.
+2. **A submission fails during hydration's acceptance read.**
+   `testReconciliationKeepsSubmissionsThatFailDuringAcceptanceRead` runs both
+   main-chat and saved-side hydration, with a real submission through the
+   generated helper transport held at `turn.submit`. Helper shutdown fails
+   the live task during the held acceptance read. The test replaces the
+   returned composer text again, then releases hydration. Both routes failed
+   with `Hydration must merge input returned during its await, including saved
+   sides`. Both now retain the independent input and Insert recovers its exact
+   text beside the newer typing without needing another snapshot.
+
+The requested whole-function sweep confirmed these additional instances:
+
+| Instance | Regression and failing-first evidence | Fix |
+| --- | --- | --- |
+| Insert/Discard during a recovery read is undone by its late result | `testReconciliationDoesNotReviveInputConsumedDuringItsRead`: both Insert and Discard fail `An old read cannot undo Insert or Discard` in `failing-first.log`. | Consumption invalidates the read; its replacement inventory excludes consumed input. |
+| A new retained input is overwritten during a read | `testReconciliationIncludesInputAddedWhileItsInventoryIsPending`: both an undurable pin and a pin committed during the wait fail `A returned pin must survive whether or not its retry commits during the read`. | Re-read changed pending records and merge current pins before publication. |
+| An identical queued Save becomes live after the initial recovery filter | `testReconciliationDoesNotPublishAQueuedRetryThatBecameLive`: `The published inventory must recheck who owns the input now`. | Revalidate live ownership; neither Insert nor Discard is admitted for the retry. |
+| Snapshot continues after its connection retires during review persistence | `testSnapshotRevalidatesItsConnectionAfterProtectingReturnedInput`: `A retired snapshot must not update the replacement runtime's sending rows` and the pending-read count is 1 instead of 0. | Check `snapshotApplies` immediately after the first review await, before further settlement. |
+| Changed snapshot inventory is deferred to a future snapshot | `testSnapshotReloadsRecoveryInventoryChangedDuringReviewPersistence`: only the new input survives, while the older unresolved input remains hidden; reads are 1 instead of 2. | Reload within this reconciliation and publish both unresolved inputs. |
+| Receipt retirement without a pin does not invalidate a concurrent read | `testReconciliationCannotReviveInputRetiredByAnInterveningReceipt`: `Receipt retirement must invalidate every older recovery inventory, even without a pin`. | Notify other readers after every committed snapshot acknowledgement/withdrawal, before checking whether the old connection still applies. |
+
+The two snapshot regressions failed before their fixes in
+`snapshot-failing-first.log`: **2 failed, 4 assertions**. An earlier attempt,
+`snapshot-first.log`, did not compile because the new fixture used a nonexistent
+`connectForTesting` convenience; it was corrected to the existing fake
+transport's `connect(cwd:state:)`. That build error is not failing-first evidence.
+
+After the initial fixes, `fixed-regressions.log` passed all **7 tests**. The
+adversarial sweep then exposed the missing receipt invalidation;
+`receipt-sweep-first.log` ran its failing regression (**1 failed, 1 assertion**)
+and a passing test covering additional awaits. That additional test,
+`testRecoveryRechecksInputAcrossQueueStatusAndReviewWaits`, holds queue status
+and returned-draft review separately, adding input that either stays pinned or
+commits while each wait is outstanding. All four combinations must retain the
+late input. The original recovery algorithm also fails those combinations in
+the hydration mutation run.
+
+### Reconciliation rules and complete sweep
+
+`SubmissionInventoryRevision` captures the pending-record generation, draft
+version identity and pin-preservation generation, the pinned inputs themselves,
+live submission IDs and the current recovery entries. Pin additions and
+ownership/recovery changes matter even when no durable write occurred. These
+values are evidence of a read's applicability, not ownership of the captured
+input. Changed evidence causes an immediate read of current durable pending
+records plus current pins. It never makes a previous filtered snapshot the
+source of truth again.
+
+Acceptance is positive, command-specific evidence: a matching queue digest,
+journal acceptance, acknowledgement or receipt. Each hydration reconciliation
+keeps its own confirmed IDs until it ends, even when the snapshot cache can
+prune them. A failed acceptance read publishes nothing new and leaves retained
+input in place. A current inventory is filtered against live ownership and
+acceptance and published in the same main-actor turn, with no intervening await.
+The callers no longer overwrite recovery with a returned older array.
+
+| Path / await | Applicability and publication check |
+| --- | --- |
+| `reconcileSubmissionDraft`: selection metadata | Capture inventory revision before reading. Retain the existing navigation/display guard and first-completed baseline adoption; re-read pending input if the metadata result is obsolete. Subagent readers remain non-submitting. |
+| `loadSideDisplay`: inherited subagents, metadata | Keep pane/navigation/display generation checks. Capture inventory revision before metadata and use the same current recovery publisher as the main pane. |
+| `loadSideDisplay`: initial history and accounting | Existing `current()` checks follow both awaits. These publish transcript data, not captured-input snapshots. Recovery is already published independently. |
+| `recoverableIntents`: pending reload | Check navigation and inventory revision after the store read; repeat if either input or ownership changed. |
+| `recoverableIntents`: queue status and confirmed-input withdrawal | Exact edit ID/digest remains required. Preserve positive confirmation locally. Commit positive status evidence even if navigation retired during the reply; stop further reads afterward. Any changed inventory is reloaded before recovery publication. |
+| `recoverableIntents`: history acceptance | Retain the read's positive confirmed IDs before checking navigation. Current readers protect returned-draft review markers before retiring accepted pins. |
+| `recoverableIntents`: review persistence, including baseline and predecessor waits | Revalidate afterward. New failed input, committed pins, consumption and a new live retry all invalidate the earlier filter. |
+| `recoverableIntents`: acknowledgement and unused Resume removal | Committed pending-record changes invalidate other reads; no snapshot made before these writes may be published afterward. Resume has no captured text to offer. |
+| `settleSnapshotIntents`: initial returned-input review | Validate the original helper object, connection, chat route and display before any subsequent queue or inventory settlement. Positive receipt evidence remains valid if the helper later ends. |
+| `settleSnapshotIntents`: cached/store inventory, review, acknowledgement, receipt and withdrawal writes | Check original runtime after each await and inventory revision before publishing. A changed inventory is re-read now, rather than left for a future event. Each committed acknowledgement/withdrawal notifies other pending-input reads, including when no pin existed. |
+| Snapshot acknowledgement pruning | Retains IDs still owned by pending records, pins or live submissions. Hydration's separate confirmed set survives pruning; terminal writes invalidate older inventories. |
+
+The sweep also checked the callers that advance pending-input generations:
+ordinary sends/steers, historical edits, queued Saves and earlier-operation
+settlement, side publication/transfer, Resume, compaction, queued-turn rewrite
+and removal, recovery Insert/Discard, pin-preservation commits and draft-version
+replacement. Existing submission records, pin ownership, recovery-action guards
+and ordered composer writers remain intact. No captured input was converted
+into a replaceable composer snapshot.
+
+### Adversarial self-review
+
+| Changed boundary | States now taking the other path | Intended result |
+| --- | --- | --- |
+| Inventory revision mismatch | Added/retired pin, changed pending records or baseline, submission start/finish, changed recovery entries | Retry the inventory; preserve newly failed input and exclude consumed/now-live input. An unchanged inventory still takes one pass. |
+| Read-local confirmation | A snapshot prunes an ID after cleanup while hydration still holds an older candidate | The original positive evidence remains effective until this read ends; confirmed input never becomes an action. |
+| Current-navigation guards inside recovery | Chat/pane/navigation retired or task canceled during an acceptance/storage wait | Preserve any positive evidence already returned, then stop without publishing into the retired presentation. A later current reader reconciles the durable input. |
+| Recovery publication moved into the validating routine | Main and side callers returning from a long read | No caller assigns the stale pre-await array over a failure/consumption that arrived meanwhile. Uncertainty still depends on durable versus pinned input; retained input visibility does not require uncertainty. |
+| Current-receipt filter | An acceptance receipt arrives during another recovery read | It suppresses that input even if the earlier history read did not yet see acceptance. |
+| Snapshot connection guard after first review await | Replacement helper or retired display/route | Stop before changing replacement sending rows or running more settlement reads. Valid current snapshots proceed. |
+| Snapshot inventory mismatch retries | A writer/pin/recovery changes during settlement | Finish with the current unresolved inventory in this invocation; do not rely on another helper event. |
+| Pending-generation notification after snapshot commits | Accepted input with or without a pin; connection may retire immediately afterward | Other readers cannot reuse the removed/acknowledged record. A failed commit does not claim successful removal. |
+
+The review checked both directions of submission ownership: live → failed
+(including helper loss) and recoverable → live (identical queued retry).
+Insert/Discard tests verify consumed input cannot return; the retry regression
+also tries both stale actions while live. Positive acceptance can settle input
+while a task is unwinding, but never authorizes resending. Unreadable storage
+or failed preservation leaves existing owners and recovery intact. No new
+prompt, product decision, recovery retention policy or geometry change is
+introduced.
+
+The review also challenged the new navigation checks with a positive reply
+already in flight. Initially they stopped before remembering that proof.
+`testCancelledRecoveryKeepsPositiveAcceptanceEvidence` failed in
+`navigation-proof-first.log` (**1 test, 3 assertions**) for both queue status
+and journal acceptance: `Leaving the pane cannot discard positive
+command-specific evidence`; the queue case also failed `The confirmed queued
+input must retire even if its reader has moved on`. The fix remembers positive
+journal evidence before testing navigation, and finishes confirmed queue input
+retirement even after cancellation. It then stops further presentation work.
+This preserves the old positive-evidence behavior while fixing the stale
+negative inventories. The fixed regression passes, and reintroducing those
+early guards fails its separate mutation check.
+
+The first full headless pass (`pre-review-headless.log`) passed **380 tests**.
+Its orchestrators were stopped while waiting for another workstream's focus
+lock, before any window lane began, to validate the positive-evidence boundary
+above. No running native test or foreign lock was interrupted. Final counts
+below come from a subsequent full rerun of the final source.
+
+### Validation
+
+The first affected-class pass (`fixed-affected.log`) passed **110 tests**:
+SubmissionPersistenceTests 61, WorkspaceRefreshLifecycleTests 37 and
+SendBookkeepingTests 12. The snapshot performance regression recorded **zero
+additional pending-store reads across 20 unchanged streamed snapshots**.
+
+**627 distinct native tests passed across 32 classes; zero failures or skips.**
+Every Round-15 class was rerun, with additional snapshot lifecycle, follow-up
+and subagent-reader coverage. Counts exclude failing-first, exploratory and
+mutation runs. Focus/window/gallery runs held the shared full-lane lock;
+serial classes ran alone. All builds used this workstream’s single build root.
+
+| Class | Passed | Evidence log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 85 | `final-conversation.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless.log` |
+| `DraftLoadingTests` | 15 | `final-headless.log` |
+| `DraftOrderingTests` | 19 | `final-headless.log` |
+| `FamilyDeletionTests` | 10 | `final-headless.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless.log` |
+| `PendingChatProjectTests` | 24 | `final-headless.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless.log` |
+| `RecoveredDraftTests` | 13 | `final-headless.log` |
+| `RunHoldTests` | 18 | `final-headless.log` |
+| `SendBookkeepingTests` | 12 | `final-headless.log` |
+| `SessionOrganizationTests` | 9 | `final-headless.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless.log` |
+| `SubagentDeletionTests` | 19 | `final-headless.log` |
+| `SubagentReaderTests` | 58 | `final-subagent-reader.log` |
+| `SubmissionPersistenceTests` | 62 | `final-headless.log` |
+| `TitleGenerationTests` | 12 | `final-title.log` |
+| `ToolOutputProducerTests` | 13 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless.log` |
+| `WorkspaceFollowupTests` | 9 | `final-window.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless.log` |
+| `WorkspaceRefreshLifecycleTests` | 37 | `final-headless.log` |
+| `WorkspaceValidationGalleryTests` | 5 | `final-gallery.log` |
+
+Exact final commands (also retained in the matching `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/QueuedEditPresentationTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/SessionOrganizationTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/HistoricalEditFocusTests -only-testing:PiAppTests/WorkspaceFollowupTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TitleGenerationTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round16-recovery-reconciliation/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Both reported fixes and every confirmed sweep case were mutation-checked.
+`mutations.py` restores the old recovery algorithm (with a publication adapter
+for the new callers), removes the initial snapshot connection fence, defers a
+changed snapshot inventory and removes receipt invalidation.
+`navigation-proof.py` restores the premature navigation guards. Both scripts
+restore exact source in `finally`; the final runs use restored source.
+
+| Mutation log | Failed regression tests | Assertion failures |
+| --- | ---: | ---: |
+| `mutation-hydration.log` | 6 | 13 |
+| `mutation-navigation-proof.log` | 1 | 3 |
+| `mutation-receipt.log` | 1 | 1 |
+| `mutation-snapshot.log` | 2 | 3 |
+
+All **10 mutation regressions** failed as expected (exit 65). These are assertion failures, not compiler failures.
+The source manifest `tested-source-sha256.json` matches all final tested Swift
+and generated project sources. `git diff --check` passes. Every failed run is
+accounted for above; no unrelated failing test is ignored. Helper and wire
+suites were not required: this round changes desktop reconciliation only.
+
+The serial gallery generated **56 PNGs** under the shared focus lock. All were
+visually inspected in 14 labeled sheets at native point dimensions: live and
+settled steer/follow-up input, unanswered and confirmed queued Save, retained
+unsaved/rejected input, one and 40 conflict copies, queued-retry refusal and
+error banners, each in light/dark at 760/300 points. Live/confirmed input has no
+recovery banner; settled retained input keeps its bounded chooser. The existing
+300-point stress-scene composer toolbar overflow remains as documented in
+`ComposerInput.swift:450–476`; no layout or control geometry changed.
+
+Original captures:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round16-recovery-reconciliation/gallery/`.
+Inspection sheets and their source-image manifest are in `gallery-inspection/`.
+
+Pixel comparison with Round 15: **51 of 56 scenes are identical**. The other
+five differ only inside the existing Edit/Copy/Details toolbar, within the
+310×46-pixel rectangle at x=1162, y=135 (or a smaller rectangle within it).
+The before/after crops were inspected in `gallery-inspection/toolbar-comparison.png`;
+the same controls occupy the same frames. Every pixel outside that toolbar
+matches. `gallery-pixel-comparison.json` records each count and difference bound.
+
+The workstream's focus lock and build mutex were released. Its automatic Xcode
+result bundle was removed; no clone folders remained. Approximately **11.86 GiB**
+remained free (`cleanup.json`). Text logs and image evidence are retained; no
+named xcresult was requested. The final source manifest still matches after
+cleanup. No unresolved Round-16 finding or new owner decision remains. The
+existing legacy no-lease publication-policy follow-up from Round 14 is unchanged.

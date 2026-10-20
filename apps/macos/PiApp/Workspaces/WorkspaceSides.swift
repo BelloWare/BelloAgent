@@ -490,15 +490,14 @@ extension WorkspaceModel {
                 await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }
                 let oldDraft = view.savedDraft
+                let revision = SubmissionInventoryRevision(view)
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded)
                 guard current() else { return }
                 view.draftConflicts = metadata?.conflicts ?? []
                 guard let metadata else { throw StoreError.unavailable }
                 self.adoptDraftBaseline(metadata, into: view, draftAtStart: oldDraft)
-                let recovered = try await self.recoverableIntents(metadata.recovered, for: child, view: view)
+                _ = try await self.recoverableIntents(metadata.recovered, for: child, view: view, revision: revision, current: current)
                 guard current() else { return }
-                view.recovered = recovered
-                view.uncertain = recovered.contains { intent in !view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } }
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
                 var page = try await self.readInitialWindow(child, holding: view.scrollAnchor)

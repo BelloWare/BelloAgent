@@ -19,21 +19,41 @@ struct DraftWrites {
     var recoveries: [String: Task<Void, Never>] = [:]
 }
 
+/// A recovery inventory is only publishable while its pending-record generation,
+/// pinned input and live task ownership still match. Check after awaits and
+/// reload on change; a later snapshot is not guaranteed after helper loss.
+@MainActor struct SubmissionInventoryRevision {
+    let pending: Int
+    let version: DraftVersion
+    let submissions: Int
+    private let pinned: [CommandIntent]
+    private let submitting: Set<String>
+    private let recovered: [CommandIntent]
+    init(_ view: SessionDisplay) {
+        pending = view.pendingIntentRevision; version = view.draftVersion
+        submissions = version.submissionRevision; pinned = version.unsavedSubmissions
+        submitting = view.submittingCommands; recovered = view.recovered
+    }
+    func isCurrent(in view: SessionDisplay) -> Bool {
+        pending == view.pendingIntentRevision && version === view.draftVersion && submissions == version.submissionRevision &&
+            pinned == version.unsavedSubmissions && submitting == view.submittingCommands && recovered == view.recovered
+    }
+}
+
 extension WorkspaceModel {
     /// Selection may abandon its read, but an explicit submission still needs
     /// this reconciliation without taking the reader back to its chat.
     func reconcileSubmissionDraft(_ item: ChatRecord, view: SessionDisplay, current: () -> Bool) async throws -> Bool {
         guard let store else { throw StoreError.unavailable }
         let wantsMetadata = !view.selectionMetadataLoaded, draftAtStart = view.savedDraft
+        let revision = SubmissionInventoryRevision(view)
         let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata && !item.isSubagent, anchor: wantsMetadata)
         guard current() else { return false }
         adoptDraftBaseline(metadata, into: view, draftAtStart: draftAtStart)
         if item.isSubagent { view.draftReady = false; return true }
         view.draftConflicts = metadata.conflicts
-        let recovered = try await recoverableIntents(metadata.recovered, for: item, view: view)
+        _ = try await recoverableIntents(metadata.recovered, for: item, view: view, revision: revision, current: current)
         guard current() else { return false }
-        view.recovered = recovered
-        view.uncertain = recovered.contains { intent in !view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } }
         // Text alone cannot authorize a resend while acceptance is unread.
         view.draftReady = true
         return true
@@ -64,41 +84,75 @@ extension WorkspaceModel {
     }
     /// An acknowledgement may be missing locally after a full disk or crash.
     /// Consult durable helper evidence before exposing any recovery action.
-    func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {
-        let intents = retainingCapturedInput(intents, in: view)
-        let unchecked = intents.filter { $0.state == "intent" && !view.acceptedCommands.contains($0.id) }
-        // Queue saves have no new turn receipt. After a lost reply, the
-        // helper's durable outcome must match this captured text before it
-        // can retire the input; a different rewrite leaves it recoverable.
-        for intent in intents {
-            guard let editID = intent.queueEditID else { continue }
-            if !view.acceptedCommands.contains(intent.id) {
-                guard let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
-                      status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+    func recoverableIntents(_ saved: [CommandIntent], for item: ChatRecord, view: SessionDisplay,
+                            revision initial: SubmissionInventoryRevision? = nil, current: () -> Bool = { true }) async throws -> [CommandIntent] {
+        guard let store else { throw StoreError.unavailable }
+        var revision = initial ?? SubmissionInventoryRevision(view), saved = saved
+        // Snapshot bookkeeping may prune an acknowledged ID once its record
+        // is gone. This read must retain its own proof across all later awaits.
+        var confirmed = view.acceptedCommands
+        while current() {
+            try Task.checkCancellation()
+            if !revision.isCurrent(in: view) {
+                revision = SubmissionInventoryRevision(view)
+                saved = try await store.list(CommandIntent.self, kind: "pending:" + item.id)
+                guard current() else { return [] }
+                guard revision.isCurrent(in: view) else { continue }
             }
-            try await retireConfirmedSubmission(intent.id, in: view)
+            let intents = retainingCapturedInput(saved, in: view)
+            confirmed.formUnion(view.acceptedCommands)
+            let unchecked = intents.filter { $0.state == "intent" && !confirmed.contains($0.id) }
+            // Queue saves have no new turn receipt. Only the matching durable
+            // digest confirms this captured text, not a different rewrite.
+            for intent in intents {
+                guard current() else { return [] }
+                guard let editID = intent.queueEditID else { continue }
+                if !confirmed.contains(intent.id) {
+                    guard let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
+                          status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+                }
+                // Positive evidence belongs to the command, even if its
+                // reader moved away while the reply was in flight.
+                confirmed.insert(intent.id)
+                try await retireConfirmedSubmission(intent.id, in: view)
+            }
+            guard current() else { return [] }
+            let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
+            let accepted: Set<String>
+            let turns = unchecked.filter { $0.queueEditID == nil }
+            if let commandAcceptanceRead { accepted = try await commandAcceptanceRead(path, turns, item.path == nil) }
+            else { accepted = try await history.acceptedCommands(in: path, intents: turns, missingIsEmpty: item.path == nil) }
+            confirmed.formUnion(accepted); view.acceptedCommands.formUnion(confirmed)
+            guard current() else { return [] }
+            try await protectReturnedDrafts(intents, view: view)
+            guard current() else { return [] }
+            for intent in intents where intent.queueEditID == nil && (confirmed.contains(intent.id) || view.acceptedCommands.contains(intent.id))
+                && view.draftVersion.unsavedSubmissions.contains(where: { $0.id == intent.id }) {
+                try await store.acknowledgeCommand(sessionID: item.id, commandID: intent.id, draftVersion: view.draftVersion)
+                pendingIntentsChanged(item.id)
+                guard current() else { return [] }
+            }
+            // Input may have settled, been consumed, or acquired a live retry.
+            // Reload and merge current pins before publishing, without a gap
+            // between this validation and the display update in either pane.
+            guard revision.isCurrent(in: view) else { continue }
+            let unaccepted = unchecked.filter { intent in !confirmed.contains(intent.id) && !view.acceptedCommands.contains(intent.id) &&
+                !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) }
+            // A Resume the helper never took ran nothing and holds no text.
+            let resumes = unaccepted.filter { $0.turnID.hasPrefix(Self.resumeIntentPrefix) }
+            if !resumes.isEmpty {
+                for intent in resumes {
+                    try await store.remove(kind: "pending:\(item.id)", id: intent.id)
+                    pendingIntentsChanged(item.id)
+                    guard current() else { return [] }
+                }
+                continue
+            }
+            view.recovered = unaccepted
+            view.uncertain = unaccepted.contains { intent in !view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } }
+            return unaccepted
         }
-        let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
-        let accepted: Set<String>
-        let turns = unchecked.filter { $0.queueEditID == nil }
-        if let commandAcceptanceRead { accepted = try await commandAcceptanceRead(path, turns, item.path == nil) }
-        else { accepted = try await history.acceptedCommands(in: path, intents: turns, missingIsEmpty: item.path == nil) }
-        view.acceptedCommands.formUnion(accepted)
-        try await protectReturnedDrafts(intents, view: view)
-        for intent in intents where intent.queueEditID == nil && view.acceptedCommands.contains(intent.id)
-            && view.draftVersion.unsavedSubmissions.contains(where: { $0.id == intent.id }) {
-            try await store?.acknowledgeCommand(sessionID: item.id, commandID: intent.id, draftVersion: view.draftVersion)
-            pendingIntentsChanged(item.id)
-        }
-        let unaccepted = unchecked.filter { !view.acceptedCommands.contains($0.id) }
-        // A Resume the helper never took ran nothing and holds no text: its
-        // record goes, and the chat still offers Resume.
-        let resumes = unaccepted.filter { $0.turnID.hasPrefix(Self.resumeIntentPrefix) }
-        if !resumes.isEmpty, let store {
-            for intent in resumes { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }
-            pendingIntentsChanged(item.id)
-        }
-        return unaccepted.filter { !$0.turnID.hasPrefix(Self.resumeIntentPrefix) }
+        return []
     }
     /// Helper evidence, not a composer snapshot, settles captured input.
     /// Failed cleanup keeps its pin and acknowledgement for a later retry.

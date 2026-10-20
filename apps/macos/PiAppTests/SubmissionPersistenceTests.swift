@@ -4,6 +4,287 @@ import Darwin
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
+    func testQueuedSaveConfirmationSurvivesLaterReconciliationAwaits() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let intent = CommandIntent(id: "queue-edit:edit:digest", sessionID: view.id, turnID: "queue-edit:edit",
+                                   text: "Confirmed queued rewrite", state: "intent", draftReviewTracked: true, queueEditID: "edit")
+        try await store.recordSubmission(intent, draft: nil)
+        model.queueEditOperation = { _, _, _ in ["state": .string("saved"), "textDigest": .string(QueuedEditDraft.digest(intent.text))] }
+        var release: CheckedContinuation<Void, Never>?, held = false
+        model.commandAcceptanceRead = { _, _, _ in
+            if !held { held = true; await withCheckedContinuation { release = $0 } }
+            return []
+        }
+        defer { release?.resume() }
+        let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+        try await eventually("History acceptance read held after queue confirmation") { release != nil }
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertTrue(pending.isEmpty)
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertFalse(view.acceptedCommands.contains(intent.id), "Snapshots may prune an acknowledgement with no remaining owner")
+        release?.resume(); release = nil
+        _ = try await reconciliation.value
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty, "A later await cannot re-offer the confirmed queued rewrite")
+        model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, "", "Confirmed input has no recovery action")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testReconciliationKeepsSubmissionsThatFailDuringAcceptanceRead() async throws {
+        for side in [false, true] {
+            let (model, view, wire) = try await fixture()
+            if side {
+                model.chats[0].parentSessionID = "parent"
+                model.chats.append(ChatRecord(id: "parent", workspaceID: "w", title: "Parent", profileID: "p"))
+                model.selectedID = "parent"
+                _ = model.mountSide(try XCTUnwrap(model.record(view.id)), beside: "parent")
+                view.draftReady = true
+            }
+            wire.heldMethod = "turn.submit"; view.draft = "Captured input awaiting its reply"
+            model.send(sessionID: view.id)
+            try await eventually("Submission reply held") { wire.held != nil }
+            let captured = try XCTUnwrap(view.submittingCommands.first)
+            view.draft = "Typing while the reply is pending"; model.draftChanged(view)
+            var release: CheckedContinuation<Void, Never>?, held = false
+            model.commandAcceptanceRead = { _, _, _ in
+                if !held { held = true; await withCheckedContinuation { release = $0 } }
+                return []
+            }
+            defer { release?.resume() }
+            let item = try XCTUnwrap(model.record(view.id))
+            let reconciliation = Task {
+                if side { await model.loadSideDisplay(item, view: view) }
+                else { _ = try await model.reconcileSubmissionDraft(item, view: view, current: { true }) }
+            }
+            try await eventually("Hydration acceptance read held") { release != nil }
+            try await wire.host.shutdownAndWait()
+            try await eventually("Submission failed while hydration was pending") { view.submittingCommands.isEmpty && !view.loading }
+            XCTAssertTrue(view.recovered.contains { $0.id == captured })
+            view.draft = "Newer typing after helper loss"; model.draftChanged(view)
+            release?.resume(); release = nil
+            try await reconciliation.value
+            XCTAssertTrue(view.recoverableSubmissions.contains { $0.id == captured }, "Hydration must merge input returned during its await, including saved sides")
+            if let intent = view.recoverableSubmissions.first(where: { $0.id == captured }) {
+                model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[view.id]?.value
+                XCTAssertEqual(view.draft, "Newer typing after helper loss\n\n" + intent.text)
+            }
+        }
+    }
+
+    func testReconciliationDoesNotReviveInputConsumedDuringItsRead() async throws {
+        for insert in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let intent = CommandIntent(id: "returned", sessionID: view.id, turnID: "turn", text: "Previously failed input", state: "intent", draftReviewTracked: true)
+            try await store.recordSubmission(intent, draft: nil); model.offerSubmissionRecovery(intent, in: view)
+            var release: CheckedContinuation<Void, Never>?, held = false
+            model.commandAcceptanceRead = { _, _, _ in
+                if !held { held = true; await withCheckedContinuation { release = $0 } }
+                return []
+            }
+            defer { release?.resume() }
+            let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+            try await eventually("Acceptance held before recovery action") { release != nil }
+            model.recoverDraft(intent, insert: insert); await model.draftWrites.recoveries[view.id]?.value
+            XCTAssertTrue(view.recovered.isEmpty)
+            release?.resume(); release = nil; _ = try await reconciliation.value
+            XCTAssertTrue(view.recoverableSubmissions.isEmpty, "An old read cannot undo Insert or Discard")
+            XCTAssertEqual(view.draft, insert ? intent.text : "")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testReconciliationIncludesInputAddedWhileItsInventoryIsPending() async throws {
+        for persisted in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            var release: CheckedContinuation<Void, Never>?, held = false
+            model.commandAcceptanceRead = { _, _, _ in
+                if !held { held = true; await withCheckedContinuation { release = $0 } }
+                return []
+            }
+            defer { release?.resume() }
+            let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+            try await eventually("Empty recovery inventory held") { release != nil }
+            let intent = CommandIntent(id: "added", sessionID: view.id, turnID: "turn", text: "Input returned during reconciliation", state: "intent", draftReviewTracked: true)
+            view.draftVersion.preservingSubmission(intent)
+            model.offerSubmissionRecovery(intent, in: view)
+            if persisted { try await store.preserveDraftConflicts(view.draftVersion) }
+            release?.resume(); release = nil; _ = try await reconciliation.value
+            XCTAssertEqual(view.recoverableSubmissions, [intent], "A returned pin must survive whether or not its retry commits during the read")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testReconciliationDoesNotPublishAQueuedRetryThatBecameLive() async throws {
+        let (model, view, wire) = try await fixture()
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked"); view.draft = "Captured rewrite"
+        model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated lost reply") }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Original Save unanswered") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        let intent = try XCTUnwrap(view.recovered.first)
+        var release: CheckedContinuation<Void, Never>?, held = false, releaseSave: CheckedContinuation<Void, Never>?
+        model.commandAcceptanceRead = { _, _, _ in
+            if !held { held = true; await withCheckedContinuation { release = $0 } }
+            return []
+        }
+        defer { release?.resume(); releaseSave?.resume() }
+        let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+        try await eventually("Recovery read held") { release != nil }
+        model.queueEditOperation = { method, _, _ in
+            if method == "queue.edit.save" { await withCheckedContinuation { releaseSave = $0 } }
+            return ["state": .string("saved"), "textDigest": .string(QueuedEditDraft.digest(intent.text))]
+        }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Identical retry held") { releaseSave != nil }
+        release?.resume(); release = nil; _ = try await reconciliation.value
+        XCTAssertTrue(view.recovered.isEmpty, "The published inventory must recheck who owns the input now")
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty)
+        for insert in [false, true] { model.recoverDraft(intent, insert: insert) }
+        XCTAssertNil(model.draftWrites.recoveries[view.id], "Neither stale recovery action may act on a live retry")
+        releaseSave?.resume(); releaseSave = nil
+        try await eventually("Retry accepted") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testSnapshotRevalidatesItsConnectionAfterProtectingReturnedInput() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let intent = CommandIntent(id: "accepted", sessionID: view.id, turnID: "turn", text: "Returned input", state: "intent")
+        try await store.recordSubmission(intent, draft: nil)
+        view.recovered = [intent]; view.draft = intent.text
+        view.showSending(.init(id: intent.turnID, role: "user", text: intent.text))
+        wire.receipts = [["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("failed")]]
+        var release: CheckedContinuation<Void, Never>?
+        let predecessor = Task { await withCheckedContinuation { release = $0 } }
+        model.draftWrites.tasks[view.id] = predecessor
+        defer { release?.resume() }
+        try await eventually("Predecessor held") { release != nil }
+        view.snapshotInFlight = false; model.refresh(view.id)
+        try await eventually("Receipt review waits for predecessor") { view.submissionReviews.contains(intent.id) }
+        let replacement = SubmissionPersistenceHost(root: model.root)
+        try await replacement.host.connect(cwd: model.root, state: model.root.appendingPathComponent("replacement-host"))
+        model.hosts["w"] = replacement.host
+        release?.resume(); release = nil
+        try await eventually("Retired snapshot settled") { !view.snapshotInFlight }
+        XCTAssertTrue(view.isSending(intent.turnID), "A retired snapshot must not update the replacement runtime's sending rows")
+        XCTAssertEqual(view.intentReads, 0, "The first post-await connection check must precede any further settlement")
+        try await wire.host.shutdownAndWait(); try await replacement.host.shutdownAndWait()
+    }
+
+    func testSnapshotReloadsRecoveryInventoryChangedDuringReviewPersistence() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let accepted = CommandIntent(id: "accepted", sessionID: view.id, turnID: "old", text: "Returned accepted input", state: "intent")
+        let failed = CommandIntent(id: "failed", sessionID: view.id, turnID: "failed-turn", text: "Unaccepted input", state: "intent", draftReviewTracked: true)
+        for intent in [accepted, failed] { try await store.recordSubmission(intent, draft: nil) }
+        view.draft = accepted.text
+        wire.receipts = [["commandId": .string(accepted.id), "turnId": .string(accepted.turnID), "state": .string("dispatched")]]
+        var release: CheckedContinuation<Void, Never>?
+        let predecessor = Task { await withCheckedContinuation { release = $0 } }
+        model.draftWrites.tasks[view.id] = predecessor
+        defer { release?.resume() }
+        try await eventually("Predecessor held") { release != nil }
+        view.snapshotInFlight = false; model.refresh(view.id)
+        try await eventually("Pending inventory review held") { view.submissionReviews.contains(accepted.id) }
+        XCTAssertEqual(view.intentReads, 1)
+        let added = CommandIntent(id: "added", sessionID: view.id, turnID: "new", text: "Input retained during review", state: "intent", draftReviewTracked: true)
+        view.draftVersion.preservingSubmission(added); model.offerSubmissionRecovery(added, in: view)
+        try await store.preserveDraftConflicts(view.draftVersion)
+        release?.resume(); release = nil
+        try await eventually("Snapshot settled after inventory change") { !view.snapshotInFlight }
+        XCTAssertEqual(Set(view.recoverableSubmissions.map(\.id)), [failed.id, added.id], "This reconciliation must reload, rather than rely on a later snapshot")
+        XCTAssertEqual(view.intentReads, 2)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testReconciliationCannotReviveInputRetiredByAnInterveningReceipt() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let intent = CommandIntent(id: "completed", sessionID: view.id, turnID: "turn", text: "Already delivered input", state: "intent", draftReviewTracked: true)
+        try await store.recordSubmission(intent, draft: nil)
+        var release: CheckedContinuation<Void, Never>?, held = false
+        model.commandAcceptanceRead = { _, _, _ in
+            if !held { held = true; await withCheckedContinuation { release = $0 } }
+            return []
+        }
+        defer { release?.resume() }
+        let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+        try await eventually("Earlier acceptance read held") { release != nil }
+        wire.receipts = [["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("completed")]]
+        try await snapshot(model, view: view, wire: wire)
+        wire.receipts = []
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertFalse(view.acceptedCommands.contains(intent.id))
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertTrue(pending.isEmpty)
+        release?.resume(); release = nil; _ = try await reconciliation.value
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty, "Receipt retirement must invalidate every older recovery inventory, even without a pin")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testRecoveryRechecksInputAcrossQueueStatusAndReviewWaits() async throws {
+        for wait in ["queue", "review"] {
+            for persisted in [false, true] {
+                let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+                let earlier = CommandIntent(id: "earlier", sessionID: view.id, turnID: "earlier-turn", text: "Earlier input", state: "intent",
+                                            queueEditID: wait == "queue" ? "edit" : nil)
+                try await store.recordSubmission(earlier, draft: nil)
+                view.draft = "Current typing"
+                var release: CheckedContinuation<Void, Never>?, held = false
+                model.commandAcceptanceRead = { _, _, _ in wait == "review" ? [earlier.id] : [] }
+                if wait == "queue" {
+                    model.queueEditOperation = { _, _, _ in
+                        if !held { held = true; await withCheckedContinuation { release = $0 } }
+                        return ["state": .string("active")]
+                    }
+                } else {
+                    model.draftWrites.tasks[view.id] = Task { await withCheckedContinuation { release = $0 } }
+                }
+                defer { release?.resume() }
+                let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true }) }
+                try await eventually("Recovery \(wait) held") {
+                    release != nil && (wait == "queue" || view.submissionReviews.contains(earlier.id))
+                }
+                let added = CommandIntent(id: "added", sessionID: view.id, turnID: "added-turn", text: "Late failed input", state: "intent", draftReviewTracked: true)
+                view.draftVersion.preservingSubmission(added); model.offerSubmissionRecovery(added, in: view)
+                if persisted { try await store.preserveDraftConflicts(view.draftVersion) }
+                release?.resume(); release = nil; _ = try await reconciliation.value
+                XCTAssertEqual(Set(view.recoverableSubmissions.map(\.id)), wait == "queue" ? [earlier.id, added.id] : [added.id],
+                               "Every acceptance/review await must revalidate its input inventory")
+                try await wire.host.shutdownAndWait()
+            }
+        }
+    }
+
+    func testCancelledRecoveryKeepsPositiveAcceptanceEvidence() async throws {
+        for source in ["queue", "journal"] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let intent = CommandIntent(id: "accepted", sessionID: view.id, turnID: "turn", text: "Already accepted input", state: "intent",
+                                       draftReviewTracked: true, queueEditID: source == "queue" ? "edit" : nil)
+            try await store.recordSubmission(intent, draft: nil)
+            var release: CheckedContinuation<Void, Never>?, current = true
+            model.queueEditOperation = { _, _, _ in
+                await withCheckedContinuation { release = $0 }
+                return ["state": .string("saved"), "textDigest": .string(QueuedEditDraft.digest(intent.text))]
+            }
+            model.commandAcceptanceRead = { _, _, _ in
+                if source == "journal" { await withCheckedContinuation { release = $0 } }
+                return source == "journal" ? [intent.id] : []
+            }
+            defer { release?.resume() }
+            let reconciliation = Task { try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { current }) }
+            try await eventually("Positive evidence held before navigation retires the read") { release != nil }
+            current = false; reconciliation.cancel()
+            release?.resume(); release = nil
+            _ = try await reconciliation.value
+            XCTAssertTrue(view.acceptedCommands.contains(intent.id), "Leaving the pane cannot discard positive command-specific evidence")
+            XCTAssertTrue(view.recoverableSubmissions.isEmpty)
+            if source == "queue" {
+                let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+                XCTAssertTrue(pending.isEmpty, "The confirmed queued input must retire even if its reader has moved on")
+            }
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
     func testFailedQueuedSaveRetryKeepsTheEarlierOutcomeForCancelAndChangedSave() async throws {
         for changedSave in [false, true] {
             let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)

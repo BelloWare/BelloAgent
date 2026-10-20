@@ -4,6 +4,15 @@
 
 ## 0.1.130
 
+- [x] Queued-Save confirmation survives later recovery reads, navigation and snapshot acknowledgement pruning. [Validation](docs/validation/a130-workspace-0.1.130.md#round-16--recovery-reconciliation-ownership).
+- [x] Main-chat and saved-side hydration preserve submissions that fail while acceptance is being read, including after helper loss.
+- [x] A late recovery read cannot revive input already inserted into a draft or explicitly discarded.
+- [x] Recovery merges newly retained input, including pins committed during an outstanding acceptance or review read.
+- [x] Recovery rechecks live submission ownership before publishing, so an identical queued-Save retry never becomes actionable recovery.
+- [x] Snapshots stop settlement if their helper connection retires while returned-input review is being saved.
+- [x] A snapshot reloads a changed recovery inventory immediately instead of requiring another helper update.
+- [x] Receipt acknowledgement and retirement invalidate other pending-input reads, including confirmed input with no in-memory pin.
+
 - [x] A failed queued-Save retry preserves the earlier operation and digest, so Cancel or changed Save still checks its outcome. [Validation](docs/validation/a130-workspace-0.1.130.md#round-15--retry-and-reading-position-ownership).
 - [x] Local side registration Retry works under its own lifetime lease; live publication remains protected and unresolved notices stay actionable.
 - [x] Outstanding reading-position writes retain their display and loaded revision until they finish; obsolete task cleanup cannot release a replacement writer.
