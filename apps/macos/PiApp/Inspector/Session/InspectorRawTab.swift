@@ -285,6 +285,11 @@ import AppKit
         let part: InspectorRequestModel.RawPart
         let revisions: [String: Int]
     }
+    /// Exports follow one rule. Until the reader has confirmed and chosen a
+    /// destination, a changed selection, part, format or capture refuses the
+    /// export (its questions would describe the wrong request). Once they
+    /// have, the export completes for the request they chose, by its frozen
+    /// identity and bytes, whatever the Inspector shows by then.
     private func exportIdentity(_ row: InspectorRequestRow) -> ExportIdentity {
         ExportIdentity(attemptID: row.id, sessionID: row.sessionID ?? request.sessionID, part: request.raw, revisions: request.captureRevisions)
     }
@@ -329,7 +334,9 @@ import AppKit
         guard await PiQuestion.shared.confirm("Export sensitive retained body bytes?", "This exports request.bin, response.bin and a manifest of their completeness and hashes, including every retained byte and any secret in them. Prefixes and expired captures are labeled. Nothing is sent again."), isCurrent(identity) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.message = "Choose where to put a new trace folder."
-        guard let destination = await PiQuestion.shared.open(panel).first, isCurrent(identity) else { return }
+        // The reader confirmed this request and chose where it goes: finish
+        // it by its frozen identity even if the Inspector moved on meanwhile.
+        guard let destination = await PiQuestion.shared.open(panel).first else { return }
         do {
             let saved: URL
             if try await capturesSavedToLog(row) {

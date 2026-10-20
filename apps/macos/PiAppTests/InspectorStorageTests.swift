@@ -53,7 +53,9 @@ import XCTest
         for stage in ["cleanup", "part", "format", "purge", "closed", "literal", "preview", "save"] { try await checkExport("redacted", changedAt: stage) }
     }
 
-    func testMetadataExportRefusesSelectionChangesAcrossCleanupAndSave() async throws {
+    /// After the reader chose a destination ("save"), an export completes for
+    /// the request it was started for; before that, a change refuses it.
+    func testMetadataExportRefusesChangesBeforeSaveAndKeepsItsRequestAfter() async throws {
         for stage in ["cleanup", "save"] { try await checkExport("metadata", changedAt: stage) }
     }
 
@@ -159,7 +161,7 @@ import XCTest
         }
         await gate.open()
         try await eventually("the export releasing its ownership") { workspace.toolOutputProducers.isEmpty }
-        if let stage, stage != "other-purge" {
+        if let stage, !["other-purge", "save"].contains(stage) {
             if ["cleanup", "part", "format", "purge", "closed"].contains(stage) { XCTAssertEqual(questions, 0, "\(kind) must refuse a changed selection before opening an export question") }
             if kind == "bodies" { XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty) }
             else { XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path), "\(kind) exported a changed selection after \(stage)") }
