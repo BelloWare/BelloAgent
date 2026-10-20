@@ -9,6 +9,9 @@
 - [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.
 - [x] Skill-popover test fixtures own their hover timing and file actions without replacing the caller's hooks on teardown.
 - [x] Failed file-review fixture construction leaves the caller's project resolver intact.
+- [x] Pasted-image sweeps prioritize orphan images and skip sidecars blocked by unrecognized files, preventing later generations from starving without deleting unknown files. [Validation](docs/validation/a130-paste-0.1.130.md#round-6--sweep-selection-progress).
+- [x] Pasted-image sweeps hold at most 32 generation leases, skip wholly retained generations, and retire empty abandoned sidecars while preserving live owners. [Validation](docs/validation/a130-paste-0.1.130.md#round-5--bounded-sweep-leases-and-sidecar-retirement).
+- [x] A live app instance's unsent pasted images survive another instance's startup sweep; per-generation lifetime leases protect conversion and drafts while abandoned generations remain collectable. [Validation](docs/validation/a130-paste-0.1.130.md#cross-instance-pasted-image-ownership--2026-10-20).
 
 - [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
