@@ -61,17 +61,18 @@ struct GitChangeOptions: Equatable, Sendable {
     var renameSimilarity: Int?
     private var configuration: [String: String]
     init(configuration data: Data = Data(), renameSimilarity: Int? = nil) {
-        var values: [String: String] = [:], renames: String?, limit: String?
+        var values: [String: String] = [:]
         for record in data.split(separator: 0) {
             let parts = String(decoding: record, as: UTF8.self).split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             let key = String(parts[0]), value = parts.count == 2 ? String(parts[1]) : "true"
             values[key] = value
-            // Match status's precedence, including diff's fallback.
-            if key == "status.renames" || (key == "diff.renames" && renames == nil) { renames = value }
-            if key == "status.renamelimit" || (key == "diff.renamelimit" && limit == nil) { limit = value }
         }
-        values["status.renames"] = renames ?? "true"; values["diff.renames"] = renames ?? "true"
-        values["status.renamelimit"] = limit ?? "1000"; values["diff.renamelimit"] = limit ?? "1000"
+        // Git supplies scopes and includes in order. Resolve each key's final
+        // value before applying the status-specific override of diff's fallback.
+        let renames = values["status.renames"] ?? values["diff.renames"] ?? "true"
+        let limit = values["status.renamelimit"] ?? values["diff.renamelimit"] ?? "1000"
+        values["status.renames"] = renames; values["diff.renames"] = renames
+        values["status.renamelimit"] = limit; values["diff.renamelimit"] = limit
         // Status with untracked-files=all sees dirty submodules by default.
         // A configured per-submodule ignore still takes precedence in Git.
         if values["diff.ignoresubmodules"] == nil { values["diff.ignoresubmodules"] = "none" }

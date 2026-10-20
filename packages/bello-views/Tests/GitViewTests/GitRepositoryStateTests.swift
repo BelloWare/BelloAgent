@@ -4,6 +4,115 @@ import XCTest
 
 final class GitRepositoryStateTests: XCTestCase {
     private static let summaryService = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"])
+    @MainActor func testSummaryAndChangesUseEffectiveRenameConfigurationAcrossScopes() async throws {
+        for scope in ["global/local", "local/worktree"] {
+            let root = try renameRepository()
+            try git(["mv", "same.txt", "moved.txt"], in: root)
+            let environment = try configurationScopes(in: root, scope: scope, key: "diff.renames", earlier: "true", later: "false")
+            let effective = try git(["config", "--get", "diff.renames"], in: root, environment: environment).trimmingCharacters(in: .newlines)
+            XCTAssertEqual(effective, "false")
+            try await assertControllersMatchGitStatus(in: root, environment: environment,
+                statusOptions: ["-c", "status.renames=" + effective], badges: ["A", "D"])
+        }
+    }
+
+    @MainActor func testSummaryAndChangesUseEffectiveRenameLimitAcrossScopes() async throws {
+        for scope in ["global/local", "local/worktree"] {
+            for limits in [("1", "1000"), ("1000", "1")] {
+                let root = try renameLimitRepository()
+                let environment = try configurationScopes(in: root, scope: scope, key: "diff.renameLimit", earlier: limits.0, later: limits.1)
+                let effective = try git(["config", "--get", "diff.renameLimit"], in: root, environment: environment).trimmingCharacters(in: .newlines)
+                XCTAssertEqual(effective, limits.1)
+                try await assertControllersMatchGitStatus(in: root, environment: environment,
+                    statusOptions: ["-c", "status.renameLimit=" + effective], badges: effective == "1" ? ["A", "A", "A", "D", "D", "D"] : ["R", "R", "R"])
+            }
+        }
+    }
+
+    @MainActor func testSummaryAndChangesUseIncludedRenameConfiguration() async throws {
+        let root = try renameRepository()
+        try (renameText + "copy addition\n").write(to: root.appendingPathComponent("copy.txt"), atomically: true, encoding: .utf8)
+        try (renameText + "source addition\n").write(to: root.appendingPathComponent("same.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root)
+        let environment = try configurationScopes(in: root, scope: "global/local", key: "diff.renames", earlier: "true", later: "false")
+        let included = root.appendingPathComponent(".git/fixture-included")
+        try "[diff]\nrenames = copies\n".write(to: included, atomically: true, encoding: .utf8)
+        try git(["config", "includeIf.onbranch:main.path", included.path], in: root, environment: environment)
+        let effective = try git(["config", "--get", "diff.renames"], in: root, environment: environment).trimmingCharacters(in: .newlines)
+        XCTAssertEqual(effective, "copies")
+        try await assertControllersMatchGitStatus(in: root, environment: environment,
+            statusOptions: ["-c", "status.renames=" + effective], badges: ["C", "M"])
+    }
+
+    @MainActor func testSummaryAndChangesKeepStatusOverridesAcrossScopes() async throws {
+        for key in ["renames", "renameLimit"] {
+            let root = try renameLimitRepository()
+            let earlier = key == "renames" ? "false" : "1", later = key == "renames" ? "true" : "1000"
+            let environment = try configurationScopes(in: root, scope: "global/local", key: "status." + key, earlier: earlier, later: later)
+            try git(["config", "extensions.worktreeConfig", "true"], in: root, environment: environment)
+            try git(["config", "--worktree", "diff." + key, earlier], in: root, environment: environment)
+            // Status's explicit option wins even over a later diff fallback.
+            try await assertControllersMatchGitStatus(in: root, environment: environment, badges: ["R", "R", "R"])
+            try git(["config", "--worktree", "status." + key, earlier], in: root, environment: environment)
+            try await assertControllersMatchGitStatus(in: root, environment: environment, badges: ["A", "A", "A", "D", "D", "D"])
+        }
+    }
+
+    private func renameLimitRepository() throws -> URL {
+        let root = try renameRepository()
+        for index in 0..<3 {
+            let text = (0..<20).map { "file \(index) line \($0)\n" }.joined()
+            try text.write(to: root.appendingPathComponent("old-\(index).txt"), atomically: true, encoding: .utf8)
+        }
+        try git(["add", "."], in: root); try git(["commit", "-qm", "Rename limit baseline"], in: root)
+        for index in 0..<3 {
+            try FileManager.default.removeItem(at: root.appendingPathComponent("old-\(index).txt"))
+            let text = (0..<20).map { $0 < 5 ? "replacement \(index) \($0)\n" : "file \(index) line \($0)\n" }.joined()
+            try text.write(to: root.appendingPathComponent("new-\(index).txt"), atomically: true, encoding: .utf8)
+        }
+        try git(["add", "."], in: root)
+        return root
+    }
+
+    private func configurationScopes(in root: URL, scope: String, key: String, earlier: String, later: String) throws -> [String: String] {
+        let global = root.appendingPathComponent(".git/fixture-global")
+        try Data().write(to: global)
+        let environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": global.path, "GIT_CONFIG_NOSYSTEM": "1"]
+        if scope == "global/local" {
+            try git(["config", "--global", key, earlier], in: root, environment: environment)
+            try git(["config", "--local", key, later], in: root, environment: environment)
+        } else {
+            try git(["config", "extensions.worktreeConfig", "true"], in: root, environment: environment)
+            try git(["config", "--local", key, earlier], in: root, environment: environment)
+            try git(["config", "--worktree", key, later], in: root, environment: environment)
+        }
+        return environment
+    }
+
+    @MainActor private func assertControllersMatchGitStatus(in root: URL, environment: [String: String], statusOptions: [String] = [], badges: [String],
+                                                           file: StaticString = #filePath, line: UInt = #line) async throws {
+        // Git 2.39 status uses the first diff.* fallback. Pass Git's effective
+        // value explicitly when testing the requested last-value policy.
+        let output = try git(statusOptions + ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"], in: root, environment: environment)
+        let expected = GitService.parseStatus(Data(output.utf8)).entries
+        XCTAssertEqual(expected.map(\.badge), badges, file: file, line: line)
+        let service = GitService(environment: environment)
+        let panel = GitController(roots: [root.path], service: service, summaryOnly: true)
+        let changes = GitController(roots: [root.path], service: service)
+        defer { panel.letGo(); changes.letGo() }
+        panel.setShown(true); changes.setShown(true)
+        try await wait { panel.statusRead && !panel.loading && changes.statusRead && !changes.loading && !changes.diffLoading }
+        XCTAssertEqual(panel.status.entries, expected, "Panel grouping must match git status", file: file, line: line)
+        XCTAssertEqual(changes.status.entries, expected, "Changes grouping must match git status", file: file, line: line)
+        for entry in expected {
+            changes.selection = .init(path: entry.path, staged: true)
+            try await wait { !changes.diffLoading }
+            let opened = try XCTUnwrap(changes.diff.first { $0.path == entry.path }, entry.path, file: file, line: line)
+            XCTAssertEqual(panel.changeStats[entry.path], GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary),
+                           entry.path + " must count the diff it opens", file: file, line: line)
+        }
+    }
+
     func testSummaryMatchesOpenedRowsWithRenameDetectionDisabled() async throws {
         for key in ["status.renames", "diff.renames"] {
             let root = try renameRepository()
@@ -249,11 +358,11 @@ final class GitRepositoryStateTests: XCTestCase {
         try "changed\n".write(to: root.appendingPathComponent("same.txt"), atomically: true, encoding: .utf8)
         return URL(fileURLWithPath: try git(["rev-parse", "--show-toplevel"], in: root).trimmingCharacters(in: .whitespacesAndNewlines))
     }
-    @discardableResult private func git(_ arguments: [String], in root: URL) throws -> String {
+    @discardableResult private func git(_ arguments: [String], in root: URL, environment: [String: String]? = nil) throws -> String {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] + arguments
         process.currentDirectoryURL = root
-        process.environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
+        process.environment = environment ?? ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
         let out = Pipe(); process.standardOutput = out; process.standardError = FileHandle.nullDevice
         try process.run(); let data = out.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)

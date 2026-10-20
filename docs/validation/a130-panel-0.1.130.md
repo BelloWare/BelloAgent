@@ -636,7 +636,9 @@ separate added/deleted rows but inherited counts from a grouped rename.
 
 `GitChangeOptions` now belongs to the status snapshot. One bounded configuration
 read per status refresh resolves `status.renames` / `diff.renames` and the
-corresponding rename limits, preserving status's precedence. Both batched
+corresponding rename limits, preserving status's first-diff-fallback behavior.
+The configuration-scope follow-up below changes this to the requested final
+value per key. Both batched
 numstats and the selected-file preview use that snapshot and the same diff
 argument builder. Configuration is reread on refresh; no repository-options
 cache or per-row configuration process is added. The default rename limit is
@@ -850,3 +852,269 @@ All gallery fixture directories were removed by teardown. No native clone
 folders or extra DerivedData roots remain under this build root. Every owned
 lane lock was released after its run; other workstreams' locks were untouched.
 `git diff --check` passes. `NEXT-RELEASE.md` has the concise follow-up entry.
+
+## Configuration-scope follow-up 2026-10-20
+
+The round-5 request explicitly requires retaining the final configured value
+for each key before applying the `status.*`-over-`diff.*` fallback. The snapshot
+now does that. Its existing, single `git config -z --get-regexp` call has no
+scope restriction: Git evaluates scopes, includes and conditional includes and
+emits the values in its configuration order. The snapshot only retains the
+last record per key, then resolves the status-specific fallback once for both
+rename detection and rename limits. Status, the panel's batched counts and
+selected Changes previews still share those options. No additional process,
+cache, per-file read, permission path or UI layout was added.
+
+### Raw-status compatibility — needs owner decision
+
+**Needs owner decision:** the request's final-value policy and exact parity
+with unmodified `git status` conflict on this Mac. The branch implements the
+explicit final-value policy. With no `status.*` override, Apple Git 2.39.5
+(Apple Git-154) takes the **first** `diff.renames` / `diff.renameLimit` value
+in `status`, although `git config --get` returns the final configured value.
+This is also explicit in the
+[upstream 2.39.5 status reader](https://github.com/git/git/blob/v2.39.5/builtin/commit.c#L1372-L1389).
+Git's configuration documentation describes the
+[last-value result and configuration order](https://git-scm.com/docs/git-config#_files).
+
+Generated CLI probes (`config-probe.log`) observed:
+
+| Generated configuration | `git config --get` | Unmodified `git status` |
+| --- | --- | --- |
+| Global `diff.renames=true`, local `false` | `false` | One rename |
+| Local `diff.renames=true`, worktree `false` | `false` | One rename |
+| Global `diff.renameLimit=1`, local `1000` | `1000` | Three additions and three deletions |
+
+Before changing production code, comparisons against unmodified status passed
+in **2 package tests** (six scope/limit combinations) and **1 native panel
+test** (two worktree combinations). Evidence: `raw-status-baseline.log` and
+`raw-status-native-baseline.log`. Thus the review's claimed raw-status
+regression was not reproduced on the required system Git. The final tests
+instead ask `git config --get` for the effective value and pass it explicitly
+to `git -c status.renames=… status` or
+`git -c status.renameLimit=… status`. They do not reuse the production snapshot
+or argument builder as their oracle. Tests with explicit `status.*` overrides
+also compare directly with unmodified status.
+
+Accepting this policy makes both app views respect the final diff fallback,
+but intentionally differs from the raw command in the conflicting cases
+above. Preserving raw-status parity would require keeping Git's first-fallback
+behavior instead. A clarification was raised during implementation; no owner
+answer has been assumed. This choice remains flagged for review.
+
+### Failing-first and mutation evidence
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r4/`.
+
+The tests cover global true/local false, local true/worktree false, rename
+limits 1→1000 and 1000→1 in both scope pairs, a conditional include selecting
+copy detection, and repeated `status.*` overrides across all three scopes.
+The rename-limit fixture uses three inexact moves with different basenames;
+the oracle asserts three renames versus six separate rows so the limit really
+changes grouping. Both the summary-only controller and regular Changes
+controller must match Git's requested grouping, and each panel row's counts
+must equal its selected preview. The native regression clicks the actual
+panel rows and checks the existing Changes tab.
+
+Before the production fix:
+
+- `effective-config-red.log`: **4 package tests executed, 3 failed, 1 passed;
+  13 assertion failures**. Rename, rename-limit and included-copy grouping
+  failed. Explicit status overrides already passed.
+- `panel-effective-red.log`: **1 native test failed, 5 assertion failures**,
+  including the absent deleted-file row.
+
+After the fix, the same four package tests passed (`effective-config-green.log`).
+The full panel class subsequently passed all 26 tests (`panel-final.log`).
+
+| Deliberate mutation | Failed tests / assertions | Text log |
+| --- | --- | --- |
+| Restore the first `diff.renames` fallback | 1 / 6 | `mutation-renames-first.log` |
+| Restore the first `diff.renameLimit` fallback | 1 / 5 | `mutation-renamelimit-first.log` |
+| Prefer `diff.*` over explicit `status.*` | 1 / 4 | `mutation-diff-before-status.log` |
+
+All three mutations failed by assertions, not compilation errors. The runner
+restored the production file in `finally` after every mutation, then the
+complete focused suites ran against the restored fix.
+
+Exact regression commands, run from the worktree:
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter 'GitRepositoryStateTests/testSummaryAndChanges'
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r4/run-native.py \
+  panel-effective-red.log SessionPanelTests/testPanelAndChangesUseEffectiveWorktreeOverrides
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r4/run-mutations.py
+```
+
+The mutation runner invokes the same `swift test` command, selecting respectively
+`GitRepositoryStateTests/testSummaryAndChangesUseEffectiveRenameConfigurationAcrossScopes`,
+`GitRepositoryStateTests/testSummaryAndChangesUseEffectiveRenameLimitAcrossScopes`,
+and `GitRepositoryStateTests/testSummaryAndChangesKeepStatusOverridesAcrossScopes`.
+
+The initial raw-status comparisons used these commands before the test methods
+were updated to exercise the explicitly effective values:
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter 'GitRepositoryStateTests/testSummaryAndChangesMatchGitStatusAcross'
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r4/run-native.py \
+  raw-status-native-baseline.log SessionPanelTests/testPanelAndChangesMatchGitStatusWithWorktreeOverrides
+```
+
+### Adversarial self-review
+
+Self-review checked both directions of rename-limit precedence, repeated
+status-specific values, a higher-scope diff option that must not replace an
+explicit status option, and conditional includes. The oracle uses separate
+`git config --get` / `git status` commands and asserts concrete A/D/R/C badges;
+it does not compare two copies of the snapshot parser. The raw-status
+discrepancy above was verified before choosing the requested final-value
+policy, rather than hidden by the normalized oracle.
+
+The final-value map still feeds the same status/numstat/preview snapshot.
+Default options, explicit similarity, submodule ignores, bounded reads,
+cancellation and canonical file opening were reviewed without further changes.
+No additional code issue was found. All new configuration writes are confined
+to generated repository fixtures; the global-file override points inside the
+fixture's `.git` directory. Existing unrelated findings and pending owner
+visual feedback remain recorded in the earlier sections.
+
+### Restored suite results
+
+The full Git package suite passed **188 tests, 0 failures, 0 skips** in
+506.387 seconds (`git-package-final.log`):
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views \
+  --filter GitViewTests
+```
+
+| Package class | Passed |
+| --- | ---: |
+| GitBlameTests | 13 |
+| GitBranchesTests | 21 |
+| GitCardShapeTests | 3 |
+| GitCommitScopeTests | 18 |
+| GitDiffParserTests | 3 |
+| GitDiffPrefixTests | 3 |
+| GitHistoryQueryTests | 17 |
+| GitHistoryWiringTests | 3 |
+| GitIndexTransactionTests | 17 |
+| GitLiteralPathTests | 8 |
+| GitPatchTests | 3 |
+| GitRepositoryStateTests | 27 |
+| GitRevealTests | 10 |
+| GitReviewFindingsTests | 6 |
+| GitSafetyTests | 17 |
+| GitStashTests | 18 |
+| GitStateWatchTests | 1 |
+
+The focused native runs passed **234 tests, 0 failures, 1 skip** across
+26 classes. The skip is the existing
+`GitCommitBrowsingTests.testMeasureCommitBrowsingWhenRequested` benchmark,
+whose `PI_APP_GIT_BENCH_REPO` opt-in remains unset. Combined restored results:
+**422 passed, 0 failed, 1 skipped**.
+
+| Native class | Passed | Skipped | Text log |
+| --- | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | `changes-frames-final.log` |
+| ChangesTabTests | 8 | 0 | `git-readers-final.log` |
+| GitBranchesInteractionTests | 20 | 0 | `git-actions-final.log` |
+| GitChangelistReadTests | 2 | 0 | `git-readers-final.log` |
+| GitCommitBrowsingTests | 3 | 1 | `git-actions-final.log` |
+| GitConfirmationSheetTests | 7 | 0 | `git-actions-final.log` |
+| GitDiffTableTests | 19 | 0 | `diff-table-final.log` |
+| GitDiscardQuestionTests | 2 | 0 | `git-actions-final.log` |
+| GitHistoryFilterTests | 14 | 0 | `git-actions-final.log` |
+| GitHunkReviewTests | 9 | 0 | `git-actions-final.log` |
+| GitIntegratedHistoryTests | 10 | 0 | `git-actions-final.log` |
+| GitOperationSafetyTests | 12 | 0 | `git-actions-final.log` |
+| GitPanelAuditTests | 8 | 0 | `git-readers-final.log` |
+| GitPanelLayoutTests | 4 | 0 | `git-readers-final.log` |
+| GitPanelNarrowParityTests | 8 | 0 | `git-narrow-final.log` |
+| GitPanelRedrawTests | 4 | 0 | `git-readers-final.log` |
+| GitPanelShownTests | 13 | 0 | `git-readers-final.log` |
+| GitPanelTimingTests | 4 | 0 | `git-timing-final.log` |
+| GitPanelWidthTests | 3 | 0 | `git-readers-final.log` |
+| GitPathBoundaryTests | 5 | 0 | `git-readers-final.log` |
+| GitRenameTests | 6 | 0 | `git-readers-final.log` |
+| GitRepositorySwitchTests | 17 | 0 | `repository-switch-final.log` |
+| GitToolTests | 5 | 0 | `git-readers-final.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | `watcher-final.log` |
+| SessionPanelGalleryTests | 1 | 0 | `gallery-final.log` |
+| SessionPanelTests | 26 | 0 | `panel-final.log` |
+
+Exact native runner command:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r4/run-native-final.py
+```
+
+The individual invocations below are equivalent when launched from the
+evidence directory. The runner uses absolute script paths and keeps the
+worktree as its working directory, taking and releasing the shared full-lane
+lock separately for each run:
+
+```sh
+python3 run-native.py panel-final.log SessionPanelTests
+python3 run-native.py git-readers-final.log ChangesTabTests GitToolTests GitRenameTests GitPathBoundaryTests GitPanelAuditTests GitPanelShownTests GitPanelRedrawTests GitChangelistReadTests GitPanelLayoutTests GitPanelWidthTests
+python3 run-native.py git-actions-final.log GitBranchesInteractionTests GitHistoryFilterTests GitHunkReviewTests GitIntegratedHistoryTests GitCommitBrowsingTests GitOperationSafetyTests GitConfirmationSheetTests GitDiscardQuestionTests
+python3 run-native.py watcher-final.log GitWorkingTreeWatcherTests
+python3 run-native.py repository-switch-final.log GitRepositorySwitchTests
+python3 run-native.py diff-table-final.log GitDiffTableTests
+python3 run-native.py changes-frames-final.log ChangesTabFrameTests
+python3 run-native.py git-timing-final.log GitPanelTimingTests
+python3 run-native.py git-narrow-final.log GitPanelNarrowParityTests
+python3 run-native.py gallery-final.log SessionPanelGalleryTests
+```
+
+The runner executes `scripts/test-macos.sh -parallel-testing-enabled NO`,
+appending `-only-testing:PiAppTests/<Class>` for every named class, with
+`PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel`.
+The gallery also sets
+`TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r4`.
+`native-restored-counts.json`, `package-restored-counts.json` and
+`native-final-summary.json` contain the per-class and per-invocation totals.
+There were no unrelated test failures in these restored runs.
+
+### Regenerated screenshots and cleanup
+
+All **16 PNGs** were regenerated under the shared lane lock and individually
+opened and inspected. All are byte-for-byte identical to the preceding
+`review-r3` set (`screenshot-hashes.json`). The panel's spacing, text wrapping,
+tabs, rows, empty state, narrow fallback and adjacent side conversation remain
+unchanged in both themes; no visual correction was needed.
+
+Directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r4/`
+
+```text
+agents-1440x900-light.png
+agents-1440x900-dark.png
+agents-1180x800-light.png
+agents-1180x800-dark.png
+diff-1440x900-light.png
+diff-1440x900-dark.png
+diff-no-renames-1440x900-light.png
+diff-no-renames-1440x900-dark.png
+files-1440x900-light.png
+files-1440x900-dark.png
+empty-1440x900-light.png
+empty-1440x900-dark.png
+pill-960x700-light.png
+pill-960x700-dark.png
+side-open-1600x900-light.png
+side-open-1600x900-dark.png
+```
+
+Gallery fixture directories were removed by teardown; no native clone
+directories remain (`cleanup-check.json`). Builds reused this workstream's
+existing `views` and `native-tests` roots. Every owned lane lock was released;
+the wait behind another workstream's full package run did not touch its lock.
+The isolated native test host and generated fixtures were used throughout.
+Helper and wire code were unchanged. `git diff --check` passes.

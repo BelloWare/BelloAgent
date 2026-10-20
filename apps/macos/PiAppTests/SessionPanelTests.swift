@@ -323,6 +323,54 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         }
     }
 
+    @MainActor func testPanelAndChangesUseEffectiveWorktreeOverrides() async throws {
+        for key in ["diff.renames", "diff.renameLimit"] {
+            let (model, pane, _, root) = try fixture(gitRepository: true)
+            try git(["restore", "file.txt"], in: root)
+            for index in 0..<3 {
+                let text = (0..<20).map { "file \(index) line \($0)\n" }.joined()
+                try text.write(to: root.appendingPathComponent("old-\(index).txt"), atomically: true, encoding: .utf8)
+            }
+            try git(["add", "."], in: root); try git(["commit", "-qm", "Generated rename baseline"], in: root)
+            for index in 0..<3 {
+                try FileManager.default.removeItem(at: root.appendingPathComponent("old-\(index).txt"))
+                let text = (0..<20).map { $0 < 5 ? "replacement \(index) \($0)\n" : "file \(index) line \($0)\n" }.joined()
+                try text.write(to: root.appendingPathComponent("new-\(index).txt"), atomically: true, encoding: .utf8)
+            }
+            try git(["add", "."], in: root)
+            try git(["config", "extensions.worktreeConfig", "true"], in: root)
+            try git(["config", "--local", key, key == "diff.renames" ? "true" : "1000"], in: root)
+            try git(["config", "--worktree", key, key == "diff.renames" ? "false" : "1"], in: root)
+            let effective = try git(["config", "--get", key], in: root).trimmingCharacters(in: .newlines)
+            XCTAssertEqual(effective, key == "diff.renames" ? "false" : "1")
+            // Pass the effective value explicitly: older Git status readers
+            // otherwise retain the first diff.* value across scopes.
+            let option = key.replacingOccurrences(of: "diff.", with: "status.") + "=" + effective
+            let output = try git(["-c", option, "status", "--porcelain=v2", "--untracked-files=all", "-z"], in: root)
+            let expected = GitService.parseStatus(Data(output.utf8)).entries
+            XCTAssertEqual(expected.map(\.badge), ["A", "A", "A", "D", "D", "D"])
+            try await eventually("repository discovered") { pane.sessionPanel.availableTabs.contains(.diff) }
+            pane.sessionPanel.select(.diff)
+            let changes = try XCTUnwrap(pane.sessionPanel.changes)
+            try await eventually("counts read") { changes.controller.statusRead && !changes.controller.loading }
+            XCTAssertEqual(changes.controller.status.entries, expected, "Panel grouping must match git status")
+            pane.layoutSubtreeIfNeeded()
+            for entry in expected {
+                let row = try button("panel-diff-" + entry.path, in: changes)
+                row.onPress?()
+                let tab = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab)
+                tab.controller.setShown(true)
+                await tab.controller.refresh()
+                try await eventually("selected diff read") { !tab.controller.diffLoading && !tab.controller.diff.isEmpty }
+                XCTAssertEqual(tab.controller.status.entries, expected, "Changes grouping must match git status")
+                XCTAssertEqual(tab.controller.diff.map(\.path), [entry.path])
+                let opened = try XCTUnwrap(tab.controller.diff.first)
+                XCTAssertEqual(changes.controller.changeStats[entry.path],
+                               GitDiffStat(added: opened.added, removed: opened.removed, binary: opened.binary))
+            }
+        }
+    }
+
     @MainActor func testFilesAreLazyVirtualizedAndKeepUntrustedContentUnreadable() async throws {
         let (model, pane, _, root) = try fixture()
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources/Nested"), withIntermediateDirectories: true)
