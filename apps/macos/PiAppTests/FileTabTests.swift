@@ -8,6 +8,10 @@ import PDFKit
 /// any, missing with the reason otherwise, or when the file is gone; one tab
 /// a file whichever path reached it; and nothing read before it is shown.
 final class FileTabTests: XCTestCase {
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     @MainActor func testRepeatedNotificationsDoNotRestartAReplacementStillBeingRead() async throws {
         try await heldReplacement(replaceAgain: false)
     }
@@ -214,11 +218,11 @@ final class FileTabTests: XCTestCase {
 
     private var folder: URL!
     @MainActor override func setUp() async throws {
+        installStandaloneFileResolver(self)
         folder = scratchRoot("file-tab")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let folder = folder!
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
-        addTeardownBlock { @MainActor in FileTab.resolveProject = { $0 == nil ? .none : .removed } }
     }
     private func file(_ name: String, _ data: Data = Data("one\ntwo".utf8)) throws -> URL {
         let url = folder.appendingPathComponent(name)

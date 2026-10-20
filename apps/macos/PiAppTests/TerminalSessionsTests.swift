@@ -7,6 +7,12 @@ import SwiftUI
 /// restarting or closing one touches only that one, after asking while its
 /// shell is running, and only if it is still the terminal asked about.
 @MainActor final class TerminalSessionsTests: XCTestCase {
+    @MainActor override func setUp() async throws { installQuestionHooks(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkQuestionHooksSetup(self) { try await self.setUp() }
+    }
+
     private let registry = TerminalRegistry.shared
     private var asked: [NSAlert] = []
     private var cleaning = false
@@ -15,7 +21,7 @@ import SwiftUI
     private func workspace(_ name: String) -> WorkspaceRecord {
         if !cleaning {
             cleaning = true; registry.shutdown()
-            addTeardownBlock { @MainActor in TerminalRegistry.shared.shutdown(); PiQuestion.shared.answerAlert = nil; PiQuestion.shared.enterText = nil }
+            addTeardownBlock { @MainActor in TerminalRegistry.shared.shutdown() }
         }
         let folder = scratchRoot("terminals-" + name)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

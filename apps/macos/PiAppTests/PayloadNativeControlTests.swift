@@ -3,6 +3,12 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class PayloadNativeControlTests: XCTestCase, SerialTestLane {
+    @MainActor override func setUp() async throws { installQuestionHooks(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkQuestionHooksSetup(self) { try await self.setUp() }
+    }
+
     private func workspace(_ name: String) -> WorkspaceModel {
         let root = scratchRoot(name)
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

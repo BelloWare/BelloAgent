@@ -3234,3 +3234,235 @@ Adversarial review of changed conditions:
 The test-lane parser remains a source-based named-declaration traversal, not a
 full Swift type checker; dynamic-only dispatch still needs the documented
 `SerialTestLane` marker. No scope expansion into production code was needed.
+
+## Round 14 — native fixture hook ownership
+
+Base: `688f8751` on `dev/a130-gitfiles`, after the lead's merge and fast-forward.
+Scope is native test fixtures only. No shipping code, helper behavior, wire
+behavior, user preferences, real credentials, or provider calls changed.
+
+### Audit and regression method
+
+The declaration graph covers all 465 native classes; its hook-consumer
+index is `r14-class-hook-audit.csv` under the evidence root below.
+Audited stored static variables and singleton members in `PiApp`, shared native
+views, test support, and native test sources, including test-only extensions
+such as `TranscriptRowRenderer.native`. Followed the setters and the callers
+that actually invoke a callback; a callback merely captured by an unpressed
+button is not an invocation. Instance-owned seams (workspace history loaders,
+question objects, read/decode gates, storage clocks) belong to each freshly
+constructed fixture and cannot inherit another test's injected callback.
+
+The permanent `testFixtureOwnsInheritedHooks` checks seed hostile state, call
+that class's actual `setUp`, exercise the expected fixture path, and register
+an assertion between the inner and outer teardowns. This checks both entry
+isolation and restoration of the previous value. The file probe writes and
+reads a generated standalone file; the question probe drives a real native
+sheet; the reveal and hover probes check their bypass/timing hooks directly.
+This needs neither a particular test ordering nor a particular clone worker.
+
+The first setup scaffold needed actor-isolated setup closures (rather than
+calling the nonisolated XCTest base API through an erased `XCTestCase`) and
+had a duplicated closure corrected before runtime checks. Compiler failures
+are not counted as failing-first evidence.
+
+### Findings
+
+Confirmed and fixed five fixture-ownership patterns:
+
+1. Standalone-file classes inherited an expired workspace resolver. The six
+   classes now install the nil-project fixture resolver in `setUp`, before
+   constructing any view, and restore the captured resolver in a teardown
+   block. Existing tests can still override it with their own trusted or
+   removed-project scenarios.
+2. Four shared-question consumers inherited another fixture's answer or
+   presenter. Their setup now installs the hooks of a fresh `PiQuestion`,
+   and restores all seven previous injectable members. Body-local recording
+   answers and presenters still take precedence.
+3. Three real sidebar-reveal consumers inherited a spy that bypassed the
+   adapter. Their setup now clears the override and restores the actual prior
+   closure. Tests that need a spy install one after setup.
+4. The shared base of the two inline-skill classes only reset its hooks at
+   teardown. It now owns the hover delay and file actions from setup through
+   teardown. Unconfigured file actions fail the test instead of opening a
+   real application; action tests already install their recording callbacks.
+5. Nearby sweep: `FileReviewFixture.init` installed its resolver before
+   throwing filesystem operations. A failed constructor had no `close()` to
+   restore it. Installation now happens after those operations. The regression
+   passes a generated regular file as an ancestor of the requested directory,
+   so failure is deterministic and does not depend on filesystem permissions.
+
+Every affected class has a failing-first probe; the class-by-class results
+are below. Except for `FileReviewStateTests`, the method is
+`testFixtureOwnsInheritedHooks`. That class uses
+`testAFileFixtureThatFailsToOpenPreservesItsCallersResolver`.
+
+| Class | Hook | Before fix | Focused pass / fail / skip | Mutation failures caught |
+| --- | --- | --- | --- | --- |
+| `FileTabTests` | File resolver | 1 failed | 17 / 0 / 0 | 2: install + restore |
+| `FileSyntaxTests` | File resolver | 1 failed | 14 / 0 / 1 | 2: install + restore |
+| `FileFolderTests` | File resolver | 1 failed | 20 / 0 / 0 | 2: install + restore |
+| `TabHostTests` | File resolver | 1 failed | 17 / 0 / 0 | 2: install + restore |
+| `ChangesTabFrameTests` | File resolver | 1 failed | 8 / 0 / 0 | 2: install + restore |
+| `ChangesTabTests` | File resolver | 1 failed | 9 / 0 / 0 | 2: install + restore |
+| `BlockingAlertTests` | Shared question | 1 failed | 8 / 0 / 0 | 2: install + restore |
+| `SettingsUnsavedTests` | Shared question | 1 failed | 25 / 0 / 0 | 2: install + restore |
+| `TerminalSessionsTests` | Shared question | 1 failed | 14 / 0 / 0 | 2: install + restore |
+| `PayloadNativeControlTests` | Shared question | 1 failed | 23 / 0 / 0 | 2: install + restore |
+| `SidebarSearchSidebarTests` | Reveal override | 1 failed | 10 / 0 / 0 | 2: install + restore |
+| `TranscriptRevealTests` | Reveal override | 1 failed | 11 / 0 / 0 | 2: install + restore |
+| `SubagentOpeningTests` | Reveal override | 1 failed | 15 / 0 / 0 | 2: install + restore |
+| `InlineSkillPillTests` | Shared hover/actions | 1 failed | 15 / 0 / 1 | 2: install + restore |
+| `InlineSkillPillTimingTests` | Shared hover/actions | 1 failed | 2 / 0 / 0 | 2: install + restore |
+| `FileReviewStateTests` | Resolver on init failure | 1 failed | 21 / 0 / 0 | 1: install before throwing work |
+| `FileHiddenReadTests` | Shared `FileReviewFixture` coverage | Unchanged class | 5 / 0 / 0 | Covered by constructor regression |
+
+All 16 affected classes are confirmed/fixed; the unchanged seventeenth class
+covers the shared file-review fixture. Skips are the existing opt-in
+`FileSyntaxTests.testDelayedSyntaxGallery` and
+`InlineSkillPillTests.testCaptureSkillPillLooks` capture tests.
+
+Failing-first output excerpts (each selected probe exited 65):
+
+```text
+File: XCTAssertNil failed: "Its project was removed from Bello Agent."
+      A previous workspace cannot remove this standalone fixture
+      XCTUnwrap failed: expected non-nil value of type "FileDocument"
+Question: XCTAssertNil failed: "NSModalResponse(rawValue: 1001)"
+          An inherited answer must not bypass the fixture's sheet
+Reveal: XCTAssertNil failed: "(Function)" - This class exercises the real sidebar reveal
+Skill: XCTAssertEqual failed: ("20.0 seconds") is not equal to ("0.45 seconds")
+       The hover fixture owns its timing
+Constructor: XCTAssertEqual failed: ("none") is not equal to
+             ("untrusted(name: "outer fixture")")
+             A failed fixture has no close() to restore its caller's resolver
+```
+
+The old teardown-only behavior also failed the restoration mutations:
+hard-coded defaults lost the inherited `.removed` resolver, reveal spy,
+question answer or 20-second delay. These are teardown assertions, not
+timeouts or compiler failures.
+
+### Sweep dispositions
+
+- `FileTab.resolveProject`: standalone consumers need a class-owned nil-project
+  resolver; a dead workspace closure returns `.removed` even for nil. The
+  six affected classes are listed in the result table. Workspace-backed file,
+  find, blame, pane and Changes fixtures construct their own `WorkspaceModel`,
+  which installs its own file/Changes callbacks before their use.
+- `FilePreviewRefreshTests` already scopes its standalone resolver, including
+  its expired-workspace regression. `FileReviewFixture` scopes the standalone
+  resolver for `FileReviewStateTests` and `FileHiddenReadTests`; its constructor
+  failure gap is fixed above, and both consuming classes are covered.
+- `FileTab.activate/openHistory`, `FileBlame.openChange`, and
+  `ChangesTab.resolveProject/openLocation/activate`: navigation tests install
+  their own workspace; the standalone Changes restoration test supplies its
+  own Changes resolver. History-only label fixtures construct a file tab as
+  an identity/return label, never read its file or invoke its navigation hooks.
+- `PiQuestion.shared`: real-sheet consumers must clear inherited answer hooks,
+  while preserving every previous injectable member. Tests using private
+  `PiQuestion` instances or `model.questions` own those instances. Other shared
+  asker callers explicitly install their answer/file/text spies before invoking
+  that path (`MCPRemovalTests`, settings-close, update, lifecycle, inspector,
+  workspace-folder, and terminal-tab tests).
+- `SidebarSearchReveal.override`: the real-reveal tests need a class-owned nil
+  override. The subagent-opening search route also invokes this adapter. Scope-only
+  tests install their reveal spy before invoking it.
+- `SkillPopovers.shared`: the inline-pill fixture owns the hover delay and
+  Open/Reveal callbacks. Action tests install recording callbacks before a
+  press. Screenshot fixtures set their own shortened hover delay.
+- `PiMenus.intercept`: actual `popUp` callers in menu/control/composer/inspector
+  tests install their spy first. Other menu tests call `menu`/`perform`, which
+  do not consult the interceptor.
+- `TranscriptRowRenderer.reference`: its two writers are parity renderers,
+  which install their chosen renderer and defer restoring the previous mode.
+  `TranscriptKeptRowsTests` explicitly installs its no-workspace policy; pane
+  fixtures with a workspace install that workspace's policy. Resident limits
+  and the idle-scheduler interval are scoped by their existing callers.
+- Clocks: `TranscriptIdleScheduler`, archive, session-usage and turn-duration
+  clocks are injected into individual instances. `PerformanceProbe.now` and
+  `TranscriptLayoutClock.now` are computed monotonic readings, not replaceable
+  closures. Counters, layout constants and caches are not callback ownership.
+- `FileBlame.service` and `FileTextStyle.standard` have no test writers.
+  Singleton storage/workers, inspector-window registries, cursor/popover
+  managers and the geometry cache expose no additional writable global
+  resolver/clock callback used by these tests. No production restore path was
+  needed.
+
+### Validation and adversarial review
+
+Evidence root:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+All commands ran in this worktree with the same build root. The evidence
+wrapper supplied generated `HOME`, `CFFIXED_USER_HOME` and `CODEX_HOME`;
+the native scheme also applied its existing test-host isolation.
+
+Focused command, once for each class in the table:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/<Class>
+```
+
+For failing-first and mutation runs, the final argument selected
+`PiAppTests/<Class>/<Method>` instead. The two parallel file classes shared
+one invocation for their initial mutation checks; serial-lane classes were
+always selected alone. Real-sheet probes and every focus-changing full class
+held the shared full-lane lock. Offscreen setup probes did not acquire focus.
+No eight-worker lane or full gate was run.
+
+Logs: `r14-red-<Class>.log`, `r14-green-<Class>.log`,
+`r14-mutation-<pattern>-<Class>.log`; the initial parallel-class mutations
+are `r14-mutation-<pattern>.log`. JSON summaries beside them retain selected
+methods and statuses. Lock-wait cancellations and initial compile errors
+are excluded from the runtime pass/fail counts.
+
+Full focused totals: **234 passed, 0 failed, 2 skipped across 17 classes**.
+All 16 failing-first probes failed before their fixes. Nine source mutations
+(remove an install or replace restoration with a default for each hook family,
+plus move resolver installation before the throwing constructor work) caused
+**31 expected failing test cases** across those classes. All mutations were
+restored. The initial three parallel-class probes passed again after their
+mutations; the remaining offscreen classes passed their full focused runs
+with the source restored. The four question probes also passed again after
+restoration (`r14-restored-<Class>.log`).
+
+All completed full-class runs passed. `xcodegen generate --quiet`
+registered the new test helper; the ordinary test script regenerated the
+project for every build. `git diff --check` passed. No clone folders or extra
+DerivedData copies were created; automatic result bundles were removed after
+recording text evidence.
+
+Adversarial review:
+
+- A nil-project file now takes the standalone readable path after a prior
+  workspace expires. An unknown non-nil project still takes `.removed`.
+  Tests of trust/removal continue to install their own resolvers after setup.
+  No production permission or capture boundary changes.
+- Inherited question answers and presenters no longer bypass or stall a
+  fixture's native sheet. Explicit answers installed by the test still win.
+  All seven previous members are captured, including the custom-sheet and
+  file/text chooser seams. Teardown is registered before views are created,
+  so their later cleanup runs before restoration.
+- An inherited reveal spy no longer replaces the real reveal adapter.
+  Local spies still work; the teardown probe calls the captured prior spy
+  once, detecting a hard-coded nil reset.
+- An inherited hover delay no longer controls the inline-skill fixture.
+  File-action tests install spies before invoking Open/Reveal. Setup never
+  installs real Finder or application-opening actions. Teardown closes the
+  fixture's popovers and restores the caller's delay/actions.
+- File-review construction failures now precede any resolver mutation.
+  Successful construction and `close()` retain the same ownership interval.
+  The test's new `root` argument defaults to the existing generated root.
+- Probe failure paths clean up their generated files/windows. The question
+  probe's early return follows an assertion failure; it only avoids waiting
+  for a sheet that the hostile answer has already bypassed. Nested setup
+  checks restoration in LIFO teardown order without relying on test order.
+- No affected superclass had setup work displaced by these overrides.
+  The shared inline-skill base owns both concrete classes' hook scope.
+
+`python3 scripts/test-lanes.py list` still reports the same 465 classes with
+identical lanes; the parser and its rules were not edited. No production or
+helper source changed, so helper/wire suites and UI gallery regeneration are
+outside this round's affected scope.

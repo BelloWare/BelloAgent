@@ -18,6 +18,12 @@ import AppKit
 /// with the commit's file chips drawn natively too, they take about 24, 6, 47
 /// and 52 ms; the last two are mostly the rest of the panel drawn again.
 final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
+    @MainActor override func setUp() async throws { installStandaloneFileResolver(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     static let changedFiles = 400
 
     /// `a-first.swift`, a one-line change the tab opens on; `b-long.swift`,
@@ -432,6 +438,7 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         let other = harness.host.open(kind: FileTab.kind, key: FileTab.key(for: folder.appendingPathComponent("a.txt"))) {
             FileTab(url: folder.appendingPathComponent("a.txt"), projectID: nil)
         }
+        XCTAssertTrue((other as? FileTab)?.readable == true, "The covering standalone file has its own fixture context")
         try await eventually("hidden") { controller.suspended && !controller.isWatching }
         try "three\n".write(to: folder.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
         try await Task.sleep(for: .milliseconds(1_500))

@@ -5,6 +5,12 @@ import FileFinder
 
 // Window-backed pointer and scroll checks run alone.
 final class FileFolderTests: XCTestCase, SerialTestLane {
+    @MainActor override func setUp() async throws { installStandaloneFileResolver(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     @MainActor func testFileHeaderOffersFolderToggleAndClickableAncestors() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("file-folder-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -124,6 +130,7 @@ final class FileFolderTests: XCTestCase, SerialTestLane {
         let restoredFile = try XCTUnwrap(restored.pane.activeTab as? FileTab)
         let restoredWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         restoredWindow.isReleasedWhenClosed = false; restoredWindow.contentView = restoredFile.contentView
+        XCTAssertTrue(restoredFile.readable, "The standalone fixture must not inherit another workspace's resolver")
         XCTAssertTrue(restoredFile.isShownNow)
         XCTAssertNotNil(restoredFile.folders.browser.root, "A restored visible file must load the remembered tree without switching tabs")
         restoredWindow.contentView = nil; restoredWindow.close()
