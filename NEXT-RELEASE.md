@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Saved copy/export pages verify each decoded row against the held selection's fingerprints, rejecting in-place rewrites without rehashing the range per page. [Validation](docs/validation/a130-wire-0.1.130.md#round-10).
 - [x] Saved copy handoffs and canceled searches register their indexes with the eight-entry LRU, closing and removing evicted index files. [Validation](docs/validation/a130-wire-0.1.130.md#round-9).
 - [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
 - [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.

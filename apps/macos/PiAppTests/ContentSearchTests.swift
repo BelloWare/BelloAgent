@@ -6,6 +6,97 @@ import XCTest
 /// text finds, in the same order and counts, with its ASCII shortcut and its
 /// records decoded a run at a time.
 final class ContentSearchTests: XCTestCase {
+    func testCachedRangeRejectsALaterRowRewrittenAfterCapture() async throws {
+        try await changedCopyRow(fixedTimes: false, cached: false)
+    }
+    func testCachedRangeRejectsALaterRowWithUnchangedStamp() async throws {
+        try await changedCopyRow(fixedTimes: true, cached: false)
+    }
+    func testCachedRangeRevalidatesTheDecodedRowCache() async throws {
+        try await changedCopyRow(fixedTimes: true, cached: true)
+    }
+    private func changedCopyRow(fixedTimes: Bool, cached: Bool) async throws {
+        let root = scratchRoot("copy-row-revalidation"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try copyJournal(["OUTSIDE RANGE", "FIRST SELECTED ROW", "ORIGINAL later row"])
+        try bytes.write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 2, last: 3))
+        let first = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+            first: 2, last: 3, cursor: .init(index: 2, offset: 0), digest: digest)
+        XCTAssertTrue(first.text.contains("FIRST SELECTED ROW"))
+        let next = try XCTUnwrap(first.next)
+        XCTAssertEqual(next.index, 3)
+        let original = try XCTUnwrap(HistoryReader.currentRevision(path: path.path))
+        if fixedTimes { try await reader.holdStampTimes(path: path.path) }
+        let changed = Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "ORIGINAL", with: "MODIFIED").utf8)
+        XCTAssertEqual(changed.count, bytes.count)
+        let rewrite: @Sendable () throws -> Void = {
+            let file = try FileHandle(forWritingTo: path); defer { try? file.close() }
+            try file.write(contentsOf: changed)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: path.path)
+        }
+        if cached {
+            try rewrite()
+            // Another copy API can populate the shared decoded-row slot. Its
+            // stamp/key alone cannot prove that text belongs to the held range.
+            let page = try await reader.copyContentPage(path: path.path, first: 2, last: 3, cursor: next, revision: found.revision)
+            XCTAssertTrue(page.text.contains("MODIFIED later row"))
+        } else {
+            // The page has already captured its stamp and immutable offset
+            // index when this real in-place rewrite occurs.
+            await reader.observeContentReads(rewrite)
+        }
+        do {
+            let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+                first: 2, last: 3, cursor: next, digest: digest)
+            XCTFail("Accepted changed selected text: \(page.text)")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("History changed"), error.localizedDescription)
+        }
+        let actual = try XCTUnwrap(HistoryReader.currentRevision(path: path.path))
+        XCTAssertNotEqual(actual, original, "The fixture changes real timestamps, even when the reader simulates unchanged times")
+        XCTAssertEqual(actual.stamp.split(separator: ":").prefix(3), original.stamp.split(separator: ":").prefix(3), "Same device, inode and length")
+        XCTAssertEqual(try Data(contentsOf: path), changed)
+        await reader.releaseIndexes()
+    }
+    private func copyJournal(_ rows: [String]) throws -> Data {
+        var data = Data("{\"type\":\"session\",\"version\":3,\"id\":\"copy-fixture\"}\n".utf8)
+        for (n, text) in rows.enumerated() {
+            data.append(try JSONEncoder().encode(WireValue.object(["type": .string("message"), "id": .string("r\(n)"),
+                "parentId": n == 0 ? .null : .string("r\(n - 1)"),
+                "message": .object(["role": .string("assistant"), "content": .string(text)])])))
+            data.append(10)
+        }
+        return data
+    }
+    func testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation() async throws {
+        let root = scratchRoot("copy-row-hashing"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rows = ["OUTSIDE RANGE", "First selected row", String(repeating: "x", count: 16 * 1_048_576), "Last selected row"]
+        try copyJournal(rows).write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 2, last: 4))
+        let before = await reader.decodedRecords, hashBefore = await reader.contentHashedBytes
+        var cursor: ContentCursor? = .init(index: 2, offset: 0), pages = 0, exported = 0
+        let started = Date()
+        while let at = cursor {
+            let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+                first: 2, last: 4, cursor: at, digest: digest)
+            exported += page.text.utf8.count; pages += 1; cursor = page.next
+        }
+        let hashes = await reader.contentHashedBytes - hashBefore, decodes = await reader.decodedRecords - before
+        let expected = rows.dropFirst().reduce(0) { $0 + "## assistant\n\n\($1)\n\n".utf8.count }
+        XCTAssertEqual(exported, expected); XCTAssertGreaterThan(pages, 1_000)
+        XCTAssertEqual(decodes, 5, "Validate three rows, then decode each subsequent row once")
+        XCTAssertLessThanOrEqual(hashes, 2 * exported, "Neither the selected range nor a large cached row is hashed again per page")
+        print("Retained export: pages=\(pages) exportedBytes=\(exported) hashedBytes=\(hashes) decodes=\(decodes) seconds=\(Date().timeIntervalSince(started))")
+        await reader.releaseIndexes()
+    }
     final class AppendingWriter: @unchecked Sendable {
         private let lock = NSLock()
         private var calls = 0

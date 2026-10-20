@@ -1000,3 +1000,79 @@ The window/gallery wrapper runs each class alone with `-parallel-testing-enabled
 `native-parity-final.log`: **7 passed / 0 failures**, 199.270 seconds. `native-geometry-final.log`: **1 passed / 0 failures**, 5.025 seconds. Neither emits SQLite cleanup diagnostics. **Final native total: 208 passed / 1 opt-in skip / 0 failures**, 209 executed across the same ten classes as round 8.
 
 Final adversarial self-review found no remaining assigned defect. The source/test hashes in `source-hashes.txt` still match the restored files after all runs; `git diff --check` passes and the generated project is unchanged. All window/gallery runs held the shared lock and released only their own acquisition. Removed this build root's final automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and generated gallery images are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture or paid provider was used. No merge, rebase, fast-forward, tag or release was performed.
+
+## Round 10
+
+Review of `6ee1183a9245f67003353dac1893511c0e555437`, on `dev/a130-wire`. Evidence is in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round10`; `B` below denotes that existing build root. All journals, index files, preferences and test homes are generated fixtures.
+
+### Cached range validation — confirmed
+
+Three regressions first validate rows 2–3 of a generated journal, then physically rewrite the later selected row in place, replacing `ORIGINAL` with equal-length `MODIFIED` while keeping the same row ID, device, inode and file length:
+
+- `testCachedRangeRejectsALaterRowRewrittenAfterCapture` rewrites after the page captures its stamp and offset index, before it reads the later row. The real filesystem stamp changes.
+- `testCachedRangeRejectsALaterRowWithUnchangedStamp` makes the same write while a per-reader test seam holds that fixture inode's observed timestamps constant. It preserves actual device/inode/size checks and simulates unchanged filesystem timestamps; the test independently confirms that the physical write changed the real stamp.
+- `testCachedRangeRevalidatesTheDecodedRowCache` uses the strict legacy copy API to populate the shared decoded-row slot with the changed text before requesting the held selection's next page, also with held timestamps.
+
+Before the fix all three return `MODIFIED later row`; `content-red.log` has **4 tests / 3 failing tests / 3 assertions**, with the fourth, counted export test passing. The observer and byte counter in that baseline only expose the race and cost; they do not change range validation.
+
+The held `contentHandoff` now retains the selected range's 32-byte row fingerprints from its successful validation. Every later decoded row must match its corresponding fingerprint before slicing or publication, including text obtained from the shared decoded-row cache. A mismatch raises the existing **History changed. Refresh the range before copying** error. The decoded slot keeps the computed fingerprint with its immutable text; every other slot writer clears that fingerprint when replacing the text. This retains one decoded row and one range manifest, avoids whole-range rehashing per page, and avoids hashing a large cached row for every page.
+
+`content-green.log` has **4 passed / 0 failures**. The initial implementation draft used nil-coalescing around the hash computation; Swift 6 rejected the resulting actor-isolated `NSString` capture (`content-green-build-error.log`). An explicit conditional fixes the compile error without changing isolation or sendability.
+
+### Cost and mutation evidence
+
+`testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation` exports a three-row range containing one 16 MiB ASCII row, starting at row 2. It asserts the complete byte count, five row decodes (three for range validation, two later row loads), and at most twice the exported text bytes hashed. The counter measures canonical UTF-8 text passed to the fingerprint function; the unchanged function also hashes each row's ID and length delimiters. The focused green run exports **16,777,299 bytes / 1,027 pages**, hashes **33,554,564 text bytes**, and performs **5 decodes**, in **0.0989 seconds** after search. The pre-fix cost is **16,777,299 hashed text bytes / 5 decodes / 0.0941 seconds**; the added bounded work is one verification hash for each subsequently loaded row.
+
+`content-mutations.py` restores exact source bytes in `finally` after each mutation:
+
+| Mutation log (`logs/round10/`) | Runtime result |
+| --- | --- |
+| `mutation-row-membership.log` — omit the row-to-held-fingerprint comparison | All **3 tests fail / 3 assertions**, returning changed text through both disk and cache paths |
+| `mutation-cached-row-hashing.log` — discard the cached row's fingerprint on reuse | **1 test / 1 failure**: **17,213,440,132 bytes** hashed for the same 16,777,299-byte export; **8.720 seconds**, still 5 decodes |
+
+### Nearby sweep and adversarial review
+
+- The selected-range digest is checked before its fingerprints are cached. Fingerprint lookup is relative to `first`, with tests selecting a range that does not start at row 1. The cached range is reused only for the same path, stamp, bounds and digest.
+- Both sources of later text are checked: direct `content(..., validatingIdentity: true)` decoding and the shared `decoded` slot. Its exact path/stamp/ID/field key remains required. The legacy copy writer and all three `message` writers clear the optional fingerprint; only validated immutable text retains one.
+- The range manifest and offset index are captured locally across validation yields, so actor reentry cannot substitute another selection. Cancellation remains checked before cache publication.
+- Existing source-ID checks, imported journal-header identity, headerless legacy IDs, final same-path journal replacement validation, LRU registration, formatting, UTF-16 page boundaries, unselected appends and live-to-disk handoff behavior are unchanged. No helper or wire code changed.
+- A cached immutable page may still return its original selected bytes after a disk rewrite; any newly decoded bytes must match the selected fingerprint. Timestamp equality is a cache hint, not authority to copy different text.
+
+No owner decision is needed.
+
+### Commands and final validation
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRejectsALaterRowRewrittenAfterCapture \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRejectsALaterRowWithUnchangedStamp \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRevalidatesTheDecodedRowCache \
+  -only-testing:PiAppTests/ContentSearchTests/testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation
+python3 "$B/logs/round10/content-mutations.py"
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round10/copy" \
+  bash "$B/logs/round10/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round10/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round10/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round10/components" \
+  bash "$B/logs/round10/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round10/components" \
+  bash "$B/logs/round10/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+```
+
+The window/gallery wrapper runs each class alone with `-parallel-testing-enabled NO` under the shared full-lane lock, releasing only its own lock on exit. This round changes only app-side retained-content validation and its test seams; no helper or wire behavior changed, so the helper and Python wire/concurrent/acceptance suites are not rerun.
+
+`native-headless-final.log`: ContentSearchTests **17 passed**, HardeningTests **12 passed**, HistoryReaderCheckpointTests **7 passed**, HistoryIndexFilesTests **6 passed / 1 opt-in skip**, StorageTruthTests **11 passed**. Total **53 passed / 1 skip / 0 failures**, 54 executed in **10.761 seconds**. The final 16 MiB export still hashes **33,554,564 text bytes / 5 decodes / 1,027 pages**, in **0.1017 seconds**. The existing 5k-call and 22k-row fingerprint fairness regressions pass with concurrent page latencies **0.01137 / 0.00642 seconds**, each after **248 decodes**. No SQLite cleanup diagnostics appear in this run.
+
+`native-copy-final.log`: **18 passed / 0 failures**, **11.706 seconds**, including imported range/whole-conversation/export actions and streaming/retirement handoffs. Inspected all regenerated light, dark and narrow images in `gallery-round10/copy`: headings, retained previews, range fields, status and footer actions remain readable and unobscured; long previews retain their existing ellipsis. No SQLite cleanup diagnostic appears.
+
+`native-workspace-final.log`: **17 passed / 0 failures**, **0.659 seconds**. The same **15** generated-fixture SQLite “vnode unlinked while in use” diagnostics recorded in rounds 8–9 recur at the existing `WorkspaceTests.swift:238` and `:274` cleanup sites. Those unrelated fixtures remain unchanged.
+
+`native-transcript-final.log`: **116 passed / 0 failures**, **141.153 seconds**. Its same **8** pre-existing SQLite cleanup diagnostics recur at `TranscriptBugRegressionTests.swift:625` and `:664`; those unrelated temporary database cleanup sites remain unchanged.
+
+`native-parity-final.log`: **7 passed / 0 failures**, **198.877 seconds**. `native-geometry-final.log`: **1 passed / 0 failures**, **5.047 seconds**. Neither emits SQLite cleanup diagnostics. **Final native total: 212 passed / 1 opt-in skip / 0 failures**, 213 executed across the same ten classes as round 9 (`native-summary.txt`).
+
+Final adversarial self-review found no remaining assigned defect. The restored source/test hashes in `source-hashes.txt` still match after all runs; `git diff --check` passes and the generated project is unchanged. Every window/gallery run held the shared lock and released only its own acquisition. Removed this build root's final automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and generated images are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture or paid provider was used. No merge, rebase, fast-forward, tag or release was performed.
