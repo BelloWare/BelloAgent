@@ -257,10 +257,8 @@ class Helper(native_host_client.HostPeer):
     def __init__(self, binary, cwd, stderr_path, *, home):
         # The helper takes the key over its wire protocol only.
         environment = {name: value for name, value in os.environ.items() if not name.startswith("PI_LIVE_")}
-        # Resource discovery also scans ~/.agents/skills independently of codexHome.
-        environment.update(HOME=str(home), CFFIXED_USER_HOME=str(home))
         self.stderr = open(stderr_path, "wb")
-        super().__init__(binary, cwd, env=environment, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
+        super().__init__(binary, cwd, env=environment, home=home, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
         try:
             try:
                 ready = self.hello(20)

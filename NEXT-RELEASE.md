@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
+- [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
+- [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.
+- [x] Wire, concurrent, acceptance, subagent and bundle-smoke fixture helpers isolate HOME, CFFIXED_USER_HOME and CODEX_HOME, including custom launch environments. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-helper-homes--round-3-follow-up).
+- [x] The native test-host guard keeps parent and explicit child process homes inside the verified fixture home; shipping apps are unchanged.
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
 - [x] Accepted capture metadata over 4 MiB remains readable, exportable and expirable after reopening. [Validation](docs/validation/a130-inspector-0.1.130.md#round-3-hunt).
