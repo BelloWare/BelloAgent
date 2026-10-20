@@ -145,51 +145,55 @@ import QuartzCore
 @MainActor final class RecoveredBannerView: NSView, PiKit.WidthSizing {
     var changed: (() -> Void)?
     private let box = PiKit.Box(fill: NSColor.piWarning.withAlphaComponent(0.10), stroke: NSColor.piWarning.withAlphaComponent(0.35), cornerRadius: PiRadius.md,
-                                padding: NSEdgeInsets(top: PiSpacing.md, left: PiSpacing.md, bottom: PiSpacing.md, right: PiSpacing.md))
-    private var stack = ShellStack(.vertical, spacing: PiSpacing.sm)
-    private var shownIDs: [String] = []
+                                padding: NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.md, bottom: PiSpacing.sm, right: PiSpacing.md))
+    private var intents: [CommandIntent] = []
+    private var conflicts: [SavedDraftConflict] = []
+    private weak var model: WorkspaceModel?
+    private lazy var chooser = PiKit.MenuButton(title: "Saved copies", identifier: "draftRecoveryCopies", maxLabelWidth: 140) { [weak self] in
+        self?.entries() ?? []
+    }
 
     init() {
         super.init(frame: .zero)
-        box.content = stack
+        box.content = ShellStack(.horizontal, spacing: PiSpacing.sm, [
+            .view(shellLine("Draft recovery", font: PiKit.Font.body, color: .labelColor), .flexible),
+            .view(chooser),
+        ])
         addSubview(box)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
     func update(_ intents: [CommandIntent], conflicts: [SavedDraftConflict] = [], model: WorkspaceModel) {
-        let ids = intents.map(\.id) + conflicts.map { "conflict:" + $0.id }
-        guard ids != shownIDs else { return }
-        shownIDs = ids
-        var items: [ShellItem] = []
-        if !intents.isEmpty { items.append(.view(ShellStack(.horizontal, spacing: 6, [
-            .view(shellBodySymbol("exclamationmark.triangle.fill", color: .piWarning)),
-            .view(shellLine("Interrupted submissions", font: PiKit.Font.heading, color: .labelColor)),
-            .view(shellLine("· Nothing was resent", font: PiKit.Font.caption, color: .piInkSecondary)),
-        ]))) }
-        for intent in intents {
-            items.append(.view(ShellStack(.horizontal, spacing: 8, [
-                .view(shellLine(intent.text, font: PiKit.Font.body, color: .labelColor), .flexible),
-                .spacer(8),
-                .view(PiKit.Button("Insert in Draft", style: .secondary, compact: true) { model.recoverDraft(intent, insert: true) }),
-                .view(PiKit.Button("Dismiss", style: .ghost) { model.recoverDraft(intent, insert: false) }),
-            ]), .fill))
-        }
-        if !conflicts.isEmpty {
-            items.append(.view(shellLine("Conflicting drafts", font: PiKit.Font.heading, color: .labelColor)))
-            items.append(.view(shellLine("Both copies saved", font: PiKit.Font.caption, color: .piInkSecondary)))
-            for conflict in conflicts {
-                items.append(.view(ShellStack(.vertical, spacing: PiSpacing.sm, [
-                    .view(shellLine(conflict.draft.text.isEmpty ? "Saved draft with attachments or an edit" : conflict.draft.text, font: PiKit.Font.body, color: .labelColor), .fill),
-                    .view(PiKit.Button("Restore Draft", style: .secondary, compact: true) { model.restoreConflictedDraft(conflict) }),
-                ]), .fill))
-            }
-        }
-        stack.items = items
-        box.content = stack
+        self.intents = intents; self.conflicts = conflicts; self.model = model
+        let count = intents.count + conflicts.count
+        chooser.label = "\(count) saved " + (count == 1 ? "copy" : "copies")
         changed?()
     }
-    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: box, width: width - PiSpacing.lg * 2) + PiSpacing.sm }
+    private func preview(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return line.isEmpty ? "Attachments or an edit" : String(line.prefix(80)) + (line.count > 80 ? "…" : "")
+    }
+    @PiMenuBuilder private func entries() -> [PiMenuEntry] {
+        if let model {
+            if !conflicts.isEmpty { PiMenuEntry.note("Conflicting drafts · Both copies saved") }
+            for (index, conflict) in conflicts.enumerated() {
+                PiMenuEntry.button("Restore Draft \(index + 1): " + preview(conflict.draft.text),
+                                   enabled: model.canRestoreConflictedDraft(conflict.draft.id), identifier: "restore-conflict-" + conflict.id) {
+                    model.restoreConflictedDraft(conflict)
+                }
+            }
+            if !intents.isEmpty { PiMenuEntry.note("Interrupted submissions · Nothing was resent") }
+            for (index, intent) in intents.enumerated() {
+                PiMenuEntry.menu("Submission \(index + 1): " + preview(intent.text)) {
+                    PiMenuEntry.button("Insert in Draft", identifier: "recover-intent-" + intent.id) { model.recoverDraft(intent, insert: true) }
+                    PiMenuEntry.button("Dismiss", identifier: "dismiss-intent-" + intent.id) { model.recoverDraft(intent, insert: false) }
+                }
+            }
+        }
+    }
+    // One row at every width and copy count. The menu scrolls independently.
+    func height(forWidth width: CGFloat) -> CGFloat { 56 }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
     override func layout() {
         super.layout()

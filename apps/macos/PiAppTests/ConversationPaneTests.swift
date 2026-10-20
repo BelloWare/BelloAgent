@@ -4,6 +4,54 @@ import AppKit
 @testable import PiApp
 
 extension ConversationPaneTests {
+    @MainActor func testConflictRecoveryKeepsTranscriptSpaceAndEveryCopyReachable() async throws {
+        for width: CGFloat in [760, 300] {
+            let pane = try Pane(messages: longChat(rows: 4), width: width); defer { pane.close() }
+            await pane.settle()
+            let surface = try XCTUnwrap(Self.views(TranscriptNativeScrollView.self, in: pane.hosted).first)
+            let available = surface.frame.height
+            for count in [1, 40] {
+                pane.session.draftConflicts = (0..<count).map { .init(id: "copy-\($0)", draft: DraftRecord(id: pane.chat.id, text: "Saved conflict \($0)")) }
+                await pane.settle()
+                let banner = try XCTUnwrap(Self.views(RecoveredBannerView.self, in: pane.hosted).first)
+                XCTAssertLessThanOrEqual(banner.frame.height, 60, "Recovery has a fixed one-row height even with many copies")
+                XCTAssertGreaterThanOrEqual(surface.frame.height, available - 60, "Saved copies must not displace the transcript")
+                let chooser = Self.views(PiKit.MenuButton.self, in: banner).first
+                XCTAssertNotNil(chooser, "Every saved copy needs a reachable chooser entry")
+                if let chooser {
+                    XCTAssertTrue(banner.bounds.contains(chooser.convert(chooser.bounds, to: banner)))
+                    let menu = PiMenus.menu(chooser.entries())
+                    XCTAssertEqual(menu.items.filter { $0.identifier?.rawValue.hasPrefix("restore-conflict-") == true }.count, count)
+                    XCTAssertNotNil(menu.items.first { $0.identifier?.rawValue == "restore-conflict-copy-0" })
+                }
+            }
+        }
+    }
+
+    @MainActor func testRecoveryChooserRefreshesAnEpisodeAndKeepsInterruptedActionsReachable() async throws {
+        let pane = try Pane(); defer { pane.close() }
+        await pane.settle()
+        let intents = (0..<12).map { CommandIntent(id: "intent-\($0)", sessionID: pane.chat.id, turnID: "turn-\($0)", text: "Interrupted \($0)", state: "intent") }
+        for intent in intents { try await pane.model.store?.put(intent, kind: "pending:" + pane.chat.id, id: intent.id) }
+        pane.session.recovered = intents
+        pane.session.uncertain = true
+        pane.session.draftConflicts = [.init(id: "episode", draft: DraftRecord(id: pane.chat.id, text: "First losing text"))]
+        await pane.settle()
+        let banner = try XCTUnwrap(Self.views(RecoveredBannerView.self, in: pane.hosted).first)
+        let chooser = try XCTUnwrap(Self.views(PiKit.MenuButton.self, in: banner).first)
+        pane.session.draftConflicts = [.init(id: "episode", draft: DraftRecord(id: pane.chat.id, text: "Latest losing text"))]
+        await pane.settle()
+        let menu = PiMenus.menu(chooser.entries())
+        XCTAssertTrue(menu.items.first { $0.identifier?.rawValue == "restore-conflict-episode" }?.title.contains("Latest losing text") == true)
+        XCTAssertLessThanOrEqual(banner.frame.height, 60)
+        let actions = menu.items.compactMap(\.submenu).flatMap(\.items).compactMap { $0.identifier?.rawValue }
+        XCTAssertEqual(pane.session.recovered.count, 12)
+        XCTAssertEqual(actions.count, 24, "Menu: \(menu.items.map { $0.title }), actions: \(actions)")
+        for intent in intents {
+            XCTAssertTrue(actions.contains("recover-intent-" + intent.id)); XCTAssertTrue(actions.contains("dismiss-intent-" + intent.id))
+        }
+    }
+
     // MARK: Typing
 
     /// What one keystroke costs in the real pane: the native edit, the SwiftUI

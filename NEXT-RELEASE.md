@@ -4,6 +4,9 @@
 
 ## 0.1.130
 
+- [x] Conflict restoration works with paused queues while protecting active sends and edits. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+- [x] Each conflict episode updates one durable copy; a fixed recovery row offers every retained copy and interrupted submission through its chooser. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+
 - [x] Conflicting drafts are saved durably before release, recoverable after reopening, and pinned across navigation, side transfer, quit/update and helper loss if saving fails. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
 - [x] Reading positions use loaded-revision checks for scrolling, side close and quit; stale instances cannot overwrite or resurrect newer positions. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
 - [x] Rejected submissions keep their captured input as well as the remaining draft when another instance wins a draft conflict. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).

@@ -68,14 +68,34 @@ final class DraftWriteEvents: @unchecked Sendable {
 final class DraftVersion: @unchecked Sendable {
     private let lock = NSLock()
     private var value: (draft: DraftRecord?, revision: Int64?)
-    private var conflicts: [DraftRecord] = []
+    private var conflicts: [SavedDraftConflict] = []
+    private var episode: (revision: Int64?, id: String)?
     init(draft: DraftRecord? = nil, revision: Int64? = nil) { value = (draft, revision) }
     var snapshot: (draft: DraftRecord?, revision: Int64?) { lock.withLock { value } }
-    var unsavedConflicts: [DraftRecord] { lock.withLock { conflicts } }
+    var unsavedConflicts: [SavedDraftConflict] { lock.withLock { conflicts } }
     var hasUnsavedConflict: Bool { lock.withLock { !conflicts.isEmpty } }
-    fileprivate func conflicted(_ draft: DraftRecord) { lock.withLock { if !conflicts.contains(draft) { conflicts.append(draft) } } }
-    fileprivate func preserved(_ draft: DraftRecord) { lock.withLock { conflicts.removeAll { $0 == draft } } }
-    fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision) } }
+    var hasConflictEpisode: Bool { lock.withLock { episode != nil } }
+    fileprivate func conflicted(_ draft: DraftRecord, against revision: Int64?) {
+        lock.withLock {
+            // A losing instance keeps editing one copy until the winner
+            // changes again. Failed writes retain the latest complete copy.
+            if episode == nil || episode?.revision != revision { episode = (revision, UUID().uuidString) }
+            guard let episode else { return }
+            conflicts.removeAll { $0.id == episode.id }
+            conflicts.append(.init(id: episode.id, draft: draft))
+        }
+    }
+    fileprivate func preservingSubmission(_ input: DraftRecord) {
+        lock.withLock {
+            guard let index = conflicts.firstIndex(where: { $0.id == episode?.id }) else { return }
+            let remaining = conflicts[index].draft
+            var combined = remaining.merging(input)
+            combined.text = input.text + (input.text.isEmpty || remaining.text.isEmpty ? "" : "\n\n") + remaining.text
+            conflicts[index] = .init(id: conflicts[index].id, draft: combined)
+        }
+    }
+    fileprivate func preserved(_ copy: SavedDraftConflict) { lock.withLock { conflicts.removeAll { $0 == copy } } }
+    fileprivate func committed(_ draft: DraftRecord, revision: Int64) { lock.withLock { value = (draft, revision); episode = nil } }
 }
 
 final class AnchorVersion: @unchecked Sendable {
@@ -212,11 +232,11 @@ actor MetadataStore {
         let previous = version.snapshot
         // An unchanged stale composer owns no write, even at Quit. Normalize
         // optional empty arrays used by older drafts before comparing them.
-        guard version.hasUnsavedConflict || !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
+        guard version.hasConflictEpisode || version.hasUnsavedConflict || !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
         func save() throws {
             let current = try draftVersion(id: draft.id).snapshot
             guard !version.hasUnsavedConflict, current.revision == previous.revision else {
-                version.conflicted(draft); transactionConflicts.append(version)
+                version.conflicted(draft, against: current.revision); transactionConflicts.append(version)
                 throw StoreError.draftConflict
             }
             let next = try revision ?? reserveRevision(kind: "draft", id: draft.id)
@@ -262,7 +282,10 @@ actor MetadataStore {
         return copies
     }
     func preserveDraftConflicts(_ version: DraftVersion) throws {
-        for draft in version.unsavedConflicts { try preserveConflict(draft); version.preserved(draft) }
+        for copy in version.unsavedConflicts {
+            try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id)
+            version.preserved(copy)
+        }
     }
     private func preserveConflict(_ draft: DraftRecord) throws {
         guard try !draftConflicts(id: draft.id).contains(where: { $0.draft.hasSameContents(as: draft) }) else { return }
@@ -273,7 +296,7 @@ actor MetadataStore {
     func restoreConflict(_ conflict: SavedDraftConflict, replacing live: DraftRecord, version: DraftVersion) throws {
         let pending = version.unsavedConflicts
         try transaction {
-            for draft in pending { try preserveConflict(draft) }
+            for copy in pending { try put(copy.draft, kind: "draft-conflict:" + copy.draft.id, id: copy.id) }
             guard live.id == conflict.draft.id,
                   try get(DraftRecord.self, kind: "draft-conflict:" + live.id, id: conflict.id) == conflict.draft else { throw StoreError.staleRevision }
             if let saved = try get(DraftRecord.self, kind: "draft", id: live.id), !saved.hasSameContents(as: conflict.draft) { try preserveConflict(saved) }
@@ -283,7 +306,7 @@ actor MetadataStore {
             transactionDraftVersions.append((version, conflict.draft, revision))
             try remove(kind: "draft-conflict:" + live.id, id: conflict.id)
         }
-        for draft in pending { version.preserved(draft) }
+        for copy in pending { version.preserved(copy) }
     }
     func anchorVersion(id: String) throws -> AnchorVersion {
         let database = try ready()
@@ -895,7 +918,7 @@ actor MetadataStore {
             catch StoreError.draftConflict {
                 // Its intent will roll back too. Keep the input that already
                 // left the composer, as well as the remaining draft.
-                draftVersion?.conflicted(DraftRecord(id: intent.sessionID, text: intent.text, attachments: intent.attachments, skills: intent.skills))
+                draftVersion?.preservingSubmission(DraftRecord(id: intent.sessionID, text: intent.text, attachments: intent.attachments, skills: intent.skills))
                 throw StoreError.draftConflict
             }
             try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)

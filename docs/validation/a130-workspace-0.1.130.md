@@ -1188,3 +1188,269 @@ TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/Bell
 | `WorkspaceValidationGalleryTests` | 1 | 0 | 0 |
 
 `xcodegen generate --quiet` reproduced the project unchanged; `git diff --check` passed. No installed app, real preferences/chats/Keychain, paid provider or live capture was used. Automatic result bundles and any test clones under this workstream's build root were removed; text logs and generated gallery images remain. Every acquired lane lock was released. Both assigned findings, including the previously documented reading-position issue, are resolved; no unrelated test failure remains.
+
+
+## Round 5 — conflict episodes and bounded recovery
+
+Scope: both Round 4 review findings are **confirmed and fixed** on
+`dev/a130-workspace`. Evidence: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round5-restart/`.
+Only generated SQLite state, memory vaults and existing fixture windows were used.
+
+Restart audit (2026-10-20): the interrupted parent comparison had left all four
+production files at Round 4 while the new tests survived. The native build was
+cleaned in this workstream's existing build root; failing-first, mutation, final
+classes and galleries below were rerun after the restart. Pre-restart logs are
+superseded and do not count as validation. Source backups now live on disk before
+baseline or mutation checks.
+
+### Paused queues must not block Restore Draft
+
+`testConflictRestorationKeepsAPausedQueueAndAllowsTheNextFlush` failed first:
+
+```text
+XCTAssertEqual failed: ("Current unsaved input") is not equal to ("Saved losing input")
+A paused queue must not block replacing the composer
+caught error: "draftConflict"
+```
+
+The previous `hasWork` guard included retained queue items. Restoration now uses
+composer eligibility: no send/startup, running work, Resume, active message/queue
+edit, edit preparation/submission/cancellation, unresolved queued edit or another
+recovery. A paused queue by itself is eligible. The menu uses the same check and
+disables unavailable Restore actions. Recovery changes no queued item, sends no
+command and preserves the replaced composer before committing the chosen draft.
+The regression verifies the queue stays paused and unchanged and the next flush
+succeeds. An additional chooser test restores the oldest of 40 copies with a
+paused queue; active send/edit cases are refused.
+
+### One episode, one copy; a fixed recovery row
+
+`testConflictEpisodeUpdatesOneCopyUntilTheOtherInstanceChangesAgain` failed first:
+20 further edits left **21** copies instead of one; another winner change then
+left **22** instead of two. `testConflictRecoveryKeepsTranscriptSpaceAndEveryCopyReachable`
+failed with a **2,351 pt** banner and a **0 pt** transcript for 40 copies at both
+760 pt and 300 pt. The fresh model run had three failing tests/seven assertions (including the
+clear-to-baseline sweep); the two UI tests had thirteen failing assertions
+(`failing-model.log`, `failing-ui.log`). The mixed recovery test also failed
+because the original banner had no chooser.
+
+**Retention rule (supersedes Round 4’s per-edit snapshots):** each losing display has one conflict episode for the winning
+draft revision it observed. Editing, debounce retries and quit/update flushes
+replace that episode's complete durable copy under its stable ID. A changed
+winning revision starts a new episode and retains the previous episode's latest
+copy. A successful canonical save/restoration ends the local episode. Failed copy
+updates remain pinned, and the previous durable bytes remain until the replacement
+commits. Legacy copies and all distinct episodes are retained without automatic
+pruning; every saved copy is reachable through the chooser. Explicit restoration
+still preserves the outgoing saved/live contents before replacing them, and
+explicit chat deletion retains its existing cleanup semantics.
+
+The recovery banner is one **56 pt** row, independent of width and copy count,
+with a **N saved copies** PiKit menu. Its conflict actions list every copy;
+interrupted submissions have their existing Insert/Dismiss actions in the same
+menu, so old recovery controls cannot be pushed out of the pane. AppKit's existing
+menu scrolling and keyboard navigation handle long lists. Complete draft payloads
+stay in storage; the menu uses a short preview and numbered actions. A changing
+episode invalidates the menu payload even though its record ID stays the same.
+
+Nearby sweep:
+
+- Returning a losing composer to its loaded baseline (including clearing it) must
+  update the episode too. `testAnEpisodeTracksTheLatestDraftEvenWhenItReturnsToTheLoadedBaseline`
+  failed first with `Losing text` instead of an empty copy (`failing-model.log`).
+  An active episode therefore bypasses the ordinary unchanged-draft skip.
+- Rejected submission input and the remaining composer now share the episode's
+  complete copy rather than creating two records. Their texts are preserved in
+  submission-then-composer order, with attachments/skills and edit/review state
+  retained; the rejected pending command still rolls back.
+- Same-ID payload refresh and mixed interrupted/conflict recovery are covered by
+  `testRecoveryChooserRefreshesAnEpisodeAndKeepsInterruptedActionsReachable`.
+- `testFailedEpisodeUpdateKeepsItsPinAndRetriesTheSameCopy` injects SQLite failure,
+  checks the prior durable copy plus the pin, then retries under the same ID.
+
+### Adversarial self-review
+
+- Queue count no longer refuses restoration. Active runtime/startup/Resume and
+  composer edits still refuse it. The new edit guards cover message-edit,
+  queue-begin/cancel and edit-submission states the old guard did not name.
+  Retained paused follow-ups never become runnable through recovery.
+- Conflict IDs change only when the observed winning revision changes; local
+  edits update the same ID, including empty input. Failed writes retain the
+  latest complete snapshot; they do not advance the canonical revision or clear
+  the pin. Different episodes and earlier stored copies are not deleted.
+- Copy persistence still runs after the rejected transaction rolls back and before
+  it returns its error. Combining rejected input changes only the conflict copy;
+  no submission intent or helper request becomes committed by this operation.
+- Recovery still validates the chosen ID and complete stored payload inside its
+  transaction. A menu opened before a copy changed cannot restore an obsolete
+  payload: it fails without replacing the draft or deleting the newer copy.
+- The fixed row no longer scales with copy/intent counts. All menu actions remain
+  present, including old interrupted submissions; the transcript loses only the
+  fixed row's height. Same-ID text changes update the next menu and its action.
+
+The changed conditions were checked state by state:
+
+| Condition | Newly admitted/rejected state | Intended result |
+| --- | --- | --- |
+| Composer eligibility replaces `hasWork` | Queue-only work is admitted; message edit, queue begin/cancel, edit submission and unresolved queued edit are refused explicitly | Paused queued input stays untouched; active composer ownership is protected. The menu and action use the same predicate. |
+| Episode ID selection | Same winning revision reuses the ID; absent episode or a different winning revision allocates an ID | Latest losing input replaces one copy; a new external conflict retains the preceding episode. |
+| Unchanged draft skip | A live episode or unsaved conflict bypasses the skip, including an intentional clear | Returning to the loaded baseline cannot leave older losing text as the episode's latest copy. Unchanged non-conflicting instances still perform no write. |
+| Failed-copy replacement/removal | Only the current episode's pending payload is replaced; only an exactly persisted snapshot is unpinned | A failed update preserves both the last durable copy and the latest pending input. Other failed episodes remain pinned. |
+| Submission combination | Only a rejected draft transaction with an episode receives the captured input | No pending command survives the rollback. The full remaining draft and submitted input stay in one durable copy. |
+| Banner state comparison | A payload change under an unchanged ID now invalidates the pane state | The next menu uses the latest text and payload. Stale open-menu actions still fail the existing transactional equality check safely. |
+| Banner sizing/menu loops | Copy count no longer increases height; every conflict/intent still contributes an action | The transcript loses only 56 pt. Empty sections have no heading; one/many copy labels and attachment-only previews remain meaningful. |
+
+No helper/wire implementation changed. No additional product decision was needed:
+retaining all distinct episodes via the chooser is one of the owner's stated options.
+
+### Final Round 5 validation
+
+All evidence below was regenerated after the laptop restart. Native checks used
+this workstream's existing build root, after a successful `xcodebuild clean`;
+no additional DerivedData copy was created. Focus-changing classes and every
+gallery run held the shared full-lane lock; serial-lane classes ran alone.
+
+Fresh failing-first: **3 model tests failed (7 assertions)** and **2 pane tests
+failed (13 assertions)** against the Round 4 production files. Restoring the fixes
+passed **32/32 DraftConcurrencyTests** and **2/2 pane regressions** before the UI
+mutation. The fresh Round 4 `HistoryEditTests` control also passed **3/3**.
+
+Mutation evidence (all reverted; final results use the restored fixes):
+
+| Mutation | Result | Evidence |
+| --- | --- | --- |
+| Restore the old `hasWork`/edit guard | 3 expected failing tests: paused restoration, oldest-copy chooser restore and active-edit protection | `mutation-paused-and-edit-guard.log`, exit 65 |
+| Allocate a new ID on every conflict and restore the unchanged-baseline skip | 3 expected failing tests: episode reuse, intentional clear and failed-write retry | `mutation-episode.log`, exit 65 |
+| Grow the banner per copy, retain only three chooser entries and ignore same-ID payload changes | 2 expected failing pane regressions | `mutation-chooser.log`, exit 65 |
+
+Final native result: **579 passed, 0 failed, 1 skipped across 42 classes** (gallery included).
+
+The sole skip is `SessionReadFocusTests.testTheChatBeingReadNeverFlashesUnreadWhenItsRunFinishes`:
+its existing guard requires the test app's own key, unoccluded window, which this
+desktop could not provide (`SessionReadStateTests.swift:237`). The other focus
+class test passed. No unrelated failure occurred in these fresh runs; all three
+`HistoryEditTests` passed against both the Round 4 control and the final fix.
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `ComposerAttachmentDestinationTests` | 2 | 0 | 0 |
+| `ComposerImportSubmissionTests` | 11 | 0 | 0 |
+| `ConversationPaneTests` | 83 | 0 | 0 |
+| `DeferredCreationTests` | 4 | 0 | 0 |
+| `DraftConcurrencyTests` | 32 | 0 | 0 |
+| `DraftMarkTests` | 5 | 0 | 0 |
+| `DraftSizeTests` | 2 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoricalEditBookkeepingTests` | 2 | 0 | 0 |
+| `HistoryEdgeTests` | 16 | 0 | 0 |
+| `HistoryEdgeTimingTests` | 2 | 0 | 0 |
+| `HistoryEditTests` | 3 | 0 | 0 |
+| `HistoryExtentTests` | 25 | 0 | 0 |
+| `ImportLifecycleTests` | 4 | 0 | 0 |
+| `InheritedSubagentReaderTests` | 7 | 0 | 0 |
+| `LaunchSelectionTests` | 20 | 0 | 0 |
+| `LifecycleHelperTests` | 11 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `PastedAttachmentTests` | 8 | 0 | 0 |
+| `PendingChatProjectTests` | 24 | 0 | 0 |
+| `QueuedAttachmentLimitTests` | 2 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SendBookkeepingTests` | 12 | 0 | 0 |
+| `SessionReadFocusTests` | 1 | 0 | 1 |
+| `SessionReadStateTests` | 16 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 15 | 0 | 0 |
+| `SidebarSideClickTests` | 4 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentDeletionTests` | 10 | 0 | 0 |
+| `SubagentOrganizationTests` | 13 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TranscriptKeptRowsTests` | 10 | 0 | 0 |
+| `UpdatePauseTests` | 7 | 0 | 0 |
+| `WindowLifecycleTests` | 5 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 | 0 |
+| `WorkspaceRaceTests` | 39 | 0 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 | 0 |
+| `WorkspaceValidationGalleryTests` | 1 | 0 | 0 |
+
+Exact final invocations (each `.command` and `.log` is in the evidence folder):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/DraftConcurrencyTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/SendBookkeepingTests \
+  -only-testing:PiAppTests/HistoricalEditBookkeepingTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/DeferredCreationTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/SessionReadStateTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/SubagentOrganizationTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/ImportLifecycleTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/SidebarSideClickTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/TranscriptKeptRowsTests \
+  -only-testing:PiAppTests/HistoryEdgeTests \
+  -only-testing:PiAppTests/UpdatePauseTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WindowLifecycleTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationPaneTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SessionReadFocusTests
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round5-restart/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+The initial clean used `xcodebuild clean -project PiApp.xcodeproj -scheme PiApp
+-destination 'platform=macOS,arch=arm64' -derivedDataPath
+/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/native-tests
+CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO`
+(`clean.log`). Exact failing-first, fixed-regression and mutation selectors are
+also retained in the matching `.command` files.
+
+Gallery: `WorkspaceValidationGalleryTests` passed with **20 fresh PNGs**. The eight
+full-pane recovery scenes cover **1 and 40 copies × light/dark × 760/300 pt**.
+All eight were inspected: the row stays 56 pt, its label/chooser fit, and the
+transcript and composer remain visible at both widths. The twelve retained
+model/draft/import-error scenes were inspected too; their controls remain within
+the banners. Menu tests enumerate all 40 actions, restore the oldest copy, and
+verify both actions for each of 12 interrupted submissions.
+
+Helper/wire behavior was not changed, so the full helper and wire/concurrent/
+acceptance suites were not required for this round. `xcodegen generate --quiet`
+and `git diff --check` passed. Automatic result bundles and test clones under this
+workstream's build root were removed after the runs; text evidence and PNGs remain.
+Every acquired shared lock was released. Both assigned findings are resolved.

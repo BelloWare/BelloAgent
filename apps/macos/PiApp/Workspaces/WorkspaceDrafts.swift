@@ -204,10 +204,14 @@ extension WorkspaceModel {
             try? await store?.putAnchor(anchor, id: view.id, version: view.anchorVersion)
         }
     }
+    func canRestoreConflictedDraft(_ id: String) -> Bool {
+        guard !isShutDown, !installPreparing, let item = record(id), !item.isSubagent, !item.imported,
+              let view = displays[id] else { return false }
+        return !view.loading && !view.busy && !view.resuming && view.editingMessageID == nil && !view.editPreparing && !view.editSubmitting &&
+            view.queueEditingID == nil && view.queueEditBeginning == nil && view.queueEditCancelling == nil && view.unreconciledQueuedEdit == nil && draftWrites.recoveries[id] == nil
+    }
     func restoreConflictedDraft(_ conflict: SavedDraftConflict) {
-        guard !isShutDown, !installPreparing, let item = record(conflict.draft.id), !item.isSubagent, !item.imported,
-              let view = displays[conflict.draft.id], !view.loading, !view.hasWork,
-              view.queueEditingID == nil, !view.editPreparing, draftWrites.recoveries[view.id] == nil else { return }
+        guard canRestoreConflictedDraft(conflict.draft.id), let view = displays[conflict.draft.id] else { return }
         view.loading = true
         draftWrites.recoveries[view.id] = Task {
             defer { view.loading = false; view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }

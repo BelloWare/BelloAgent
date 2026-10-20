@@ -103,7 +103,8 @@ import SQLite3
         let losing = DraftRecord(id: b.id, text: "Draft inside failed transaction")
         let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Message", state: "intent")
         do { try await second.store?.recordSubmission(intent, draft: losing, draftVersion: b.draftVersion); XCTFail("Must conflict") } catch { }
-        try await assertConflictSaved(second, losing)
+        var kept = losing; kept.text = intent.text + "\n\n" + losing.text
+        try await assertConflictSaved(second, kept)
         let savedIntent = try await second.store?.get(CommandIntent.self, kind: "pending:" + b.id, id: intent.id)
         XCTAssertNil(savedIntent, "Preserving a conflict must not commit the failed submission")
     }
@@ -233,7 +234,8 @@ import SQLite3
         let intent = CommandIntent(id: "submission", sessionID: b.id, turnID: "turn", text: "Accepted input waiting to send", state: "intent")
         do { try await second.store?.recordSubmission(intent, draft: DraftRecord(id: b.id, text: "Remaining input"), draftVersion: b.draftVersion); XCTFail("Must conflict") } catch { }
         let copies = try await second.store?.list(DraftRecord.self, kind: "draft-conflict:" + b.id)
-        XCTAssertTrue(copies?.contains(where: { $0.text == intent.text }) == true, "The rejected submission's input must be durable too")
+        XCTAssertEqual(copies?.count, 1, "One episode keeps the captured input and remaining draft together")
+        XCTAssertEqual(copies?.first?.text, intent.text + "\n\nRemaining input", "The rejected submission's input must be durable too")
     }
 
     func testConflictRecoveryAfterReloadKeepsWinnerAndFullLosingDraft() async throws {
@@ -253,16 +255,110 @@ import SQLite3
         XCTAssertTrue(copies?.contains(where: { $0.text == "Winning draft" }) == true, "Explicit restoration must keep the previous saved copy")
     }
 
-    func testRepeatedConflictsKeepDistinctEditsWithoutDuplicatingRetries() async throws {
+    func testConflictEpisodeUpdatesOneCopyUntilTheOtherInstanceChangesAgain() async throws {
         let (model, view, original) = try await conflicted()
         for _ in 0..<3 { try? await model.flushDrafts() }
-        var copies = try await model.store?.list(DraftRecord.self, kind: "draft-conflict:" + view.id)
-        XCTAssertEqual(copies?.filter { $0 == original }.count, 1)
-        view.draft = "Later losing edit"; try? await model.flushDrafts()
-        copies = try await model.store?.list(DraftRecord.self, kind: "draft-conflict:" + view.id)
-        XCTAssertEqual(copies?.count, 2)
-        XCTAssertTrue(copies?.contains(original) == true)
-        XCTAssertTrue(copies?.contains(view.savedDraft) == true)
+        var copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        let first = try XCTUnwrap(copies.first)
+        XCTAssertEqual(first.draft, original); XCTAssertEqual(copies.count, 1)
+        for index in 0..<20 { view.draft = "Later losing edit \(index)"; try? await model.flushDrafts() }
+        copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        XCTAssertEqual(copies.count, 1, "Typing in one conflict episode must update its copy in place")
+        XCTAssertEqual(copies.first?.id, first.id)
+        XCTAssertEqual(copies.first?.draft, view.savedDraft)
+        let previous = view.savedDraft
+        try await model.store?.put(DraftRecord(id: view.id, text: "The other instance changed again"), kind: "draft", id: view.id)
+        view.draft = "New conflict episode"; try? await model.flushDrafts()
+        copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        XCTAssertEqual(copies.count, 2)
+        XCTAssertTrue(copies.contains { $0.id == first.id && $0.draft == previous })
+        XCTAssertTrue(copies.contains { $0.id != first.id && $0.draft == view.savedDraft })
+    }
+
+    func testConflictRestorationKeepsAPausedQueueAndAllowsTheNextFlush() async throws {
+        let (first, a, model, view) = try await fixture()
+        a.draft = "Winning draft"; try await first.flushDrafts()
+        view.draft = "Saved losing input"; try? await model.flushDrafts()
+        let copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        let conflict = try XCTUnwrap(copies.first)
+        view.draft = "Current unsaved input"
+        view.state = "paused"; view.queuePaused = true
+        view.queue = [["turnId": .string("queued"), "text": .string("Retained follow-up")]]; view.queueCount = 1
+        let queue = view.queue
+        XCTAssertTrue(view.hasWork); XCTAssertFalse(view.busy)
+        model.restoreConflictedDraft(conflict)
+        await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, conflict.draft.text, "A paused queue must not block replacing the composer")
+        XCTAssertEqual(view.queue, queue); XCTAssertEqual(view.queueCount, 1); XCTAssertTrue(view.queuePaused)
+        try await model.flushDrafts()
+        let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: view.id)
+        XCTAssertEqual(saved?.text, conflict.draft.text)
+    }
+
+    func testAnEpisodeTracksTheLatestDraftEvenWhenItReturnsToTheLoadedBaseline() async throws {
+        let (first, a, model, view) = try await fixture()
+        a.draft = "Winning draft"; try await first.flushDrafts()
+        view.draft = "Losing text"; try? await model.flushDrafts()
+        let original = try await model.store?.draftConflicts(id: view.id).first
+        view.draft = ""; try? await model.flushDrafts()
+        let copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        XCTAssertEqual(copies.count, 1); XCTAssertEqual(copies.first?.id, original?.id)
+        XCTAssertEqual(copies.first?.draft.text, "", "The existing episode must follow an intentional clear too")
+    }
+
+    func testConflictRestorationDoesNotReplaceAnActiveSendOrEdit() async throws {
+        let states: [(String, (SessionDisplay) -> Void)] = [
+            ("send preparation", { $0.loading = true }), ("running", { $0.state = "running" }), ("resume", { $0.resuming = true }),
+            ("message edit", { $0.editingMessageID = "message" }), ("edit preparation", { $0.editPreparing = true }),
+            ("edit submission", { $0.editSubmitting = true }), ("queue edit", { $0.queueEditingID = "turn" }),
+            ("queue begin", { $0.queueEditBeginning = "edit" }), ("queue cancel", { $0.queueEditCancelling = "edit" }),
+        ]
+        for (name, prepare) in states {
+            let (first, a, model, view) = try await fixture()
+            a.draft = "Winning draft"; try await first.flushDrafts()
+            view.draft = "Losing text"; try? await model.flushDrafts()
+            let copies = try await model.store?.draftConflicts(id: view.id) ?? []
+            let conflict = try XCTUnwrap(copies.first)
+            view.draft = "Active input"; prepare(view)
+            model.restoreConflictedDraft(conflict)
+            XCTAssertNil(model.draftWrites.recoveries[view.id], name)
+            XCTAssertEqual(view.draft, "Active input", name)
+        }
+    }
+
+    func testFailedEpisodeUpdateKeepsItsPinAndRetriesTheSameCopy() async throws {
+        let (model, view, _) = try await conflicted()
+        let original = try await model.store?.draftConflicts(id: view.id).first
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database); defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_conflict BEFORE INSERT ON records WHEN NEW.kind LIKE 'draft-conflict:%' BEGIN SELECT RAISE(ABORT, 'generated update failure'); END", nil, nil, nil), SQLITE_OK)
+        view.draft = "Latest losing text"; try? await model.flushDrafts()
+        XCTAssertTrue(view.draftVersion.hasUnsavedConflict)
+        let held = try await model.store?.draftConflicts(id: view.id)
+        XCTAssertEqual(held?.first, original, "The previously durable copy remains until its replacement commits")
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_conflict", nil, nil, nil), SQLITE_OK)
+        try? await model.flushDrafts()
+        let copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        XCTAssertEqual(copies.count, 1); XCTAssertEqual(copies.first?.id, original?.id)
+        XCTAssertEqual(copies.first?.draft, view.savedDraft); XCTAssertFalse(view.draftVersion.hasUnsavedConflict)
+    }
+
+    func testRecoveryChooserCanRestoreTheOldestOfManyCopiesWithAPausedQueue() async throws {
+        let (model, view, _, _) = try await fixture()
+        for index in 0..<40 { try await model.store?.put(DraftRecord(id: view.id, text: "Copy \(index)"), kind: "draft-conflict:" + view.id, id: "copy-\(index)") }
+        let copies = try await model.store?.draftConflicts(id: view.id) ?? []
+        let oldest = try XCTUnwrap(copies.last)
+        view.state = "paused"; view.queuePaused = true; view.queueCount = 1
+        view.queue = [["turnId": .string("follow-up"), "text": .string("Retained")]]
+        let banner = RecoveredBannerView(); banner.update([], conflicts: copies, model: model)
+        let chooser = try XCTUnwrap(ConversationPaneTests.views(PiKit.MenuButton.self, in: banner).first)
+        let menu = PiMenus.menu(chooser.entries())
+        XCTAssertTrue(PiMenus.perform("restore-conflict-" + oldest.id, in: menu))
+        await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, oldest.draft.text); XCTAssertEqual(view.queue.count, 1); XCTAssertTrue(view.queuePaused)
+        let remaining = try await model.store?.draftConflicts(id: view.id) ?? []
+        XCTAssertFalse(remaining.contains { $0.id == oldest.id }); XCTAssertGreaterThanOrEqual(remaining.count, 39)
     }
 
     func testConflictCopyKeepsItsPastedImageThroughCleanup() async throws {

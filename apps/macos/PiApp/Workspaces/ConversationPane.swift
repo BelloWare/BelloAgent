@@ -73,7 +73,7 @@ struct SideActions {
         var progress: String?
         var showsRecovered: Bool
         var recovered: [String]
-        var conflicts: [String]
+        var conflicts: [SavedDraftConflict]
         var showsQueue: Bool
         var terminalWorkspace: WorkspaceRecord?
         var missingFolder: String?
@@ -237,7 +237,7 @@ struct SideActions {
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
                      covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
                      showsRecovered: !current.isSubagent && !session.busy && ((!session.recovered.isEmpty && session.uncertain) || !session.draftConflicts.isEmpty),
-                     recovered: session.recovered.map(\.id), conflicts: session.draftConflicts.map(\.id),
+                     recovered: session.recovered.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
                      terminalWorkspace: terminalWorkspace, missingFolder: model.missingProjectFolders[current.workspaceID],
                      footer: kind, transcriptState: session.state, canFork: model.canForkFromReply(session.id),
