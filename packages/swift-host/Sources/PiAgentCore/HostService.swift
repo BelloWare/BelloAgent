@@ -835,12 +835,13 @@ public actor NativeHostService {
         case "queue.edit.status": return try await session.queueEditStatus(editID:required(params["editId"],"edit id"))
         case "queue.update": try await session.updateQueued(required(params["turnId"],"turn id"),text:params["text"].text ?? ""); return ["accepted":true]
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
-        case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
+        case "queue.resume": try await session.resumeQueue(resumeToken:params["resumeToken"]); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
         case "run.continue":
             // A paused family resumes only below its (root's) limit.
+            let admittedAt = await session.stopCount
             try await session.requireCostResumeRoom()
-            return try await session.continueRun(commandID: commandID, overrides: params)
+            return try await session.continueRun(commandID: commandID, overrides: params, admittedAt: admittedAt)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":

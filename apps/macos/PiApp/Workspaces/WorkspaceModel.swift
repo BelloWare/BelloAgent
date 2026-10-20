@@ -108,6 +108,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
     var archiveStopRevisions: [String: Int] = [:]
     var archiveRevisions: [String: Int] = [:]
+    var resumeStopRevisions: [String: Int] = [:]
+    var resumeTasks: [String: (task: Task<Void, Never>, family: Bool)] = [:]
     var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.

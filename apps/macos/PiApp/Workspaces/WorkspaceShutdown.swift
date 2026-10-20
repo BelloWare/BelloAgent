@@ -45,6 +45,7 @@ extension WorkspaceModel {
         stopRememberingSelection()
         stopConfigurationRetry()
         navigationTask?.cancel(); navigationTask = nil
+        for pending in resumeTasks.values { pending.task.cancel() }
         for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()
         cancelAutomaticContext()

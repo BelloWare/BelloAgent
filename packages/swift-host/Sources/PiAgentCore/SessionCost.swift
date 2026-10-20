@@ -468,7 +468,8 @@ extension AgentSession {
         if costPaused || costPendingMembership != nil { rememberSideMembership(paused:costPaused) }
         // Pruning a completed recipient is the recovered fan-out ack. It
         // must also retire an otherwise empty hold, just as a live ack does.
-        var repaired = costPendingSidePauses != (saved?["costPendingSidePauses"].list.compactMap(\.text) ?? [])
+        var repaired = costPendingSidePauses != (saved?["costPendingSidePauses"].list.compactMap(\.text) ?? []) ||
+            costPausedMembers != (saved?["costPausedMembers"].list.compactMap(\.text) ?? [])
         // A sender can die before its task runs, or after a receiver write but
         // before its ack. Inspect only validated family metadata off-host, as
         // the rest of this initializer's recovery does. Binding later replays
@@ -501,7 +502,7 @@ extension AgentSession {
         for side in retirements where !additions.contains(side) && costPausedMembers.contains(side) {
             costPausedMembers.removeAll { $0 == side }; repaired = true
         }
-        let kept = costPausedMembers.filter { side in ((try? SideBudgetRecovery.journalURL(side, directory: directory)) ?? nil) != nil }
+        let kept = costPausedMembers.filter { side in sideBudgetMembers[side] != nil && ((try? SideBudgetRecovery.journalURL(side, directory: directory)) ?? nil) != nil }
         if kept != costPausedMembers || repaired {
             costPausedMembers = kept
             if costPaused, runTask == nil, !hasWorkAfterCostPause {

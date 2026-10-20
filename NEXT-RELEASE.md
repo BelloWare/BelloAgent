@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Stop retires pending Resume preparation and locally queued continuations, including Resume Follow-ups; helper generation tokens reject delayed requests after Stop. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Recover Copy restores paused membership only for its own descendants, clears an empty inherited family pause and preserves its own held work. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
 - [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
 - [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
 - [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
