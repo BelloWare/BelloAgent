@@ -156,6 +156,53 @@ final class PastedImageLeaseTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path), "Collect sidecars left after the last image disappeared")
     }
 
+    @MainActor func testNonRetirableSidecarsCannotStarveOrphanImages() async throws {
+        let root = scratchRoot("paste-blocked-sidecars"), model = makeWorkspaceModel(stateRoot: root)
+        let directory = model.pastedImages.directory, sidecars = try emptySidecars(35, directory: directory)
+        let bytes = Data("Keep unrecognized generation files".utf8)
+        let unknown = sidecars.map { $0.deletingPathExtension().path + "-unfinished" }
+        for path in unknown.prefix(33) { try bytes.write(to: URL(fileURLWithPath: path)) }
+        try FileManager.default.createDirectory(atPath: unknown[33], withIntermediateDirectories: false)
+        let sentinel = root.appendingPathComponent("sentinel")
+        try bytes.write(to: sentinel)
+        try FileManager.default.createSymbolicLink(atPath: unknown[34], withDestinationPath: sentinel.path)
+        let orphan = directory.appendingPathComponent("pasted-FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF-\(UUID().uuidString).png")
+        try ClipboardImageTests.image().write(to: orphan)
+        _ = try await savedJournal(retaining: [], model: model)
+        let probe = SweepReadProbe(directory: directory)
+        model.pastedImageRead = { try probe.read($0) }
+        try await model.cleanupPastedImages()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path), "Unrecognized files must not starve later orphan images")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL(for: orphan).path))
+        XCTAssertEqual(probe.measurements.peak, 1, "Non-retirable sidecars must not consume spare lease capacity")
+        XCTAssertLessThanOrEqual(probe.measurements.reads, 2)
+        for lock in sidecars { XCTAssertTrue(FileManager.default.fileExists(atPath: lock.path)) }
+        for path in unknown.prefix(33) { XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes) }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: unknown[33]).isEmpty)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: unknown[34]), sentinel.path)
+        XCTAssertEqual(try Data(contentsOf: sentinel), bytes)
+        print("PASTE_LEASE_BLOCKED peak=\(probe.measurements.peak) scans=\(probe.measurements.reads)")
+    }
+
+    @MainActor func testOrphanImagesTakePriorityOverRetirableSidecars() async throws {
+        let root = scratchRoot("paste-sidecar-priority"), model = makeWorkspaceModel(stateRoot: root)
+        let directory = model.pastedImages.directory, sidecars = try emptySidecars(33, directory: directory)
+        let orphan = directory.appendingPathComponent("pasted-FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF-\(UUID().uuidString).png")
+        try ClipboardImageTests.image().write(to: orphan)
+        _ = try await savedJournal(retaining: [], model: model)
+        let probe = SweepReadProbe(directory: directory)
+        model.pastedImageRead = { try probe.read($0) }
+        try await model.cleanupPastedImages()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path), "Collect image bytes before spending leases on empty sidecars")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL(for: orphan).path))
+        XCTAssertEqual(sidecars.filter { FileManager.default.fileExists(atPath: $0.path) }.count, 2, "Only spare capacity retires empty sidecars")
+        XCTAssertEqual(probe.measurements.peak, 32)
+        try await model.cleanupPastedImages()
+        for lock in sidecars { XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path)) }
+        XCTAssertLessThanOrEqual(probe.measurements.reads, 2, "Empty sidecars need no additional journal reads")
+        print("PASTE_LEASE_PRIORITY peak=\(probe.measurements.peak) scans=\(probe.measurements.reads)")
+    }
+
     @MainActor func testProducerCommitAndExitAfterPrepassSurvivesClaimedRescan() async throws {
         let root = scratchRoot("paste-prepass-commit"), model = makeWorkspaceModel(stateRoot: root)
         var producer: PastedImageStorage? = PastedImageStorage(root: root)
@@ -189,6 +236,15 @@ final class PastedImageLeaseTests: XCTestCase {
         try await model.store?.put(ChatRecord(id: "saved", workspaceID: "w", title: "Saved", path: journal.path, profileID: "p"),
                                    kind: "chat", id: "saved")
         return journal
+    }
+
+    private func emptySidecars(_ count: Int, directory: URL) throws -> [URL] {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try (0..<count).map { index in
+            let lock = directory.appendingPathComponent(String(format: "pasted-00000000-0000-0000-0000-%012d.lock", index))
+            try Data().write(to: lock)
+            return lock
+        }
     }
 
     private final class SweepReadProbe: @unchecked Sendable {

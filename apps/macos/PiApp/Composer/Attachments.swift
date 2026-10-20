@@ -41,10 +41,12 @@ struct PastedImageStorage: Sendable {
     /// Listing acquires no descriptors that survive this call.
     func oldGenerations() throws -> [String: [URL]] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
-        var generations: [String: [URL]] = [:]
+        var generations: [String: [URL]] = [:], occupied: Set<String> = []
         for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) {
             let name = file.lastPathComponent
             guard !name.hasPrefix(prefix), name != "pasted-" + generation + ".lock" else { continue }
+            // Unknown files, directories and symlinks prevent sidecar retirement.
+            if name.hasPrefix("pasted-"), name.dropFirst(43).first == "-" { occupied.insert(String(name.prefix(43))) }
             let image = Self.names(in: Data(name.utf8)).contains(name)
             let sidecar = name.hasPrefix("pasted-") && name.hasSuffix(".lock") && name.count == 48 &&
                 UUID(uuidString: String(name.dropFirst(7).dropLast(5))) != nil
@@ -55,15 +57,19 @@ struct PastedImageStorage: Sendable {
             if image { generations[generation, default: []].append(file) }
             else if generations[generation] == nil { generations[generation] = [] }
         }
-        return generations
+        return generations.filter { !$0.value.isEmpty || !occupied.contains($0.key) }
     }
     /// A pre-pass can only exclude work. Every claimed generation still needs
     /// a fresh inventory before deletion, with its lease held throughout.
     func claimOldFiles(_ generations: [String: [URL]], excluding names: Set<String>) -> OldFiles {
         var abandoned: [URL] = [], leases: [String: WorkspaceLock] = [:]
-        for generation in generations.keys.sorted() {
+        // Spend spare capacity on empty sidecars only after collectable images.
+        let ordered = generations.sorted {
+            if $0.value.isEmpty != $1.value.isEmpty { return !$0.value.isEmpty }
+            return $0.key < $1.key
+        }
+        for (generation, files) in ordered {
             guard leases.count < Self.sweepGenerationLimit else { break }
-            let files = generations[generation]!
             guard files.isEmpty || files.contains(where: { !names.contains($0.lastPathComponent) }) else { continue }
             let url = directory.appendingPathComponent(generation + ".lock")
             guard let lease = try? WorkspaceLock(url: url), lease.matchesFile(at: url) else { continue }

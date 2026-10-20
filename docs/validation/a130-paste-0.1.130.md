@@ -960,3 +960,159 @@ All final runs used the code committed as `43b4b54b`; the completion update
 changes documentation only. The runner released its own shared lock. No clone
 folders or workstream test lock remain. No helper or wire code changed, so
 their full suites were not rerun. Neither round-5 issue remains unresolved.
+
+## Round 6 — sweep selection progress
+
+Review of `f32b6762` found that lexicographically early sidecars with only
+unrecognized generation-prefixed files could consume all 32 claims every
+launch. Those files correctly prevented sidecar retirement, but the same
+unproductive batch then permanently blocked later orphan PNGs.
+
+The existing directory pass now records occupied generation prefixes before
+filtering by recognized image or regular-file type. A sidecar without
+collectable images is eligible only when no generation-prefixed name remains;
+unknown files, directories and symlinks all prevent eligibility. Generations
+with images come first, followed by genuinely empty sidecars using only spare
+capacity. The reference pre-pass still excludes wholly retained generations.
+This fixes the reported orphan on the **first sweep**, without deleting or
+following unrecognized files.
+
+Selection remains advisory: acquisition is nonblocking, at most **32** claims
+are held, and the authoritative metadata/journal inventory is still obtained
+after acquisition and before deletion. No inventory/deletion or lifetime-lock
+code changed. If directory contents change after selection, the existing fresh
+listing before sidecar unlink preserves a newly added unknown file's sidecar;
+the next selection excludes that group. If an unknown file disappears after
+listing, retirement simply waits for the next sweep. Both cases defer work
+without authorizing deletion from stale inventory. The inode checks, live and
+crashed owner behavior, and two-journal-scan limit remain intact.
+
+### Failing-first evidence
+
+Only generated fixture roots, PNG bytes, sidecars, unknown files, a directory,
+a symlink and memory vaults were used. The existing real descriptor probe
+measures fixture leases during journal reads; no process descriptor limit was
+changed. Text logs below are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-paste/evidence`.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-paste
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testNonRetirableSidecarsCannotStarveOrphanImages \
+  -only-testing:PiAppTests/PastedImageLeaseTests/testOrphanImagesTakePriorityOverRetirableSidecars
+```
+
+Against unchanged round-5 production code, `r6-failing-first.log` reports
+**2 tests, 6 assertion failures, 0 unexpected errors**:
+
+- **35 non-retirable sidecar groups** sort before an orphan PNG: 33 hold
+  unknown regular files, one a directory, and one a symlink. The first sweep
+  leaves the orphan behind. The fixed test also requires exactly one useful
+  lease, so an implementation that merely sorts images first cannot hide
+  wasted claims on the blocked sidecars.
+- **33 genuinely empty sidecars** sort before an orphan PNG: the first sweep
+  spends all 32 claims on sidecars and leaves the image behind. An extra
+  sweep needs another journal read.
+
+The baseline probe sees no post-claim journal read when the selected batch
+contains no image candidates; its zero measurement is not a claim that the
+old batch held no descriptors.
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests \
+  -only-testing:PiAppTests/PastedAttachmentTests
+```
+
+`r6-lease-fixed.log`: **21/21 passed** (13 lease, 8 attachment). The blocked
+fixture collects its orphan in one sweep with **1** peak lease and **2**
+journal reads, preserving every unknown file, directory, symlink and sidecar.
+The empty-sidecar fixture collects its orphan plus 31 sidecars in one sweep,
+then the last two sidecars without another journal read: **32** peak leases,
+**2** reads total. Existing retained/garbage fixtures repeat **3 / 32** peak
+leases and **2 / 6** reads.
+
+### Mutation checks and adversarial self-review
+
+Each mutation ran with `scripts/test-macos.sh -parallel-testing-enabled NO`
+and the single `-only-testing:PiAppTests/PastedImageLeaseTests/<selector>`
+below, then the source was restored.
+
+| Mutation | Test selector | Runtime result |
+| --- | --- | --- |
+| Return all groups, omitting the occupied-prefix filter | `testNonRetirableSidecarsCannotStarveOrphanImages` | 1 test, 1 assertion failure; peak 32 instead of 1 |
+| Sort only by generation name, omitting image priority | `testOrphanImagesTakePriorityOverRetirableSidecars` | 1 test, 4 assertion failures; orphan remains after first sweep |
+
+Logs: `r6-mutation-{eligibility,priority}.log`. **2/2 mutations caught at
+runtime, 0 unexpected errors.** Neither result relies on a build failure.
+
+Adversarial review checked that occupation is recorded before file-type
+filtering, so an unrecognized directory or symlink cannot be mistaken for an
+empty group. A group containing both recognized PNGs and unknown names remains
+eligible for image collection; its sidecar still survives the final directory
+check. Wholly retained groups and busy/unverifiable leases continue to skip
+without consuming capacity. The new ordering does not move inventory reads,
+lease release or unlink operations. Existing tests still exercise a real child
+holding a live lease, collection after SIGKILL, the producer commit/exit race,
+claim-before-inventory, sidecar replacement, and 70-generation bounded cleanup.
+No further issue was found in this change. The conservative text-first caption
+choice and the separate helper finding already recorded above are unchanged.
+
+### Final focused validation
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PastedImageLeaseTests \
+  -only-testing:PiAppTests/ClipboardImageTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/ComposerSubmissionTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/CatalogImageInputTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardHTMLPerformanceTests
+```
+
+`r6-regressions-final.log`: **110 executed, 109 passed, 1 existing skip,
+0 failures**. Per-class passes: PastedImageLease **13**, ClipboardImage **19**,
+ComposerAttachmentDestination **2**, ComposerImportSubmission **11**,
+ComposerSubmission **6** (+ **1** existing missing-Conversation-menu skip),
+PastedAttachment **8**, QueuedAttachmentLimit **2**, CatalogImageInput **2**,
+DraftSize **2**, DraftMark **5**, RecoveredDraft **13**,
+QueuedEditPresentation **9**, Workspace **17**. `r6-timing-final.log`:
+**1/1 passed**; malformed HTML took **1.260 ms** text-first and **0.165 ms**
+image-first.
+
+The remaining classes each ran alone under the shared full-lane lock:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PendingChatProjectTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteRoutingTests
+TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-r6-paste" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteGalleryTests
+```
+
+| Final run | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| Paste/attachment/lease/draft/workspace (`r6-regressions-final.log`) | 109 | 1 existing | 0 |
+| HTML timing (`r6-timing-final.log`) | 1 | 0 | 0 |
+| Pending-chat projects (`r6-pending-project-final.log`) | 24 | 0 | 0 |
+| Real Edit-menu routing (`r6-menu-final.log`) | 6 | 0 | 0 |
+| Refusal gallery (`r6-gallery-final.log`) | 1 | 0 | 0 |
+| **Total** | **141** | **1** | **0** |
+
+Regenerated and inspected `gallery-r6-paste/paste-refusal-{light,dark,narrow}.png`.
+The full notice, Copy/Dismiss controls and draft remain visible in all three;
+the narrow footer continues to truncate its duplicate notice while the full
+top notice wraps. The runner released its own shared lock, and no clone folders
+or workstream test lock remain. No helper or wire source changed, so those
+suites were not rerun. No round-6 issue remains unresolved.
