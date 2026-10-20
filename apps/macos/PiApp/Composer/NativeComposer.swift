@@ -454,10 +454,13 @@ struct ComposerEditMeasurement {
         let types = pasteboard.types ?? [], hasImage = types.contains(where: Self.isImageType)
         let hasPromise = Self.hasFilePromise(on: pasteboard)
         guard urls != nil || hasImage || hasPromise else { return false }
-        // Do not request optional HTML without image bytes, or inspect the
-        // caption/icon of an explicit file URL.
-        let pasted = urls == nil && !types.contains(.fileURL) ? Self.pastedImage(on: pasteboard) : nil
-        let imageWasCopied = urls == nil && Self.imageIsWhatWasCopied(on: pasteboard, inspectHTML: pasted != nil)
+        // Resolve cheap text/type signals before asking a provider to render
+        // an image. Only an undecided HTML copy needs bytes during classification.
+        var imageForHTML: PastedImage?
+        let imageWasCopied = urls == nil && Self.imageIsWhatWasCopied(on: pasteboard) {
+            imageForHTML = Self.pastedImage(on: pasteboard)
+            return imageForHTML != nil
+        }
         let image = imageWasCopied && hasImage
         let promise = imageWasCopied && hasPromise
         guard urls != nil || image || promise else { return false }
@@ -472,6 +475,7 @@ struct ComposerEditMeasurement {
         guard urls != nil || image else {
             destination.reject?("This clipboard item promises a file but has no image data. Save the image, then attach the file."); return true
         }
+        let pasted = imageForHTML ?? (image ? Self.pastedImage(on: pasteboard) : nil)
         let storage = destination.storage
         let importing = destination.beginImport()
         // Decoding a screenshot, re-encoding it and writing it out takes long
@@ -524,7 +528,7 @@ struct ComposerEditMeasurement {
     /// Files win over their icons. Rich text with a rendering stays text;
     /// an image's URL, image-only HTML or lower-fidelity caption does not
     /// replace the image. Ambiguous text-first copies remain text.
-    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard, inspectHTML: Bool) -> Bool {
+    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard, hasImageBytes: () -> Bool) -> Bool {
         let types = pasteboard.types ?? []
         if types.contains(.fileURL) { return false }
         if types.contains(.URL) { return true }
@@ -536,7 +540,7 @@ struct ComposerEditMeasurement {
         } else { return true }
         // HTML may add confidence, never veto the cheap signals above. Read
         // bytes rather than decoding an unbounded flavor on the main actor.
-        guard inspectHTML, types.contains(.html), let html = pasteboard.data(forType: .html) else { return false }
+        guard types.contains(.html), hasImageBytes(), let html = pasteboard.data(forType: .html) else { return false }
         return htmlContainsOnlyImage(html)
     }
     private nonisolated static let clipboardInspectionByteLimit = 256 * 1024

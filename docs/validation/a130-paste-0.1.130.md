@@ -291,11 +291,12 @@ otherwise valid image copy, and Foundation's tag-stripping regex could revisit
 an unmatched suffix quadratically on the main actor. No UI, helper, wire,
 permission, capture, vault or storage boundary changes are needed.
 
-The classifier now checks file/type metadata and obtains encoded image bytes
+This revision checked file/type metadata and obtained encoded image bytes
 before considering HTML. Image-first copies without rich text, explicit image
 URLs, and absence of meaningful text decide without reading HTML. A missing
 image flavor or unavailable image bytes never triggers an HTML read. Deferred
 private pasteboard providers verify the request order and omitted reads.
+The subsequent review below corrects the eager image read introduced here.
 
 HTML supplies positive evidence only. The scanner accepts a conservative set
 of ordinary image/container tags, quoted attributes, comments and hidden
@@ -387,7 +388,7 @@ TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-html-review" \
   the complete, readable refusal strip and usable composer controls.
 
 Follow-up total: **87 executed, 86 passed, 1 existing skip, 0 failures**.
-All **6** new mutations were caught. No unresolved finding remains; ambiguous
+All **6** new mutations were caught. Both HTML review findings were resolved; ambiguous
 text-first image captions retain the lead-approved conservative behavior.
 
 ### Adversarial self-review
@@ -409,3 +410,124 @@ text-first image captions retain the lead-approved conservative behavior.
 - Reran the existing document/Finder/promise, JPEG/HEIC, large screenshot,
   malformed-image notice, destination, edit-boundary, storage and durable-draft
   matrix. No additional out-of-scope bug was changed.
+
+## Promised image read ordering review — 2026-10-20
+
+Review of `8507e20a` found that the HTML fix requested encoded image bytes
+before rejecting an ordinary text copy. A document's promised image rendering
+could therefore delay the main actor even though its bytes would be discarded.
+
+The image-byte check is now lazy. Classification first uses types and fidelity
+order, then bounded plain-text inspection. Clear text with neither URL nor HTML
+returns to ordinary text paste without requesting an image provider. Only an
+undecided HTML copy requests image bytes during classification; unavailable
+image bytes skip HTML, and available bytes precede the bounded HTML scan.
+Copies identified by cheap signals fetch image bytes after resolving their
+attachment destination, without reading unused text or HTML. Bytes obtained
+for HTML classification are retained for the background import.
+
+No classifier decision, HTML budget, normalization limit, refusal wording,
+composer destination, helper or wire behavior changed. **Known choice confirmed
+by the lead:** ambiguous text-first image captions remain text when neither
+URL nor conclusive image-only HTML adds confidence.
+
+### Failing first and mutation
+
+The new regression uses generated image data and private named pasteboards
+with an `NSPasteboardItemDataProvider` that counts requests. Both ordinary and
+rich-text cases advertise nonempty text first, a promised PNG, and no HTML or
+URL. Metadata inspection must not request data; text classification must return
+false with **zero image-provider calls**. Counting calls proves the avoided
+work without deliberately sleeping inside the provider.
+
+The existing deferred-HTML test now promises the text flavor as well, asserting
+the complete read sequence: image-first copies request **PNG only**; undecided
+text-first copies request **text → PNG → HTML**, and both attach.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-paste
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardImageTests/testClearTextDoesNotRequestPromisedImageRendering \
+  -only-testing:PiAppTests/ClipboardImageTests/testHTMLIsReadOnlyAfterImageBytesAndCheapSignals
+```
+
+`ordering-failing-first.log`: **2 tests, 3 assertion failures, 0 unexpected**.
+Both text variants requested the PNG; the undecided case read PNG before text.
+After the fix, the full clipboard matrix passed **19/19**
+(`ordering-fixed.log`).
+
+The mutation initialized the cached image by eagerly calling `pastedImage`
+before classification. Running the same two selectors caught it with **3
+assertion failures, 0 unexpected** (`ordering-mutation-eager-image.log`).
+The passing source was restored byte-for-byte before final validation:
+**1/1 new mutation caught**, with no build failure involved.
+
+### Final focused regression results
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardImageTests \
+  -only-testing:PiAppTests/ComposerAttachmentDestinationTests \
+  -only-testing:PiAppTests/ComposerImportSubmissionTests \
+  -only-testing:PiAppTests/ComposerSubmissionTests \
+  -only-testing:PiAppTests/PastedAttachmentTests \
+  -only-testing:PiAppTests/QueuedAttachmentLimitTests \
+  -only-testing:PiAppTests/CatalogImageInputTests \
+  -only-testing:PiAppTests/DraftSizeTests \
+  -only-testing:PiAppTests/DraftMarkTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ClipboardHTMLPerformanceTests
+```
+
+`ordering-regressions-final.log`: **80 executed, 79 passed, 1 existing skip,
+0 failures**. Per-class passes: ClipboardImage **19**,
+ComposerAttachmentDestination **2**, ComposerImportSubmission **11**,
+ComposerSubmission **6** (+ **1** existing missing-Conversation-menu skip),
+PastedAttachment **8**, QueuedAttachmentLimit **2**, CatalogImageInput **2**,
+DraftSize **2**, DraftMark **5**, RecoveredDraft **13**,
+QueuedEditPresentation **9**.
+
+`ordering-timing-final.log`: **1/1 passed**. The malformed fragment with
+16,000 `<` characters took **1.336 ms** text-first and **0.180 ms** image-first,
+both below the enforced 50 ms limit. No helper or wire code changed, so their
+full suites were not rerun.
+
+After acquiring the shared full-lane lock, these classes ran separately; the
+lock was released after both completed:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteRoutingTests
+TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-ordering-review" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteGalleryTests
+```
+
+- `ordering-menu-final.log`: **6/6 passed**. Actual Edit-menu ⌘V attaches in
+  main, pending, side, earlier-edit and queued-edit composers; the child reader
+  remains read-only.
+- `ordering-gallery-final.log`: **1/1 passed**. Regenerated and visually
+  reviewed `gallery-ordering-review/paste-refusal-{light,dark,narrow}.png`;
+  the complete refusal strip is readable and composer controls remain usable.
+
+Round-3 final total: **88 executed, 87 passed, 1 existing skip, 0 failures**.
+No clone folders were left under this workstream's build root.
+
+### Adversarial self-review
+
+- Traced every flavor read: read-only editors, absent image types, explicit
+  non-image file URLs and clear text do not request image bytes. Image-only
+  signals omit unused text/HTML; undecided HTML reads bytes only after text.
+- Verified the optional byte callback is nonescaping, invoked only once at
+  the HTML decision, and cached for import. There is no repeated text scan or
+  repeated provider request to obtain the same image.
+- Checked the missing-data branch still skips HTML, and direct image copies
+  still reach their visible refusal if the bytes are unreadable. Unavailable
+  destinations can refuse an already-identified image without generating it.
+- Compared the decision branches with the prior source: document renderings,
+  Finder icons, file promises, oversized/malformed HTML, explicit URLs and the
+  lead-approved text-first caption choice preserve their existing outcomes.
+- The HTML scanner and normalization code are unchanged. No additional
+  out-of-scope bug or owner decision was identified.

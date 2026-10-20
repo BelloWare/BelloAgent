@@ -151,6 +151,23 @@ final class ClipboardImageTests: XCTestCase {
         }
     }
 
+    @MainActor func testClearTextDoesNotRequestPromisedImageRendering() throws {
+        let png = try Self.image(), editor = ComposerTextView()
+        editor.attachFiles = { _ in XCTFail("A text copy must not attach its rendering") }
+        editor.imageRejected = { XCTFail("Keep ordinary text paste: \($0)") }
+        for richText in [false, true] {
+            let board = board(), item = NSPasteboardItem(), provider = DeferredFlavors([.png: png])
+            item.setString("Generated document text", forType: .string)
+            if richText { item.setString("{\\rtf1 Generated document text}", forType: .rtf) }
+            item.setDataProvider(provider, forTypes: [.png])
+            board.writeObjects([item])
+            XCTAssertEqual(board.types?.first, .string)
+            XCTAssertTrue(provider.requests.isEmpty, "Advertising a rendering must not generate it")
+            XCTAssertFalse(editor.pasteAttachments(from: board))
+            XCTAssertTrue(provider.requests.isEmpty, "An ordinary text paste must never request the promised image")
+        }
+    }
+
     @MainActor func testHTMLIsReadOnlyAfterImageBytesAndCheapSignals() async throws {
         let png = try Self.image(), html = Data("<img src='https://fixture.invalid/image'>".utf8)
         for advertisedImage in [false, true] {
@@ -164,14 +181,14 @@ final class ClipboardImageTests: XCTestCase {
         }
         for imageFirst in [true, false] {
             let board = board(), item = NSPasteboardItem()
-            let provider = DeferredFlavors([.png: png, .html: html])
+            let provider = DeferredFlavors([.png: png, .html: html, .string: Data("Generated caption".utf8)])
             if imageFirst { item.setDataProvider(provider, forTypes: [.png]) }
-            item.setString("Generated caption", forType: .string)
+            item.setDataProvider(provider, forTypes: [.string])
             item.setDataProvider(provider, forTypes: imageFirst ? [.html] : [.html, .png])
             board.writeObjects([item])
             _ = try await paste(board, label: "Deferred HTML, image first: \(imageFirst)")
-            XCTAssertEqual(provider.requests.first, .png, "Read image bytes before optional HTML")
-            XCTAssertEqual(provider.requests.contains(.html), !imageFirst, "Flavor order already decides an image-first copy")
+            XCTAssertEqual(provider.requests, imageFirst ? [.png] : [.string, .png, .html],
+                           "Use flavor order, then cheap text, image bytes and optional HTML; omit unneeded reads")
         }
     }
 
@@ -198,7 +215,7 @@ final class ClipboardImageTests: XCTestCase {
                 item.setString("Generated caption", forType: .string); item.setString(fixture.0, forType: .html)
                 if !imageFirst { item.setData(png, forType: .png) }
                 board.writeObjects([item])
-                XCTAssertEqual(ComposerTextView.imageIsWhatWasCopied(on: board, inspectHTML: true), imageFirst || fixture.1,
+                XCTAssertEqual(ComposerTextView.imageIsWhatWasCopied(on: board, hasImageBytes: { true }), imageFirst || fixture.1,
                                "HTML case \(index), image first: \(imageFirst)")
             }
         }
