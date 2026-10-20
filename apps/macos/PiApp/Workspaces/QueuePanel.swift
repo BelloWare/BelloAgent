@@ -363,16 +363,6 @@ extension WorkspaceModel {
         // Protect captured references through their independent write. Input
         // becomes durable before queueEditRequest waits for recycling.
         let outputUse = intent.map { _ in beginToolOutputUse(.queuedEdit) }
-        let completed: ([String: WireValue]) -> Void = { [weak self] reply in
-            done(reply)
-            guard let self, let intent, let store else { return }
-            view.acceptedCommands.insert(intent.id)
-            view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }
-            Task {
-                try? await store.remove(kind: "pending:" + view.id, id: intent.id)
-                self.pendingIntentsChanged(view.id)
-            }
-        }
         Task {
             defer {
                 if let intent { finishSubmission(intent.id, in: view) }
@@ -395,8 +385,10 @@ extension WorkspaceModel {
                 let reply = try await queueEditRequest(method, sessionID: view.id, params: params)
                 guard view.queueEditID == editID else { return }
                 if let revision = reply["revision"]?.number { view.adoptQueueEditHold(QueueEditHold(reply["held"]?.object), revision: Int(revision)) }
+                if let intent { try? await retireConfirmedSubmission(intent.id, in: view) }
+                guard view.queueEditID == editID else { return }
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
-                completed(reply)
+                done(reply)
             } catch HostError.rejected(let code, let reason) where ["queue_edit_cancelled", "queue_edit_removed", "queue_edit_saved", "queue_edit_missing", "command_conflict"].contains(code) {
                 guard view.queueEditID == editID else { return }
                 // Ended otherwise. A Save refused because another text was
@@ -410,7 +402,7 @@ extension WorkspaceModel {
                 draftChanged(view)
             } catch {
                 guard view.queueEditID == editID else { return }
-                await settleUnansweredQueuedEdit(view, editID: editID, operation: operation, sentDigest: sentDigest, done: completed)
+                await settleUnansweredQueuedEdit(view, editID: editID, operation: operation, sentDigest: sentDigest, done: done)
             }
         }
     }
@@ -428,6 +420,8 @@ extension WorkspaceModel {
                 view.queueEditNotice = "That did not reach the helper; the edit is still open and the queue still paused. Try again."
                 draftChanged(view)
             case "saved" where operation == "save" && status["textDigest"]?.string == sentDigest:
+                if let sentDigest { try? await retireConfirmedSubmission("queue-edit:" + editID + ":" + sentDigest, in: view) }
+                guard view.queueEditID == editID else { return }
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil; done(status)
             case "cancelled" where operation == "cancel", "removed" where operation == "remove":
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil; done(status)
@@ -582,6 +576,10 @@ extension WorkspaceModel {
             await cancelByIdentity(view, record)
             if view.unreconciledQueuedEdit == nil { view.queueEditNotice = "The queued message was not opened for rewriting." }
             return
+        }
+        if state == "saved", let digest = status["textDigest"]?.string {
+            try? await retireConfirmedSubmission("queue-edit:" + record.editID + ":" + digest, in: view)
+            guard view.unreconciledQueuedEdit == record, view.queueEditingID == nil else { return }
         }
         finishRecord(view, record, saved: state == "saved" ? (status["textDigest"]?.string ?? "") : nil)
         if record.beginOnly == true { view.queueEditNotice = "The queued message was not opened for rewriting." }

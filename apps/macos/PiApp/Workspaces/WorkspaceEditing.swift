@@ -231,7 +231,7 @@ extension WorkspaceModel {
                 // followed the way a sent message is.
                 if view.pendingBranch?.turnID == turnID, !view.browsingHistory, !view.historyState.loading { refresh(item.id) }
                 else { followSubmittedTurn(item.id) }
-                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
+                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID, draftVersion: view.draftVersion); pendingIntentsChanged(item.id) }
             } catch {
                 if helperAccepted {
                     // The helper made the branch. Local bookkeeping cannot

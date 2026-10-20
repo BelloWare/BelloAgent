@@ -1,8 +1,237 @@
 import XCTest
 import SQLite3
+import Darwin
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
+    func testEarlierQueuedSaveConfirmationRetiresItsCapturedInput() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked")
+        view.draft = "First saved rewrite"
+        model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated lost reply") }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("First Save unanswered") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        XCTAssertEqual(view.queueEditPendingOperation, "save")
+        let captured = try XCTUnwrap(view.recovered.first)
+        view.draft = "Newer typing"
+        model.queueEditOperation = { method, _, _ in
+            XCTAssertEqual(method, "queue.edit.status")
+            return ["state": .string("saved"), "textDigest": .string(QueuedEditDraft.digest(captured.text))]
+        }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Earlier Save confirmed") { view.queueEditID == nil }
+        await model.draftWrites.tasks[view.id]?.value
+        try await snapshot(model, view: view, wire: wire)
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertTrue(pending.isEmpty, "The earlier operation's completion must retire its independent input")
+        XCTAssertTrue(view.recovered.isEmpty, "A confirmed queued Save cannot be offered again")
+        XCTAssertEqual(view.draft, "Newer typing\n\nParked")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testConfirmedQueuedSaveRetiresAPinLeftByFailedRetryPersistence() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked")
+        view.draft = "Saved rewrite with a lost reply"
+        model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated lost reply") }
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("First Save unanswered") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        let captured = try XCTUnwrap(view.recovered.first)
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_retry BEFORE INSERT ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'generated retry failure'); END", root: model.root)
+        model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Retry persistence failed") { !view.queueEditResolving && view.submittingCommands.isEmpty }
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions, [captured])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_retry", root: model.root)
+        model.queueEditOperation = { _, _, _ in ["state": .string("saved"), "textDigest": .string(QueuedEditDraft.digest(captured.text))] }
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        view.recovered = try await model.recoverableIntents(pending, for: try XCTUnwrap(model.record(view.id)), view: view)
+        XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty, "Confirmation consumes both the durable record and its retry pin")
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertTrue(view.recovered.isEmpty, "An empty durable inventory must not revive the accepted pin")
+        try await model.flushDrafts()
+        let remaining = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertTrue(remaining.isEmpty, "Flush must not recreate confirmed input")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testAnotherInstanceCannotRecoverALiveSidePublication() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.opened.remove(parent.id); wire.heldMethod = "session.open"
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Live first side input"
+        model.send(sessionID: side.id)
+        try await eventually("Parent opening held") { wire.held != nil }
+        let observer = makeWorkspaceModel(stateRoot: model.root, vault: model.vault)
+        observer.prewarmsHelpers = false; observer.chats = model.chats
+        let otherParent = SessionDisplay(id: parent.id); otherParent.selectionMetadataLoaded = true
+        observer.displays[parent.id] = otherParent
+        await observer.reconcileSideKeeps()
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+        let inputs = try await store.list(CommandIntent.self, kind: "pending:" + parent.id)
+        XCTAssertNotNil(keep, "A different instance's missing display is not abandonment")
+        XCTAssertTrue(inputs.isEmpty); XCTAssertTrue(otherParent.recovered.isEmpty)
+        XCTAssertTrue(observer.sideKeepIssues.isEmpty, "A live publication must not offer retirement actions")
+        wire.release()
+        try await eventually("Owner finishes publication") { !view.loading && view.submittingCommands.isEmpty }
+        XCTAssertNotNil(model.chats.first { $0.id == side.id }, "The owner's registration intent must survive")
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testJournalAndTerminalReceiptSettlementRetireRetryPins() async throws {
+        for evidence in ["journal", "dispatched", "completed"] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let intent = CommandIntent(id: "accepted", sessionID: view.id, turnID: "turn", text: "Already delivered", state: "intent", draftReviewTracked: true)
+            try await store.recordSubmission(intent, draft: nil)
+            view.draftVersion.preservingSubmission(intent)
+            if evidence == "journal" {
+                model.commandAcceptanceRead = { _, _, _ in [intent.id] }
+                view.recovered = try await model.recoverableIntents([intent], for: try XCTUnwrap(model.record(view.id)), view: view)
+            } else {
+                wire.receipts = [["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string(evidence)]]
+                try await snapshot(model, view: view, wire: wire)
+            }
+            XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty, "Durable helper evidence must retire the retry pin")
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertTrue(view.recovered.isEmpty)
+            try await model.flushDrafts()
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertFalse(pending.contains { $0.state == "intent" }, "Flush cannot recreate input proven accepted")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testQueuedSaveConfirmationSurvivesFailedCleanupAndHydratedEditorSettlement() async throws {
+        for failure in [false, true] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let text = "Confirmed queued input", digest = QueuedEditDraft.digest(text)
+            let intent = CommandIntent(id: "queue-edit:edit:" + digest, sessionID: view.id, turnID: "queue-edit:edit", text: text, state: "intent", draftReviewTracked: true, queueEditID: "edit")
+            view.draftVersion.preservingSubmission(intent); view.recovered = [intent]
+            let record = QueuedEditDraft(editID: "edit", turnID: "queued", rewrite: "Later typing", original: "Original", pending: "save", sent: text)
+            model.queueEditOperation = { _, _, _ in ["state": .string("saved"), "textDigest": .string(digest)] }
+            if failure { try RecoveredDraftTests.sql("CREATE TRIGGER fail_cleanup BEFORE DELETE ON records BEGIN SELECT RAISE(ABORT, 'generated cleanup failure'); END", root: model.root) }
+            // Include a durable row so the DELETE failure runs its trigger.
+            try await store.put(intent, kind: "pending:" + view.id, id: intent.id)
+            await model.reconcileQueuedEdit(view, record)
+            XCTAssertTrue(view.recovered.isEmpty)
+            XCTAssertTrue(view.draft.contains("Later typing"))
+            try await snapshot(model, view: view, wire: wire)
+            XCTAssertTrue(view.recovered.isEmpty, "Failed cleanup cannot undo helper confirmation")
+            if failure {
+                XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent], "A failed transaction retains its owner")
+                try RecoveredDraftTests.sql("DROP TRIGGER fail_cleanup", root: model.root)
+                _ = try await model.recoverableIntents([intent], for: try XCTUnwrap(model.record(view.id)), view: view)
+            }
+            XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+            try await model.flushDrafts()
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertTrue(pending.isEmpty)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testConfirmedInputWithoutADurableRowStaysSuppressedUntilCleanupRetries() async throws {
+        let (model, view, wire) = try await fixture()
+        let intent = CommandIntent(id: "queue-edit:edit:digest", sessionID: view.id, turnID: "queue-edit:edit", text: "Confirmed input", state: "intent", queueEditID: "edit")
+        view.draftVersion.preservingSubmission(intent); view.recovered = [intent]
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        defer { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        do { try await model.retireConfirmedSubmission(intent.id, in: view); XCTFail("Generated storage contention must fail cleanup") }
+        catch {}
+        XCTAssertEqual(sqlite3_exec(database, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent])
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertTrue(view.acceptedCommands.contains(intent.id), "A pin still owns the acknowledgement when no durable row exists")
+        XCTAssertTrue(view.recovered.isEmpty)
+        model.queueEditOperation = { _, _, _ in XCTFail("Known acceptance needs no new helper call"); return [:] }
+        _ = try await model.recoverableIntents([], for: try XCTUnwrap(model.record(view.id)), view: view)
+        XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testAcknowledgementReleasesPinsOnlyAfterItsCommit() async throws {
+        for hasRecord in [false, true] {
+            for rollback in [false, true] {
+                let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+                let intent = CommandIntent(id: "accepted", sessionID: view.id, turnID: "turn", text: "Confirmed input", state: "intent")
+                if hasRecord { try await store.recordSubmission(intent, draft: nil) }
+                view.draftVersion.preservingSubmission(intent)
+                let event = rollback && hasRecord ? "UPDATE" : "INSERT"
+                try RecoveredDraftTests.sql("CREATE TRIGGER fail_ack \(rollback ? "AFTER" : "BEFORE") \(event) ON records WHEN NEW.kind='pending:chat' BEGIN SELECT RAISE(\(rollback ? "ROLLBACK" : "ABORT"), 'generated acknowledgement failure'); END", root: model.root)
+                do { try await store.acknowledgeCommand(sessionID: view.id, commandID: intent.id, draftVersion: view.draftVersion); XCTFail("Generated acknowledgement failure") }
+                catch {}
+                XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent])
+                let unchanged = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: intent.id)
+                XCTAssertEqual(unchanged?.state, hasRecord ? "intent" : nil)
+                try RecoveredDraftTests.sql("DROP TRIGGER fail_ack", root: model.root)
+                try await store.acknowledgeCommand(sessionID: view.id, commandID: intent.id, draftVersion: view.draftVersion)
+                XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+                let saved = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: intent.id)
+                XCTAssertEqual(saved?.state, "acknowledged")
+                try await wire.host.shutdownAndWait()
+            }
+        }
+    }
+
+    func testAcknowledgementSurvivesALiveTaskAfterItsInputWasRetired() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let intent = CommandIntent(id: "accepted", sessionID: view.id, turnID: "queue-edit:edit", text: "Already saved", state: "intent", queueEditID: "edit")
+        view.submittingCommands.insert(intent.id)
+        try await store.recordSubmission(intent, draft: nil, draftVersion: view.draftVersion)
+        try await model.retireConfirmedSubmission(intent.id, in: view)
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertTrue(view.acceptedCommands.contains(intent.id), "The live task still owns its acknowledgement after durable cleanup")
+        // Match the queued Save task's exit, after storage and any snapshot.
+        model.finishSubmission(intent.id, in: view)
+        if !view.acceptedCommands.contains(intent.id) { model.offerSubmissionRecovery(intent, in: view) }
+        XCTAssertTrue(view.recovered.isEmpty, "Successful cleanup cannot become failed-input recovery as the task returns")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testCrashedPublicationOwnerReleasesItsLeaseForParentRecovery() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let owner = UUID(), url = model.sidePublicationLeaseURL(owner), ready = model.root.appendingPathComponent("lease-ready")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", "import fcntl,sys,pathlib,signal\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\npathlib.Path(sys.argv[2]).touch()\nsignal.pause()", url.path, ready.path]
+        try process.run()
+        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL) }; process.waitUntilExit() }
+        try await eventually("Child owns publication lease") { FileManager.default.fileExists(atPath: ready.path) }
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("missing-side.jsonl").path
+        try await store.put(SideKeepIntent(chat: child, publicationOwner: owner.uuidString), kind: "side-keep", id: child.id)
+        let intent = CommandIntent(id: "input", sessionID: child.id, turnID: "turn", text: "Captured before crash", state: "intent")
+        try await store.recordSubmission(intent, draft: nil)
+        await model.reconcileSideKeeps()
+        XCTAssertTrue(parent.recovered.isEmpty); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+        kill(process.processIdentifier, SIGKILL)
+        try await eventually("Child exited") { !process.isRunning }
+        await model.reconcileSideKeeps()
+        XCTAssertEqual(parent.recovered.map(\.text), [intent.text], "The kernel releases a crashed owner's lease")
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: child.id)
+        XCTAssertNil(keep); XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Lease files must keep their inode")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testLegacyMissingSideWithoutOwnershipEvidenceIsNotRetiredAutomatically() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "legacy-side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("missing-side.jsonl").path
+        try await store.put(SideKeepIntent(chat: child), kind: "side-keep", id: child.id)
+        let intent = CommandIntent(id: "input", sessionID: child.id, turnID: "turn", text: "Legacy retained input", state: "intent")
+        try await store.recordSubmission(intent, draft: nil)
+        await model.reconcileSideKeeps()
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + child.id)
+        XCTAssertEqual(pending, [intent]); XCTAssertTrue(parent.recovered.isEmpty)
+        XCTAssertEqual(model.sideKeepIssues.map(\.id), [child.id])
+        try await wire.host.shutdownAndWait()
+    }
+
     func testFailedSidePublicationTransfersPersistedInputToParentRecovery() async throws {
         for closing in [true, false] {
             let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
@@ -62,6 +291,7 @@ import SQLite3
         // Reconstruct from desktop records alone, without the live display.
         model.sides.removeAll(); model.displays.removeValue(forKey: side.id)
         try await wire.host.shutdownAndWait()
+        model.sidePublicationOwnership = nil
         await model.reconcileSideKeeps()
         let recovered = try await store.selectionMetadata(id: parent.id, draft: false, anchor: false)
         XCTAssertEqual(recovered.recovered.map(\.text), ["Side input before relaunch"])
@@ -814,6 +1044,7 @@ import SQLite3
     var rejectedMethod: String?
     var held: [String: WireValue]?
     var snapshotSequence = 0
+    var receipts: [[String: WireValue]] = []
     lazy var host = HostSupervisor(commandSender: { [weak self] frame in
         guard let self else { return }
         frames.append(frame)
@@ -824,7 +1055,8 @@ import SQLite3
     private func answer(_ frame: [String: WireValue]) {
         var result: [String: WireValue] = [:]
         if frame["method"]?.string == "session.snapshot" || frame["method"]?.string == "session.status" {
-            result = ["seq": .number(Double(snapshotSequence)), "state": .string("running"), "queue": .array([]), "queueEditRevision": .number(0)]
+            result = ["seq": .number(Double(snapshotSequence)), "state": .string("running"), "queue": .array([]), "queueEditRevision": .number(0),
+                      "commands": .array(receipts.map(WireValue.object))]
         }
         if frame["method"]?.string == "side.open", rejectedMethod != "side.open", let id = frame["params"]?.object?["sideSessionId"]?.string {
             let path = root.appendingPathComponent("Workspaces/w/Sessions/side_\(id).jsonl")

@@ -208,7 +208,7 @@ extension WorkspaceModel {
         view.acknowledgeContextSubmission(turnID)
         // The helper's own row for the message comes with its next snapshot.
         if drawsRow { refresh(item.id) }
-        if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
+        if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID, draftVersion: view.draftVersion); pendingIntentsChanged(item.id) }
         sendSteps?("acknowledged")
         try await titleAfterSending(submission)
         sendSteps?("titled")

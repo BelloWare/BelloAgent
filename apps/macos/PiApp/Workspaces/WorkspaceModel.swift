@@ -338,6 +338,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var chatStatsRevision = 0
     var chatStatsVersions: [String: Int] = [:]
     let root: URL
+    /// Held for this model's lifetime, including shutdown task unwinding.
+    /// Its file stays: another instance must lock the same inode to recover.
+    var sidePublicationOwnership: (id: UUID, lock: WorkspaceLock)?
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
     @Published var configurationLoaded = false

@@ -4181,3 +4181,317 @@ change was introduced.
 No production helper or wire behavior changed. All locks owned by this
 workstream were released and its automatic test results/clones cleaned up;
 text logs and generated PNGs are the evidence, with no named xcresult.
+
+## Round 14 — confirmed input settlement and publication ownership
+
+Reviewed base: `888366091541c18b6d8f365e0539bd1b76b453f4` on
+`dev/a130-workspace`. Read the shared round rules, `AGENTS.md`,
+`NEXT-RELEASE.md` and the relevant side/lifecycle design policies. No merge,
+rebase, history rewrite or installed-app launch. Fixtures use temporary state,
+MemoryVault, generated helpers and loopback services only.
+
+Evidence directory:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round14-settlement-ownership/`.
+Each run retains its exact `.command`, text `.log` and exit `.status`.
+`run.py` serializes this build root; `windows.py` also owns the shared full-lane
+lock for its window, serial and gallery runs. Serial classes run alone.
+
+### Findings and failing-first evidence
+
+All three findings are **confirmed and fixed**. With production code unchanged,
+`failing-first.log` ran three regressions: **10 expected assertion failures**,
+exit 65, with no compilation failure.
+
+1. **Earlier queued Save settlement.**
+   `testEarlierQueuedSaveConfirmationRetiresItsCapturedInput` loses the Save
+   reply and all three status replies, types different text, then confirms
+   the earlier digest through the alternate settlement branch. Before the fix:
+
+   ```text
+   XCTAssertTrue failed - The earlier operation's completion must retire its independent input
+   XCTAssertTrue failed - A confirmed queued Save cannot be offered again
+   ```
+
+   Direct replies, unanswered-operation status, the earlier-operation branch
+   and hydrated editor settlement now share confirmed-input retirement. It
+   runs before completing the editor UI. Only the confirmed edit/digest's ID
+   is consumed; the later text remains in the composer ahead of its parked
+   draft. Identity is checked again after storage awaits.
+
+2. **Accepted retry pins.**
+   `testConfirmedQueuedSaveRetiresAPinLeftByFailedRetryPersistence` loses a
+   Save reply, injects a failure into the same input's retry transaction,
+   confirms the helper's saved digest, delivers a snapshot and flushes.
+   Before:
+
+   ```text
+   XCTAssertTrue failed - Confirmation consumes both the durable record and its retry pin
+   XCTAssertTrue failed - An empty durable inventory must not revive the accepted pin
+   XCTAssertTrue failed - Flush must not recreate confirmed input
+   ```
+
+   Confirmed retirement uses the ordered, transactional `withdrawSubmission`
+   path with the draft version. The pin is released only after the deletion
+   commits. Acceptance suppresses recovery before any await, and remains
+   remembered while a durable record, pin or live submission still owns the
+   command. A failed cleanup is retried even when acceptance is already known;
+   that retry does not require another helper response.
+
+3. **Cross-instance publication ownership.**
+   `testAnotherInstanceCannotRecoverALiveSidePublication` holds the first
+   model's parent opening after the side intent/input are durable, and runs
+   reconciliation in a second model sharing the same state root. Before:
+
+   ```text
+   XCTAssertNotNil failed - A different instance's missing display is not abandonment
+   XCTAssertNotNil failed - The owner's registration intent must survive
+   XCTAssertEqual failed: ("0") is not equal to ("1")
+   ```
+
+   The observer previously moved the live input into parent recovery, removed
+   its keep intent and prevented the owner's dispatch. Publication now records
+   a UUID identifying a model-lifetime `WorkspaceLock` before saving its keep
+   intent. Reconciliation only acts on an owned publication after acquiring
+   that lease nonblockingly, and holds the acquired lease through registration
+   or parent transfer. A held lease skips both recovery and actionable notices;
+   local display absence supplies no ownership evidence.
+
+   `testCrashedPublicationOwnerReleasesItsLeaseForParentRecovery` starts a
+   generated Python child holding the same `flock`, verifies that recovery
+   cannot run, kills only that fixture child, then verifies parent recovery
+   and keep-intent retirement. The kernel releases ownership after the crash.
+   Lease files remain in `PublicationLeases/<UUID>.lock`; their stable inode,
+   not their presence or a PID, defines ownership. IDs are parsed as UUIDs;
+   the existing lock uses `O_NOFOLLOW`, `O_CLOEXEC` and nonblocking `flock`.
+   A model retains its lease while shutdown tasks unwind. No polling of the
+   publisher, new prompt, helper call or production-path enablement is added.
+
+`fixed-first.log` passed all **38** then-current submission tests. Further
+sweep tests reproduced two related settlement gaps (`failing-settlement-sweep.log`:
+four tests, six expected assertions; the lease-crash and legacy-policy tests
+passed). Journal/terminal-receipt acceptance could also leave retry pins, and
+known acceptance skipped a later failed-cleanup retry. These are fixed through
+the same ordered acknowledgement/retirement operations.
+
+### Acceptance and ownership sweep
+
+| Path checked | Settlement / ownership result |
+| --- | --- |
+| Queued Save direct reply | Confirmed ID retires before editor completion; the live task still owns it through cleanup. |
+| Same Save's lost reply followed by status | Matching edit/digest invokes the same retirement before its completion callback. |
+| Different Save/Cancel/Remove while an earlier operation is unresolved | Only the earlier matching Save is retired. Newer typing is retained; mismatching digests remain unresolved input. |
+| Hydrated queued editor | A saved outcome retires its matching command ID independently of the editor's current rewrite; replacement editor identity is rechecked after storage. |
+| Hydrated independent queued input | Matching saved digest or already-known acceptance consumes the durable record and pin; a different digest stays recoverable. |
+| Send, Steer, follow-up and side first send | Existing acknowledgement now carries its draft version; pin retirement follows the ordered acknowledgement commit. |
+| Historical Resend | Uses the same version-aware acknowledgement; review markers remain separate ordered composer writes. |
+| Journal acceptance | Matching accepted pins are acknowledged durably after returned-draft review protection. Inputs without pins retain their existing path. |
+| Dispatched snapshot receipt | Only a remaining pin needs acknowledgement; ordinary streaming snapshots acquire no additional acknowledgement write. |
+| Terminal snapshot receipt | Durable receipt precedes pending-record/pin retirement; pinned records also participate in the inventory. Failed cleanup remains suppressed and retryable. |
+| Resume, compaction and title jobs | These do not capture user-input pins. Their existing calls retain the default no-version API; title and lifecycle classes are included in validation. |
+| Queue removal and rewritten original-turn bookkeeping | These operate on already-dispatched original turn records, whose initial write committed before dispatch; the separate `queue-edit:` capture is settled by the paths above. |
+| Pending side publication, Keep, keep-on-close and fork | All four keep-intent writers attach the model's lifetime lease. No anonymous new publication remains. |
+| Close/quit/update of an owned side | Existing explicit parent transfer retains its input and collector ownership. Lifetime ownership affects observer reconciliation, not the owning model's transfer. |
+| Relaunch and concurrent observers | The successful lease probe is held across awaited storage; another observer skips without waiting. Input moves atomically before the keep intent is removed. |
+
+`testJournalAndTerminalReceiptSettlementRetireRetryPins` covers journal,
+dispatched and terminal evidence. `testQueuedSaveConfirmationSurvivesFailedCleanupAndHydratedEditorSettlement`
+checks both successful and failed deletion and a subsequent retry.
+`testConfirmedInputWithoutADurableRowStaysSuppressedUntilCleanupRetries`
+holds an independent SQLite writer to fail BEGIN, then checks an empty durable
+snapshot cannot erase acceptance while its pin remains.
+`testAcknowledgementSurvivesALiveTaskAfterItsInputWasRetired` covers the other
+owner: a live task after successful durable cleanup, before its completion
+callback. Its separate mutation removes only the live-task retention term.
+`testAcknowledgementReleasesPinsOnlyAfterItsCommit` covers missing/existing
+pending rows and failure before the write or transaction rollback after it;
+failed writes preserve the pin and durable row, successful retry clears it.
+
+The first expanded `fixed-sweep.log` ran 44 tests with three assertions in one
+new fixture case. Its AFTER INSERT trigger did not fire on SQLite's upsert
+UPDATE arm, so no failure had actually been injected. The fixture now selects
+AFTER UPDATE for an existing row. `fixed-acknowledgement-fixture.log` passes;
+this was a fixture correction, not an ignored production/test failure.
+
+**Legacy compatibility — needs owner decision:** an old keep record without
+a publication owner cannot prove its publisher is gone. Missing-journal legacy
+records therefore retain their existing review notice and records, rather than
+being automatically moved or discarded. `testLegacyMissingSideWithoutOwnershipEvidenceIsNotRetiredAutomatically`
+covers this conservative rule. A future explicit recovery policy for such
+ownerless legacy records needs the owner's decision; all newly
+published records have a lease. Legacy records with a valid journal keep the
+existing registration path.
+
+### Adversarial self-review
+
+Reviewed every changed condition and suspension boundary:
+
+| Changed decision | Newly affected state; intended result |
+| --- | --- |
+| Known accepted queued input is revisited | Failed cleanup now retries instead of leaving a pin indefinitely. It uses existing acceptance evidence, not a second dispatch. |
+| Matching saved status calls shared retirement | Earlier-operation and hydrated-editor branches now consume only the confirmed digest. Another rewrite's independent record is untouched. |
+| Editor identity after cleanup | Navigation/replacement during an await cannot finish another editor. The old command's proven acceptance still settles its own input. |
+| Pending pin included in receipt inventory | Receipt-backed input absent from desktop rows can now settle. Unmatched pins remain owned and recoverable after their task ends. |
+| Acknowledgement has a pin but no pending row | The confirmed record is recreated as acknowledged, then its pin is released after commit. Failure leaves the original pin. |
+| Acknowledgement is already durable | An acknowledged row needs no rewrite; only the redundant pin is retired. |
+| Acceptance-cache intersection | Pins and live tasks now retain acknowledgement when the durable inventory is empty. IDs with no owner remain eligible for pruning. |
+| Lease acquired before keep write | A failed lock/file operation fails publication while the existing captured-input pin remains available. No anonymous publication is written. |
+| Foreign/own lifetime lease is held | Automatic reconciliation skips the entire publication; no missing-file notice or recovery action can retire live work. The owner's explicit publication/transfer paths remain available. |
+| Lease owner exited | A nonblocking probe succeeds; recovery holds that descriptor across awaits and commits before releasing it. Files are never unlinked to manufacture ownership. |
+| Invalid owner or unacquirable lease | No automatic retirement; UUID validation prevents a record from choosing an arbitrary lock path. |
+| No owner on a legacy missing-journal record | No automatic abandonment claim; retain the existing review notice/data pending an explicit policy. |
+
+No helper implementation, wire contract, provider behavior, capture policy,
+permission boundary, control or layout geometry changed. Full helper and wire/
+concurrent/acceptance suites are not required for this native-storage round.
+The affected title-job tests are added because they share the acknowledgement API.
+
+### Final validation
+
+**503 distinct native tests passed across 29 classes; zero failures or skips.**
+All round-13 classes were rerun, with `TitleGenerationTests` added for the shared
+acknowledgement API. Counts exclude earlier exploratory/failing runs and mutations.
+
+| Class | Passed | Evidence log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 85 | `final-conversation.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless.log` |
+| `DraftLoadingTests` | 15 | `final-headless.log` |
+| `DraftOrderingTests` | 17 | `final-headless.log` |
+| `FamilyDeletionTests` | 10 | `final-headless.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless.log` |
+| `PendingChatProjectTests` | 24 | `final-headless.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless.log` |
+| `RecoveredDraftTests` | 13 | `final-headless.log` |
+| `RunHoldTests` | 18 | `final-headless.log` |
+| `SendBookkeepingTests` | 12 | `final-headless.log` |
+| `SessionOrganizationTests` | 9 | `final-headless.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless.log` |
+| `SubagentDeletionTests` | 19 | `final-headless.log` |
+| `SubmissionPersistenceTests` | 45 | `final-headless.log` |
+| `TitleGenerationTests` | 12 | `final-title.log` |
+| `ToolOutputProducerTests` | 13 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless.log` |
+| `WorkspaceValidationGalleryTests` | 4 | `final-gallery.log` |
+
+Exact final commands (also retained in the matching `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/DraftConcurrencyTests \
+  -only-testing:PiAppTests/DraftLoadingTests \
+  -only-testing:PiAppTests/DraftOrderingTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/HistoricalEditBookkeepingTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SendBookkeepingTests \
+  -only-testing:PiAppTests/SessionOrganizationTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/SubmissionPersistenceTests \
+  -only-testing:PiAppTests/WorkspaceDisplayMemoryTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/HistoricalEditFocusTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TitleGenerationTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round14-settlement-ownership/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Each mutation changed only its recorded condition(s), ran its dedicated
+regressions, then restored exact source in `finally`. All failures were
+assertions (exit 65), never compilation failures. Reversible edits/selectors
+are in `mutations.py` and `live-acknowledgement.py`. The first script groups
+independent changes into three builds; the live-task term has its own build.
+
+| Mutation log | Failed regression tests | Expected assertions |
+| --- | ---: | ---: |
+| `mutation-acknowledgement-lifetime.log` | 1 | 4 |
+| `mutation-live-acknowledgement.log` | 1 | 2 |
+| `mutation-primary.log` | 5 | 13 |
+| `mutation-settlement-sweep.log` | 3 | 10 |
+
+The primary batch removes the earlier-status retirement call (finding 1),
+omits the draft version from shared retirement (finding 2), and bypasses the
+lease/proof guards (finding 3, including crash and legacy cases). Each finding's
+regression fails again. The sweep batch removes acknowledgement pin release,
+terminal-receipt pin retirement and known-acceptance cleanup retries. The two
+lifetime batches separately exercise accepted pins without a durable row and
+live tasks after that row has been retired.
+
+All **10 mutation regressions** failed as expected. Final tests then ran restored source.
+The final source manifest is `tested-source-sha256.json`. Compared with the
+headless manifest, only the subsequently added gallery scene differs; all
+production and headless-test sources match. `git diff --check` passes.
+All failed runs are accounted for above; there are no ignored/unexplained failures.
+
+The serial gallery regenerated **52 PNGs** under the shared focus lock:
+the 44 existing scenes plus eight queued-Save unanswered/confirmed captures
+(light/dark, 760/300-point widths). The eight new captures were visually checked
+at their native point dimensions using the labeled inspection sheets. The
+unanswered input has its existing one-row chooser; confirmation removes that
+row, while “Newer typing after choosing Save.” remains in the composer.
+The transcript regains the row's space without a new control or layout change.
+
+Original captures:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round14-settlement-ownership/gallery/`.
+The corresponding `gallery-inspection/queued-save-light.png` and
+`gallery-inspection/queued-save-dark.png` sheets show both widths and states.
+All sheets map to their source captures in `gallery-inspection/manifest.json`.
+
+The 44 existing captures were also pixel-compared with the inspected round-13
+gallery (`gallery-pixel-comparison.json`): **41 are pixel-identical**. The
+remaining three live/wide captures differ only inside the unchanged message
+Edit/Copy/Details toolbar rectangle (310×46 pixels at x=1162, y=135). Their
+full scenes and before/after crops were visually inspected; the controls and
+geometry are unchanged. All pixels outside that rectangle match.
+
+All workstream-owned locks were released. Automatic Xcode result bundles and
+any test clone folders were cleaned from this build root; text logs and PNGs
+remain the evidence. No named xcresult was requested. The three assigned
+findings and the confirmed nearby settlement gaps are fixed; the conservative
+legacy ownership policy above is the only item flagged for an owner decision.

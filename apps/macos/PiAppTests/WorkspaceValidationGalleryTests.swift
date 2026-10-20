@@ -3,6 +3,35 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testConfirmedQueuedSaveRecoveryInLightDarkAndNarrowLayouts() async throws {
+        guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                let pane = try ConversationPaneTests.Pane(messages: [
+                    TranscriptMessage(id: "question", role: "user", text: "Review the queued rewrite while I keep typing.", turn: "turn"),
+                    TranscriptMessage(id: "answer", role: "assistant", text: "The saved rewrite stays in the queue. Newer typing remains in your composer.", turn: "turn")
+                ], width: width, height: 620)
+                defer { pane.close() }
+                pane.model.prewarmsHelpers = false; pane.hosted.appearance = NSAppearance(named: appearance)
+                let intent = CommandIntent(id: "queued-save", sessionID: pane.chat.id, turnID: "queue-edit:edit", text: "The saved queued rewrite.", state: "intent", queueEditID: "edit")
+                try await pane.model.store?.recordSubmission(intent, draft: nil)
+                pane.session.recovered = [intent]; pane.session.draft = "Newer typing after choosing Save."
+                for confirmed in [false, true] {
+                    if confirmed { try await pane.model.retireConfirmedSubmission(intent.id, in: pane.session) }
+                    await pane.settle()
+                    let banner = try XCTUnwrap(ConversationPaneTests.views(RecoveredBannerView.self, in: pane.hosted).first)
+                    XCTAssertEqual(banner.isHidden, confirmed)
+                    XCTAssertEqual(pane.session.draft, "Newer typing after choosing Save.")
+                    let image = try XCTUnwrap(pane.hosted.bitmapImageRepForCachingDisplay(in: pane.hosted.bounds))
+                    pane.hosted.cacheDisplay(in: pane.hosted.bounds, to: image)
+                    try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("queued-save-\(confirmed ? "confirmed" : "unanswered")-\(theme)-\(Int(width)).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testLiveAndSettledSubmissionRecoveryInLightDarkAndNarrowLayouts() async throws {
         guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

@@ -418,15 +418,22 @@ extension WorkspaceModel {
             guard current() else { return false }
         }
         var settled: Set<String> = []
-        try await protectReturnedDrafts(intents, view: view)
+        let pending = intents + view.draftVersion.unsavedSubmissions.filter { pin in !intents.contains { $0.id == pin.id } }
+        try await protectReturnedDrafts(pending, view: view)
         guard current() else { return false }
-        for var intent in intents {
-            guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
-                  state != "dispatched" else { continue }
+        for var intent in pending {
+            guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string else { continue }
+            if state == "dispatched" {
+                if view.draftVersion.unsavedSubmissions.contains(where: { $0.id == intent.id }) {
+                    try await store?.acknowledgeCommand(sessionID: id, commandID: intent.id, draftVersion: view.draftVersion)
+                    guard current() else { return false }
+                }
+                continue
+            }
             intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
             try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
             guard current() else { return false }
-            try await store?.remove(kind: "pending:\(id)", id: intent.id)
+            try await store?.withdrawSubmission(sessionID: id, commandID: intent.id, draft: nil, draftVersion: view.draftVersion)
             guard current() else { return false }
             settled.insert(intent.id)
         }
@@ -436,7 +443,7 @@ extension WorkspaceModel {
         guard revision == view.pendingIntentRevision, view.draftVersion === draftVersion, draftVersion.submissionRevision == submissionRevision else { return true }
         view.pendingIntents = (revision, intents)
         view.pendingSubmissionRevision = submissionRevision
-        view.acceptedCommands.formIntersection(Set(intents.map(\.id)))
+        view.acceptedCommands.formIntersection(Set(intents.map(\.id)).union(view.draftVersion.unsavedSubmissions.map(\.id)).union(view.submittingCommands))
         // A dispatched receipt or a local acknowledgement proves acceptance,
         // even while the intent waits here for its terminal receipt.
         let recoverable = retainingCapturedInput(intents, in: view).filter { intent in

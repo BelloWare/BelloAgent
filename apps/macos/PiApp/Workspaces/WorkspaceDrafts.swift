@@ -70,13 +70,13 @@ extension WorkspaceModel {
         // Queue saves have no new turn receipt. After a lost reply, the
         // helper's durable outcome must match this captured text before it
         // can retire the input; a different rewrite leaves it recoverable.
-        for intent in unchecked {
-            guard let editID = intent.queueEditID,
-                  let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
-                  status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
-            view.acceptedCommands.insert(intent.id)
-            try await store?.remove(kind: "pending:" + item.id, id: intent.id)
-            pendingIntentsChanged(item.id)
+        for intent in intents {
+            guard let editID = intent.queueEditID else { continue }
+            if !view.acceptedCommands.contains(intent.id) {
+                guard let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
+                      status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+            }
+            try await retireConfirmedSubmission(intent.id, in: view)
         }
         let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
         let accepted: Set<String>
@@ -85,6 +85,11 @@ extension WorkspaceModel {
         else { accepted = try await history.acceptedCommands(in: path, intents: turns, missingIsEmpty: item.path == nil) }
         view.acceptedCommands.formUnion(accepted)
         try await protectReturnedDrafts(intents, view: view)
+        for intent in intents where intent.queueEditID == nil && view.acceptedCommands.contains(intent.id)
+            && view.draftVersion.unsavedSubmissions.contains(where: { $0.id == intent.id }) {
+            try await store?.acknowledgeCommand(sessionID: item.id, commandID: intent.id, draftVersion: view.draftVersion)
+            pendingIntentsChanged(item.id)
+        }
         let unaccepted = unchecked.filter { !view.acceptedCommands.contains($0.id) }
         // A Resume the helper never took ran nothing and holds no text: its
         // record goes, and the chat still offers Resume.
@@ -94,6 +99,16 @@ extension WorkspaceModel {
             pendingIntentsChanged(item.id)
         }
         return unaccepted.filter { !$0.turnID.hasPrefix(Self.resumeIntentPrefix) }
+    }
+    /// Helper evidence, not a composer snapshot, settles captured input.
+    /// Failed cleanup keeps its pin and acknowledgement for a later retry.
+    func retireConfirmedSubmission(_ commandID: String, in view: SessionDisplay) async throws {
+        view.acceptedCommands.insert(commandID)
+        view.settlingSubmissions.removeValue(forKey: commandID)
+        view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
+        guard let store else { throw StoreError.unavailable }
+        try await store.withdrawSubmission(sessionID: view.id, commandID: commandID, draft: nil, draftVersion: view.draftVersion)
+        pendingIntentsChanged(view.id)
     }
     func protectReturnedDrafts(_ intents: [CommandIntent], view: SessionDisplay) async throws {
         let commands = Set(intents.filter { $0.draftReviewTracked != true && !$0.turnID.hasPrefix("compaction:") && !$0.turnID.hasPrefix(Self.resumeIntentPrefix) &&

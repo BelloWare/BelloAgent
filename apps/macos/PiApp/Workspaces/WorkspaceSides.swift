@@ -27,6 +27,7 @@ struct SideKeepIntent: Codable, Sendable {
     /// Attachment discovery only: never listed for automatic registration.
     static let retainedKind = "side-keep-retained"
     var chat: ChatRecord
+    var publicationOwner: String? = nil
 }
 
 /// The exact pending copy consumed by a successful registration. A delayed
@@ -44,6 +45,17 @@ enum SideKeepState: Sendable {
 }
 
 extension WorkspaceModel {
+    func sidePublicationLeaseURL(_ id: UUID) -> URL {
+        root.appendingPathComponent("PublicationLeases", isDirectory: true).appendingPathComponent(id.uuidString + ".lock")
+    }
+    private func sideKeepIntent(_ chat: ChatRecord) throws -> SideKeepIntent {
+        if sidePublicationOwnership == nil {
+            let id = UUID(), url = sidePublicationLeaseURL(id)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            sidePublicationOwnership = (id, try WorkspaceLock(url: url))
+        }
+        return SideKeepIntent(chat: chat, publicationOwner: sidePublicationOwnership!.id.uuidString)
+    }
     /// Both are asked for once per sidebar row, and the sidebar redraws on every
     /// workspace change: a linear scan here is a scan of every chat per row.
     func side(_ id: String) -> SideRecord? { sidebarIndex.side(id, in: sides) }
@@ -196,7 +208,7 @@ extension WorkspaceModel {
             view.sideInputPendingTransfer = true
             try await materializeChat(parentID)
         }
-        try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
+        try await store.put(sideKeepIntent(saved), kind: "side-keep", id: id)
         let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
         if let submission {
             try await store.recordSubmission(submission, draft: draft, draftVersion: view.draftVersion, write: write)
@@ -530,7 +542,7 @@ extension WorkspaceModel {
             guard let store else { throw StoreError.unavailable }
             var chat = info.chat
             chat.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
-            try await store.put(SideKeepIntent(chat: chat), kind: "side-keep", id: id)
+            try await store.put(sideKeepIntent(chat), kind: "side-keep", id: id)
             let result = try await host.request("side.keep", sessionID: id, params: ["whenFinished": .bool(whenFinished)]).object ?? [:]
             if result["ephemeral"]?.bool == false { try await registerKeptSide(id: id, path: result["path"]?.string) }
             else { sides[info.parentID]?.keepRequested = true }
@@ -635,8 +647,18 @@ extension WorkspaceModel {
                 var issues: [SideKeepIssue] = []
                 for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
                     do {
+                        // A local missing display says nothing about another
+                        // instance. Probe its lifetime lease without waiting;
+                        // hold it through recovery so observers cannot race.
+                        let ownership: WorkspaceLock?
+                        if let owner = intent.publicationOwner {
+                            guard let id = UUID(uuidString: owner) else { throw StoreError.invalidRecord }
+                            guard let lease = try? WorkspaceLock(url: sidePublicationLeaseURL(id)) else { continue }
+                            ownership = lease
+                        } else { ownership = nil }
+                        defer { withExtendedLifetime(ownership) {} }
                         guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
-                        if displays[intent.chat.id] == nil, !FileManager.default.fileExists(atPath: path),
+                        if ownership != nil, displays[intent.chat.id] == nil, !FileManager.default.fileExists(atPath: path),
                            let parentID = intent.chat.parentSessionID, let store,
                            try await !store.list(CommandIntent.self, kind: "pending:" + intent.chat.id).isEmpty {
                             let moved = try await store.transferSideSubmissions(from: intent.chat.id, to: parentID, version: DraftVersion(), retiringKeep: true)
@@ -682,7 +704,7 @@ extension WorkspaceModel {
                 guard let host = hosts[info.workspaceID], host.isReady else { throw HostError.failure("The side could not be saved. Reopen its project to recover its journal; the panel remains open.") }
                 var saved = info.chat
                 saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
-                try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
+                try await store.put(sideKeepIntent(saved), kind: "side-keep", id: id)
                 let result = try await host.request("side.close", sessionID: id).object ?? [:]
                 try await registerKeptSide(id: id, path: result["path"]?.string)
             }
@@ -735,7 +757,7 @@ extension WorkspaceModel {
         fork.topicID = effectiveTopicID(for: parent)
         if atMessageID != nil { fork.parentSessionID = parent.id }
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
-        try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
+        try await store.put(sideKeepIntent(fork), kind: "side-keep", id: id)
         let host = try await open(parent), connection = host.connectionID
         var params: [String: WireValue] = ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]
         if let atMessageID { params["atMessageId"] = .string(atMessageID) }

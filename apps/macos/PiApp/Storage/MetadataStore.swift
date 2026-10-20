@@ -1117,10 +1117,16 @@ actor MetadataStore {
         }
         draftVersion?.preservedSubmission(commandID)
     }
-    func acknowledgeCommand(sessionID: String, commandID: String) throws {
-        let kind = "pending:\(sessionID)"
-        guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }
-        intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID)
+    func acknowledgeCommand(sessionID: String, commandID: String, draftVersion: DraftVersion? = nil) throws {
+        try orderedDraftWrite(sessionID, payload: .submission) {
+            try transaction {
+                let kind = "pending:\(sessionID)"
+                guard var intent = try get(CommandIntent.self, kind: kind, id: commandID)
+                    ?? draftVersion?.unsavedSubmissions.first(where: { $0.id == commandID }) else { return }
+                if intent.state != "acknowledged" { intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID) }
+            }
+        }
+        draftVersion?.preservedSubmission(commandID)
     }
     func preserveSubmissionReviews(sessionID: String, commands: Set<String>, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
         try orderedDraftWrite(sessionID, ticket: write) {

@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] Confirming an earlier queued Save settles its captured input while preserving newer typing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-14--confirmed-input-settlement-and-publication-ownership).
+- [x] Confirmed queued input retires retry pins with its durable record; failed cleanup stays suppressed and retries safely.
+- [x] Side/fork publication records carry a lifetime lease, so another instance cannot recover live input; crashed publishers remain recoverable.
+- [x] Journal and snapshot acceptance retire captured-input pins only after committed acknowledgement or receipt cleanup.
+
 - [x] Failed side first sends retain their parent link and move captured input into parent recovery before Close/Quit or after relaunch. [Validation](docs/validation/a130-workspace-0.1.130.md#round-13--captured-input-ownership-and-reachable-side-recovery).
 - [x] Returning rejected input to a draft verifies its current durable contents before consuming the independent submission.
 - [x] Preserving captured input invalidates pending snapshots, including conflict-restoration retries, so recovery stays visible.
