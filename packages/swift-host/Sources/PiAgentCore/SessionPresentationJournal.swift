@@ -36,7 +36,7 @@ extension AgentSession {
     func saveResponseLedger(persist: Bool, terminal: String? = nil) {
         guard let id = partialLedgerID, let index = history.lastIndex(where: { $0.id == id }) else { return }
         var row = history[index]
-        row.responseTimeline = partialTimeline
+        row.responseTimeline = partialTimeline.projected()
         if let terminal { row.responseTimeline?.finish(terminal); row.detail = "Request \(terminal)" }
         do { try updatePresentation(row,persist:persist) } catch { partialTimeline.coverage = "partial" }
     }

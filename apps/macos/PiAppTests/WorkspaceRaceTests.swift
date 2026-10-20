@@ -146,6 +146,153 @@ import XCTest
     func testArchiveDuringCompactionOpeningDoesNotDispatch() async throws { try await archiveDuringOpening("context.compact") }
     func testArchiveDuringQueueResumeOpeningDoesNotDispatch() async throws { try await archiveDuringOpening("queue.resume") }
 
+    func testStopInvalidatesResumeBlockedOnMetadataBeforeItsAcknowledgment() async throws {
+        try await stopDuringResumeMetadata()
+    }
+    func testStopInvalidatesFamilyResumeBlockedOnMetadata() async throws {
+        try await stopDuringResumeMetadata(family: true)
+    }
+    func testStopInvalidatesQueuedResumeBlockedOnMetadata() async throws {
+        try await stopDuringResumeMetadata(queued: true)
+    }
+    private func stopDuringResumeMetadata(family: Bool = false, queued: Bool = false) async throws {
+        let (model, view, wire) = try await fixture()
+        model.opened.insert(view.id); view.runState = .paused; view.runStateKnown = true; view.continuable = true
+        view.costPaused = family; view.queueCount = queued ? 1 : 0
+        let method = queued ? "queue.resume" : "run.continue"
+        let store = try XCTUnwrap(model.store)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+        defer { released.signal() }
+        try await eventually("metadata preflight blocked") { entered.wait(timeout: .now()) == .success }
+        if queued { model.action(method, sessionID: view.id) } else { model.resumeRun(sessionID: view.id) }
+        try await eventually("Resume awaiting metadata") { model.budgetOpenCallers[view.id, default: 0] > 0 }
+        model.stop(sessionID: view.id)
+        try await eventually("Stop acknowledged") { wire.answered.contains("turn.stop") }
+        released.signal(); try await barrier.value
+        try await eventually("Resume retired") { !view.resuming && model.budgetOpenCallers[view.id, default: 0] == 0 }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == method }, "A Resume prepared before Stop must never dispatch afterward")
+        let intents = try await store.list(CommandIntent.self, kind: "pending:\(view.id)")
+        XCTAssertTrue(intents.isEmpty, "Undispatched Resume must not become uncertain on reopen")
+        view.runState = .paused
+        if queued { model.action(method, sessionID: view.id) } else { model.resumeRun(sessionID: view.id) }
+        try await eventually("fresh Resume finished") { !view.resuming && wire.answered.contains(method) }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == method }.count, 1, "A new click after Stop still resumes")
+    }
+
+    func testStopInvalidatesResumeWhileOpeningAnUnloadedChat() async throws {
+        let (model, view, wire) = try await fixture()
+        wire.heldMethod = "session.open"
+        model.resumeRun(sessionID: view.id)
+        try await eventually("opening held") { wire.held != nil }
+        model.stop(sessionID: view.id)
+        wire.release()
+        try await eventually("opening Resume retired") { !view.resuming }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "run.continue" })
+        let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(view.id)")
+        XCTAssertTrue(intents?.isEmpty == true)
+    }
+
+    func testSideStopCancelsFamilyPreparationButNotAnOrdinaryRootResume() async throws {
+        for family in [false, true] {
+            let (model, view, wire) = try await fixture()
+            view.runState = .paused; view.runStateKnown = true; view.costPaused = family
+            let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: wire.root.appendingPathComponent("side_side.jsonl").path, profileID: "p", parentSessionID: view.id)
+            model.chats.append(side); try await model.store?.put(side, kind: "chat", id: side.id)
+            let sideView = SessionDisplay(id: side.id); sideView.queueCount = 1; sideView.snapshotInFlight = true
+            model.displays[side.id] = sideView; model.opened.formUnion([view.id, side.id])
+            let store = try XCTUnwrap(model.store)
+            let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+            let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+            defer { released.signal() }
+            try await eventually("family metadata held") { entered.wait(timeout: .now()) == .success }
+            model.resumeRun(sessionID: view.id)
+            try await eventually("root preparing") { model.budgetOpenCallers[view.id, default: 0] > 0 }
+            model.stop(sessionID: side.id)
+            try await eventually("side Stop acknowledged") { wire.answered.contains("turn.stop") }
+            released.signal(); try await barrier.value
+            try await eventually("root preparation finished") { !view.resuming }
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.count, family ? 0 : 1)
+        }
+    }
+
+    func testStopAfterRootResumeDispatchPreventsLaterSideFanout() async throws {
+        let (model, view, wire) = try await fixture()
+        view.runState = .paused; view.runStateKnown = true; view.costPaused = true
+        let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: wire.root.appendingPathComponent("side_side.jsonl").path, profileID: "p", parentSessionID: view.id)
+        model.chats.append(side); try await model.store?.put(side, kind: "chat", id: side.id)
+        model.opened.formUnion([view.id, side.id]); wire.pausedMembers = [side.id]
+        wire.heldMethod = "run.continue"
+        model.resumeRun(sessionID: view.id)
+        try await eventually("root Resume accepted, reply held") { wire.held != nil }
+        model.stop(sessionID: view.id)
+        try await eventually("root Stop acknowledged") { wire.answered.contains("turn.stop") }
+        wire.release()
+        try await eventually("family Resume finished") { !view.resuming }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id], "Stop must retire the side fan-out after an accepted root request")
+    }
+
+    func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
+        try await stopAfterResumePreflight(queued: false)
+    }
+    func testStopGenerationAlsoFencesADirectResumeCaller() async throws {
+        let (model, view, wire) = try await fixture()
+        model.opened.insert(view.id); view.runState = .paused; view.resuming = true
+        wire.heldMethod = "session.status"
+        let item = try XCTUnwrap(model.record(view.id))
+        // Direct callers do not own a registered UI task. The synchronous
+        // Stop generation must protect them independently of Task.cancel().
+        let pending = Task { await model.performResume(item, view: view) }
+        try await eventually("direct Resume status held") { wire.held != nil }
+        model.stop(sessionID: view.id)
+        try await eventually("direct Stop acknowledged") { wire.answered.contains("turn.stop") }
+        wire.release()
+        let result = await pending.value; view.resuming = false
+        XCTAssertNil(result)
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "run.continue" })
+        let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(view.id)")
+        XCTAssertTrue(intents?.isEmpty == true)
+    }
+    func testStopCancelsResumeStillQueuedInTheSupervisor() async throws {
+        try await stopAfterResumePreflight(queued: true)
+    }
+    private func stopAfterResumePreflight(queued: Bool) async throws {
+        let (model, view, wire) = try await fixture()
+        model.opened.insert(view.id); view.runState = .paused; view.continuable = true
+        wire.heldMethod = "session.status"
+        var recording = false
+        model.resumeSteps = { if $0 == "recording" { recording = true } }
+        model.resumeRun(sessionID: view.id)
+        try await eventually("Resume status held") { wire.held != nil }
+        let store = try XCTUnwrap(model.store)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+        var blockers: [Task<WireValue, Error>] = []
+        defer { released.signal(); wire.release(); for task in blockers { task.cancel() } }
+        try await eventually("intent writer blocked") { entered.wait(timeout: .now()) == .success }
+        wire.release()
+        try await eventually("Resume recording its intent") { recording }
+        if queued {
+            wire.heldMethod = "context.info"
+            for _ in 0..<32 { blockers.append(Task { try await wire.host.request("context.info", sessionID: view.id) }) }
+            try await eventually("all supervisor slots occupied") { wire.heldFrames.count == 32 }
+            released.signal(); try await barrier.value
+            try await eventually("run.continue queued locally") { wire.host.queuedCommandCount == 1 }
+            XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "run.continue" })
+        }
+        // The forwarded action has the same synchronous retirement as the
+        // Stop button; even a full normal-command lane cannot delay its ack.
+        if queued { model.stop(sessionID: view.id) } else { model.action("turn.stop", sessionID: view.id) }
+        try await eventually("Stop acknowledged before preflight/queue released") { wire.answered.contains("turn.stop") }
+        if queued { wire.release(); for task in blockers { _ = try await task.value } }
+        else { released.signal(); try await barrier.value }
+        try await eventually("Resume cancelled") { !view.resuming }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "run.continue" })
+        let intents = try await store.list(CommandIntent.self, kind: "pending:\(view.id)")
+        XCTAssertTrue(intents.isEmpty)
+        XCTAssertNil(model.error)
+    }
+
     func testBulkRestoreDoesNotCancelAnActiveChatsPendingSend() async throws {
         let (model, view, wire) = try await fixture()
         var archived = ChatRecord(id: "archived", workspaceID: "w", title: "Archived", profileID: "p")
@@ -261,18 +408,28 @@ import XCTest
 @MainActor private final class WorkspaceRaceHost {
     let root: URL
     var frames: [[String: WireValue]] = []
+    var answered: [String] = []
     var heldMethod: String?
     var held: [String: WireValue]?
+    var heldFrames: [[String: WireValue]] = []
+    var stopRevision = 0
+    var pausedMembers: [String] = []
     lazy var host = HostSupervisor(commandSender: { [weak self] frame in
         guard let self else { return }
         self.frames.append(frame)
-        if frame["method"]?.string == self.heldMethod { self.held = frame }
+        if frame["method"]?.string == self.heldMethod { self.held = frame; self.heldFrames.append(frame) }
         else { self.answer(frame) }
     })
     init(root: URL) { self.root = root }
-    func release() { let frame = held; held = nil; heldMethod = nil; if let frame { answer(frame) } }
+    func release() { let frames = heldFrames; heldFrames = []; held = nil; heldMethod = nil; for frame in frames { answer(frame) } }
     private func answer(_ frame: [String: WireValue]) {
         var result: [String: WireValue] = [:]
+        if frame["method"]?.string == "turn.stop" { stopRevision += 1 }
+        if frame["method"]?.string == "session.status" || frame["method"]?.string == "session.open" {
+            result["resumeToken"] = .string("fixture:\(stopRevision)")
+            if !pausedMembers.isEmpty { result["cost"] = .object(["paused": .bool(true), "pausedMembers": .array(pausedMembers.map(WireValue.string))]) }
+        }
+        if frame["method"]?.string == "run.continue" { result["pausedMembers"] = .array(pausedMembers.map(WireValue.string)) }
         let side = frame["method"]?.string == "side.open"
         if side || frame["method"]?.string == "session.fork", let id = frame["params"]?.object?[side ? "sideSessionId" : "forkSessionId"]?.string {
             let path = root.appendingPathComponent("Workspaces/w/Sessions/\(side ? "side" : "fork")_\(id).jsonl")
@@ -286,6 +443,7 @@ import XCTest
         guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch), "commandId": command,
                              "ok": .bool(true), "result": .object(result)]), connectionID: connection)
+        answered.append(frame["method"]?.string ?? "")
     }
 }
 

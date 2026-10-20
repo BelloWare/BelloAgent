@@ -31,6 +31,34 @@ private actor TimedFailureClient: ModelClient {
     }
 }
 
+private actor CrashRetryClient: ModelClient {
+    var requests = 0
+    let thirdReply: Bool
+    init(thirdReply: Bool) { self.thirdReply = thirdReply }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        requests += 1
+        if requests == 1 {
+            try await Task.sleep(for:.milliseconds(150))
+            throw AgentError("provider_transport","Fixture connection dropped")
+        }
+        if requests == 2 || (requests == 3 && thirdReply) {
+            try await Task.sleep(for:.milliseconds(50))
+            return toolReply(["read"])
+        }
+        while true { try await Task.sleep(for:.milliseconds(5)) }
+    }
+}
+
+private actor CrashRetryTools: ToolExecuting {
+    var calls = 0
+    func definitions(readOnly:Bool) -> [ToolDefinition] { [ToolDefinition("read","Fixture",[:])] }
+    func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
+        calls += 1
+        if calls == 2 { while true { try await Task.sleep(for:.milliseconds(5)) } }
+        return resultText("Read fixture")
+    }
+}
+
 /// Fails its first request as a dropped connection, then holds every later
 /// request until it is cancelled: a retried request the reader stops.
 private actor HeldRetryClient: ModelClient {
@@ -43,6 +71,33 @@ private actor HeldRetryClient: ModelClient {
 }
 
 final class RetryTests: XCTestCase {
+    func testCrashAfterToolBoundaryPreservesSavedRetryTime() async throws { try await crashRetryTime(afterNewReply:false) }
+    func testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime() async throws { try await crashRetryTime(afterNewReply:true) }
+    private func crashRetryTime(afterNewReply: Bool) async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let directory=root.appendingPathComponent("state"), client=CrashRetryClient(thirdReply:afterNewReply), tools=CrashRetryTools()
+        let session=try AgentSession(id:"crash-retry",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),autoCompaction:false)
+        addTeardownBlock { await session.close() }
+        await session.useRetrySettings(.init(enabled:true,maxRetries:1,baseDelayMs:1))
+        _=try await session.submit(Submission(commandID:"c",turnID:"task",text:"Inspect"),steer:false)
+        try await eventually { await client.requests == 3 }
+        if afterNewReply { try await eventually { await tools.calls == 2 } }
+        let live=await session.snapshot(), measured=try XCTUnwrap(live["taskPresentation"]["active"]["modelMs"].double)
+        XCTAssertGreaterThanOrEqual(measured,200)
+        let rows=await session.history
+        XCTAssertGreaterThan(measured,rows.reduce(0) { $0+($1.modelMs ?? 0) }+100)
+        let saved=await session.path, crash=directory.appendingPathComponent("crash.jsonl")
+        try FileManager.default.copyItem(atPath:try XCTUnwrap(saved),toPath:crash.path)
+        let recoveredTools=RecordingTools()
+        let reopened=try AgentSession(id:"crash-retry",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:recoveredTools,traces:TraceStore(),resumePath:crash.path,autoCompaction:false)
+        let restored=await reopened.snapshot()
+        XCTAssertEqual(restored["taskPresentation"]["recent"].list.last?["outcome"].text,"interrupted")
+        XCTAssertEqual(restored["taskPresentation"]["recent"].list.last?["modelMs"].double,measured)
+        let calls=await recoveredTools.calls; XCTAssertTrue(calls.isEmpty,"Recovery never replays a tool")
+        await reopened.close()
+        await session.close()
+    }
+
     func testRetryRejectsAnUnloadedSessionBeforeProviderOrToolWork() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = FlakyClient(failures: [AgentError("provider_http", "Provider returned HTTP 401. Fixture rejection.")], replies: [toolReply(["write"]), answer("untracked")])

@@ -3,6 +3,29 @@ import Darwin
 @testable import PiApp
 
 final class TestHostIsolationTests: XCTestCase {
+    func testChildProcessesCannotRestoreInheritedHomeRoots() throws {
+        guard hasIsolatedHost() else { return }
+        let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path
+        let expected = [home, home, home + "/.codex"]
+        for environment in [["HOME": "/synthetic/inherited", "CFFIXED_USER_HOME": "/synthetic/inherited",
+                             "CODEX_HOME": "/synthetic/inherited-codex", "PI_FIXTURE_FLAG": "retained"], [:]] {
+            let child = Process(), output = Pipe()
+            child.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            child.environment = environment; child.standardOutput = output
+            try child.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            child.waitUntilExit()
+            XCTAssertEqual(child.terminationStatus, 0)
+            let entries = String(decoding: data, as: UTF8.self).split(separator: "\n").map { $0.split(separator: "=", maxSplits: 1) }
+            let values = Dictionary(uniqueKeysWithValues: entries.filter { $0.count == 2 }.map { (String($0[0]), String($0[1])) })
+            XCTAssertEqual(["HOME", "CFFIXED_USER_HOME", "CODEX_HOME"].map { values[$0] ?? "" }, expected)
+            XCTAssertEqual(values["PI_FIXTURE_FLAG"], environment["PI_FIXTURE_FLAG"])
+        }
+        for (name, path) in zip(["HOME", "CFFIXED_USER_HOME", "CODEX_HOME"], expected) {
+            XCTAssertEqual(ProcessInfo.processInfo.environment[name], path)
+        }
+    }
+
     // Verification must stop before any defaults/storage/Keychain access if
     // the boundary is broken; a non-fatal XCTAssert alone would keep running.
     private func hasIsolatedHost() -> Bool {

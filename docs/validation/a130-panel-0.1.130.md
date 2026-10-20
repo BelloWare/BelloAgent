@@ -1665,3 +1665,233 @@ existing side-open scenes include live fixture-state variation. Hashes and
 inspection results are in `screenshots-premerge-hashes.json` and
 `screenshots-premerge-review.json`. Generated fixtures are removed by test
 cleanup; no native clone folder remains (`cleanup-premerge.json`).
+
+### Integration with current dev/next
+
+Fix commit `9cf0d848` was committed and pushed before integration. Ran
+`git fetch origin`, then merged
+`origin/dev/next` at `649ea623291c9417443d61d3bb55314d8a2f5d9a` using
+`git -c commit.gpgsign=false merge --no-ff --no-commit origin/dev/next`.
+The only conflict was the additions at the top of `NEXT-RELEASE.md`; both
+sets of entries were retained. Production and test sources merged without
+conflicts. `xcodegen generate --quiet` regenerated the combined project.
+The panel and Git sources equal the tested fix commit, and merged helper
+sources equal upstream; no helper behavior was authored in this round.
+This integration is recorded as a two-parent merge commit, with no rebase
+or history rewriting. Only `dev/a130-panel` is pushed.
+
+The expanded merged sweep covers panel, Git/Changes, Files/Quick Open,
+sidebar/search and transcript Find regression classes, plus GitView,
+FileFinder and FileView package suites. Serial classes have separate native
+invocations; all native runs and gallery captures hold the shared lane.
+
+Merged package validation (`package-views-merged.log`, 529.487 seconds):
+
+| Suite | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| GitViewTests | 198 | 0 | 0 |
+| FileViewTests | 100 | 0 | 0 |
+| FileFinderTests | 38 | 0 | 3 |
+
+The three skips are the existing `FINDER_PERF=1` benchmarks for 100,000 and
+500,000 generated files; no normal file-reader test was skipped.
+
+```sh
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter 'GitViewTests|FileFinderTests|FileViewTests'
+```
+
+`merge-audit.json` confirms the tested fix sources are unchanged by the merge,
+all completed release-note entries from both parents are present, the helper
+matches upstream, and no conflict remains. Review also checked deferred
+summary notifications against controller replacement and retained the canonical
+file-opening path from the earlier trust-boundary fix.
+
+### Merged-run exception retained
+
+The first mixed Files/search group had **50 passes and one failed test**
+(two XCTest reports: the timeout assertion and its propagated error):
+`FilePreviewRefreshTests.testSiblingNotificationsLetTheActivePreviewPublish`
+at `apps/macos/PiAppTests/FilePreviewRefreshTests.swift:25` timed out waiting
+for `queued metadata recheck entered`. Evidence:
+`files-sidebar-1-merged-initial-failure.log` and
+`native-merged-initial-failures.json`. No source was changed in response.
+The isolated class rerun passed **2/2** in 0.454 seconds
+(`FilePreviewRefreshTests-merged-isolated.log`); the other seven classes were
+then rerun as a group without this class. The test and FilePreview implementation are unchanged
+from upstream. The mixed-run timeout's cause is undetermined and remains
+recorded rather than being described as an entirely failure-free first pass.
+
+### Merged gallery
+
+`SessionPanelGalleryTests` passed and regenerated **22 PNGs** under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r6/`:
+
+```text
+agents-1180x800-dark.png
+agents-1180x800-light.png
+agents-1440x900-dark.png
+agents-1440x900-light.png
+diff-1440x900-dark.png
+diff-1440x900-light.png
+diff-classification-1440x900-dark.png
+diff-classification-1440x900-light.png
+diff-no-renames-1440x900-dark.png
+diff-no-renames-1440x900-light.png
+diff-unavailable-1440x900-dark.png
+diff-unavailable-1440x900-light.png
+empty-1440x900-dark.png
+empty-1440x900-light.png
+files-1440x900-dark.png
+files-1440x900-light.png
+pill-960x700-dark.png
+pill-960x700-light.png
+repository-removed-1440x900-dark.png
+repository-removed-1440x900-light.png
+side-open-1600x900-dark.png
+side-open-1600x900-light.png
+```
+
+Opened and visually inspected all 22 final images. Unavailable counts remain
+readable in both themes, removal leaves the usable Files tree with Diff hidden,
+and the 1180-point, narrow and side-open scenes retain their intended spacing
+and clearance. No correction was needed. Twenty-one images are byte-identical
+to the pre-merge renders; the dark side-open image now includes the fixture's
+saved side-cost label. This is fixture publication timing, not a layout change.
+Hashes and individual inspection results are in `screenshots-merged-review.json`.
+
+### Final merged native validation
+
+The final **24 native invocations** passed **719 tests** across **72 classes**,
+with **0 failures and 5 optional skips**. These counts use the isolated preview
+rerun and the successful regrouped run, excluding duplicate executions from
+the initial failed group recorded above. The other seven classes passed **49/49**
+in that regrouped run. All native invocations held the shared lane; serial
+classes ran alone. Exact per-class counts follow, with text logs in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r6/`.
+
+| Class | Passed | Failed | Skipped | Text log |
+| --- | ---: | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | 0 | `changes-frames-merged.log` |
+| ChangesTabTests | 8 | 0 | 0 | `git-readers-merged.log` |
+| ChatFileLinkTests | 7 | 0 | 0 | `files-sidebar-1-merged.log` |
+| ContentSearchTests | 7 | 0 | 0 | `files-sidebar-1-merged.log` |
+| ConversationSearchPagingTests | 1 | 0 | 0 | `files-sidebar-1-merged.log` |
+| FileBlameTests | 10 | 0 | 0 | `files-sidebar-1-merged.log` |
+| FileFindTabTests | 16 | 0 | 0 | `files-sidebar-1-merged.log` |
+| FileFolderTests | 19 | 0 | 0 | `FileFolderTests-merged.log` |
+| FileHiddenReadTests | 5 | 0 | 0 | `files-sidebar-1-merged.log` |
+| FilePageReadTests | 3 | 0 | 0 | `files-sidebar-1-merged.log` |
+| FilePreviewRefreshTests | 2 | 0 | 0 | `FilePreviewRefreshTests-merged-isolated.log` |
+| FileReviewStateTests | 20 | 0 | 0 | `files-sidebar-2-merged.log` |
+| FileSyntaxTests | 13 | 0 | 1 | `FileSyntaxTests-merged.log` |
+| FileTabTests | 16 | 0 | 0 | `files-sidebar-2-merged.log` |
+| FileTextViewTests | 47 | 0 | 0 | `files-sidebar-2-merged.log` |
+| GitBranchesInteractionTests | 20 | 0 | 0 | `git-actions-merged.log` |
+| GitChangelistReadTests | 2 | 0 | 0 | `git-readers-merged.log` |
+| GitCommitBrowsingTests | 3 | 0 | 1 | `git-actions-merged.log` |
+| GitConfirmationSheetTests | 7 | 0 | 0 | `git-actions-merged.log` |
+| GitDiffTableTests | 19 | 0 | 0 | `diff-table-merged.log` |
+| GitDiscardQuestionTests | 2 | 0 | 0 | `git-actions-merged.log` |
+| GitHistoryFilterTests | 14 | 0 | 0 | `git-actions-merged.log` |
+| GitHunkReviewTests | 9 | 0 | 0 | `git-actions-merged.log` |
+| GitIntegratedHistoryTests | 10 | 0 | 0 | `git-actions-merged.log` |
+| GitOperationSafetyTests | 12 | 0 | 0 | `git-actions-merged.log` |
+| GitPanelAuditTests | 8 | 0 | 0 | `git-readers-merged.log` |
+| GitPanelDiffCaptureTests | 0 | 0 | 1 | `files-sidebar-2-merged.log` |
+| GitPanelLayoutTests | 4 | 0 | 0 | `git-readers-merged.log` |
+| GitPanelNarrowParityTests | 8 | 0 | 0 | `git-narrow-merged.log` |
+| GitPanelRedrawTests | 4 | 0 | 0 | `git-readers-merged.log` |
+| GitPanelShownTests | 13 | 0 | 0 | `git-readers-merged.log` |
+| GitPanelTimingTests | 4 | 0 | 0 | `git-timing-merged.log` |
+| GitPanelWidthTests | 3 | 0 | 0 | `git-readers-merged.log` |
+| GitPathBoundaryTests | 5 | 0 | 0 | `git-readers-merged.log` |
+| GitRenameTests | 6 | 0 | 0 | `git-readers-merged.log` |
+| GitRepositorySwitchTests | 17 | 0 | 0 | `repository-switch-merged.log` |
+| GitToolTests | 5 | 0 | 0 | `git-readers-merged.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 | `watcher-merged.log` |
+| HistoryIndexFilesTests | 3 | 0 | 1 | `files-sidebar-2-merged.log` |
+| PayloadSearchTests | 3 | 0 | 0 | `files-sidebar-2-merged.log` |
+| ProjectSidebarTests | 8 | 0 | 0 | `files-sidebar-2-merged.log` |
+| QuickOpenPlacementTests | 1 | 0 | 0 | `QuickOpenPlacementTests-merged.log` |
+| QuickOpenTests | 17 | 0 | 0 | `QuickOpenTests-merged.log` |
+| ReplyFileLinkTests | 4 | 0 | 0 | `files-sidebar-2-merged.log` |
+| SessionPanelGalleryTests | 1 | 0 | 0 | `gallery-merged.log` |
+| SessionPanelTests | 29 | 0 | 0 | `panel-merged.log` |
+| SidebarAppearanceTests | 6 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarBindingActionTests | 3 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarDocumentRegressionTests | 10 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarDropZoneTests | 6 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarFigureGoldenTests | 2 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarFlatTopicsTests | 30 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarInteractionTests | 9 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarListedOrderTests | 5 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarMetricsLayoutTests | 10 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarMultiSelectionTests | 4 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarNativeBindingTests | 4 | 0 | 0 | `SidebarNativeBindingTests-merged.log` |
+| SidebarOrderHoldViewTests | 3 | 0 | 0 | `files-sidebar-3-merged.log` |
+| SidebarRecencyTests | 4 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarRowDragTests | 4 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarRowStatesTogetherTests | 1 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarScalePerformanceTests | 4 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarSearchIndexTests | 16 | 0 | 0 | `files-sidebar-5-merged.log` |
+| SidebarSearchKeyboardTests | 1 | 0 | 0 | `SidebarSearchKeyboardTests-merged.log` |
+| SidebarSearchScopeTests | 12 | 0 | 0 | `files-sidebar-4-merged.log` |
+| SidebarSearchSidebarTests | 9 | 0 | 0 | `files-sidebar-5-merged.log` |
+| SidebarSearchTypingTests | 2 | 0 | 0 | `SidebarSearchTypingTests-merged.log` |
+| SidebarSideClickTests | 4 | 0 | 0 | `files-sidebar-5-merged.log` |
+| TopicSidebarPresentationTests | 4 | 0 | 0 | `files-sidebar-5-merged.log` |
+| TranscriptBugRegressionTests | 116 | 0 | 0 | `files-sidebar-5-merged.log` |
+| TranscriptFindProbeTests | 0 | 0 | 1 | `TranscriptFindProbeTests-merged.log` |
+| TranscriptFindTests | 11 | 0 | 0 | `files-sidebar-5-merged.log` |
+
+The five native skips are existing opt-in cases:
+
+- `GitCommitBrowsingTests.testMeasureCommitBrowsingWhenRequested`: `PI_APP_GIT_BENCH_REPO` unset.
+- `GitPanelDiffCaptureTests.testCaptureTheDiffPaneWhenRequested`: `PI_APP_UI_SCREENSHOT_ROOT` unset.
+- `HistoryIndexFilesTests.testTheIndexOfALongChat`: `PI_PERF_HISTORY_JOURNAL` unset.
+- `FileSyntaxTests.testDelayedSyntaxGallery`: `PI_ROUND2_GITFILES_GALLERY` unset.
+- `TranscriptFindProbeTests.testProbeFindDeepInHistory`: `PI_LONG_PROBE=1` unset.
+
+Exact final native commands (executed from this worktree):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests -only-testing:PiAppTests/GitToolTests -only-testing:PiAppTests/GitRenameTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitPanelAuditTests -only-testing:PiAppTests/GitPanelShownTests -only-testing:PiAppTests/GitPanelRedrawTests -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitPanelLayoutTests -only-testing:PiAppTests/GitPanelWidthTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitHunkReviewTests -only-testing:PiAppTests/GitIntegratedHistoryTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitOperationSafetyTests -only-testing:PiAppTests/GitConfirmationSheetTests -only-testing:PiAppTests/GitDiscardQuestionTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiffTableTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabFrameTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r6 PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelGalleryTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FilePreviewRefreshTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChatFileLinkTests -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/ConversationSearchPagingTests -only-testing:PiAppTests/FileBlameTests -only-testing:PiAppTests/FileFindTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/FilePageReadTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileTextViewTests -only-testing:PiAppTests/GitPanelDiffCaptureTests -only-testing:PiAppTests/HistoryIndexFilesTests -only-testing:PiAppTests/PayloadSearchTests -only-testing:PiAppTests/ProjectSidebarTests -only-testing:PiAppTests/ReplyFileLinkTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarOrderHoldViewTests -only-testing:PiAppTests/SidebarAppearanceTests -only-testing:PiAppTests/SidebarBindingActionTests -only-testing:PiAppTests/SidebarDocumentRegressionTests -only-testing:PiAppTests/SidebarFigureGoldenTests -only-testing:PiAppTests/SidebarFlatTopicsTests -only-testing:PiAppTests/SidebarInteractionTests -only-testing:PiAppTests/SidebarListedOrderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarMetricsLayoutTests -only-testing:PiAppTests/SidebarMultiSelectionTests -only-testing:PiAppTests/SidebarRecencyTests -only-testing:PiAppTests/SidebarRowStatesTogetherTests -only-testing:PiAppTests/SidebarRowDragTests -only-testing:PiAppTests/SidebarDropZoneTests -only-testing:PiAppTests/SidebarScalePerformanceTests -only-testing:PiAppTests/SidebarSearchScopeTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarSearchIndexTests -only-testing:PiAppTests/SidebarSearchSidebarTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/TopicSidebarPresentationTests -only-testing:PiAppTests/TranscriptBugRegressionTests -only-testing:PiAppTests/TranscriptFindTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileSyntaxTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenPlacementTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarNativeBindingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarSearchKeyboardTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SidebarSearchTypingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptFindProbeTests
+```
+
+Final adversarial review rechecked relative-path Git configuration, explicit
+count failure and automatic recovery, stale-controller callbacks, both repository
+lifecycle directions, canonical file navigation, and the merged release entries.
+The six mutation checks and failing-first evidence above remain applicable because
+the merge did not change those production or test sources. No additional issue
+was found in the changed paths. The unrelated mixed-run preview timeout remains
+recorded with an undetermined cause and a successful isolated rerun.
+
+`git diff --check` and `git diff --cached --check` pass. The owned lane was
+released after the native checks. No native clone directory remains; the final
+automatic Xcode result bundle was removed after preserving text logs
+(`cleanup-merged.json`). All build products and screenshots use this workstream's
+build root. No source changed after these final checks; only this validation
+record was completed.

@@ -47,6 +47,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
+    var toolOutputRecycling: (id: UUID, task: Task<Void, Error>)?
+    var toolOutputCleanup: Task<Void, Never>?
+    var toolOutputProducers: [UUID: ToolOutputProducer] = [:]
+    var toolOutputProducerRevision: UInt64 = 0
+    var toolOutputCollectionDeferred = false
+    var toolOutputProducerStep: ((ToolOutputProducer) async throws -> Void)?
+    var toolOutputReferenceScanStep: (() async -> Void)?
     var familyDeletionStep: ((String) throws -> Void)?
     var deletionTombstoneRead: ((String) async throws -> String?)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
@@ -108,6 +115,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
     var archiveStopRevisions: [String: Int] = [:]
     var archiveRevisions: [String: Int] = [:]
+    var resumeStopRevisions: [String: Int] = [:]
+    var resumeTasks: [String: (task: Task<Void, Never>, family: Bool)] = [:]
     var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
@@ -463,6 +472,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceSides.swift`: a side's draft on its way to its
     /// parent's saved draft, which every other move of it waits for.
     var sideDraftTransfers: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    var sideDraftTransferStep: (() async -> Void)?
     /// Test seam: each step of a connection change as it happens, awaited
     /// ("closed", "marked", "rebound", "metadata"), so a fixture can hold the change there.
     var connectionSwitchSteps: ((String) async throws -> Void)?

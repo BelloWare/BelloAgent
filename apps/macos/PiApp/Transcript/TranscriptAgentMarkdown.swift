@@ -160,7 +160,7 @@ private struct AgentMarkdownReading: Sendable {
         }
         collectCodes(blocks)
         return .init(blocks: blocks, headings: TranscriptCopy.targets(in: source).filter { if case .section = $0.kind { return true }; return false },
-                     codeCopyTargets: codes, searchText: text, characters: max(1, text.utf16.count))
+                     codeCopyTargets: codes, searchText: TranscriptMarkdown.renderedText(source), characters: max(1, text.utf16.count))
     }
     func prefix(_ count: Int) -> [MarkdownBlock] {
         guard count < characters else { return blocks }

@@ -5,7 +5,7 @@ import Darwin
 private actor DrainArchiveConsumer {
     let archive: PayloadArchive
     let holdBegin: Bool
-    var held = false, released = false
+    var held = false, released = false, finished = false
     private var waiter: CheckedContinuation<Void, Never>?
     init(_ archive: PayloadArchive, holdBegin: Bool = false) { self.archive = archive; self.holdBegin = holdBegin }
     func accept(_ packet: [String: WireValue]) async throws {
@@ -17,6 +17,7 @@ private actor DrainArchiveConsumer {
         }
         try await Task.sleep(for: .milliseconds(10))
         try await archive.accept(packet, workspace: "w")
+        if packet["type"]?.string == "finish" { finished = true }
     }
     func release() { released = true; waiter?.resume(); waiter = nil }
 }
@@ -42,7 +43,10 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { if !clearDuringStop { try? FileManager.default.removeItem(at: root) } }
         let script = root.appendingPathComponent("gateway.py")
-        let source = largeMetadata ? Self.gateway.replacingOccurrences(of: "body = b''.join", with: "frames[-1]['response']['usage']['vendor_details'] = 'v' * 1_100_000\n        body = b''.join") : Self.gateway
+        let source = largeMetadata ? Self.gateway
+            .replacingOccurrences(of: "body = b''.join(b'data: ' + json.dumps(f).encode() + b'\\n\\n' for f in frames)",
+                                  with: "frames[-1]['response']['usage']['vendor_details'] = 'v' * 5_000_000\n        body = json.dumps(frames[-1]['response']).encode()")
+            .replacingOccurrences(of: "'text/event-stream'", with: "'application/json'") : Self.gateway
         try source.write(to: script, atomically: true, encoding: .utf8)
         let gateway = Process()
         gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); gateway.arguments = ["-u", script.path, root.path]
@@ -71,7 +75,7 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
             "baseUrl": .string("http://127.0.0.1:\(port)/v1"), "contextWindow": .number(100000), "maxOutputTokens": .number(4096), "reasoning": .bool(true), "thinkingLevel": .string("default")]
         _ = try await host.request("session.open", sessionID: "s", params: ["profile": .object(profile), "apiKey": .string("fixture-secret"), "captureMode": .string("persist")])
         _ = try await host.request("turn.submit", sessionID: "s", params: ["clientTurnId": .string("t"), "text": .string(String(repeating: "Question ", count: 10_000))])
-        try await eventually {
+        try await eventually(timeout: largeMetadata ? 60 : 10) {
             let snapshot = try await host.request("session.snapshot", sessionID: "s").object ?? [:]
             return snapshot["state"]?.string == "idle" && snapshot["messages"]?.array?.contains { $0.object?["role"]?.string == "assistant" } == true
         }
@@ -93,6 +97,7 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
             XCTAssertFalse(clearFinished, "A stopping helper still owns an unacknowledged begin")
         } else { clearing = nil }
         let start = ProcessInfo.processInfo.systemUptime
+        if largeMetadata { try await eventually(timeout: 60) { await consumer.finished } }
         try await host.shutdownAndWait()
         try await clearing?.value
         if clearDuringStop {
@@ -116,7 +121,7 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
             XCTAssertLessThan(elapsed, 6, "The existing shutdown wait remains bounded")
         } else {
             XCTAssertEqual(metadata["outcome"]?.string, "completed")
-            if largeMetadata { XCTAssertEqual(metadata["usage"]?.object?["raw"]?.object?["vendor_details"]?.string, String(repeating: "v", count: 1_100_000)) }
+            if largeMetadata { XCTAssertEqual(metadata["usage"]?.object?["raw"]?.object?["vendor_details"]?.string?.count, 5_000_000) }
             for body in ["request", "response"] {
                 XCTAssertEqual(metadata[body]?.object?["state"]?.string, "complete")
                 let actual = try await archive.completeBody(attemptID: id, body: body)
@@ -126,6 +131,48 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
         print("CAPTURE gracefulShutdown pastDeadline=\(pastDeadline) elapsed=\(elapsed) responseRetained=\(metadata["response"]?.object?["retainedBytes"]?.number ?? 0)")
         try await release.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("Sessions/.capture-outbox").path))
+        if largeMetadata {
+            try await archive.close()
+            let reopened = PayloadArchive(root: root.appendingPathComponent("archive"))
+            try await reopened.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
+            let saved = try await reopened.metadata(attempt: id)
+            XCTAssertEqual(saved["usage"]?.object?["raw"]?.object?["vendor_details"]?.string, String(repeating: "v", count: 5_000_000))
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("export"), withIntermediateDirectories: true)
+            let exported = try await reopened.exportRetained(sessionID: "s", attemptID: id, destination: root.appendingPathComponent("export"))
+            for body in ["request", "response"] {
+                let actual = try await reopened.completeBody(attemptID: id, body: body)
+                XCTAssertEqual(actual, try Data(contentsOf: root.appendingPathComponent(body + ".bin")))
+                XCTAssertEqual(actual, try Data(contentsOf: exported.appendingPathComponent(body + ".bin")))
+            }
+            let manifest = try JSONDecoder().decode([String: WireValue].self, from: Data(contentsOf: exported.appendingPathComponent("manifest.json")))
+            XCTAssertEqual(manifest["usage"], saved["usage"])
+            try await reopened.close()
+            // Exercise both metadata migrations on the accepted large record.
+            let db = try CaptureDatabase(url: root.appendingPathComponent("archive/requests.sqlite"))
+            try db.execute("DELETE FROM archive_info WHERE name='dashboard-projection'")
+            try PayloadArchive.prepareDashboardSchema(db, migrate: true)
+            try PayloadArchive.prepareDashboardSchema(db, migrate: true)
+            try CaptureLineage.prepare(db, migrate: true)
+            try CaptureLineage.prepare(db, migrate: true)
+            let future = Date().addingTimeInterval(8 * 86400)
+            let expired = PayloadArchive(root: root.appendingPathComponent("archive"), now: { future })
+            try await expired.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
+            let statistics = try await expired.statistics()
+            XCTAssertEqual(statistics["expiredRequests"], 1); XCTAssertEqual(statistics["chunks"], 0)
+            let bytes = Data("Generated capture after expiry".utf8)
+            let sibling: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "sessionId": .string("sibling"), "turnId": .string("t"),
+                "mode": .string("persist"), "outcome": .string("completed"), "timingVersion": .number(2), "timings": .object(["dispatch": .number(1)]),
+                "request": .object(["observedBytes": .number(Double(bytes.count))])]
+            try await expired.begin(sibling, workspace: "w")
+            try await expired.append(attempt: sibling["attemptId"]!.string!, kind: "request", offset: 0, bytes: bytes)
+            try await expired.finish(sibling)
+            let body = try await expired.completeBody(attemptID: sibling["attemptId"]!.string!, body: "request")
+            XCTAssertEqual(body, bytes)
+            let report = try await expired.dashboard(DashboardFilter(from: future.addingTimeInterval(-9 * 86400), until: future.addingTimeInterval(1)))
+            XCTAssertEqual(report.requests.map(\.id), [sibling["attemptId"]!.string!])
+            try await expired.close()
+            return
+        }
         try await archive.clear(sessionID: "s")
         let remaining = try await archive.statistics()
         XCTAssertEqual(remaining["chunks"], 0); XCTAssertEqual(remaining["storedBytes"], 0)
@@ -215,8 +262,8 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(remaining["chunks"], 0); XCTAssertEqual(remaining["storedBytes"], 0)
     }
 
-    @MainActor private func eventually(_ predicate: () async throws -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(10)
+    @MainActor private func eventually(timeout: TimeInterval = 10, _ predicate: () async throws -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if try await predicate() { return }
             try await Task.sleep(for: .milliseconds(10))

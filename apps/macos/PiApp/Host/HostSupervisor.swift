@@ -116,12 +116,8 @@ final class HostSupervisor: ObservableObject {
             }
             let connection = HostTransport(capture: capture) { event in inbox.enqueue(event) }
             transport = connection; status = "Starting native runtime…"
-            let environment = [
-                "HOME": NSHomeDirectory(), "PATH": runtime.toolsPATH,
-                "LANG": "en_US.UTF-8", "TMPDIR": ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory(),
-                "PI_APP_VERSION": ReleaseConfiguration.current.version,
-                "PI_APP_BENCHMARK": PerformanceProbe.shared.enabled ? "1" : "0"
-            ]
+            let environment = HostEnvironment.values(toolsPATH: runtime.toolsPATH,
+                appVersion: ReleaseConfiguration.current.version, benchmark: PerformanceProbe.shared.enabled)
             // The vault supplies only tool search paths here; credentials use private IPC.
             connection.start(executable: helper, arguments: [], cwd: cwd, environment: environment)
             // `unknownToolOutcomes`: this app reads a call stopped while it ran

@@ -161,6 +161,12 @@ struct ToolInputDocument: Equatable, Sendable {
         let keys = callNames.filter { $0.value == callID }.map(\.key)
         return keys.count == 1 ? documents[keys[0]] : nil
     }
+    /// The same documents handed to native cards, copied before Find leaves
+    /// the main actor. Find also searches cards it will open on navigation.
+    func snapshot(_ open: Set<String>? = nil) -> [String: ToolInputDocument] {
+        guard let open else { return documents }
+        return Dictionary(open.compactMap { id in document(id).map { (id, $0) } }, uniquingKeysWith: { _, last in last })
+    }
     func isLoading(_ callID: String) -> Bool { inFlight.contains(callID) || inFlight.contains { callNames[$0] == callID } }
 
     /// Whether opening this card should ask the host for its arguments. Only a

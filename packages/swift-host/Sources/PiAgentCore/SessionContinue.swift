@@ -19,6 +19,16 @@ extension AgentSession {
     /// a user turn, so a continuation's receipt cannot replace a message's.
     static let continuePrefix = "continue:"
 
+    /// A prepared Resume belongs to this runtime and Stop generation. A
+    /// Stop acknowledgment fences that preparation even if its command has
+    /// not reached the helper yet; a fresh snapshot permits a new Resume.
+    var resumeToken: String { "\(displayEpoch):\(stopCount)" }
+    func checkResumeToken(_ token: JSON, admittedAt: Int? = nil) throws {
+        guard (admittedAt == nil || admittedAt == stopCount), token.isNull || token.text == resumeToken else {
+            throw AgentError("resume_superseded", "This Resume was prepared before the chat was stopped. Choose Resume again to go on.")
+        }
+    }
+
     /// The last message a request would carry: what a continuation answers.
     var continuationTail: ChatMessage? {
         context.last { $0.replayEligible && !requestExclusions.contains($0.id) }
@@ -154,12 +164,12 @@ extension AgentSession {
     /// before the run starts, so the same command sent again — a reply lost
     /// to a helper that then restarted — finds it and runs nothing. A second
     /// Resume with a new identity while this one runs is refused as busy.
-    public func continueRun(commandID: String, overrides: JSON = [:]) throws -> JSON {
+    public func continueRun(commandID: String, overrides: JSON = [:], admittedAt: Int? = nil) throws -> JSON {
         // Acceptance can roll back its Resume count on a failed write. No
         // cross-actor message may capture that temporary, reusable stamp.
-        try withCostPauseFence { try acceptContinuation(commandID:commandID,overrides:overrides) }
+        try withCostPauseFence { try acceptContinuation(commandID:commandID,overrides:overrides,admittedAt:admittedAt) }
     }
-    private func acceptContinuation(commandID: String, overrides: JSON) throws -> JSON {
+    private func acceptContinuation(commandID: String, overrides: JSON, admittedAt: Int?) throws -> JSON {
         try requireIndependentSession()
         try requireAgentExecution()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
@@ -171,6 +181,9 @@ extension AgentSession {
             if !costPausedMembers.isEmpty { reply["pausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
             return reply
         }
+        // Receipts above are reads, not new work. Check both preparations
+        // here, after the host's last budget await and before any writes.
+        try checkResumeToken(overrides["resumeToken"],admittedAt:admittedAt)
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
         // A family paused at its limit resumes only below it. Its parked

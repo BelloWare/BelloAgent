@@ -204,3 +204,187 @@ TEST_RUNNER_PI_APP_UI_GALLERY_SEARCH_ONLY=1 \
 No helper source or wire behavior changed, so helper/wire/concurrent/acceptance
 suites were not required for this app-only feature. The lead runs the merged
 release gate. No unresolved feature issue or owner decision remains.
+
+## Metadata row eligibility regression — 2026-10-20
+
+Follow-up branch `dev/a130-search2`, worktree `wt-a130-search2`, reusing the
+assigned build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-search`.
+This section corrects the initial implementation's over-inclusion of family
+metadata; the earlier results above describe the original search-mode work.
+Follow-up logs and images are in `evidence/search2`.
+
+### Cause and fix
+
+`sidebarFilterMatches(query:)` added project, topic, connection and model matches
+for every stored chat. Once Topics also consumed that set, it bypassed the
+existing main-chat-only group match rule and promoted unrelated sides and
+managed children into results. Flat and keyboard order shared that problem.
+
+The metadata pass now uses the same main-chat classification as the sidebar:
+exclude background tasks, managed children and valid same-project family
+children. Imported originals, orphans and cross-project side links remain
+ordinary main chats. Pinning, another topic or another archive state does not
+turn a valid family child into a main chat. The existing title, short-title,
+task and full-chat content paths still reveal matching descendants and their
+ancestors. Full-chat hits are not filtered out by the metadata eligibility rule.
+No helper, indexing, persistence, permission or capture path changed.
+
+The original scope test's model-only child/side assertions had blessed the
+over-inclusion. They now explicitly reject those metadata-only hits and retain
+positive assertions for direct child title/task and side-title matches.
+
+### Consumer sweep and adversarial review
+
+- `sidebarGroupContents` is shared by Topics, Flat, project roots and archived
+  sections. Its filtered rows, totals and archive headings consume the corrected
+  hit set; topic header counts retain their existing active-main-chat meaning.
+- `sidebarChatOrder` consumes the same set and the same ancestor-preserving
+  filter. Tests compare its IDs with the actual list rows in both layouts.
+- `SidebarListContents.visibleTopics` calls `sidebarMatches` only on the group's
+  eligible search entries. A family-only connection/model match no longer keeps
+  an empty topic visible. A matching topic title still shows its own header.
+- Chat mutations already invalidate the metadata cache. Tests change a side's
+  parent to a missing ID and back without changing the query, checking the row
+  and topic appear only while it is an orphan.
+- Generated fixtures cover both scopes, both layouts, active/archived families,
+  all four metadata fields, profile-model fallback, pinned children, different
+  family topics/archive states, imported/orphan/cross-project exceptions,
+  background exclusion, and a content-matching archived side in a matching topic.
+
+### Failing-first evidence
+
+- The unchanged `SubagentPanelTests.testTopicCountsOnlyMainChatsAndMatchingTopicDoesNotHideChildSearchHits`
+  failed exactly as reported: `chat-side` was added to the parent/child result.
+  **1 test, 1 failure**, exit 65 (`failing-first.log`).
+- Before the production fix, the expanded scope class ran **12 tests: 8 passed,
+  4 failed, 248 failed assertions**, exit 65 (`metadata-failing-first.log`).
+- With the guard applied, the scope and panel classes passed **20 tests,
+  0 failures**, exit 0 (`focused-fixed.log`).
+- Mutation: removed the metadata eligibility guard, then ran both classes.
+  **20 tests: 15 passed, 5 failed, 249 failed assertions**, exit 65
+  (`mutation-eligibility.log`). The original panel regression and all four
+  expanded metadata checks failed. Restored the fixed source byte-for-byte
+  before the final runs.
+
+### Follow-up commands
+
+All commands ran from `wt-a130-search2`, with generated fixtures and the same
+assigned build root. No named result bundle was requested. Focus/window runs
+and gallery captures take the shared full-lane lock with `mkdir`, name this
+workstream in `owner`, and release it in `finally` after each command. The
+queued runner watches for lock deletion rather than repeatedly missing the
+short gaps between other runs. Its scripts and selected-class manifest are
+retained in `evidence/search2`.
+
+```bash
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-search
+scripts/test-macos.sh -only-testing:PiAppTests/SubagentPanelTests/testTopicCountsOnlyMainChatsAndMatchingTopicDoesNotHideChildSearchHits
+scripts/test-macos.sh -only-testing:PiAppTests/SidebarSearchScopeTests
+# Both fixed and temporarily mutated source:
+scripts/test-macos.sh -only-testing:PiAppTests/SubagentPanelTests -only-testing:PiAppTests/SidebarSearchScopeTests
+
+scripts/test-macos.sh \
+  -only-testing:PiAppTests/ArchiveSwitchTests \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/ConversationSearchPagingTests \
+  -only-testing:PiAppTests/PayloadSearchTests \
+  -only-testing:PiAppTests/ProjectSidebarTests \
+  -only-testing:PiAppTests/SidebarOrderHoldViewTests \
+  -only-testing:PiAppTests/SidebarAppearanceTests \
+  -only-testing:PiAppTests/SidebarBindingActionTests \
+  -only-testing:PiAppTests/SidebarDocumentRegressionTests \
+  -only-testing:PiAppTests/SidebarFigureGoldenTests \
+  -only-testing:PiAppTests/SidebarFlatTopicsTests \
+  -only-testing:PiAppTests/SidebarInteractionTests \
+  -only-testing:PiAppTests/SidebarListedOrderTests \
+  -only-testing:PiAppTests/SidebarMetricsLayoutTests \
+  -only-testing:PiAppTests/SidebarMultiSelectionTests \
+  -only-testing:PiAppTests/SidebarRecencyTests \
+  -only-testing:PiAppTests/SidebarRowStatesTogetherTests \
+  -only-testing:PiAppTests/SidebarRowDragTests \
+  -only-testing:PiAppTests/SidebarDropZoneTests \
+  -only-testing:PiAppTests/SidebarScalePerformanceTests \
+  -only-testing:PiAppTests/SidebarSearchScopeTests \
+  -only-testing:PiAppTests/SidebarSearchIndexTests \
+  -only-testing:PiAppTests/SidebarSearchSidebarTests \
+  -only-testing:PiAppTests/SidebarSideClickTests \
+  -only-testing:PiAppTests/SubagentOrganizationTests \
+  -only-testing:PiAppTests/SubagentPanelTests \
+  -only-testing:PiAppTests/TopicSidebarPresentationTests
+for cls in SidebarSearchTypingTests SidebarNativeBindingTests SidebarSearchKeyboardTests; do
+  scripts/test-macos.sh -only-testing:PiAppTests/$cls
+done
+TEST_RUNNER_PI_APP_SEARCH_SCOPE_GALLERY="$PI_BUILD_ROOT/evidence/search2/gallery" \
+  scripts/test-macos.sh -only-testing:PiAppTests/SidebarSearchGalleryTests
+```
+
+### Final follow-up results
+
+**199 passed, 0 skipped, 0 failures**. Every requested `Sidebar*` class and all
+app search classes ran, together with `SubagentPanelTests`, the project/topic
+presentation classes, archive controls and family organization coverage.
+All five final invocations exited 0. `affected.log` contains 190 passing tests:
+
+| Class | Passed |
+| --- | ---: |
+| ArchiveSwitchTests | 4 |
+| ContentSearchTests | 7 |
+| ConversationSearchPagingTests | 1 |
+| PayloadSearchTests | 3 |
+| ProjectSidebarTests | 8 |
+| SidebarAppearanceTests | 6 |
+| SidebarBindingActionTests | 3 |
+| SidebarDocumentRegressionTests | 10 |
+| SidebarDropZoneTests | 6 |
+| SidebarFigureGoldenTests | 2 |
+| SidebarFlatTopicsTests | 30 |
+| SidebarInteractionTests | 9 |
+| SidebarListedOrderTests | 5 |
+| SidebarMetricsLayoutTests | 10 |
+| SidebarMultiSelectionTests | 4 |
+| SidebarOrderHoldViewTests | 3 |
+| SidebarRecencyTests | 4 |
+| SidebarRowDragTests | 4 |
+| SidebarRowStatesTogetherTests | 1 |
+| SidebarScalePerformanceTests | 4 |
+| SidebarSearchIndexTests | 16 |
+| SidebarSearchScopeTests | 12 |
+| SidebarSearchSidebarTests | 9 |
+| SidebarSideClickTests | 4 |
+| SubagentOrganizationTests | 13 |
+| SubagentPanelTests | 8 |
+| TopicSidebarPresentationTests | 4 |
+
+The serial classes each ran alone under the shared lane lock:
+
+| Class / log | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| SidebarSearchTypingTests | 2 | 0 | 0 |
+| SidebarNativeBindingTests | 4 | 0 | 0 |
+| SidebarSearchKeyboardTests | 1 | 0 | 0 |
+| SidebarSearchGalleryTests / gallery.log | 2 | 0 | 0 |
+
+Typing checks retain their original limits: the 32,000-row index built in
+6.07 s; maximum keystroke 26.0 ms, median 0.6 ms, main-thread stall 41.6 ms.
+For 600 matches: maximum keystroke 49.9 ms, median 42.2 ms, main-thread stall
+45.6 ms. No helper or wire behavior changed, so their suites were not required.
+
+### Follow-up gallery review
+
+Both gallery tests regenerated **32 PNGs**, and every image was opened and
+visually inspected. Folder:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-search/evidence/search2/gallery`.
+
+- New regression scenes:
+  `family-{topics,flat}-{details,full}-{300,200}-{light,dark}.png` (16 images).
+  The topic-name match lists the main chat and the child whose own title matches;
+  the metadata-only archived side stays hidden in Titles & details. Full chats
+  adds that side for its actual message hit, with its snippet and archive count 1.
+  The topic header continues to count 1 main chat. Narrow labels truncate within
+  their rows, and both scope buttons fit in light and dark appearances.
+- Existing search scenes:
+  `{topics,flat}-{details,full}-{300,200}-{light,dark}.png` (16 images).
+  Title filtering, full-chat snippets and archived results remain intact.
+
+The final source matches the restored guard used by the passing sweep.
+No unresolved regression, unrelated test failure or owner decision remains.

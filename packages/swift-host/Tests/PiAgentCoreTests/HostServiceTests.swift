@@ -68,6 +68,35 @@ final class HostServiceTests: XCTestCase {
         _ = try await host.command("mcp.resultRetained", sessionID: nil, params: ["commandId": "invocation", "retained": true])
         let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
         XCTAssertEqual(quiet["quiesced"].flag, true)
+    }
+
+    func testForgetWaitsForSlimmingWithoutBlockingAnotherChat() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path,cwd:root,profile:profile)
+        let host = NativeHostService(emit:{ _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        _ = try await host.command("session.open",sessionID:"quick",params:["profile":profile.raw,"apiKey":"fixture"])
+        let entered = expectation(description:"slimming disk entered"), gate = JournalDiskGate()
+        defer { gate.open() }
+        await host.holdJournalDiskWork { entered.fulfill(); gate.wait() }
+        let slimming = Task { try await host.command("journal.slim",sessionID:nil,params:["sessionId":"long","path":JSON(path.path)]) }
+        await fulfillment(of:[entered],timeout:3)
+        let forgotten = SubmissionPreflightGate()
+        let deletion = Task {
+            _ = try await host.command("session.forget",sessionID:"long",params:["descendantsDeleted":true,"ancestorsRepaired":true])
+            await forgotten.wait()
+        }
+        let snapshot = try await host.command("session.snapshot",sessionID:"quick",params:[:])
+        XCTAssertEqual(snapshot["state"].text,"idle")
+        try await Task.sleep(for:.milliseconds(200))
+        let premature = await forgotten.entered
+        XCTAssertFalse(premature,"Deletion cannot proceed while slimming can still publish")
+        gate.open(); _ = try await slimming.value
+        try await eventually { await forgotten.entered }
+        try FileManager.default.removeItem(at:path)
+        await forgotten.release(); try await deletion.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
         await host.shutdown()
     }
 
@@ -290,6 +319,31 @@ private final class ReadyFrames: @unchecked Sendable {
 /// recovery the app offered was rejected outright. `session.recover` copies
 /// every complete record to a new chat and leaves the original as it was.
 final class SessionRecoverTests: XCTestCase {
+    func testRecoveryRefusesSourceRemovedOrReplacedBeforePublication() async throws {
+        for replace in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let (host,sessions) = try await open(root)
+            let source = sessions.appendingPathComponent("original.jsonl")
+            let records: [JSON] = [["type":"session","version":3,"id":"original"],
+                ["type":"custom","customType":"pi-app.native.v1","id":"n1","parentId":.null,"data":["version":1]]]
+            let bytes = try journal(records,tail:"{"); try bytes.write(to:source)
+            let gate = JournalDiskGate(), ready = expectation(description:"Complete copy awaits publication")
+            await host.holdRecoveryPublication { ready.fulfill(); gate.wait() }
+            let recovery = Task { try await host.command("session.recover",sessionID:nil,params:["path":JSON(source.path),"newSessionId":"recovered"]) }
+            await fulfillment(of:[ready],timeout:5)
+            // Moving to fixture Trash reproduces normal deletion while the
+            // open descriptor still reads the original inode successfully.
+            try FileManager.default.moveItem(at:source,to:root.appendingPathComponent("trashed.jsonl"))
+            if replace { try bytes.write(to:source) }
+            gate.open()
+            do { _ = try await recovery.value; XCTFail("Recovery published after its source was \(replace ? "replaced" : "deleted")") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"session_damaged") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath:sessions.appendingPathComponent("recovered.jsonl").path))
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:sessions.path).allSatisfy { !$0.hasPrefix(".recover-") })
+            await host.shutdown()
+        }
+    }
+
     private func journal(_ lines: [JSON], tail: String) throws -> Data {
         var data = Data(); for line in lines { data.append(try line.data()); data.append(10) }
         data.append(Data(tail.utf8)); return data
@@ -358,4 +412,5 @@ private final class JournalDiskGate: @unchecked Sendable {
 }
 private extension NativeHostService {
     func holdJournalDiskWork(_ action: @escaping @Sendable () -> Void) { beforeJournalDiskWork = action }
+    func holdRecoveryPublication(_ action: @escaping @Sendable () -> Void) { beforeRecoveryPublication = action }
 }

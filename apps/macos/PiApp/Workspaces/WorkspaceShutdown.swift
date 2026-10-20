@@ -45,6 +45,7 @@ extension WorkspaceModel {
         stopRememberingSelection()
         stopConfigurationRetry()
         navigationTask?.cancel(); navigationTask = nil
+        for pending in resumeTasks.values { pending.task.cancel() }
         for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()
         cancelAutomaticContext()
@@ -55,6 +56,7 @@ extension WorkspaceModel {
         titleGenerationTasks.removeAll()
         journalSlimming?.cancel()
         pastedImageCleanup?.cancel()
+        toolOutputCleanup?.cancel()
         sidebarSearchStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
