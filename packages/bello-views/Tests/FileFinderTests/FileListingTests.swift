@@ -19,6 +19,18 @@ final class FileListingTests: XCTestCase {
         git = try TestGit(root)
     }
 
+    func testGitPathsKeepTrailingCarriageReturn() async throws {
+        let repo = root.appendingPathComponent("repo\r")
+        try git.initialize(repo)
+        let top = try await FileListing.repositoryTop(of: repo.path, environment: git.environment)
+        XCTAssertEqual(top, String(decoding: try git.run(["rev-parse", "--show-toplevel"], in: repo).dropLast(), as: UTF8.self))
+        let ignore = root.appendingPathComponent("ignore\r")
+        try Data("hidden\n".utf8).write(to: ignore)
+        try write("[core]\nexcludesFile = \"" + ignore.path + "\"\n", ".gitconfig", in: git.home)
+        let rules = try await FileListing.globalIgnoreFile(in: repo.path, environment: git.environment)
+        XCTAssertNotNil(rules)
+    }
+
     func testARepositoryListsWhatGitListsThatIsThere() async throws {
         try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
         let repo = root.appendingPathComponent("repo")

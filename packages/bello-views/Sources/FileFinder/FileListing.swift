@@ -76,7 +76,7 @@ enum FileListing {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return false }
-        let developer = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let developer = String(decoding: data.last == 10 ? data.dropLast() : data, as: UTF8.self)
         return !developer.isEmpty && files.isExecutableFile(atPath: developer + "/usr/bin/git")
     }()
 
@@ -119,7 +119,7 @@ enum FileListing {
     static func repositoryTop(of folder: String, environment: [String: String]) async throws -> String? {
         let output = try await FinderProcess.git(["rev-parse", "--show-toplevel"], in: folder, limit: 65_536, timeout: 20, environment: environment)
         guard output.status == 0 else { return nil }
-        let top = String(decoding: output.stdout, as: UTF8.self).trimmingCharacters(in: .newlines)
+        let top = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
         return top.isEmpty ? nil : top
     }
 
@@ -188,7 +188,7 @@ enum FileListing {
         var path: String?
         if gitAvailable, let output = try? await FinderProcess.git(["config", "--path", "--get", "core.excludesFile"], in: folder,
                                                                    limit: 65_536, timeout: 20, environment: environment), output.status == 0 {
-            let value = String(decoding: output.stdout, as: UTF8.self).trimmingCharacters(in: .newlines)
+            let value = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
             if !value.isEmpty { path = value }
         }
         if path == nil {

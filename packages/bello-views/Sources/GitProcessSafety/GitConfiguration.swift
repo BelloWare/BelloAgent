@@ -28,15 +28,15 @@ public struct GitConfiguration {
         // Keep the queried spelling so discovery also stamps its symlinks.
         self = try Self.inventory(in: directory, environment: environment, invocation: invocation, ancestors: [])
     }
-    private static func inventory(in directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL]) throws -> GitConfiguration {
+    private static func inventory(in directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL], stored: Bool = false) throws -> GitConfiguration {
         guard ancestors.count <= 16, !ancestors.contains(directory) else {
             throw Failure("Git submodule configuration is nested too deeply to check safely.")
         }
         return try GitInventoryCache.shared.configuration(in: directory, environment: environment, invocation: invocation) {
-            try GitConfiguration(loading: directory, environment: environment, invocation: invocation, ancestors: ancestors)
+            try GitConfiguration(loading: directory, environment: environment, invocation: invocation, ancestors: ancestors, stored: stored)
         }
     }
-    private init(loading directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL]) throws {
+    private init(loading directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL], stored: Bool) throws {
         let discovery = GitFileStamp.discovery(in: directory)
         policy = GitInventoryMemo(); redirects = GitInventoryMemo()
         let options = ["config", "--null", "--list", "--includes", "--show-scope", "--show-origin"]
@@ -68,12 +68,14 @@ public struct GitConfiguration {
         func path(_ arguments: [String]) throws -> String {
             let result = try Self.query(arguments, in: directory, environment: environment, invocation: invocation)
             guard result.status == 0 else { return "" }
-            guard let text = String(data: result.data, encoding: .utf8) else { throw ConfinementRequired() }
-            return text.hasSuffix("\n") ? String(text.dropLast()) : text
+            let bytes = result.data.last == 10 ? result.data.dropLast() : result.data
+            guard let text = String(data: bytes, encoding: .utf8) else { throw ConfinementRequired() }
+            return text
         }
         gitDirectory = try path(["rev-parse", "--absolute-git-dir"])
         let top = try path(["rev-parse", "--show-toplevel"])
         let common = gitDirectory.isEmpty ? "" : try path(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        if stored, gitDirectory.isEmpty || common.isEmpty { throw ConfinementRequired() }
         // Git setup changes cwd to the worktree (or bare gitdir) before it
         // reads config. --show-origin may still report relative filenames.
         let originBase = !top.isEmpty ? top : (!gitDirectory.isEmpty ? gitDirectory : directory.path)
@@ -212,15 +214,16 @@ public struct GitConfiguration {
                 let next = try Self.query(["symbolic-ref", "--quiet", "--no-recurse", reference],
                                           in: directory, environment: environment, invocation: invocation)
                 if next.status == 1 { reference = ""; break }
-                guard next.status == 0, let text = String(data: next.data, encoding: .utf8), text.hasSuffix("\n"),
+                guard next.status == 0, next.data.last == 10, let text = String(data: next.data.dropLast(), encoding: .utf8),
                       text.hasPrefix("refs/") else { canCache = false; break }
-                reference = String(text.dropLast())
+                reference = text
             }
             if !reference.isEmpty { canCache = false }
         }
         var children: [GitConfiguration] = []
+        var moduleStamps: [GitFileStamp] = []
         var indexStamp: GitFileStamp?
-        if !top.isEmpty {
+        if !top.isEmpty, !stored {
             let root = URL(fileURLWithPath: top, isDirectory: true)
             indexStamp = GitFileStamp(absolute(environment["GIT_INDEX_FILE"] ?? gitDirectory + "/index"))
             let index = try Self.query(["ls-files", "--stage", "--sparse", "--full-name", "-z"], in: root, environment: environment,
@@ -237,11 +240,45 @@ public struct GitConfiguration {
                 children.append(try Self.inventory(in: child, environment: environment, invocation: invocation, ancestors: ancestors + [directory]))
             }
         }
+        // Deinitializing a checkout leaves its repository here. Fetch and
+        // inherited -c options can still reach it, including nested modules.
+        func storedModules(in folder: URL, depth: Int = 0) throws {
+            try invocation.check()
+            guard depth <= 16 else { throw ConfinementRequired() }
+            let stamp = GitFileStamp(folder.path)
+            guard stamp.cacheable else { throw ConfinementRequired() }
+            moduleStamps.append(stamp)
+            guard stamp.exists else { return }
+            let contents: [URL]
+            do { contents = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
+            catch { throw ConfinementRequired() }
+            for child in contents {
+                try invocation.check()
+                let markers = ["HEAD", "config", "commondir"].map { child.appendingPathComponent($0).path }
+                if markers.contains(where: { GitFileStamp($0).exists }) {
+                    if children.contains(where: { resolved($0.gitDirectory) == resolved(child.path) }) { continue }
+                    // Relative root config paths depend on a missing
+                    // checkout's cwd, which this metadata query cannot prove.
+                    guard ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"].allSatisfy({
+                        environment[$0].map { $0.hasPrefix("/") } ?? true
+                    }) else { throw ConfinementRequired() }
+                    var childEnvironment = environment
+                    // Stored modules need no checkout. Give Git a valid cwd
+                    // without changing gitdir/onbranch/include resolution.
+                    childEnvironment["GIT_DIR"] = child.path
+                    childEnvironment["GIT_WORK_TREE"] = child.path
+                    childEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
+                    children.append(try Self.inventory(in: child, environment: childEnvironment, invocation: invocation,
+                                                       ancestors: ancestors + [directory], stored: true))
+                } else { try storedModules(in: child, depth: depth + 1) }
+            }
+        }
+        if !common.isEmpty { try storedModules(in: URL(fileURLWithPath: common).appendingPathComponent("modules")) }
         self.children = children
         var stamps = Set(files).sorted().map { path in
             indexStamp?.path == path ? indexStamp! : GitFileStamp(path)
         }
-        stamps += discovery + branchStamps + includeStamps
+        stamps += discovery + branchStamps + includeStamps + moduleStamps
         stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
         if !top.isEmpty { stamps.append(GitFileStamp(top + "/.git", directoryIdentity: true)) }
         // Hunk reads create private indexes in .git. Those do not change its
@@ -350,6 +387,7 @@ public struct GitConfiguration {
     /// Generic -c alone loses to a URL-scoped followRedirects setting.
     public func redirectOptions(invocation: GitInvocation = GitInvocation()) throws -> (options: [String], protected: Bool) {
         try redirects.get(invocation: invocation) {
+            guard repositories.allSatisfy(\.permitsUnconfinedRead) else { throw ConfinementRequired() }
             let entries = repositories.flatMap(\.entries)
             // Names come from Git's NUL-delimited inventory. Header values,
             // URL matching and remote resolution cannot weaken this policy.

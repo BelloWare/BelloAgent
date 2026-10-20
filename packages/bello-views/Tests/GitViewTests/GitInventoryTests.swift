@@ -35,6 +35,120 @@ final class GitInventoryTests: XCTestCase {
         return path
     }
 
+    func testDeinitializedSubmoduleKeepsRedirectRefusal() async throws {
+        try await storedModuleRedirect(nested: false)
+    }
+
+    func testNestedStoredSubmoduleKeepsRedirectRefusal() async throws {
+        try await storedModuleRedirect(nested: true)
+    }
+
+    private func storedModuleRedirect(nested: Bool) async throws {
+        try git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", "--name", "group/child", root.path, "child"])
+        let child = root.appendingPathComponent("child")
+        if nested {
+            try git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", root.path, "nested"], in: child)
+        }
+        try git(["submodule", "deinit", "-f", "--all"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: child.appendingPathComponent(".git").path))
+        let stored = root.appendingPathComponent(".git/modules/group/child" + (nested ? "/modules/nested" : ""))
+        let config = stored.appendingPathComponent("config").path
+        let before = try GitConfiguration(in: root, environment: environment).redirectOptions()
+        XCTAssertFalse(before.protected)
+        let warm = GitConfiguration.queryCount
+        try git(["config", "--file", config, "http.extraHeader", "X-Fixture: stored-module"])
+        try git(["config", "--file", config, "http.followRedirects", "false"])
+        try git(["config", "--file", config, "http.https://fixture.invalid/.followRedirects", "true"])
+        try git(["config", "--file", config, "core.fsmonitor", try monitor()])
+        let policy = try GitConfiguration(in: root, environment: environment).redirectOptions()
+        XCTAssertTrue(policy.protected)
+        XCTAssertTrue(policy.options.contains("http.followredirects=false"))
+        XCTAssertTrue(policy.options.contains("http.https://fixture.invalid/.followredirects=false"))
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm, "Stored config edits invalidate the parent inventory")
+        var childEnvironment = environment!
+        childEnvironment["GIT_DIR"] = stored.path; childEnvironment["GIT_WORK_TREE"] = stored.path
+        let effective = try GitConfiguration.query(policy.options + ["config", "--get-urlmatch", "http.followRedirects", "https://fixture.invalid/repo"],
+                                                    in: stored, environment: childEnvironment)
+        XCTAssertEqual(effective.status, 0)
+        XCTAssertEqual(effective.data, Data("false\n".utf8))
+        _ = try await GitService(environment: environment, trusted: true).status(in: root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testNewStoredModuleInvalidatesWarmInventory() throws {
+        XCTAssertFalse(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        let warm = GitConfiguration.queryCount
+        let stored = root.appendingPathComponent(".git/modules/group/absent-checkout")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        try git(["config", "--file", stored.appendingPathComponent("config").path, "http.extraHeader", "X-Fixture: new"])
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
+    }
+
+    func testUninspectableStoredConfigCannotRelaxRedirects() throws {
+        let stored = root.appendingPathComponent(".git/modules/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        let config = stored.appendingPathComponent("config"), original = try Data(contentsOf: config)
+        for key in ["include.path", "includeIf.onbranch:absent.path"] {
+            try original.write(to: config)
+            try git(["config", "--file", config.path, key, "/dev/stdin"])
+            XCTAssertThrowsError(try GitConfiguration(in: root, environment: environment).redirectOptions(), key)
+        }
+    }
+
+    func testStoredModuleRelativeConfigRootsFailClosed() throws {
+        let stored = root.appendingPathComponent(".git/modules/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        environment["GIT_CONFIG_GLOBAL"] = "relative-global"
+        XCTAssertThrowsError(try GitConfiguration(in: root, environment: environment).redirectOptions())
+    }
+
+    func testTrustedRepositoryPathEndingInCarriageReturn() async throws {
+        let directory = root.appendingPathComponent("checkout\r")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try git(["init", "-q", "--template="], in: directory)
+        try Data("base\n".utf8).write(to: directory.appendingPathComponent("file"))
+        try git(["add", "file"], in: directory)
+        try git(["config", "core.fsmonitor", try monitor()], in: directory)
+        let service = GitService(environment: environment, trusted: true)
+        let found = await service.repositoryRoot(of: directory.path)
+        XCTAssertEqual(found, String(decoding: try git(["rev-parse", "--show-toplevel"], in: directory).utf8.dropLast(), as: UTF8.self))
+        do {
+            let status = try await service.status(in: directory.path)
+            XCTAssertTrue(status.entries.contains { $0.path == "file" })
+        } catch { XCTFail("A trailing CR is part of the repository path: \(error)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testStashCommonDirectoryKeepsTrailingCarriageReturn() async throws {
+        let directory = root.appendingPathComponent("separate"), storage = root.appendingPathComponent("storage\r")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try git(["init", "-q", "--template=", "--separate-git-dir=" + storage.path], in: directory)
+        // Git gitfiles trim CRLF themselves; explicit paths can retain CR.
+        environment["GIT_DIR"] = storage.path; environment["GIT_WORK_TREE"] = directory.path
+        try Data("base\n".utf8).write(to: directory.appendingPathComponent("file"))
+        try git(["add", "file"], in: directory); try git(["commit", "-qm", "Base"], in: directory)
+        try Data("changed\n".utf8).write(to: directory.appendingPathComponent("file"))
+        try git(["stash", "push", "-qm", "Fixture"], in: directory)
+        try git(["config", "core.fsmonitor", try monitor()], in: directory)
+        let records = try await GitService(environment: environment, trusted: true).stashRecords(in: directory.path)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
+    func testPatchIndexKeepsTrailingCarriageReturn() async throws {
+        let alternate = root.appendingPathComponent("index\r")
+        try FileManager.default.copyItem(at: root.appendingPathComponent(".git/index"), to: alternate)
+        environment["GIT_INDEX_FILE"] = alternate.path
+        try write("file", "changed\n")
+        try git(["config", "core.fsmonitor", try monitor()])
+        do {
+            let review = try await GitService(environment: environment, trusted: true).patchReview(in: root.path, path: "file", staged: false)
+            XCTAssertEqual(review.patch.hunks.count, 1)
+        } catch { XCTFail("A trailing CR is part of the index path: \(error)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("hostile-ran").path))
+    }
+
     func testControlCharactersInGitdirRequireConfinement() throws {
         for character in ["\n", "\t", "\u{8}", "\r", "\u{7f}"] {
             try overridePathFixture("checkout" + character + "fixture", confined: true)

@@ -53,6 +53,10 @@
 - [x] SECURITY-BOUNDARIES-1ah: Unrepresentable restored Git values select confinement before a trusted read; separate subsection/value encoders are checked through Git's parser. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1ai: Gitdir patterns escape glob punctuation even beside combining marks, preventing local programs from escaping their conditional overrides. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1aj: Generated Git subsection/value quoting preserves quotes and backslashes beside combining marks under Git's own parser. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2l: Git redirect inventory includes deinitialized and nested stored modules, with stamped discovery and refusal when reachable configuration cannot be checked. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ak: Git inventory removes exactly one LF byte from path output, preserving trusted repository names ending in CR. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1al: FileFinder preserves trailing whitespace in repository and global ignore-file paths returned by Git. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1am: Stash common-directory and hunk index paths preserve trailing whitespace from Git output. [Validation](docs/validation/a130-security-0.1.130.md).
 
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).

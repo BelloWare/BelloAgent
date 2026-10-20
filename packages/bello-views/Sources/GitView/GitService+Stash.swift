@@ -26,7 +26,7 @@ extension GitService {
         guard storage.status == 1 || (storage.status == 0 && storage.text.trimmingCharacters(in: .newlines) == "files") else {
             throw GitFailure(message: "This stash ref store is unsupported. Manage stashes in the terminal.")
         }
-        return try await branchCommand(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: root).text.trimmingCharacters(in: .newlines)
+        return try await branchCommand(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: root).path
     }
     static func stashFingerprint(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 

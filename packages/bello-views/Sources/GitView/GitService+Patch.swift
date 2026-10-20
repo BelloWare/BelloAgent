@@ -64,7 +64,7 @@ extension GitService {
     }
 
     private func patchIndexPath(in root: String) async throws -> String {
-        try await patchCommand(["rev-parse", "--path-format=absolute", "--git-path", "index"], in: root).text.trimmingCharacters(in: .newlines)
+        try await patchCommand(["rev-parse", "--path-format=absolute", "--git-path", "index"], in: root).path
     }
     private func patchEntry(_ data: Data, path: String, index: Bool) throws -> (mode: String, oid: String) {
         let entries = data.split(separator: 0)

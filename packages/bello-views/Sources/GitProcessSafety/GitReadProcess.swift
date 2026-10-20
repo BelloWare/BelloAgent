@@ -127,8 +127,8 @@ public struct GitReadProcess {
         process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = FileHandle.nullDevice
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-        var path = String(decoding: data, as: UTF8.self)
-        if path.hasSuffix("\n") { path.removeLast() }
+        let bytes = data.last == 10 ? data.dropLast() : data
+        let path = String(decoding: bytes, as: UTF8.self)
         guard process.terminationStatus == 0, path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
             throw Failure()
         }
