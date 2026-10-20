@@ -4,6 +4,13 @@
 
 ## 0.1.130
 
+- [x] Draft debounces wait for loaded revisions and reschedule typing admitted during cold, side and relaunch opens; single-instance typing no longer creates false conflicts.
+- [x] Pending draft clears and reading positions survive eviction, close and quit/update flushes before initial metadata finishes loading.
+- [x] Side-draft transfer preserves typing in an unread parent while retaining the durable transfer path for untouched parents.
+- [x] Original sub-agent readers load reading-position revisions; pending position changes are saved after hydration.
+- [x] Materialization, side registration, receipt review markers and interrupted-input recovery load draft baselines before writing; recovery rechecks acceptance and active edits afterward.
+- [x] Shared PiKit capsule outlines no longer draw vertical end seams; control geometry and noncapsule corners stay unchanged. [Round-7 validation](docs/validation/a130-workspace-0.1.130.md#round-7--loaded-baselines-and-capsule-outlines).
+
 - [x] Rejected submissions remain separate durable input records across conflict-episode edits and empty debounces. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
 - [x] Configuration tasks are shared only within their helper connection, chat lease and runtime generation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
 - [x] Retired configuration failures and late close replies cannot close or clear replacement runtimes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).

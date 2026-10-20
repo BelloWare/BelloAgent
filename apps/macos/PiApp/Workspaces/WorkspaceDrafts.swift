@@ -24,27 +24,11 @@ extension WorkspaceModel {
     /// this reconciliation without taking the reader back to its chat.
     func reconcileSubmissionDraft(_ item: ChatRecord, view: SessionDisplay, current: () -> Bool) async throws -> Bool {
         guard let store else { throw StoreError.unavailable }
-        if item.isSubagent {
-            let metadata = try await store.selectionMetadata(id: view.id, draft: false, anchor: !view.selectionMetadataLoaded)
-            guard current() else { return false }
-            if let version = metadata.anchorVersion { view.anchorVersion = version }
-            if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
-            view.selectionMetadataLoaded = true; view.draftReady = false
-            return true
-        }
         let wantsMetadata = !view.selectionMetadataLoaded, draftAtStart = view.savedDraft
-        let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata)
+        let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata && !item.isSubagent, anchor: wantsMetadata)
         guard current() else { return false }
-        if wantsMetadata {
-            if let version = metadata.draftVersion { view.draftVersion = version }
-            if let draft = metadata.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
-               view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
-                view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
-            }
-            if let version = metadata.anchorVersion { view.anchorVersion = version }
-            if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
-            view.selectionMetadataLoaded = true
-        }
+        adoptDraftBaseline(metadata, into: view, draftAtStart: draftAtStart)
+        if item.isSubagent { view.draftReady = false; return true }
         view.draftConflicts = metadata.conflicts
         let recovered = try await recoverableIntents(metadata.recovered, for: item, view: view)
         guard current() else { return false }
@@ -52,6 +36,30 @@ extension WorkspaceModel {
         // Text alone cannot authorize a resend while acceptance is unread.
         view.draftReady = true
         return true
+    }
+    /// A flush, receipt or side transfer can need the baseline before the
+    /// navigation read reaches it. Only the first completed read installs it;
+    /// a later completion must not replace a version already used for writing.
+    func loadDraftBaseline(_ view: SessionDisplay) async throws {
+        guard !view.selectionMetadataLoaded else { return }
+        guard let store else { throw StoreError.unavailable }
+        let draftAtStart = view.savedDraft
+        let metadata = try await store.selectionMetadata(id: view.id, draft: record(view.id)?.isSubagent != true, anchor: true)
+        adoptDraftBaseline(metadata, into: view, draftAtStart: draftAtStart)
+    }
+    func adoptDraftBaseline(_ metadata: MetadataStore.SelectionMetadata, into view: SessionDisplay, draftAtStart: DraftRecord) {
+        guard !view.selectionMetadataLoaded else { return }
+        if let version = metadata.draftVersion { view.draftVersion = version; view.draftConflicts = metadata.conflicts }
+        if let draft = metadata.draft, !view.draftWritePending,
+           view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
+           view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
+            view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
+        }
+        if let version = metadata.anchorVersion { view.anchorVersion = version }
+        if !view.anchorWritePending, view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
+        view.selectionMetadataLoaded = true
+        if view.draftWritePending { draftChanged(view) }
+        if view.anchorWritePending { anchorChanged(view) }
     }
     /// An acknowledgement may be missing locally after a full disk or crash.
     /// Consult durable helper evidence before exposing any recovery action.
@@ -77,6 +85,7 @@ extension WorkspaceModel {
         let commands = Set(intents.filter { $0.draftReviewTracked != true && !$0.turnID.hasPrefix("compaction:") && !$0.turnID.hasPrefix(Self.resumeIntentPrefix) &&
             (view.acceptedCommands.contains($0.id) || $0.state == "acknowledged") && !view.reconciledSubmissionReviews.contains($0.id) }.map(\.id))
         guard !commands.isEmpty else { return }
+        if !isEphemeral(view.id) { try await loadDraftBaseline(view) }
         // Legacy records do not identify which characters came back after a
         // lost reply. Preserve all typing, but require review before resending.
         if view.hasSubmittableInput { view.submissionReviews.formUnion(commands) }
@@ -117,6 +126,8 @@ extension WorkspaceModel {
         // Unkept side drafts stay in memory by design; on host loss their text
         // is moved into the parent composer instead (discardLostSides).
         guard !isEphemeral(view.id), !pendingChatIDs.contains(view.id) else { return }
+        guard view.selectionMetadataLoaded else { view.draftWritePending = true; return }
+        view.draftWritePending = false
         let previous = draftWrites.tasks[view.id]; previous?.cancel()
         // The entry is cleared when this write finishes, and only by the write
         // that owns it: a newer one replaces the token first, so a cancelled
@@ -171,11 +182,11 @@ extension WorkspaceModel {
                 guard !isPendingEmpty(view.id) else { continue }
                 try await materializeChat(view.id)
             } else if !view.selectionMetadataLoaded {
-                // A display whose saved draft never loaded (a selection that
-                // was overtaken, or one a helper event built for a chat nobody
-                // is showing) holds an empty composer that is not the user's:
-                // writing it erased the draft that is on disk.
-                continue
+                // Untouched displays may still stand for an unread saved
+                // draft. Actual typing or scrolling owns a write, even if
+                // navigation retired the read that would have hydrated it.
+                guard view.hasUnsavedDraft || view.anchorWritePending else { continue }
+                try await loadDraftBaseline(view)
             }
             if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion) }
             try await store.putAnchor(view.scrollAnchor, id: view.id, version: view.anchorVersion)
@@ -198,6 +209,8 @@ extension WorkspaceModel {
         // re-enter (`TranscriptPage.reportPendingAnchor`).
         DispatchQueue.main.async { [weak self, weak view] in if let self, let view { self.releaseHeldWindow(view) } }
         guard !isEphemeral(view.id) else { return }
+        guard view.selectionMetadataLoaded else { view.anchorWritePending = true; return }
+        view.anchorWritePending = false
         let anchor = view.scrollAnchor, previous = view.anchorWrite
         view.anchorWrite = Task {
             await previous?.value
@@ -263,6 +276,13 @@ extension WorkspaceModel {
                   !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
             do {
                 guard let store else { throw StoreError.unavailable }
+                if insert { try await loadDraftBaseline(view) }
+                guard view.recovered.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
+                      !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
+                guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing,
+                      view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {
+                    view.notice = "Finish sending, or save or cancel the message you are editing before recovering this submission."; return
+                }
                 let merged = insert ? mergedDraft() : nil
                 if let merged, let reason = Self.recoveryLimit(merged) { view.notice = reason; return }
                 // Freeze the validated candidate only for this commit. Late

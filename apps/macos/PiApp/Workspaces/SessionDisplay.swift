@@ -866,11 +866,15 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
     var hasUnsavedDraft: Bool {
-        draftVersion.hasUnsavedConflict || !savedDraft.hasSameContents(as: draftVersion.snapshot.draft ?? DraftRecord(id: id, text: ""))
+        draftWritePending || draftVersion.hasUnsavedConflict || !savedDraft.hasSameContents(as: draftVersion.snapshot.draft ?? DraftRecord(id: id, text: ""))
     }
     var draftVersion = DraftVersion()
     @Published var draftConflicts: [SavedDraftConflict] = []
     var selectionMetadataLoaded = false
+    /// Edits admitted while the baseline is unread, including a cleared field
+    /// or reading position. Hydration reschedules them against that baseline.
+    var draftWritePending = false
+    var anchorWritePending = false
     /// This window is detached from the helper's live tail (a newer gap,
     /// source load or explicit retained-message inspection). Earlier rows
     /// alone do not detach it or suppress live transcript updates.

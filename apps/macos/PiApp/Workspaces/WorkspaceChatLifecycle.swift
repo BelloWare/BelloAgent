@@ -80,6 +80,7 @@ extension WorkspaceModel {
         }
         try await store.put(item, kind: "chat", id: id)
         PerformanceProbe.shared.count("pendingChatCreationWrites")
+        if let view = displays[id] { try await loadDraftBaseline(view) }
         // Navigation can discard a still-empty placeholder while this actor
         // write is pending. Do not leave a resurrected desktop row on restart.
         guard record(id) != nil else {

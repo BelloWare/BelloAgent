@@ -102,6 +102,8 @@ extension WorkspaceModel {
                 observeCost(["cost":.object(cost)],sessionID:child.id)
             }
             guard current() else { return }
+            try await loadDraftBaseline(view)
+            guard current() else { return }
             var page = try await readInitialWindow(child, holding: view.scrollAnchor)
             guard current() else { return }
             page.messages = await withAccounting(page.messages, view: view, workspaceID: child.workspaceID)

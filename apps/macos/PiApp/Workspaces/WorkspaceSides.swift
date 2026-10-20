@@ -307,7 +307,10 @@ extension WorkspaceModel {
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // The parent's draft may have loaded meanwhile: it takes the
                 // draft itself, and the saved one follows from it.
-                if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
+                if let parent = displays[info.parentID] {
+                    if !parent.selectionMetadataLoaded, parent.hasUnsavedDraft { try await loadDraftBaseline(parent) }
+                    if parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
+                }
                 let merged = saved.receiving(moving), revision = version.snapshot.revision
                 try await store.put(merged, kind: "draft", id: info.parentID, draftVersion: version)
                 if let parent = displays[info.parentID], parent.draftVersion.snapshot.revision == revision { parent.draftVersion = version }
@@ -430,15 +433,9 @@ extension WorkspaceModel {
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded)
                 guard current() else { return }
                 view.draftConflicts = metadata?.conflicts ?? []
-                if !view.selectionMetadataLoaded {
-                    if let version = metadata?.draftVersion { view.draftVersion = version }
-                    if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
-                       view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
-                    if let version = metadata?.anchorVersion { view.anchorVersion = version }
-                    if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
-                    view.selectionMetadataLoaded = true
-                }
-                let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: child, view: view)
+                guard let metadata else { throw StoreError.unavailable }
+                self.adoptDraftBaseline(metadata, into: view, draftAtStart: oldDraft)
+                let recovered = try await self.recoverableIntents(metadata.recovered, for: child, view: view)
                 guard current() else { return }
                 view.recovered = recovered; view.uncertain = !recovered.isEmpty
                 view.draftReady = true
@@ -540,7 +537,7 @@ extension WorkspaceModel {
         try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
         let draft: DraftRecord, version: DraftVersion
-        if let view { draft = view.savedDraft; version = view.draftVersion }
+        if let view { try await loadDraftBaseline(view); draft = view.savedDraft; version = view.draftVersion }
         else { version = try await store.draftVersion(id: id); draft = version.snapshot.draft ?? DraftRecord(id: id, text: "") }
         var retained = intent.chat
         // The file as the helper names it, which is how every snapshot will
@@ -623,8 +620,9 @@ extension WorkspaceModel {
                 let result = try await host.request("side.close", sessionID: id).object ?? [:]
                 try await registerKeptSide(id: id, path: result["path"]?.string)
             }
-            // A side whose saved draft never loaded holds nothing of the user's
-            // yet: writing its empty composer would erase the one on disk.
+            // Untouched, unread drafts stay on disk; typing before loading
+            // must get its baseline and be saved before the pane closes.
+            if !view.selectionMetadataLoaded, view.hasUnsavedDraft || view.anchorWritePending { try await loadDraftBaseline(view) }
             if view.selectionMetadataLoaded {
                 try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion)
                 await view.anchorWrite?.value

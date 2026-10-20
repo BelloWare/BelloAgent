@@ -1767,3 +1767,412 @@ PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace sc
 
 All requested findings are fixed. The separate shared-capsule visual follow-up
 above is recorded for an owner decision; no wider PiKit change is included.
+
+## Round 7 — loaded baselines and capsule outlines
+
+Work remains on `dev/a130-workspace`, based on round 6 (`febcb31b`); no merge,
+fast-forward, helper/protocol change, live provider call, installed-app launch,
+real preferences or Keychain access. Fixtures use generated journals/databases
+and memory vaults. Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/`.
+The lead's round-7 decision supersedes the shared-capsule “needs owner decision”
+follow-up above: the seam is a rendering defect to fix in the shared control.
+
+### Baseline loading: confirmed and fixed
+
+A nil revision is not proof of an absent row until the baseline has been read.
+Draft and anchor callbacks now remember changes made before that read, without
+starting a versioned write. Initial metadata installs its versions once and
+reschedules those callbacks. Explicit clears count as edits; they neither restore
+old text/positions nor become eligible for eviction while their baseline is
+pending. An already-installed baseline cannot be replaced by another initial
+read returning late. Existing loaded-revision conflict checks and durable copies
+remain in force for actual competing writers.
+
+The first six regressions ran against unchanged round-6 production code:
+`failing-drafts.log`: **6 tests failed, 28 assertions**. Representative output:
+
+```text
+XCTAssertTrue failed - Typing while the baseline is pending is not a conflict
+XCTAssertEqual failed: ("Optional("")") is not equal to ("Optional("Typed during cold")")
+XCTAssertNil failed: "TranscriptAnchor(id: "saved", offset: 17.0, followsBottom: false)" - Returning to latest before loading must remain cleared
+```
+
+The reader and additional-writer tests also ran before the fix:
+`failing-reader.log`: **1 test failed / 2 assertions**;
+`failing-original.log`: **1 failed / 3 assertions**;
+`failing-sweep.log`: **2 failed / 3 failures**, including the side-registration
+`draftConflict` thrown in ordinary single-instance use. Initial fixed runs passed
+all ten regressions and all **79 tests** in the six existing draft/loading classes.
+
+| Path / scenario | Regression | Before the fix |
+| --- | --- | --- |
+| Cold chat; type while the inherited-history read is held | `DraftLoadingTests.testColdOpenTypingWaitsForBaselineAndReschedules` | False conflict, typed text not saved, cleared position not saved |
+| Saved side; type while its initial read is held | `testSavedSideTypingWaitsForBaselineAndReschedules` | Same false conflict and stale position |
+| Relaunch's `reopenRememberedSelection`; type while loading | `testRelaunchSelectionTypingWaitsForBaselineAndReschedules` | Same; exercises the actual launch-selection entry point with a generated retained chat |
+| Quit/update flush after navigation retires an initial read | `testFlushLoadsBaselineForTypingAfterNavigationRetiresTheRead` | Flush skipped the typed, unread display |
+| Close a saved side while its metadata is unread | `testSideCloseLoadsBaselineForTypingBeforeHydration` | Close skipped typing, and the debounce manufactured a conflict |
+| Transfer an unsent side into a parent typed in before loading | `testDraftTransferJoinsTypingBeforeParentBaselineLoads` | Parent's live typing omitted the transferred side input |
+| Legacy accepted-submission marker while typing before load | `testReceiptProtectionLoadsBaselineBeforeMarkingPendingTyping` | Neither pending typing nor its review marker was saved |
+| Side registration while typing before load | `testSideRegistrationLoadsBaselineBeforeSavingPendingTyping` | Threw `draftConflict` against its own saved draft |
+| Managed sub-agent reader; clear its position while metadata is held, type in parent | `SubagentReaderTests.testPendingReaderBaselineDefersAnchorAndKeepsParentTyping` | Started a versioned write without a baseline; retained old anchor |
+| Original sub-agent reader; clear position while history validation is held, type in fork | `InheritedSubagentReaderTests.testOriginalReaderLoadsAnchorBaselineBeforeSavingPendingPosition` | Never loaded the anchor baseline; retained old anchor |
+
+Sub-agent readers have no editable composer. Their regressions type in the
+editable parent/fork while changing the reader's position; no draft is written
+for a managed child. Baseline adoption takes conflict metadata only with a
+draft-version read; these read-only readers do not gain draft recovery controls.
+Original readers now load desktop anchor metadata after validating the original
+journal and before presenting its history.
+
+Additional adversarial cases cover typing then clearing before load (the display
+remains pinned through eviction and flush), and a late initial read after a
+second reader has installed and advanced the baseline. Untouched unread displays
+continue to skip flush/close writes; the existing tests protecting their saved
+text pass. Fresh pending sides already mark their unique, not-yet-published baseline as
+loaded. Pending chat materialization now installs its baseline before advancing
+the first draft revision, so a late initial read cannot reset it to nil.
+
+The write-site sweep included all `draftVersion`, `putAnchor`, submission,
+withdrawal, review-marker and side-commit call sites. Send/edit entry points
+already require `draftReady` after reconciliation. Runtime snapshots can also
+expose interrupted-input recovery before selection hydration; Insert now loads
+the baseline and rechecks acceptance and composer eligibility after that await.
+Dismiss retains its existing path without an unnecessary baseline read. The
+sweep fixes cover the independent writers that bypassed initial selection. Transfer without a live parent
+already obtains its own version from the store; transfer to an existing unread
+parent hydrates it only when it holds pending typing. Untouched unread parents
+retain the existing durable transfer path.
+
+### Additional write-site and adversarial checks
+
+`failing-write-sweep.log`: **2 tests failed / 7 assertions** before the final
+write-site fixes:
+
+- `testPendingMaterializationInstallsBaselineBeforeItsFirstWrite`: an initial
+  nil-revision read returned after materialization had already advanced the
+  version; subsequent typing incorrectly produced a conflict copy. Materialize
+  now installs the baseline before the first versioned draft write.
+- `testReceiptRecoveryLoadsBaselineBeforeMergingPendingTyping`: a runtime
+  snapshot exposed a pending intent while the composer's baseline was unread;
+  Insert manufactured a conflict instead of recovering the input. Insert now
+  obtains that baseline before merging the live composer and captured input.
+
+The new recovery await also requires renewed eligibility. The accepted-command
+race is covered by `testAcceptanceDuringRecoveryBaselineLoadStillRetiresTheInsert`.
+`failing-recovery-edit.log`: **1 test failed / 3 assertions** in
+`testRecoveryCannotReplaceAnEditRestoredByItsBaselineLoad`: loading restored an
+existing edit and recovery appended into it and removed its pending record.
+Recovery now repeats its existing composer guard after loading, retaining both
+the edit and interrupted input. Paused queue counts remain irrelevant.
+
+The first broad model run (`final-model.log`) caught **13 assertions in 2 of 15
+SideTests**: eagerly hydrating untouched parents changed their established
+save-to-disk transfer path. This was a regression in the initial approach,
+not an ignored unrelated failure. Hydration is now limited to parents with
+pending typing, including typing admitted while the transfer's store read was
+pending. `fixed-write-sweep.log` passed **31/31**; the final corrected model run
+passed **270/270 across 20 classes**, including the complete SideTests,
+DraftLoadingTests, DeferredCreationTests and WorkspaceRaceTests.
+
+The first full shell-performance run (`final-context-performance.log`) found
+two assertions in `testFinishedDraftWritesLeaveNoTasksBehind`: its twelve raw
+`SessionDisplay` fixtures had never loaded any metadata, so the corrected
+admission guard deferred their writes. The fixture now reads each baseline,
+then admits all twelve writes in one actor turn. Its original task-cleanup and
+last-typing assertions remain unchanged; no production guard was bypassed.
+
+### Shared capsule outlines: confirmed and fixed
+
+`CapsuleRenderingTests.testCapsuleOutlineHasNoStraightSeamsOutsideItsArc` renders
+an empty capsule with a black outline on white. Pixels outside the expected arc
+have a 1.5-point raster allowance. Against unchanged round-6 PiKit code,
+`failing-capsule.log` found **8 stray pixels at 1x and 16 at 2x** (one failed test,
+two assertions). The fixed test passes with zero stray pixels. Reverting the
+outline curve reproduces both failures (`mutation-capsule.log`).
+
+```text
+XCTAssertEqual failed: ("8") is not equal to ("0") - The capsule has stray outline pixels outside its arc at 1x
+XCTAssertEqual failed: ("16") is not equal to ("0") - The capsule has stray outline pixels outside its arc at 2x
+```
+
+`ButtonBase` now uses circular arcs for a capsule's **stroke only**. Fill/shade
+curves, radii, frames, intrinsic sizes, labels, hit testing, shadows and press
+transforms are unchanged. Explicit circular controls stay circular; controls
+with a smaller corner radius keep their continuous outline. This fixes the
+shared shape, without adding per-user workarounds.
+
+The native component gallery covers model/effort and compact composer pills,
+normal/compact choices, family, search-scope menu face, one/many-copy chooser,
+project, primary/secondary/danger/ghost buttons, statistics, circle icon,
+back-to-bottom and a noncapsule rounded rectangle. The search-scope fixture uses
+the existing PiKit menu face; it does not introduce a new search product feature.
+Mounted native controls are rasterized at **1x and 2x in light and dark**.
+The chooser rows exercise the shared menu face; the actual draft-recovery
+banner, with its existing explicit circular fill setting, is also regenerated
+in the workspace gallery with one and forty copies, wide and narrow.
+All four before images were inspected; straight seams are visible at capsule
+ends. Geometry JSON accompanies each appearance for exact frame comparisons.
+
+The first full PiKit parity run (`final-parity.log`) reported two assertions in
+`testPillButtons`: the repaired enabled secondary outline differed from the old
+SwiftUI continuous outline at 8 light pixels / 32 dark pixels out of 20,520,
+with largest channel differences 9 / 10. This is the intended outline change,
+not a geometry regression. Only that comparison now uses the suite's existing
+small curve-antialiasing allowance (`shapeShare`); disabled buttons and all other
+button styles retain their original threshold. The independent analytic-arc
+regression still rejects the old seams, and the before/after gallery comparison
+checks every non-border pixel without a tolerance.
+
+### Adversarial self-review
+
+- **Unloaded versus absent:** only a completed metadata read (or the existing
+  fresh-side known-absence path) authorizes a versioned debounce. Pending typing
+  is remembered even when cleared back to empty. Once loaded, callbacks follow
+  their original ordered/debounced path.
+- **First completion versus late completion:** baseline adoption is monotonic
+  for a display. A second initial read cannot roll back an already committed
+  version; the late-read mutation produces the expected false conflict.
+- **Restoration versus admitted input:** an untouched empty composer can restore
+  saved text as before. Pending typing/clears win over automatic restoration.
+  A pending nil anchor means an intentional return to latest, not “unread”.
+- **Eviction:** pending draft clears and anchor changes pin their displays until
+  hydration/flush; loaded idle unchanged displays remain eligible as before.
+- **Flush/close:** untouched unread displays still skip writes. Dirty unread
+  displays load their baselines and save; read failures keep the existing error
+  path instead of approving loss. The original saved-draft protection tests pass.
+- **Transfer:** untouched unloaded parents retain the durable disk merge and its
+  failure behavior. Parents with pending typing hydrate and absorb into the
+  current live draft; transfer failures restore the side input. Existing parked
+  edit, attachment, skill, disk-failure and conflict-copy tests pass.
+- **Other writers:** review markers, side registration and materialization load
+  the baseline before snapshotting/writing. No wire call or permission/capture
+  boundary is changed. New-chat identity/deletion guards remain in place.
+- **Recovery after awaiting:** Insert rereads its baseline before constructing
+  the merged candidate, then checks accepted receipts and active composer edits
+  again. A newly accepted input or restored edit prevents replacement; the
+  durable input record remains until the existing settling path handles it.
+- **Capsules versus other shapes:** only outlines whose radius fills the smaller
+  dimension use circular arcs; rectangle controls retain continuous corners,
+  explicit circles retain circular corners, and fill/content geometry is untouched.
+- **Parity and fixture checks:** only the enabled secondary-button comparison
+  takes the existing curve allowance; all other thresholds remain unchanged.
+  The debounce cleanup fixture reads real baselines before its twelve writes,
+  preserving its simultaneous-admission and latest-write assertions.
+
+### Mutations and final validation
+
+Eleven mutation runs deliberately failed all **20 selected test executions**.
+Snapshots on disk were restored in `finally` blocks. The own-build mutex kept
+native builds/galleries from observing a partially mutated source tree.
+
+| Mutation log | Broken condition / behavior | Failed tests |
+| --- | --- | ---: |
+| `mutation-draft-admission` | Permit a debounce before the draft baseline | 1 |
+| `mutation-reschedule` | Do not reschedule initial typing/scrolling | 3 |
+| `mutation-anchor-admission` | Permit anchor writes before the baseline | 1 |
+| `mutation-write-paths` | Remove baseline loads from flush, close, transfer, markers, registration | 5 |
+| `mutation-original-reader` | Remove original-reader anchor hydration | 1 |
+| `mutation-late-baseline` | Let a late read replace an installed version | 1 |
+| `mutation-additional-writers` | Remove the final transfer/materialization/recovery baseline checks | 3 |
+| `mutation-pending-pins` | Allow eviction of pending clears/positions | 2 |
+| `mutation-recovery-recheck` | Ignore acceptance arriving during baseline loading | 1 |
+| `mutation-recovery-edit` | Allow replacement after baseline restores an edit | 1 |
+| `mutation-capsule` | Restore continuous capsule outlines | 1 |
+
+Final suite counts, gallery inspection and exact commands follow below.
+
+### Gallery inspection and pixel comparison
+
+Inspected all four after component images alongside their before captures. The
+vertical end seams are gone at both scales in both appearances; labels, icons,
+fills, spacing and sizes are unchanged. Both geometry JSON files match byte for
+byte. Across all four pairs, **zero pixels outside the outline mask changed**,
+with an exact RGBA comparison (no channel tolerance). The mask is the 2-point
+antialiasing rim around the capsule arc plus the old straight-end seam band.
+The circle icon, back-to-bottom circle and noncapsule rectangle are entirely
+pixel-identical. `pixel-diff.json` records per-control counts and `pixel-diff.log`
+records the comparison output.
+
+| Appearance / scale | Changed border pixels | Changed non-border pixels | Before | After |
+| --- | ---: | ---: | --- | --- |
+| light-1x | 2149 | 0 | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/before/capsules-light-1x.png) | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/after/capsules-light-1x.png) |
+| light-2x | 4810 | 0 | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/before/capsules-light-2x.png) | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/after/capsules-light-2x.png) |
+| dark-1x | 2272 | 0 | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/before/capsules-dark-1x.png) | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/after/capsules-dark-1x.png) |
+| dark-2x | 4920 | 0 | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/before/capsules-dark-2x.png) | [PNG](/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/after/capsules-dark-2x.png) |
+
+Before captures used the unchanged round-6 `ButtonBase` outline; after captures
+use the final outline with the same component fixture. Before-capture command:
+
+```sh
+TEST_RUNNER_PI_CAPSULE_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/before PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CapsuleGalleryTests
+```
+
+Exact comparison command:
+
+```sh
+xcrun swift -module-cache-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/swift-tools-cache /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/compare-gallery.swift /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7 > /Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/pixel-diff.log
+```
+
+Final focused validation (all text logs above; no named result bundles):
+
+| Run | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `final-model-corrected` | 270 | 0 | 0 |
+| `final-materialization` | 75 | 0 | 0 |
+| `final-baseline-review` | 62 | 0 | 0 |
+| `final-ui` | 187 | 0 | 2 |
+| `final-context-performance-corrected` | 14 | 0 | 0 |
+| `final-conversation` | 83 | 0 | 0 |
+| `final-reader` | 56 | 0 | 0 |
+| `final-original` | 8 | 0 | 0 |
+| `final-opening` | 13 | 0 | 0 |
+| `final-parity-corrected` | 20 | 0 | 1 |
+| `final-lifecycle` | 11 | 0 | 0 |
+| `final-window` | 5 | 0 | 0 |
+| `gallery-after` | 1 | 0 | 0 |
+| `final-workspace-gallery` | 1 | 0 | 0 |
+
+The final runs cover **672 distinct tests in 43 classes**: **669 passed, 3 skipped, zero failures**. The materialization follow-up repeats its four affected classes after moving baseline loading ahead of the existing deletion guard; those repeated tests are not double-counted here. The baseline review repeats the three affected draft/loading classes after preserving anchor-only adoption for read-only sub-agent readers.
+
+Class counts (latest final execution for each test):
+
+| Class | Passed | Skipped |
+| --- | ---: | ---: |
+| `AppShellPerformanceTests` | 11 | 0 |
+| `AutomaticContextTests` | 11 | 0 |
+| `CapsuleGalleryTests` | 1 | 0 |
+| `CapsuleRenderingTests` | 1 | 0 |
+| `ContextReadingTests` | 3 | 0 |
+| `ConversationFamilyTests` | 22 | 0 |
+| `ConversationPaneTests` | 83 | 0 |
+| `DeferredCreationTests` | 4 | 0 |
+| `DraftConcurrencyTests` | 34 | 0 |
+| `DraftLoadingTests` | 15 | 0 |
+| `DraftMarkTests` | 5 | 0 |
+| `DraftSizeTests` | 2 | 0 |
+| `HardeningTests` | 12 | 0 |
+| `InheritedSubagentReaderTests` | 8 | 0 |
+| `LaunchSelectionTests` | 20 | 0 |
+| `LifecycleHelperTests` | 11 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 |
+| `ModelSwitchTests` | 24 | 0 |
+| `PendingChatProjectTests` | 24 | 0 |
+| `PiChoicePickerTests` | 7 | 2 |
+| `PiKitControlTests` | 39 | 0 |
+| `PiKitParityTests` | 20 | 1 |
+| `PiMenuTests` | 3 | 0 |
+| `RecoveredDraftTests` | 13 | 0 |
+| `SendBookkeepingTests` | 12 | 0 |
+| `SendImmediacyTests` | 14 | 0 |
+| `SessionReadStateTests` | 16 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 |
+| `SideRelaunchTests` | 3 | 0 |
+| `SideTests` | 15 | 0 |
+| `SidebarSideClickTests` | 4 | 0 |
+| `StorageTruthTests` | 11 | 0 |
+| `SubagentOpeningTests` | 13 | 0 |
+| `SubagentReaderTests` | 56 | 0 |
+| `WindowLifecycleTests` | 5 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 |
+| `WorkspaceDurabilityTests` | 7 | 0 |
+| `WorkspaceFailureTests` | 6 | 0 |
+| `WorkspaceLoadingTests` | 13 | 0 |
+| `WorkspaceRaceTests` | 49 | 0 |
+| `WorkspaceRefreshLifecycleTests` | 32 | 0 |
+| `WorkspaceValidationGalleryTests` | 1 | 0 |
+
+The two `PiChoicePickerTests` interactive SwiftUI pointer/keyboard checks require `PI_APP_INTERACTIVE_POINTER_TESTS=1` and an unlocked interactive desktop; they retain their existing opt-in skips. The PiKit parity hover check also retains its Accessibility-permission skip. No permission was requested or changed. All 39 native PiKit control tests ran and passed.
+
+No helper implementation, wire contract or host protocol behavior changed; the helper and wire/concurrent/acceptance suites were therefore not required this round. The native test script built/reused only this workstream’s bundle/build root. Focused headless model tests ran without the focus lock; all window/focus/gallery runs held it, with serial-lane classes run alone. No other workstream’s lock was removed.
+
+Exact final commands:
+
+```sh
+# final-model-corrected
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/WorkspaceLoadingTests -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceFailureTests -only-testing:PiAppTests/SessionReadStateTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/CapsuleRenderingTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/AutomaticContextTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests
+# final-materialization
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DeferredCreationTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceDurabilityTests
+# final-baseline-review
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/WorkspaceLoadingTests
+# final-ui
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/SidebarSideClickTests -only-testing:PiAppTests/LaunchSelectionTests -only-testing:PiAppTests/ConversationFamilyTests -only-testing:PiAppTests/ModelSwitchTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/PiKitControlTests -only-testing:PiAppTests/PiChoicePickerTests -only-testing:PiAppTests/PiMenuTests -only-testing:PiAppTests/SendImmediacyTests
+# final-context-performance-corrected
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ContextReadingTests -only-testing:PiAppTests/AppShellPerformanceTests
+# final-conversation
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+# final-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+# final-original
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests
+# final-opening
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentOpeningTests
+# final-parity-corrected
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/PiKitParityTests
+# final-lifecycle
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+# final-window
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WindowLifecycleTests
+# gallery-after
+TEST_RUNNER_PI_CAPSULE_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/after PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CapsuleGalleryTests
+# final-workspace-gallery
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/workspace-gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Exact failing-first and mutation commands:
+
+```sh
+# failing-capsule
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CapsuleRenderingTests
+# failing-drafts
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests
+# failing-original
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests/testOriginalReaderLoadsAnchorBaselineBeforeSavingPendingPosition
+# failing-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests/testPendingReaderBaselineDefersAnchorAndKeepsParentTyping
+# failing-recovery-edit
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testRecoveryCannotReplaceAnEditRestoredByItsBaselineLoad
+# failing-sweep
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testReceiptProtectionLoadsBaselineBeforeMarkingPendingTyping -only-testing:PiAppTests/DraftLoadingTests/testSideRegistrationLoadsBaselineBeforeSavingPendingTyping
+# failing-write-sweep
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testPendingMaterializationInstallsBaselineBeforeItsFirstWrite -only-testing:PiAppTests/DraftLoadingTests/testReceiptRecoveryLoadsBaselineBeforeMergingPendingTyping
+# mutation-additional-writers
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testDraftTransferJoinsTypingBeforeParentBaselineLoads -only-testing:PiAppTests/DraftLoadingTests/testPendingMaterializationInstallsBaselineBeforeItsFirstWrite -only-testing:PiAppTests/DraftLoadingTests/testReceiptRecoveryLoadsBaselineBeforeMergingPendingTyping
+# mutation-anchor-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests/testPendingReaderBaselineDefersAnchorAndKeepsParentTyping
+# mutation-capsule
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CapsuleRenderingTests
+# mutation-draft-admission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testColdOpenTypingWaitsForBaselineAndReschedules
+# mutation-late-baseline
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testLateBaselineCannotReplaceTheVersionUsedForNewTyping
+# mutation-original-reader
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/InheritedSubagentReaderTests/testOriginalReaderLoadsAnchorBaselineBeforeSavingPendingPosition
+# mutation-pending-pins
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testClearingPendingTypingPinsTheDisplayUntilFlushLoadsItsBaseline -only-testing:PiAppTests/DraftLoadingTests/testPendingPositionPinsAnOtherwiseEmptyDisplayUntilFlush
+# mutation-recovery-edit
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testRecoveryCannotReplaceAnEditRestoredByItsBaselineLoad
+# mutation-recovery-recheck
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testAcceptanceDuringRecoveryBaselineLoadStillRetiresTheInsert
+# mutation-reschedule
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testColdOpenTypingWaitsForBaselineAndReschedules -only-testing:PiAppTests/DraftLoadingTests/testSavedSideTypingWaitsForBaselineAndReschedules -only-testing:PiAppTests/DraftLoadingTests/testRelaunchSelectionTypingWaitsForBaselineAndReschedules
+# mutation-write-paths
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftLoadingTests/testFlushLoadsBaselineForTypingAfterNavigationRetiresTheRead -only-testing:PiAppTests/DraftLoadingTests/testSideCloseLoadsBaselineForTypingBeforeHydration -only-testing:PiAppTests/DraftLoadingTests/testDraftTransferJoinsTypingBeforeParentBaselineLoads -only-testing:PiAppTests/DraftLoadingTests/testReceiptProtectionLoadsBaselineBeforeMarkingPendingTyping -only-testing:PiAppTests/DraftLoadingTests/testSideRegistrationLoadsBaselineBeforeSavingPendingTyping
+```
+
+The final workspace gallery also passed and all 20 PNGs were inspected in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round7/workspace-gallery/`.
+The eight recovery scenes cover one/forty copies, light/dark, and 300/760-point
+widths. The chooser and composer outlines have no end seams; the recovery bar
+stays one line and leaves the transcript its normal space. The twelve existing
+draft/image/model notice scenes retain their existing narrow truncation and
+reachable Copy/Dismiss actions.
+
+Adversarial self-review is complete. All 14 source/project hashes match the
+validated state (`tested-source-sha256.json`). Own generated test-result bundles
+were removed; no own clone app folders remained. Text logs and gallery PNGs are
+retained. No other workstream's build products or lock were touched. There are
+no unresolved code findings; the three existing opt-in/permission skips are
+listed above. The two requested defects and the confirmed nearby baseline
+writers are fixed; no helper or wire behavior was changed.

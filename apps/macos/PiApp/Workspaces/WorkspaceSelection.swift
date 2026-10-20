@@ -182,7 +182,7 @@ extension WorkspaceModel {
         // Imports belong to this exact composer; keep it until its images
         // have arrived, even off screen.
         for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading
-            && !other.hasUnsavedDraft && draftWrites.tasks[other.id] == nil && subagentTab(other.id) == nil && other.imageImports == 0 && other.id != record(id)?.delegation?.budgetOwnerSessionID
+            && !other.hasUnsavedDraft && !other.anchorWritePending && draftWrites.tasks[other.id] == nil && subagentTab(other.id) == nil && other.imageImports == 0 && other.id != record(id)?.delegation?.budgetOwnerSessionID
             && !(pendingChatIDs.contains(other.id) && !isPendingEmpty(other.id)) && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
             releaseHelperSession(other.id)
