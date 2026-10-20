@@ -28,7 +28,30 @@ concurrent = load('test-concurrent-native-host')
 acceptance = load('test-native-acceptance')
 helper = (Path(os.environ['PI_NATIVE_HOST']) if os.environ.get('PI_NATIVE_HOST') else
           Path(os.environ['PI_BUILD_ROOT']) / 'swift-host/arm64-apple-macosx/release/pi-native-host' if os.environ.get('PI_BUILD_ROOT') else
-          ROOT / 'packages/swift-host/.build/release/pi-native-host')
+          ROOT / 'packages/swift-host/.build/release/pi-native-host').resolve()
+
+
+@unittest.skipUnless(helper.is_file(), 'build the Release helper under PI_BUILD_ROOT first')
+class HelperPathTests(unittest.TestCase):
+    def test_relative_helper_and_build_root_launch_all_fixture_peers(self):
+        with tempfile.TemporaryDirectory(prefix='pi-relative-helper-') as folder:
+            build = Path(folder)
+            executable = build / 'swift-host/arm64-apple-macosx/release/pi-native-host'
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(helper.resolve())
+            for variable, path in (('PI_NATIVE_HOST', executable), ('PI_BUILD_ROOT', build)):
+                with self.subTest(variable=variable):
+                    environment = dict(os.environ)
+                    for key in ('PI_NATIVE_HOST', 'PI_BUILD_ROOT'):
+                        environment.pop(key, None)
+                    environment[variable] = os.path.relpath(path, ROOT)
+                    result = subprocess.run(
+                        [sys.executable, '-m', 'unittest',
+                         'scripts.tests.test_helper_home.HelperHomeFixtureTests', '-v'],
+                        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('Ran 1 test', result.stderr)
+                    self.assertNotIn('skipped', result.stderr)
 
 
 class HelperEnvironmentTests(unittest.TestCase):

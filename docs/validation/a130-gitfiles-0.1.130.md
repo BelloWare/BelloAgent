@@ -1835,3 +1835,204 @@ for separate follow-up, not silently changed here.
 The assigned script isolation issue and the native test-host sweep finding are
 fixed. There are no failing checks or unresolved owner product decisions in
 these changes; the separate opt-in benchmark observation remains as noted.
+
+## Fixture isolation review — relative paths and launch benchmarks
+
+Base `14cc0893`, on `dev/a130-gitfiles`; no merge, fast-forward or history rewrite.
+This resolves both the relative-path review and the opt-in benchmark observation
+above. Evidence is under this workstream's
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`,
+prefixed `home-review-`. No live or paid requests, installed app launch,
+Keychain access, real preferences/resource reads or metadata probes were used.
+
+### Relative helper paths — confirmed and fixed
+
+`HelperPathTests.test_relative_helper_and_build_root_launch_all_fixture_peers`
+creates a generated build-tree symlink to this workstream's Release helper. It
+runs the actual home-isolation fixture class in a subprocess twice: once with
+relative `PI_NATIVE_HOST`, then with relative `PI_BUILD_ROOT` and no
+`PI_NATIVE_HOST`. Each child exercises all four peers, both with and without an
+explicit generated `codexHome`, and must finish without skipping.
+
+Failing first (`home-review-relative-before.log`): both subprocesses failed;
+each had eight `FileNotFoundError`s, because the validated relative executable
+was then interpreted under the peer's temporary workspace:
+
+```text
+(variable='PI_NATIVE_HOST') ... FAIL
+(variable='PI_BUILD_ROOT') ... FAIL
+FileNotFoundError: [Errno 2] No such file or directory:
+  '../../../../../../var/folders/.../pi-relative-helper-.../swift-host/arm64-apple-macosx/release/pi-native-host'
+Ran 1 test in 0.505s
+FAILED (errors=8)
+```
+
+The selected path now calls `.resolve()` before either existence check or peer
+override. Precedence and missing-helper skip behavior remain unchanged.
+Removing this call reproduces both failures (`home-review-mutation-relative.log`).
+The restored regression passes as part of the focused and full Python runs.
+
+Nearby sweep: both standalone wire runners already resolve their executable;
+acceptance reuses the wire runner. `test_live_compaction_e2e.release_helper`
+can return a relative path, but its callers pass it to the harness in the same
+working directory, and `load_config` resolves it before helper construction.
+It does not have this directory-change bug; no change there.
+
+### Launch benchmark isolation — confirmed and fixed
+
+`PerfLaunchTests.test_launch_and_preference_checks_stay_in_the_fixture` executes
+the real shell entry point over a generated fixture and fake bundle, using a
+fake `belloperf` that never executes the app. `stat`, `defaults` and `sysctl`
+are spies; no preference query, purge, window, capture or actual benchmark runs.
+Its inherited HOME/CFFIXED_USER_HOME/CODEX_HOME and scratch paths are synthetic.
+The test observes one prime and one warm trial, the harness environment, app
+arguments, copied preference removal and the original fixture's unchanged plist.
+
+`LaunchHelperEnvironmentTests` compiles the actual helper environment builder
+three ways: shipping, `PI_LAUNCH_FIXTURE`, and `PI_TEST_HOST`. The original
+six-key dictionary was extracted unchanged from `HostSupervisor` to the small
+Foundation-only `HostEnvironment.swift` before adding the fix. This lets the
+regression exercise the fixture compilation condition without a GUI app or the
+native test-host guard masking the bug. Its generated child only returns
+environment/home path strings; it never opens or stats the returned paths.
+
+The final failing-first probe (`home-review-perf-before-normalized.log`) recorded
+**2 failing methods / 10 assertions**:
+
+```text
+(variable='CFFIXED_USER_HOME', condition='PI_LAUNCH_FIXTURE') ... FAIL
+AssertionError: None != '/var/folders/.../pi-launch-helper-.../home'
+(variable='CODEX_HOME', condition='PI_LAUNCH_FIXTURE') ... FAIL
+AssertionError: None != '/var/folders/.../pi-launch-helper-.../home/.codex'
+... foundationHome and fileManagerHome did not name the generated home
+(preferences='metadata') ... FAIL
+... inherited/Library/Preferences/com.belloware.PiApp.plist
+    != fixture/home/Library/Preferences/com.belloware.PiApp.launchperf.plist
+(preferences='defaults') ... FAIL
+AssertionError: True is not false : do not contact the invoking account preferences service
+```
+
+The shipping allowlist control passed before and after the fix. An earlier
+prototype compared `/private/var` and Foundation's `/var` spelling literally;
+the probe was corrected and rerun before the fix. The normalization is a string
+operation, not a filesystem lookup on any unexpected returned home.
+
+Changes:
+
+- `perf-launch.sh` supplies generated HOME, CFFIXED_USER_HOME, CODEX_HOME,
+  TMPDIR and PI_APP_SCRATCH_ROOT to both the harness and its app arguments,
+  creating the Codex and scratch directories before launch.
+- Only `PI_LAUNCH_FIXTURE` and `PI_TEST_HOST` builds add CFFIXED_USER_HOME and
+  CODEX_HOME to the helper environment. Both derive from the app's effective
+  generated Foundation home, including an inherited CODEX_HOME override case.
+  Shipping builds retain exactly the prior six-key environment.
+- The preferences timestamp check names the original fixture's launchperf
+  plist. Per-trial reset removes only the copied fixture plist. Neither reset
+  nor final cleanup calls the account's `defaults` service.
+
+The sweep also found that `WorkspaceModel` can use an inherited
+`PI_APP_BENCHMARK_STATE_ROOT` when benchmark output enables instrumentation;
+inherited `PI_APP_BENCHMARK_OUTPUT` and `BELLO_CONTEXT_DIAGNOSTICS` can likewise
+direct writes outside the generated run. Extending the shell regression with
+these synthetic paths first failed both trial assertions
+(`home-review-override-before.log`). The same launcher now unsets these three
+inherited overrides before calling the harness. The default application-support
+and resource paths derive from the fixed home; any harness-created diagnostic
+output remains owned by that harness.
+
+App/resource sweep: `WorkspaceResources` defaults `codexHome` to the effective
+Foundation home's `.codex`; the generated LaunchFixtureWriter vault has no
+external resource overrides. `Resources.swift` uses `NSHomeDirectory`,
+CODEX_HOME or explicit `codexHome`; these are covered by the fixture boundary.
+`LaunchFixtureVault` still supplies only the generated configuration and does
+not use Keychain. No production permission, capture, tool, vault, resource
+discovery or wire implementation changed.
+
+### Mutation checks
+
+`home-review-mutations.py` (evidence folder) mutates one boundary at a time and
+restores all files in `finally`. It runs the relevant relative-path, compiled
+environment or stub benchmark test for each mutation. All **11/11** were caught:
+
+| Mutation | Failing assertions / evidence suffix |
+| --- | --- |
+| Remove helper-path `.resolve()` | 2; `relative` (each child reports 8 launch errors) |
+| Omit helper CFFIXED_USER_HOME | 4; `helper-cfhome` |
+| Omit helper CODEX_HOME | 2; `helper-codex` |
+| Enable the override in shipping builds | 2; `shipping-gate` |
+| Drop PI_TEST_HOST from the compilation condition | 3; `test-host-gate` |
+| Omit launcher/harness CODEX_HOME | 2; `launch-codex` |
+| Omit launcher/harness CFFIXED_USER_HOME | 2; `launch-cfhome` |
+| Restore the invoking account's preferences path | 1; `preferences-stat` (stat spy only) |
+| Restore account defaults reset | 3; `preferences-reset` (defaults spy only) |
+| Retain inherited benchmark/diagnostic paths | 2; `optional-roots` |
+| Drop generated scratch roots | 2; `scratch` |
+
+Logs are `home-review-mutation-<suffix>.log`, with the aggregate in
+`home-review-mutations.log`. The executable-path mutant intentionally reproduces
+the reported launch failure; all other mutations fail assertions after their
+probes compile and run. No mutation is accepted merely for a build/syntax error.
+All sources were restored before the full validation runs.
+
+### Validation commands and adversarial review
+
+Commands from this worktree:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 scripts/build-bundle.py
+python3 -m unittest scripts.tests.test_helper_home scripts.tests.test_perf_launch -v
+python3 -m unittest discover -s scripts/tests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/swift-host/arm64-apple-macosx/release/pi-native-host
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles scripts/test-macos.sh \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/HostSupervisorTests \
+  -only-testing:PiAppTests/HostTransportTests -only-testing:PiAppTests/TestHostIsolationTests
+xcodegen generate --quiet
+bash -n scripts/perf-launch.sh
+git diff --check
+```
+
+Python commands run through the evidence driver `run-home-review.py`, with
+PI_BUILD_ROOT/PI_NATIVE_HOST naming this build root and its Release helper, and
+HOME/CFFIXED_USER_HOME/CODEX_HOME in a generated `review-home-*` temporary
+directory removed after each command. The benchmark script test uses only its
+stubs, and all model requests elsewhere use loopback fixtures.
+
+| Suite | Result | Text evidence |
+| --- | --- | --- |
+| Release helper rebuild/staging | Pass | `home-review-build.log` |
+| Focused helper-home and benchmark probes | 8 pass | `home-review-focused.log` |
+| Full Python discovery, including the subsequent override regression | 115 pass, 0 skips, 55.250 s | `home-review-python.log` |
+| Wire | 39 pass, 35.351 s | `home-review-wire.log` |
+| Concurrent | 4 pass, 25.827 s | `home-review-concurrent.log` |
+| Acceptance | 3 pass, 3.476 s | `home-review-acceptance.log` |
+| HostSupervisorTests | 10 pass, 0 fail | `home-review-native.log` |
+| HostTransportTests | 8 pass, 0 fail | `home-review-native.log` |
+| TestHostIsolationTests | 5 pass, 0 fail | `home-review-native.log` |
+
+The native run rebuilt this worktree's test host/products and passed **23/23**,
+with no compiler warnings. It waited for the shared full-lane lock, held it
+only for the run and released its own lock in `finally`. No focus-changing
+probe ran outside that lock. The benchmark unit probes never launched an app
+and needed no gallery. There are no test-runner clones to remove under this
+build root, and no extra DerivedData root was created.
+
+The Python log's signing retry messages are from stubbed signing tests, not
+actual signing or Keychain calls. No `packages/swift-host` or wire source
+changed, so the Swift helper unit suite was not required; all three requested
+Release-helper black-box suites ran in full.
+
+Adversarial review of every changed behavior/condition:
+
+| Boundary | States that change; preservation check |
+| --- | --- |
+| Relative versus absolute selected helper | Relative paths now bind in the invoking directory before peers switch cwd. Absolute paths retain their destination; native-host override, build-root fallback and missing-helper skip precedence are unchanged. Both relative selectors execute all eight actual fixture cases. |
+| `PI_LAUNCH_FIXTURE || PI_TEST_HOST` | Only these two compiled environments gain fixed Foundation/Codex roots. The shipping configuration, including benchmark enabled/disabled, exactly matches the old six-key allowlist. Dropping the test-host condition and making the condition unconditional are independently caught. |
+| Fixture helper home construction | The child's fixed home and Codex root derive from the parent's effective Foundation home, rather than forwarding a potentially unrelated inherited CODEX_HOME. PATH, language, app version, benchmark flag and existing scratch selection retain their values. The child probe checks both Foundation home APIs. |
+| Benchmark harness/app inheritance | Missing, inherited or conflicting home/scratch roots now name the generated run. Both the harness's own environment and its explicit app overrides are asserted; directory creation precedes launch. Trial scheduling, labels and timing arguments are unchanged. |
+| Optional state/diagnostic overrides | Previously inherited external paths are now absent at harness startup, so app defaults remain under the fixed home and inherited diagnostics cannot write elsewhere. The synthetic poison-path regression and mutation cover this state. |
+| Preference reset and timestamp check | Present copied launchperf preferences are removed; absent files remain harmless. The original generated fixture plist is only checked, and remains byte-equivalent in the test. The account plist is never inspected, and no account defaults service is invoked. Both boundaries have independent mutants. |
+| Source extraction / generated project | Only the existing environment dictionary moved into a Foundation-only builder, allowing direct tests of fixture and shipping compilation without an app launch. The supervisor uses that builder; XcodeGen adds it to the same app/test-host source sets. |
+
+No product decision or production behavior change is needed for these fixes.

@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
+- [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.
 - [x] Wire, concurrent, acceptance, subagent and bundle-smoke fixture helpers isolate HOME, CFFIXED_USER_HOME and CODEX_HOME, including custom launch environments. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-helper-homes--round-3-follow-up).
 - [x] The native test-host guard keeps parent and explicit child process homes inside the verified fixture home; shipping apps are unchanged.
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
