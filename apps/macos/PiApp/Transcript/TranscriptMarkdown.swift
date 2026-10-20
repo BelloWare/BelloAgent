@@ -58,8 +58,8 @@ enum TranscriptMarkdown {
     nonisolated(unsafe) private static let renderedCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>(); cache.countLimit = 1_000; cache.totalCostLimit = 16 << 20; return cache
     }()
-    /// The native builder's exact text, including list markers, table cells
-    /// and preview notices. Search creates no views or layout managers.
+    /// The native builder's selection-copy text, including list markers and
+    /// table cells. Search creates no views or layout managers.
     static func renderedText(_ source: String, style: MarkdownStyle = .prose, streaming: Bool = false) -> String {
         if streaming { return MarkdownTextBuilder.string(streamingBlocks(source, style: style), style: style) }
         let key = (style.id + "\u{0}" + source) as NSString

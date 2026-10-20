@@ -183,6 +183,86 @@ enum MarkdownTextLayout {
     }
 }
 
+/// Selection-copy text and its UTF-16 positions in the native text. Only
+/// attributed layout marks change spelling; literal whitespace stays literal.
+struct MarkdownCopyText {
+    private struct Span { var copied: NSRange; var rendered: NSRange }
+    private(set) var string = ""
+    private var length = 0
+    private var spans: [Span] = []
+
+    init(_ storage: NSAttributedString, range: NSRange? = nil) {
+        let whole = NSRange(location: 0, length: storage.length)
+        let clipped = NSIntersectionRange(range ?? whole, whole), source = storage.string as NSString
+        var skippedMarker = NSRange(location: NSNotFound, length: 0)
+        storage.enumerateAttributes(in: clipped) { attributes, run, _ in
+            if attributes[.piChrome] != nil { return }
+            if let marker = attributes[.piListMarker] as? String {
+                var marked = NSRange()
+                _ = storage.attribute(.piListMarker, at: run.location, longestEffectiveRange: &marked, in: whole)
+                guard marked != skippedMarker else { return }
+                skippedMarker = marked
+                let drawn = source.substring(with: marked)
+                // Keep the number's individual characters addressable even
+                // when a query covers only part of the copied marker.
+                if drawn.hasPrefix("\t"), drawn.hasSuffix("\t"), marked.length >= 3, marker.hasSuffix(" ") {
+                    let body = marker.trimmingCharacters(in: .whitespaces)
+                    let indent = marker.utf16.count - body.utf16.count - 1
+                    append(String(repeating: " ", count: indent), rendered: NSRange(location: marked.location, length: 1))
+                    append(body, rendered: NSRange(location: marked.location + 1, length: marked.length - 2))
+                    append(" ", rendered: NSRange(location: NSMaxRange(marked) - 1, length: 1))
+                } else { append(marker, rendered: marked) }
+                return
+            }
+            let piece = source.substring(with: run)
+            if let copy = attributes[.piBlockBreak] as? String, piece.allSatisfy({ $0 == "\n" }) {
+                for offset in 0..<run.length { append(copy, rendered: NSRange(location: run.location + offset, length: 1)) }
+            } else { append(piece, rendered: run) }
+        }
+    }
+    private mutating func append(_ piece: String, rendered: NSRange) {
+        let count = piece.utf16.count
+        guard count > 0 else { return }
+        string += piece
+        if let last = spans.last, last.copied.length == last.rendered.length, count == rendered.length,
+           NSMaxRange(last.rendered) == rendered.location {
+            spans[spans.count - 1].copied.length += count
+            spans[spans.count - 1].rendered.length += count
+        } else { spans.append(Span(copied: NSRange(location: length, length: count), rendered: rendered)) }
+        length += count
+    }
+    func renderedRange(_ range: NSRange) -> NSRange? {
+        guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= length else { return nil }
+        func span(at offset: Int) -> Span {
+            var low = 0, high = spans.count
+            while low < high {
+                let mid = (low + high) / 2
+                if NSMaxRange(spans[mid].copied) <= offset { low = mid + 1 } else { high = mid }
+            }
+            return spans[low]
+        }
+        let first = span(at: range.location), last = span(at: NSMaxRange(range) - 1)
+        let start = first.rendered.location + (first.copied.length == first.rendered.length ? range.location - first.copied.location : 0)
+        let end = last.copied.length == last.rendered.length
+            ? last.rendered.location + NSMaxRange(range) - last.copied.location : NSMaxRange(last.rendered)
+        return NSRange(location: start, length: end - start)
+    }
+
+    struct Mark: Equatable { var key: NSAttributedString.Key; var range: NSRange; var value: String }
+    /// Attribute-only syntax colouring leaves these marks unchanged.
+    static func marks(_ storage: NSAttributedString) -> [Mark] {
+        var result: [Mark] = []
+        for key in [NSAttributedString.Key.piChrome, .piListMarker, .piBlockBreak] {
+            storage.enumerateAttribute(key, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                guard let value else { return }
+                if key == .piChrome { result.append(Mark(key: key, range: range, value: "")) }
+                else if let text = value as? String { result.append(Mark(key: key, range: range, value: text)) }
+            }
+        }
+        return result
+    }
+}
+
 /// Builds one block's paragraphs. A code block's colouring is kept per block
 /// and resumed where the scanner last stood in a neutral state, so a token
 /// on a long fence colours what it adds, not the whole fence again.
@@ -191,9 +271,12 @@ enum MarkdownTextLayout {
 final class MarkdownTextBuilder {
     static func string(_ blocks: [MarkdownBlock], style: MarkdownStyle) -> String {
         let builder = MarkdownTextBuilder(), context = MarkdownTextContext(style: style, capsWidth: true)
-        return blocks.enumerated().flatMap { index, block in
-            builder.paragraphs(block, identity: .init(generation: 0, sourceOffset: index), context: context, gap: 0, headingIndex: nil)
-        }.map { $0.text.string }.joined(separator: MarkdownTextAssembler.paragraphBreak)
+        let paragraphs = blocks.enumerated().flatMap { index, block in
+            builder.paragraphs(block, identity: .init(generation: 0, sourceOffset: index), context: context,
+                               gap: index == 0 ? 0 : MarkdownTextLayout.blockGap, headingIndex: nil)
+        }
+        let (text, _) = MarkdownTextAssembler.text(paragraphs, after: nil, leadingBreak: nil, leadingAttributes: [:])
+        return MarkdownCopyText(text).string
     }
 
     struct CodeReading {
@@ -520,8 +603,8 @@ final class MarkdownTextBuilder {
 /// Joins paragraphs into the reply's text. Each paragraph after the first is
 /// preceded by the line break that ends the one before it; the break carries
 /// the marks of the paragraph it ends, so a panel runs to its last line.
-@MainActor enum MarkdownTextAssembler {
-    nonisolated static let paragraphBreak = "\n"
+enum MarkdownTextAssembler {
+    static let paragraphBreak = "\n"
     /// How far below the previous paragraph's text a paragraph's text begins,
     /// less the line spacing TextKit already leaves below that paragraph.
     static func spacing(_ paragraph: MarkdownTextParagraph, after tail: MarkdownTextTail) -> CGFloat {

@@ -3,6 +3,36 @@ import XCTest
 @testable import PiApp
 
 final class TranscriptBugGalleryTests: XCTestCase {
+    @MainActor func testCopiedListFindGallery() async throws {
+        guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(760)), ("dark", .darkAqua, 760), ("narrow", .aqua, 360)] {
+            let session = SessionDisplay(id: "copied-list-gallery")
+            session.messages = [.init(id: "question", role: "user", text: "Find the copied list item: 1. alpha beta"),
+                .init(id: "reply", role: "assistant", text: "# Copy, then Find\n\n1. **alpha** beta\n2. second item\n   - nested item\n\n| Left | Right |\n|:--|--:|\n| one | two |\n\n```text\nLiteral\ttabs  and spaces\n```\n\nThe highlight follows the rendered characters.")]
+            let page = TranscriptPage(); page.state = "idle"; page.bind(session)
+            let scroll = TranscriptNativeScrollView(frame: CGRect(x: 0, y: 0, width: width, height: 660))
+            let document = TranscriptNativeDocument(page: page); scroll.documentView = document
+            let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance); window.contentView = scroll; window.makeKeyAndOrderFront(nil)
+            defer { window.contentView = nil; window.close() }
+            var environment = TranscriptRowEnvironment(); environment.colorScheme = appearance == .darkAqua ? .dark : .light
+            document.update(snapshot: page.snapshot, actions: .init(), environment: environment, disclosure: session.disclosure)
+            document.layoutRows(width: scroll.contentSize.width); document.finishDisclosureMotion()
+            document.highlights = TranscriptHighlights(query: "1. alpha beta", focus: .init(messageID: "reply", needle: "1. alpha beta", occurrence: 0, serial: 1, fromFind: true))
+            try await eventually("Copied list focus in \(name)") {
+                scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                return !document.focusPending && document.focusText != nil
+            }
+            let text = try XCTUnwrap(document.focusText as? MarkdownTextView)
+            XCTAssertEqual(text.copyText([document.focusRange]), "1. alpha beta")
+            let bitmap = try XCTUnwrap(scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds))
+            scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("copied-list-\(name).png"))
+        }
+    }
+
     @MainActor func testRepeatedCardExpansionGallery() async throws {
         guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
         let directory = URL(fileURLWithPath: path)

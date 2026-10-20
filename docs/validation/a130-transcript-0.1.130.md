@@ -4160,3 +4160,385 @@ scripts/test-macos.sh -parallel-testing-enabled NO \
 No helper or wire implementation changed, so the full helper and Python wire/concurrent/acceptance suites were not required. No files were added or removed. Only generated fixtures, isolated test-host windows and the in-memory vault were used; no installed app, real preferences/chats, Keychain, live capture or paid provider was used. There is no new owner decision or unresolved assigned finding.
 
 Final `git diff --check` passed after removing a generated trailing blank line. No clone directories remain under this workstream’s build root; its native runs released their locks. Approximately 13 GiB remained free after validation.
+
+## Round 12 — selection-copy Find projection (2026-10-20)
+
+Review finding **confirmed**. The previous `MarkdownTextBuilder.string` joined raw
+paragraph strings, retaining `\t1.\talpha`; selection copy emits `1. alpha`.
+The same split also affected block separators, table-cell separators and large-table
+preview chrome. The existing rendered-string corpus did not enforce copy semantics.
+
+The shared `MarkdownCopyText` projection now owns selection-copy normalization and
+UTF-16 mapping back to the native string. Search assembles the builder's paragraphs
+with the same attributes, without a text view or layout manager, then uses that projection. Highlight
+matching searches its normalized string and maps each result back to rendered
+coordinates. Literal source whitespace remains literal, including raw views and
+code. The match cache also tracks copy-mark changes while retaining matches through
+syntax-colour-only edits. No Find navigation/focus ownership logic changed.
+
+### Normalization/input sweep
+
+| Builder input / rendered construct | Copy and Find rule | Highlight mapping |
+| --- | --- | --- |
+| `.piListMarker`: leading/trailing layout tabs, ordered number or bullet, nested indentation | Copy's marker value (`1. `, `- `, indented nested marker) | Marker body remains individually addressable; indentation/trailing space map to layout tabs |
+| `.piBlockBreak`: paragraphs/headings/quotes/list items | Copy's declared break (two newlines between blocks, one between items) | One or more projected break characters map to the original line break |
+| Table cells, including empty and aligned cells | Copy's tab between cells and newline between rows | Copied tabs map to rendered cell-ending newlines |
+| `.piChrome`: large-table preview notice and its break | Omitted from selection copy and Find | No match range is produced for omitted chrome |
+| Inline formatting, links, images, hidden HTML | Native builder's text; image note is literal text; hidden HTML has no rendered payload | UTF-16 identity outside marked layout substitutions |
+| Code, raw source, literal alignment spaces/tabs, emoji joiners and literal U+FFFC | Preserved verbatim; no blanket whitespace or Unicode removal | UTF-16 identity, including surrogate pairs and combining text |
+| Other renderer inputs | Existing planner, delivery metadata, fetched documents and per-segment display-state paths retained | Tool/receipt scope and reader navigation unchanged |
+
+The builder creates no attachment placeholders or zero-width joiners. It replaces
+images with a visible note and carries table alignment in paragraph styles, not
+padding spaces. `.piCellBreak` is declared but not emitted; actual table separators
+use `.piBlockBreak`, shared with copy. The corpus now compares selection-copy text
+for ordinary, timeline, recovery, user/status/agent and tool-card rows, rather than
+raw TextKit strings.
+
+### Failing first
+
+`round12-failing-first-clean.log`: **0 passed, 5 failed, 0 skipped**, exit 65,
+with unchanged production code. Representative assertions:
+
+- `testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus`: `("\t1.\talpha\n\t2.\tbeta") is not equal to ("1. alpha\n2. beta")`.
+- `testCopiedMarkdownFindsAndFocusesSavedReplies` and `...LiveReplies`:
+  `XCTAssertEqual failed: ("[]") is not equal to ("[\"reply\"]")`, source `1. alpha`.
+- `testCopiedMarkdownRangesMapBackToRenderedText`: `("0") is not equal to ("1")`, copied list, heading, table and nested constructs.
+- `testCopiedMarkdownMatchCacheTracksLayoutAttributes`: no match after installing marker/block-break metadata on unchanged characters.
+
+The initial harness attempt did not compile because a main-actor method reference
+was passed directly to `map`; explicit closures corrected it. A preliminary runtime
+run then exposed test-only temporary-window release and over-limit query issues.
+The final failing-first run sets non-releasing windows and copies at most 120 UTF-16
+units for navigation, inside Find's existing 256-character query limit. All five
+failures above are ordinary XCTest assertions, with no crash or build failure.
+
+The first positive control (`round12-positive-control.log`) passed **8/8**.
+Self-review expanded the corpus to **22 constructs**, including adjacent empty
+cells, empty fences and multi-paragraph list items. Find now uses the full native
+paragraph assembler, retaining its attribute boundaries as well as its copy marks;
+it creates no view or layout manager. The expanded control
+(`round12-expanded-positive.log`) passed **6/6**, including an independent golden
+copy assertion and exact literal-whitespace checks. The ordinary projection test
+covers saved, live, streaming and raw states; the pane tests type copied selections
+for all 22 constructs in both disclosure settings, saved and live (**88 queries**).
+
+The initially queued mutation job was cancelled while it was still waiting for
+another workstream's lock, before building or taking that lock, to run the expanded
+positive control first. Its `finally` restored production. The mutation sequence
+was then restarted against the positively validated implementation.
+
+### Nearby run-boundary case — confirmed and fixed
+
+Self-review found that `copyText`'s `piece == "\n"` check depended on unrelated
+attribute boundaries: two adjacent marked breaks could be enumerated together,
+then separately after a colour change. That could change copied text while leaving
+Find's copy-metadata cache valid. The shared function now applies the declared
+separator to **each** marked newline, independent of colour/font runs.
+
+`testCopiedBreaksDoNotDependOnColourRunBoundaries` failed before this change:
+`round12-break-runs-failing-runtime.log`, **0 passed, 1 failed**, exit 65. It
+copied `alpha\n\nbeta` instead of `alpha\n\n\n\nbeta`, and the cached ranges
+were `[]` instead of `[{0, 11}]`. The initial fixture draft omitted the required
+text-container initializer; the corrected fixture uses `NativeMarkdownContainer`
+and produced ordinary assertion failures, not a compilation failure or crash.
+
+The final corpus has **24 constructs**, adding hard/soft breaks, autolinks,
+escaped Markdown and entities. End-to-end pane coverage includes saved,
+streaming-unsaved and completed-unsaved replies, each under both disclosure
+settings (**144 copied-selection queries**). The direct rendered/copy projection
+matrix covers the same constructs; raw mode remains unavailable for an arriving
+segment as before.
+
+The complete positive control (`round12-complete-positive.log`) passed **7/7**, including all 144 pane queries and the run-boundary regression.
+
+### Mutation checks
+
+Every accepted mutation compiled, exited 65 with ordinary assertion failures, and was
+restored in `finally` before the next run. Logs are under this workstream's
+`build-a130-transcript/validation` directory.
+
+| Log suffix (`round12-mutation-…`) | Deliberate break | Failed test methods |
+| --- | --- | --- |
+| `projection` | Return the assembled raw string instead of selection-copy text | `testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus` (1) |
+| `highlight-normalization` | Match against raw TextKit text | `testCopiedMarkdownRangesMapBackToRenderedText` (1) |
+| `range-mapping` | Return projected offsets directly as rendered offsets | `testCopiedMarkdownRangesMapBackToRenderedText`, `testCopiedMarkdownMatchCacheTracksLayoutAttributes` (2) |
+| `copy-metadata` | Invalidate only character edits, ignoring copy-mark changes | `testCopiedMarkdownMatchCacheTracksLayoutAttributes` (1) |
+| `shared-copy-rule` | Remove block/table-break normalization from the shared function | `testCopyNormalizationKeepsLiteralWhitespaceAndSelectionSemantics` (1) |
+| `break-runs` | Restore the single-newline-run check | `testCopiedBreaksDoNotDependOnColourRunBoundaries` (1) |
+
+**6/6 mutations detected, 7 expected failed test cases, no crashes or compiler failures in the accepted mutation runs.** The golden assertion makes a shared copy/Find mistake fail
+independently of the projection-vs-copy comparison. The initial revised
+`shared-copy-rule` mutation left its binding unused and was rejected at compilation
+(`round12-mutation-shared-copy-rule-compile-attempt.log`, zero executed tests).
+The driver restored production and released its lock; that attempt is **not**
+counted as mutation evidence. A corrected, binding-preserving mutation compiled
+and failed its golden-copy assertion. All six accepted results use the final
+production implementation.
+
+### Adversarial self-review
+
+Reviewed the complete new production diff and its existing Find/copy callers:
+
+- Kept exact matching for unmarked text; no blanket tab/space/Unicode replacement
+  and no relaxed-whitespace fallback was introduced. Raw views and literal tool
+  payloads retain their previous representation.
+- Checked marker substrings, nested indentation, table cells, omitted preview
+  chrome, empty cells/fences, surrogate pairs and combining characters. Mapped
+  intervals use UTF-16, with binary lookup in merged spans rather than rescanning
+  the document for each occurrence.
+- Checked copy of disjoint selections and partial markers against independent
+  expected strings. Source/heading/code-button Copy paths are unchanged.
+- Checked cache lifetime and invalidation: one normalized projection per resident
+  text storage, at most two query-range entries, invalidation on character or
+  copy-mark changes, and no range invalidation on syntax-colour changes.
+- The assembler now also runs for the search's privately owned builder/paragraphs;
+  no view or layout manager crosses actors. Its paragraph styles/table blocks are
+  locally built. The font cache retains its existing lock.
+- Rechecked ordinary and per-segment source disclosure, agent/fetched-tool inputs,
+  planner recovery rows, receipt ownership, continuation budgets and reader focus
+  adoption. This round changes no history dependency or navigation state code.
+- The shared-layout/copy changes stay within this finding and nearby instances;
+  no helper, permission, capture, vault or persisted-data path changed.
+
+### Final validation
+
+Every native run used the shared full-lane lock, releasing only its own lock even
+on failure. Serial-lane classes ran separately; no LifecycleHelper class was mixed
+in. Text logs and JSON counts live under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`.
+
+| Log | Classes | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: | ---: |
+| `round12-regression-final.log` | 1 | 116 | 0 | 0 |
+| `round12-affected-final.log` | 69 | 672 | 0 | 7 |
+| `round12-timeline-final.log` | 1 | 30 | 0 | 0 |
+| `round12-agent-markdown-final.log` | 1 | 19 | 0 | 0 |
+| `round12-agent-reader-final.log` | 1 | 55 | 0 | 0 |
+| `round12-wire-page-final.log` | 1 | 4 | 0 | 0 |
+| `round12-history-edge-timing-final.log` | 1 | 2 | 0 | 0 |
+| `round12-history-edit-final.log` | 1 | 3 | 0 | 0 |
+| `round12-agent-navigation-final.log` | 1 | 7 | 0 | 0 |
+| `round12-inherited-agent-reader-final.log` | 1 | 7 | 0 | 0 |
+| `round12-agent-inputs-final.log` | 4 | 33 | 0 | 0 |
+| `round12-plain-copy-final.log` | 1 | 3 | 0 | 0 |
+| `round12-view-update-final.log` | 1 | 7 | 0 | 0 |
+| `round12-copy-callers-final.log` | 9 | 82 | 0 | 3 |
+| `round12-stable-reading-final.log` | 1 | 6 | 0 | 0 |
+| `round12-native-turn-final.log` | 1 | 11 | 0 | 0 |
+| `round12-transcript-performance-final.log` | 1 | 7 | 0 | 2 |
+| `round12-window-presentation-final.log` | 1 | 9 | 0 | 0 |
+| `round12-gallery-final.log` | 1 | 7 | 0 | 0 |
+
+Native total: **1073 passed, 0 failed, 12 skipped**.
+Gallery total: **7 passed, 0 failed, 0 skipped**.
+**1080 passed across 98 classes**, excluding the earlier
+positive controls and expected mutation failures from this unique total.
+
+Exact final commands (the build-root export applies to every command):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round12-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round12-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests \
+  -only-testing:PiAppTests/NativeWorkListViewportTests \
+  -only-testing:PiAppTests/TranscriptTurnFoldTests \
+  -only-testing:PiAppTests/TranscriptFrameBudgetTests \
+  -only-testing:PiAppTests/TranscriptGeometryCacheTests \
+  -only-testing:PiAppTests/TranscriptKeptRowsTests
+
+# round12-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round12-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round12-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round12-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round12-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round12-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round12-agent-navigation-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentNavigationTests
+
+# round12-inherited-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests
+
+# round12-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentEffortTests \
+  -only-testing:PiAppTests/SubagentCostTests \
+  -only-testing:PiAppTests/SubagentDisplayTests \
+  -only-testing:PiAppTests/SubagentMetadataTests
+
+# round12-plain-copy-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/PlainTextCopyTests
+
+# round12-view-update-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ViewUpdateSideEffectTests
+
+# round12-copy-callers-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/CompactTurnReportTests \
+  -only-testing:PiAppTests/InspectorExpandInPlaceTests \
+  -only-testing:PiAppTests/NestedFenceIdentityTests \
+  -only-testing:PiAppTests/StreamingMarkdownStabilityTests \
+  -only-testing:PiAppTests/TerminalMarkdownMatchingTests \
+  -only-testing:PiAppTests/TranscriptNativeRowParityTests \
+  -only-testing:PiAppTests/TranscriptQuoteSelectionTests \
+  -only-testing:PiAppTests/TurnDurationClockTests \
+  -only-testing:PiAppTests/TurnInfoTests
+
+# round12-stable-reading-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/StableReadingTests
+
+# round12-native-turn-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTurnBehaviourTests
+
+# round12-transcript-performance-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptPerformanceRegressionTests
+
+# round12-window-presentation-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WindowPresentationTests
+
+# round12-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/round12-gallery" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+Regenerated and inspected all **24 PNGs** under
+`build-a130-transcript/validation/round12-gallery`: `copied-list`, `transcript`,
+`recovery`, `rows`, `expanded-read`, `reordered-table`, `repeated-read` and
+`repeated-edit`, each in light, dark and narrow variants. The new copied-list
+scene highlights the whole `1. alpha beta` phrase, including its marker and
+bold text; literal code tabs/spaces and table/nested-list alignment remain intact.
+The 360-point transcript still keeps heading Copy inside the row. Recovery and
+user-row focus, reordered B1 details, remounted expansion and repeated-card
+expansion also remain correct.
+
+The **12 skips** are explicit existing opt-in/manual checks: long-journal
+measurements (`HistoryIndexFilesTests.testTheIndexOfALongChat`,
+`HistoryReaderOpenPerformanceTests.testIndexingAKeptJournal`); skill-pill and
+Markdown snapshots; Markdown line-pitch/token-cost measurements; the 70-turn
+wire timing probe; the compact-report gallery; two row glyph calibration sweeps;
+and two interactive-pointer cases in `TranscriptPerformanceRegressionTests`.
+No new regression or requested gallery case skipped.
+
+The logs retain **95 SQLite fixture-cleanup warnings** (`vnode unlinked while in
+use`), all referring to generated temporary history/app-state databases. This is
+the already-recorded test-cleanup warning pattern; the affected test methods all
+passed. Counts and locations are retained explicitly rather than suppressed:
+
+| Log | Warnings | Example lines |
+| --- | ---: | --- |
+| `round12-regression-final.log` | 8 | 767, 1073, 1102, 1134, 1148, 1177, 1206, 1219 |
+| `round12-affected-final.log` | 62 | 958–1019 (skill-pill fixtures), 1161–1234, 1497–1500, 1627–1629, 2392–2440 |
+| `round12-agent-reader-final.log` | 3 | 724, 726, 727 |
+| `round12-agent-navigation-final.log` | 6 | 633–636, 651–655 |
+| `round12-view-update-final.log` | 16 | 634–683 |
+
+`round12-final-summary.json` records every warning with its log, line, current
+test and full message, plus all skip names. The earlier out-of-scope helper
+canonical-timeline slowdown at
+`packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift:125` remains
+recorded above; this round changes no helper or wire behavior, so the full
+helper/Python wire/concurrent/acceptance suites were not required.
+
+No repository files were added or removed. Only generated fixtures, isolated
+native test-host windows and the in-memory vault were used. No installed app,
+real preferences/chats, Keychain, live capture or paid provider was used. There
+is no unresolved assigned finding or new owner decision. Final `git diff --check`
+passed. No clone directories remain under this workstream's build root; all its
+native runs released their own locks. Approximately **12 GiB** remained free
+after validation.

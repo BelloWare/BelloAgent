@@ -1351,13 +1351,13 @@ final class TranscriptBugRegressionTests: XCTestCase {
             return row.subviews.compactMap { ($0 as? TranscriptLabel)?.text }.filter { !$0.isEmpty }.joined(separator: "\n")
         }
         if let execution = row as? TranscriptNativeExecutionRow {
-            let body = TranscriptNativeDocument.textViews(in: row).filter { $0.accessibilityLabel() != "Button" }.map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+            let body = TranscriptNativeDocument.textViews(in: row).filter { $0.accessibilityLabel() != "Button" }.map { Self.copiedText($0) }.filter { !$0.isEmpty }.joined(separator: "\n")
             return [execution.line.accessibilityLabel() ?? "", body].filter { !$0.isEmpty }.joined(separator: "\n")
         }
         if row is TranscriptNativeAgentRow {
             var parts: [String] = []
             func visit(_ view: NSView) {
-                if let prose = view as? TranscriptAgentMarkdown { parts.append(prose.markdown.textView.string); return }
+                if let prose = view as? TranscriptAgentMarkdown { parts.append(Self.copiedText(prose.markdown.textView)); return }
                 if let title = view as? PiKit.WrappedText { parts.append(title.text); return }
                 if let badge = view as? PiKit.Badge { parts.append(badge.text); return }
                 if let note = view as? PiKit.Note { parts.append(note.text); return }
@@ -1367,7 +1367,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             return parts.filter { !$0.isEmpty }.joined(separator: "\n")
         }
         return TranscriptNativeDocument.textViews(in: row).filter { message.kind != "failure" || $0.accessibilityLabel() != "Title" }
-            .map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+            .map { Self.copiedText($0) }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
     @MainActor func testUserStatusAndSummaryProjectionEqualsNativeRowsSavedAndLive() throws {
         let sources = ["user", "**literal** [site](https://example.test)", "1. first\n2. second", "# Heading\n\nBody 🌍", "", "left\r\nright"]
@@ -1427,7 +1427,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             for message in session.presentedMessages {
                 let row = try XCTUnwrap(side.pane.transcript.document.row(drawing: message.id))
                 row.prepareToDraw(); row.layoutForViewport()
-                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map { Self.copiedText($0) }.joined(separator: "\n")
                 XCTAssertEqual(ConversationContent.transcriptText(message), shown, "Side \(message.id)")
                 if saved {
                     let entry = try XCTUnwrap(twoUsers.first { $0.object?["id"]?.string == message.id }?.object)
@@ -1592,7 +1592,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
                 environment: .init(), disclosure: disclosure))
             row.frame = CGRect(x: 0, y: 0, width: 620, height: 500); row.frame.size.height = row.settle().height; row.layoutSubtreeIfNeeded()
             let shown = TranscriptNativeDocument.textViews(in: row).filter { $0.isSelectable && !$0.isHiddenOrHasHiddenAncestor }
-                .map(\.string).filter { !$0.isEmpty }.joined(separator: "\n")
+                .map { Self.copiedText($0) }.filter { !$0.isEmpty }.joined(separator: "\n")
             if !shown.isEmpty { payload[block.message?.id ?? block.activity.first?.id ?? block.id, default: []].append(shown) }
         }
         return payload.mapValues { $0.joined(separator: "\n") }
@@ -2072,7 +2072,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             if inputOnly, !(card is TranscriptNativeDiffCard), !TranscriptNativeDocument.isToolInput(view) { return nil }
             if let lines = view as? TranscriptCardLines { return lines.lines.map(\.text).joined(separator: "\n") }
             guard let text = view as? NSTextView, text.isSelectable else { return nil }
-            return text.string
+            return Self.copiedText(text)
         }.filter { !$0.isEmpty }.joined(separator: "\n")
         if case .diff(_, _, .failed, _, _) = value, !tool.output.isEmpty, !inputOnly, includeWorkSummary {
             let row = TranscriptNativeActionRow(frame: .zero)
@@ -2402,20 +2402,137 @@ final class TranscriptBugRegressionTests: XCTestCase {
         }
     }
 
-    @MainActor func testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus() throws {
-        let corpus = ["**alpha** beta and _italic_ ~~gone~~ `code`", "# Heading\n\nBody\n\nSetext\n------",
-                      "1. alpha\n2. beta", "7. seven\n29. eight\n   - nested\n\n     > quote",
+    static let copiedMarkdownCorpus = ["**alpha** beta and _italic_ ~~gone~~ `code`", "# Heading\n\nBody\n\nSetext\n------",
+                      "1. alpha", "1. alpha\n2. beta", "7. seven\n29. eight\n   - nested\n\n     > quote",
                       "- ```swift\n  let x = 1\n  ```\n- next", "> # Quote\n>\n> body\n>\n> 1. one\n> 2. two",
                       "```text\nfirst\n\nlast\n```\n\n~~~\n~~~", "[site](https://example.test) and [reference][id]\n\n[id]: https://reference.test",
                       "![alt](https://image.test/a.png)\n\n<!-- hidden -->\n\nvisible", "| A | B |\n|---|---|\n| one | |\n| two | three |",
                       "| A | B |\n|---|---|\n" + (0..<45).map { "| row \($0) | value |" }.joined(separator: "\n"),
-                      "Before **unfinished", "[unfinished](https://example.test", "1. first\n2."]
-        for (index, source) in corpus.enumerated() {
+                      "Before **unfinished", "[unfinished](https://example.test", "1. first\n2.", "9. café 👩‍💻\n10. e\u{301}nd", "before  after\n\n`literal\tcode`",
+                      "```text\nleft\tright  aligned\nzero\u{200D}join \u{FFFC} literal\n```", "---\n\nAfter rule", "| A | B | C |\n|:--|:-:|--:|\n| | | last |\n| | | |",
+                      "```\n```\n\n```\n```\n\nafter", "- first\n\n  continuation\n\n- second", "hard  \nbreak\nsoft",
+                      "<https://example.test>\n\n\\*literal\\* and &amp; entity"]
+
+    @MainActor private static func copiedText(_ text: NSTextView) -> String {
+        (text as? MarkdownTextView)?.copyText([NSRange(location: 0, length: text.string.utf16.count)]) ?? text.string
+    }
+
+    @MainActor func testCopiedMarkdownRangesMapBackToRenderedText() throws {
+        for source in Self.copiedMarkdownCorpus {
+            let (surface, window) = MarkdownTextSurfaceTests.surface(source)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            let text = surface.textView, storage = try XCTUnwrap(text.textStorage)
+            let copied = Self.copiedText(text)
+            guard !copied.isEmpty else { continue }
+            let cache = TranscriptTextMatches(storage)
+            let matches = cache.ranges(.init(needle: copied))
+            XCTAssertEqual(matches.count, 1, "Copied construct: \(source)")
+            if let range = matches.first { XCTAssertEqual(text.copyText([range]), copied) }
+            for word in ["alpha", "8.", "10.", "café", "👩‍💻", "e\u{301}nd", "literal\tcode"] {
+                let expected = transcriptRanges(of: word, in: text.string as NSString)
+                XCTAssertEqual(cache.ranges(.init(needle: word)), expected, "Character offsets stay exact after normalisation: \(word)")
+            }
+        }
+    }
+
+    @MainActor func testCopyNormalizationKeepsLiteralWhitespaceAndSelectionSemantics() throws {
+        let source = "# Title\n\n7. first\n8. second\n\n- nested\n  - leaf\n\n| A | B |\n|:--|--:|\n| left | right |\n\n```text\nraw\ttab  spaces 👩‍💻\n```"
+        let (surface, window) = MarkdownTextSurfaceTests.surface(source)
+        window.isReleasedWhenClosed = false; defer { window.close() }
+        let text = surface.textView, rendered = text.string as NSString
+        XCTAssertEqual(Self.copiedText(text), "Title\n\n7. first\n8. second\n\n- nested\n  - leaf\n\nA\tB\nleft\tright\n\nraw\ttab  spaces 👩‍💻")
+        XCTAssertEqual(text.copyText([rendered.range(of: "first"), rendered.range(of: "second")]), "first\nsecond")
+        XCTAssertEqual(text.copyText([rendered.range(of: "7.")]), "7. ")
+        let storage = try XCTUnwrap(text.textStorage), cache = TranscriptTextMatches(storage)
+        XCTAssertEqual(cache.ranges(.init(needle: "raw\ttab  spaces 👩‍💻")), [rendered.range(of: "raw\ttab  spaces 👩‍💻")])
+        XCTAssertTrue(cache.ranges(.init(needle: "raw tab spaces")).isEmpty, "Literal whitespace is not made flexible")
+        let raw = NSTextStorage(string: "1. alpha\t beta  👩‍💻\u{FFFC}")
+        XCTAssertEqual(TranscriptTextMatches(raw).ranges(.init(needle: raw.string)), [NSRange(location: 0, length: raw.length)])
+        XCTAssertTrue(TranscriptTextMatches(raw).ranges(.init(needle: "1. alpha beta")).isEmpty)
+    }
+
+    @MainActor func testCopiedMarkdownMatchCacheTracksLayoutAttributes() {
+        let storage = NSTextStorage(string: "\t1.\talpha\nbeta")
+        let cache = TranscriptTextMatches(storage)
+        XCTAssertTrue(cache.ranges(.init(needle: "1. alpha\n\nbeta")).isEmpty)
+        storage.addAttribute(.piListMarker, value: "1. ", range: NSRange(location: 0, length: 4))
+        storage.addAttribute(.piBlockBreak, value: "\n\n", range: NSRange(location: 9, length: 1))
+        let expected = NSRange(location: 1, length: 13)
+        XCTAssertEqual(cache.ranges(.init(needle: "1. alpha\n\nbeta")), [expected])
+        let scans = TranscriptHighlightSearch.scans
+        storage.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 0, length: storage.length))
+        XCTAssertEqual(cache.ranges(.init(needle: "1. alpha\n\nbeta")), [expected])
+        XCTAssertEqual(TranscriptHighlightSearch.scans, scans, "Colour changes do not invalidate Find")
+        storage.addAttribute(.piChrome, value: true, range: NSRange(location: 10, length: 4))
+        XCTAssertTrue(cache.ranges(.init(needle: "1. alpha\n\nbeta")).isEmpty)
+        storage.removeAttribute(.piChrome, range: NSRange(location: 10, length: 4))
+        XCTAssertEqual(cache.ranges(.init(needle: "1. alpha\n\nbeta")), [expected])
+        storage.removeAttribute(.piListMarker, range: NSRange(location: 0, length: 4))
+        XCTAssertTrue(cache.ranges(.init(needle: "1. alpha\n\nbeta")).isEmpty)
+        XCTAssertEqual(cache.ranges(.init(needle: "\t1.\talpha")), [NSRange(location: 0, length: 9)])
+    }
+
+    @MainActor func testCopiedBreaksDoNotDependOnColourRunBoundaries() throws {
+        let surface = NativeMarkdownContainer(frame: .zero), text = surface.textView
+        let storage = try XCTUnwrap(text.textStorage)
+        storage.setAttributedString(NSAttributedString(string: "alpha\n\nbeta"))
+        storage.addAttribute(.piBlockBreak, value: "\n\n", range: NSRange(location: 5, length: 2))
+        let query = "alpha\n\n\n\nbeta", range = NSRange(location: 0, length: storage.length)
+        let cache = TranscriptTextMatches(storage)
+        XCTAssertEqual(text.copyText([range]), query, "Each marked block break has its declared copy spelling")
+        XCTAssertEqual(cache.ranges(.init(needle: query)), [range])
+        let scans = TranscriptHighlightSearch.scans
+        storage.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 5, length: 1))
+        XCTAssertEqual(text.copyText([range]), query, "Colour must not change what a selection copies")
+        XCTAssertEqual(cache.ranges(.init(needle: query)), [range])
+        XCTAssertEqual(TranscriptHighlightSearch.scans, scans)
+    }
+
+    @MainActor private func checkCopiedMarkdownFind(saved: Bool) async throws {
+        for source in Self.copiedMarkdownCorpus {
+            let (model, pane, window) = try await findFixture(saved: saved, source: source)
+            for streaming in saved ? [false] : [true, false] {
+                if !saved { model.selected?.messages[1].state = streaming ? "streaming" : "complete"; pane.refresh() }
+                for raw in [false, true] {
+                    pane.closeFind(focusing: false)
+                    model.selected?.disclosure.setOpen(raw, .source("reply")); pane.refresh()
+                    pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    let text = try XCTUnwrap(pane.document.rows(drawing: "reply").flatMap { TranscriptNativeDocument.textViews(in: $0) }
+                        .first { $0.isSelectable && !$0.string.isEmpty })
+                    let selection = (text.string as NSString).rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(120, text.string.utf16.count)))
+                    let query = (text as? MarkdownTextView)?.copyText([selection]) ?? (text.string as NSString).substring(with: selection)
+                    guard !query.isEmpty else { continue }
+                    pane.showFind(); pane.find.setQuery(query)
+                    try await eventually("Copied Markdown search finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+                    XCTAssertFalse(pane.find.failed)
+                    XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply"], "saved=\(saved), streaming=\(streaming), raw=\(raw), source=\(source)")
+                    guard !pane.find.matches.isEmpty else { continue }
+                    try await eventually("Copied Markdown focuses its rendered range") {
+                        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                        return !pane.document.focusPending && pane.document.focusText != nil
+                    }
+                    let focused = try XCTUnwrap(pane.document.focusText), range = pane.document.focusRange
+                    let copied = (focused as? MarkdownTextView)?.copyText([range]) ?? (focused.string as NSString).substring(with: range)
+                    XCTAssertEqual(copied, query)
+                    let manager = try XCTUnwrap(focused.layoutManager), container = try XCTUnwrap(focused.textContainer)
+                    XCTAssertEqual(manager.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil) as? NSColor, TranscriptHighlights.focusColor)
+                    let rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+                    XCTAssertTrue(pane.scrollView.contentView.bounds.intersects(focused.convert(rect.offsetBy(dx: focused.textContainerOrigin.x, dy: focused.textContainerOrigin.y), to: pane.scrollView.contentView)))
+                }
+            }
+        }
+    }
+    @MainActor func testCopiedMarkdownFindsAndFocusesSavedReplies() async throws { try await checkCopiedMarkdownFind(saved: true) }
+    @MainActor func testCopiedMarkdownFindsAndFocusesLiveReplies() async throws { try await checkCopiedMarkdownFind(saved: false) }
+
+    @MainActor func testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus() throws {
+        for (index, source) in Self.copiedMarkdownCorpus.enumerated() {
             for streaming in [false, true] { for raw in [false, true] {
                 let message = TranscriptMessage(id: "corpus", role: "assistant", text: source, state: streaming ? "streaming" : "complete")
                 let row = TranscriptNativeReplyRow(inputs: .init(item: TranscriptNativePartView.wordsItem(message), fresh: false,
                     actions: .init(), width: 620, environment: .init(), disclosure: .init(raw: raw), toggle: { _ in }))
-                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map { Self.copiedText($0) }.joined(separator: "\n")
                 XCTAssertEqual(ConversationContent.transcriptText(message, rawReply: raw), shown, "Corpus \(index), streaming=\(streaming), raw=\(raw)")
                 if !streaming {
                     let entry: [String: WireValue] = ["id": .string("corpus"), "message": .object(["role": .string("assistant"), "content": .string(source)])]
@@ -2437,7 +2554,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             let shown = timeline.segments.map { part -> String in
                 let view = TranscriptNativePartView(frame: CGRect(x: 0, y: 0, width: 620, height: 300))
                 view.update(.init(part: part, message: message, actions: .init(), open: true, toggle: {}, raw: raw, toggleRow: { _ in }, environment: .init()))
-                return TranscriptNativeDocument.textViews(in: view).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+                return TranscriptNativeDocument.textViews(in: view).filter(\.isSelectable).map { Self.copiedText($0) }.joined(separator: "\n")
             }.joined(separator: "\n")
             XCTAssertEqual(ConversationContent.transcriptText(message, rawReply: raw), shown, "streaming=\(streaming), raw=\(raw)")
             if !streaming {

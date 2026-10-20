@@ -11,24 +11,34 @@ import AppKit
 /// like any other.
 @MainActor enum TranscriptHighlightSearch { static var scans = 0 }
 
-/// One text storage owns one revision. Attribute-only edits (including syntax
-/// colour and Find marks) do not invalidate the character matches.
+/// One text storage owns one revision. Copy-layout marks affect matching;
+/// syntax colour and Find marks do not.
 @MainActor final class TranscriptTextMatches: NSObject {
     private weak var storage: NSTextStorage?
     private(set) var revision = 0
     private var matches: [TranscriptMatchQuery: [NSRange]] = [:]
+    private var copied: MarkdownCopyText?
+    private var copyMarks: [MarkdownCopyText.Mark] = []
     init(_ storage: NSTextStorage) {
         self.storage = storage
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(edited), name: NSTextStorage.didProcessEditingNotification, object: storage)
     }
     @objc private func edited() {
-        guard storage?.editedMask.contains(.editedCharacters) == true else { return }
+        guard let storage else { return }
+        if !storage.editedMask.contains(.editedCharacters) {
+            guard copied != nil, MarkdownCopyText.marks(storage) != copyMarks else { return }
+        }
+        copied = nil
         revision += 1; matches.removeAll(keepingCapacity: true)
     }
     func ranges(_ query: TranscriptMatchQuery) -> [NSRange] {
+        guard !query.needle.isEmpty, let storage else { return [] }
         if let found = matches[query] { return found }
-        let found = TranscriptNativeDocument.ranges(of: query.needle, in: (storage?.string ?? "") as NSString, flexible: query.flexible)
+        if copied == nil { copied = MarkdownCopyText(storage); copyMarks = MarkdownCopyText.marks(storage) }
+        guard let copied else { return [] }
+        let found = TranscriptNativeDocument.ranges(of: query.needle, in: copied.string as NSString, flexible: query.flexible)
+            .compactMap { copied.renderedRange($0) }
         // At most the Find query and its focused excerpt; no query history.
         if matches.count >= 2 { matches.removeAll(keepingCapacity: true) }
         matches[query] = found
