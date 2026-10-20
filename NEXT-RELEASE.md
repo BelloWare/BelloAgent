@@ -4,6 +4,12 @@
 
 ## 0.1.130
 
+- [x] Every captured Send, Steer, Resend, queued Save and side first send stays pinned and recoverable after any storage failure. [Validation](docs/validation/a130-workspace-0.1.130.md#round-12--retained-input-through-storage-failures).
+- [x] Retained-input recovery stays visible after rejection and edit cancellation, independently of execution uncertainty.
+- [x] A side with undurable captured input stays reachable until recovery or dismissal; quit/update cannot orphan its input.
+- [x] Rejected input leaves the recovery chooser and pending cache only after its returned draft commits.
+- [x] Failed connection preparation retains captured input when storage fails or newer typing replaces it.
+
 - [x] Tool-output collection retains pinned conflict and captured-input references after failed persistence. [Validation](docs/validation/a130-workspace-0.1.130.md#post-integration-storage-failure-review).
 - [x] Failed side-draft cleanup preserves its committed revision, avoiding false conflicts after storage recovers.
 - [x] Restore Draft protects pinned input while its recovery transaction moves references into durable storage.

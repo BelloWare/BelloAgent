@@ -868,7 +868,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     var hasUnsavedDraft: Bool {
         draftWritePending || draftVersion.hasUnsavedConflict || !savedDraft.hasSameContents(as: draftVersion.snapshot.draft ?? DraftRecord(id: id, text: ""))
     }
-    var draftVersion = DraftVersion()
+    var draftVersion = DraftVersion() {
+        didSet {
+            // Hydration and side transfer replace the composer baseline, not
+            // independent input still awaiting its own durable record.
+            for intent in oldValue.unsavedSubmissions { draftVersion.preservingSubmission(intent) }
+        }
+    }
     @Published var draftConflicts: [SavedDraftConflict] = []
     var selectionMetadataLoaded = false
     /// Edits admitted while the baseline is unread, including a cleared field

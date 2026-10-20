@@ -149,6 +149,9 @@ extension WorkspaceModel {
         }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
+        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+        view.draftVersion.preservingSubmission(intent)
         // An edit stays in the composer while the helper replies. Its saved
         // copy needs the same review gate as a normal send returned on failure.
         view.submissionReviews.insert(commandID)
@@ -170,23 +173,25 @@ extension WorkspaceModel {
             var shown: (state: RunState, replaced: RunState)?
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             @MainActor func settleRefusedInput() async {
+                defer { pendingIntentsChanged(item.id) }
                 // A rejection settles execution, not the captured input.
                 // Retire it only with a durable draft still holding that input.
-                if view.draft == text, view.attachments == attachments, view.skills == skills {
-                    try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
-                                                        draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                if !view.draftVersion.unsavedSubmissions.contains(where: { $0.id == commandID }),
+                   view.draft == text, view.attachments == attachments, view.skills == skills {
+                    do {
+                        try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
+                                                           draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                        view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
+                        return
+                    } catch { view.draftVersion.preservingSubmission(intent) }
                 }
-                if let intent = try? await store.get(CommandIntent.self, kind: "pending:" + item.id, id: commandID),
-                   !view.recovered.contains(where: { $0.id == commandID }) { view.recovered.append(intent) }
-                pendingIntentsChanged(item.id)
+                offerSubmissionRecovery(intent, in: view)
             }
             do {
                 try await prepareToolOutputUse(outputUse)
                 let connection = Result { try connectionLease(for: item) }
                 // Newer typing may replace the editor snapshot, never the
                 // replacement captured by Resend or its independent intent.
-                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                           epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
                 try await store.recordSubmission(intent, draft: savedDraft, draftVersion: view.draftVersion, write: write)
                 pendingIntentsChanged(item.id)
                 let lease = try connection.get()
@@ -250,7 +255,7 @@ extension WorkspaceModel {
                 }
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
-                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted }
+                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted; offerSubmissionRecovery(intent, in: view) }
                 else if case HostError.rejected(let code, _) = error {
                     view.submissionReviews.remove(commandID); draftChanged(view)
                     // Refused: no branch was made.
@@ -260,8 +265,8 @@ extension WorkspaceModel {
                     await settleRefusedInput()
                     if code == "connection_unavailable" { view.runState = .interrupted } else { undoShownState() }
                 }
-                else if dispatched { view.uncertain = true; view.runState = .interrupted }
-                else { view.submissionReviews.remove(commandID); draftChanged(view); undoShownState() }
+                else if dispatched { view.uncertain = true; view.runState = .interrupted; offerSubmissionRecovery(intent, in: view) }
+                else { view.submissionReviews.remove(commandID); draftChanged(view); await settleRefusedInput(); undoShownState() }
             }
         }
     }

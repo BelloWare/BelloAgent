@@ -168,7 +168,8 @@ import QuartzCore
     func update(_ intents: [CommandIntent], conflicts: [SavedDraftConflict] = [], model: WorkspaceModel) {
         self.intents = intents; self.conflicts = conflicts; self.model = model
         let count = intents.count + conflicts.count
-        chooser.label = "\(count) saved " + (count == 1 ? "copy" : "copies")
+        let unsaved = intents.contains { intent in model.displays[intent.sessionID]?.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } == true }
+        chooser.label = "\(count) " + (unsaved ? "retained " : "saved ") + (count == 1 ? "copy" : "copies")
         changed?()
     }
     private func preview(_ text: String) -> String {
@@ -184,7 +185,7 @@ import QuartzCore
                     model.restoreConflictedDraft(conflict)
                 }
             }
-            if !intents.isEmpty { PiMenuEntry.note("Interrupted submissions · Nothing was resent") }
+            if !intents.isEmpty { PiMenuEntry.note("Retained submissions · Nothing was resent") }
             for (index, intent) in intents.enumerated() {
                 PiMenuEntry.menu("Submission \(index + 1): " + preview(intent.text)) {
                     PiMenuEntry.button("Insert in Draft", identifier: "recover-intent-" + intent.id) { model.recoverDraft(intent, insert: true) }

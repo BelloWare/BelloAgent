@@ -561,6 +561,10 @@ import SQLite3
         XCTAssertEqual(view.draftVersion.snapshot.revision, revision)
         let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
         XCTAssertEqual(saved?.text, "")
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions.map(\.id), [invalid.id])
+        // Even an invalid captured record is retained until explicit discard.
+        // App entry points reject oversized input before capture.
+        try await store.withdrawSubmission(sessionID: view.id, commandID: invalid.id, draft: nil, draftVersion: view.draftVersion)
         view.draft = "Retry after rollback"; try await model.flushDrafts()
         let retried = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
         XCTAssertEqual(retried?.text, view.draft)
@@ -603,7 +607,8 @@ import SQLite3
             XCTAssertEqual(durable.draft, before.draft, operation)
             XCTAssertEqual(view.draftVersion.snapshot.revision, durable.revision, operation)
             XCTAssertEqual(view.draftVersion.snapshot.draft, durable.draft, operation)
-            XCTAssertFalse(view.draftVersion.hasUnsavedConflict, "A storage failure is not another instance's edit")
+            XCTAssertTrue(view.draftVersion.unsavedConflicts.isEmpty, "A storage failure is not another instance's edit")
+            XCTAssertEqual(view.draftVersion.unsavedSubmissions.map(\.id), operation == "submission" ? [intent.id] : [])
             let retained = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: intent.id)
             let copies = try await store.draftConflicts(id: view.id)
             let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: view.id)

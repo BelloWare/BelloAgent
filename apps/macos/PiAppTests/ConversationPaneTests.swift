@@ -52,6 +52,29 @@ extension ConversationPaneTests {
         }
     }
 
+    @MainActor func testRejectedInputRecoveryStaysVisibleAfterCancellingAnEdit() async throws {
+        let pane = try Pane(); defer { pane.close() }
+        await pane.settle()
+        let intent = CommandIntent(id: "rejected", sessionID: pane.chat.id, turnID: "replacement", text: "Captured replacement", state: "intent")
+        try await pane.model.store?.recordSubmission(intent, draft: nil)
+        pane.session.recovered = [intent]; pane.session.uncertain = false
+        pane.session.editingMessageID = "original"; pane.session.draftBeforeEdit = DraftRecord(id: pane.chat.id, text: "Parked draft")
+        pane.session.draft = "Newer editing"
+        await pane.settle()
+        let banner = try XCTUnwrap(Self.views(RecoveredBannerView.self, in: pane.hosted).first)
+        XCTAssertFalse(banner.isHidden, "Retained input does not require uncertain execution")
+        pane.model.cancelEdit(sessionID: pane.chat.id)
+        await pane.settle()
+        XCTAssertFalse(banner.isHidden, "Cancel Edit must leave recovery reachable in place")
+        let chooser = try XCTUnwrap(Self.views(PiKit.MenuButton.self, in: banner).first)
+        let menu = PiMenus.menu(chooser.entries())
+        let actions = menu.items.compactMap(\.submenu).flatMap(\.items).compactMap { $0.identifier?.rawValue }
+        XCTAssertTrue(actions.contains("recover-intent-rejected")); XCTAssertTrue(actions.contains("dismiss-intent-rejected"))
+        pane.session.runState = .running
+        await pane.settle()
+        XCTAssertFalse(banner.isHidden, "Running work must not hide retained input")
+    }
+
     // MARK: Typing
 
     /// What one keystroke costs in the real pane: the native edit, the SwiftUI

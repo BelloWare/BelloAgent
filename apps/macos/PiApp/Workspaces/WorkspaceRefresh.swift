@@ -437,7 +437,7 @@ extension WorkspaceModel {
         view.acceptedCommands.formIntersection(Set(intents.map(\.id)))
         // A dispatched receipt or a local acknowledgement proves acceptance,
         // even while the intent waits here for its terminal receipt.
-        let recoverable = intents.filter { intent in
+        let recoverable = retainingCapturedInput(intents, in: view).filter { intent in
             intent.state == "intent" && !view.acceptedCommands.contains(intent.id) && !receipts.contains { $0["commandId"]?.string == intent.id }
                 && !intent.turnID.hasPrefix(Self.resumeIntentPrefix)
         }

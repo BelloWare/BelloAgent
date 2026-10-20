@@ -32,7 +32,8 @@ extension WorkspaceModel {
         view.draftConflicts = metadata.conflicts
         let recovered = try await recoverableIntents(metadata.recovered, for: item, view: view)
         guard current() else { return false }
-        view.recovered = recovered; view.uncertain = !recovered.isEmpty
+        view.recovered = recovered
+        view.uncertain = recovered.contains { intent in !view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } }
         // Text alone cannot authorize a resend while acceptance is unread.
         view.draftReady = true
         return true
@@ -64,6 +65,7 @@ extension WorkspaceModel {
     /// An acknowledgement may be missing locally after a full disk or crash.
     /// Consult durable helper evidence before exposing any recovery action.
     func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {
+        let intents = retainingCapturedInput(intents, in: view)
         let unchecked = intents.filter { $0.state == "intent" && !view.acceptedCommands.contains($0.id) }
         // Queue saves have no new turn receipt. After a lost reply, the
         // helper's durable outcome must match this captured text before it
@@ -210,6 +212,7 @@ extension WorkspaceModel {
                 guard view.hasUnsavedDraft || view.anchorWritePending else { continue }
                 try await loadDraftBaseline(view)
             }
+            try await store.preserveDraftConflicts(view.draftVersion)
             if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id)) }
             try await store.putAnchor(view.scrollAnchor, id: view.id, version: view.anchorVersion, write: store.draftWriter.capture(view.id, payload: .anchor))
         }
@@ -273,6 +276,16 @@ extension WorkspaceModel {
             } catch { self.error = "The conflicting draft could not be restored. Its saved copy was kept. \(error.localizedDescription)" }
         }
     }
+    /// Until the independent input record commits, the version owns its pin.
+    /// Recovery visibility is separate from whether the helper may have acted.
+    func offerSubmissionRecovery(_ intent: CommandIntent, in view: SessionDisplay) {
+        guard !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }),
+              !view.recovered.contains(where: { $0.id == intent.id }) else { return }
+        view.recovered.append(intent)
+    }
+    func retainingCapturedInput(_ intents: [CommandIntent], in view: SessionDisplay) -> [CommandIntent] {
+        intents + view.draftVersion.unsavedSubmissions.filter { pinned in !intents.contains { $0.id == pinned.id } }
+    }
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
         // The banner sits in the pane of the chat the submission belongs to,
         // a side's included: it acts on that chat, not on the selected one.
@@ -309,7 +322,10 @@ extension WorkspaceModel {
                   !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
             do {
                 guard let store else { throw StoreError.unavailable }
-                if insert { try await loadDraftBaseline(view) }
+                if insert {
+                    try await materializeChat(view.id)
+                    try await loadDraftBaseline(view)
+                }
                 guard view.recovered.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
                       !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
                 guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing,
@@ -329,7 +345,7 @@ extension WorkspaceModel {
                 }
                 pendingIntentsChanged(view.id)
                 view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }
-            } catch { self.error = "The interrupted submission could not be recovered. Its saved copy was kept. \(error.localizedDescription)" }
+            } catch { self.error = "The retained submission could not be recovered. Its input was kept. \(error.localizedDescription)" }
         }
     }
     /// These are helper submission limits, not a reason to truncate a saved

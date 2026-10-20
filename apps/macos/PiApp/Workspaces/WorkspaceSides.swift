@@ -304,6 +304,11 @@ extension WorkspaceModel {
             // One move of a side's draft at a time: another waits, then sees
             // what that one left in the side (all of it, if it failed).
             while let running = sideDraftTransfers[info.id] { await running.task.value }
+            if !side.draftVersion.unsavedSubmissions.isEmpty {
+                // A failed first keep write may leave no durable chat owning
+                // this side's input. Keep its recovery actions reachable here.
+                throw HostError.failure("Recover or dismiss the retained submission in this side before closing it.")
+            }
             if side.draftVersion.hasUnsavedConflict {
                 guard let store else { throw StoreError.unavailable }
                 try await store.preserveDraftConflicts(side.draftVersion)
@@ -456,7 +461,8 @@ extension WorkspaceModel {
                 self.adoptDraftBaseline(metadata, into: view, draftAtStart: oldDraft)
                 let recovered = try await self.recoverableIntents(metadata.recovered, for: child, view: view)
                 guard current() else { return }
-                view.recovered = recovered; view.uncertain = !recovered.isEmpty
+                view.recovered = recovered
+                view.uncertain = recovered.contains { intent in !view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id } }
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
                 var page = try await self.readInitialWindow(child, holding: view.scrollAnchor)

@@ -266,8 +266,12 @@ extension WorkspaceModel {
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
         guard let id, let item = record(id), !item.isSubagent else { return }
-        guard displays[id]?.draftVersion.hasUnsavedConflict != true else { error = "Save the conflicting draft before deleting this chat."; return }
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
+        guard displays[id]?.draftVersion.hasUnsavedConflict != true else {
+            error = displays[id]?.draftVersion.unsavedConflicts.isEmpty == false
+                ? "Save the conflicting draft before deleting this chat." : "Recover or dismiss the retained submission before deleting this chat."
+            return
+        }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
         if let info = side(id), info.pending { Task { await discardPendingSide(info) }; return }

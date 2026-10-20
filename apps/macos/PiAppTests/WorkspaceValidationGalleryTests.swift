@@ -3,6 +3,36 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testRetainedInputRecoveryInLightDarkAndNarrowLayouts() async throws {
+        guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                for pinned in [false, true] {
+                    let pane = try ConversationPaneTests.Pane(messages: [
+                        TranscriptMessage(id: "question", role: "user", text: "Review the draft without losing what I chose to send.", turn: "turn"),
+                        TranscriptMessage(id: "answer", role: "assistant", text: "Retained input stays available in the recovery menu while you continue editing.", turn: "turn")
+                    ], width: width, height: 620)
+                    defer { pane.close() }
+                    pane.model.prewarmsHelpers = false; pane.hosted.appearance = NSAppearance(named: appearance)
+                    let intent = CommandIntent(id: "retained", sessionID: pane.chat.id, turnID: "turn-edit", text: "The replacement captured before newer typing.", state: "intent")
+                    if pinned { pane.session.draftVersion.preservingSubmission(intent) }
+                    else { try await pane.model.store?.recordSubmission(intent, draft: nil) }
+                    pane.session.recovered = [intent]; pane.session.uncertain = false; pane.session.draft = "The draft restored after cancelling the active edit."
+                    await pane.settle()
+                    let banner = try XCTUnwrap(ConversationPaneTests.views(RecoveredBannerView.self, in: pane.hosted).first)
+                    XCTAssertFalse(banner.isHidden); XCTAssertEqual(banner.frame.height, 56)
+                    let chooser = try XCTUnwrap(ConversationPaneTests.views(PiKit.MenuButton.self, in: banner).first)
+                    XCTAssertTrue(chooser.label.contains(pinned ? "retained" : "saved"))
+                    let image = try XCTUnwrap(pane.hosted.bitmapImageRepForCachingDisplay(in: pane.hosted.bounds))
+                    pane.hosted.cacheDisplay(in: pane.hosted.bounds, to: image)
+                    try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("retained-\(pinned ? "unsaved" : "rejected")-\(theme)-\(Int(width)).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testChangedWorkspaceErrorsInLightDarkAndNarrowLayouts() async throws {
         guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
@@ -22,6 +23,305 @@ import XCTest
         try await wire.host.connect(cwd: root, state: root.appendingPathComponent("host"))
         model.hosts["w"] = wire.host; model.opened.insert(chat.id)
         return (model, view, wire)
+    }
+
+    func testStorageFailureKeepsEveryCapturedSubmissionRecoverableInPlace() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            try await failedCapture(method, kind: "pending:%")
+        }
+    }
+
+    func testDraftWriteFailureKeepsEveryCapturedSubmissionRecoverableInPlace() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            try await failedCapture(method, kind: "draft", superseding: false)
+        }
+    }
+
+    func testSideIntentAndNewChatWriteFailuresRetainCapturedInput() async throws {
+        try await failedCapture("side", kind: "side-keep")
+        try await failedCapture("new-chat", kind: "chat")
+    }
+
+    func testRollbackAfterInputInsertKeepsEverySubmissionRecoverable() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            try await failedCapture(method, kind: "pending:%", rollback: true)
+        }
+    }
+
+    func testEveryFailedCaptureCanBeExplicitlyDiscardedWithoutReturningOnFlush() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            try await failedCapture(method, kind: "pending:%", discard: true)
+        }
+    }
+
+    func testSideRegistrationFailuresLeaveCapturedInputReachable() async throws {
+        for (kind, event) in [("chat", "INSERT"), ("draft", "INSERT"), ("side-keep", "DELETE"), (SideKeepRegistration.kind, "INSERT")] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            model.openSide(parentID: parent.id)
+            let view = try XCTUnwrap(model.sides[parent.id].flatMap { model.displays[$0.id] })
+            view.snapshotInFlight = true; view.draft = "Captured before registration failure"
+            wire.heldMethod = "side.open"; model.send(sessionID: view.id)
+            try await eventually("Side publication held") { wire.held != nil }
+            view.draft = "Newer side typing"; model.draftChanged(view)
+            let row = event == "DELETE" ? "OLD" : "NEW"
+            try RecoveredDraftTests.sql("CREATE TRIGGER fail_registration BEFORE \(event) ON records WHEN \(row).kind='\(kind)' BEGIN SELECT RAISE(ABORT, 'generated registration failure'); END", root: model.root)
+            wire.release()
+            try await eventually("Registration failure settled") { !view.loading && model.toolOutputProducers.isEmpty }
+            XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "turn.submit" })
+            let intent = try XCTUnwrap(view.recovered.first { $0.text == "Captured before registration failure" })
+            let durable = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertTrue(durable.contains { $0.id == intent.id }, kind)
+            try RecoveredDraftTests.sql("DROP TRIGGER fail_registration", root: model.root)
+            view.draft = "After failure"
+            model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[view.id]?.value
+            XCTAssertEqual(view.draft, "After failure\n\n" + intent.text, kind)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testCapturedInputSurvivesHydrationRefreshFlushAndRecoveryFailure() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let intent = CommandIntent(id: "captured", sessionID: view.id, turnID: "turn", text: "Captured input", state: "intent")
+        view.draftVersion.preservingSubmission(intent); model.offerSubmissionRecovery(intent, in: view)
+        view.selectionMetadataLoaded = false
+        try await model.loadDraftBaseline(view)
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent])
+        view.draft = "Later typing"; model.draftChanged(view); await model.draftWrites.tasks[view.id]?.value
+        XCTAssertTrue(view.draftConflicts.isEmpty)
+        let reconciled = try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true })
+        XCTAssertTrue(reconciled); XCTAssertEqual(view.recovered, [intent], "An empty durable inventory cannot hide pinned input")
+        XCTAssertFalse(view.uncertain, "Input that could not be persisted was never dispatched")
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_input BEFORE INSERT ON records WHEN NEW.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated flush failure'); END", root: model.root)
+        do { try await model.flushDrafts(); XCTFail("Quit/update must not release undurable input") } catch {}
+        XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent]); XCTAssertEqual(view.recovered, [intent])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_input", root: model.root)
+        try await model.flushDrafts()
+        XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty)
+        let durable = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertEqual(durable, [intent]); XCTAssertEqual(view.recovered, [intent])
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_withdrawal BEFORE DELETE ON records WHEN OLD.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated recovery failure'); END", root: model.root)
+        for insert in [true, false] {
+            model.recoverDraft(intent, insert: insert); await model.draftWrites.recoveries[view.id]?.value
+            XCTAssertEqual(view.draft, "Later typing"); XCTAssertEqual(view.recovered, [intent])
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertEqual(pending, [intent])
+        }
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_withdrawal", root: model.root)
+        model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, "Later typing\n\n" + intent.text)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testSideTransferCannotOrphanInputCapturedBeforeItsKeepIntentCouldBeSaved() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Captured before side storage failed"
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_keep BEFORE INSERT ON records WHEN NEW.kind='side-keep' BEGIN SELECT RAISE(ABORT, 'generated keep failure'); END", root: model.root)
+        model.send(sessionID: view.id)
+        try await eventually("Side first send refused") { !view.loading && model.toolOutputProducers.isEmpty }
+        let intent = try XCTUnwrap(view.recovered.first)
+        view.draft = "Newer side text"
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_keep", root: model.root)
+        do { try await model.moveSideDraft(side); XCTFail("A pending record without a saved chat/keep intent cannot release its only reachable display") } catch {}
+        XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id })
+        XCTAssertEqual(view.recovered, [intent])
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+        XCTAssertNil(keep)
+        model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[side.id]?.value
+        try await model.moveSideDraft(side); try await model.flushDrafts()
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+        XCTAssertTrue(saved?.text.contains(intent.text) == true)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testTransactionStartFailurePinsEveryCapturedSubmission() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            try await failedCapture(method, kind: "begin", busy: true)
+        }
+    }
+
+    func testUnavailableMetadataPinsEveryCapturedSubmissionBeforeAnyWrite() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let view: SessionDisplay
+            if method == "side" {
+                model.openSide(parentID: parent.id)
+                view = try XCTUnwrap(model.sides[parent.id].flatMap { model.displays[$0.id] }); view.snapshotInFlight = true
+            } else { view = parent }
+            view.draft = "Captured while storage unavailable"
+            if method == "turn.edit" { view.editingMessageID = "original"; view.draftBeforeEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "queue.edit.save" { view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"; view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "turn.steer" { view.runState = .running }
+            await store.close()
+            if method == "turn.edit" { model.sendEdit(sessionID: view.id) }
+            else if method == "queue.edit.save" { model.saveQueuedEdit(sessionID: view.id) }
+            else { model.send(steer: method == "turn.steer", sessionID: view.id) }
+            view.draft = "Newer typing"; model.draftChanged(view)
+            try await eventually("Unavailable storage answered") { !view.loading && !view.queueEditResolving && model.toolOutputProducers.isEmpty }
+            XCTAssertEqual(view.recovered.map(\.text), ["Captured while storage unavailable"], method)
+            XCTAssertEqual(view.draftVersion.unsavedSubmissions.map(\.text), ["Captured while storage unavailable"], method)
+            XCTAssertTrue(view.draftConflicts.isEmpty)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testAcceptedSubmissionBookkeepingFailuresNeverOfferDuplicateRecovery() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let view: SessionDisplay
+            if method == "side" {
+                model.openSide(parentID: parent.id)
+                view = try XCTUnwrap(model.sides[parent.id].flatMap { model.displays[$0.id] }); view.snapshotInFlight = true
+            } else { view = parent }
+            view.draft = "Captured accepted input"
+            if method == "turn.edit" { view.editingMessageID = "original"; view.draftBeforeEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "queue.edit.save" { view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"; view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked") }
+            if method == "turn.steer" { view.runState = .running }
+            wire.heldMethod = method == "side" ? "turn.submit" : method
+            if method == "turn.edit" { model.sendEdit(sessionID: view.id) }
+            else if method == "queue.edit.save" { model.saveQueuedEdit(sessionID: view.id) }
+            else { model.send(steer: method == "turn.steer", sessionID: view.id) }
+            try await eventually("Accepted input held") { wire.held != nil }
+            view.draft = "Newer typing"; model.draftChanged(view)
+            let event = method == "queue.edit.save" ? "DELETE" : "UPDATE"
+            try RecoveredDraftTests.sql("CREATE TRIGGER fail_ack BEFORE \(event) ON records WHEN OLD.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated acknowledgement failure'); END", root: model.root)
+            let before = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            let captured = try XCTUnwrap(before.first)
+            wire.release()
+            try await eventually("Accepted input settled") { !view.loading && !view.queueEditResolving && model.toolOutputProducers.isEmpty }
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertTrue(pending.contains { $0.id == captured.id }, method)
+            XCTAssertTrue(view.acceptedCommands.contains(captured.id), method)
+            XCTAssertFalse(view.recovered.contains { $0.id == captured.id }, method)
+            XCTAssertTrue(view.draftVersion.unsavedSubmissions.isEmpty, method)
+            XCTAssertTrue(view.draft.contains("Newer typing"), method)
+            try RecoveredDraftTests.sql("DROP TRIGGER fail_ack", root: model.root)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testDefiniteRejectionRetiresVisibleRecoveryOnlyAfterItsDraftCommits() async throws {
+        for method in ["turn.submit", "turn.edit"] {
+            let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            view.draft = "Captured input"; wire.heldMethod = method
+            if method == "turn.edit" {
+                view.editingMessageID = "original"; view.draftBeforeEdit = DraftRecord(id: view.id, text: "Parked")
+                model.sendEdit(sessionID: view.id)
+            } else { model.send(sessionID: view.id) }
+            try await eventually("Delivery held") { wire.held != nil }
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            view.recovered = pending; view.pendingIntents = (view.pendingIntentRevision, pending)
+            let revision = view.pendingIntentRevision
+            wire.rejectedMethod = method; wire.release()
+            try await eventually("Refusal settled") { !view.loading }
+            XCTAssertTrue(view.recovered.isEmpty, "A successfully returned draft no longer needs a recovery action")
+            XCTAssertGreaterThan(view.pendingIntentRevision, revision, "The old pending cache must not resurrect retired input")
+            let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+            XCTAssertEqual(saved?.text, "Captured input")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testConnectionRefusalDoesNotDropCapturedInputWhenMaterializationFails() async throws {
+        try await failedCapture("connection-refused", kind: "chat")
+    }
+
+    private func failedCapture(_ method: String, kind: String, superseding: Bool = true, rollback: Bool = false, discard: Bool = false, busy: Bool = false) async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let view: SessionDisplay
+        if method == "side" {
+            model.openSide(parentID: parent.id)
+            view = try XCTUnwrap(model.sides[parent.id].flatMap { model.displays[$0.id] })
+            view.snapshotInFlight = true
+        } else { view = parent }
+        if method == "new-chat" || method == "connection-refused" { model.pendingChatIDs.insert(view.id) }
+        if method == "connection-refused" { model.profiles = [] }
+        let captured = "Captured \(method) at \(kind)"
+        view.draft = captured
+        if method == "turn.edit" {
+            view.editingMessageID = "original"; view.draftBeforeEdit = DraftRecord(id: view.id, text: "Parked draft")
+        } else if method == "queue.edit.save" {
+            view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+            view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked draft")
+        } else if method == "turn.steer" { view.runState = .running }
+        // Ensure the send's emptied composer also owns a real draft write.
+        if kind == "draft" { try await store.put(view.savedDraft, kind: "draft", id: view.id, draftVersion: view.draftVersion) }
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database); defer { sqlite3_close(db) }
+        if busy { XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK) }
+        else { XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_capture \(rollback ? "AFTER" : "BEFORE") INSERT ON records WHEN NEW.kind LIKE '\(kind)' BEGIN SELECT RAISE(\(rollback ? "ROLLBACK" : "ABORT"), 'generated capture failure'); END", nil, nil, nil), SQLITE_OK) }
+        let gate = DraftBaselineGate(expectation(description: "Metadata held for \(method)/\(kind)"))
+        let blocker = Task { await store.holdDraftBaseline(gate) }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        defer { gate.resume.signal() }
+        if method == "turn.edit" { model.sendEdit(sessionID: view.id) }
+        else if method == "queue.edit.save" { model.saveQueuedEdit(sessionID: view.id) }
+        else { model.send(steer: method == "turn.steer", sessionID: view.id) }
+        try await Task.sleep(for: .milliseconds(30))
+        view.draft = "Newer typing"; if superseding { model.draftChanged(view) }
+        gate.resume.signal(); await blocker.value
+        try await eventually("Failed capture settled", timeout: .seconds(30)) { !view.loading && !view.queueEditResolving && model.toolOutputProducers.isEmpty }
+        XCTAssertFalse(wire.frames.contains { ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save"].contains($0["method"]?.string ?? "") }, "\(method)/\(kind) must not dispatch")
+        let retained = view.draftVersion.unsavedSubmissions.map(\.text) + view.recovered.map(\.text)
+        XCTAssertTrue(retained.contains(captured), "\(method)/\(kind) lost captured input or hid its recovery")
+        XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.text == captured }, "Failed persistence needs an eviction/collector pin")
+        XCTAssertTrue(view.draftConflicts.isEmpty, "Storage failure must not invent a cross-instance conflict")
+        if busy { XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK) }
+        // Cancelling an editor and replacing all composer text must not consume
+        // a different input already chosen by Save/Resend.
+        if method == "turn.edit" { model.cancelEdit(sessionID: view.id) }
+        if method == "queue.edit.save" {
+            model.queueEditOperation = { _, _, _ in [:] }
+            model.cancelQueuedEdit(sessionID: view.id)
+            try await eventually("Queue edit cancelled") { view.queueEditingID == nil }
+        }
+        view.runState = .idle; view.draft = "After cancellation"; model.draftChanged(view)
+        await model.draftWrites.tasks[view.id]?.value
+        if view.draftVersion.hasUnsavedConflict {
+            model.deleteChat(view.id)
+            XCTAssertTrue(model.error?.contains("retained submission") == true, "Single-instance storage errors are not draft conflicts")
+            XCTAssertTrue(model.displays[view.id] === view)
+        }
+        let intent = view.recovered.first { $0.text == captured }
+        XCTAssertNotNil(intent, "\(method)/\(kind) must offer recovery without reopening")
+        if !busy { XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_capture", nil, nil, nil), SQLITE_OK) }
+        if let intent {
+            if !discard {
+                XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_recovery BEFORE INSERT ON records WHEN NEW.kind='draft' BEGIN SELECT RAISE(ABORT, 'generated recovery failure'); END", nil, nil, nil), SQLITE_OK)
+                model.recoverDraft(intent, insert: true)
+                await model.draftWrites.recoveries[view.id]?.value
+                XCTAssertEqual(view.draft, "After cancellation")
+                XCTAssertTrue(view.recovered.contains { $0.id == intent.id })
+                XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id })
+                XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_recovery", nil, nil, nil), SQLITE_OK)
+                try await store.preserveDraftConflicts(view.draftVersion)
+                XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_retirement BEFORE DELETE ON records WHEN OLD.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated retirement failure'); END", nil, nil, nil), SQLITE_OK)
+                for insert in [true, false] {
+                    model.recoverDraft(intent, insert: insert)
+                    await model.draftWrites.recoveries[view.id]?.value
+                    XCTAssertEqual(view.draft, "After cancellation")
+                    XCTAssertTrue(view.recovered.contains { $0.id == intent.id })
+                    let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+                    XCTAssertTrue(pending.contains { $0.id == intent.id })
+                }
+                XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_retirement", nil, nil, nil), SQLITE_OK)
+            }
+            model.recoverDraft(intent, insert: !discard)
+            await model.draftWrites.recoveries[view.id]?.value
+            XCTAssertEqual(view.draft, discard ? "After cancellation" : "After cancellation\n\n" + captured)
+            if !discard {
+                let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+                XCTAssertEqual(saved?.text, view.draft)
+            }
+            XCTAssertFalse(view.recovered.contains { $0.id == intent.id })
+            XCTAssertFalse(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id }, "Recovered pins must not reappear on flush")
+            try await store.preserveDraftConflicts(view.draftVersion)
+            let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            XCTAssertFalse(pending.contains { $0.id == intent.id })
+        }
+        try await wire.host.shutdownAndWait()
     }
 
     func testSendKeepsCapturedInputWhileNewTypingSupersedesItsSnapshot() async throws { try await typingDuringWrite("turn.submit") }

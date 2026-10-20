@@ -88,7 +88,7 @@ final class DraftVersion: @unchecked Sendable {
             conflicts.append(.init(id: episode.id, draft: draft))
         }
     }
-    fileprivate func preservingSubmission(_ intent: CommandIntent) {
+    func preservingSubmission(_ intent: CommandIntent) {
         lock.withLock {
             // A captured send is independent of later composer snapshots.
             // Keep it pinned too if the recovery transaction cannot commit.
@@ -261,10 +261,10 @@ actor MetadataStore {
         let previous = version.snapshot
         // An unchanged stale composer owns no write, even at Quit. Normalize
         // optional empty arrays used by older drafts before comparing them.
-        guard version.hasConflictEpisode || version.hasUnsavedConflict || !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
+        guard version.hasConflictEpisode || !version.unsavedConflicts.isEmpty || !draft.hasSameContents(as: previous.draft ?? DraftRecord(id: draft.id, text: "")) else { return }
         func save() throws {
             let current = try draftVersion(id: draft.id).snapshot
-            guard !version.hasUnsavedConflict, current.revision == previous.revision else {
+            guard version.unsavedConflicts.isEmpty, current.revision == previous.revision else {
                 version.conflicted(draft, against: current.revision); transactionConflicts.append(version)
                 throw StoreError.draftConflict
             }
@@ -1047,10 +1047,11 @@ actor MetadataStore {
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, kind, -1, transient); sqlite3_bind_int(statement, 3, Int32(max(0, keeping)))
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
-    /// A submission and the composer it left normally commit together. If
-    /// another instance won the draft, retain the captured input separately
-    /// beside the losing composer copy before reporting the conflict.
+    /// Captured input is never a replaceable composer snapshot. Pin it before
+    /// storage can fail (including BEGIN/read/COMMIT), and release the pin only
+    /// after its independent record commits. Storage errors are not conflicts.
     func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
+        draftVersion?.preservingSubmission(intent)
         defer { if let write { draftWriter.finish(write) } }
         try orderedDraftWrite(intent.sessionID, payload: .submission) {
             try transaction {
@@ -1059,16 +1060,10 @@ actor MetadataStore {
                     // Newer typing owns the composer, but cannot cancel the
                     // captured message. Its independent intent still commits.
                 }
-                catch StoreError.draftConflict {
-                    // Roll back the draft write, then durably retain this intent
-                    // beside its conflict copy. Debounces may replace only that
-                    // composer copy; withdrawal/acknowledgement settles the input.
-                    draftVersion?.preservingSubmission(intent)
-                    throw StoreError.draftConflict
-                }
                 try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
             }
         }
+        draftVersion?.preservedSubmission(intent.id)
     }
     /// A submission the helper never acted on went back into the composer:
     /// the draft that holds its text again and the end of its record, in one
@@ -1080,6 +1075,7 @@ actor MetadataStore {
                 try remove(kind: "pending:\(sessionID)", id: commandID)
             }
         }
+        draftVersion?.preservedSubmission(commandID)
     }
     func acknowledgeCommand(sessionID: String, commandID: String) throws {
         let kind = "pending:\(sessionID)"

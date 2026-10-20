@@ -3490,3 +3490,347 @@ hashes match `tested-source-sha256.json`, and `git diff --check` passes. Automat
 result bundles were removed from this workstream's build root, no cloned test
 apps remained, and its owned full-lane lock was released. No branch other than
 `dev/a130-workspace` is committed or pushed by this round.
+
+
+## Round 12 — retained input through storage failures
+
+Branch: `dev/a130-workspace`, continuing from `0aa9e6c1`. No merge/rebase or
+helper/wire change in this round. All fixtures use generated desktop databases,
+journals, text and credentials, memory vaults, and fake in-process host transports.
+No installed app, real preferences/chats/Keychain, capture, or paid provider calls.
+
+Evidence root:
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round12-captured-input/`.
+Every native run uses this workstream's build root. `run.py` records the exact
+command, full text log and exit status; window and gallery runs take/release the
+shared full-lane lock. Serial-lane classes run alone. Automatic Xcode result
+bundles are not the evidence and are removed after validation.
+
+### Findings and failing-first evidence
+
+**P1 — queued rewrite storage failure: confirmed and fixed.** The recorded
+round-11 follow-up was real for historical Resend too. Captured input now enters
+`DraftVersion.unsavedSubmissions` synchronously at capture, before metadata or
+producer awaits. `recordSubmission` also pins before BEGIN/read/write/commit can
+fail. Its independent `pending:<chat>` record owns the input after commit; only
+then does the pin clear. No subsequent typing/episode write replaces that input.
+
+`SubmissionPersistenceTests.testStorageFailureKeepsEveryCapturedSubmissionRecoverableInPlace`,
+`testDraftWriteFailureKeepsEveryCapturedSubmissionRecoverableInPlace`, and
+`testSideIntentAndNewChatWriteFailuresRetainCapturedInput` failed first on all
+12 scenarios (3 tests, 24 assertions, `failing-first-storage.log`). The queued
+and historical edits lost the captured text; ordinary sends could still restore
+text into their composer but lacked the independent failure pin/recovery action
+required here:
+
+
+```text
+XCTAssertTrue failed - queue.edit.save/pending:% lost captured input or hid its recovery
+XCTAssertNotNil failed - turn.edit/pending:% must offer recovery without reopening
+XCTAssertTrue failed - side/side-keep lost captured input or hid its recovery
+```
+
+**P2 — retained rejected input hidden by uncertainty: confirmed and fixed.**
+`ConversationPaneTests.testRejectedInputRecoveryStaysVisibleAfterCancellingAnEdit`
+failed first with five assertions (`failing-first-recovery-ui.log`):
+
+```text
+XCTAssertFalse failed - Retained input does not require uncertain execution
+XCTAssertFalse failed - Cancel Edit must leave recovery reachable in place
+XCTAssertFalse failed - Running work must not hide retained input
+```
+
+Recovery visibility now depends on retained submissions/conflict copies, with
+sub-agent readers still excluded. The existing one-row chooser remains present
+through running work and editing; Insert still checks send/edit ownership before
+replacing the composer, and becomes usable in place after Cancel. Undurable input
+is labelled “retained”, not “saved”. Execution uncertainty and acceptance checks
+remain separate; a known accepted command is never offered for replay.
+
+### Capture records and storage-failure coverage
+
+| Capture | Owner before durability | Durable record / dispatch |
+| --- | --- | --- |
+| Send, including refused connection preparation | Immutable `Submission.intent` and version pin | `pending:<chat>/<commandID>` / `turn.submit` only after persistence |
+| Steer | Same independent input and pin | `pending:<chat>/<commandID>` / `turn.steer` |
+| Historical Resend | Immutable intent and pin; replaceable editor snapshot separately ordered | `pending:<chat>/<commandID>` / `turn.edit` |
+| Queued-message Save | Immutable intent and pin; newer rewrite remains editable | `pending:<chat>/queue-edit:<editID>:<digest>` / `queue.edit.save` |
+| Side first send | Immutable first-send intent and pin before even `side-keep` | `pending:<side>/<commandID>` plus the existing side-keep/registration path / `turn.submit` |
+
+The regression matrix exercises all five captures with newer typing during a held
+metadata operation and injects:
+
+- unavailable metadata before any write;
+- an external SQLite write lock, causing transaction start/write acquisition to
+  fail rather than accepting a command without a durable input;
+- failed draft INSERT (including rollback of submission-review state);
+- failed independent pending-input INSERT;
+- rollback immediately after that INSERT, before successful transaction commit;
+- failed recovery draft INSERT, then retry;
+- failed post-acceptance acknowledgement UPDATE (pending DELETE for queued Save):
+  the durable input remains but is not offered as an unaccepted duplicate.
+
+Additional first-send tests fail new-chat materialization, side-keep INSERT, each
+side-registration operation (chat INSERT, draft INSERT, side-keep DELETE and
+registration-receipt INSERT), and recovery's pending DELETE (Insert and Dismiss,
+for every capture kind). Explicit Dismiss is also tested for every capture kind: its pin and pending record stay gone after a
+preservation retry. No test automatically retries a provider command.
+
+The `draft` failure cases deliberately keep the admitted snapshot ticket while
+changing live composer text, so the failing draft write actually executes. The
+pending INSERT/rollback cases also call `draftChanged` and supersede the old
+snapshot: that cancellation must never cancel the captured input. Existing
+round-9 typing-during-write tests remain in the full class run.
+
+### Nearby sweep and release ownership
+
+- **Side transfer after failed first keep INSERT — confirmed and fixed.** A later
+  preservation could save `pending:<side>` without any chat/keep record through
+  which to find it after the side disappeared. New
+  `testSideTransferCannotOrphanInputCapturedBeforeItsKeepIntentCouldBeSaved`
+  failed first twice (`failing-first-side-release.log`). Transfer now keeps that
+  side pinned and asks the reader to restore or dismiss its retained submission
+  in place before closure/quit/update can release it. Restoration then transfers
+  the complete draft to the parent and flushes it durably. No fabricated saved
+  side or journal is created to bypass the side-draft policy.
+- **Retired recovery/cache entries — confirmed and fixed.** With recovery visible
+  independently of uncertainty, a definitively rejected input successfully moved
+  back into its durable draft must also leave the recovery array and invalidate
+  the pending-input cache. `testDefiniteRejectionRetiresVisibleRecoveryOnlyAfterItsDraftCommits`
+  failed first three times across Send and Resend
+  (`failing-first-retired-recovery.log`). Retirement now follows commit, and
+  failure preserves the independent input instead.
+- **Connection refusal plus failed chat creation — confirmed and fixed.** Capture
+  formerly depended on a valid connection even though asynchronous materialization
+  could fail after typing replaced that text. The new
+  `testConnectionRefusalDoesNotDropCapturedInputWhenMaterializationFails` failed
+  first three times (`failing-first-refused-storage.log`). Connection refusal still
+  dispatches nothing; unchanged input can settle into its durable draft, whereas
+  changed input or failed storage retains the captured copy independently.
+- **Hydration and side-transfer baseline replacement:** `SessionDisplay` carries
+  pinned submissions into a replacement `DraftVersion`. A baseline is not an input
+  owner. Reconciliation and snapshot inventories union durable pending records
+  with pins; missing durable records cannot hide them. Known undurable input does
+  not assert execution uncertainty.
+- **Debounce/direct writes:** submission-only pins no longer trigger a composer
+  conflict. Real conflict copies still use the same loaded-revision CAS, ordering,
+  and episode rules. Quit/update flush preserves pins before saving snapshots.
+- **Display eviction/chat switch:** the existing `hasUnsavedDraft` and
+  `hasUnsavedConflict` release guards now see the capture pin immediately, including
+  before the metadata actor starts. Neither direct placeholder discard nor Delete
+  can remove it. Busy Delete retains the Stop-work notice; idle retained input is
+  identified as recovery input, not a fictitious cross-instance conflict.
+- **Side close/sibling replacement/helper loss:** the existing pin guards retain
+  the display; side transfer additionally refuses the orphan-input case above.
+- **Family deletion and collection:** existing pin guards still prevent release;
+  round-11's collector inventories `unsavedSubmissions` and `unsavedConflicts`, and
+  the producer remains registered through capture, persistence and failed-input
+  settlement. Ordinary/parked/displaced drafts and transfers retain their existing
+  ownership. Tool-output/deletion classes are included in the final runs.
+- **Recovery:** Insert/Dismiss clears the pin only after its atomic withdrawal
+  commits. A failed withdrawal keeps both input and UI. New-chat recovery first
+  materializes its owner so it cannot save an orphan draft. Cancellation of an
+  active historical/queued edit changes only that editor/parked draft, never the
+  independent captured input. Explicit acceptance, restored input, or successful
+  Dismiss retires recovery; storage failure does not.
+
+### Validation notes before final runs
+
+The first broad run (`fixed-matrix.log`) found an old test fixture expectation:
+`testFailedSubmissionTransactionDoesNotAdvanceTheDraftVersion` intentionally
+creates an input larger than the metadata record limit. That input now correctly
+stays pinned, so flush refuses it. The test now verifies its pin, explicitly
+discards that invalid synthetic input, and retries the baseline write; app entry
+points already reject oversized input before capture. The other 96 tests passed.
+
+The first expanded class run (`final-headless.log`) had 269 passing tests and four
+assertions in two race tests. Delete's work notice now precedes the pin notice.
+The old direct-discard test expected removal during first-send materialization;
+that is now forbidden by the capture rule, so it was renamed to
+`testDirectDiscardRefusesCapturedFirstSendBeforeItsRecordCommits` and verifies
+that the same display/chat remains, becomes durable, and submits once. The
+separate removed-placeholder/no-input materialization test remains unchanged.
+Final passing counts below exclude those exploratory runs.
+
+### Final validation and adversarial review
+
+**466 distinct native tests passed across 28 classes; zero failures or skips.**
+`SubmissionPersistenceTests` was repeated after extending every capture's failed
+Insert/Dismiss retirement coverage (`final-submissions.log`, 24/24); it is counted
+once here. Exploratory/failing-first/mutation runs are excluded.
+
+| Class | Passed | Final log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 84 | `final-conversation.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless-rerun.log` |
+| `DraftLoadingTests` | 15 | `final-headless-rerun.log` |
+| `DraftOrderingTests` | 17 | `final-headless-rerun.log` |
+| `FamilyDeletionTests` | 10 | `final-headless-rerun.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless-rerun.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless-rerun.log` |
+| `PendingChatProjectTests` | 24 | `final-headless-rerun.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless-rerun.log` |
+| `RecoveredDraftTests` | 13 | `final-headless-rerun.log` |
+| `RunHoldTests` | 18 | `final-headless-rerun.log` |
+| `SendBookkeepingTests` | 12 | `final-headless-rerun.log` |
+| `SessionOrganizationTests` | 9 | `final-headless-rerun.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless-rerun.log` |
+| `SubagentDeletionTests` | 19 | `final-headless-rerun.log` |
+| `SubmissionPersistenceTests` | 24 | `final-submissions.log` |
+| `ToolOutputProducerTests` | 12 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless-rerun.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless-rerun.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless-rerun.log` |
+| `WorkspaceValidationGalleryTests` | 2 | `final-gallery.log` |
+
+Exact final commands (each also saved in the matching `.command` file):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubmissionPersistenceTests \
+  -only-testing:PiAppTests/DraftConcurrencyTests \
+  -only-testing:PiAppTests/DraftLoadingTests \
+  -only-testing:PiAppTests/DraftOrderingTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/WorkspaceDisplayMemoryTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/FamilyDeletionTests \
+  -only-testing:PiAppTests/SendBookkeepingTests \
+  -only-testing:PiAppTests/HistoricalEditBookkeepingTests \
+  -only-testing:PiAppTests/QueuedEditPresentationTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/PendingChatProjectTests \
+  -only-testing:PiAppTests/SessionOrganizationTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubmissionPersistenceTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/HistoricalEditFocusTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round12-captured-input/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Mutation checks: each temporarily broke the named fix, failed its targeted
+regression, and was restored before the final class runs. All eight exit 65
+results below are assertion failures, not build failures. The UI and refused-
+connection mutants additionally have adjacent fixed/restored targeted passes.
+
+| Evidence log | Tests | Expected failed assertions |
+| --- | ---: | ---: |
+| `mutation-baseline-pin.log` | 1 | 12 |
+| `mutation-captured-pin.log` | 1 | 12 |
+| `mutation-flush-pin.log` | 1 | 9 |
+| `mutation-recovery-ui.log` | 1 | 5 |
+| `mutation-refused-capture.log` | 1 | 3 |
+| `mutation-retired-recovery.log` | 1 | 1 |
+| `mutation-side-release.log` | 1 | 2 |
+| `mutation-submission-is-not-conflict.log` | 1 | 4 |
+
+`mutations.py` and `final-mutations.py` contain the exact reversible mutations
+and selectors. They serialize the worktree/build root and restore source in
+`finally` blocks. `tested-source-sha256.json` records the final 936 Swift/project
+files after every mutation was restored. `git diff --check` passes.
+
+Gallery: `final-gallery.log`, 2/2 tests, 28 generated PNGs under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round12-captured-input/gallery`.
+Inspected all eight new `retained-{unsaved,rejected}-{light,dark}-{300,760}.png`
+scenes and all eight `conflict-recovery-{1,40}-{light,dark}-{300,760}.png`
+scenes. The retained/saved labels are truthful, the 56-point recovery row
+fits at both widths, and transcript space is preserved. No shape/layout
+geometry changed. The twelve existing error-banner scenes were regenerated
+by the same class as well. All focus-changing checks held the shared lock.
+
+Our locks were released, and our automatic result bundle/test clone cleanup
+completed. Evidence is the text logs and PNGs; no named xcresult was created.
+
+
+Adversarial review of every changed condition and ownership transition:
+
+- `putDraft` ignores submission-only pins for conflict detection and unchanged
+  draft comparisons. Real pinned conflict copies and mismatching loaded revisions
+  still take the conflict path; superseded snapshots are still rejected by the
+  ordered writer before this code. Capture pins cannot manufacture single-instance
+  conflicts or force an unchanged stale composer over another instance's draft.
+- Admission pins every captured input, including connection-refused preparation.
+  A refused connection with unchanged input retires it only through a successful
+  durable draft transaction. New typing, stale tickets, materialization failure,
+  or any storage error leaves the independent captured input. No connection refusal
+  starts helper work or changes its lease/capture/tool permissions.
+- `recordSubmission` clears pins only after transaction success. BEGIN/read/write/
+  rollback errors keep them; a real draft conflict still attempts durable
+  preservation in the transaction's existing rollback handler. Withdrawal clears
+  its pin after commit, never on failure or supersession.
+- Resend settles a definite rejection into its draft only if the complete current
+  text/images/skills still match and no failed-persistence pin remains. Otherwise
+  the captured intent is offered independently. Successful retirement removes only
+  that command and invalidates the pending cache; failed retirement repins it.
+- Queued Save's final recovery publication covers initial persistence errors,
+  definite rejection and unresolved outcomes. It excludes known acceptance;
+  newer typing and cancelling the active editor do not consume captured input.
+  Repeating the same edit/text keeps the same record ID; different text remains a
+  separate capture. Cancel/Remove without new text create no capture pin.
+- Baseline replacement carries pins forward without changing the loaded draft
+  revision. Inventories deduplicate pins against durable IDs, preserve acceptance
+  filtering, and never infer execution uncertainty from undurable input alone.
+- Flush commits retained input before it can release a normal display. Pending
+  chats get an owner first. An unsaved side is conservatively held for in-place
+  recovery/dismissal rather than creating an unreachable pending record. Ordinary
+  side transfers, actual conflict-copy preservation, parked input and successfully
+  registered sides retain their prior behavior.
+- Delete checks active work before explaining a retained pin, so active sends
+  keep the Stop-work message. Idle captured input gets a recovery message; actual
+  conflicting drafts keep their conflict message. Every destructive release guard
+  still sees the pin. Direct placeholder discard cannot bypass it.
+- Recovery visibility no longer depends on `uncertain` or busy work. Sub-agent
+  readers remain excluded, and Insert retains its loading/edit/acceptance and
+  size-limit checks. The row stays 56 points high. A pin is never described as a
+  saved copy. Recovery failure leaves the input and actions intact; no automatic
+  dispatch or new prompt was introduced.
+- Known helper acceptance remains authoritative even if local acknowledgement
+  fails. Captured input has already committed before any dispatch; acceptance
+  guards and durable journal/digest reconciliation still prevent duplicate recovery.
+
+No helper/wire source, protocol, live-provider behavior, permission, capture,
+vault or data boundary was changed; helper and Python wire suites are therefore
+not rerun for this app-only round. No unresolved finding or owner decision from
+this round. If storage remains unavailable, retained input stays pinned and
+quit/update refuses to discard it.

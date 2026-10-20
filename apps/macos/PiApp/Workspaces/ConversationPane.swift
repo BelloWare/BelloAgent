@@ -236,7 +236,7 @@ struct SideActions {
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
                      covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
-                     showsRecovered: !current.isSubagent && !session.busy && ((!session.recovered.isEmpty && session.uncertain) || !session.draftConflicts.isEmpty),
+                     showsRecovered: !current.isSubagent && (!session.recovered.isEmpty || !session.draftConflicts.isEmpty),
                      recovered: session.recovered.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
                      terminalWorkspace: terminalWorkspace, missingFolder: model.missingProjectFolders[current.workspaceID],

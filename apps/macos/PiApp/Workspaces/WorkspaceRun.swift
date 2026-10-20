@@ -133,7 +133,10 @@ extension WorkspaceModel {
             }
         }
         let named = drawsRow ? nameAfterFirstMessage(item.id, text: text.isEmpty && skills.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, skills: skills) : nil
-        return Submission(item: item, view: view, store: store, steer: steer, text: text, attachments: attachments, skills: skills,
+        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+        view.draftVersion.preservingSubmission(intent)
+        return Submission(item: item, view: view, store: store, intent: intent, steer: steer, text: text, attachments: attachments, skills: skills,
                           directCommand: directCommand, commandID: commandID, turnID: turnID, connection: connection,
                           accepted: accepted, drawsRow: drawsRow, named: named, archiveRevision: archiveRevisions[item.id, default: 0])
     }
@@ -151,14 +154,20 @@ extension WorkspaceModel {
         guard accepted else {
             // A refusal leaves the composer intact. Save its current contents:
             // typing may have changed since Return captured the rejected text.
-            if !isEphemeral(item.id) { try await store.put(view.savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id)) }
+            if !isEphemeral(item.id) {
+                if view.draft == text, view.attachments == attachments, view.skills == skills {
+                    try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
+                                                       draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                } else {
+                    try await store.put(view.savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                }
+            }
             _ = try connection.get()
             return
         }
         let lease = try connection.get()
         try requireConnection(lease)
-        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+        let intent = submission.intent
         if let info = side(item.id), info.pending {
             try await publishPendingSide(info, view: view, submission: intent)
         }
@@ -278,18 +287,28 @@ extension WorkspaceModel {
             // The helper never acted on it: its record goes, in the
             // same commit as the draft that holds the text again.
             _ = try? await recording?.value
-            if accepted, draft == nil {
-                // An unkept side restores only in memory. Its independent
-                // input stays recoverable until an explicit durable recovery
-                // or discard; typing in that side cannot overwrite it.
-                if let intent = try? await store.get(CommandIntent.self, kind: "pending:" + item.id, id: commandID),
-                   !view.recovered.contains(where: { $0.id == commandID }) { view.recovered.append(intent) }
-            } else { try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write) }
+            if view.draftVersion.unsavedSubmissions.contains(where: { $0.id == commandID }) || (accepted && draft == nil) {
+                // Failed persistence and unsaved sides keep independent input;
+                // later typing in the restored composer cannot consume it.
+                offerSubmissionRecovery(submission.intent, in: view)
+            } else {
+                do {
+                    try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write)
+                    view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
+                }
+                catch {
+                    if accepted {
+                        view.draftVersion.preservingSubmission(submission.intent)
+                        offerSubmissionRecovery(submission.intent, in: view)
+                    }
+                }
+            }
             pendingIntentsChanged(item.id)
         } else if let draft {
             // Its outcome is unknown: the record stays to say so, and
             // the text is back in the draft as well.
             try? await store.put(draft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: write)
+            offerSubmissionRecovery(submission.intent, in: view)
         }
         if let rejection {
             // The helper refused it, so nothing new is running. The
@@ -422,6 +441,7 @@ private struct Submission {
     let item: ChatRecord
     let view: SessionDisplay
     let store: MetadataStore
+    let intent: CommandIntent
     let steer: Bool
     let text: String
     let attachments: [AttachmentRecord]

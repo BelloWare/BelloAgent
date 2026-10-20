@@ -559,7 +559,7 @@ import XCTest
         XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }.count, 1)
     }
 
-    func testRemovedChatAbortsMaterializingSubmission() async throws {
+    func testDirectDiscardRefusesCapturedFirstSendBeforeItsRecordCommits() async throws {
         try await pendingSend(discardDirectly: true)
     }
 
@@ -591,8 +591,11 @@ import XCTest
         model.send(sessionID: view.id)
         try await eventually("first metadata write pending") { model.pendingChatSaveCounts[view.id] == 1 }
         XCTAssertTrue(view.loading); XCTAssertFalse(view.busy)
-        if discardDirectly { model.discardPendingChat(view.id) }
-        else {
+        if discardDirectly {
+            model.discardPendingChat(view.id)
+            XCTAssertNotNil(model.record(view.id), "Captured input pins even the direct placeholder-discard path")
+            XCTAssertTrue(model.displays[view.id] === view)
+        } else {
             model.deleteChat(view.id)
             XCTAssertNotNil(model.record(view.id), "Delete must refuse an accepted first send")
             XCTAssertTrue(model.displays[view.id] === view)
@@ -601,9 +604,8 @@ import XCTest
         released.signal(); try await barrier.value
         try await eventually("send settled") { !view.loading }
         let saved = try await store.get(ChatRecord.self, kind: "chat", id: view.id)
-        XCTAssertEqual(saved != nil, !discardDirectly)
-        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, discardDirectly ? 0 : 1)
-        if discardDirectly { XCTAssertFalse(model.opened.contains(view.id)) }
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
     }
 
     func testArchiveDuringSendOpeningReturnsUnsentDraft() async throws { try await archiveDuringOpening("turn.submit") }
