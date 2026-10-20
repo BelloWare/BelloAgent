@@ -320,7 +320,13 @@ extension WorkspaceModel {
         guard unchanged, try await store.pastedImageReferencesUnchanged(metadata.token) else { return }
         guard !deferToolOutputCollection(since: producerRevision) else { return }
         var kept = references.keys.union(metadata.keys)
-        for view in displays.values where !deleted.contains(view.id) {
+        for view in displays.values {
+            // A failed preservation outlives its writer's producer token.
+            // These pinned inputs own references until they become durable,
+            // independently of the current composer or a chat tombstone.
+            kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.draftVersion.unsavedConflicts.map(\.draft)), candidates: candidates))
+            kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.draftVersion.unsavedSubmissions), candidates: candidates))
+            guard !deleted.contains(view.id) else { continue }
             kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.savedDraft), candidates: candidates))
             for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
                 kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(draft), candidates: candidates))

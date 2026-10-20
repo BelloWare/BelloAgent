@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] Tool-output collection retains pinned conflict and captured-input references after failed persistence. [Validation](docs/validation/a130-workspace-0.1.130.md#post-integration-storage-failure-review).
+- [x] Failed side-draft cleanup preserves its committed revision, avoiding false conflicts after storage recovers.
+- [x] Restore Draft protects pinned input while its recovery transaction moves references into durable storage.
+
 - [x] Integration: queued-message Save protects tool-output references before its captured-input persistence, keeping both submission durability and collection ordering. [Validation](docs/validation/a130-workspace-0.1.130.md#round-9-integration-with-devnext).
 
 - [x] Historical Resend persists its captured replacement independently; typing during storage cannot cancel the edit. [Round-9 validation](docs/validation/a130-workspace-0.1.130.md#round-9--independent-captured-submissions).

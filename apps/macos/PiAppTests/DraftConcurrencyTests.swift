@@ -566,6 +566,84 @@ import SQLite3
         XCTAssertEqual(retried?.text, view.draft)
     }
 
+    func testStorageFailuresLeaveDraftBaselinesAtTheDurableRevision() async throws {
+        for operation in ["snapshot", "submission", "withdrawal", "review", "restore", "registration"] {
+            let (model, view, _, _) = try await fixture(), store = try XCTUnwrap(model.store)
+            view.draft = "Saved input"; try await model.flushDrafts()
+            let before = view.draftVersion.snapshot, changed = DraftRecord(id: view.id, text: "Changed input")
+            let intent = CommandIntent(id: "captured", sessionID: view.id, turnID: "turn", text: "Captured input", state: "intent")
+            let conflict = SavedDraftConflict(id: "copy", draft: changed)
+            let chat = try XCTUnwrap(model.chats.first)
+            try await store.put(intent, kind: "pending:" + view.id, id: intent.id)
+            try await store.put(changed, kind: "draft-conflict:" + view.id, id: conflict.id)
+            try await store.put(SideKeepIntent(chat: chat), kind: "side-keep", id: view.id)
+            var db: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+            defer { sqlite3_close(db) }
+            let deletion = operation == "withdrawal" || operation == "restore"
+            let kind = operation == "registration" ? SideKeepRegistration.kind
+                : operation == "restore" ? "draft-conflict:" + view.id
+                : ["submission", "withdrawal"].contains(operation) ? "pending:" + view.id : "draft"
+            let event = deletion ? "DELETE" : "INSERT", row = deletion ? "OLD" : "NEW"
+            XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_operation BEFORE \(event) ON records WHEN \(row).kind='\(kind)' BEGIN SELECT RAISE(ABORT, 'generated transaction failure'); END", nil, nil, nil), SQLITE_OK)
+            func write() async throws {
+                switch operation {
+                case "snapshot": try await store.put(changed, kind: "draft", id: view.id, draftVersion: view.draftVersion)
+                case "submission": try await store.recordSubmission(intent, draft: changed, draftVersion: view.draftVersion)
+                case "withdrawal": try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: changed, draftVersion: view.draftVersion)
+                case "review": try await store.preserveSubmissionReviews(sessionID: view.id, commands: [intent.id], draftVersion: view.draftVersion)
+                case "restore": try await store.restoreConflict(conflict, replacing: changed, version: view.draftVersion)
+                default: _ = try await store.commitKeptSide(chat, draft: changed, expected: chat, draftVersion: view.draftVersion)
+                }
+            }
+            do { try await write(); XCTFail(operation + " must fail at the injected storage operation") }
+            catch { XCTAssertEqual(error as? StoreError, .unavailable, operation) }
+            let durable = try await store.draftVersion(id: view.id).snapshot
+            XCTAssertEqual(durable.revision, before.revision, operation)
+            XCTAssertEqual(durable.draft, before.draft, operation)
+            XCTAssertEqual(view.draftVersion.snapshot.revision, durable.revision, operation)
+            XCTAssertEqual(view.draftVersion.snapshot.draft, durable.draft, operation)
+            XCTAssertFalse(view.draftVersion.hasUnsavedConflict, "A storage failure is not another instance's edit")
+            let retained = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: intent.id)
+            let copies = try await store.draftConflicts(id: view.id)
+            let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: view.id)
+            XCTAssertNotNil(retained, operation); XCTAssertEqual(copies, [conflict], operation); XCTAssertNotNil(keep, operation)
+            XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_operation", nil, nil, nil), SQLITE_OK)
+            try await write()
+            let retried = try await store.draftVersion(id: view.id).snapshot
+            XCTAssertEqual(view.draftVersion.snapshot.revision, retried.revision, operation)
+            XCTAssertEqual(view.draftVersion.snapshot.draft, retried.draft, operation)
+            XCTAssertNotEqual(retried.revision, before.revision, operation)
+        }
+    }
+
+    func testStorageFailuresLeaveAnchorBaselinesAtTheDurableRevision() async throws {
+        for clearing in [false, true] {
+            let (model, view, _, _) = try await fixture(), store = try XCTUnwrap(model.store)
+            let first = TranscriptAnchor(id: "first", offset: 12, followsBottom: false)
+            try await store.putAnchor(first, id: view.id, version: view.anchorVersion)
+            if !clearing { try await store.putAnchor(nil, id: view.id, version: view.anchorVersion) }
+            let before = view.anchorVersion.snapshot
+            let next = clearing ? nil : TranscriptAnchor(id: "next", offset: 34, followsBottom: false)
+            var db: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+            defer { sqlite3_close(db) }
+            let kind = clearing ? "anchor" : "anchor-deleted"
+            XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_anchor BEFORE DELETE ON records WHEN OLD.kind='\(kind)' BEGIN SELECT RAISE(ABORT, 'generated anchor failure'); END", nil, nil, nil), SQLITE_OK)
+            do { try await store.putAnchor(next, id: view.id, version: view.anchorVersion); XCTFail("Must roll back both anchor rows") }
+            catch { XCTAssertEqual(error as? StoreError, .unavailable) }
+            let durable = try await store.anchorVersion(id: view.id).snapshot
+            XCTAssertEqual(durable.revision, before.revision); XCTAssertEqual(durable.anchor, before.anchor)
+            XCTAssertEqual(view.anchorVersion.snapshot.revision, durable.revision)
+            XCTAssertEqual(view.anchorVersion.snapshot.anchor, durable.anchor)
+            XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_anchor", nil, nil, nil), SQLITE_OK)
+            try await store.putAnchor(next, id: view.id, version: view.anchorVersion)
+            let retried = try await store.anchorVersion(id: view.id).snapshot
+            XCTAssertEqual(retried.anchor, next); XCTAssertNotEqual(retried.revision, before.revision)
+            XCTAssertEqual(view.anchorVersion.snapshot.revision, retried.revision)
+        }
+    }
+
     func testConcurrentDraftFlushesHaveOneWinnerAndPreserveTheOtherInput() async throws {
         let (first, a, second, b) = try await fixture()
         a.draft = "A"; b.draft = "B"

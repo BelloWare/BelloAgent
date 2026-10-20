@@ -253,10 +253,13 @@ extension WorkspaceModel {
     func restoreConflictedDraft(_ conflict: SavedDraftConflict) {
         guard canRestoreConflictedDraft(conflict.draft.id), let view = displays[conflict.draft.id] else { return }
         view.loading = true
+        let outputUse = beginToolOutputUse(.draftRecovery)
         draftWrites.recoveries[view.id] = Task {
+            defer { finishToolOutputUse(outputUse) }
             defer { view.loading = false; view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }
             let previous = draftWrites.tasks[view.id]; previous?.cancel(); await previous?.value
             do {
+                try await prepareToolOutputUse(outputUse)
                 guard let store else { throw StoreError.unavailable }
                 view.recoveringDraft = true
                 let live = view.savedDraft

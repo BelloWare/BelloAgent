@@ -221,8 +221,13 @@ extension WorkspaceModel {
             if sides[parentID]?.id == id, sides[parentID]?.kept != true { sides[parentID]?.pending = true }
             if !written {
                 try? await store.remove(kind: "side-keep", id: id)
-                try? await store.remove(kind: "draft", id: id)
-                view.draftVersion = DraftVersion()
+                do {
+                    try await store.remove(kind: "draft", id: id)
+                    view.draftVersion = DraftVersion()
+                } catch {
+                    // Failed cleanup leaves the saved row and its baseline
+                    // intact, so retrying cannot conflict with our own write.
+                }
             }
             throw error
         }

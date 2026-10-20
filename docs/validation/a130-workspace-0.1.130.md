@@ -3174,3 +3174,319 @@ Final `xcodegen generate --quiet` reproduced the tested project exactly.
 `git diff --check` and the staged equivalent pass. Automatic result bundles
 were removed from this workstream's build root; no clone directories remained.
 All owned full-lane locks were released. The lead still owns the merged full gate.
+
+
+## Post-integration storage-failure review
+
+2026-10-20, branch `dev/a130-workspace`, starting at integrated commit
+`d686b22f61f09dcf323e8e1b3bc31383d8d378f9`. This round changes only desktop
+workspace code and native tests. No helper/wire contract, UI layout, credentials,
+capture policy, permission boundary or production path changes.
+
+Fresh text evidence is in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/post-integration-storage/`.
+Every `.log` has its exact invocation in the matching `.command` and exit code
+in `.status`. All fixtures use generated SQLite records, synthetic credentials,
+scripted helpers or the packaged helper against unused loopback routes.
+
+### Finding 1 — pinned recovery inputs and tool-output collection: confirmed and fixed
+
+The collector inventoried durable metadata, journals, current composers and
+parked edits, but omitted `DraftVersion.unsavedConflicts` and
+`unsavedSubmissions`. Both arrays can outlive the failed writer's producer token.
+After later typing removes a reference, an array may be its only owner.
+
+The final inventory now includes both arrays for every retained display, before
+applying the existing tombstone exclusion to its ordinary composer. Pinned input
+is not an instruction to delete its referenced output, even if its own chat has
+a tombstone. Candidate validation, journal/metadata consistency checks, producer
+fences and the existing filesystem recycler stay unchanged. Successful
+preservation transfers ownership to the durable records; explicit removal of the
+last record permits collection again.
+
+Regression tests in `ToolOutputProducerTests`:
+
+- `testFailedConflictPreservationKeepsOutputAfterTheComposerChanges`
+- `testFailedSubmissionPreservationKeepsOutputAfterTheComposerChanges`
+
+Each fixture creates output owned by an already-deleted chat and an independent
+winning draft. SQLite `BEFORE INSERT` triggers abort conflict-copy or captured-input
+preservation. The tests verify that the producer has finished, no durable record
+contains the reference, and the pinned input is its only owner; later typing then
+removes the reference from the composer. They also retry preservation, release the
+display, verify durable ownership, explicitly discard the records, and verify
+reclamation.
+
+Failing first (`failing-first.log`): both tests failed, two assertions each. The
+first failure in each was:
+
+```text
+XCTAssertTrue failed - Pinned input must own its output after its producer finishes
+```
+
+The second assertion observed the same already-deleted file after successful
+preservation. `fixed-regressions.log`: both pass. Separate mutations remove only
+the conflict inventory line (`mutation-pinned-conflict.log`) or only the captured
+submission inventory line (`mutation-pinned-submission.log`): each corresponding
+test fails with the same two assertions. Both lines were restored before final
+validation.
+
+### Finding 2 — failed side-draft removal and its baseline: confirmed and fixed
+
+`publishPendingSide` unconditionally installed an empty `DraftVersion` after an
+ignored draft-removal error. Cleanup now resets the version only after
+`store.remove` succeeds. On failure the saved row and the version that committed
+it remain paired; the original publication error still reaches the caller.
+
+`SideTests.testFailedSideDraftRemovalKeepsItsCommittedBaseline` holds `side.open`
+after a nonempty draft has committed, injects a SQLite `BEFORE DELETE` failure,
+and rejects side publication. It checks the durable and loaded draft/revision,
+removes the fault, and saves new text without a conflict or recovery copy.
+
+Failing first (`failing-first.log`): one test failed with five assertions,
+including:
+
+```text
+XCTAssertEqual failed: ("nil") is not equal to ("Optional(...)") - A failed removal must not reset the loaded baseline
+failed - This instance's own retained row must not cause a conflict: draftConflict
+XCTAssertTrue failed - Single-instance retry must not create a recovery banner
+```
+
+`fixed-regressions.log`: passes. The mutation moves the baseline reset before
+the throwing removal (`mutation-side-baseline.log`): the same test fails with
+five assertions. The successful-removal control,
+`testSuccessfulSideDraftRemovalResetsItsCommittedBaseline`, proves that an actual
+removal still clears the loaded version and allows the next write.
+
+### Nearby ownership gap — conflict restoration: confirmed and fixed
+
+`restoreConflictedDraft` was the remaining recovery entry point without a
+producer. Its transaction can turn pinned copies into durable records and clear
+the arrays while a collector is checking ownership. It now registers
+`.draftRecovery` synchronously, waits for any previously submitted recycling,
+and holds the token through success/error cleanup. This is the same protection
+used by interrupted-submission recovery.
+
+`ToolOutputProducerTests.testConflictRestorationOwnsPinnedInputThroughStorageFailure`
+first injects a failed conflict-copy write, removes its reference from the current
+composer, and requests restoration of a different saved copy. The injected fault
+also rejects restoration. It checks synchronous producer admission, preparation,
+retention through failure, producer release and the eventual durable handoff.
+
+Failing first (`failing-first-restoration.log`): one test, two assertions:
+
+```text
+XCTAssertTrue failed - Conflict restoration must register before its pinned references can move to durable storage
+XCTAssertTrue failed - Restoration must also wait for any previously submitted recycling
+```
+
+`fixed-sweep.log`: passes. Removing this method's registration, preparation and
+deferred release (`mutation-restoration.log`) produces the same two failures.
+All three lines were restored before final validation.
+
+### Cross-feature invariant sweep
+
+Ownership checks:
+
+| Holder / transition | Checked ownership and failure behavior |
+| --- | --- |
+| Pinned conflict snapshots and captured inputs | Both arrays are inventoried after producer release. New injected-failure tests cover each, durable retry, display removal and final discard. |
+| Ordinary Send, Steer and side first Send | `.submission` is admitted before clearing the composer; it spans materialization, the independent `recordSubmission` task, dispatch and failed-send recovery. Side publication also holds `.sidePublication`. `SubmissionPersistenceTests` covers typing during all these waits. |
+| Historical Resend and queued-message Save | `.messageEdit` / `.queuedEdit` register before their asynchronous captured-input write. New typing can supersede only the composer snapshot. The separate non-conflict persistence-failure follow-up below is outside the collector/baseline fixes. |
+| Current, historical-edit displaced and queue-edit parked drafts | The final display inventory covers `savedDraft`, `draftBeforeEdit` and `draftBeforeQueueEdit`; metadata scanning includes nested parked drafts. Debounces/flushes hold `.draftWrite` / `.draftFlush` until completion. Existing displaced/queued producer tests cover display removal during the write. |
+| Asynchronous side transfer | `.sideDraft` registers before consuming the source and remains until the destination commits or the source is restored. The new `testFailedSideTransferReturnsOutputOwnershipToItsComposerAndParkedDraft` injects a destination write failure for both a normal composer and a queued edit's parked draft. Collection is checked while transfer is suspended, after failure returns input, after a successful retry and after explicit discard. |
+| Synchronous side transfer and helper-loss re-parking | `moveSideDraftHere`/`absorb` publish the parent holder before consuming the source, without suspension. `discardLostSides` transfers or re-parks the input synchronously and skips unsaved-conflict displays. Existing side/race/deletion classes cover these paths. |
+| Recovery and explicit restoration | `recoverDraft` already holds `.draftRecovery`; `restoreConflictedDraft` now does too. Their storage transactions preserve input before consuming its previous durable record. Failed restoration retains the pins and live composer. |
+| Keep/fork/registration, handoff, import/export | Existing producer registrations cover local captures through publication; an editable side-handoff holds its token for the editor lifetime, and export cancellation retains its reader until it returns. The full producer class exercises every producer's first suspension and already-submitted recycling. |
+| Display release | Eviction, side replacement/close, helper loss and family deletion retain unsaved-conflict displays; quit/update flush/transfer paths refuse failed preservation. Durable copies remain discoverable after display release. Existing conflict, side, race and deletion tests were rerun. |
+
+Baseline checks:
+
+- Enumerated every assignment to `draftVersion` and `anchorVersion`: default
+  construction for a new display; adoption only after successful initial metadata
+  reads; the corrected side cleanup; and parent adoption only after a successful
+  side-transfer write. Initial-read failure never marks metadata loaded.
+- `putDraft`, `recordSubmission`, `withdrawSubmission`, submission-review writes,
+  conflict restoration and kept-side registration stage version updates inside
+  the store transaction. `transaction` applies them only after `COMMIT`; failure
+  drops staged updates before rollback/recovery. Conflict snapshots/submissions
+  clear only after their preservation transaction commits.
+- `putAnchor` changes `AnchorVersion` only after its anchor/tombstone transaction
+  returns successfully. Failed writes and clears leave the loaded version intact;
+  a CAS mismatch does not adopt another instance's position as our own write.
+- Failed anchor debounces and failed ordinary/returned-input draft writes do not
+  reset their baseline. The next explicit save/flush still compares against the
+  last successfully loaded or committed revision. No new revision is treated as
+  durable merely because it was reserved.
+- `DraftConcurrencyTests.testStorageFailuresLeaveDraftBaselinesAtTheDurableRevision`
+  injects failures in six paths: snapshot, submission, withdrawal, review marker,
+  conflict restore and side registration. For compound writes the fault is after
+  the draft write, before its transaction completes. It verifies the durable row,
+  loaded revision/content, retained input/conflict/keep records and retry after
+  removing the fault.
+- `testStorageFailuresLeaveAnchorBaselinesAtTheDurableRevision` fails the DELETE
+  following the INSERT in both writing a new position over a tombstone and
+  clearing a position. Both database rows roll back, the loaded baseline stays
+  unchanged, and retry advances it correctly.
+
+The first sweep-test attempt (`sweep-empty-review-fixture.log`) had two failed
+assertions in the new review-marker case: its empty draft correctly owned no
+review-marker write, so the injected trigger never fired. The fixture was corrected
+to start with nonempty saved input; no product change was made for that test issue.
+The other 11 classes passed in that exploratory run. Final counts exclude it.
+
+### Separate finding for the lead — initial captured-edit storage failure
+
+**Confirmed, recorded rather than fixed under the shared scope rule.** This is
+loss of the captured holder itself, distinct from the assigned collector omitting
+an existing pinned holder or cleanup corrupting a loaded baseline.
+
+- `MetadataStore.swift:1053–1075`: `recordSubmission` pins an independent captured
+  intent only on `draftConflict`. A normal `pending:<chat>` INSERT failure rolls
+  back without pinning that input.
+- `WorkspaceEditing.swift:190,264`: if typing superseded the captured editor
+  snapshot before that write, the pre-dispatch error path leaves only the newer
+  editor text; it does not retain the captured replacement elsewhere.
+- `QueuePanel.swift:380–387`: queued Save has the same result on its initial local
+  persistence failure while newer typing has replaced the captured text.
+
+A temporary diagnostic test in `SubmissionPersistenceTests` exercised both
+`turn.edit` and `queue.edit.save` with generated fixtures. It held the metadata
+actor, accepted the captured replacement, typed different text, and released the
+actor with a SQLite trigger aborting `pending:%` inserts. Neither operation was
+dispatched. After all producers finished, the captured text was absent from the
+live draft, durable draft, durable pending/conflict records and both pinned arrays.
+`diagnostic-captured-edit.log` reports one diagnostic test with two failures:
+
+```text
+XCTAssertTrue failed - turn.edit lost captured input after a non-conflict storage failure
+XCTAssertTrue failed - queue.edit.save lost captured input after a non-conflict storage failure
+```
+
+The exact test body and reversible insertion runner remain in the evidence folder
+as `diagnostic-captured-edit.swift` and `diagnostic.py`. The original test file was
+restored byte-for-byte afterward; the failing diagnostic is not in the committed
+suite and is excluded from final passing counts. A follow-up should retain this
+input independently on initial persistence failure, without treating a same-instance
+storage error as a cross-instance conflict or allowing debounces to overwrite it.
+
+### Adversarial self-review
+
+Every changed branch and asynchronous boundary was reviewed against both sides
+of the merge:
+
+- Collector: a display with no pins contributes exactly its prior ordinary/parked
+  references. A display with pins now keeps only matching validated candidates.
+  A tombstoned display still does not retain its ordinary composer, but its
+  uncommitted recovery input remains an owner. Successful preservation moves that
+  ownership into the existing all-records metadata scan; removal of the final
+  record allows recycling. There is no new filesystem authority or path parsing.
+- Side cleanup: an unpublished side whose draft removal succeeds still gets an
+  empty version; a failed removal keeps its old version. Published sides
+  (`written == true`) continue retaining their journal/recovery state. Failures
+  before this publication catch continue following their original recovery path.
+  No failure installs a nil revision over a durable draft.
+- Conflict restoration: existing eligibility/paused-queue behavior is unchanged.
+  New admission happens before queuing the task, so a concurrent sweep defers.
+  An already-submitted recycler finishes before restoration touches its inputs.
+  The token is held while waiting for the previous debounce and through commit or
+  error cleanup. Deferred `draftChanged` registers any following writer before
+  this token is released; storage/cancellation errors still clear the busy flags.
+- Collection cannot observe a gap when restoration drains the pin arrays into
+  SQLite: the new producer spans that whole transaction. Side transfers likewise
+  restore their source before releasing their producer when persistence fails.
+- Mutation runs were followed by restoring the production fixes. Final source
+  hashes are recorded in `tested-source-sha256.json`; docs do not alter those
+  sources. The lead retains merge and full-gate ownership.
+
+
+### Fresh validation commands
+
+Focused failing-first and fixed regressions (the exact same selectors in both runs):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ToolOutputProducerTests/testFailedConflictPreservationKeepsOutputAfterTheComposerChanges \
+  -only-testing:PiAppTests/ToolOutputProducerTests/testFailedSubmissionPreservationKeepsOutputAfterTheComposerChanges \
+  -only-testing:PiAppTests/SideTests/testFailedSideDraftRemovalKeepsItsCommittedBaseline
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ToolOutputProducerTests/testConflictRestorationOwnsPinnedInputThroughStorageFailure
+```
+
+Each mutation uses the corresponding single selector above and the same
+`PI_BUILD_ROOT`, script and `-parallel-testing-enabled NO` arguments. The
+`fixed-sweep.command` additionally runs the restoration test,
+`ToolOutputProducerTests/testFailedSideTransferReturnsOutputOwnershipToItsComposerAndParkedDraft`,
+`DraftConcurrencyTests/testStorageFailuresLeaveDraftBaselinesAtTheDurableRevision`
+and `DraftConcurrencyTests/testStorageFailuresLeaveAnchorBaselinesAtTheDurableRevision`.
+All four pass, including six draft-operation and two anchor-operation fault cases.
+
+Final full affected classes, after all mutations were restored:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/DraftConcurrencyTests \
+  -only-testing:PiAppTests/DraftOrderingTests \
+  -only-testing:PiAppTests/DraftLoadingTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/SubmissionPersistenceTests \
+  -only-testing:PiAppTests/SideTests \
+  -only-testing:PiAppTests/WorkspaceDurabilityTests \
+  -only-testing:PiAppTests/WorkspaceDisplayMemoryTests \
+  -only-testing:PiAppTests/WorkspaceRaceTests \
+  -only-testing:PiAppTests/RecoveredDraftTests \
+  -only-testing:PiAppTests/SubagentDeletionTests \
+  -only-testing:PiAppTests/FamilyDeletionTests
+
+# This second run holds the shared full-lane lock for its entire run.
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ToolOutputProducerTests \
+  -only-testing:PiAppTests/SideKeepOrderingTests \
+  -only-testing:PiAppTests/SideKeepRecoveryTests \
+  -only-testing:PiAppTests/SideRelaunchTests
+```
+
+`run.py` in the evidence folder records commands/status, serializes this
+workstream's build root, and releases only the full-lane lock it acquired in a
+`finally` block. The headless focused runs use the documented lock exemption;
+the full window-based classes run under the shared lock. No named result bundles,
+installed app, live services, real credentials or user data are used.
+
+### Final results
+
+`final-headless.log`: **217 passed**. `final-window.log`: **42 passed**.
+Total: **259 passed, 0 skipped, 0 failures**, across 16 complete native classes.
+
+| Class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| `DraftConcurrencyTests` | 36 | 0 | 0 |
+| `DraftLoadingTests` | 15 | 0 | 0 |
+| `DraftOrderingTests` | 17 | 0 | 0 |
+| `FamilyDeletionTests` | 10 | 0 | 0 |
+| `MetadataDurabilityTests` | 10 | 0 | 0 |
+| `RecoveredDraftTests` | 13 | 0 | 0 |
+| `SideKeepOrderingTests` | 12 | 0 | 0 |
+| `SideKeepRecoveryTests` | 15 | 0 | 0 |
+| `SideRelaunchTests` | 3 | 0 | 0 |
+| `SideTests` | 17 | 0 | 0 |
+| `SubagentDeletionTests` | 19 | 0 | 0 |
+| `SubmissionPersistenceTests` | 11 | 0 | 0 |
+| `ToolOutputProducerTests` | 12 | 0 | 0 |
+| `WorkspaceDisplayMemoryTests` | 2 | 0 | 0 |
+| `WorkspaceDurabilityTests` | 9 | 0 | 0 |
+| `WorkspaceRaceTests` | 58 | 0 | 0 |
+
+Both assigned findings and the nearby conflict-restoration ownership gap are
+fixed. Four intentional mutation runs each failed their targeted regression;
+all fixes were restored for the final runs. The separate captured-edit diagnostic
+above remains a confirmed follow-up for the lead, not a passing-suite claim.
+There were no unrelated failures in the final runs.
+
+No helper or wire implementation changed, so helper/wire/concurrent/acceptance
+suites were not repeated for this app-only round. No UI geometry changed.
+`xcodegen generate --quiet` reproduced the tested project; all 936 source/project
+hashes match `tested-source-sha256.json`, and `git diff --check` passes. Automatic
+result bundles were removed from this workstream's build root, no cloned test
+apps remained, and its owned full-lane lock was released. No branch other than
+`dev/a130-workspace` is committed or pushed by this round.
