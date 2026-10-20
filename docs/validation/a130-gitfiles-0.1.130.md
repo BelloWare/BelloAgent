@@ -1437,3 +1437,170 @@ Every changed production condition and coordinate update was reviewed:
 The complete new diff from `8cb055b9` was reviewed adversarially, including the
 test oracles and the six mutations above. Both assigned items are confirmed
 and fixed. No unresolved finding or owner decision remains in this follow-up.
+
+## Round 3 hunt
+
+Base: `28dbfb30`, on `dev/a130-gitfiles` after the lead's fast-forward. Only
+the live-compaction harness, its Python tests and the two release records
+changed. Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+The Release helper was rebuilt after the laptop restart. No live harness
+invocation or paid provider call was made: real helper processes used only
+`--fixture`, generated homes/workspaces and the loopback reasoning gateway.
+The live-policy tests use a fake helper, with helper construction and socket
+creation explicitly blocked. No installed app, real preferences, chats,
+credentials or Keychain were accessed. These checks do not change focus and
+need neither a gallery nor the full-lane lock.
+
+### TOOLING-CONFIG-4 — confirmed and fixed
+
+`FixtureRunTests.test_inherited_home_skills_never_reach_the_fixture_gateway`
+creates an inherited synthetic home with a valid implicit skill at
+`.agents/skills/private/SKILL.md`. It runs both `compact-now` and `mid-run`
+against the actual fixture gateway and inspects its decoded outgoing request
+bodies, along with both helper launch environments. Before changing the
+harness, `round3-before.log` showed four failed assertions:
+
+```text
+AssertionError: True is not false : gateway received inherited skill metadata: SYNTHETIC_PRIVATE_SKILL_DESCRIPTION_74AC
+AssertionError: True is not false : gateway received inherited skill metadata: .../inherited-home/.agents/skills/private/SKILL.md
+AssertionError: False is not true : helper inherited HOME
+AssertionError: False is not true : helper inherited CFFIXED_USER_HOME
+```
+
+Each scenario now creates `home` alongside its existing temporary `codex`,
+workspace and sessions directories. `Helper` requires that home and sets both
+child environment variables before process launch. This covers Foundation's
+independent `.agents/skills` scan while retaining the explicit `codexHome`
+override. The parent environment and the existing `PI_LIVE_*` filtering are
+unchanged. The directories follow the existing temporary-run cleanup/`--keep`
+policy. The passing test checks that neither metadata sentinel nor inherited
+skill path reaches any accepted fixture request, and that the two helpers have
+distinct homes with matching HOME/CFFIXED_USER_HOME values.
+
+Nearby sweep: this harness has one helper construction site and one launch
+implementation, shared by all three scenarios; there is no alternate launch
+that bypasses the new home requirement. Session reopening reuses the same
+isolated helper. The separate `codexHome` override remains in place.
+
+### TOOLING-CONFIG-5 — confirmed and fixed
+
+`PollingAccountingTests.test_unpriced_summary_between_polls_blocks_follow_up`
+drives the real `Session.wait`, `compaction_scenario`, `Session.submit` and final
+accounting. The fake helper first returns a running summary and then idle with
+`spentUSD: 0.10, unreportedRequests: 1`. It also checks a summary that is already
+idle on the first poll. Both cases failed before the fix:
+
+```text
+AssertionError: Lists differ: [call('turn.submit', ... 'text': 'E2E follow-up. ...', 'fake-session')] != []
+... : an unpriced summary must not authorize FOLLOW_UP
+```
+
+Live polling now validates settled accounting before returning success.
+Unreported requests produce a cost stop, so the existing scenario guard sends
+no follow-up. The tests also assert that final `runTotalUSD` stays null,
+`spendKnown` is false, and the next-scenario budget is zero. Reported zero-cost
+and positive-cost summaries still submit exactly one follow-up. Fixture-mode
+dispatch remains unchanged.
+
+Nearby instance, fixed in the same polling branch: missing or malformed
+settled accounting also allowed the follow-up before final accounting rejected
+it. `test_missing_or_malformed_settled_accounting_blocks_follow_up` reproduced
+this with missing fields, invalid types, negative counters and non-finite
+spending. The initial eight cases each failed on the unexpected `turn.submit`;
+coverage also includes a nonempty invalid cost list and integer-to-float
+overflow. The existing final-accounting validation is shared through
+`settled_spend`, retaining its exact validity predicate and exception handling.
+Polling now uses that same criterion and returns a cost stop when validation
+fails. Unpriced paused/error statuses are also explicitly reported as cost
+stops, rather than successful completion; their existing no-follow-up behavior
+is preserved.
+
+The running-attempt polling, loop limits, timeout/Stop path, final accounting,
+once-only spend aggregation, request reserve and outer scenario budget gate
+were reviewed. Only the settled-success return previously bypassed the cost
+check. No helper or wire implementation changed.
+
+### Commands, results and mutations
+
+All commands ran from this worktree. `PI_BUILD_ROOT` below is
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles`.
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 scripts/build-bundle.py
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e.FixtureRunTests.test_inherited_home_skills_never_reach_the_fixture_gateway \
+  scripts.tests.test_live_compaction_e2e.PollingAccountingTests -v
+
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/round3-mutations.py
+
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles python3 -m unittest \
+  scripts.tests.test_live_compaction_e2e -v
+
+python3 -m py_compile scripts/live-compaction-e2e.py scripts/tests/test_live_compaction_e2e.py
+git diff --check
+```
+
+| Check | Result and evidence |
+| --- | --- |
+| Release helper rebuild | Pass, 75.49 s; `round3-helper-build.log`. Existing Swift 6 isolation warnings remain in unrelated helper initialization. |
+| Failing-first focused run | 6 tests: 2 pass, 4 failing test methods / 16 subtest assertion failures; `round3-before.log`. |
+| Fixed focused run | 6 pass, 0 fail; `round3-after.log`. |
+| Entire affected harness module | 24 pass, 0 fail, 0 skip in 5.443 s; `round3-harness-tests.log`. |
+| Syntax / whitespace | Both Python files compile; `git diff --check` passes. |
+
+The full module comprises FixtureRunTests **3**, PollingAccountingTests **5**,
+SpendingFailureTests **7**, ReasoningGatewayTests **5**, SummaryPromptTests **2**
+and ConfigurationTests **2**. The fixture tests include all three scenarios and
+the intentionally capped-summary negative control. No native app class or
+helper source changed, so full native/helper/wire/concurrent/acceptance suites
+are outside this change's affected tests. No new DerivedData or test-host clones
+were created.
+
+The external mutation driver restores the original source after each run and
+in `finally`. It runs `python3 -m unittest <selector> -v` with this build root;
+the home mutants select the inherited-home test, and the accounting mutants
+select PollingAccountingTests. Every failure was a test assertion, not a
+syntax error or process failure:
+
+| Mutation | Result (`round3-mutation-<name>.log`) |
+| --- | --- |
+| `home`: remove the HOME override, retain CFFIXED_USER_HOME | Killed: 2 assertions fail. |
+| `cfhome`: remove CFFIXED_USER_HOME, retain HOME | Killed: 4 assertions fail, including leaked sentinel/path. |
+| `unreported`: bypass the settled unreported-request guard | Killed: 4 assertions fail. |
+| `unknown`: bypass the unknown-accounting guard | Killed: 9 assertions fail. |
+| `fixture`: apply the new live guard to fixture dispatch too | Killed: 1 assertion fails. |
+
+`round3-mutations.log` records all five results. The final full-module run above
+ran after restoration and includes the additional malformed-accounting and
+zero-cost controls.
+
+### Adversarial self-review and separate observation
+
+Reviewed the complete new diff from `28dbfb30`, including every changed
+production condition and its changed states:
+
+| Change | States affected and preservation check |
+| --- | --- |
+| Required `home` argument / child environment override | All harness helper launches now resolve home resources inside the generated scenario. All callers were checked. The parent environment, supplied key, explicit codex directory and resource permission policy stay unchanged. |
+| New home directory in the existing creation loop | The directory exists before launch and is owned by the existing temporary-run lifecycle. No real directory is created or removed. |
+| Settled-state branch | Running polls still take the original path. Idle, paused and error snapshots are checked before they can be returned as successful live completion. |
+| `mode == "live"` guard | Only live-policy completion requires this new admission check. The fixture dispatch control and its mutation pin the existing fixture behavior. |
+| Accounting exception / `not known` | Missing, malformed, negative, non-finite and overflowing accounting now stops live completion. Valid numeric zero remains known; booleans remain invalid. No exception grants follow-up admission. |
+| `if unreported` | A valid positive count now blocks live completion. Zero retains the prior priced-success path. The mutation reproduces the extra follow-up. |
+| Shared settled accounting predicate | The final-accounting predicate, tuple values and exception fallback are unchanged. All seven prior spending-failure tests pass, including failure before disposal, unknown totals, reserve and exactly-once aggregation. |
+| Existing follow-up guard | Unchanged: it requires idle and no stop reason. It now receives the cost stop before dispatch, rather than learning of unknown spending during final reporting. |
+
+Separate source-level observation, not changed under this harness assignment:
+`scripts/test-native-host.py:419` and
+`scripts/test-concurrent-native-host.py:46` still launch their loopback fixture
+helpers without an explicit environment; acceptance reuses the former at
+`scripts/test-native-acceptance.py:37`. Direct callers without an isolated home
+can therefore expose inherited skills to their local fixtures through the same
+Resources discovery path. These are loopback clients, not live provider paths;
+this observation was not runtime-reproduced or changed here and is recorded for
+the lead's scope decision.
+
+Both assigned Round 3 findings are confirmed and fixed. No assigned finding or
+owner product decision remains unresolved.

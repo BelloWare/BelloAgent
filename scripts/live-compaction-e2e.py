@@ -254,9 +254,11 @@ class HelperError(Exception):
 class Helper(native_host_client.HostPeer):
     """The release helper, driven as the app drives it (scripts/native_host_client.py)."""
 
-    def __init__(self, binary, cwd, stderr_path):
+    def __init__(self, binary, cwd, stderr_path, *, home):
         # The helper takes the key over its wire protocol only.
         environment = {name: value for name, value in os.environ.items() if not name.startswith("PI_LIVE_")}
+        # Resource discovery also scans ~/.agents/skills independently of codexHome.
+        environment.update(HOME=str(home), CFFIXED_USER_HOME=str(home))
         self.stderr = open(stderr_path, "wb")
         super().__init__(binary, cwd, env=environment, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
         try:
@@ -585,10 +587,11 @@ class Session:
         self.run, self.name, self.cfg = run, name, run.cfg
         self.root = run.temp / name
         self.workspace, self.directory = self.root / "workspace", self.root / "sessions"
-        for folder in (self.workspace, self.directory, self.root / "codex"):
+        home = self.root / "home"
+        for folder in (self.workspace, self.directory, self.root / "codex", home):
             folder.mkdir(parents=True, exist_ok=True)
         self.markers = workspace(self.workspace) if workspace else {}
-        self.helper = Helper(self.cfg.helper, self.workspace, self.cfg.out / f"{name}-helper-stderr.log")
+        self.helper = Helper(self.cfg.helper, self.workspace, self.cfg.out / f"{name}-helper-stderr.log", home=home)
         self.id, self.path, self.turn, self.watched = f"e2e-{name}-{uuid.uuid4().hex[:8]}", None, None, set()
         try:
             self.helper.command("workspace.open", {"cwd": str(self.workspace), "directory": str(self.directory),
@@ -642,6 +645,15 @@ class Session:
         while True:
             status = self.status()
             if status["state"] in ("idle", "paused", "error"):
+                if self.cfg.mode == "live":
+                    try:
+                        _, _, unreported, known = settled_spend(status)
+                    except Exception:
+                        unreported, known = None, False
+                    if not known:
+                        return status, "cost: final spending could not be recovered, so the cost cap cannot hold"
+                    if unreported:
+                        return status, "cost: the gateway reported no cost for a completed request, so the cost cap cannot hold"
                 return status, None
             summaries, requests, unpriced = 0, 0, 0
             for attempt in self.listed():
@@ -862,18 +874,23 @@ def common_checks(result, status, stopped, bound, run):
                  + (f"; {stopped}" if stopped else ""))
 
 
+def settled_spend(status):
+    """The same settled accounting is required before follow-up and disposal."""
+    cost = status.get("cost") or {}
+    spent, unreported = cost.get("spentUSD"), cost.get("unreportedRequests")
+    known = (status.get("state") in ("idle", "paused", "error")
+             and type(spent) in (int, float) and math.isfinite(spent) and spent >= 0
+             and type(unreported) is int and unreported >= 0)
+    return cost, spent, unreported, known
+
+
 def count_spend(run, session, result):
     """Adds this chat's spend, as the helper counted it, to the run's: once,
     also when the scenario stopped early, so the next chat's budget is right."""
     if result.cost:
         return
     try:
-        status = session.status()
-        cost = status.get("cost") or {}
-        spent, unreported = cost.get("spentUSD"), cost.get("unreportedRequests")
-        known = (status.get("state") in ("idle", "paused", "error")
-                 and type(spent) in (int, float) and math.isfinite(spent) and spent >= 0
-                 and type(unreported) is int and unreported >= 0)
+        cost, spent, unreported, known = settled_spend(session.status())
     except Exception:  # Failed or malformed accounting must not reset the budget.
         cost, spent, unreported, known = {}, None, None, False
     unreported = max(unreported if type(unreported) is int else 0, sum(row["costUnreported"] for row in result.requests))
