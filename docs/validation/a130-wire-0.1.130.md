@@ -553,3 +553,110 @@ Reviewed the complete diff against `fe734912`, including the generated project e
 Reviewed complete versus partial/unsupported response timelines, compaction replay prefixes, branch markers, Unicode offsets, selection replacement, disk cache invalidation, helper retirement while awaiting IPC, and source disappearance while preparing export. The bounded helper reply path and the 16,384-unit text page limit are retained. The helper emits the optional digest/incarnation only for retained-selection searches, preserving existing wire callers. The original matching semantics of source search are the explicit follow-up above; rendered Find is unchanged.
 
 The Release helper tested by all three Python suites has SHA-256 `bfe18747c58c1db62cfb938dbc2c115779f33fbf5baaba669122aac98a65602f`, rechecked after the final native run. New generated fixture cases use registered teardown. No cloned test-host directories were present in this workstream's `native-tests/Build/Products`; the remaining automatically named result bundle was removed. Text logs and gallery images remain in this workstream's build root. All owned shared locks were released. `git diff --check` passes.
+
+## Round 4 review
+
+Review of `31969162cf5e85ef6cbd7e65f45ec4859a4255eb`, plus the lead's decision to align live source search with Copy Conversation. Work remains on `dev/a130-wire`; no merge or fast-forward. Logs for this round are under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round4-review` (`B` below is that build root).
+
+### Findings and failing-first evidence
+
+1. **Empty/uncovered timeline loses canonical content — confirmed.** `ConversationReadTests.testEmptyAndUncoveredTimelinesKeepCanonicalAnswer` feeds the reported Responses event sequence through both `ProviderAccumulator` and `ProviderDisplayEvents`: the collected answer exists while the supported timeline is empty. It also covers nonempty evidence that belongs to another part. `helper-red.log`: both assertions fail because `COLLECTED-ANSWER` is absent.
+
+   `RetainedConversation.swift` is now compiled into both targets, using the project's existing shared-source convention. The JSON adapters supply values; one implementation formats message boundaries, reasoning, tool arguments, image placeholders, timeline evidence, edits and compactions. Timeline coverage is checked against canonical parts, including adjacent/interleaved contributions, corrections and normalized tool JSON. Unproven coverage adds the complete saved response; existing complete evidence keeps its order. Unsupported timelines use canonical content. Separate message-text reads remain unchanged.
+
+   Mutation: short-circuiting the coverage proof to accept any supported, untruncated timeline fails the same test with **2 failures** (`mutation-timeline.log`). Restored code passes. The native timeline corpus verifies live copy, live search and held disk handoff for covered, uncovered, empty, partial/truncated and unsupported timelines.
+
+2. **Inherited compaction produces incompatible handoff identity — confirmed.** `ConversationCopyTests.testKeptCompactedSideRetainsCopyIdentityAfterRetirement` appends a generated checkpoint, opens a real helper side with `side.open`, checks that `keepNow` saved a `message` with `nativeKind: compaction`, and copies through the existing selection after idle retirement. Before the fix it throws “History changed. Refresh the range before copying” (`native-red.log`).
+
+   Both representations now use the shared compaction heading and summary. Only inherited message rows lose their replay prefix; a top-level checkpoint's summary is already the saved summary and is not stripped again. This keeps intentionally repeated prefix text intact.
+
+   Mutation: removing `nativeKind` from the disk adapter recreates the handoff rejection: **1 failing test / 1 failure** (`mutation-compaction.log`). The restored test passes, as do the existing historical edit/compaction corpus and Unicode page/handoff tests.
+
+   **Same-pattern sweep: adopted compaction progress — confirmed and fixed in the same read functions.** A modern checkpoint durably adopts its preceding execution row. Helper replay updates that row's terminal evidence/title, while the disk copy/search adapters ignored the offset index's existing `adopted` flag. The generated `testAdoptedCompactionProgressKeepsTheSameCopyIdentity` reproduces the rejected handoff (`adopted-red.log`: **1 failing test / 1 failure**). The disk adapter now applies the same proven adoption state already used by helper replay and disk transcript projection before calling the shared formatter. `adopted-green.log`: **1 passed**. Copy and source-search call sites each have a mutation that omits the flag; the regression checks both the held copy and a query for the adopted title.
+
+   `mutation-adopted-copy.log` rejects the held handoff; `mutation-adopted-search.log` loses the adopted-title hit. Each is **1 failing test / 1 failure**. Both call sites are restored. This correction changes only the app's interpretation of the existing index metadata; the tested helper source/binary remains unchanged.
+
+3. **Whole-history work occupies the session actor and repeats — confirmed.** The generated 130-row fixture holds the first formatting row at a semaphore. Before the fix, Stop cannot execute within 500 ms; Next Results increases formatted-row observations from 130 to 260 (`helper-red.log`). No wall-clock race or large real journal is needed to establish actor occupancy.
+
+   The session captures its retained arrays/index and a generation/revision key, then uses `BlockingWorkExecutor` to decode, format and hash away from the actor. Completed results are published only after checking cancellation, closure and the captured key. One immutable cache per snapshot stores formatted text in an immediately unlinked, mode-0600 file with a close-on-exec descriptor; only row offsets/IDs remain in memory. Search and copy use positional reads on workers and validate again before publication. Next Results and copy pages reuse the formatted rows and digest. Cache generation follows retained row changes, independently of unsaved streaming/display generations. The existing shared-load primitive coalesces readers and cancels work after its last reader departs; close cancels the load and releases the cache.
+
+   Mutations: moving the build back onto the actor fails the Stop barrier (**1 failure**, `mutation-actor.log`); bypassing the cache fails the format-count assertion (**1 failure**, `mutation-cache.log`). Additional tests reject equal-count row changes while formatting, invalidate a completed cache after changed content, retain it across unsaved streaming, cancel/close without publishing a partial result, and let one concurrent reader finish when the other cancels. All seven `ConversationReadTests` pass after restoration.
+
+4. **Live search misses reasoning/tool-only queries — confirmed; lead decision applied.** The two marker-only queries return no live hits but one saved hit each (`helper-red.log`, `native-red.log`). Search now reads the same cached shared-formatter text as copy, using the disk reader's case-insensitive matching semantics. The previous Round 3 “needs owner decision” search item is resolved by this lead instruction. Rendered Find and the separate message-text API retain their existing contracts.
+
+   Mutation: building the source snapshot with `retainedDisplayText` instead of conversation text loses both marker hits (**2 failures**, `mutation-search.log`). `ConversationCopyTests.testLiveAndDiskSearchFindReasoningAndToolArguments` checks matching live/disk row IDs after idle retirement.
+
+The combined initial helper run was **4 failing tests / 6 failures**. The initial native run was **2 failing tests / 5 failures** (including the expected thrown handoff rejection). These are runtime failures, not compile failures. The focused restored helper run is **31 passed / 1 opt-in skip / 0 failures** (`helper-restored.log`); the restored native regression run is **3 passed / 0 failures** (`native-green.log`).
+
+### Nearby sweep and adversarial self-review
+
+- Traced live search and paging, disk source search, disk copy pages and handoff digest computation. They now reach the same formatter, including both disk branch shortcuts. Checked ordinary string/array content, covered/uncovered/empty/partial/unsupported timelines, correction and continuation parts, exposed reasoning, tool arguments (absent `{}` versus explicit `null`, sorted keys and unescaped slashes), image omission, top-level checkpoints, inherited summaries and historical edit markers. The native corpus additionally exercises both sides of helper retirement; the existing contract test independently computes the ordered ID/text digest.
+- Checked retained row changes in append, presentation updates, branch edits, compaction, full-history adoption, checkpoint replay and side preservation. Array mutation advances the retained generation, including equal-count replacement. Loading older rows completes before capture; unreadable offsets use the existing off-actor full-history recovery. No whole-history formatting or hashing remains in `SessionReads` or its actor closures.
+- Reviewed cache ownership, cancellation before/after publication, last-reader retirement, joined-reader cancellation, same-ID runtime replacement and stale load cleanup. The runtime incarnation gate, strong revision check, app selection ownership and navigation/presentation identities remain intact. A stale worker cannot clear a newer load or publish its obsolete cache.
+- Reviewed storage and wire bounds: no persistent extra journal, no named temporary capture path, no inherited cache descriptor, and no extra DerivedData root. Text still uses 16,384-unit UTF-16 pages without splitting surrogates; search retains 100 hits and 240-byte previews. Captures, tools, permissions, vaults and provider replay are unchanged.
+- The final source audit rechecked worker publication guards, independent reader cancellation, cache descriptor lifetime, and generated project membership. SHA-256 verification matches the production sources used by the final helper/wire runs and restored native tests (`source-hashes.txt`). `xcodegen generate --quiet` regenerated the project after adding the shared formatter.
+- Diff review is local and read-only; no other workstream's HostService/TraceStore functions were edited. All fixtures are generated/loopback with test homes and in-memory credentials. No installed application, real preferences, chats, Keychain or paid provider was used.
+
+**Separate pre-existing follow-up — needs owner decision:** `SessionReplay.swift:323` (`endWithoutReceipt`) changes unfinished execution/request-ledger rows to an interrupted/partial presentation in memory. `HistoryReader.swift:778` and `ConversationContent.swift:257` still copy the original saved missing-receipt evidence. A generated unfinished request-ledger probe confirms that a held live copy then rejects its disk handoff without any source-row edit (`unfinished-progress-probe.log`: **1 failing probe / 1 failure**, “History changed”). The probe and reproduction script are retained as `unfinished-progress-probe.swift` / `.py` in the round's logs; the temporary diagnostic test is removed from the suite.
+
+Unlike a durably adopted checkpoint, a missing terminal receipt does not by itself prove interruption: a disk reader can also encounter a still-running child that has no attached helper reader. Applying interruption to all such disk rows would misstate live work. Making helper source copies exclude recovery annotations would instead change their existing copy/search text. The conservative choice is to preserve both existing evidence policies and flag the decision: should source copy/search show raw retained evidence or normalized recovery annotations, with an explicit source policy carried through handoff? This follow-up is not silently normalized or presented as a terminal receipt. The assigned ordinary-answer, inherited-summary and durable-compaction cases are fixed.
+
+### Validation commands and results
+
+Failing-first and focused restored helper runs:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ConversationReadTests|ContractTests|OlderRowsTests|HistoryReadCancellationTests'
+```
+
+Each helper mutation uses the first command with `--filter ConversationReadTests/<test name>` as recorded in `helper-mutations.py`; the source is restored in `finally`. The compaction mutation uses the native command below with only `testKeptCompactedSideRetainsCopyIdentityAfterRetirement` and also restores in `finally`.
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testKeptCompactedSideRetainsCopyIdentityAfterRetirement \
+  -only-testing:PiAppTests/ConversationCopyTests/testLiveAndDiskSearchFindReasoningAndToolArguments \
+  -only-testing:PiAppTests/ConversationCopyTests/testTimelineCorpusCopiesAndHandsOffIdentically
+```
+
+The initial native red run selected the first two methods. These model-only methods do not open windows or change focus and use the focused-run lock exception.
+
+Full helper and Release wire commands:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+`bundle-final.log`: pass. `wire-final.log`: **40 passed**, 35.637 s. `concurrent-final.log`: **4 passed**, 21.823 s. `acceptance-final.log`: **3 passed**, 3.483 s.
+
+`helper-final.log`: **1,134 passed / 7 opt-in skips / 0 failures**, 1,141 executed in 417.359 s. `helper-cost-final.log`: **5 passed / 0 failures**, 3.403 s. Combined helper total: **1,139 passed / 7 skips / 0 failures**. Release helper SHA-256: `2a9bfff4236ea5c3f0b59871fd610846896a8b634dd9a1183be6cb3e576590ee`.
+
+Affected native classes:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round4-review/copy" \
+  "$B/logs/round4-review/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+"$B/logs/round4-review/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+"$B/logs/round4-review/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+```
+
+`native-headless-final.log`: **40 passed / 1 opt-in performance skip / 0 failures**, 41 executed in 4.498 s after the adopted-progress correction (ContentSearch 7, Hardening 12, HistoryReaderCheckpoint 7, HistoryIndexFiles 3 + 1 skip, StorageTruth 11). Each serial class runs alone; window/gallery checks use `native-lane.sh`, which takes the shared lock and releases only its own owner token on exit, including failure.
+
+**Retained validation failure:** an initial headless run failed `HardeningTests.testNativeSupervisorStartsTheBundledSwiftHostAndExitsOnEOF` because its test app lacked both the helper and manifest. A separately invoked bundle stage overlapped the embedding step: `build-bundle.py` removes and recreates the staging directories, and the test app had copied empty directories. `native-headless-staging-race.log` records **39 passed / 1 skip / 1 failure**; `staging-race-evidence.log` records the populated staging files and missing embedded files. Staging was serialized and the complete 41-test group rerun successfully above. This was validation orchestration, not an ignored test failure or product change.
+
+`native-copy-final.log`: **10 passed / 0 skips / 0 failures**, 8.100 s, including the complete class and opt-in gallery. Inspected all three generated images under `gallery-round4-review/copy`: light/dark at 1080 × 700 points and narrow at 900 × 700 points. The source previews, message counts, range fields and action buttons remain legible and correctly placed; long preview text uses the existing ellipsis without covering controls.
+
+`native-workspace-final.log`: **17 passed / 0 skips / 0 failures**, 0.533 s. `native-transcript-final.log`: **116 passed / 0 skips / 0 failures**, 146.506 s. **Final native total: 183 passed / 1 opt-in performance skip / 0 failures** (184 executed). The copy, workspace and transcript classes each ran alone with the shared full-lane lock. Acquisition uses atomic `mkdir`; a directory-removal notification avoids missing brief gaps between other lanes. The owner-token guard released only this workstream's lock after every run.
+
+The final native logs also retain **15** SQLite “vnode unlinked while in use” diagnostics for generated `native-fixture-*` request databases in the unchanged `WorkspaceTests` cleanup (for example, `apps/macos/PiAppTests/WorkspaceTests.swift:238` and `:274`), and **8** for the already-recorded `wide-search-*` history indexes (`TranscriptBugRegressionTests.swift:625`, `:664`, and similar defers). These fixtures delete their temporary roots before every database handle has closed. All tests pass; these unrelated fixture cleanup warnings are recorded, not suppressed or repaired in this branch.
+
+All seven mutations were caught and restored. Final read-only adversarial review and `git diff --check` pass; the tested production source hashes still match after all native runs. Only this build root's generated result bundle was removed; no cloned test-host directories remained. Text logs and the three inspected PNGs are retained. No installed app was launched, no real preferences/chats/Keychain or paid provider was accessed, and no other workstream's lock or build root was modified.

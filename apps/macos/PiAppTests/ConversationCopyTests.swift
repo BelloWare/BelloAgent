@@ -66,6 +66,109 @@ import XCTest
             XCTAssertEqual(diskText, expected)
         }
     }
+    func testLiveAndDiskSearchFindReasoningAndToolArguments() async throws {
+        let (model, chat, host, _) = try await fixture()
+        var live: [[String]] = []
+        for query in ["COPY-REASONING", "COPY-ARGUMENT"] {
+            let found = try await model.searchConversation(chat.id, query: query, start: 0)
+            live.append(found.hits.map(\.id))
+            XCTAssertEqual(found.hits.map(\.id), ["answer"], query)
+        }
+        try await retire(model, chat: chat, host: host)
+        for (index, query) in ["COPY-REASONING", "COPY-ARGUMENT"].enumerated() {
+            let found = try await model.searchConversation(chat.id, query: query, start: 0)
+            XCTAssertEqual(found.hits.map(\.id), live[index], query)
+        }
+    }
+    func testKeptCompactedSideRetainsCopyIdentityAfterRetirement() async throws {
+        let (model, parent, host, _) = try await fixture()
+        _ = try await host.request("session.close", sessionID: parent.id)
+        model.helperSessionDidUnload(parent.id)
+        let row: WireValue = .object(["type": .string("compaction"), "id": .string("summary"), "parentId": .string("final"),
+            "summary": .string("INHERITED-SUMMARY"), "nativeKeptIDs": .array([.string("answer"), .string("receipt"), .string("final")]),
+            "tokensBefore": .number(9000)])
+        try ContentSearchTests.append(JSONEncoder().encode(row) + Data([10]), to: try XCTUnwrap(parent.path))
+        _ = try await model.open(parent)
+        let made = try await host.request("side.open", sessionID: parent.id, params: ["sideSessionId": .string("kept-side")])
+        var side = ChatRecord(id: "kept-side", workspaceID: parent.workspaceID, title: "Side", profileID: parent.profileID)
+        side.path = try XCTUnwrap(made.object?["path"]?.string)
+        model.chats.append(side); try await model.store?.put(side, kind: "chat", id: side.id)
+        _ = try await model.open(side)
+        let journal = try String(contentsOfFile: try XCTUnwrap(side.path), encoding: .utf8)
+        XCTAssertTrue(journal.contains("\"nativeKind\":\"compaction\""), "Exercise keepNow's message representation")
+        let source = ConversationContentSource.workspace(model, sessionID: side.id)
+        let found = try await source.search("", 0), live = try await collect(source, result: found, last: found.total)
+        XCTAssertTrue(live.contains("## Compaction\n\nINHERITED-SUMMARY"))
+        try await retire(model, chat: side, host: host)
+        let saved = try await collect(source, result: found, last: found.total)
+        XCTAssertEqual(saved, live)
+    }
+    func testTimelineCorpusCopiesAndHandsOffIdentically() async throws {
+        let (model, chat, host, _) = try await fixture()
+        _ = try await host.request("session.close", sessionID: chat.id)
+        model.helperSessionDidUnload(chat.id)
+        var empty = ResponseTimeline(); empty.finish("completed")
+        let covered = ResponseTimeline.canonical([("text", "COVERED-ANSWER", nil, nil)], sourceID: "covered")
+        var partial = covered; partial.segments[0].truncated = true; partial.omittedEvents = 1
+        var unsupported = empty; unsupported.version = 99
+        let corpus = [("covered", "COVERED-ANSWER", covered),
+                      ("uncovered", "UNCOVERED-ANSWER", covered),
+                      ("empty", "EMPTY-TIMELINE-ANSWER", empty),
+                      ("partial", "FULL-PARTIAL-ANSWER", partial),
+                      ("unsupported", "UNSUPPORTED-ANSWER", unsupported)]
+        var parent = "final"
+        for (id, answer, timeline) in corpus {
+            let value = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+            let row: WireValue = .object(["type": .string("message"), "id": .string(id), "parentId": .string(parent),
+                "message": .object(["role": .string("assistant"), "content": .string(answer), "nativeResponseTimeline": value])])
+            try ContentSearchTests.append(JSONEncoder().encode(row) + Data([10]), to: try XCTUnwrap(chat.path))
+            parent = id
+        }
+        _ = try await model.open(chat)
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id)
+        let found = try await source.search("", 0), live = try await collect(source, result: found, last: found.total)
+        for (_, answer, _) in corpus { XCTAssertTrue(live.contains(answer), answer) }
+        for query in ["UNCOVERED-ANSWER", "EMPTY-TIMELINE-ANSWER"] {
+            let result = try await model.searchConversation(chat.id, query: query, start: 0)
+            XCTAssertEqual(result.hits.count, 1, query)
+        }
+        try await retire(model, chat: chat, host: host)
+        let saved = try await collect(source, result: found, last: found.total)
+        XCTAssertEqual(saved, live)
+        for query in ["UNCOVERED-ANSWER", "EMPTY-TIMELINE-ANSWER"] {
+            let result = try await model.searchConversation(chat.id, query: query, start: 0)
+            XCTAssertEqual(result.hits.count, 1, query)
+        }
+    }
+    func testAdoptedCompactionProgressKeepsTheSameCopyIdentity() async throws {
+        let (model, chat, host, _) = try await fixture()
+        _ = try await host.request("session.close", sessionID: chat.id)
+        model.helperSessionDidUnload(chat.id)
+        var timeline = ResponseTimeline.canonical([("status", "CHECKPOINT-PROGRESS", nil, nil)], sourceID: "operation")
+        timeline.finish("recorded")
+        let encoded = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))
+        let ids: WireValue = .array(["answer", "receipt", "final"].map(WireValue.string))
+        let records: [WireValue] = [
+            .object(["type": .string("message"), "id": .string("operation"), "parentId": .string("final"),
+                "message": .object(["role": .string("system"), "content": .array([]), "nativeKind": .string("execution"),
+                    "nativeOperationID": .string("operation"), "nativeDetail": .string("Compaction started"),
+                    "nativeReplayEligible": .bool(false), "nativeResponseTimeline": encoded])]),
+            .object(["type": .string("compaction"), "id": .string("summary"), "parentId": .string("operation"),
+                "summary": .string("ADOPTED-SUMMARY"), "nativeKeptIDs": ids, "tokensBefore": .number(9000),
+                "nativeCompactionVersion": .number(2), "nativeCompaction": .object(["version": .number(2),
+                    "operationId": .string("operation"), "sourceIDs": ids, "keptIDs": ids, "protectedIDs": .array([])])])
+        ]
+        for record in records { try ContentSearchTests.append(JSONEncoder().encode(record) + Data([10]), to: try XCTUnwrap(chat.path)) }
+        _ = try await model.open(chat)
+        let source = ConversationContentSource.workspace(model, sessionID: chat.id)
+        let found = try await source.search("", 0), live = try await collect(source, result: found, last: found.total)
+        XCTAssertTrue(live.contains("Compaction · Checkpoint durably adopted"))
+        try await retire(model, chat: chat, host: host)
+        let saved = try await collect(source, result: found, last: found.total)
+        XCTAssertEqual(saved, live)
+        let matched = try await model.searchConversation(chat.id, query: "Checkpoint durably adopted", start: 0)
+        XCTAssertEqual(matched.hits.map(\.id), ["operation"])
+    }
     func testExistingSheetCopiesAndExportsAfterIdleRetirement() async throws {
         for exporting in [false, true] {
             let (model, chat, host, expected) = try await fixture()

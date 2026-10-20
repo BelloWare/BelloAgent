@@ -757,7 +757,7 @@ actor HistoryReader {
         let record = ref.type == "branch" || (rendered && pass.captured[ref.id] != nil)
             ? [:] : try await searchRecord(ref, pass: pass)
         if !rendered {
-            let text = ref.type == "branch" ? "## Edit\n\n" + Self.branchText + "\n\n" : ConversationContent.text(record)
+            let text = ref.type == "branch" ? RetainedConversation.edit : ConversationContent.text(record, adopted: ref.adopted)
             let match = pass.match(text); try pass.cache.store(match, at: ref.offset); return match
         }
         let message = pass.captured[ref.id] ?? Self.displayedMessage(record, ref: ref)
@@ -776,11 +776,11 @@ actor HistoryReader {
         let match = pass.match(try searchText(message, pass: pass)); try pass.cache.store(match, at: ref.offset); return match
     }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
-        if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
+        if ref.type == "branch" { return RetainedConversation.edit }
         decodedRecords += 1
         try file.seek(toOffset: ref.offset)
         guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
-        return ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:])
+        return ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:], adopted: ref.adopted)
     }
     func editTarget(path: String, id: String) throws -> [String: WireValue] {
         let page = try read(path: path, around: id, targetTurns: 1, whole: true)
