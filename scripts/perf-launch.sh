@@ -20,6 +20,18 @@
 # Results: <out>/raw/<label>-<warm|cold>-<n>.json; summarize with the
 # harness's analyze-launch.py <out>.
 set -euo pipefail
+DOMAIN=com.belloware.PiApp.launchperf
+[ "$DOMAIN" = com.belloware.PiApp.launchperf ] || { echo "Refusing non-fixture preferences domain: $DOMAIN" >&2; exit 1; }
+readonly DOMAIN
+reset_fixture_preferences() {
+  local fixture_home="$1"
+  # cfprefsd can ignore the fixed home. Seed the fixture domain so an absent
+  # domain is harmless, while any write/delete failure still stops the run.
+  env HOME="$fixture_home" CFFIXED_USER_HOME="$fixture_home" CODEX_HOME="$fixture_home/.codex" \
+    defaults write "$DOMAIN" BelloLaunchFixtureReset -bool true
+  env HOME="$fixture_home" CFFIXED_USER_HOME="$fixture_home" CODEX_HOME="$fixture_home/.codex" \
+    defaults delete "$DOMAIN" >/dev/null
+}
 FIXTURE=$(cd "$1" && pwd) OUT=$(mkdir -p "$2" && cd "$2" && pwd); shift 2
 # The fixture's records name its journals and projects by absolute path, and
 # its search index keys each journal by path and file identity: a copied
@@ -32,7 +44,6 @@ journals() { find "$FIXTURE/home" -name '*.jsonl' -exec stat -f '%N %m %z' {} + 
 before_journals=$(journals)
 : "${BELLOPERF:?Set BELLOPERF to the belloperf binary}"
 WARM=${WARM:-8} COLD=${COLD:-5} IDLE=${IDLE:-2}
-DOMAIN=com.belloware.PiApp.launchperf
 mkdir -p "$OUT/raw" "$OUT/apps"
 FIXTURE_PREFS="$FIXTURE/home/Library/Preferences/$DOMAIN.plist"
 before_preferences=$(stat -f %m "$FIXTURE_PREFS" 2>/dev/null || echo none)
@@ -50,6 +61,7 @@ trial() { # label exe kind index
   rm -rf "$run"; ditto "$FIXTURE" "$run"
   mkdir -p "$run/home/.codex" "$run/tmp"
   rm -f "$run/home/Library/Preferences/$DOMAIN.plist"
+  reset_fixture_preferences "$run/home"
   local cold=(); [ "$3" = cold ] && cold=(--cold)
   env -u PI_APP_BENCHMARK_STATE_ROOT -u PI_APP_BENCHMARK_OUTPUT -u BELLO_CONTEXT_DIAGNOSTICS \
     HOME="$run/home" CFFIXED_USER_HOME="$run/home" CODEX_HOME="$run/home/.codex" \
@@ -68,6 +80,7 @@ for kind in warm cold; do
     for i in "${order[@]}"; do printf '%s %s %d: ' "${labels[$i]}" $kind $n; trial "${labels[$i]}" "${exes[$i]}" $kind $n; done
   done
 done
+reset_fixture_preferences "$OUT/run/home"
 rm -rf "$OUT/run" "$OUT/raw/"*-prime-*.json
 [ "$(journals)" = "$before_journals" ] || echo "WARNING: a fixture journal changed during the run" >&2
 [ "$(stat -f %m "$FIXTURE_PREFS" 2>/dev/null || echo none)" = "$before_preferences" ] || echo "WARNING: fixture preferences changed during the run" >&2

@@ -1838,6 +1838,12 @@ these changes; the separate opt-in benchmark observation remains as noted.
 
 ## Fixture isolation review — relative paths and launch benchmarks
 
+**Preference-reset correction:** the file-only reset and the prohibition on
+fixture-domain `defaults` calls recorded below were incorrect. The owner's
+clarification and the real UserDefaults regression in
+[the follow-up](#fixture-preferences-review--effective-per-trial-reset)
+supersede that conclusion and its `preferences-reset` mutation expectation.
+
 Base `14cc0893`, on `dev/a130-gitfiles`; no merge, fast-forward or history rewrite.
 This resolves both the relative-path review and the opt-in benchmark observation
 above. Evidence is under this workstream's
@@ -2036,3 +2042,142 @@ Adversarial review of every changed behavior/condition:
 | Source extraction / generated project | Only the existing environment dictionary moved into a Foundation-only builder, allowing direct tests of fixture and shipping compilation without an app launch. The supervisor uses that builder; XcodeGen adds it to the same app/test-host source sets. |
 
 No product decision or production behavior change is needed for these fixes.
+
+## Fixture preferences review — effective per-trial reset
+
+Base `88137210`, on `dev/a130-gitfiles`. The review finding is **confirmed and
+fixed**. The benchmark's `com.belloware.PiApp.launchperf` domain is generated
+fixture state, even when cfprefsd stores it in the account Preferences directory.
+The owner explicitly permits resetting this exact domain. The real app's domain
+and every other non-fixture domain remain outside the test boundary.
+
+### Failing first and fix
+
+`PerfLaunchTests.test_each_trial_resets_the_effective_fixture_defaults` runs
+the actual shell entry point with a generated bundle and fake `belloperf`.
+For each of two labels' prime and warm trials, the harness starts a separate
+Foundation-only executable. It reads the fixture's persistent domain through
+`UserDefaults`, writes a distinct marker and synchronizes it. No app executes.
+The regression requires every trial's initial marker to be absent.
+
+Before changing the script, `defaults-review-before.log` showed:
+
+```text
+FAIL: test_each_trial_resets_the_effective_fixture_defaults
+AssertionError: Lists differ:
+[None, 'fixture-prime-0', 'second-prime-0', 'fixture-warm-1']
+!= [None, None, None, None]
+UserDefaults retained a previous trial
+Ran 4 tests in 4.587s
+FAILED (failures=9)
+```
+
+The other eight failures were the five non-fixture target cases, the two
+reset-error cases, and the missing reset calls in the existing launch-boundary
+test. Those cases use spies exclusively; they never query a non-fixture domain.
+
+`perf-launch.sh` now checks the exact fixture domain before any paths or
+preferences are accessed, then makes it readonly. Before each trial it invokes
+`defaults` under the trial's generated HOME, CFFIXED_USER_HOME and CODEX_HOME.
+It writes one fixture marker before deleting the domain, so an initially absent
+domain is handled without suppressing a genuine write/delete failure. Either
+failure stops the script before the harness launches. Normal completion also
+clears the domain before removing the run directory.
+
+The copied fixture plist is still removed, and the original fixture plist's
+metadata check remains confined to the fixture. Home/scratch isolation, helper
+environments, trial ordering and timing arguments are unchanged.
+
+For the real preference probe, the defaults proxy permits only the exact
+fixture marker write and fixture-domain delete, then calls `/usr/bin/defaults`.
+The Foundation probe hardcodes that same suite and uses `persistentDomain`,
+never `UserDefaults.standard` or a merged preference search. Cleanup clears the
+fixture domain in `finally`. Unsafe-domain cases include the real app ID, an
+unrelated ID, a fixture-prefix lookalike, `-g`, and the empty string; all are
+refused before any spy observes a preference operation or launch.
+
+Nearby sweep: `rg` over `scripts/` and `apps/macos/TestSupport` for defaults
+writes/deletes, preference plist resets and persistent-domain removal found no
+additional file-only reset to fix. No Swift app/helper or wire source changed.
+
+### Mutation checks
+
+The evidence driver `defaults-review-validation.py` changes one line at a time,
+runs the indicated method and restores the script in `finally`. All **5/5**
+mutations fail assertions after their probes run successfully:
+
+| Mutation | Test / failure | Log suffix |
+| --- | --- | --- |
+| Remove per-trial reset | Effective-defaults regression sees prior trial markers; 1 failure | `per-trial` |
+| Bypass exact-domain guard | Non-fixture-domain regression; 5 failures | `domain-guard` |
+| Ignore failed marker write | Reset-error regression observes a launch; 1 failure | `failed-write` |
+| Ignore failed domain delete | Reset-error regression observes a launch; 1 failure | `failed-delete` |
+| Remove final reset | Effective-defaults regression reads `second-warm-1` after the run; 1 failure | `cleanup` |
+
+An initial final-cleanup mutation survived because the inspection used a home
+directory already removed by the launcher. The probe now recreates that same
+generated home before inspection, matching a subsequent trial. The final
+mutation then failed with:
+
+```text
+AssertionError: 'second-warm-1' is not None :
+  the fixture domain is cleared after the run
+Ran 1 test in 3.554s
+FAILED (failures=1)
+```
+
+The initial result is retained as
+`defaults-review-mutation-cleanup-initial.log`; it is not counted as a caught
+mutation. Final logs use `defaults-review-mutation-<suffix>.log`.
+
+### Validation and adversarial review
+
+Evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+Commands from this worktree:
+
+```sh
+python3 -m unittest scripts.tests.test_perf_launch.PerfLaunchTests -v
+python3 -m unittest scripts.tests.test_perf_launch -v
+python3 -m unittest discover -s scripts/tests
+bash -n scripts/perf-launch.sh
+python3 -m py_compile scripts/tests/test_perf_launch.py
+git diff --check
+```
+
+Python commands use the existing evidence wrapper `run-home-review.py`, which
+sets generated HOME/CFFIXED_USER_HOME/CODEX_HOME and this workstream's
+PI_BUILD_ROOT/Release PI_NATIVE_HOST. The complete fixed/mutation/final run was:
+
+```sh
+python3 /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/run-home-review.py \
+  defaults-review-validation python3 \
+  /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence/defaults-review-validation.py
+```
+
+| Suite | Result | Text evidence |
+| --- | --- | --- |
+| Focused launch/environment probes | 6 pass, 0 fail, 9.938 s | `defaults-review-focused.log` |
+| Full Python discovery | 118 pass, 0 fail, 0 skips, 58.779 s | `defaults-review-python.log` |
+| Mutations | 5/5 caught | `defaults-review-validation.log` |
+| Shell/Python syntax and diff checks | Pass | `defaults-review-static.log` |
+
+These Foundation-only and stub tests do not launch a GUI app or change focus;
+they ran independently of the native lane and did not alter another workstream's
+lock. No opt-in benchmark, paid/live request, installed app, real app preferences,
+other non-fixture domain, real journal or Keychain access was used. The full
+Python suite's signing retry messages come from its signing stubs. No new
+DerivedData root, test clone or named xcresult was created.
+
+Adversarial review of the whole new diff:
+
+| Changed condition/step | States that now differ and intended result |
+| --- | --- |
+| Exact-domain guard | Only the fixed fixture ID proceeds; other IDs, aliases and empty values fail before any preference access or launch. The readonly assignment prevents a later target change. Wrong-target tests always use spies. |
+| Seed then delete | An absent domain is created and deleted successfully; an existing domain loses all prior trial values through cfprefsd. Failed writes or deletes abort instead of allowing contaminated timings. Both error branches have independent mutations. |
+| Per-trial reset | Prime, warm and cold trials share the same reset path. Values from any previous label/trial are removed; launch ordering and arguments are unchanged. Separate UserDefaults processes demonstrate persistence before and absence after the fix. |
+| Final reset and probe cleanup | Successful runs clear the last trial's values while the home still exists. The probe recreates its generated home before final inspection and clears the exact fixture domain even after assertion failure. |
+| Test dispatch/real defaults boundary | Real calls require an explicit per-test flag plus an exact argument allowlist. Inherited probe/failure flags are removed. Non-fixture cases cannot reach real defaults even with the production guard mutated away. The fake app is not executable. |
+| Existing boundaries | The original fixture plist stays unchanged; metadata checks stay fixture-local; all app/helper home and scratch overrides remain as before. No shipping path or helper behavior changes. |
+
+No unresolved failure or owner decision remains in this change.
