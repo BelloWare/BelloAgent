@@ -368,6 +368,28 @@ The separate final `ClipboardHTMLPerformanceTests` run passed **1/1**
 (`html-timing-final.log`): **1.233 ms** text-first, **0.160 ms** image-first.
 No helper or wire code changed, so their full suites were not rerun.
 
+The shared focus lock was acquired for the remaining UI checks on the same
+production source, now committed as **`8507e20a`**, and released after both:
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteRoutingTests
+TEST_RUNNER_PI_APP_PASTE_GALLERY="$PI_BUILD_ROOT/gallery-html-review" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ComposerPasteGalleryTests
+```
+
+- `html-menu-final.log`: **6/6 passed**. Actual Edit-menu ⌘V attaches in main,
+  pending, side, earlier-edit and queued-edit composers; the child reader
+  remains read-only.
+- `html-gallery-final.log`: **1/1 passed**. Regenerated and visually reviewed
+  `gallery-html-review/paste-refusal-{light,dark,narrow}.png`. All three retain
+  the complete, readable refusal strip and usable composer controls.
+
+Follow-up total: **87 executed, 86 passed, 1 existing skip, 0 failures**.
+All **6** new mutations were caught. No unresolved finding remains; ambiguous
+text-first image captions retain the lead-approved conservative behavior.
+
 ### Adversarial self-review
 
 - Verified every HTML outcome is reached only after ordinary image signals
