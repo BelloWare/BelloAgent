@@ -555,11 +555,11 @@ public actor GitService {
     func changeStats(in root: String, status: GitRepositoryStatus) async throws -> [String: GitDiffStat] {
         let entries = status.entries
         guard !entries.isEmpty else { return [:] }
-        let options = status.changeOptions, format = ["--no-renames", "--numstat", "-z"]
+        let options = status.changeOptions, format = ["-O/dev/null", "--numstat", "-z"]
         let untracked = entries.filter(\.untracked).map(\.path)
         async let additions = untrackedStats(in: root, paths: untracked)
-        async let worktree = run(options.diffArguments(staged: false) + format, in: root)
-        async let index = run(options.diffArguments(staged: true) + format, in: root)
+        async let worktree = run(options.diffArguments(staged: false) + ["--no-renames"] + format, in: root)
+        async let index = run(options.diffArguments(staged: true) + ["--no-renames"] + format, in: root)
         let working = Self.parseNumstat(try require(await worktree, "Reading change counts").stdout)
         let staged = Self.parseNumstat(try require(await index, "Reading staged counts").stdout)
         var stats: [String: GitDiffStat] = [:]
@@ -575,7 +575,7 @@ public actor GitService {
         for cached in [false, true] {
             let side = pairs.filter { (!$0.unstaged && $0.staged) == cached }
             guard !side.isEmpty else { continue }
-            let prefix = options.diffArguments(staged: cached) + ["--find-copies=1%", "--find-copies-harder", "--numstat", "-z", "--"]
+            let prefix = options.diffArguments(staged: cached) + ["--find-copies=1%", "--find-copies-harder"] + format + ["--"]
             let paths = Array(Set(side.flatMap { options.paths(for: $0, staged: cached) })).sorted()
             for batch in Self.batches(of: Self.literal(paths), prefix: prefix) {
                 let output = try require(await run(prefix + batch, in: root), "Reading paired counts")
@@ -590,7 +590,7 @@ public actor GitService {
             for entry in pairs where stats[entry.path] == nil {
                 group.addTask {
                     let cached = !entry.unstaged && entry.staged
-                    let arguments = options.diffArguments(staged: cached, entry: entry) + ["--numstat", "-z", "--"]
+                    let arguments = options.diffArguments(staged: cached, entry: entry) + format + ["--"]
                         + Self.literal(options.paths(for: entry, staged: cached))
                     let output = try await self.run(arguments, in: root)
                     let counts = Self.parseNumstat(try await self.require(output, "Reading paired counts").stdout)
@@ -685,11 +685,13 @@ public actor GitService {
             for operand in operands {
                 group.addTask {
                     let directory = accepted.contains { $0.hasPrefix(operand + "/") }
+                    // Ordering cannot affect counts, and a relative orderFile
+                    // belongs to the real tree, not these private copies.
                     let arguments = configuration + ["--git-dir=" + gitDirectory, "--work-tree=" + tree.path]
                         + GitChangeOptions().diffArguments(staged: false)
-                        + ["--no-index", "--no-renames", "--numstat", "-z", "--", directory ? empty.path : "/dev/null", operand]
+                        + ["--no-index", "--no-renames", "-O/dev/null", "--numstat", "-z", "--", directory ? empty.path : "/dev/null", operand]
                     let output = try await self.run(arguments, in: tree.path)
-                    guard output.status <= 1 else { return [:] }
+                    if output.status > 1 { _ = try await self.require(output, "Reading untracked counts") }
                     return Self.parseNumstat(output.stdout).filter { selected.contains($0.key) }
                 }
             }

@@ -8,6 +8,7 @@
 - [x] Panel review fixes: stable tab accessibility identities, repository discovery retries after `git init`, and no stale deletion counts for unreadable untracked replacements. [Evidence](docs/validation/a130-panel-0.1.130.md#follow-up-review-2026-10-20).
 - [x] Panel Files opens resolve symlink destination ownership through the canonical opener, preserving untrusted-project boundaries. [Evidence](docs/validation/a130-panel-0.1.130.md#destination-trust-follow-up-2026-10-20).
 - [x] Changes and panel grouping follow raw `git status`; Git computes each reported row’s counts, including rename/copy pairs and bounded untracked files with Git’s attributes and binary thresholds. [Evidence](docs/validation/a130-panel-0.1.130.md#git-owned-grouping-and-counts-follow-up-2026-10-20).
+- [x] Panel counts ignore diff ordering files and report unavailable reads; repository removal/recreation revalidates discovery and restores Diff without switching chats. [Evidence](docs/validation/a130-panel-0.1.130.md#ordering-and-repository-lifecycle-follow-up-2026-10-20).
 
 - [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
 - [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.

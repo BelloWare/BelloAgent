@@ -105,6 +105,13 @@ final class SessionPanelGalleryTests: GitPanelTestCase, SerialTestLane {
             XCTAssertEqual(changes.controller.changeStats["samples/binary.dat"]?.binary, true)
             await settle(window)
             try capture(root, name: "diff-classification-1440x900-\(theme)", output: output, manifest: &manifest)
+            try Data(repeating: 65, count: (4 << 20) + 1).write(to: samples.appendingPathComponent("oversized.txt"))
+            try FileManager.default.createSymbolicLink(atPath: samples.appendingPathComponent("linked.txt").path, withDestinationPath: "late-nul.txt")
+            await changes.controller.refresh()
+            XCTAssertNil(changes.controller.changeStats["samples/oversized.txt"])
+            XCTAssertNil(changes.controller.changeStats["samples/linked.txt"])
+            await settle(window)
+            try capture(root, name: "diff-unavailable-1440x900-\(theme)", output: output, manifest: &manifest)
             try FileManager.default.removeItem(at: samples)
             await changes.controller.refresh()
             pane.sessionPanel.select(.files)
@@ -117,6 +124,18 @@ final class SessionPanelGalleryTests: GitPanelTestCase, SerialTestLane {
             }
             await settle(window)
             try capture(root, name: "files-1440x900-\(theme)", output: output, manifest: &manifest)
+            do {
+                let marker = project.appendingPathComponent(".git")
+                let saved = fixture.root.appendingPathComponent("saved-git-" + UUID().uuidString)
+                pane.sessionPanel.collapse.onPress?()
+                try FileManager.default.moveItem(at: marker, to: saved)
+                defer { try? FileManager.default.moveItem(at: saved, to: marker) }
+                pane.agentFamilyHeader.button.onPress?()
+                try await eventually("removed repository hides Diff") { pane.sessionPanel.availableTabs == [.agents, .files] }
+                await settle(window)
+                try capture(root, name: "repository-removed-1440x900-\(theme)", output: output, manifest: &manifest)
+            }
+            try await eventually("restored repository rediscovered") { pane.sessionPanel.availableTabs.contains(.diff) }
             pane.sessionPanel.select(.agents)
             model.chats.removeAll { $0.id != fixture.parent.id }; model.subagentSummaries = [:]
             root.refresh(); await settle(window)

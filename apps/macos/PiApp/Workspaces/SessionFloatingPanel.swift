@@ -94,7 +94,7 @@ enum SessionPanelLayout {
         guard self.model !== model || chatID != chat.id || project != next || self.enabled != enabled else { return }
         self.model = model; self.enabled = enabled
         if chatID != chat.id {
-            invalidateNegativeRepository()
+            invalidateRepository()
             chatID = chat.id
             scroll.documentView = nil; agents = nil
         }
@@ -125,14 +125,19 @@ enum SessionPanelLayout {
         if let first = PiKit.controls(in: tabs).first { window?.makeFirstResponder(first) }
     }
     private var active: Bool { presented && enabled && window != nil && !isHiddenOrHasHiddenAncestor }
-    private func invalidateNegativeRepository() {
-        guard repository == nil else { return }
+    private func invalidateRepository() {
         discovery?.cancel(); discovery = nil; discoveryToken = UUID()
         repositoryChecked = false
     }
+    private func setRepository(_ path: String?) {
+        if repository != path {
+            changes?.controller.letGo()
+            changes?.removeFromSuperview(); changes = nil
+        }
+        repository = path
+    }
     private func suspend() {
-        discovery?.cancel(); discovery = nil; discoveryToken = UUID()
-        if repository == nil { repositoryChecked = false }
+        invalidateRepository()
         repositoryWatch?.stop(); repositoryWatch = nil
         changes?.controller.setShown(false)
         files?.browser.stop(); filesActive = false
@@ -142,15 +147,15 @@ enum SessionPanelLayout {
     override func viewDidUnhide() { super.viewDidUnhide(); refresh() }
 
     func refresh() {
-        if active, repository == nil, repositoryWatch?.isWatching != true, let root {
+        if active, repository == nil || !repositoryChecked, repositoryWatch?.isWatching != true, let root {
             // Watch before the read so git init cannot fall between a negative
             // snapshot and arming the stream. No status or file reads are added.
             let watch = GitStateWatch(root: root, discoveringRepository: true) { [weak self] in
-                guard let self, self.active, self.root == root, self.repository == nil else { return }
-                self.invalidateNegativeRepository(); self.refresh()
+                guard let self, self.active, self.root == root else { return }
+                self.invalidateRepository(); self.refresh()
             }
             repositoryWatch = watch; watch.start()
-        } else if repository != nil {
+        } else if repository != nil, repositoryChecked {
             repositoryWatch?.stop(); repositoryWatch = nil
         }
         if active, !repositoryChecked, discovery == nil, let root {
@@ -160,7 +165,7 @@ enum SessionPanelLayout {
             discovery = Task { [weak self] in
                 let top = await GitService.shared.repositoryRoot(of: root)
                 guard let self, !Task.isCancelled, self.discoveryToken == token else { return }
-                self.discovery = nil; self.repository = top; self.repositoryChecked = true
+                self.discovery = nil; self.setRepository(top); self.repositoryChecked = true
                 self.refresh()
             }
         } else if !active { suspend() }
@@ -192,6 +197,11 @@ enum SessionPanelLayout {
                 controller.selection = .init(path: entry.path, staged: !entry.unstaged && entry.staged)
             }
             changes.changed = { [weak self] in self?.contentSizeChanged() }
+            changes.repositoryMissing = { [weak self, weak changes] in
+                guard let self, let changes, self.changes === changes else { return }
+                self.setRepository(nil)
+                self.invalidateRepository(); self.refresh()
+            }
             self.changes = changes; content.addSubview(changes)
         }
         changes?.isHidden = tab != .diff
@@ -208,7 +218,7 @@ enum SessionPanelLayout {
             browser.changed = { [weak self, weak files] in
                 guard let self, let files, self.files === files else { return }
                 files.refresh(); self.contentSizeChanged()
-                if self.repository == nil { self.invalidateNegativeRepository(); self.refresh() }
+                self.invalidateRepository(); self.refresh()
             }
             self.files = files; content.addSubview(files)
         }
@@ -255,6 +265,7 @@ enum SessionPanelLayout {
     let controller: GitController
     let list = LazyStackView()
     var changed: (() -> Void)?
+    var repositoryMissing: (() -> Void)?
     private let open: (GitStatusEntry) -> Void
     private var observer: ShellObserver?
     private var entries: [GitStatusEntry] = []
@@ -274,6 +285,9 @@ enum SessionPanelLayout {
     override var isFlipped: Bool { true }
     var preferredHeight: CGFloat { entries.isEmpty ? 72 : 10 + CGFloat(entries.count) * 48 }
     private func refresh() {
+        if controller.statusRead, controller.repositoryRoot == nil, let repositoryMissing {
+            repositoryMissing(); return
+        }
         let source = controller.status.entries, stats = controller.changeStats
         let entries = source == sourceEntries ? self.entries : Self.compactEntries(source)
         let message = !controller.notice.isEmpty ? controller.notice : !controller.statusRead ? "Reading changes…" : "No changed files"
@@ -332,7 +346,7 @@ enum SessionPanelLayout {
     required init?(coder: NSCoder) { nil }
     override var acceptsFirstResponder: Bool { isEffectivelyEnabled }
     override var canBecomeKeyView: Bool { isEffectivelyEnabled && !isHiddenOrHasHiddenAncestor }
-    private var counts: String { stat.map { $0.binary ? "Binary" : "+\($0.added) −\($0.removed)" } ?? "—" }
+    private var counts: String { stat.map { $0.binary ? "Binary" : "+\($0.added) −\($0.removed)" } ?? "Counts unavailable" }
     override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
     override func styleFace() {
         fill.backgroundColor = piCGColor(hovering || isPressedDown ? .piFill : .clear)

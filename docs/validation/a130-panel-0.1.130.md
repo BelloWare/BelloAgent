@@ -1449,3 +1449,219 @@ copy was created. Every owned full-lane lock was released; other workstreams'
 locks were left alone. The final diff check passes. The production changes
 are confined to the shared Git reader and its selected-diff caller; no
 navigation, trust or panel-layout code changed in this round.
+
+## Ordering and repository lifecycle follow-up 2026-10-20
+
+Review base: `18e8d897ea558c238c035158331935a19c4ef682`.
+Evidence: `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/evidence/review-r6/`.
+This round also integrates the current `origin/dev/next` into this branch by
+merge, as requested by the lead; it does not merge or push into `dev/next`.
+
+### Corrections and path-option audit
+
+All summary numstats use `-O/dev/null`, including ordinary tracked reads,
+paired rename/copy batches and their isolated fallback, and untracked private
+snapshots. Ordering has no effect on a row's counts. The preview retains its
+normal working-tree context. Git documents this flag as the way to cancel
+[`diff.orderFile`](https://git-scm.com/docs/git-diff#Documentation/git-diff.txt--Oltorderfilegt),
+whose relative paths resolve from the working tree. The regression combines
+root/nested untracked files, staged/unstaged rows, global/local and local/worktree
+configuration, relative attributes, `diff.relative=true`, and relative external
+diff/textconv commands that must remain disabled. Counts are compared with both
+an independent Git numstat and the opened preview.
+
+The audit also checked `core.attributesFile` (Git's effective relative path is
+already anchored to the original root), ancestor `.gitattributes` (bounded
+copies with original relative names), and `info/attributes` (the actual Git
+directory). Snapshot commands explicitly supply the original absolute Git
+directory and private working tree. Config includes remain Git-owned and are
+[relative to their including config file](https://git-scm.com/docs/git-config#_includes),
+not the snapshot cwd. `--no-ext-diff` and `--no-textconv` continue to disable
+relative helper commands. `diff.relative` is tested from both roots; parser
+prefixes remain explicitly controlled. No rename/limit configuration snapshot
+or override has returned.
+
+A non-difference Git exit from an untracked count read now propagates failure
+instead of becoming an empty dictionary. The summary controller clears stale
+counts and publishes a `Counts unavailable` notice on a failed count read;
+cancellation retains its existing generation fence. Rows with no count show
+`Counts unavailable`, including their tooltip and accessibility label, rather
+than an unexplained dash. A subsequent successful refresh clears the notice
+and restores counts.
+
+Repository discovery expires on every suspension/reactivation, including a
+previously successful discovery; same-project chat changes and folder-browser
+publications also invalidate it. A discovery watch is armed before revalidation,
+including while the old positive result is still displayed, so a new `.git`
+marker cannot fall between the read and starting a stream. A summary controller
+that publishes a missing repository notifies the card even when the previous
+repository was empty. The card retires that summary, hides Diff, and rearms
+discovery. A recreated/initialised repository restores Diff without changing
+chats. Files remains available when the project directory still exists; deleting
+`.git` does not delete the project files or change file-opening/trust behavior.
+The remembered tab is retained while an unavailable tab falls back to Agents.
+
+### Failing first and mutation controls
+
+- `package-red.log`: **2 tests failed, 14 assertions** before the Git fix.
+  Relative ordering loses the three untracked paths in each configuration
+  scope; a failed count refresh retains old numbers and lacks the explicit
+  unavailable notice.
+- `package-green.log`: the same **2 tests pass** after the fix.
+- `panel-red.log`: **3 tests failed, 14 assertions** before the panel fix.
+  Covers positive discovery on collapse/ancestor-hide/disable, the summary's
+  missing-repository publication for both empty and nonempty repositories,
+  and unavailable-count accessibility. This baseline used the inherited
+  40-second eventual timeout; the new removal assertion now uses five seconds.
+  Its unusually long 2313.324-second reactivation test duration is retained in
+  the text log rather than omitted.
+- Mutations run one at a time and restore sources in `finally`. Package
+  controls use a temporary GitView source copy with the existing Swift scratch
+  root, avoiding interference with native compilation; that copy is deleted.
+  Native controls acquire the shared lane before mutating and release it only
+  after restoring the source. No extra DerivedData tree is created.
+- The first missing-repository mutation was rejected by warnings-as-errors
+  because suppressing the callback left its binding unused. That compile-only
+  attempt is retained as `mutation-missing-repository-build-rejection.log`
+  and is not counted as a detected regression. The corrected control consumes
+  the binding while suppressing only the callback.
+
+### Adversarial review
+
+Checked both discovery directions with lazy Agents/Files/Diff selection,
+empty status snapshots, stale summary notifications, cancellation tokens,
+watch-before-read ordering, hidden/disabled panes and retained per-window tab
+selection. Missing-summary notifications are tied to the current view identity;
+a retired controller cannot clear a replacement repository. Count errors cannot
+retain a previous refresh's values. Attribute, external-command, untracked
+bounds and canonical file-opener behavior remain covered by existing regressions.
+No new product decision is needed for these corrections.
+
+Self-review reproduced a stale unavailable notice after a successful automatic
+refresh (`automatic-recovery-red.log`, one failed assertion). Successful count
+publication now clears only its own unavailable notice. The regression awaits
+the publication boundary, since an automatic request may be deferred/coalesced
+with a watch refresh. The first immediate assertion attempt saw the pending
+state (`automatic-recovery-unsettled.log`, two failed assertions); the corrected
+wait passes in `automatic-recovery-green.log`. Removing the notice-clear line
+fails again in `mutation-automatic-recovery.log`. The earlier full Git sweep
+passed 198 tests before this final notice recovery adjustment; its log is
+retained as `package-git-before-automatic-recovery.log`.
+
+Six behavioral controls were detected, restored, and followed by validation:
+
+| Mutation | Failed tests | Assertions/errors | Text log |
+| --- | ---: | ---: | --- |
+| ordering | 1 | 2 | `mutation-ordering.log` |
+| failed-counts | 1 | 1 | `mutation-failed-counts.log` |
+| automatic-recovery | 1 | 1 | `mutation-automatic-recovery.log` |
+| reactivation | 1 | 6 | `mutation-reactivation.log` |
+| missing-repository | 1 | 4 | `mutation-missing-repository.log` |
+| unavailable-label | 1 | 2 | `mutation-unavailable-label.log` |
+
+### Final pre-merge validation
+
+On the restored final source, the full Git package suite passed **198/198**
+(`package-git-premerge.log`, 492.195 seconds). The native panel/Git sweep
+passed **237 tests, zero failures**, with one existing opt-in benchmark skip
+(`GitCommitBrowsingTests.testMeasureCommitBrowsingWhenRequested`, no
+`PI_APP_GIT_BENCH_REPO`). The panel class was also rerun after the final
+notice-recovery adjustment: **29/29** in `panel-green.log`.
+
+| Class | Passed | Failed | Skipped | Text log |
+| --- | ---: | ---: | ---: | --- |
+| ChangesTabFrameTests | 7 | 0 | 0 | `changes-frames-premerge.log` |
+| ChangesTabTests | 8 | 0 | 0 | `git-readers-premerge.log` |
+| GitBranchesInteractionTests | 20 | 0 | 0 | `git-actions-premerge.log` |
+| GitChangelistReadTests | 2 | 0 | 0 | `git-readers-premerge.log` |
+| GitCommitBrowsingTests | 3 | 0 | 1 | `git-actions-premerge.log` |
+| GitConfirmationSheetTests | 7 | 0 | 0 | `git-actions-premerge.log` |
+| GitDiffTableTests | 19 | 0 | 0 | `diff-table-premerge.log` |
+| GitDiscardQuestionTests | 2 | 0 | 0 | `git-actions-premerge.log` |
+| GitHistoryFilterTests | 14 | 0 | 0 | `git-actions-premerge.log` |
+| GitHunkReviewTests | 9 | 0 | 0 | `git-actions-premerge.log` |
+| GitIntegratedHistoryTests | 10 | 0 | 0 | `git-actions-premerge.log` |
+| GitOperationSafetyTests | 12 | 0 | 0 | `git-actions-premerge.log` |
+| GitPanelAuditTests | 8 | 0 | 0 | `git-readers-premerge.log` |
+| GitPanelLayoutTests | 4 | 0 | 0 | `git-readers-premerge.log` |
+| GitPanelNarrowParityTests | 8 | 0 | 0 | `git-narrow-premerge.log` |
+| GitPanelRedrawTests | 4 | 0 | 0 | `git-readers-premerge.log` |
+| GitPanelShownTests | 13 | 0 | 0 | `git-readers-premerge.log` |
+| GitPanelTimingTests | 4 | 0 | 0 | `git-timing-premerge.log` |
+| GitPanelWidthTests | 3 | 0 | 0 | `git-readers-premerge.log` |
+| GitPathBoundaryTests | 5 | 0 | 0 | `git-readers-premerge.log` |
+| GitRenameTests | 6 | 0 | 0 | `git-readers-premerge.log` |
+| GitRepositorySwitchTests | 17 | 0 | 0 | `repository-switch-premerge.log` |
+| GitToolTests | 5 | 0 | 0 | `git-readers-premerge.log` |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 | `watcher-premerge.log` |
+| SessionPanelGalleryTests | 1 | 0 | 0 | `gallery-premerge.log` |
+| SessionPanelTests | 29 | 0 | 0 | `panel-premerge.log` |
+
+Exact final commands (run from this worktree; native runs held the shared
+full-lane lock, serial classes in separate invocations):
+
+```sh
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/views --filter GitViewTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests -only-testing:PiAppTests/GitToolTests -only-testing:PiAppTests/GitRenameTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitPanelAuditTests -only-testing:PiAppTests/GitPanelShownTests -only-testing:PiAppTests/GitPanelRedrawTests -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitPanelLayoutTests -only-testing:PiAppTests/GitPanelWidthTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitHunkReviewTests -only-testing:PiAppTests/GitIntegratedHistoryTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitOperationSafetyTests -only-testing:PiAppTests/GitConfirmationSheetTests -only-testing:PiAppTests/GitDiscardQuestionTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiffTableTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabFrameTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r6-premerge PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-panel/scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelGalleryTests
+```
+
+The two new package regressions were first run with
+`--filter 'GitRepositoryStateTests/(testSummaryIgnoresRelativeOrderingWhilePreservingAttributesAndPreviewCounts|testSummaryCountFailureClearsOldCountsAndReportsUnavailable)'`
+using the same package/scratch command. Each package mutation used the
+individual test filter; native controls used the corresponding
+`-only-testing:PiAppTests/SessionPanelTests/<test method>` with the same native
+command and build root. The scripts, exact arguments and text logs are retained
+in the evidence folder. One queued wrapper was cancelled before it started any
+tests so the remaining native runs could share a continuous lock; see
+`queued-run-consolidation.json`. No running test or another workstream's lock
+was interrupted.
+
+### Pre-merge screenshots and inspection
+
+Regenerated **22 PNGs** in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-panel/screenshots/review-r6-premerge/`:
+
+```text
+agents-1180x800-dark.png
+agents-1180x800-light.png
+agents-1440x900-dark.png
+agents-1440x900-light.png
+diff-1440x900-dark.png
+diff-1440x900-light.png
+diff-classification-1440x900-dark.png
+diff-classification-1440x900-light.png
+diff-no-renames-1440x900-dark.png
+diff-no-renames-1440x900-light.png
+diff-unavailable-1440x900-dark.png
+diff-unavailable-1440x900-light.png
+empty-1440x900-dark.png
+empty-1440x900-light.png
+files-1440x900-dark.png
+files-1440x900-light.png
+pill-960x700-dark.png
+pill-960x700-light.png
+repository-removed-1440x900-dark.png
+repository-removed-1440x900-light.png
+side-open-1600x900-dark.png
+side-open-1600x900-light.png
+```
+
+Opened and visually inspected every image, light and dark. The explicit
+unavailable labels fit on the count line without colliding with filenames;
+repository removal presents Agents and Files while keeping the expanded tree
+usable. The 1180-point panel, narrow pill and side-open panel preserve their
+existing transcript/composer clearance. No visual correction was required.
+Sixteen existing images are byte-identical to review-r5; the remaining two
+existing side-open scenes include live fixture-state variation. Hashes and
+inspection results are in `screenshots-premerge-hashes.json` and
+`screenshots-premerge-review.json`. Generated fixtures are removed by test
+cleanup; no native clone folder remains (`cleanup-premerge.json`).

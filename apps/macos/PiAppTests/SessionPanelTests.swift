@@ -265,6 +265,61 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         XCTAssertEqual(panel.selectedTab, .files)
     }
 
+    @MainActor func testPositiveRepositoryDiscoveryRevalidatesOnReactivation() async throws {
+        for transition in ["collapse", "hidden ancestor", "disabled"] {
+            let (_, pane, _, root) = try fixture(gitRepository: true)
+            let panel = pane.sessionPanel
+            try await eventually("positive discovery") { panel.availableTabs.contains(.diff) }
+            if transition == "collapse" { panel.collapse.onPress?() }
+            else if transition == "hidden ancestor" { pane.isHidden = true }
+            else { pane.inheritedEnabled = false }
+            try FileManager.default.removeItem(at: root.appendingPathComponent(".git"))
+            if transition == "collapse" { pane.agentFamilyHeader.button.onPress?() }
+            else if transition == "hidden ancestor" { pane.isHidden = false }
+            else { pane.inheritedEnabled = true }
+            XCTAssertFalse(panel.repositoryChecked, "Successful discovery also expires on reactivation")
+            try await eventually("removed repository after " + transition, timeout: 5) { panel.availableTabs == [.agents, .files] }
+            XCTAssertNil(panel.changes, "Reactivation keeps changes lazy")
+            try start(root)
+            try await eventually("recreated repository after " + transition, timeout: 5) { panel.availableTabs.contains(.diff) }
+        }
+    }
+
+    @MainActor func testMissingSummaryRepositoryRearmsDiscoveryAndKeepsFilesUsable() async throws {
+        for empty in [false, true] {
+            let (_, pane, _, root) = try fixture(gitRepository: true)
+            if empty { try git(["restore", "file.txt"], in: root) }
+            let panel = pane.sessionPanel
+            try await eventually("repository discovery") { panel.availableTabs.contains(.diff) }
+            panel.select(.diff)
+            let changes = try XCTUnwrap(panel.changes)
+            try await eventually("summary read") { changes.controller.statusRead && !changes.controller.loading }
+            XCTAssertEqual(changes.controller.status.entries.isEmpty, empty)
+            try FileManager.default.removeItem(at: root.appendingPathComponent(".git"))
+            await changes.controller.refresh()
+            try await eventually("missing repository hides Diff", timeout: 5) { panel.availableTabs == [.agents, .files] }
+            XCTAssertNil(panel.changes, "Retire the missing summary before a replacement repository arrives")
+            panel.select(.files)
+            let browser = try XCTUnwrap(panel.files?.browser)
+            try await eventually("ordinary project files remain browsable") {
+                browser.rows.contains { $0.url.lastPathComponent == "file.txt" && $0.entry != nil }
+            }
+            try start(root)
+            try await eventually("git init is discovered without a chat switch", timeout: 5) { panel.availableTabs.contains(.diff) }
+            panel.select(.diff)
+            let replacement = try XCTUnwrap(panel.changes)
+            XCTAssertFalse(replacement === changes)
+            try await eventually("new repository counts") { replacement.controller.changeStats["file.txt"] != nil }
+        }
+    }
+
+    @MainActor func testUnavailableCountsHaveAnExplicitRowLabel() {
+        let entry = GitStatusEntry(path: "missing.txt", originalPath: nil, indexState: ".", worktreeState: ".", untracked: true)
+        let row = SessionPanelDiffRow(entry: entry, stat: nil)
+        XCTAssertTrue(row.accessibilityLabel()?.contains("Counts unavailable") == true)
+        XCTAssertTrue(row.toolTip?.contains("Counts unavailable") == true)
+    }
+
     @MainActor func testDiffCountsAndClickOpenExistingChangesTab() async throws {
         let (model, pane, _, _) = try fixture(gitRepository: true)
         try await eventually("repository discovered") { pane.sessionPanel.availableTabs.contains(.diff) }

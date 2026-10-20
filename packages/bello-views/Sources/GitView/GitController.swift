@@ -581,9 +581,17 @@ import AppKit
             let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
             if summaryOnly {
-                let stats = try await service.changeStats(in: top, status: status)
+                let stats: [String: GitDiffStat]
+                do { stats = try await service.changeStats(in: top, status: status) }
+                catch is CancellationError { return }
+                catch {
+                    guard current(generation) else { return }
+                    publish(\.changeStats, [:])
+                    throw GitFailure(message: "Counts unavailable. " + error.localizedDescription)
+                }
                 guard current(generation) else { return }
                 publish(\.changeStats, stats)
+                if notice.hasPrefix("Counts unavailable.") { notice = "" }
                 if let ignored = try? await service.ignoredPaths(in: top),
                    current(generation), let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
                     watcher.ignored.update(root: watcher.root, relative: ignored)

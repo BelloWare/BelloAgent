@@ -363,6 +363,56 @@ final class GitRepositoryStateTests: XCTestCase {
         }
     }
 
+    func testSummaryIgnoresRelativeOrderingWhilePreservingAttributesAndPreviewCounts() async throws {
+        for scope in ["global/local", "local/worktree"] {
+            let root = try repository()
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("nested"), withIntermediateDirectories: false)
+            try "nested/*\n*.txt\n".write(to: root.appendingPathComponent(".git/order"), atomically: true, encoding: .utf8)
+            let environment = try configurationScopes(in: root, scope: scope, key: "diff.orderFile",
+                earlier: "/dev/null", later: ".git/order")
+            try "*.txt diff=fixture\n/nested/binary.txt -diff\n".write(to: root.appendingPathComponent(".git/attributes"), atomically: true, encoding: .utf8)
+            for (key, value) in [("core.attributesFile", ".git/attributes"), ("diff.external", "missing-relative-driver"),
+                                 ("diff.fixture.command", "missing-relative-driver"), ("diff.fixture.textconv", "missing-relative-converter"),
+                                 ("diff.relative", "true")] {
+                try Self.git(["config", key, value], in: root, environment: environment)
+            }
+            for path in ["new.txt", "nested/new.txt", "nested/binary.txt", "staged.txt"] {
+                try "generated\nsecond line\n".write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8)
+            }
+            try Self.git(["add", "staged.txt"], in: root, environment: environment)
+            let service = GitService(environment: environment)
+            let status = try await service.status(in: root.path)
+            let counts = try await service.changeStats(in: root.path, status: status)
+            for entry in status.entries {
+                XCTAssertEqual(counts[entry.path], try Self.gitCounts(entry, in: root, environment: environment), scope + " " + entry.path)
+                let preview = try await service.diffFiles(in: root.path, paths: [entry.path], staged: !entry.unstaged && entry.staged,
+                    untracked: entry.untracked, entry: entry)
+                XCTAssertEqual(counts[entry.path], preview.first.map { GitDiffStat(added: $0.added, removed: $0.removed, binary: $0.binary) })
+            }
+        }
+    }
+
+    @MainActor func testSummaryCountFailureClearsOldCountsAndReportsUnavailable() async throws {
+        let root = try repository()
+        let controller = GitController(roots: [root.path], service: Self.summaryService, summaryOnly: true)
+        defer { controller.letGo() }
+        controller.setShown(true)
+        try await wait { !controller.loading && controller.changeStats["same.txt"] != nil }
+        controller.statusDidRead = {
+            controller.statusDidRead = nil
+            try Self.git(["config", "diff.algorithm", "invalid-fixture-algorithm"], in: root)
+        }
+        await controller.refresh()
+        XCTAssertFalse(controller.status.entries.isEmpty)
+        XCTAssertTrue(controller.changeStats.isEmpty, "Failed counts cannot retain the previous refresh's numbers")
+        XCTAssertTrue(controller.notice.hasPrefix("Counts unavailable"), controller.notice)
+        try Self.git(["config", "--unset", "diff.algorithm"], in: root)
+        await controller.refresh(automatic: true)
+        try await wait { controller.changeStats["same.txt"] != nil }
+        XCTAssertEqual(controller.changeStats["same.txt"], GitDiffStat(added: 1, removed: 1, binary: false))
+        XCTAssertEqual(controller.notice, "")
+    }
+
     private static func gitCounts(_ entry: GitStatusEntry, in root: URL, environment: [String: String]? = nil) throws -> GitDiffStat? {
         let staged = !entry.unstaged && entry.staged
         let state = staged ? entry.indexState : entry.worktreeState
