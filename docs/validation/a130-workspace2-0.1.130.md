@@ -463,3 +463,91 @@ classes together and the serial ones under the shared full-lane lock.
 No helper source, wire contract, layout or style changed; the helper was only
 read to establish its behavior. The automatic result bundle was deleted after
 the last run, and `git diff --check` passes.
+
+## Round 4 — a published side reopens its own journal
+
+A read-only Astra review through `8f21cf8d` found one issue, a consequence of
+round 1 routing `/side Q` into the pending-side first send. Evidence:
+`evidence/round4/`.
+
+### [P2] Reopen published sides using their registered chat record — confirmed and fixed
+
+Trace (verified): `deliverSubmission` keeps the `ChatRecord` captured on
+Return. For a pending side that is `SideRecord.chat`, whose `path` is nil.
+`publishPendingSide` registers the side (`side_<id>.jsonl`, budget parent), and
+the send then opened the runtime with the captured record. Normally the side
+is already open there (fast path). But if the helper exits between publication
+and that open, `open()` sent `session.open` without a path, the replacement
+helper started `<id>.jsonl`, and `open()` wrote that path over the registered
+one, in memory and in SQLite. The side lost its inherited history and its family
+budget association (`persistedBudgetParentID` needs `side_<id>.jsonl`). This
+applies to every first message of a pending side (typed, quoted or `/side Q`);
+the old `/side` path only sent after registration.
+
+- Fix: once the side is published, `deliverSubmission` opens its runtime from
+  the registered record (journal and family); the message and its choices
+  (model, effort, limits, skills, images) stay as captured on Return, since
+  `turnOverrides` still reads the captured record.
+- `open()` never puts another file in place of a registered journal. A caller
+  whose record would open a different journal (a record read before
+  registration names none, so the helper would start `<id>.jsonl`) is refused
+  before any `session.open`: "This chat's saved conversation changed while this
+  was starting. Try again." A main chat's default journal is that same file, so
+  a new chat's first send is unaffected. If the helper answers with another file
+  anyway, the runtime it opened is closed and the open is refused instead of
+  overwriting the path.
+- Other first-send paths: typing into an empty side, quoted sides and `/side Q`
+  all go through `deliverSubmission`. Keep and Close register a side without
+  opening it; a send captured before such a registration and opened after a
+  helper loss is now refused by `open()` (not dispatched, so it returns to its
+  composer with the notice) instead of rewriting the path.
+- `testPublishedSideReopensItsOwnJournalAfterHelperLoss` (typed and `/side Q`):
+  the existing stub helper-loss fixture fails the helper at a new `"published"`
+  send step, after registration and before the runtime open. After the fix the
+  replacement opens `side_<id>.jsonl`, the record and SQLite path and the budget
+  owner are unchanged, and Q is sent once.
+- `testOpenNeverReplacesARegisteredJournal` (stale caller; helper answering
+  with another file): refused with the notice, path unchanged, no runtime left
+  (`[]`, respectively `["session.open", "session.close"]` for the side).
+- Failing-first: `round4/failing-first.log` ran both tests on `8f21cf8d` plus
+  only the `"published"` send-step seam (`round4/failing-first-production.diff`):
+  **2 tests, 16 failures**. The replacement opened `<id>.jsonl`, the registered
+  path was replaced in memory and SQLite, and the budget owner became the side
+  itself; the stale caller and the other-file answer each rewrote the path and
+  left a runtime (`session.open`, `debug.mode`). `round4/fixed-first.log`: both
+  pass.
+
+### Round-4 mutation evidence
+
+`round4/mutations-round4.py` (same runner semantics; `round4/pre-mutation-sha256.txt`
+matched after every run). All **3 mutations compiled and failed** (exit 65).
+
+| Mutation | Source change | Failing test | Assertions |
+| --- | --- | --- | ---: |
+| `r4-m1-open-captured-record` | the send opens the captured pre-publication record | reopen after helper loss (typed, `/side`) | 8 |
+| `r4-m2-no-stale-record-refusal` | no refusal before `session.open` | stale caller | 1 |
+| `r4-m3-no-path-overwrite-guard` | a helper's other file is written over the registered path | other file | 5 |
+
+The checks back each other up without hiding a regression. With m1, the
+refusal keeps the journal intact but the question is not delivered (refused
+with the notice). With m2, the post-open guard still restores safety but only
+after a runtime was opened on the wrong file and closed again.
+
+### Round-4 validation
+
+**801 native tests passed across 53 classes; zero failures or skips**, on the
+final sources (`round4/tested-source-sha256.txt`). Because `open()` is shared by
+every chat, the round-2 set was rerun with `ForkCloneReaderTests`,
+`ImportLifecycleTests`, `SubagentMetadataTests` and `InheritedSubagentReaderTests`
+added. Parallel-lane classes ran together with parallel testing disabled; every
+serial-lane run held the shared full-lane lock (`round4/round4-runs.sh`).
+
+| Run (log under `round4/`) | Classes and passed tests |
+| --- | --- |
+| `final-headless.log` (533) | AutomaticContextTests 11, ContextAndSkillPolicyTests 12, ConversationFamilyTests 22, CostLimitOpeningTests 1, CostPausePresentationTests 6, DeferredCreationTests 4, DraftConcurrencyTests 36, DraftLoadingTests 15, DraftOrderingTests 19, FamilyDeletionTests 10, ForkCloneReaderTests 1, ImportLifecycleTests 4, ManualCompactionTests 1, MetadataDurabilityTests 10, ModelSwitchTests 24, OrganizationBatchTests 9, RecoveredDraftTests 13, RunHoldTests 18, SendBookkeepingTests 12, SessionOrganizationTests 9, SettingsSaveTests 15, SideBudgetIntegrationTests 18, SideKeepOrderingTests 12, SideKeepRecoveryTests 15, SideTests 17, SidebarMultiSelectionTests 4, SkillRefreshTests 15, SubagentCostTests 11, SubagentDeletionTests 19, SubagentMetadataTests 9, SubmissionPersistenceTests 81, TranscriptActionsForwardingTests 3, WorkspaceConcurrencyTests 12, WorkspaceRaceTests 65 |
+| `final-window.log`, locked (154) | CompactionResponsivenessTests 1, ConnectionSwitchJournalTests 6, CostLimitTests 13, CostPauseFamilyTests 3, LaunchSelectionTests 21, PendingChatProjectTests 24, SideRelaunchTests 3, SubagentNavigationTests 7, SubagentOpeningTests 15, TopicOrganizationTests 14, WorkspaceFollowupTests 9, WorkspaceRefreshLifecycleTests 38 |
+| locked singles (114) | LifecycleHelperTests 11, QueueEditInteractionTests 17, SubagentReaderTests 58, InheritedSubagentReaderTests 8, NativeApplicationTests 12, SmoothShellTests 5, AppShellPerformanceTests 3 |
+
+No helper, wire contract, layout or style changed. The new notice reuses the
+send failure row's existing presentation. The automatic result bundle was
+deleted after the last run, and `git diff --check` passes.

@@ -592,7 +592,7 @@ extension WorkspaceModel {
     /// mounted volume — those two strings differ although nothing about them
     /// disagrees, and comparing them as text refused to register a side that
     /// had in fact been written exactly where it was asked for.
-    private static func sameFile(_ lhs: String?, _ rhs: String?) -> Bool {
+    static func sameFile(_ lhs: String?, _ rhs: String?) -> Bool {
         guard let lhs, let rhs else { return false }
         if lhs == rhs { return true }
         func settled(_ value: String) -> String {

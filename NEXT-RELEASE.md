@@ -51,6 +51,7 @@
 - [x] `/side Q` never replaces a pending side's unsent typing or races its first send: Q stays in the chat's composer with a notice (needs owner decision); an empty, idle pending side still takes it.
 - [x] The cost-limit notice's Continue keeps its click's archive authority: Archive, or Archive then Restore, while its helper opens continues nothing.
 - [x] One press of Continue, Retry or Compact Now sends one request: repeats while it is on its way are ignored without a notice (no busy error, restarted compaction or duplicate retry), and a `/compact` typed meanwhile stays in the composer. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-3--one-request-per-continue-retry-or-compact-press)
+- [x] A published side whose helper exits before its first message goes out reopens its own `side_<id>.jsonl`, keeping its inherited history and family budget; an open never replaces a registered chat's journal with another file. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-4--a-published-side-reopens-its-own-journal)
 
 - [x] Recovering a failed, unregistered side submission commits the input to its saved parent's draft before consuming the independent record. [State model and validation](docs/validation/a130-workspace-0.1.130.md#round-17--captured-input-state-and-cross-instance-ownership).
 - [x] Every captured submission carries a launch lease; other instances cannot offer or consume live input, while crashed owners remain recoverable.

@@ -279,6 +279,11 @@ extension WorkspaceModel {
             idleTasks[item.workspaceID]?.cancel(); accepted = true; return host
         }
         if isEphemeral(item.id) { throw HostError.failure("This unkept side lost its host. Open a new side from the parent; nothing was replayed.") }
+        // A registered chat opens only the journal it is registered with. A
+        // record read before registration names none, and the helper would
+        // start another file in its place: such a caller is refused.
+        if let registered = chatRecord(item.id)?.path,
+           !Self.sameFile(registered, item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path) { throw journalChanged }
         // Preserve the opening contract used by connection switching. A caller
         // waiting behind a switch pins its budget but has not begun this open.
         sessionOpenCallers[item.id, default: 0] += 1
@@ -348,6 +353,12 @@ extension WorkspaceModel {
                         // Previewing a fresh chat allocates a native journal too. Persist
                         // its path before an idle unload, even when no message is sent.
                         if let path = initial.object?["path"]?.string, let index = chats.firstIndex(where: { $0.id == item.id }) {
+                            // Never another file in place of a registered journal:
+                            // the runtime opened on it goes, and the open is refused.
+                            if let registered = chats[index].path, !Self.sameFile(registered, path) {
+                                if (try? await host.request("session.close", sessionID: item.id)) != nil, hosts[item.workspaceID] === host, host.connectionID == connection { helperSessionDidUnload(item.id) }
+                                throw journalChanged
+                            }
                             chats[index].path = path
                             // Always retry this durable write on a later open after a
                             // storage failure, even though the in-memory path is known.

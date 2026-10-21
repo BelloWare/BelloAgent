@@ -17,6 +17,11 @@ extension WorkspaceModel {
     var connectionChanged: HostError {
         .rejected("connection_changed", "This chat's connection changed while this was starting. Try again.")
     }
+    /// An open that would put another file in place of the journal the chat
+    /// is registered with (`open`): refused, never written over.
+    var journalChanged: HostError {
+        .rejected("journal_changed", "This chat's saved conversation changed while this was starting. Try again.")
+    }
     func connectionLease(for item: ChatRecord) throws -> ConnectionLease {
         let lease = ConnectionLease(profileID: item.profileID, deletionGeneration: profileDeletionGenerations[item.profileID, default: 0],
                                     chatID: item.id, chatGeneration: connectionGenerations[item.id, default: 0])

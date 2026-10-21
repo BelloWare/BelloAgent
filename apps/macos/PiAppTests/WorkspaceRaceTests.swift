@@ -845,6 +845,85 @@ import XCTest
         }
     }
 
+    private func sameFile(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return URL(fileURLWithPath: lhs).standardizedFileURL.resolvingSymlinksInPath().path == URL(fileURLWithPath: rhs).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// The helper exits after a side is published, before the runtime open
+    /// that sends its first message (typed into the side, or `/side Q`). The
+    /// replacement helper replays the side's own journal, the family budget
+    /// stays with the parent, and the question is delivered once.
+    func testPublishedSideReopensItsOwnJournalAfterHelperLoss() async throws {
+        for entry in ["typed", "slash"] {
+            let (model, parent, wire) = try await fixture()
+            try await bindLossHandling(model, wire)
+            model.opened.insert(parent.id); wire.answersOpenWithPath = true
+            var lost = false
+            model.sendSteps = { step in
+                // Published: registered and open. The helper exits before
+                // the send opens the side's runtime for its first message.
+                guard step == "published", !lost, let connection = wire.host.connectionID else { return }
+                lost = true; wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+            }
+            let question = "Explain this failure"
+            if entry == "typed" {
+                model.openSide(parentID: parent.id)
+                let pending = try XCTUnwrap(model.sides[parent.id])
+                let typed = try XCTUnwrap(model.displays[pending.id]); typed.snapshotInFlight = true
+                typed.draft = question; model.send(sessionID: pending.id)
+            } else {
+                parent.draft = "/side " + question; parent.directCommand = true; model.send(sessionID: parent.id)
+            }
+            let sideID = try XCTUnwrap(model.sides[parent.id]).id, view = try XCTUnwrap(model.displays[sideID])
+            try await eventually("First side message settled (\(entry))") { !view.loading && view.submittingCommands.isEmpty }
+            XCTAssertTrue(lost, "The helper was lost between publication and the runtime open (\(entry))")
+            let journal = wire.root.appendingPathComponent("Workspaces/w/Sessions/side_\(sideID).jsonl").path
+            let reopened = wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == sideID }
+            XCTAssertEqual(reopened.count, 1, entry)
+            XCTAssertTrue(sameFile(reopened.first?["params"]?.object?["path"]?.string, journal), "The replacement helper replays the side's own journal (\(entry))")
+            let record = try XCTUnwrap(model.record(sideID))
+            let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: sideID)
+            XCTAssertTrue(sameFile(record.path, journal) && sameFile(stored?.path, journal), "The registered journal is never replaced (\(entry))")
+            XCTAssertEqual(model.budgetOwner(for: record).id, parent.id, "The family budget stays with the parent (\(entry))")
+            let sent = wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == sideID }.compactMap { $0["params"]?.object?["text"]?.string }
+            XCTAssertEqual(sent, [question], "Delivered once (\(entry))")
+            XCTAssertNil(view.sendFailure, entry)
+        }
+    }
+
+    /// A registered chat opens only its own journal. A caller holding the
+    /// record read before registration (no journal), or a helper answering
+    /// with another file, is refused; the registered path is never replaced.
+    func testOpenNeverReplacesARegisteredJournal() async throws {
+        for answer in ["stale caller", "other file"] {
+            let (model, parent, wire) = try await fixture()
+            try await bindLossHandling(model, wire)
+            model.opened.insert(parent.id); wire.answersOpenWithPath = true
+            model.openSide(parentID: parent.id)
+            let info = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[info.id])
+            view.snapshotInFlight = true
+            let stale = try XCTUnwrap(model.record(info.id))
+            XCTAssertNil(stale.path, "Read before publication")
+            view.draft = "First side message"; model.send(sessionID: info.id)
+            try await eventually("Side published and sent") { model.sides[parent.id]?.kept == true && !view.loading && view.submittingCommands.isEmpty }
+            let journal = try XCTUnwrap(model.record(info.id)?.path)
+            let connection = try XCTUnwrap(wire.host.connectionID)
+            wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+            XCTAssertFalse(model.opened.contains(info.id))
+            let opening = answer == "stale caller" ? stale : try XCTUnwrap(model.record(info.id))
+            if answer == "other file" { wire.openedPath = wire.root.appendingPathComponent("Workspaces/w/Sessions/\(info.id).jsonl").path }
+            let before = wire.frames.count
+            do { _ = try await model.open(opening); XCTFail("Opening another journal than the registered one must be refused (\(answer))") }
+            catch { XCTAssertEqual(error.localizedDescription, "This chat's saved conversation changed while this was starting. Try again.", answer) }
+            let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: info.id)
+            XCTAssertEqual(model.record(info.id)?.path, journal, answer); XCTAssertEqual(stored?.path, journal, answer)
+            XCTAssertFalse(model.opened.contains(info.id), answer)
+            let later = Array(wire.frames[before...]).filter { $0["sessionId"]?.string == info.id }.compactMap { $0["method"]?.string }
+            XCTAssertEqual(later, answer == "stale caller" ? [] : ["session.open", "session.close"], "No runtime is left on another journal (\(answer))")
+        }
+    }
+
     func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
         try await stopAfterResumePreflight(queued: false)
     }
@@ -1025,6 +1104,10 @@ import XCTest
     var heldMethod: String?
     var rejectedMethod: String?
     var rejectionCode = "fixture_rejection"
+    /// Answer `session.open` as the helper does, naming the journal it
+    /// opened: the requested path, else a new `<id>.jsonl`, or `openedPath`.
+    var answersOpenWithPath = false
+    var openedPath: String?
     var heldSessionID: String?
     var held: [String: WireValue]?
     var heldFrames: [[String: WireValue]] = []
@@ -1046,6 +1129,17 @@ import XCTest
             if !pausedMembers.isEmpty { result["cost"] = .object(["paused": .bool(true), "pausedMembers": .array(pausedMembers.map(WireValue.string))]) }
         }
         if frame["method"]?.string == "run.continue" { result["pausedMembers"] = .array(pausedMembers.map(WireValue.string)) }
+        if frame["method"]?.string == "session.open", answersOpenWithPath, let id = frame["sessionId"]?.string {
+            let path = openedPath ?? frame["params"]?.object?["path"]?.string ?? root.appendingPathComponent("Workspaces/w/Sessions/\(id).jsonl").path
+            if !FileManager.default.fileExists(atPath: path) {
+                do {
+                    try FileManager.default.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(), withIntermediateDirectories: true)
+                    let header: [String: WireValue] = ["type": .string("session"), "version": .number(3), "id": .string(id)]
+                    var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to: URL(fileURLWithPath: path))
+                } catch { XCTFail("Generated journal could not be written: \(error)") }
+            }
+            result["path"] = .string(path)
+        }
         let side = frame["method"]?.string == "side.open"
         if side || frame["method"]?.string == "session.fork", let id = frame["params"]?.object?[side ? "sideSessionId" : "forkSessionId"]?.string {
             let path = root.appendingPathComponent("Workspaces/w/Sessions/\(side ? "side" : "fork")_\(id).jsonl")
