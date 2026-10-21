@@ -26,6 +26,12 @@ private actor ReaderLookupGate {
     func release() { waiting?.resume(); waiting = nil }
 }
 
+/// Searches a test's conversation loader ran, from any executor.
+private actor SearchCount {
+    private(set) var value = 0
+    func add() { value += 1 }
+}
+
 final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor func testSupersededReloadCannotInheritANewerReveal() async throws {
         for hosted in [false, true] {
@@ -402,6 +408,74 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
             XCTAssertFalse(pane.find.failed)
             XCTAssertNotEqual(display.scrollAnchor?.id,"needle","Recovery must not replay an obsolete automatic reveal")
         }
+    }
+    /// A child tab hidden after its ⌘F query finished is not searched while
+    /// it is hidden, whatever arrives in it; shown again, it is searched once
+    /// and counts what arrived.
+    @MainActor func testAHiddenChildTabsFindIsSearchedOnceWhenShownAgain() async throws {
+        let (model, gate) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        let display = try XCTUnwrap(model.displays[tab.key])
+        try await eventually("The child's page is read") { display.messages.first?.text == "Saved child reply" }
+        let pane = NativeTranscriptPane(frame: .init(x: 0, y: 0, width: 620, height: 500))
+        let window = NSWindow(contentRect: pane.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = pane; window.orderFront(nil)
+        defer { pane.closeFind(focusing: false); window.contentView = nil; window.close() }
+        pane.showTranscript(model: model, session: display, state: "idle", canFork: false, canQuote: false, enabled: true)
+        let searches = SearchCount(), history = model.history
+        model.conversationSearchLoader = { _, query, start in
+            await searches.add()
+            return try await history.searchPresented(await MainActor.run { display.presentedMessages }, query: query, start: start)
+        }
+        pane.showFind(); pane.find.setQuery("needle")
+        try await eventually("The first search finishes", until: { let count = await searches.value; return !pane.find.searching && count == 1 })
+        XCTAssertTrue(pane.find.matches.isEmpty)
+        _ = otherTab(model)
+        XCTAssertFalse(model.subagentTabIsShown(tab.key), "Another tab hides the child's")
+        var text = "Saved child reply"
+        for word in ["needle one", "needle two", "needle three"] {
+            text += " " + word; display.messages[0].text = text
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        try await Task.sleep(for: .milliseconds(1_500))
+        let hidden = await searches.value
+        XCTAssertEqual(hidden, 1, "Nothing is searched for a hidden reader")
+        // The page read as the tab shows again holds what arrived.
+        await gate.set(text)
+        model.tabs.activate(tab)
+        XCTAssertTrue(model.subagentTabIsShown(tab.key))
+        try await eventually("Shown again, the child is searched once", until: { let count = await searches.value; return !pane.find.searching && count == 2 })
+        XCTAssertEqual(pane.find.matches.count, 3)
+        try await Task.sleep(for: .milliseconds(1_500))
+        let shown = await searches.value
+        XCTAssertEqual(shown, 2, "One search for everything that arrived")
+    }
+    /// A popped-out child's own transcript with ⌘F open is not searched any
+    /// more once its tab closes, whatever arrives in the child.
+    @MainActor func testAClosedChildTabsFindSearchesNothingMore() async throws {
+        let (model, _) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of: container))
+        window.orderFront(nil)
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
+        let transcript = try XCTUnwrap(tab.pane?.transcript), display = try XCTUnwrap(model.displays[tab.key])
+        try await eventually("The child's page is read") { display.messages.first?.text == "Saved child reply" }
+        let searches = SearchCount(), history = model.history
+        model.conversationSearchLoader = { _, query, start in
+            await searches.add()
+            return try await history.searchPresented(await MainActor.run { display.presentedMessages }, query: query, start: start)
+        }
+        transcript.showFind(); transcript.find.setQuery("needle")
+        try await eventually("The first search finishes", until: { let count = await searches.value; return !transcript.find.searching && count == 1 })
+        model.tabs.close(tab)
+        for word in ["needle one", "needle two"] {
+            display.messages[0].text += " " + word
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        try await Task.sleep(for: .milliseconds(1_500))
+        let closed = await searches.value
+        XCTAssertEqual(closed, 1, "A closed tab's reader is not searched")
+        transcript.closeFind(focusing: false)
     }
     @MainActor func testRecoveryDefersToANewerRevealThatStillOwnsTheReader() async throws {
         for route in ["transcript", "report", "conversation-search"] {

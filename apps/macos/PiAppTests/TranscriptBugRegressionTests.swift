@@ -1430,6 +1430,61 @@ final class TranscriptBugRegressionTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1_000))
         XCTAssertEqual(calls, 2)
     }
+    /// Find counting again never takes back a place another reader marked —
+    /// a link, the Inspector — nor the landing still under way for it.
+    @MainActor func testFindRecountKeepsAnotherReadersPendingMark() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, source: "needle here and needle again")
+        let session = try XCTUnwrap(model.selected)
+        func draw() { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        session.messages += [.init(id: "other-question", role: "user", text: "Read something else"),
+                             .init(id: "other-reply", role: "assistant", text: (0..<100).map { "Other plain paragraph \($0)." }.joined(separator: "\n\n"))]
+        pane.refresh(); draw()
+        pane.showFind(); pane.find.setQuery("needle")
+        try await eventually("The search lands") { draw(); return !pane.find.searching && !pane.document.focusPending && pane.document.focusText != nil }
+        let mark = TranscriptHighlights.Focus(messageID: "other-reply", needle: "Other plain paragraph 90.", occurrence: 0, serial: 900)
+        pane.document.highlights = TranscriptHighlights(query: "needle", focus: mark)
+        XCTAssertTrue(pane.document.focusPending, "The other reader's place is still to be brought into view")
+        pane.find.setQuery("needle", restarting: true)
+        XCTAssertEqual(pane.document.highlights.focus, mark, "A recount keeps the other reader's mark")
+        XCTAssertTrue(pane.document.focusPending, "and its landing")
+        try await eventually("The recount finishes") { draw(); return !pane.find.searching }
+        XCTAssertEqual(pane.document.highlights.focus, mark)
+        try await eventually("The other reader's place lands") {
+            draw(); return !pane.document.focusPending && pane.document.focusText?.string.contains("Other plain paragraph 90.") == true
+        }
+        XCTAssertEqual(pane.find.matches.count, 2)
+        pane.find.step(1)
+        XCTAssertEqual(pane.document.highlights.focus?.fromFind, true, "Next is Find's own navigation again")
+    }
+    /// A transcript out of sight — under the Reports page, which hides its
+    /// scroll view (`ConversationPageVisibilityView`), or in a window ordered
+    /// out — is not searched while rows arrive; shown again, it is searched
+    /// once for all of them.
+    @MainActor func testACoveredTranscriptIsSearchedOnceItShowsAgain() async throws {
+        let (model, pane, window) = try await findFixture(saved: false, source: "Counting tokens.")
+        let session = try XCTUnwrap(model.selected)
+        pane.showFind(); pane.find.setQuery("token")
+        try await eventually("The first search finishes") { !pane.find.searching }
+        let search = try XCTUnwrap(pane.find.search)
+        var calls = 0
+        pane.find.search = { id, query, start in calls += 1; return try await search(id, query, start) }
+        defer { pane.find.search = search }
+        for cover in ["page", "window"] {
+            let before = calls
+            if cover == "page" { pane.scrollView.isHidden = true } else { window.orderOut(nil) }
+            for index in 0..<4 {
+                session.messages[1].text += " token \(cover) \(index)."
+                try await Task.sleep(for: .milliseconds(150))
+            }
+            try await Task.sleep(for: .milliseconds(1_500))
+            XCTAssertEqual(calls, before, "Nothing is searched while the \(cover) covers the transcript")
+            if cover == "page" { pane.scrollView.isHidden = false } else { window.orderFront(nil) }
+            try await eventually("Shown again, it is searched once") { !pane.find.searching && calls == before + 1 }
+            try await Task.sleep(for: .milliseconds(1_200))
+            XCTAssertEqual(calls, before + 1, "One search for everything that arrived")
+        }
+        XCTAssertEqual(pane.find.matches.count, 9)
+    }
     /// A refresh for streamed text keeps the reader's chosen match, its
     /// highlight and the reader's place, and leaves the keyboard alone.
     @MainActor func testStreamingRefreshKeepsTheReaderAndTheirChosenMatch() async throws {

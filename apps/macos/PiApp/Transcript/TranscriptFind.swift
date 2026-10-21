@@ -117,6 +117,9 @@ struct TranscriptFindCommand: Equatable {
     /// results still wait to be counted again (`contentChanged`).
     private var contentChangedAt: TimeInterval?
     private var contentRefresh: Task<Void, Never>?
+    /// The reader went elsewhere (`retireReaderNavigation`): nothing is
+    /// searched for it, whatever changes, until it resumes.
+    private var retired = false
     /// How long the last whole search took, from its first read to its last.
     private var lastScan: TimeInterval = 0
     /// How long a changed conversation stays quiet before it is searched
@@ -133,20 +136,23 @@ struct TranscriptFindCommand: Equatable {
 
     func retireReaderNavigation() {
         if searching { task?.cancel(); task = nil; searching = false; needsResume = true }
-        // Resuming searches the conversation as it is then.
+        // Resuming searches the conversation as it is then. A query at rest
+        // keeps that its rows changed, for one search when it resumes.
         if needsResume { cancelContentRefresh() }
+        else if !query.isEmpty { retired = true; contentRefresh?.cancel(); contentRefresh = nil }
         stopNavigation()
     }
     func resumeReaderNavigation() {
-        guard needsResume else { return }
-        setQuery(query, restarting: true)
+        retired = false
+        if needsResume { setQuery(query, restarting: true) }
+        else { scheduleContentRefresh() }
     }
     /// What the conversation presents — its rows or its tasks — changed while
     /// the bar is open. Its query is searched again once that has been quiet
     /// for a moment, as a refresh (`setQuery(restarting:)`): a reply
     /// streaming in is one change, not a search per token, and a search
-    /// under way finishes before another starts. A search retired for
-    /// another reader's navigation is left to resume with it.
+    /// under way finishes before another starts. A reader retired for
+    /// another's navigation, or out of sight, is searched once it is back.
     func contentChanged() {
         guard !query.isEmpty, !needsResume else { return }
         contentChangedAt = ProcessInfo.processInfo.systemUptime
@@ -160,17 +166,18 @@ struct TranscriptFindCommand: Equatable {
         return changed + quiet - ProcessInfo.processInfo.systemUptime
     }
     private func scheduleContentRefresh() {
-        guard contentRefresh == nil, contentChangedAt != nil, !searching, !needsResume else { return }
+        guard contentRefresh == nil, contentChangedAt != nil, !searching, !needsResume, !retired else { return }
         contentRefresh = Task { [weak self] in
-            // A run that stops shortens the wait: it is looked at again at
-            // least every `contentSettle`.
-            while let wait = self?.contentWait, wait > 0 {
-                try? await Task.sleep(for: .seconds(min(wait, Self.contentSettle)))
+            // A run that stops shortens the wait, and a transcript a page or
+            // a tab covers is searched once it shows again: both are looked
+            // at again at least every `contentSettle`.
+            while let wait = self?.contentWait, wait > 0 || self?.pane?.showsTranscript == false {
+                try? await Task.sleep(for: .seconds(wait > 0 ? min(wait, Self.contentSettle) : Self.contentSettle))
                 if Task.isCancelled { return }
             }
             guard let self, !Task.isCancelled else { return }
             self.contentRefresh = nil
-            guard self.contentChangedAt != nil, !self.searching, !self.needsResume, !self.query.isEmpty else { return }
+            guard self.contentChangedAt != nil, !self.searching, !self.needsResume, !self.retired, !self.query.isEmpty else { return }
             self.setQuery(self.query, restarting: true)
         }
     }
@@ -186,8 +193,8 @@ struct TranscriptFindCommand: Equatable {
         cancelContentRefresh()
         task?.cancel(); failed = false
         if !refreshing { stopNavigation(); matches = []; current = nil }
-        guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false); return }
-        searching = true; publish(focus: false)
+        guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false, keepingMarks: refreshing); return }
+        searching = true; publish(focus: false, keepingMarks: refreshing)
         let id = session.id
         task = Task { [weak self] in
             // Typing settles before the chat is searched.
@@ -200,7 +207,7 @@ struct TranscriptFindCommand: Equatable {
                 do { found = try await search(id, text, start) }
                 catch {
                     guard let self, !Task.isCancelled, self.query == text else { return }
-                    self.searching = false; self.failed = true; self.publish(focus: false)
+                    self.searching = false; self.failed = true; self.publish(focus: false, keepingMarks: refreshing)
                     self.scheduleContentRefresh()
                     return
                 }
@@ -213,7 +220,7 @@ struct TranscriptFindCommand: Equatable {
                 }
                 guard let next = found.next else { break }
                 if !refreshing, self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
-                else { self.publish(focus: false) }
+                else { self.publish(focus: false, keepingMarks: refreshing) }
                 start = next
             }
             guard let self, !Task.isCancelled, self.query == text else { return }
@@ -223,7 +230,7 @@ struct TranscriptFindCommand: Equatable {
                 let selected = self.current.flatMap { self.matches.indices.contains($0) ? self.matches[$0] : nil }
                 self.matches = refreshed
                 self.current = selected.flatMap { refreshed.firstIndex(of: $0) } ?? (refreshed.isEmpty ? nil : self.firstNearReader())
-                self.publish(focus: false)
+                self.publish(focus: false, keepingMarks: true)
             }
             else if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
             else { self.publish(focus: false) }
@@ -242,7 +249,7 @@ struct TranscriptFindCommand: Equatable {
         publish(focus: true)
     }
     func clear() {
-        needsResume = false
+        needsResume = false; retired = false
         cancelContentRefresh()
         task?.cancel(); task = nil; stopNavigation(); query = ""; matches = []; current = nil; searching = false; failed = false
         pane?.document.highlights = TranscriptHighlights()
@@ -272,8 +279,10 @@ struct TranscriptFindCommand: Equatable {
         } else { publish(focus: false) }
     }
     /// Shows the count and marks the matches; `focus` also brings the current
-    /// match into view.
-    private func publish(focus: Bool, navigate: Bool = true, adoptingOccurrence: Bool = false) {
+    /// match into view. A recount (`keepingMarks`) keeps a place another
+    /// reader marked — a sidebar match, the Inspector's, a link's — with the
+    /// landing still under way for it: that place is not Find's to take back.
+    private func publish(focus: Bool, navigate: Bool = true, adoptingOccurrence: Bool = false, keepingMarks: Bool = false) {
         guard let pane else { return }
         pane.findBar?.show(current: current, total: matches.count, searching: searching, failed: failed, query: query)
         var highlights = TranscriptHighlights(query: query)
@@ -323,6 +332,7 @@ struct TranscriptFindCommand: Equatable {
                 }
             }
         }
+        if keepingMarks, highlights.focus == nil, let marked = pane.document.highlights.focus, !marked.fromFind { highlights.focus = marked }
         pane.document.highlights = highlights
     }
 }
@@ -330,4 +340,7 @@ struct TranscriptFindCommand: Equatable {
 extension NativeTranscriptPane {
     func retireFindNavigation() { find.retireReaderNavigation() }
     func resumeFindNavigation() { if findBar != nil { find.resumeReaderNavigation() } }
+    /// The transcript is in a visible window, and neither the page over the
+    /// chats nor a tab hides it.
+    var showsTranscript: Bool { window?.isVisible == true && !scrollView.isHiddenOrHasHiddenAncestor }
 }
