@@ -862,6 +862,75 @@ final class GitInventoryTests: ViewsTestCase {
         XCTAssertEqual(process.terminationStatus, 0)
     }
 
+    func testUnicodeSymbolicRefsKeepDiscoveryStatusAndHistoryReadable() async throws {
+        let branches = ["caf\u{e9}", "cafe\u{301}", "\u{301}branch", "branch-\u{1f469}\u{200d}\u{1f4bb}"]
+        let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)
+        let head = try git(["rev-parse", "HEAD"])
+        let top = String(decoding: try git(["rev-parse", "--show-toplevel"]).utf8.dropLast(), as: UTF8.self)
+        let command = try monitor(), marker = root.appendingPathComponent("hostile-ran")
+        let service = GitService(environment: environment, trusted: true)
+        for branch in branches {
+            let reference = "refs/heads/" + branch
+            // Write HEAD as bytes: Process would normalize the NFC argument
+            // before Git could create the symbolic ref used by this fixture.
+            try write(".git/" + reference, head)
+            try write(".git/HEAD", "ref: " + reference + "\n")
+            XCTAssertEqual(Data(try git(["symbolic-ref", "--no-recurse", "HEAD"]).utf8), Data((reference + "\n").utf8))
+            for conditional in [false, true] {
+                let include = conditional ? "[includeIf \"onbranch:absent\"]\npath = ../absent\n" : ""
+                try (original + Data(("\n[core]\nfsmonitor = \(command)\n" + include).utf8)).write(to: config)
+                let label = "branch bytes \(Array(branch.utf8)), onbranch: \(conditional)"
+                let representable = reference.utf8.elementsEqual(String(cString: (reference as NSString).fileSystemRepresentation).utf8)
+                for arguments in [["status", "--porcelain=v2"], ["log", "-1", "--format=%H"]] {
+                    let process = Process(); process.currentDirectoryURL = root
+                    do {
+                        let policy = try GitReadProcess(process, arguments: arguments, environment: environment, trusted: true)
+                        defer { policy.remove() }
+                        XCTAssertEqual(process.executableURL?.lastPathComponent, conditional && !representable ? "sandbox-exec" : "git", label)
+                        process.standardInput = FileHandle.nullDevice
+                        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                        try process.run(); process.waitUntilExit()
+                        XCTAssertEqual(process.terminationStatus, 0, label)
+                    } catch { XCTFail("Inventory representation must select confinement, not fail a read (\(label)): \(error)") }
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), label)
+                }
+                let discovered = await service.repositoryRoot(of: root.path)
+                XCTAssertEqual(discovered, top, label)
+                do {
+                    let status = try await service.status(in: root.path)
+                    XCTAssertEqual(Data(status.branch.utf8), Data(branch.utf8), label)
+                    let history = try await service.log(in: root.path)
+                    XCTAssertEqual(history.map(\.subject), ["Fixture"], label)
+                } catch { XCTFail("Status/history must remain readable (\(label)): \(error)") }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), label)
+            }
+        }
+    }
+
+    func testInventoryLookupRepresentationErrorsRequireConfinement() throws {
+        for arguments in [
+            ["rev-parse", "--git-path", "refs/heads/caf\u{e9}"],
+            ["config", "--file", root.path + "/caf\u{e9}", "--list"],
+            ["config", "--get", "filter.caf\u{e9}.clean"],
+            ["-c", "core.fsmonitor=caf\u{e9}", "config", "--list"],
+            ["config", "--file", "nul\0path", "--list"]
+        ] {
+            XCTAssertThrowsError(try GitConfiguration.query(arguments, in: root, environment: environment)) {
+                XCTAssertTrue($0 is GitConfiguration.ConfinementRequired, "\(arguments): \($0)")
+            }
+        }
+    }
+
+    func testRedirectOverrideRepresentationErrorsRemainClosed() throws {
+        let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)
+        for scope in ["https://example.invalid/a=b", "https://example.invalid/caf\u{e9}", "https://example.invalid/a\nb"] {
+            try (original + Data("\n[http]\nextraHeader = X-Fixture: value\n[http \"\(scope)\"]\nfollowRedirects = true\n".utf8)).write(to: config)
+            XCTAssertThrowsError(try GitConfiguration(in: root, environment: environment).redirectOptions()) {
+                XCTAssertTrue($0 is GitConfiguration.ConfinementRequired, "\(scope): \($0)")
+            }
+        }
+    }
+
     func testUnicodeIncludePathsKeepReadPolicy() throws {
         let name = "caf\u{e9}", path = root.path + "/" + name
         let config = root.appendingPathComponent(".git/config"), original = try Data(contentsOf: config)

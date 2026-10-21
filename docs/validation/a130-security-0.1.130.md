@@ -2513,3 +2513,86 @@ folders were deleted. The last automatic Xcode result was extracted to JSON and
 deleted; text logs and gallery PNGs remain. No clone folders remained. Cleanup
 left 21,440,000,000 bytes free. No installed app, real preferences, chats,
 Keychain or paid provider calls were used.
+
+
+## Round 13 — Unicode inventory inputs select confinement (2026-10-21)
+
+### Decision and implementation
+
+The P2 review is confirmed. A byte-written NFC `refs/heads/café` in HEAD is a
+valid Git symbolic reference. With an `includeIf.onbranch:` directive, the
+inventory passes that name back through Foundation's argument conversion,
+which decomposes it. The byte-preservation guard formerly threw `Failure`,
+bypassing the read fallback.
+
+Keep the existing byte check and select `ConfinementRequired` for every input
+it cannot preserve. The eventual status/log/rev-parse command reads HEAD itself
+and succeeds in the sandbox, without re-encoding the ref as an argument. NFD,
+leading-combining-mark and emoji refs remain unconfined when representable;
+NFC also remains unconfined when no onbranch lookup is needed. No new ref-name
+resolution code or subprocess is introduced. A failed inventory is not cached.
+
+The same guard now rejects embedded NUL before NSString conversion (which
+otherwise raises an Objective-C exception). Redirect override separator errors
+also use `ConfinementRequired`; network writes propagate that error and never
+launch, so this does not relax redirect protection. Local marker programs do
+not run in any matrix case. Global/system program policy is unchanged.
+
+### Failure sweep
+
+All explicit `Failure` throws in `Sources/GitProcessSafety` were inspected.
+Repository metadata's invalid UTF-8, malformed include lookups, unsupported
+config encodings and generated override controls already select confinement.
+Normalized lookup arguments, values, keys and redirect scopes now do likewise.
+`GitInventoryMemo` and `GitInventoryCache` rethrow errors without changing their
+classification; `GitReadProcess` catches only `ConfinementRequired`.
+
+The remaining hard failures deliberately retain their existing behavior:
+
+| Site | Retained reason |
+| --- | --- |
+| `GitConfiguration.inventory`: submodule depth/cycle guard | Bounded traversal exceeded; not a text-representation failure. |
+| `GitConfiguration.init`: mismatched name/value origin passes | Config changed between queries; do not use a torn inventory. |
+| `GitConfiguration.init`: nonzero `ls-files` status | Index/submodule inventory command failed; no normalization conversion occurs here. Invalid UTF-8 in its output already confines. |
+| `GitConfiguration.init`: final inventory/stamp comparison | Concurrent config/identity mutation; stop rather than apply partial safety data. |
+| `GitConfiguration.query`: output limit | Resource limit; do not restart work after exhausting its allowance. |
+| `GitInvocation.check`: deadline | A timed-out read must stop, not restart under confinement. Cancellation stays `CancellationError`. |
+| `GitReadProcess.init`: argument limit | Protect Foundation's process argument limit, including final caller arguments. |
+| `GitReadProcess.git`: system Git lookup | No safe executable was found; confinement cannot supply one. |
+
+### Failing-first and mutation evidence
+
+Commands use `$B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`
+and the existing `views-tests` scratch directory, isolated HOME/config, and
+fixture-only marker programs. Exact commands, exit codes and elapsed times are
+recorded in `$B/logs/round13-*.json`, with paired text logs.
+
+```
+swift test --package-path packages/bello-views --scratch-path "$B/views-tests" --filter 'GitInventoryTests.testUnicodeSymbolicRefsKeepDiscoveryStatusAndHistoryReadable|GitInventoryTests.testInventoryLookupRepresentationErrorsRequireConfinement|GitInventoryTests.testRedirectOverrideRepresentationErrorsRemainClosed'
+```
+
+| Check | Executed | Assertion failures | Result |
+| --- | ---: | ---: | --- |
+| Failing first on production source 403b437b (`failing-first-final`) | 3 | 11 | Expected failure: NFC discovery/status/history; lookup/redirect error classifications; NUL exception. |
+| Fixed (`fixed`) | 3 | 0 | Pass. |
+| Restore hard normalization error (`mutation-normalization`) | 2 | 8 | Expected failure. |
+| Remove pre-conversion NUL guard (`mutation-nul`) | 1 | 1 | Expected failure: Foundation exception. |
+| Restore hard redirect separator error (`mutation-redirect`) | 1 | 1 | Expected failure. |
+
+The branch matrix covers four byte spellings (NFC café, NFD café, leading
+U+0301 and a woman-technologist emoji with ZWJ), with and without an onbranch
+include. It compares HEAD's exact bytes to real Git output, checks the selected
+executable, runs status/log, then tests GitService discovery/status/history.
+The lookup table covers ref, include path, config key, config value and NUL
+inputs. Redirect cases cover an equals sign, NFC scope and invalid literal
+newline config; the last is rejected during inventory before override creation.
+
+Two preliminary fixture runs were corrected before the final failing-first
+run: the expected root initially used /var rather than Git's /private/var;
+the newline config case initially expected rejection only in redirectOptions
+although Git already rejects it during inventory. Those preliminary assertion
+counts are not used as regression evidence. All mutations were restored.
+
+### Integration and final validation
+
+Final merged validation and adversarial review follow below.

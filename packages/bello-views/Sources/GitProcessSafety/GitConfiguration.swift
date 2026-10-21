@@ -434,7 +434,7 @@ public struct GitConfiguration {
             if !protected, !configured.isEmpty { return ([], false) }
             let names = configured.union([Data("http.followredirects".utf8)])
             guard !names.contains(where: { $0.contains(61) || $0.contains(10) }) else {
-                throw Failure("Git HTTP configuration contains a URL that cannot be overridden safely.")
+                throw ConfinementRequired()
             }
             let options = names.sorted(by: { $0.lexicographicallyPrecedes($1) }).flatMap {
                 ["-c", String(decoding: $0, as: UTF8.self) + "=" + (protected ? "false" : "initial")]
@@ -447,11 +447,13 @@ public struct GitConfiguration {
     /// Foundation's macOS Process converts arguments/environment through the
     /// filesystem representation, which decomposes Unicode. Refuse a safety
     /// key or lookup it would silently change, even though Git distinguishes it.
+    /// Reads can still use confinement; network writes must refuse the query.
     private static func requireUnchangedBytes(_ arguments: [String]) throws {
         for argument in arguments {
+            guard !argument.utf8.contains(0) else { throw ConfinementRequired() }
             let passed = String(cString: (argument as NSString).fileSystemRepresentation)
             guard argument.utf8.elementsEqual(passed.utf8) else {
-                throw Failure("Git configuration contains text that cannot be passed to Git without changing its bytes.")
+                throw ConfinementRequired()
             }
         }
     }
