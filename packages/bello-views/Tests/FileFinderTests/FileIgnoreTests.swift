@@ -4,7 +4,7 @@ import XCTest
 /// Ignore files outside a repository are read and matched as git reads and
 /// matches them: wildmatch's own cases, and a folder of every kind of pattern
 /// walked and compared with what `git check-ignore` says of the same folder.
-final class FileIgnoreTests: XCTestCase {
+final class FileIgnoreTests: ViewsTestCase {
     private func matches(_ text: String, _ pattern: String, pathname: Bool = true) -> Bool {
         Wildmatch.match(Array(pattern.utf8)[...], Array(text.utf8)[...], pathname: pathname)
     }

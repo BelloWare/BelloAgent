@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentCacheTests: XCTestCase {
+final class SubagentCacheTests: HelperTestCase {
     func testChildFollowUpsKeepInputPrefixAcrossEffortChangesAndColdOpen() async throws {
         for initial in ["low", "default"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

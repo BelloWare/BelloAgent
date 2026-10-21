@@ -84,7 +84,7 @@ targets:
   PiAppTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [apps/macos/PiAppTests, apps/macos/TestSupport/TestIsolationGuard.m]
+    sources: [apps/macos/PiAppTests, apps/macos/TestSupport/TestIsolationGuard.m, apps/macos/TestSupport/IssueRecordingGuard.m]
     dependencies:
       - target: PiAppTestHost
     settings:

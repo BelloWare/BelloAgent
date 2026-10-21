@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class RoutingTests: XCTestCase {
+final class RoutingTests: HelperTestCase {
     func testConfiguredHeaderMatchingSchemaKeysKeepsPinnedReplayAfterReopen() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         for region in ["status", "us", "effectiveModel", "reported"] { for mode in ["off", "memory", "persist"] {

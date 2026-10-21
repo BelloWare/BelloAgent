@@ -35,7 +35,7 @@ private actor ScreenshotTool: ToolExecuting {
     }
 }
 
-final class PiImageTests: XCTestCase {
+final class PiImageTests: HelperTestCase {
     func testAnAttachmentPastPiLimitsIsResizedWithPiHint() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let data = png(width: 3000, height: 1200), file = root.appendingPathComponent("wide.png")

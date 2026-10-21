@@ -19,7 +19,7 @@ private final class InspectorReplyProbe: @unchecked Sendable {
     var received: JSON? { lock.lock(); defer { lock.unlock() }; return reply }
 }
 
-final class MCPInspectorRetentionTests: XCTestCase {
+final class MCPInspectorRetentionTests: HelperTestCase {
     private func completed(_ root: URL) async throws -> (NativeHostService, InspectorReplyProbe) {
         let script = root.appendingPathComponent("server.py"); try Data(MCPRecoveryTests.stdioServer.utf8).write(to: script)
         let probe = InspectorReplyProbe(root), host = NativeHostService(emit: { probe.emit($0) })

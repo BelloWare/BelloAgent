@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class ResponseTimelineTests: XCTestCase {
+final class ResponseTimelineTests: HelperTestCase {
     private func part(_ ordinal: Int, _ index: Int, _ kind: String, _ update: String, _ text: String = "", attempt: String = "a") -> ResponsePartEvent {
         ResponsePartEvent(attemptID:attempt,ordinal:ordinal,itemID:"item-\(index)",outputIndex:index,partIndex:0,
                           kind:kind,update:update,text:text,callID:kind == "toolArguments" ? "call-\(index)" : nil,

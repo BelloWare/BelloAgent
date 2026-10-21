@@ -4,7 +4,7 @@ import XCTest
 /// Saving a connection never waits for its chats: a run that is going keeps
 /// the settings it started with and the next turn uses the new ones; an idle
 /// session switches at once, without being closed and reopened.
-final class SessionConfigureTests: XCTestCase {
+final class SessionConfigureTests: HelperTestCase {
     func testSettingsSavedDuringARunApplyWhenItEndsAndAtOnceWhenIdle() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = ScriptClient([answer("first"), answer("second"), answer("third")], holdFirst: true)

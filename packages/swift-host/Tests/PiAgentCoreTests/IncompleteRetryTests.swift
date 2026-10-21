@@ -27,7 +27,7 @@ private final class IncompleteLedgerWriteFailure: @unchecked Sendable {
 /// The LiteLLM failure reported on 2026-10-15: HTTP 200, a reasoning
 /// item, response.incomplete with no reason and zero usage, then [DONE].
 /// Every request uses a loopback gateway and synthetic credentials.
-final class IncompleteRetryTests: XCTestCase {
+final class IncompleteRetryTests: HelperTestCase {
     private static let gatewayScript = #"""
 import http.server, json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])

@@ -3,7 +3,7 @@ import XCTest
 
 /// The 2026-10-16 review's Git findings: discarding before the first commit,
 /// the configuration location git is given, and a path with two rows.
-final class GitReviewFindingsTests: XCTestCase {
+final class GitReviewFindingsTests: ViewsTestCase {
     private var folder: URL!, root: URL!
 
     override func setUpWithError() throws {

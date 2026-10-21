@@ -16,7 +16,7 @@ private actor HeldTools: ToolExecuting {
 
 /// Fork from any reply: the fork is the chat as it stood right after that
 /// reply and its tool batch, rebuilt by replaying the journal up to there.
-final class ForkAtReplyTests: XCTestCase {
+final class ForkAtReplyTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], client: ScriptClient? = nil, tools: any ToolExecuting = RecordingTools(), resume: String? = nil, keepRecentTokens: Int? = nil) throws -> AgentSession {

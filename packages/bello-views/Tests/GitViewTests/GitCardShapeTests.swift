@@ -5,7 +5,7 @@ import XCTest
 /// path `GitDiffMetrics.continuousRoundedRect` makes is the one
 /// `RoundedRectangle(cornerRadius:style: .continuous)` made, point for point.
 /// The expected points were read from SwiftUI's own path (macOS 14).
-final class GitCardShapeTests: XCTestCase {
+final class GitCardShapeTests: ViewsTestCase {
     private func points(_ path: CGPath) -> [CGPoint] {
         var points: [CGPoint] = []
         path.applyWithBlock { element in

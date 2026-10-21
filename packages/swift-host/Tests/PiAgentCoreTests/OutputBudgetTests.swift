@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class OutputBudgetTests: XCTestCase {
+final class OutputBudgetTests: HelperTestCase {
     /// The budget is metadata for the local estimate; the model's ceiling is the
     /// cap a conversation request carries, and a bounded task's explicit cap wins.
     func testTheCeilingReachesTheWireAndTheBudgetNeverDoes() throws {

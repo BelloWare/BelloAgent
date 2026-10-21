@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class GatewayTelemetryTests: XCTestCase {
+final class GatewayTelemetryTests: HelperTestCase {
     private func profile(_ api: String = "openai-responses", cacheHeader: Bool = true) throws -> Profile {
         var routing: JSON = ["replayPolicy":"portable"]
         if cacheHeader { routing["reference"]="fixture-v1"; routing["cacheHeader"]="x-fixture-cache" }

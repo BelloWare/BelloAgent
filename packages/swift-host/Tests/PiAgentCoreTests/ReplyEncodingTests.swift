@@ -5,7 +5,7 @@ import XCTest
 /// A command's reply is encoded once (`NativeHostService.boundedReply`): the
 /// bytes checked against the frame limit are the bytes written, and a retry
 /// writes them again. They are the bytes the helper always wrote.
-final class ReplyEncodingTests: XCTestCase {
+final class ReplyEncodingTests: HelperTestCase {
     func testRejectedCommandIdentitiesCannotOverflowTheWriter() async throws {
         let written = WrittenReplies(), host = NativeHostService(output: { written.add($0) })
         await host.receive(["v": 1, "kind": "hello", "major": 1])

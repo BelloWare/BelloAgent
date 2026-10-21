@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentRecoveryTests: XCTestCase {
+final class SubagentRecoveryTests: HelperTestCase {
     func testNativeCostsAllowAnUnstartedLegacyChildWithoutAJournal() async throws {
         let fixture = try RecoveryFixture(); defer { fixture.remove() }
         try fixture.write()

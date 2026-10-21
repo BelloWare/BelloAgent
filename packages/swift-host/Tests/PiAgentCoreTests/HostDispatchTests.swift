@@ -27,7 +27,7 @@ private final class DispatchReplies: @unchecked Sendable {
 /// and fails. A command the host does not know goes through every check
 /// before it is refused. Which commands are read-only, and so run again on
 /// a repeat instead of answering from the kept reply, is pinned here too.
-final class HostDispatchTests: XCTestCase {
+final class HostDispatchTests: HelperTestCase {
     /// Every command the host answers, by the last of those checks it needs.
     private static let stages: [(stage: Int, methods: [String])] = [
         (0, ["display.result.read"]),

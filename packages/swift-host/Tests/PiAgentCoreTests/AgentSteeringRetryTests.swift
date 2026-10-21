@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentSteeringRetryTests: XCTestCase {
+final class AgentSteeringRetryTests: HelperTestCase {
     func testRetryRefreshConsumesAgentEventsAndRecordsTheRefreshedDeliveryIDs() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentRetryRefreshClient(), coordinator = AgentSteeringCoordinator()

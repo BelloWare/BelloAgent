@@ -47,7 +47,7 @@ private actor HeldDisplayTraceSnapshot {
     func release() { held = false }
 }
 
-final class DisplayObservationTests: XCTestCase {
+final class DisplayObservationTests: HelperTestCase {
     func testOldestVisibleDeltaSurvivesStatusAndUnchangedProjectionPolls() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = DisplayClock(), client = HeldDisplayClient()

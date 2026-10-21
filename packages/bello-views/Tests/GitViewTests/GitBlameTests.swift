@@ -5,7 +5,7 @@ import XCTest
 /// repositories: several authors, a rename with lines moved, the first
 /// commit, a merge, lines not committed yet, odd file names, and the files
 /// that have no history to show.
-final class GitBlameTests: XCTestCase {
+final class GitBlameTests: ViewsTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {

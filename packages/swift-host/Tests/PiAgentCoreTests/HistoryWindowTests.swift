@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class HistoryWindowTests: XCTestCase {
+final class HistoryWindowTests: HelperTestCase {
     func testReaderRebindsTheSameBoundaryAcrossRuntimeReplacement() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var rows: [ChatMessage] = []

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class ToolCallCountTests: XCTestCase {
+final class ToolCallCountTests: HelperTestCase {
     func testProjectionKeepsAllCompleteCallsThroughReopen() throws {
         let calls: [JSON] = (0..<64).map { ["type":"toolCall", "id":JSON("c\($0)"), "name":"read", "arguments":["path":"same"]] }
         let message = ChatMessage(role:"assistant", content:calls)

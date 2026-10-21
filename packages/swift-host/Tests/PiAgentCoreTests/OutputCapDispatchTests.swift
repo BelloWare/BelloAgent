@@ -6,7 +6,7 @@ import XCTest
 /// model's catalog ceiling, clipped as pi's clampMaxTokensToContext clips it
 /// (window − pi's estimate − 4,096, at least 1); bounded tasks carry their own
 /// small caps. Like pi, no estimate ever stops a turn before its request.
-final class OutputCapDispatchTests: XCTestCase {
+final class OutputCapDispatchTests: HelperTestCase {
     private func session(_ client: ScriptClient, profile: Profile, root: URL, autoCompaction: Bool = false, titleTask: Bool = false) throws -> AgentSession {
         try AgentSession(id: "cap", profile: profile, apiKey: "synthetic-cap-fixture-secret", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
                          resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: autoCompaction, titleTask: titleTask)

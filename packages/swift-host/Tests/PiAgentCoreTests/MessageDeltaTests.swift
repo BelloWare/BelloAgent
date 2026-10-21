@@ -18,7 +18,7 @@ private actor DeltaClient: ModelClient {
 /// The row-update wire contract: a reader that opts in and stays in step is
 /// sent only what changed; everything else still gets a whole page, and what
 /// the reader assembles is exactly what a whole page would have said.
-final class MessageDeltaTests: XCTestCase {
+final class MessageDeltaTests: HelperTestCase {
     private func history(count: Int) -> [ChatMessage] {
         (0..<count).map { index in
             var message = ChatMessage(role: index.isMultiple(of: 2) ? "user" : "assistant", content: [textBlock("Row \(index): " + String(repeating: "y", count: 512))])

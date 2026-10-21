@@ -4,7 +4,7 @@ import XCTest
 /// The helper's output speed counts all reported tokens over dispatch → last
 /// output, including TTFT and excluding the terminal/HTTP tail. Raw TTFT and
 /// streamDurationMs remain separate observations.
-final class RequestRateTests: XCTestCase {
+final class RequestRateTests: HelperTestCase {
     /// One attempt on the store's own clock: output opens at `first`, the last
     /// output arrives at `last`, and the terminal event at `terminal`.
     private func metadata(usage: JSON = ["output": 601], dispatch: Double? = 500, first: Double? = 1_000, last: Double? = 3_000, terminal: Double? = 3_500,

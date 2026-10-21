@@ -22,7 +22,7 @@ private actor GoldenCompactionTools: ToolExecuting {
     }
 }
 
-final class CompactionGatewayTests: XCTestCase {
+final class CompactionGatewayTests: HelperTestCase {
     func testStreamingSummaryAndOutputExhaustionRetainEveryAttemptAndEffort() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }

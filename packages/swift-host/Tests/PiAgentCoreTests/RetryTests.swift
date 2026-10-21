@@ -70,7 +70,7 @@ private actor HeldRetryClient: ModelClient {
     }
 }
 
-final class RetryTests: XCTestCase {
+final class RetryTests: HelperTestCase {
     func testCrashAfterToolBoundaryPreservesSavedRetryTime() async throws { try await crashRetryTime(afterNewReply:false) }
     func testCrashAddsOnlyRepliesJournaledAfterSavedRetryTime() async throws { try await crashRetryTime(afterNewReply:true) }
     private func crashRetryTime(afterNewReply: Bool) async throws {

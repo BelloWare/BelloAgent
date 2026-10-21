@@ -3,7 +3,7 @@ import XCTest
 
 /// MCP servers: discovery and invocations that run together, an unknown
 /// outcome that survives a restart, and the configurations refused outright.
-final class MCPConnectionTests: XCTestCase {
+final class MCPConnectionTests: HelperTestCase {
     func testMCPListDescribeConcurrentInvokeAndUnknownOutcome() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let manager=MCPManager(cwd:root),transport=FakeMCP();await manager.installForTesting(name:"test",transport:transport)

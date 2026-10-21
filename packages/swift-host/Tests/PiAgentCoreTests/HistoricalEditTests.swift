@@ -12,7 +12,7 @@ private actor EditMutationTools: ToolExecuting {
         return resultText("MUTATED_ONCE")
     }
 }
-final class HistoricalEditTests: XCTestCase {
+final class HistoricalEditTests: HelperTestCase {
     func testEditPreparationPagesFullOriginalUnicodeInputAndRejectsChangedSource() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), path = state.appendingPathComponent("input.jsonl"), profile = try fixtureProfile()

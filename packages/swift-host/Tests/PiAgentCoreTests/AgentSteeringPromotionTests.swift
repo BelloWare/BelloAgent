@@ -5,7 +5,7 @@ import XCTest
 /// the coordinator's wake signal (60 s by default). Steering it directly
 /// wakes it; promoting a queued follow-up to steering must too. The child's
 /// request is held for the whole check, so nothing else wakes the parent.
-final class AgentSteeringPromotionTests: XCTestCase {
+final class AgentSteeringPromotionTests: HelperTestCase {
     private func waitingParent(_ root: URL, _ client: AgentBoundaryClient, _ coordinator: AgentSteeringCoordinator) async throws -> AgentSession {
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
         await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)

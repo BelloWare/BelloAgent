@@ -5,7 +5,7 @@ import XCTest
 /// whole list now and then (`CommandReceipts`), and every open rebuilds the
 /// same 128 receipts the chat had: a full replay, an open from the metadata
 /// file, after a failed write, and from records written before this format.
-final class CommandReceiptsTests: XCTestCase {
+final class CommandReceiptsTests: HelperTestCase {
     private struct Chat { let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore }
 
     private func chat() throws -> Chat {

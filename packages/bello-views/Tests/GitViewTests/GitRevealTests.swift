@@ -5,7 +5,7 @@ import XCTest
 /// the exact commit and file, wherever the commit is in the history and
 /// whatever the history filter shows, held through refreshes until the
 /// reader chooses another; the newest ask wins.
-final class GitRevealTests: XCTestCase {
+final class GitRevealTests: ViewsTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {
@@ -286,7 +286,7 @@ final class GitRevealTests: XCTestCase {
 }
 
 /// The state watch blame uses: told of a commit or a stage, not of a save.
-final class GitStateWatchTests: XCTestCase {
+final class GitStateWatchTests: ViewsTestCase {
     @MainActor func testACommitIsToldAndASaveIsNot() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("git-state-watch-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

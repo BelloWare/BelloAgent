@@ -4,7 +4,7 @@ import XCTest
 /// The two framings the helper reads: NDJSON commands from the app and SSE
 /// events from a gateway. Both must survive arriving one byte at a time and
 /// must never invent a frame the sender did not finish.
-final class FrameParsingTests: XCTestCase {
+final class FrameParsingTests: HelperTestCase {
     func testMaximalJSONEscapedSubmissionSurvivesWholeAndSplitInputFrames() throws {
         let text = String(repeating: "\u{001b}", count: 256 * 1024)
         let frame: JSON = ["v": 1, "kind": "command", "hostEpoch": "fixture", "commandId": "edit", "sessionId": "s", "method": "turn.edit",

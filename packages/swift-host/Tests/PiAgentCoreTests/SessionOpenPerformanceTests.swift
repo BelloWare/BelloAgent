@@ -5,7 +5,7 @@ import XCTest
 /// loop (a tool call, an 8 KB result and an answer per turn), then read back
 /// the way `session.open` reads it. Opt-in with `PI_PERF_SESSION_TURNS`; it
 /// prints its figures and asserts only that the reopened chat is the same.
-final class SessionOpenPerformanceTests: XCTestCase {
+final class SessionOpenPerformanceTests: HelperTestCase {
     private actor BulkTools: ToolExecuting {
         func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("first", "test", [:])] }
         func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {

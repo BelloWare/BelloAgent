@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import FileView
 
-final class FileReadingPositionTests: XCTestCase {
+final class FileReadingPositionTests: ViewsTestCase {
     @MainActor func testHorizontalTabsAndWideTextRestoreEvenAfterWideLineScrollsOffscreen() async throws {
         for text in [String(repeating: "\t", count: 100), String(repeating: "界", count: 200)] {
             let scroll = FileTextScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentJournalTests: XCTestCase {
+final class SubagentJournalTests: HelperTestCase {
     func testDurableTerminalNotifiesTheOpenChildViewer() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let origin = subagentFixtureOrigin()

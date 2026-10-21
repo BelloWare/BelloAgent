@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class ContextPreviewTests: XCTestCase {
+final class ContextPreviewTests: HelperTestCase {
     func testPreviewProtocolAndSourceLabelsSurviveMatchingCredentials() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         try Data("Fixture instructions".utf8).write(to:root.appendingPathComponent("AGENTS.md"))

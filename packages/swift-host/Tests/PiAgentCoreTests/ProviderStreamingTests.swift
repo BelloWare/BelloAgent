@@ -3,7 +3,7 @@ import XCTest
 
 /// What the accumulator makes of a provider stream: opaque reasoning kept
 /// verbatim, usage counted once, and an unfinished tool call never executed.
-final class ProviderStreamingTests: XCTestCase {
+final class ProviderStreamingTests: HelperTestCase {
     func testResponsesOpaqueReplayAndUsage() throws {
         var accumulator=ProviderAccumulator(api:"openai-responses")
         let opaque:JSON=["type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque-test"]

@@ -21,7 +21,7 @@ private final class IngressFixtureProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
-final class HTTPIngressTests: XCTestCase {
+final class HTTPIngressTests: HelperTestCase {
     /// An HTTP/1.1 server that keeps connections alive, like a gateway.
     private static let keepAliveServer = """
     import http.server, json, os, sys

@@ -3,7 +3,7 @@ import XCTest
 
 /// Pi 0.85.1 runs a reply's tool calls together (executeToolCallsParallel) and
 /// puts their results in the next request in call order.
-final class ParallelToolCallTests: XCTestCase {
+final class ParallelToolCallTests: HelperTestCase {
     /// `first` waits up to two seconds for `second` to begin: run one after
     /// another, `second` could not begin until `first` had returned. `edit`
     /// takes a moment, so a later edit that did not wait for it would show.

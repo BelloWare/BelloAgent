@@ -3,7 +3,7 @@ import XCTest
 
 /// The per-attempt record: independent model and HTTP boundaries, timings
 /// that stay null until they are observed, masked headers and hashed bodies.
-final class CaptureTraceTests: XCTestCase {
+final class CaptureTraceTests: HelperTestCase {
     func testTimingNullsAndIndependentModelHTTPBoundaries() async throws {
         let traces=TraceStore()
         let id=await traces.begin(session:"timing",turn:"t",profile:try fixtureProfile(),purpose:"turn",body:Data(),headers:[:])

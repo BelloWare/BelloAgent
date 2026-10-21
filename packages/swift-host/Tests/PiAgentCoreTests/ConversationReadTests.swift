@@ -33,7 +33,7 @@ private actor ContentStreamClient: ModelClient {
     }
 }
 
-final class ConversationReadTests: XCTestCase {
+final class ConversationReadTests: HelperTestCase {
     func testSearchSendsFingerprintsOnlyWhenTheReaderNeedsTheSnapshot() async throws {
         let session = try await fixture(rows: 26_000)
         let first = try await session.contentSearch(["retained": true])

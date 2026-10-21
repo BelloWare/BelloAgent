@@ -1,7 +1,7 @@
 import XCTest
 @testable import FileFinder
 
-final class FolderBrowserTests: XCTestCase {
+final class FolderBrowserTests: ViewsTestCase {
     func testBreadcrumbsRespectProjectBoundaryAndHome() {
         let home = URL(fileURLWithPath: "/fixture/home")
         let root = home.appendingPathComponent("Project")

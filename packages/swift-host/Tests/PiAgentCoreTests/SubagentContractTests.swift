@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentContractTests: XCTestCase {
+final class SubagentContractTests: HelperTestCase {
     func testCallIdentityIncludesSessionAndAssistantMessage() {
         let a = SubagentCallKey(parentSessionID: "a", assistantMessageID: "reply", toolCallID: "call")
         let b = SubagentCallKey(parentSessionID: "b", assistantMessageID: "reply", toolCallID: "call")

@@ -3,7 +3,7 @@ import XCTest
 
 /// The streaming row is built and sized without the encoder; these hold the
 /// direct forms to exactly what the encoder produces.
-final class ResponseTimelineJSONTests: XCTestCase {
+final class ResponseTimelineJSONTests: HelperTestCase {
     func testCountedSizeIsTheEncodedSizeForEveryCharacterClass() throws {
         var samples: [String] = ["", "plain", "\"quoted\"", "back\\slash", "slash/", "tab\tnew\nline\r", "\u{08}\u{0C}", "中文🦉👩‍👩‍👧", "\u{2028}\u{2029}\u{7F}\u{FEFF}"]
         samples.append(String((0..<128).map { Character(UnicodeScalar(UInt8($0))) }))

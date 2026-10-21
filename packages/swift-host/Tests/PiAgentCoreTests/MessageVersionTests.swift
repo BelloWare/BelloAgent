@@ -10,7 +10,7 @@ func attempted(_ reply: ModelReply, _ attempt: String) -> ModelReply {
 /// it, readable as an earlier version. The versions come from the branch
 /// records every edit already writes, so a chat edited before versions were
 /// shown reads the same way, and nothing is rewritten.
-final class MessageVersionTests: XCTestCase {
+final class MessageVersionTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String = "chat", replies: [ModelReply] = [], resume: String? = nil, keepRecentTokens: Int? = nil) throws -> AgentSession {

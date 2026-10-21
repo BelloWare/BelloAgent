@@ -31,7 +31,7 @@ private actor HeldDrainConsumer {
     func release() { released = true; waiter?.resume(); waiter = nil }
 }
 
-final class CaptureDrainTests: XCTestCase {
+final class CaptureDrainTests: HelperTestCase {
     func testLargeMetadataPagesAreOrderedAndWaitForFinalRetention() async throws {
         let packets = DrainPackets(), done = DrainFlag()
         let delivery = CaptureDelivery(epoch: "fixture", emit: { packets.emit($0) })

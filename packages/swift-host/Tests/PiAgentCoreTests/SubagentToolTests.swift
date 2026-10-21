@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentToolTests: XCTestCase {
+final class SubagentToolTests: HelperTestCase {
     func testSchemaRejectsExtraAuthorityAndInvalidNarrowingArguments() throws {
         for value: JSON in [["task":"work","cwd":"/other"], ["task":"work","apiKey":"secret"], ["task":"work","tools":["read","read"]], ["task":"work","tools":.null], ["task":" "], ["task":"work","model":4]] {
             XCTAssertThrowsError(try SubagentSpec(value))

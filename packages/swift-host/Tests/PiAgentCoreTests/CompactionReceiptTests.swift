@@ -3,7 +3,7 @@ import XCTest
 
 /// A completed manual compaction reports itself as completed, and its summary
 /// is what a reopened journal sends to the model.
-final class CompactionReceiptTests: XCTestCase {
+final class CompactionReceiptTests: HelperTestCase {
     /// A one-token tail: the second answer stays; one request summarizes the
     /// first task, and the second question in pi's turn-prefix section.
     func testCompactionReceiptAndNativeResumePreserveSummary() async throws {

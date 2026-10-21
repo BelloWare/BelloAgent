@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentSteeringReviewFixTests: XCTestCase {
+final class AgentSteeringReviewFixTests: HelperTestCase {
     func testPromotionFencesReentrantAppendsAndPreservesTheChain() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let box = PromotionReentryBox()

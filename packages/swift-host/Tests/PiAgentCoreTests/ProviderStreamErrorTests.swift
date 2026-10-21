@@ -4,7 +4,7 @@ import XCTest
 /// A gateway whose upstream fails after the first token. LiteLLM's proxy ends
 /// the Responses stream with a bare `{"error":…}` frame, one with no `type`,
 /// and closes the connection.
-final class ProviderStreamErrorTests: XCTestCase {
+final class ProviderStreamErrorTests: HelperTestCase {
     static let gatewayScript = #"""
 import http.server, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])

@@ -4,7 +4,7 @@ import XCTest
 import FoundationNetworking
 #endif
 
-final class ContextGatewayTests: XCTestCase {
+final class ContextGatewayTests: HelperTestCase {
     func testPreparedAndPreflightCountsDescribeTheCapturedResponsesRequest() async throws {
         let root = try Self.scratch(); defer { try? FileManager.default.removeItem(at: root) }
         try Data("CONTEXT FIXTURE: preserve the selected model and tool schema.".utf8)

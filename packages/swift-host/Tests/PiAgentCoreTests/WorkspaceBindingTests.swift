@@ -3,7 +3,7 @@ import XCTest
 
 /// A refused workspace configuration must leave the host bound to nothing, so
 /// the next open starts clean instead of inheriting half of the last attempt.
-final class WorkspaceBindingTests: XCTestCase {
+final class WorkspaceBindingTests: HelperTestCase {
     func testInvalidWorkspaceConfigurationCannotPartiallyBindAHost() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let host = NativeHostService(emit: { _ in })
