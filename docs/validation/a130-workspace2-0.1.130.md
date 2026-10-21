@@ -551,3 +551,57 @@ serial-lane run held the shared full-lane lock (`round4/round4-runs.sh`).
 No helper, wire contract, layout or style changed. The new notice reuses the
 send failure row's existing presentation. The automatic result bundle was
 deleted after the last run, and `git diff --check` passes.
+
+## Round 5 — the keyboard stays with a refused `/side` question
+
+A read-only Astra review of round 4 (`ca5674c9`) found one issue. Evidence:
+`evidence/round5/`.
+
+### [P2] Keep parent focus when a reused side refuses the question — confirmed and fixed
+
+Trace (verified): when an empty pending side was already waiting, `openSide`
+moved focus to it (`focusedSessionID` and the side composer's focus request)
+before `sendSideQuestion` ran. A refusal before capture (a deleted connection,
+the submission size limit, storage, the launch lease) returned false with Q
+still in the parent composer, but the side composer had already taken the
+keyboard, so the reader's next typing went into the empty side.
+
+- Fix: the side takes the keyboard only after `sendSideQuestion` has captured
+  the question; a refusal leaves focus and the composer's selection untouched.
+  The new-side path never moved focus before capture. Its refusal removes the
+  side and re-requests the parent composer, which is a no-op for a composer
+  that already holds the keyboard, so the selection stays where it was.
+- `SidebarSideClickTests.testARefusedSideQuestionKeepsTheKeyboardWithTheCommand`
+  runs in the serial focus lane with a real window. Its `RecordingWindow`
+  records every composer handed the keyboard, however briefly. Both with and
+  without an empty pending side, a refused `/side Explain this failure` (a
+  connection being deleted) leaves `window.firstResponder` in the chat's
+  composer, `focusedSessionID` on the chat, and the command and cursor
+  (location 6) unchanged, and no side composer ever takes the keyboard. A
+  captured question then moves the keyboard to the side; its keep intent fails
+  to write, so no helper starts.
+- Failing-first (`round5/failing-first.log`, production at `ca5674c9`, under the
+  full-lane lock): **1 test, 3 failures**. The waiting side's composer became
+  first responder, the window recorded it, and `focusedSessionID` moved to the
+  side. The new-side variant and the captured case already passed.
+
+### Round-5 mutation evidence
+
+`round5/mutations-round5.py`, run under the full-lane lock because the test is
+serial-lane. `r5-m1-focus-before-capture` restores the round-4 order (focus,
+then send): it compiled and failed the test with the same **3 failures**, and
+`round5/pre-mutation-sha256.txt` matched afterwards.
+
+### Round-5 validation
+
+**274 native tests passed across 12 classes; zero failures or skips**, on the
+final sources (`round5/tested-source-sha256.txt`). `round5/fixed-first.log`
+passes the new test.
+
+| Run (log under `round5/`) | Classes and passed tests |
+| --- | --- |
+| `final-headless.log` (233) | ContextAndSkillPolicyTests 12, RecoveredDraftTests 13, SideBudgetIntegrationTests 18, SideKeepOrderingTests 12, SideKeepRecoveryTests 15, SideTests 17, SubmissionPersistenceTests 81, WorkspaceRaceTests 65 |
+| `final-side-serial.log`, locked (41) | PendingChatProjectTests 24, SideRelaunchTests 3, SidebarSideClickTests 5, WorkspaceFollowupTests 9 |
+
+No layout, component or style changed: only when focus moves. The automatic
+result bundle was deleted after the last run, and `git diff --check` passes.

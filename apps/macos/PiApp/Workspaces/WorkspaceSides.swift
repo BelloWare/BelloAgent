@@ -149,8 +149,11 @@ extension WorkspaceModel {
             guard Self.holdsNothing(shown) else {
                 error = "This chat's side has an unsent draft. Send or close it first; your question is still in this chat's composer."; return false
             }
+            // The side takes the keyboard only once it has taken the question;
+            // a refusal leaves the cursor with the command where it was typed.
+            guard sendSideQuestion(question, in: shown) else { return false }
             focusedSessionID = existing.id; shown.composerFocusRequest += 1
-            return sendSideQuestion(question, in: shown)
+            return true
         }
         if let existing = sides[parentID], !existing.kept || existing.keeping {
             quietSidebarReveal.insert(existing.id)
