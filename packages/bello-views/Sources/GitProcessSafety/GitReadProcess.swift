@@ -4,12 +4,20 @@ import Foundation
 /// Trusted projects keep user-configured programs; local/worktree program
 /// settings are overridden using Git's stamp-checked scope/origin inventory.
 public struct GitReadProcess {
-    @MainActor public static var resolveTrust: (String) -> Bool = { _ in false } {
-        didSet { GitConfiguration.invalidate(); trust.removeAll() }
+    /// Snapshot app state on the main actor; resolve filesystem paths elsewhere
+    /// and include that work in the invocation's cancellation and deadline.
+    public typealias TrustResolver = @MainActor @Sendable (String, GitInvocation) async throws -> Bool
+    @MainActor public static var resolveTrust: TrustResolver = { _, _ in false } {
+        didSet { GitConfiguration.invalidate(); trust.removeAll(); trustRevision &+= 1 }
     }
+    @MainActor private static var trustRevision = 0
     @MainActor private static var trust: [String: Bool] = [:]
-    @MainActor public static func isTrusted(_ directory: String) -> Bool {
-        let value = resolveTrust(directory)
+    @MainActor public static func isTrusted(_ directory: String, invocation: GitInvocation = GitInvocation()) async throws -> Bool {
+        try Task.checkCancellation(); try invocation.check()
+        let revision = trustRevision
+        let value = try await resolveTrust(directory, invocation)
+        try Task.checkCancellation(); try invocation.check()
+        guard revision == trustRevision else { return false }
         if let previous = trust[directory], previous != value { GitConfiguration.invalidate() }
         trust[directory] = value
         return value

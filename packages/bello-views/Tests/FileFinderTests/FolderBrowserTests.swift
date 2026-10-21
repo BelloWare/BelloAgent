@@ -4,6 +4,32 @@ import GitProcessSafety
 import Darwin
 
 final class FolderBrowserTests: ViewsTestCase {
+    @MainActor func testFinderTrustCallbackSharesCancellationAndDeadline() async throws {
+        let previous = GitReadProcess.resolveTrust
+        defer { GitReadProcess.resolveTrust = previous }
+        GitReadProcess.resolveTrust = { _, invocation in
+            while true {
+                try invocation.check()
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) { continuation.resume() }
+                }
+            }
+        }
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, timeout: cancel ? 1 : 0.06, environment: git.environment) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("Stopped trust resolution must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+        }
+    }
+
     @MainActor func testStdinIncludesDoNotConsumeFolderPaths() async throws {
         let root = try fixture(), git = try TestGit(fixture())
         try git.run(["init", "-q"], in: root)
@@ -13,7 +39,7 @@ final class FolderBrowserTests: ViewsTestCase {
         try file(".gitignore", at: root, text: "*.tmp\n")
         try file("README", at: root); try git.run(["add", "README"], in: root)
         let previous = GitReadProcess.resolveTrust
-        GitReadProcess.resolveTrust = { $0 == root.path }
+        GitReadProcess.resolveTrust = { directory, _ in directory == root.path }
         defer { GitReadProcess.resolveTrust = previous }
         for source in ["/dev/stdin", "/dev/fd/0"] {
             try git.run(["config", "include.path", source], in: root)
@@ -26,7 +52,7 @@ final class FolderBrowserTests: ViewsTestCase {
 
     @MainActor func testTrustedFinderInventorySharesCancellationAndDeadline() async throws {
         let previous = GitReadProcess.resolveTrust
-        GitReadProcess.resolveTrust = { _ in true }
+        GitReadProcess.resolveTrust = { _, _ in true }
         defer { GitReadProcess.resolveTrust = previous }
         for cancel in [false, true] {
             let root = try fixture(), git = try TestGit(fixture())
@@ -60,7 +86,7 @@ final class FolderBrowserTests: ViewsTestCase {
         var env = Self.environment(root); env["GIT_CONFIG_GLOBAL"] = global.path
         try git.run(["config", "core.fsmonitor", root.path + "/.git/local-monitor"], in: root)
         let previous = GitReadProcess.resolveTrust
-        GitReadProcess.resolveTrust = { $0 == root.path }
+        GitReadProcess.resolveTrust = { directory, _ in directory == root.path }
         defer { GitReadProcess.resolveTrust = previous }
         for operation in ["folder", "quick open"] {
             if operation == "folder" {
@@ -74,7 +100,7 @@ final class FolderBrowserTests: ViewsTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("local-ran").path), operation)
             try? FileManager.default.removeItem(at: root.appendingPathComponent("global-ran"))
         }
-        GitReadProcess.resolveTrust = { _ in false }
+        GitReadProcess.resolveTrust = { _, _ in false }
         _ = try await FolderDirectory.read(root, relativeTo: root, environment: env)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-ran").path), "Revoked trust restores confinement")
     }

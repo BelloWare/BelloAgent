@@ -1,8 +1,122 @@
 import XCTest
 @testable import PiApp
 @testable import GitView
+import GitProcessSafety
 
 final class GitRepositoryPermissionTests: XCTestCase {
+    @MainActor func testSlowTrustPathDoesNotBlockMainActorOrOtherGitReads() async throws {
+        let root = scratchRoot("git-slow-trust").resolvingSymlinksInPath()
+        let local = root.appendingPathComponent("local"), slow = root.appendingPathComponent("slow")
+        for path in [local, slow] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GitService(environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"])
+        for path in [local, slow] { _ = try await service.run(["init", "-q", "--template="], in: path.path, readOnly: false) }
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false
+        model.workspaces = [WorkspaceRecord(id: "slow", path: slow.path, trusted: true), WorkspaceRecord(id: "local", path: local.path, trusted: true)]
+        let gate = TrustPathGate(path: slow.path)
+        model.gitTrustPath = { gate.resolve($0) }
+        // The timer releases even a main-actor regression, keeping this test bounded.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.release() }
+        defer { gate.release() }
+        var heartbeats = 0
+        let heartbeat = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(10))
+                if gate.isWaiting { heartbeats += 1 }
+            }
+        }
+        defer { heartbeat.cancel() }
+        let blocked = Task { try await service.run(["status", "--porcelain=v2"], in: slow.path) }
+        try await eventually("The resolver reached the slow volume") { gate.started }
+        let localRead = try await service.run(["status", "--porcelain=v2"], in: local.path, timeout: 1)
+        XCTAssertEqual(localRead.status, 0)
+        XCTAssertTrue(gate.isWaiting, "An unrelated read finishes before the slow path is released")
+        XCTAssertGreaterThan(heartbeats, 0, "Main-actor work keeps running during path resolution")
+        gate.release(); _ = try await blocked.value
+    }
+
+    @MainActor func testTrustRevokedDuringPathResolutionConfinesTheRead() async throws {
+        let root = scratchRoot("git-stale-trust").resolvingSymlinksInPath()
+        let repo = root.appendingPathComponent("repo"), marker = root.appendingPathComponent("marker")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let global = root.appendingPathComponent("global"), program = root.appendingPathComponent("monitor")
+        try Data("#!/bin/sh\n: > '\(marker.path)'\nprintf 'token\\000'\n".utf8).write(to: program)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        try Data("[core]\nfsmonitor = \(program.path)\n".utf8).write(to: global)
+        let service = GitService(environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_GLOBAL": global.path, "GIT_CONFIG_NOSYSTEM": "1"])
+        _ = try await service.run(["-c", "core.fsmonitor=false", "init", "-q", "--template="], in: repo.path, readOnly: false)
+        try Data("fixture\n".utf8).write(to: repo.appendingPathComponent("README"))
+        _ = try await service.run(["-c", "core.fsmonitor=false", "add", "README"], in: repo.path, readOnly: false)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false
+        model.workspaces = [WorkspaceRecord(id: "repo", path: repo.path, trusted: true)]
+        let gate = TrustPathGate(path: repo.path)
+        model.gitTrustPath = { gate.resolve($0) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.release() }
+        defer { gate.release() }
+        let read = Task { try await service.run(["status", "--porcelain=v2"], in: repo.path) }
+        try await eventually("Trust resolution is suspended") { gate.started }
+        model.workspaces[0].trusted = false
+        gate.release()
+        _ = try await read.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "A stale trusted snapshot cannot run the global marker file program")
+    }
+
+    @MainActor func testTrustPathResolutionUsesReadCancellationAndDeadline() async throws {
+        let root = scratchRoot("git-trust-deadline").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GitService(environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"])
+        _ = try await service.run(["init", "-q", "--template="], in: root.path, readOnly: false)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false
+        model.workspaces = [WorkspaceRecord(id: "repo", path: root.path, trusted: true)]
+        let gate = TrustPathGate(path: root.path)
+        model.gitTrustPath = { gate.resolve($0) }
+        defer { gate.release() }
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await service.run(["status", "--porcelain=v2"], in: root.path, timeout: cancel ? 10 : 0.06) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("A stopped resolution must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.2)
+            XCTAssertTrue(gate.isWaiting, "The read stops without waiting for the filesystem call")
+            let processes = await service.processesRunning
+            XCTAssertEqual(processes, 0)
+        }
+        XCTAssertEqual(gate.invocations, 1, "Concurrent or repeated reads coalesce a pending path lookup")
+    }
+
+    @MainActor func testTrustResolutionRechecksSymlinkRootsWithoutAWorkspaceRevision() async throws {
+        let root = scratchRoot("git-trust-alias").resolvingSymlinksInPath()
+        let child = root.appendingPathComponent("parent/child"), other = root.appendingPathComponent("other"), alias = root.appendingPathComponent("alias")
+        for path in [child, other] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: other)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false
+        model.workspaces = [WorkspaceRecord(id: "parent", path: child.deletingLastPathComponent().path, trusted: true),
+                            WorkspaceRecord(id: "denied", path: alias.path, trusted: false)]
+        let revision = model.workspacesRevision
+        let before = try await GitReadProcess.isTrusted(child.path)
+        XCTAssertTrue(before)
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: child)
+        let after = try await GitReadProcess.isTrusted(child.path)
+        XCTAssertFalse(after)
+        XCTAssertEqual(model.workspacesRevision, revision)
+    }
+
     @MainActor func testNestedProjectTrustKeepsBytePathBoundaries() async throws {
         let root = scratchRoot("git-nested-trust").resolvingSymlinksInPath()
         let outer = root.appendingPathComponent("outer"), inner = outer.appendingPathComponent("inner")
@@ -22,16 +136,20 @@ final class GitRepositoryPermissionTests: XCTestCase {
         model.tabs.showsWindows = false; try await model.reloadConfiguration()
         let alias = root.appendingPathComponent("alias")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: inner)
-        XCTAssertTrue(GitService.resolveTrust(outer.appendingPathComponent("inner-sibling").path))
-        XCTAssertFalse(GitService.resolveTrust(root.appendingPathComponent("outer-sibling").path))
+        let siblingTrust = try await GitReadProcess.isTrusted(outer.appendingPathComponent("inner-sibling").path)
+        XCTAssertTrue(siblingTrust)
+        let outsideTrust = try await GitReadProcess.isTrusted(root.appendingPathComponent("outer-sibling").path)
+        XCTAssertFalse(outsideTrust)
         for (index, extender) in ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"].enumerated() {
             let name = extender + "repo-\(index)", repo = inner.appendingPathComponent(name)
             try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
             _ = try await service.run(["-c", "core.fsmonitor=false", "init", "-q", "--template="], in: repo.path, readOnly: false)
             try Data("fixture\n".utf8).write(to: repo.appendingPathComponent("file"))
             _ = try await service.run(["-c", "core.fsmonitor=false", "add", "file"], in: repo.path, readOnly: false)
-            XCTAssertFalse(GitService.resolveTrust(repo.path), name.debugDescription)
-            XCTAssertFalse(GitService.resolveTrust(alias.appendingPathComponent(name).path), "A symlink retains its destination's trust")
+            let repositoryTrust = try await GitReadProcess.isTrusted(repo.path)
+            let aliasTrust = try await GitReadProcess.isTrusted(alias.appendingPathComponent(name).path)
+            XCTAssertFalse(repositoryTrust, name.debugDescription)
+            XCTAssertFalse(aliasTrust, "A symlink retains its destination's trust")
             XCTAssertEqual(model.projectID(holding: repo.appendingPathComponent("file").path), "inner")
             XCTAssertEqual(model.projectID(holding: alias.appendingPathComponent(name + "/file").path), "inner")
             let reply = await model.replyFileResolver.resolve(repo.appendingPathComponent("file").path,
@@ -58,7 +176,8 @@ final class GitRepositoryPermissionTests: XCTestCase {
         try Data("fixture\n".utf8).write(to: plain)
         model.workspaces[1].trusted = true
         model.workspaces.append(WorkspaceRecord(id: "denied-alias", path: inner.path, trusted: false))
-        XCTAssertFalse(GitService.resolveTrust(plain.path))
+        let duplicateTrust = try await GitReadProcess.isTrusted(plain.path)
+        XCTAssertFalse(duplicateTrust)
         XCTAssertEqual(model.projectID(holding: plain.path), "denied-alias", "Equally specific canonical roots must not override a denial")
         let reply = await model.replyFileResolver.resolve(plain.path,
             in: .init(roots: [outer.path], projects: [.init(path: inner.path, trusted: false), .init(path: alias.path, trusted: true)]))
@@ -84,7 +203,8 @@ final class GitRepositoryPermissionTests: XCTestCase {
         let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
         defer { model.shutdown() }
         try await model.reloadConfiguration()
-        XCTAssertFalse(GitService.resolveTrust(root.path), "The surrounding folder is outside this project")
+        let surroundingTrust = try await GitReadProcess.isTrusted(root.path)
+        XCTAssertFalse(surroundingTrust, "The surrounding folder is outside this project")
         _ = try await service.run(["status", "--porcelain=v2"], in: repo.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
         try FileManager.default.removeItem(at: marker)
@@ -195,5 +315,24 @@ final class GitRepositoryPermissionTests: XCTestCase {
         } catch { XCTAssertTrue(error.localizedDescription.contains("Trust"), error.localizedDescription) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         XCTAssertEqual(try git(["branch", "--show-current"]), "trusted\n")
+    }
+}
+
+private final class TrustPathGate: @unchecked Sendable {
+    let path: String
+    private let condition = NSCondition()
+    private var entered = false, released = false, calls = 0
+    init(path: String) { self.path = path }
+    var invocations: Int { condition.lock(); defer { condition.unlock() }; return calls }
+    var started: Bool { condition.lock(); defer { condition.unlock() }; return entered }
+    var isWaiting: Bool { condition.lock(); defer { condition.unlock() }; return entered && !released }
+    func release() { condition.lock(); released = true; condition.broadcast(); condition.unlock() }
+    func resolve(_ value: String) -> String {
+        if value == path {
+            condition.lock(); entered = true; calls += 1
+            while !released { condition.wait() }
+            condition.unlock()
+        }
+        return FileTab.key(for: URL(fileURLWithPath: value))
     }
 }

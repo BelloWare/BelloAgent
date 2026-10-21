@@ -878,6 +878,7 @@
 		A1E491B3D25A1E1B21B43F81 /* HostSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EFFB5714C2CCABE948775D /* HostSupervisor.swift */; };
 		A1F25C223D202C6F7BD114A2 /* InspectorOverviewPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0FD0405436B6690845753B7 /* InspectorOverviewPage.swift */; };
 		A2184AFEBE4CD6DDF2BE44DB /* RetainedConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C619D3E825D347EE9E1D0AED /* RetainedConversation.swift */; };
+		A22A385F0A0146FC2FD3D208 /* WorkspaceGitTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6E25E5D4C437A7418E55B06 /* WorkspaceGitTrust.swift */; };
 		A2492BF34AF60E5660B6608A /* ContextPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EC6AE3B23F39EC158F6A20 /* ContextPresentation.swift */; };
 		A25147236B69C0A830F380BA /* InspectorFamily.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CBF2DA7FB35E0006071D39 /* InspectorFamily.swift */; };
 		A2824289FCCAFF203BEB99F6 /* WorkspaceBridges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00C1E3B62E239235A31A9BAD /* WorkspaceBridges.swift */; };
@@ -1063,6 +1064,7 @@
 		C71C81025C804B1833CC6F67 /* GitStashList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49449B77EEDBCCDAE1B5F007 /* GitStashList.swift */; };
 		C7881AABC7F3C1487344402B /* TestIsolationGuard.m in Sources */ = {isa = PBXBuildFile; fileRef = 63E8D3E2A0B3467CB9BE5972 /* TestIsolationGuard.m */; };
 		C7E1AE1B5271B5B4AD5AB0A6 /* GitChangelistReadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1320E316307CA08F0108C392 /* GitChangelistReadTests.swift */; };
+		C823B6796F4CCABB7E232425 /* WorkspaceGitTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6E25E5D4C437A7418E55B06 /* WorkspaceGitTrust.swift */; };
 		C82DD33600F8E1DD6C260241 /* CostLimitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EFF7B421F32334EE9F3CB2A /* CostLimitTests.swift */; };
 		C83772D0AB1389B63AA82116 /* PiChoicePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ED9C2711536A29B3CF266 /* PiChoicePicker.swift */; };
 		C86E9A05DAFA5DCA185C4D9E /* TranscriptViewEqualityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149EE0F0F4D7C9B9649EC194 /* TranscriptViewEqualityTests.swift */; };
@@ -2167,6 +2169,7 @@
 		C6B796F517BAF76E9B3EB9C1 /* TranscriptKeptRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptKeptRows.swift; sourceTree = "<group>"; };
 		C6CD294FDA98129F30173552 /* TranscriptUpdateIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptUpdateIsolationTests.swift; sourceTree = "<group>"; };
 		C6D5F61E14B759F8052D5527 /* InspectorSummaryRequestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorSummaryRequestTests.swift; sourceTree = "<group>"; };
+		C6E25E5D4C437A7418E55B06 /* WorkspaceGitTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitTrust.swift; sourceTree = "<group>"; };
 		C70C42414FB77681235BA4A3 /* SideKeepOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SideKeepOrderingTests.swift; sourceTree = "<group>"; };
 		C77BA28D6E8C75D08287C245 /* InspectorComponentsReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorComponentsReference.swift; sourceTree = "<group>"; };
 		C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerBarLayout.swift; sourceTree = "<group>"; };
@@ -2767,6 +2770,7 @@
 				3EBF50710F64ADCD26D629B8 /* WorkspaceDrafts.swift */,
 				273002CEAC41AB47DF0B6CE1 /* WorkspaceEditing.swift */,
 				C1A6992B660BE38563A2701E /* WorkspaceFolders.swift */,
+				C6E25E5D4C437A7418E55B06 /* WorkspaceGitTrust.swift */,
 				AAB13BAFD5364355867E18D1 /* WorkspaceHistory.swift */,
 				6A8B28DC425C46E1CBD466B5 /* WorkspaceHosts.swift */,
 				BB47173487B2DD252AE41ED6 /* WorkspaceInspector.swift */,
@@ -4179,6 +4183,7 @@
 				CB77B2756EFDC95CFB70ECAD /* WorkspaceDrafts.swift in Sources */,
 				4185E647FC3183C704AC270D /* WorkspaceEditing.swift in Sources */,
 				90F6E0A2916612AE32B5E599 /* WorkspaceFolders.swift in Sources */,
+				A22A385F0A0146FC2FD3D208 /* WorkspaceGitTrust.swift in Sources */,
 				7784520F5575F557F35055E3 /* WorkspaceHistory.swift in Sources */,
 				BCE1F1FEFD7A873E3CD87671 /* WorkspaceHosts.swift in Sources */,
 				E94B4D4FB1723FB3002B850A /* WorkspaceInspector.swift in Sources */,
@@ -4606,6 +4611,7 @@
 				F1A390DA0AB1B377DAB3BACE /* WorkspaceDrafts.swift in Sources */,
 				AB0A6DB551F2C49398D8EE3C /* WorkspaceEditing.swift in Sources */,
 				B8EAF9D6FFFEAD3E5868EEF9 /* WorkspaceFolders.swift in Sources */,
+				C823B6796F4CCABB7E232425 /* WorkspaceGitTrust.swift in Sources */,
 				6D1251BEF120135D1AC960AD /* WorkspaceHistory.swift in Sources */,
 				E591D447D5985D8CAD7C0C9A /* WorkspaceHosts.swift in Sources */,
 				DF06B14FAD84A5174C5EF126 /* WorkspaceInspector.swift in Sources */,

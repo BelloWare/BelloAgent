@@ -44,7 +44,7 @@ final class GitInventoryPerformanceTests: ViewsTestCase {
         #else
         print("GIT_BENCHMARK_BUILD branch \(#filePath)")
         let previousTrust = GitService.resolveTrust, repository = root.resolvingSymlinksInPath().path
-        GitService.resolveTrust = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == repository }
+        GitService.resolveTrust = { directory, _ in URL(fileURLWithPath: directory).resolvingSymlinksInPath().path == repository }
         defer { GitService.resolveTrust = previousTrust }
         let service = GitService(environment: environment)
         #endif

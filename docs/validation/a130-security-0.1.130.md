@@ -2266,3 +2266,88 @@ Both branch measurements meet the approximately 5% steady-state latency budget. 
 Regenerated **112 Git-safety PNGs** and inspected `round11-gallery/untrusted-light-1180x780.png`, `untrusted-dark-310x600.png`, and `http-redirect-dark-1180x780.png`. The trust/redirect notices, file rows and controls remain legible in the sampled light, dark and narrow layouts; existing notice ellipsis and scrolling are retained. No new visual regression was observed. `round11-gallery-images.json` lists all outputs.
 
 Removed this workstream's generated large-repository fixture, exported baseline and the final default XCTest result bundle after saving text/JSON evidence. No clone folders remained in its native build root; compiler objects for tests with Clone in their name were retained. The 112 gallery images, raw samples, compiler input/source hashes, command results and mutation logs remain under `$B`. Cleanup is recorded in `round11-cleanup.json`; the validation driver released only its own lock, as recorded in `round11-lock.txt`. Other workstreams' locks and build products were untouched. There are no unresolved assigned findings.
+
+
+## Round 12: asynchronous Git trust resolution — 2026-10-21
+
+The review is confirmed. The main-actor trust callback previously canonicalized
+both the query and every configured project root before the Git workers started.
+A generated blocking-path fixture stopped the main-actor heartbeat, delayed an
+unrelated local Git read until the path was released, and allowed a global marker
+file program after trust was revoked during resolution.
+
+### Implementation and cache decision
+
+- The callback snapshots only root strings, trust flags and `workspacesRevision`
+  on the main actor. `WorkspaceRecord.roots` is just `[path] + paths`; this snapshot
+  performs no filesystem work. Canonicalization runs on a dedicated concurrent
+  Dispatch queue, outside the main actor and Swift's cooperative executor.
+- Every root must resolve before a trusted result can be returned. A project on a
+  slow volume could be a symlink into the queried repository, so it is never
+  excluded using lexical path guesses. After at most 250 ms, incomplete resolution
+  selects confinement for that read; an unrelated local repository remains readable.
+  The Git invocation's shorter deadline and cancellation take precedence.
+- Pending lookups for identical path bytes are coalesced, with at most 64 outstanding
+  filesystem calls per resolver. Unwanted queued lookups are skipped. A kernel path
+  call that is already blocked cannot be forcibly interrupted; callers stop waiting
+  promptly and it holds neither the main actor nor a Swift cooperative thread.
+- Completed canonical roots are deliberately **not** cached by workspace revision:
+  symlinks can retarget without any workspace edit. A new regression retargets a
+  denied project alias without changing the revision and verifies the next read is
+  denied. Only pending path work is shared; no trust decision is cached there.
+- After resolution, the callback rechecks the revision and shutdown state before
+  granting trust. Replacement of the entire resolver also invalidates an in-flight
+  result. Existing byte-aware canonical containment, most-specific-root selection,
+  equal-specificity denial and source-repository context for count snapshots remain.
+- `GitService` and `FinderProcess` place trust lookup inside their cancellation
+  handlers and pass the same `GitInvocation` through lookup, inventory and execution.
+  Trust resolution cannot reset the command deadline or retain a process slot after
+  its cancelled read completes.
+
+### Failing-first and focused evidence
+
+All fixtures use temporary directories, isolated global Git configuration and
+marker file programs. `B` is
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`.
+The wrapper `B/round12-run.py` records exact commands, statuses and elapsed times
+in `B/logs/round12-*.json`; native runs acquire and release the shared lane lock.
+
+- `PI_BUILD_ROOT=$B scripts/test-macos.sh -parallel-testing-enabled NO
+  -only-testing:PiAppTests/GitRepositoryPermissionTests/testSlowTrustPathDoesNotBlockMainActorOrOtherGitReads
+  -only-testing:PiAppTests/GitRepositoryPermissionTests/testTrustRevokedDuringPathResolutionConfinesTheRead`
+  before the fix: **2 cases failed, 3 assertions** (`round12-failing-first.log`).
+  The heartbeat stayed at zero and the global marker file was present.
+- The complete native `GitRepositoryPermissionTests` class after the fix:
+  **9 passed, 0 failures** (`round12-fixed-native-2.log`). This also covers the
+  shared timeout/cancellation, coalescing, unchanged-revision symlink retargeting,
+  nested byte boundaries, global programs and trusted explicit writes.
+- `swift test --package-path packages/bello-views --scratch-path $B/views-tests
+  --filter 'GitInventoryTests/testTrustCallback|GitInventoryTests/testReplacingTrustCallback|FolderBrowserTests/testFinderTrustCallback'`:
+  **3 passed, 0 failures** (`round12-focused-views.log`).
+- The first native build identified a missing `Sendable` annotation on the
+  lock-protected pending-path object. It was corrected before the 9-case pass;
+  `round12-fixed-native.log` is build-failure evidence, not a test result.
+
+### Mutation and adversarial review
+
+| Mutation | Focused fixture | Result |
+| --- | --- | --- |
+| Canonicalize on the main actor again | Native slow-path/heartbeat fixture | 1 case failed, 2 assertions |
+| Omit workspace revision revalidation | Native revoke-during-resolution marker fixture | 1 case failed, 1 assertion |
+| Give the callback a fresh invocation instead of the read's deadline/cancellation | GitInventory + FolderBrowser callback fixtures | 2 cases failed, 6 assertions |
+| Omit resolver replacement revalidation | GitInventory callback replacement fixture | 1 case failed, 1 assertion |
+
+Logs: `round12-mutation-main-actor.log`,
+`round12-mutation-workspace-revision-2.log`, `round12-mutation-invocation.log`,
+`round12-mutation-resolver-revision.log`. The first workspace-revision mutation
+left an unused local, which the app's warnings-as-errors build rejected; that
+attempt is excluded and the compiling mutation was rerun. All mutations restored.
+
+Adversarial self-review checked both callers, the source-repository override,
+callback replacement, revocation/shutdown during suspension, cancellation before
+lookup, shorter invocation deadlines, symlink retargeting without revisions and
+late worker completions. The main actor handles only immutable string snapshots;
+all pending-path mutable state is lock-protected, no lock spans a filesystem call,
+and abandoned work cannot publish a trust grant. The 250 ms admission check also
+rejects late completions if its timer was delayed by scheduling. No UI was changed.
+Final validation will be performed on the upstream-integrated result.

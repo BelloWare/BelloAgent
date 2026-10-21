@@ -187,7 +187,7 @@ public actor GitService {
     private let environment: [String: String]
     private let trusted: Bool?
     public nonisolated static func invalidateConfiguration() { GitConfiguration.invalidate() }
-    @MainActor public static var resolveTrust: (String) -> Bool {
+    @MainActor public static var resolveTrust: GitReadProcess.TrustResolver {
         get { GitReadProcess.resolveTrust }
         set { GitReadProcess.resolveTrust = newValue }
     }
@@ -326,11 +326,13 @@ public actor GitService {
                                        sourceRepository: String? = nil,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
         let executable = override ?? executable, gitOptions = override == nil, handle = GitInvocation(timeout: timeout), base = self.environment
-        await acquireProcess()
-        defer { releaseProcess() }
-        let trusted = if let trusted { trusted } else { await GitReadProcess.isTrusted(sourceRepository ?? root) }
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
+            try Task.checkCancellation(); try handle.check()
+            await acquireProcess()
+            defer { releaseProcess() }
+            try handle.check()
+            let trusted = if let trusted { trusted } else { try await GitReadProcess.isTrusted(sourceRepository ?? root, invocation: handle) }
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
                     do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly, trusted: trusted, sourceRepository: sourceRepository))) }
                     catch { continuation.resume(throwing: error) }

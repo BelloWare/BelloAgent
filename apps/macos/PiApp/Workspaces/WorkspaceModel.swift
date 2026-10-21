@@ -18,6 +18,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
     let quickOpen = QuickOpen(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     let replyFileResolver = ReplyFileResolver()
+    private var gitTrustPaths = WorkspaceGitTrustPaths()
+    /// Test seam: a path on a disconnected volume must not occupy the main actor.
+    var gitTrustPath: @Sendable (String) -> String = { FileTab.key(for: URL(fileURLWithPath: $0)) } {
+        didSet { gitTrustPaths = WorkspaceGitTrustPaths() }
+    }
     let fileReviewNavigation = FileReviewNavigation()
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
@@ -589,13 +594,17 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         tabs.paneVisibilityChanged = { [weak self] in self?.readerPaneVisibilityChanged() }
         tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
-        GitService.resolveTrust = { [weak self] directory in
-            let path = FileTab.key(for: URL(fileURLWithPath: directory))
-            let matches = (self?.workspaces ?? []).flatMap { project in
-                project.roots.map { (FileTab.key(for: URL(fileURLWithPath: $0)), project.trusted) }
-            }.filter { path.gitIsWithin($0.0) }
+        GitService.resolveTrust = { [weak self] directory, invocation in
+            guard let self, !self.isShutDown else { return false }
+            let revision = self.workspacesRevision
+            let projects = self.workspaces.flatMap { project in project.roots.map { (path: $0, trusted: project.trusted) } }
+            guard let paths = try await self.gitTrustPaths.resolve([directory] + projects.map(\.path),
+                                                                  invocation: invocation, canonicalize: self.gitTrustPath),
+                  revision == self.workspacesRevision, !self.isShutDown,
+                  let path = paths.first else { return false }
+            let matches = zip(paths.dropFirst(), projects).filter { path.gitIsWithin($0.0) }
             guard let longest = matches.map({ $0.0.utf8.count }).max() else { return false }
-            return matches.filter { $0.0.utf8.count == longest }.allSatisfy { $0.1 }
+            return matches.filter { $0.0.utf8.count == longest }.allSatisfy { $0.1.trusted }
         }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }

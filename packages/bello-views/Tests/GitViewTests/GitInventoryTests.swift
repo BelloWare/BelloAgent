@@ -28,6 +28,46 @@ final class GitInventoryTests: ViewsTestCase {
     }
     private func write(_ path: String, _ text: String) throws { try Data(text.utf8).write(to: root.appendingPathComponent(path)) }
 
+    @MainActor func testTrustCallbackSharesReadCancellationAndDeadline() async throws {
+        let previous = GitService.resolveTrust
+        defer { GitService.resolveTrust = previous }
+        GitService.resolveTrust = { _, invocation in
+            while true {
+                try invocation.check()
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) { continuation.resume() }
+                }
+            }
+        }
+        let service = GitService(environment: environment)
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await service.run(["status", "--porcelain=v2"], in: root.path, timeout: cancel ? 1 : 0.06) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("Stopped trust resolution must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+            let processes = await service.processesRunning
+            XCTAssertEqual(processes, 0)
+        }
+    }
+
+    @MainActor func testReplacingTrustCallbackDuringResolutionConfinesTheRead() async throws {
+        let previous = GitService.resolveTrust
+        defer { GitService.resolveTrust = previous }
+        var pending: CheckedContinuation<Bool, Never>?
+        GitService.resolveTrust = { _, _ in await withCheckedContinuation { pending = $0 } }
+        let read = Task { try await GitReadProcess.isTrusted(root.path) }
+        while pending == nil { try await Task.sleep(for: .milliseconds(1)) }
+        GitService.resolveTrust = { _, _ in false }
+        pending?.resume(returning: true)
+        let trusted = try await read.value
+        XCTAssertFalse(trusted)
+    }
+
     private func monitor() throws -> String {
         try write("monitor", "#!/bin/sh\n: > '\(root.path)/hostile-ran'\nprintf 'token\\000'\n")
         let path = root.appendingPathComponent("monitor").path
@@ -54,7 +94,7 @@ final class GitInventoryTests: ViewsTestCase {
         try? FileManager.default.removeItem(at: marker)
         let previous = GitService.resolveTrust, source = root.path
         var trusted = true, queried: [String] = []
-        GitService.resolveTrust = { directory in queried.append(directory); return trusted && directory == source }
+        GitService.resolveTrust = { directory, _ in queried.append(directory); return trusted && directory == source }
         defer { GitService.resolveTrust = previous }
         let service = GitService(environment: environment)
         for localOverride in [false, true] {
@@ -898,7 +938,7 @@ final class GitInventoryTests: ViewsTestCase {
     @MainActor func testHunkReadsReuseScopedConfiguration() async throws {
         let previous = GitService.resolveTrust, path = root.path
         defer { GitService.resolveTrust = previous }
-        GitService.resolveTrust = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == path }
+        GitService.resolveTrust = { directory, _ in URL(fileURLWithPath: directory).resolvingSymlinksInPath().path == path }
         try git(["config", "core.fsmonitor", try monitor()])
         try write("file", "edit\n")
         let service = GitService(environment: environment)
@@ -1260,12 +1300,12 @@ final class GitInventoryTests: ViewsTestCase {
     @MainActor func testTrustChangeDuringInventoryCannotRepopulateCache() async throws {
         let previous = GitService.resolveTrust
         defer { GitService.resolveTrust = previous }
-        GitService.resolveTrust = { _ in true }
+        GitService.resolveTrust = { _, _ in true }
         let service = GitService(environment: environment), path = root.path, before = GitConfiguration.queryCount
         let read = Task { try await service.status(in: path) }
         while GitConfiguration.queryCount < before + 3 { try await Task.sleep(for: .milliseconds(1)) }
-        GitService.resolveTrust = { _ in false }
-        GitService.resolveTrust = { _ in true }
+        GitService.resolveTrust = { _, _ in false }
+        GitService.resolveTrust = { _, _ in true }
         _ = try await read.value
         let warm = GitConfiguration.queryCount
         _ = try await service.status(in: path)
@@ -1453,12 +1493,12 @@ final class GitInventoryTests: ViewsTestCase {
     @MainActor func testTrustChangesDiscardWarmInventory() async throws {
         let previous = GitService.resolveTrust
         defer { GitService.resolveTrust = previous }
-        GitService.resolveTrust = { _ in true }
+        GitService.resolveTrust = { _, _ in true }
         let service = GitService(environment: environment)
         _ = try await service.status(in: root.path)
         let warm = GitConfiguration.queryCount
-        GitService.resolveTrust = { _ in false }
-        GitService.resolveTrust = { _ in true }
+        GitService.resolveTrust = { _, _ in false }
+        GitService.resolveTrust = { _, _ in true }
         _ = try await service.status(in: root.path)
         XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
     }

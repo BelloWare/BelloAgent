@@ -35,9 +35,9 @@ enum FinderProcess {
     static func git(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval = 60,
                     environment: [String: String] = FinderProcess.environment, input: Data? = nil) async throws -> Output {
         let handle = GitInvocation(timeout: timeout)
-        let trusted = await GitReadProcess.isTrusted(directory)
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
+            let trusted = try await GitReadProcess.isTrusted(directory, invocation: handle)
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
                 queue.async {
                     do { continuation.resume(returning: try execute(arguments, in: directory, limit: limit, timeout: timeout,
                                                                     environment: environment, input: input, handle: handle, trusted: trusted)) }
