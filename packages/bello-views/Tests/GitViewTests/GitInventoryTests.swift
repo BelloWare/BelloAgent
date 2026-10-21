@@ -332,6 +332,110 @@ final class GitInventoryTests: XCTestCase {
         XCTAssertGreaterThan(GitConfiguration.queryCount, warm)
     }
 
+    func testStoredModuleGroupingNamesStayTraversable() async throws {
+        for name in ["config", "HEAD", "commondir"] {
+            try git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", "--name", "group/" + name, root.path, "child-" + name])
+        }
+        try git(["commit", "-qm", "Grouped modules"])
+        try git(["submodule", "deinit", "-f", "--all"])
+        let stored = root.appendingPathComponent(".git/modules/group/config")
+        try addStoredModuleMarker(in: stored)
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        try await assertStoredLayoutAllowsOperations()
+    }
+
+    func testStoredModuleWalkSkipsOrdinaryFilesAtEveryDepth() async throws {
+        let stored = root.appendingPathComponent(".git/modules/group/nested/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        try addStoredModuleMarker(in: stored)
+        for folder in [".git/modules", ".git/modules/group", ".git/modules/group/nested"] {
+            for name in [".DS_Store", "stray-file"] { try write(folder + "/" + name, "fixture\n") }
+        }
+        try write(".git/modules/group/config", "ordinary grouping file\n")
+        try write(".git/modules/group/nested/commondir", "ordinary grouping file\n")
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        try await assertStoredLayoutAllowsOperations()
+    }
+
+    func testStoredModuleWithoutConfigStillInventoriesConditionalGlobals() throws {
+        let stored = root.appendingPathComponent(".git/modules/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        try FileManager.default.removeItem(at: stored.appendingPathComponent("config"))
+        try write("module-policy", "[http]\nextraHeader = X-Fixture: configless\n")
+        let common = String(decoding: try git(["rev-parse", "--path-format=absolute", "--git-common-dir"]).utf8.dropLast(), as: UTF8.self)
+        let gitDirectory = common + "/modules/child"
+        try git(["config", "--global", "includeIf.gitdir:" + gitDirectory + ".path", root.appendingPathComponent("module-policy").path])
+        XCTAssertEqual(try git(["--git-dir=" + gitDirectory, "config", "--get", "http.extraHeader"]), "X-Fixture: configless\n")
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+    }
+
+    func testStoredModuleSymlinksKeepReachableRepositoriesInventoried() async throws {
+        let modules = root.appendingPathComponent(".git/modules")
+        try FileManager.default.createDirectory(at: modules, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("ordinary-file"), target = root.appendingPathComponent("later-module")
+        try write("ordinary-file", "fixture\n")
+        try FileManager.default.createSymbolicLink(at: modules.appendingPathComponent("file-link"), withDestinationURL: file)
+        try FileManager.default.createSymbolicLink(at: modules.appendingPathComponent("directory-link"), withDestinationURL: target)
+        XCTAssertFalse(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        try git(["init", "-q", "--bare", "--template=", target.path])
+        try addStoredModuleMarker(in: target)
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected,
+                      "A previously dangling module symlink can become reachable without changing the link")
+        try await assertStoredLayoutAllowsOperations()
+        try FileManager.default.createSymbolicLink(at: modules.appendingPathComponent("cycle"), withDestinationURL: modules)
+        XCTAssertThrowsError(try GitConfiguration(in: root, environment: environment))
+    }
+
+    func testUnreadableStoredModuleStillRequiresConfinement() async throws {
+        let stored = root.appendingPathComponent(".git/modules/group/child")
+        try git(["init", "-q", "--bare", "--template=", stored.path])
+        try addStoredModuleMarker(in: stored)
+        XCTAssertTrue(try GitConfiguration(in: root, environment: environment).redirectOptions().protected)
+        for unreadable in [stored, stored.deletingLastPathComponent()] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadable.path) }
+            XCTAssertThrowsError(try FileManager.default.contentsOfDirectory(atPath: unreadable.path), "Fixture must actually deny enumeration")
+            XCTAssertThrowsError(try GitConfiguration(in: root, environment: environment))
+            let process = Process(); process.currentDirectoryURL = root
+            let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+            defer { read.remove() }
+            XCTAssertEqual(process.executableURL?.lastPathComponent, "sandbox-exec")
+            process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+            let service = GitService(environment: environment, trusted: true)
+            for command in ["fetch", "pull", "push"] {
+                do { _ = try await service.run([command], in: root.path, readOnly: false); XCTFail("Unreadable module accepted for \(command)") }
+                catch is GitConfiguration.ConfinementRequired { }
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("module-marker").path))
+    }
+
+    private func addStoredModuleMarker(in directory: URL) throws {
+        try write("module-program", "#!/bin/sh\n: > '\(root.path)/module-marker'\nprintf 'token\\000'\n")
+        let program = root.appendingPathComponent("module-program")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        let config = directory.appendingPathComponent("config").path
+        try git(["config", "--file", config, "core.fsmonitor", program.path])
+        try git(["config", "--file", config, "http.extraHeader", "X-Fixture: module"])
+        try git(["config", "--file", config, "http.followRedirects", "false"])
+    }
+
+    private func assertStoredLayoutAllowsOperations() async throws {
+        let remote = root.appendingPathComponent("remote.git")
+        try git(["init", "-q", "--bare", "--template=", remote.path])
+        try git(["remote", "add", "origin", remote.path]); try git(["push", "-qu", "origin", "main"])
+        for command in [["fetch", "--prune"], ["pull", "--ff-only"], ["push"]] { try git(command) }
+        let process = Process(); process.currentDirectoryURL = root
+        let read = try GitReadProcess(process, arguments: ["status", "--porcelain=v2"], environment: environment, trusted: true)
+        defer { read.remove() }
+        XCTAssertEqual(process.executableURL?.lastPathComponent, "git", "Inspectable module layout must retain trusted reads")
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.status(in: root.path)
+        try await service.fetch(in: root.path); try await service.pull(in: root.path); try await service.push(in: root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("module-marker").path))
+    }
+
     func testUninspectableStoredConfigCannotRelaxRedirects() throws {
         let stored = root.appendingPathComponent(".git/modules/child")
         try git(["init", "-q", "--bare", "--template=", stored.path])

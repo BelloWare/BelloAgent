@@ -244,20 +244,42 @@ public struct GitConfiguration {
         }
         // Deinitializing a checkout leaves its repository here. Fetch and
         // inherited -c options can still reach it, including nested modules.
+        func moduleType(at path: String) throws -> mode_t? {
+            let stamp = GitFileStamp(path)
+            guard stamp.cacheable else { throw ConfinementRequired() }
+            moduleStamps.append(stamp)
+            var value = stat()
+            guard lstat(path, &value) == 0 else {
+                guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
+                return nil
+            }
+            // Git follows module-directory aliases. Inventory their spelled
+            // paths and stamp the full chain, including dangling targets.
+            if value.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK), stat(path, &value) != 0 {
+                guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
+                return nil
+            }
+            return value.st_mode & mode_t(S_IFMT)
+        }
         func storedModules(in folder: URL, depth: Int = 0) throws {
             try invocation.check()
             guard depth <= 16 else { throw ConfinementRequired() }
-            let stamp = GitFileStamp(folder.path)
-            guard stamp.cacheable else { throw ConfinementRequired() }
-            moduleStamps.append(stamp)
-            guard stamp.exists else { return }
+            guard try moduleType(at: folder.path) == mode_t(S_IFDIR) else { return }
             let contents: [URL]
             do { contents = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
             catch { throw ConfinementRequired() }
             for child in contents {
                 try invocation.check()
+                guard try moduleType(at: child.path) == mode_t(S_IFDIR) else { continue }
                 let markers = ["HEAD", "config", "commondir"].map { child.appendingPathComponent($0).path }
-                if markers.contains(where: { GitFileStamp($0).exists }) {
+                let types = try markers.map { try moduleType(at: $0) }
+                // Git needs a file HEAD; a grouping directory can contain
+                // ordinary files named config/commondir. A repository without
+                // config is also valid when its objects/refs directories exist.
+                let hasMetadata = types[1...].contains(mode_t(S_IFREG))
+                let hasObjectStore = types[0] == mode_t(S_IFREG) && !hasMetadata
+                    ? try ["objects", "refs"].allSatisfy { try moduleType(at: child.appendingPathComponent($0).path) == mode_t(S_IFDIR) } : false
+                if types[0] == mode_t(S_IFREG), hasMetadata || hasObjectStore {
                     // Foundation encodes environment values like argv too.
                     do { try Self.requireUnchangedBytes([child.path]) }
                     catch { throw ConfinementRequired() }

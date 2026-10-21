@@ -2115,3 +2115,43 @@ Skipped cases are explicit opt-ins: three Finder measurements and the separately
 Regenerated **158 PNGs**: 112 Git-safety scenes, 24 file-review scenes and 22 floating-panel scenes. Inspected `round10-gallery/untrusted-light-1180x780.png`, `untrusted-dark-310x600.png`, and `http-redirect-dark-1180x780.png`; `round10-file-gallery/history-light-1240x800.png`, `history-dark-420x600.png`, and `back-light-420x600.png`; and `round10-session-gallery/diff-1440x900-light.png`, `diff-classification-1440x900-dark.png`, and `pill-960x700-light.png`. Counts and binary labels, history navigation, restored selection, and trust/redirect notices remain legible in the sampled light/dark and narrow layouts. Existing notice ellipsis and horizontal file scrolling remain visible. No new visual regression was observed.
 
 Removed only this workstream's generated benchmark repository, exported baseline and final default XCTest result bundle after extracting text/JSON evidence. No Clone files remain under its native build root. The 158 gallery images, command logs, mutation evidence, source hashes and JSON counts are retained under `$B`; cleanup details are in `$B/logs/round10-cleanup.json`. The validation driver released its own lock. Other workstreams' locks and build products were untouched. Both assigned findings are resolved; the adjacent display/input cases noted in the sweep remain for the separate app grapheme workstream.
+
+
+## Round 11: stored-module entry types — 2026-10-21
+
+Both reported regressions are confirmed. All fixtures are generated in temporary directories with isolated `HOME` and `GIT_CONFIG_GLOBAL`; configured fixture programs only create a marker file. No real preferences, chats, Keychain items or external provider requests are used.
+
+The walk now checks entry types with `lstat`, follows a symlink with `stat`, and stamps the original spelling plus the existing full resolution chain. Ordinary files and links to ordinary files are skipped. A directory becomes a repository candidate only with a file `HEAD` and a file `config`/`commondir`, or an `objects`/`refs` directory layout for a valid repository without config. Confined Git still validates and inventories each candidate. A directory named `HEAD`, `config` or `commondir` is a grouping component, while an isolated ordinary config/commondir file does not make its containing group a repository.
+
+Directory symlinks are **followed and inventoried**, because Git can follow them and their spelled path can activate distinct conditional includes. Dangling targets are stamped; creating the target later invalidates the parent inventory. Symlink cycles retain the existing depth/deadline refusal. Failed metadata reads or directory enumeration still select confinement for reads and refuse network commands. Skipping an unreadable candidate is never treated as a successful inventory. This preserves the existing redirect policy and does not introduce a new trust or redirect decision.
+
+### Regression and mutation evidence
+
+Logs and exact command JSON are under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/logs/round11-*`. The initial pre-fix run on `49bc6308` executed four new tests: the grouping-directory, ordinary-file and symlink-file layouts failed; the unreadable-directory control passed. The first restored run passed all four. The wider sweep added ordinary files named config/commondir in grouping directories and a valid bare module without config whose global conditional header must still be inventoried.
+
+| Fixture | Required result |
+| --- | --- |
+| Real deinitialized submodules named `group/config`, `group/HEAD`, `group/commondir` | Inventory reaches the child policy; trusted status stays unconfined; raw Git and GitService fetch/pull/push succeed. |
+| `.DS_Store` and stray files at three levels; ordinary group config/commondir files | Files are skipped; the nested module remains inventoried and operations succeed. |
+| File symlink, initially dangling directory symlink, later target creation | File link is skipped; the new directory's header forces redirect refusal without touching the link; operations succeed. |
+| Cyclic module-directory symlink | Inventory refuses rather than omit reachable configuration. |
+| Valid module and grouping directory chmod 000 | Fixture first proves enumeration really fails; inventory refuses; status runs in the sandbox; all three network commands refuse. |
+| Bare module without config, with a global gitdir conditional header | Git's own query confirms the header; the parent inventory also protects it. |
+
+The configless fixture uses Git's returned absolute common directory for the condition; a preliminary fixture used macOS's `/var` alias while stored discovery used `/private/var`, so that condition was corrected before final evidence. A mutation that merely swallowed enumeration errors did not bypass the earlier unreadable-marker check; the stronger mutation that skips unreadable child directories is rejected by the test. This confirms both checks rather than relying on the first mutation as coverage.
+
+The complete replay of the five fixtures against `49bc6308` has **3 failed cases / 10 failed assertions, 2 passed** (`round11-before-complete.log`); restoring the fix has **5 passed, 0 failed** (`round11-restored.log`). The extra pre-fix controls (unreadable and configless repositories) pass because the fix must retain those behaviors.
+
+| Mutation | Selected test cases / failed assertions |
+| --- | ---: |
+| Restore existence-only marker classification | 1 / 3 |
+| Enumerate ordinary files as directories | 1 / 3 |
+| Skip module symlinks without inspecting their targets | 1 / 2 |
+| Skip unreadable candidate directories | 1 / 8 |
+| Omit a valid repository without config | 1 / 1 |
+
+Each mutation compiles and fails the intended test; production code is restored after each run. `round11-mutations.json` and per-command JSON retain statuses and arguments. Commands use `swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryTests/<test name>`; the complete replay/restored selector contains all five table cases. The untouched unreadability guards also reject the weaker enumeration-only mutation before directory listing.
+
+The adversarial review checks marker kinds, configless repositories, ordinary file names at grouping levels, readable and dangling symlinks, target activation, cyclic paths, unreadable metadata/directories, scope preservation, invalidation stamps, invocation cancellation, and the shared fetch/pull/push admission path. The type change neither skips a Git-recognizable repository nor treats a failed read as absence. No UI or helper production change is introduced by this fix.
+
+Final merged validation and command counts follow below.

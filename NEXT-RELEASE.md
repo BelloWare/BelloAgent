@@ -4,6 +4,9 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-2q: Stored-module discovery distinguishes metadata files from grouping directories such as `group/config`, preserving valid fetch/pull/push layouts. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2r: Stored-module traversal skips ordinary files, inventories directory symlinks and newly populated targets, and retains confinement for unreadable candidates. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] SECURITY-BOUNDARIES-1az: Git trust resolves canonical paths with byte-aware containment; the most specific project and any equally specific denial win. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1ba: File ownership and reply links preserve nested untrusted boundaries beside combining marks and through symlink aliases. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1bb: Folder roots, blame and file-to-history navigation keep canonical byte path boundaries and relative filenames. [Validation](docs/validation/a130-security-0.1.130.md).
