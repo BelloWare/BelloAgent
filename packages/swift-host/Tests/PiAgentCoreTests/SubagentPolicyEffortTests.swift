@@ -676,6 +676,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
   raw = json.dumps(body).encode(); self.send_response(200)
   self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(raw))); self.send_header('x-litellm-response-cost','0.01'); self.end_headers(); self.wfile.write(raw)
 server = http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
-(root/'ready.json').write_text(json.dumps({'port':server.server_port})); server.serve_forever()
+(root/'ready.tmp').write_text(json.dumps({'port':server.server_port})); (root/'ready.tmp').replace(root/'ready.json'); server.serve_forever()
 """#
 }
