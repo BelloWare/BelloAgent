@@ -357,6 +357,19 @@ extension WorkspaceModel {
         }
         draftChanged(view)
     }
+    /// Retry and the cost-limit Continue both send `turn.retry`; Compact sends
+    /// a compaction. One press is one request: while it opens or dispatches,
+    /// another for the same chat is ignored, with no second request and no
+    /// notice (the helper would refuse it as busy, stop the first compaction,
+    /// or retry a run that just failed again). It is available again once
+    /// that attempt has settled.
+    static func runActionKey(_ method: String, _ id: String) -> String? {
+        switch method {
+        case "turn.retry": return "retry:" + id
+        case "context.compact": return "compact:" + id
+        default: return nil
+        }
+    }
     func action(_ method: String, params: [String: WireValue] = [:], sessionID: String? = nil) {
         guard !installPreparing, let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id) else { return }
         guard !item.isSubagent || method == "turn.stop" else { return }
@@ -368,6 +381,10 @@ extension WorkspaceModel {
             guard resumeTasks[id] == nil, displays[id]?.resuming != true else { return }
             displays[id]?.resuming = true
         }
+        // One press admits one Retry or Compact; a repeat while it is on its
+        // way sends nothing (`runActionKey`).
+        let oneShot = Self.runActionKey(method, id)
+        if let oneShot { guard runActionsInFlight.insert(oneShot).inserted else { return } }
         // Compact uses the same selected model/effort/limits as Send. Freeze
         // the originating pane's choice before opening or awaiting its helper.
         var requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
@@ -377,6 +394,7 @@ extension WorkspaceModel {
         if method == "context.compact" { beginSubmission(commandID, in: inputView) }
         let task = Task {
             defer {
+                if let oneShot { runActionsInFlight.remove(oneShot) }
                 if method == "context.compact" {
                     if let inputView { finishSubmission(commandID, in: inputView) }
                     else { liveSubmissionCommands.remove(commandID) }

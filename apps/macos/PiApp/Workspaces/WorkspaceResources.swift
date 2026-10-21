@@ -339,6 +339,8 @@ extension WorkspaceModel {
                 // Pi's /compact [instructions]: the running turn stops first and
                 // the text after the command is the summary's focus.
                 let focus = command.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+                // A compaction still on its way keeps this one where it was typed.
+                if let oneShot = Self.runActionKey("context.compact", view.id), runActionsInFlight.contains(oneShot) { return true }
                 view.draft = ""; view.directCommand = false; draftChanged(view)
                 action("context.compact", params: focus.isEmpty ? [:] : ["focus": .string(focus)], sessionID: view.id); return true
             }

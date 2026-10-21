@@ -807,6 +807,44 @@ import XCTest
         XCTAssertEqual(model.error, "Archive cancelled this operation. Restore the chat if needed, then try again.")
     }
 
+    /// One click admits one request. Repeated Continue, Retry or Compact
+    /// presses while the first attempt's helper is opening send nothing more
+    /// and add no notice; a `/compact` typed meanwhile stays in the composer.
+    /// Once that attempt has settled, the action works again.
+    func testRepeatedOneShotRunActionsWhileOpeningSendOneRequest() async throws {
+        for action in ["continue", "retry", "compact"] {
+            let (model, view, wire) = try await fixture()
+            view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+            let method = action == "compact" ? "context.compact" : "turn.retry"
+            let sent = { wire.frames.filter { $0["method"]?.string == method }.count }
+            let press = {
+                switch action {
+                case "continue": model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+                case "retry": model.action("turn.retry", sessionID: view.id)
+                default: model.action("context.compact", sessionID: view.id)
+                }
+            }
+            wire.heldMethod = "session.open"
+            press(); press()
+            try await eventually("The first \(action) waits for its helper") { wire.held != nil }
+            press()
+            if action == "compact" {
+                view.draft = "/compact keep the evidence list"; view.directCommand = true
+                model.send(sessionID: view.id)
+                XCTAssertEqual(view.draft, "/compact keep the evidence list", "A typed /compact is not dropped while one is on its way")
+            }
+            wire.release()
+            try await eventually("The first \(action) was sent") { sent() > 0 }
+            for _ in 0..<40 { await Task.yield() }
+            XCTAssertEqual(sent(), 1, "One click admits exactly one request (\(action))")
+            XCTAssertNil(model.error, action); XCTAssertEqual(view.notice, "", action)
+            // Settled, the action is available again: one more press, one more request.
+            try await eventually("\(action) works again once settled") { if sent() < 2 { press() }; return sent() >= 2 }
+            for _ in 0..<40 { await Task.yield() }
+            XCTAssertEqual(sent(), 2, action)
+        }
+    }
+
     func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
         try await stopAfterResumePreflight(queued: false)
     }

@@ -374,11 +374,92 @@ passes.
 
 ### Remaining observations (not fixed)
 
-- Continue has no in-flight guard and no Stop fence (`WorkspaceCostLimits.swift`
-  `continueAfterCostLimit`): two quick clicks start two tasks that each send
-  `turn.retry`, leaving the second to the helper's refusal (or to its
-  `queue.resume` fallback). Stop is not offered on a chat stopped at its limit,
-  so the missing Stop fence is not reachable from the UI today.
+- Continue had no in-flight guard (fixed in round 3 below) and has no Stop
+  fence. Stop is not offered on a chat stopped at its limit, so the missing Stop
+  fence is not reachable from the UI today.
 - The parent composer's emptied snapshot after a captured `/side` question is
   still the ordinary 150 ms debounced write beside the side's record (round-1
   residual note above): unchanged, as for Send.
+
+## Round 3 — one request per Continue, Retry or Compact press
+
+Round 2 (`bb037100`) was accepted; the item-2 refusal notices stay as the
+conservative choice for the owner's post-release decision list. Round 3
+closes the double-click gap noted above. Evidence: `evidence/round3/`.
+
+### What the helper does with a repeated press (read-only check)
+
+- `AgentSession` is an actor and `retryRun` (`turn.retry`) launches its run
+  synchronously. A second retry that lands while the first run is active is
+  refused `session_busy` ("Run already active"), which the app showed as an
+  error banner. If the first run has already failed again (`state == .error`),
+  the second retry **runs again: a duplicate provider request**. If the first
+  has already succeeded, the second answers `nothing_to_retry`, and Continue
+  then fell back to `queue.resume`.
+- A second `context.compact` while the first compaction runs **stops it and
+  starts a new one** (`compact()` stops a running task, waits for it, then
+  launches), so a repeated Compact Now replaced the first summary request with
+  a second.
+- Repeated presses share one helper open and dispatch back to back, so the
+  busy refusal or restarted compaction is the usual outcome, and a fast
+  failure turns a retry into a duplicate request.
+
+### Fix
+
+- `runActionsInFlight` holds one key per chat and action: Retry and the
+  cost-limit Continue share one (both send `turn.retry`), Compact has its own.
+  A press is admitted only when no attempt with its key is on its way; a repeat
+  is ignored, with no request and no notice. The key is released when that
+  attempt's task ends (sent, refused, failed, or retired by Archive), so the
+  action works again once it has settled.
+- A `/compact` typed while a compaction is on its way stays in the composer
+  instead of being emptied and dropped.
+- Audit of the round-2 entry points: Resume (`resumeRun`), the family Resume
+  and Resume Follow-ups / the queue's Resume already admit one at a time
+  (`resumeTasks`, `view.resuming`); Send and Steer set `view.loading` at
+  Return; Resend holds `editSubmitting` (a repeat keeps its existing "Waiting
+  for the current operation to finish." notice). Left alone: Stop (idempotent)
+  and *different* actions pressed within one window (for example Retry, then
+  Resume Follow-ups), which the helper refuses as busy and which are not a
+  same-action duplicate.
+
+### Evidence
+
+- `testRepeatedOneShotRunActionsWhileOpeningSendOneRequest` (Continue, Retry,
+  Compact): two presses before and one during a held helper open, plus a typed
+  `/compact`. Before (`round3/failing-first.log`, production at `bb037100`):
+  3 `turn.retry` for Continue and for Retry, 4 compactions and an emptied
+  composer for Compact (**1 test, 7 failures**). After: exactly one request
+  each, no error or notice, the typed command kept; once settled, one more
+  press sends exactly one more request.
+
+### Round-3 mutation evidence
+
+`round3/mutations-round3.py` (same runner semantics; `round3/pre-mutation-sha256.txt`
+matched after every run). All **4 mutations compiled and failed** (exit 65).
+
+| Mutation | Source change | Assertions |
+| --- | --- | ---: |
+| `r3-m1-no-action-guard` | Retry/Compact presses no longer checked in `action()` | 4 (3 requests for Retry and Compact) |
+| `r3-m2-no-continue-guard` | Continue presses no longer checked | 2 (3 `turn.retry`) |
+| `r3-m3-typed-compact-dropped` | `/compact` emptied while one is on its way | 1 (typed command lost) |
+| `r3-m4-never-settles` | the attempt never releases its key | 2 (Retry never works again) |
+
+r3-m3 shows why the slash check is separate: the `action()` guard still blocks
+the second compaction, but the typed command would be emptied and lost.
+
+### Round-3 validation
+
+**236 native tests passed across 14 classes; zero failures or skips**, on the
+final sources (`round3/tested-source-sha256.txt`). `runs.sh` ran the headless
+classes together and the serial ones under the shared full-lane lock.
+
+| Run (log under `round3/`) | Classes and passed tests |
+| --- | --- |
+| `final-headless.log` (216) | ConversationFamilyTests 22, CostLimitOpeningTests 1, CostPausePresentationTests 6, FamilyDeletionTests 10, ManualCompactionTests 1, RunHoldTests 18, SubagentCostTests 11, SubmissionPersistenceTests 81, TranscriptActionsForwardingTests 3, WorkspaceRaceTests 63 |
+| `final-cost-serial.log`, locked (17) | CompactionResponsivenessTests 1, CostLimitTests 13, CostPauseFamilyTests 3 |
+| `final-cost-parity.log`, locked (3) | CostLimitParityTests 3 |
+
+No helper source, wire contract, layout or style changed; the helper was only
+read to establish its behavior. The automatic result bundle was deleted after
+the last run, and `git diff --check` passes.
