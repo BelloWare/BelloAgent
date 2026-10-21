@@ -598,7 +598,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
             guard let self, !self.isShutDown else { return false }
             let revision = self.workspacesRevision
             let projects = self.workspaces.flatMap { project in project.roots.map { (path: $0, trusted: project.trusted) } }
-            guard let paths = try await self.gitTrustPaths.resolve([directory] + projects.map(\.path),
+            guard let paths = try await self.gitTrustPaths.resolve([directory] + projects.map(\.path), revision: revision,
                                                                   invocation: invocation, canonicalize: self.gitTrustPath),
                   revision == self.workspacesRevision, !self.isShutDown,
                   let path = paths.first else { return false }

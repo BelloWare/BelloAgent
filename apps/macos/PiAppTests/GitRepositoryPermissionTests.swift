@@ -117,6 +117,34 @@ final class GitRepositoryPermissionTests: XCTestCase {
         XCTAssertEqual(model.workspacesRevision, revision)
     }
 
+    @MainActor func testNewWorkspaceRevisionDoesNotReusePendingCanonicalPaths() async throws {
+        let root = scratchRoot("git-trust-pending-revision").resolvingSymlinksInPath()
+        let child = root.appendingPathComponent("parent/child"), other = root.appendingPathComponent("other"), alias = root.appendingPathComponent("alias")
+        for path in [child, other] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: other)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false
+        model.workspaces = [WorkspaceRecord(id: "parent", path: child.deletingLastPathComponent().path, trusted: true),
+                            WorkspaceRecord(id: "alias", path: alias.path, trusted: true)]
+        let gate = TrustPathGate(path: alias.path, snapshotBeforeWait: true)
+        model.gitTrustPath = { gate.resolve($0) }
+        defer { gate.release() }
+        let oldRead = Task { try await GitReadProcess.isTrusted(child.path) }
+        try await eventually("The old revision has read the alias") { gate.started }
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: child)
+        model.workspaces[1].trusted = false
+        let newRead = Task { try await GitReadProcess.isTrusted(child.path) }
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(gate.invocations, 2, "A new revision must resolve its own canonical roots")
+        gate.release()
+        let oldTrust = try await oldRead.value, newTrust = try await newRead.value
+        XCTAssertFalse(oldTrust, "The original snapshot is stale")
+        XCTAssertFalse(newTrust, "The new revision must not inherit the old alias destination")
+    }
+
     @MainActor func testNestedProjectTrustKeepsBytePathBoundaries() async throws {
         let root = scratchRoot("git-nested-trust").resolvingSymlinksInPath()
         let outer = root.appendingPathComponent("outer"), inner = outer.appendingPathComponent("inner")
@@ -320,19 +348,21 @@ final class GitRepositoryPermissionTests: XCTestCase {
 
 private final class TrustPathGate: @unchecked Sendable {
     let path: String
+    private let snapshotBeforeWait: Bool
     private let condition = NSCondition()
     private var entered = false, released = false, calls = 0
-    init(path: String) { self.path = path }
+    init(path: String, snapshotBeforeWait: Bool = false) { self.path = path; self.snapshotBeforeWait = snapshotBeforeWait }
     var invocations: Int { condition.lock(); defer { condition.unlock() }; return calls }
     var started: Bool { condition.lock(); defer { condition.unlock() }; return entered }
     var isWaiting: Bool { condition.lock(); defer { condition.unlock() }; return entered && !released }
     func release() { condition.lock(); released = true; condition.broadcast(); condition.unlock() }
     func resolve(_ value: String) -> String {
+        let snapshot = snapshotBeforeWait && value == path ? FileTab.key(for: URL(fileURLWithPath: value)) : nil
         if value == path {
             condition.lock(); entered = true; calls += 1
             while !released { condition.wait() }
             condition.unlock()
         }
-        return FileTab.key(for: URL(fileURLWithPath: value))
+        return snapshot ?? FileTab.key(for: URL(fileURLWithPath: value))
     }
 }

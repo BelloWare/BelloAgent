@@ -2287,7 +2287,7 @@ file program after trust was revoked during resolution.
   excluded using lexical path guesses. After at most 250 ms, incomplete resolution
   selects confinement for that read; an unrelated local repository remains readable.
   The Git invocation's shorter deadline and cancellation take precedence.
-- Pending lookups for identical path bytes are coalesced, with at most 64 outstanding
+- Pending lookups for identical path bytes and workspace revision are coalesced, with at most 64 outstanding
   filesystem calls per resolver. Unwanted queued lookups are skipped. A kernel path
   call that is already blocked cannot be forcibly interrupted; callers stop waiting
   promptly and it holds neither the main actor nor a Swift cooperative thread.
@@ -2366,3 +2366,33 @@ resolver setup, inherited-hook ownership test and fsmonitor marker test.
 upstream's new watcher callback/timestamp arguments; the initial integrated
 build log (`round12-merged-views.log`) records those compile errors, corrected
 before final validation. All views security fixtures continue to use `ViewsTestCase`.
+
+
+### Additional adversarial revision check
+
+Self-review of overlapping requests found that a new workspace revision could
+join a path lookup started under an older revision. The pending-work key now
+includes the revision as well as the literal path bytes. This also preserves the
+64-call bound across revisions: an old blocked call still occupies its slot until
+it returns, and new work confines if capacity is unavailable.
+
+A fixture resolves an alias before pausing, retargets it into a trusted parent,
+revokes that project's trust, and starts another read before releasing either
+lookup. Before the correction, `testNewWorkspaceRevisionDoesNotReusePendingCanonicalPaths`
+failed because only one lookup ran instead of the required two
+(`round12-revision-coalescing-first.log`: 1 case, 1 failed assertion). With the
+revision key, the full native permission class passed **10/10**
+(`round12-revision-coalescing-fixed.log`). Removing the revision key again made
+the new case fail while the nested byte-boundary control passed
+(`round12-mutation-coalescing-revision.log`: 1 passed case, 1 failed case,
+1 assertion). Both results remained confined in the mutation run; the regression
+specifically detects the incorrect reuse rather than claiming observed program
+execution in that additional fixture. The original marker-file revocation test
+separately verifies the confinement outcome.
+
+The ongoing native batch was deliberately stopped for this app-only correction;
+the owned lock was released and its partial/completed native logs were moved to
+`round12-pre-revision-native-*`, excluded from the final totals. All 27 native
+classes are rerun on the final app source. The completed views, helper, protocol
+and benchmark results remain valid: no package or helper source changed in this
+correction, which is checked with `git diff 1caa160f HEAD -- packages`.

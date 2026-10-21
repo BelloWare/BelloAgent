@@ -2,7 +2,8 @@ import Foundation
 import GitProcessSafety
 
 /// Filesystem calls on a disconnected volume may not return even when their
-/// caller is cancelled. Coalesce outstanding calls, cap their number, and let
+/// caller is cancelled. Coalesce calls within one workspace revision, cap their
+/// number, and let
 /// reads use confinement when any root cannot be resolved promptly. Completed
 /// paths are not cached: symlinks can change without a workspace revision.
 final class WorkspaceGitTrustPaths: @unchecked Sendable {
@@ -15,7 +16,7 @@ final class WorkspaceGitTrustPaths: @unchecked Sendable {
     private var pending: [Data: Pending] = [:]
     private static let queue = DispatchQueue(label: "Bello.git.trust.paths", qos: .userInitiated, attributes: .concurrent)
 
-    func resolve(_ paths: [String], invocation: GitInvocation,
+    func resolve(_ paths: [String], revision: Int, invocation: GitInvocation,
                  canonicalize: @escaping @Sendable (String) -> String) async throws -> [String]? {
         try Task.checkCancellation(); try invocation.check()
         let id = UUID(), (events, completion) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -26,7 +27,7 @@ final class WorkspaceGitTrustPaths: @unchecked Sendable {
         }
         for path in paths {
             try Task.checkCancellation(); try invocation.check()
-            let key = Data(path.utf8)
+            let key = Data(String(revision).utf8) + Data([0]) + Data(path.utf8)
             let job: Pending? = lock.withLock {
                 if let current = pending[key] { current.waiters[id] = completion; return current }
                 guard pending.count < 64 else { return nil }
