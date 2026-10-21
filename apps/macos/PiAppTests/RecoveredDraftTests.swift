@@ -182,7 +182,9 @@ final class RecoveredDraftTests: XCTestCase {
         let images = (10..<14).map { AttachmentRecord(id: "i\($0)", path: "/fixture/i\($0).png", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png") }
         view.attachments = Array(images.prefix(3))
         var intent = original; intent.attachments = [images[3]]
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        // Versioned like the fixture's own record: an unversioned draft write
+        // is another instance's and would rightly stop the recovery.
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
         model.recoverDraft(intent, insert: true)
         try await eventually("recovery finished") { view.recovered.isEmpty }
         XCTAssertEqual(view.attachments, images, view.notice)
