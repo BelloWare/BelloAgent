@@ -46,11 +46,15 @@ struct PythonGateway {
         do {
             let ready = root.appendingPathComponent("ready.json")
             let clock = ContinuousClock(), deadline = clock.now.advanced(by: readyTimeout)
-            while !FileManager.default.fileExists(atPath: ready.path) {
+            // A server that writes the file in place may still be writing it:
+            // wait for complete JSON, not only for its name.
+            var report: JSON?
+            while report == nil {
+                if let data = try? Data(contentsOf: ready), let parsed = try? JSON.parse(data) { report = parsed; break }
                 guard clock.now < deadline else { throw AgentError("fixture_not_ready", "The fixture server did not report its port in time") }
                 try await Task.sleep(for: .milliseconds(10))
             }
-            guard let port = try JSON.parse(Data(contentsOf: ready))["port"].int else { throw AgentError("fixture_port", "The fixture server reported no port") }
+            guard let port = report?["port"].int else { throw AgentError("fixture_port", "The fixture server reported no port") }
             return PythonGateway(process: process, port: port)
         } catch {
             stopFixtureProcess(process)
