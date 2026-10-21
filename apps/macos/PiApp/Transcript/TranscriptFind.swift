@@ -141,12 +141,12 @@ struct TranscriptFindCommand: Equatable {
         guard needsResume else { return }
         setQuery(query, restarting: true)
     }
-    /// The conversation's rows changed while the bar is open. Its query is
-    /// searched again once they have been quiet for a moment, as a refresh
-    /// (`setQuery(restarting:)`): a reply streaming in is one change, not a
-    /// search per token, and a search under way finishes before another
-    /// starts. A search retired for another reader's navigation is left to
-    /// resume with it.
+    /// What the conversation presents — its rows or its tasks — changed while
+    /// the bar is open. Its query is searched again once that has been quiet
+    /// for a moment, as a refresh (`setQuery(restarting:)`): a reply
+    /// streaming in is one change, not a search per token, and a search
+    /// under way finishes before another starts. A search retired for
+    /// another reader's navigation is left to resume with it.
     func contentChanged() {
         guard !query.isEmpty, !needsResume else { return }
         contentChangedAt = ProcessInfo.processInfo.systemUptime

@@ -253,6 +253,9 @@
 - [x] Find searches selection-copy text, normalizing Markdown list markers, block/table breaks and preview chrome, with exact rendered highlight mapping and literal raw/code whitespace preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Copy and Find apply every marked block separator independently of color/style runs, keeping cached matches stable through syntax coloring. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
+- [x] An open Find counts text that streams in after its search: it searches again once the conversation has been quiet for 0.5 s (while the chat runs, for four times its last search), never per token or over a search under way, keeping the reader's place, chosen match and keyboard; Next reaches the new matches. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-1--confirmed-and-fixed).
+- [x] Image-result tool cards read back from a journal show the description their live card showed, including text-and-image results, and Find reaches it; legacy receipts keep their text and Copy Conversation keeps the shared source text. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-2--confirmed-and-fixed).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
