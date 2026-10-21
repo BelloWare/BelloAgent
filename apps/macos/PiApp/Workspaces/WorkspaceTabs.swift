@@ -31,8 +31,8 @@ extension WorkspaceModel {
         file.containingFolderRoot = { [weak self, weak file] in
             guard let self, let file, let project = self.workspaces.first(where: { $0.id == file.projectID }), project.trusted else { return nil }
             return project.roots.map { URL(fileURLWithPath: $0, isDirectory: false) }
-                .filter { root in let path = file.url.path; return path == root.path || path.hasPrefix(root.path == "/" ? "/" : root.path + "/") }
-                .max { $0.path.count < $1.path.count }
+                .filter { root in CanonicalPath.isWithin(file.url.path, root.path) }
+                .max { $0.path.utf8.count < $1.path.utf8.count }
         }
     }
     /// A file a chat's tool read or changed, from its card: the path as the
@@ -41,7 +41,7 @@ extension WorkspaceModel {
     /// file of the project whose root holds it, whichever chat named it.
     @discardableResult func openFile(fromChat sessionID: String, path: String, lines: ClosedRange<Int>?) -> FileTab? {
         var resolved = (path as NSString).expandingTildeInPath
-        if !resolved.hasPrefix("/") {
+        if resolved.utf8.first != UInt8(ascii: "/") {
             guard let workspaceID = record(sessionID)?.workspaceID, let root = workspaces.first(where: { $0.id == workspaceID })?.path else { return nil }
             resolved = (root as NSString).appendingPathComponent(resolved)
         }
@@ -57,8 +57,8 @@ extension WorkspaceModel {
         for project in workspaces where !project.isScratch {
             for root in project.roots {
                 let root = FileTab.key(for: URL(fileURLWithPath: root))
-                guard path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/") else { continue }
-                if root.count > best?.length ?? -1 { best = (project.id, root.count) }
+                guard CanonicalPath.isWithin(path, root) else { continue }
+                if root.utf8.count > best?.length ?? -1 { best = (project.id, root.utf8.count) }
             }
         }
         return best?.id

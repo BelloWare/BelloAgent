@@ -12,6 +12,7 @@ struct CaptureCredentials: Sendable {
     static let ordinaryHeaders: Set<String> = ["content-type", "content-length", "content-encoding", "accept", "accept-encoding", "user-agent", "host", "connection", "anthropic-version", "anthropic-beta", "openai-version", "x-request-id", "request-id", "retry-after", "openai-processing-ms", "x-session-id", "x-turn-id", "session_id", "x-client-request-id"]
     let values: [String]
     let configuredNames: Set<String>
+    private let literals: [Data]
 
     init(headers: [String: String], configuredNames: Set<String>) {
         let names = Set(configuredNames.map { $0.lowercased() })
@@ -21,6 +22,7 @@ struct CaptureCredentials: Sendable {
             guard !value.isEmpty, names.contains(name) || !Self.ordinaryHeaders.contains(name) else { return nil }
             return Self.credential(value, header: name).value
         })).sorted { $0.utf8.count > $1.utf8.count }
+        literals = values.filter { !$0.isEmpty }.map { Data($0.utf8) }
     }
     static func fingerprint(_ value: String) -> String { "[sha256:" + sha256(Data(value.utf8)) + "]" }
     static func masked(_ value: String, showSuffix: Bool = true) -> String {
@@ -30,18 +32,33 @@ struct CaptureCredentials: Sendable {
     }
     private static func sensitiveHeader(_ name: String) -> Bool {
         if ["x-litellm-cache-key", "x-litellm-key-spend"].contains(name) { return false }
-        let parts = name.lowercased().split(separator: "-").map(String.init)
+        // Parts end at "-" bytes: a "-" before a combining mark, ZWJ or
+        // variation selector is one Character with it, not a separator.
+        let parts = name.lowercased().utf8.split(separator: UInt8(ascii: "-")).map { String(decoding: $0, as: UTF8.self) }
         return ["authorization", "proxy-authorization", "cookie", "set-cookie"].contains(name) ||
             parts.contains(where: { ["auth", "authorization", "key", "token", "secret", "credential", "password"].contains($0) })
     }
     private static func credential(_ value: String, header: String) -> (prefix: String, value: String) {
-        if ["authorization", "proxy-authorization"].contains(header), let space = value.firstIndex(of: " "),
-           value[..<space].range(of: "^[A-Za-z][A-Za-z0-9+.-]{0,31}$", options: .regularExpression) != nil {
-            return (String(value[...space]), String(value[value.index(after: space)...]))
+        // The scheme ends at the first space byte, also where the token's
+        // first scalar joins that space into one Character.
+        if ["authorization", "proxy-authorization"].contains(header), let space = value.utf8.firstIndex(of: UInt8(ascii: " ")) {
+            let scheme = String(decoding: value.utf8[..<space], as: UTF8.self)
+            if scheme.range(of: "^[A-Za-z][A-Za-z0-9+.-]{0,31}$", options: .regularExpression) != nil {
+                return (scheme + " ", String(decoding: value.utf8[value.utf8.index(after: space)...], as: UTF8.self))
+            }
         }
         return ("", value)
     }
-    func contains(_ value: String) -> Bool { values.contains { value.contains($0) } }
+    /// Byte search, as the body maskers match: a credential can end inside a
+    /// grapheme cluster ("…=" then a combining mark, ZWJ or variation selector
+    /// is one Character), where String matching finds nothing or depends on
+    /// the string's storage. String matching still catches a canonically
+    /// equivalent spelling.
+    func contains(_ value: String) -> Bool {
+        guard !values.isEmpty else { return false }
+        let bytes = Data(value.utf8)
+        return literals.contains { bytes.range(of: $0) != nil } || values.contains { value.contains($0) }
+    }
     func requestHeaders(_ headers: [String: String]) -> JSON {
         .object(Dictionary(headers.map { name, value in
             let name = name.lowercased(), credential = Self.credential(value, header: name)
