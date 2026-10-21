@@ -12,10 +12,17 @@ public struct ProviderClient: ModelClient {
     public init(traces: TraceStore) { self.traces=traces }
     /// Error text is shown outside the raw capture inspector. Reuse capture's
     /// credential replacement before bounding it so a clipped secret cannot leak.
+    /// pi's retry and overflow rules read the provider text instead: there a
+    /// credential becomes same-length asterisks, as in a response capture
+    /// (escaped spellings too), since a fingerprint's hex can spell a status
+    /// pi retries ("500") and turn a rejected key into retries.
     static func safeFailure(_ error: AgentError, credentials: CaptureCredentials) -> AgentError {
         let safe = credentials.requestBody(Data(error.message.utf8))
         let message = safe.omitted ? "Provider error details exceeded the display safety limit." : String(decoding: safe.bytes, as: UTF8.self)
-        let piText = error.providerMessage.map { String(decoding: credentials.requestBody(Data($0.utf8)).bytes, as: UTF8.self) }
+        let piText = error.providerMessage.map { text -> String in
+            var masker = CaptureCredentials.ResponseMasker(credentials)
+            return String(decoding: masker.feed(Data(text.utf8), final: true), as: UTF8.self)
+        }
         return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID,providerMessage:piText,discardIncompleteReply:error.discardIncompleteReply)
     }
     /// Profile custom headers can never replace transport, authentication or
@@ -190,7 +197,7 @@ public struct ProviderClient: ModelClient {
                         await traces.event(attempt,event)
                         if event.data=="[DONE]" { continue }
                         let value=try JSON.parse(Data(event.data.utf8))
-                        let observed = profile.api == "openai-responses" && observation.consume(value,streaming:true,at:receivedAt)
+                        let observed = profile.api == "openai-responses" && observation.consume(value,streaming:true,at:receivedAt,credentials:credentials)
                         await traces.reported(attempt,value:value,streaming:true)
                         if ProviderAccumulator.isFailure(value) {
                             await traces.terminal(attempt,at:receivedAt)
@@ -243,7 +250,7 @@ public struct ProviderClient: ModelClient {
             if let providerFailure { throw providerFailure }
             if jsonBody {
                 let value=try JSON.parse(nonSSE)
-                if profile.api == "openai-responses" { _ = observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) }
+                if profile.api == "openai-responses" { _ = observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS(),credentials:credentials) }
                 await traces.reported(attempt,value:value,streaming:false)
                 try accumulator.acceptJSON(value)
                 await traces.usage(attempt, UsageObservation.normalized(accumulator.root["usage"], api: profile.api))

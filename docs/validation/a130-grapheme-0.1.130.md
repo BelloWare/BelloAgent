@@ -232,16 +232,117 @@ After the mutation runs, the tracked diff was compared with a saved snapshot
 
 ## Not fixed (reported)
 
-- `packages/bello-views` (owned by another workstream): `FileBreadcrumb.contains`
-  (FileFinder) uses the same Character prefix. The app's folder-tree anchor
-  (`FileFolderNavigation.projectRoot`, `showInTree`) still goes through it, so a
-  marked first name stays unanchored in a trusted project's tree (fails closed,
-  no trust change). Blame output parsing for such names is also bello-views'.
-- `RequestObservation.effectiveModel` publishes the raw `response.model` in the
-  live context observation (Inspector "returned …") with no credential check,
-  for any echo, not only grapheme ones. Not capture code and not this bug class;
-  needs a separate decision.
+- `packages/bello-views`: `FileBreadcrumb.contains` (FileFinder) used the same
+  Character prefix for the folder-tree anchor; already fixed on
+  `dev/a130-security` (`gitHasPrefix`). Blame output parsing for such names is
+  also bello-views'.
+- Async helper tests losing assertion failures: handed to a separate workstream.
 - A tab opened for a file that does not exist yet keeps the ownership computed
   then; case is only canonicalized for existing paths, so a different-case
   spelling of an untrusted folder can be owned by its trusted parent until the
   tab is reopened. Pre-existing, case-only, outside the grapheme class.
+
+## Round 2 — provider-echoed metadata (2026-10-21)
+
+Accepted from round 1's report. `RequestObservation.consume` kept the
+provider's `response.model`/`router_model_name` as `effectiveModel` and
+`response.id` as `responseID` unmasked. The session publishes the observation
+in every snapshot (`requestObservation`, `lastRequestObservation`,
+`contextState.currentRequest`/`lastRequest`), and the Inspector reads it for its
+context reading (`countedModel`) and "returned …". A gateway echoing the key
+there, plainly or with an extender, put it in the Inspector.
+
+Fix:
+
+- `RequestObservation.consume(_:streaming:at:credentials:)` masks the id and
+  model with the request's `CaptureCredentials.metadataText` (the byte matching
+  from round 1) before the 512-character bound can cut a key apart;
+  `ProviderClient` passes the request's credentials at both call sites. A
+  credential-bearing model stays reported, as `[sha256:…]`.
+- `ProviderClient.safeFailure`: `providerMessage`, which only pi's retry and
+  overflow rules read, now masks credentials with same-length asterisks through
+  `ResponseMasker` (escaped spellings too) instead of the display fingerprint.
+  Found while testing: a fingerprint's hex can spell a status pi retries (this
+  fixture key's digest contains `500`), so an auth failure that echoed the key
+  was retried three times (2, 4 and 8 s) where pi stops at once. The shown
+  message keeps its fingerprint.
+
+Sweep of provider-echoed and response-derived strings that reach the
+Inspector, request/capture metadata, exports, notices or errors:
+
+| Value | Where it goes | Status |
+| --- | --- | --- |
+| Response model, router model, response id (live observation) | snapshots → Inspector context reading, "returned …" | fixed |
+| Routing evidence, effective/reported models, contract reference, requested alias | capture metadata, journal `providerIdentity`, Reports, menu-bar activity, turn reports | masked (round-1 bytes) |
+| Response/request headers and header names; gateway call id, version, cost and cache sources | capture metadata | masked or refused |
+| Raw usage keys and values | capture metadata | masked; replies keep numbers only (`PiContext.usage`); accounting keeps numbers and helper statuses |
+| SSE event names; request URL | raw events; capture metadata | masked; fingerprinted when holding a credential |
+| HTTP error bodies, failed streams, incomplete reasons, malformed streams | errors, notices, retry notices | `safeFailure` (fingerprint shown, asterisks classified); connection tests show helper text only; transport errors are helper text |
+| Request/response bodies, raw events | request log, Inspector Raw/Response, exports | byte maskers |
+| Compaction diagnostics | errors | allowlisted fields only |
+| Monitoring feed | snapshots | allowlist without model or id; masked telemetry |
+
+Unreachable or not metadata (unchanged): `SessionRun`'s second
+incomplete-reason check and `stopReason` see only `max_output_tokens` with
+`ProviderClient`, which throws other reasons inside `complete()` through
+`safeFailure`. Reply text, reasoning, tool arguments, generated titles and webhook text, and
+"Provider item: <type> (opaque)" labels are model output, shown as content by
+design. Provider item
+ids and encrypted reasoning stay byte-exact for replay and are not shown as
+metadata. Catalog model ids are configuration the user picks in Settings
+(discovery errors are already fixed text). The observation's `requestedModel`
+is the configured alias.
+
+Regressions:
+
+- `CredentialCaptureTests.testRequestObservationsAndErrorsNeverCarryAnEchoedCredential`:
+  loopback gateway; streamed, JSON, failed-stream and HTTP 401 responses ×
+  plain, U+0301, U+200D, U+FE0F; every `RequestObservation` the session would
+  receive (`json` and `monitoring`), the reply's identity, the error's message
+  and `providerMessage`, packets and the capture list.
+- `CredentialCaptureTests.testAChatPublishesAndPersistsNoEchoedCredential`:
+  through `AgentSession`; running and final snapshots, context state, inspected
+  context, every file in the chat's state folder, packets.
+- `CredentialCaptureTests.testMaskedProviderTextDecidesRetriesAsTheUnmaskedTextWould`.
+- `CaptureMacIntegrationTests.testPackagedHelperKeepsEchoedCredentialsOutOfInspectorStateCaptureAndExports`:
+  the packaged helper through `WorkspaceModel` (streamed and HTTP 401 × the four
+  spellings); snapshots, `SessionDisplay.observeContext` footer state,
+  `RequestContextObservation` details and reading, request-log metadata
+  (Export Metadata's text), `exportRetained` trace folders, and every file
+  under the app's state folder after shutdown.
+
+Failing first, with the round-2 production changes removed:
+
+| Suite | Result | Log |
+| --- | --- | --- |
+| Helper loopback and chat tests | 2 tests, 9053 failures: every streamed, JSON and failed-stream observation (plain and each extender) held the key; chat snapshots and context state held it; failed and HTTP 401 chats retried three times (116 s) | `r2-failing-first-helper.log` |
+| Retry classification test | 5 failures: four retried auth texts, one kept escaped spelling | `r2-failing-first-retry.log` |
+| App packaged-helper test | 24 failures, all streamed variants: snapshot, context state, last request, its "returned …" text and context reading; HTTP errors, request log, Export Metadata text, exported traces and kept files were already clean | `r2-failing-first-app-*.log` |
+
+Round-2 mutations (helper mutations ran on a copy of `packages/swift-host`
+with its own scratch path, so a queued app run could not build a mutated
+helper):
+
+| Mutation | Tests | Result | Log |
+| --- | --- | --- | --- |
+| R2-M1 effective model unmasked | helper loopback and chat tests | detected, 64 failures | `mutation-R2-M1-model-unmasked.log` |
+| R2-M2 response id unmasked | helper loopback and chat tests | detected, 44 failures | `mutation-R2-M2-response-id-unmasked.log` |
+| R2-M3 streamed observations consumed without the request's credentials | helper loopback and chat tests | detected, 56 failures | `mutation-R2-M3-stream-call-without-credentials.log` |
+| R2-M4 classifier text masked with fingerprints again | retry classification test | detected, 5 failures | `mutation-R2-M4-classifier-fingerprint.log` |
+
+Round-2 validation:
+
+| Suite | Result |
+| --- | --- |
+| New and related helper classes (`CredentialCaptureTests`, `RequestObservationTests`, `FailurePresentationTests`, `PiParityTests`, `ContextScopeTests`) | 28, 3, 8, 29, 3 tests; 0 failures (`r2-fixed-helper-focused.log`) |
+| Full helper suite (`swift test … --skip StreamingCostTests`) | 1172 tests, 7 skipped, 0 failures (`r2-helper-full-suite.log`) |
+| Wire / concurrent / acceptance (Release helper from `scripts/build-bundle.py`) | 40 / 4 / 3 OK (`r2-test-native-host.log`, `r2-test-concurrent-native-host.log`, `r2-test-native-acceptance.log`) |
+| `CaptureMacIntegrationTests` (serial, alone under the lock; includes the new packaged-helper test) | 3 tests, 0 failures (`r2-fixed-app-CaptureMacIntegrationTests.log`) |
+| Parallel-lane Inspector/capture/context classes, one `test-macos.sh` run | 164 tests, 0 failures (`r2-fixed-app-parallel.log`): AutomaticContextTests 11, ContextAndSkillPolicyTests 12, ContextScopeTests 9, DashboardTests 19, GatewayAccountingTests 25, MenuBarMetricsTests 29, PayloadArchiveTests 40, ReportDocumentGeometryTests 3, RequestContextObservationTests 4, RoutingConfigurationTests 2, TraceArchiveTests 10 |
+| Serial-lane classes, each alone under the lock | 154 tests, 5 skipped, 0 failures (`r2-fixed-app-<Class>.log`): CaptureDrainTests 7, TurnAccountingTests 13, ConnectionSwitchJournalTests 6, InspectorStorageTests 44 (2 skipped), MessageDetailTests 9, LivePopupTests 15, MonitorParityTests 3, SessionStatsPopoverTests 8 (1 skipped), ReportPageTests 33, WireContractTests 11 (1 skipped), StreamedReplyEndTests 5 (1 skipped) |
+
+The covering app classes are those that read the observation, context state,
+`countedModel`, capture metadata or exports, plus the packaged-helper gateway
+classes. The app test's own failing-first run (round-2 production changes
+removed) is its mutation evidence; the helper mutations isolate each change.
+No app source changed in round 2.

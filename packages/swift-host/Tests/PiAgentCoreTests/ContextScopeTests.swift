@@ -12,7 +12,7 @@ private actor PreparingClient: ModelClient {
         let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
         var observation=RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:"recorded",purpose:purpose,fingerprint:try RequestContextCounter.fingerprint(body,profile:profile),profile:profile)
         await onObservation(observation)
-        _=observation.consume(["status":"completed","usage":["input_tokens":38,"output_tokens":302,"output_tokens_details":["reasoning_tokens":253]]],streaming:false,at:1)
+        _=observation.consume(["status":"completed","usage":["input_tokens":38,"output_tokens":302,"output_tokens_details":["reasoning_tokens":253]]],streaming:false,at:1,credentials:CaptureCredentials(headers:[:],configuredNames:[]))
         await onObservation(observation)
         return answer("done")
     }
