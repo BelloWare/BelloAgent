@@ -343,6 +343,16 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var chatStatsRevision = 0
     var chatStatsVersions: [String: Int] = [:]
     let root: URL
+    /// Held for this model's lifetime, including shutdown task unwinding.
+    /// Its file stays: another instance must lock the same inode to recover.
+    var sidePublicationOwnership: (id: UUID, lock: WorkspaceLock)?
+    /// Task ownership survives display replacement; the lifetime lease makes
+    /// that ownership visible to every other launch sharing this state root.
+    var liveSubmissionCommands: Set<String> = []
+    var submissionRecoveryLeases: [String: (owner: String, lock: WorkspaceLock)] = [:]
+    /// Local publication tasks, distinct from the lifetime lease that also
+    /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
+    var sidePublications: Set<String> = []
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
     @Published var configurationLoaded = false
@@ -465,6 +475,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// close or connection switch, before session opening itself begins.
     var budgetOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// The profile revision acknowledged by each runtime, including a queued
+    /// change for its next turn. Credential updates share one writer per chat.
+    var sessionProfileRevisions: [String: (connection: UUID?, revision: String)] = [:]
+    var sessionConfigurations: [String: (token: UUID, lease: SessionConfigurationLease, task: Task<Void, Error>)] = [:]
+    var sessionConfigurationGenerations: [String: UInt64] = [:]
     /// Runtimes opened solely to supply a saved side's budget, and explicit
     /// display releases that the helper may have refused while a side pinned it.
     var budgetDependencySessions: Set<String> = []
@@ -515,6 +530,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var journalSlimming: Task<Void, Never>?
     var pastedImageCleanup: Task<Void, Never>?
     var attachmentImports = 0
+    var attachmentInspect: @Sendable (URL) throws -> AttachmentRecord = AttachmentRecord.inspect
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []

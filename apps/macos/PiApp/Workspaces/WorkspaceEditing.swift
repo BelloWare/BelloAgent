@@ -10,7 +10,7 @@ extension WorkspaceModel {
     nonisolated static func editTurnParams(messageID: String, text: String, turnID: String, attachments: [AttachmentRecord], skills: [SkillChip], model: String? = nil, thinkingLevel: String? = nil) -> [String: WireValue] {
         var params: [String: WireValue] = ["messageId": .string(messageID), "text": .string(text), "clientTurnId": .string(turnID),
                                            "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]
-        if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty, model.count <= 200 { params["model"] = .string(model) }
+        if let model = TurnOverrides.normalizedModel(model) { params["model"] = .string(model) }
         if let thinkingLevel, ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(thinkingLevel) { params["thinkingLevel"] = .string(thinkingLevel) }
         return params
     }
@@ -147,12 +147,18 @@ extension WorkspaceModel {
             }) { view.notice = PiQuestion.busyNotice }
             return
         }
+        let owner: String
+        do { owner = try inputPublicationOwner() }
+        catch { view.editNotice = "The replacement could not be saved locally. " + error.localizedDescription; return }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
+        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true, submissionOwner: owner)
+        view.draftVersion.preservingSubmission(intent)
         // An edit stays in the composer while the helper replies. Its saved
         // copy needs the same review gate as a normal send returned on failure.
         view.submissionReviews.insert(commandID)
-        let savedDraft = view.savedDraft
+        let savedDraft = view.savedDraft, write = store.draftWriter.capture(view.id)
         var params = turnOverrides(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
@@ -160,8 +166,10 @@ extension WorkspaceModel {
         let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true
+        beginSubmission(commandID, in: view)
         let outputUse = beginToolOutputUse(.messageEdit)
         Task {
+            defer { finishSubmission(commandID, in: view) }
             defer { finishToolOutputUse(outputUse) }
             defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false, helperAccepted = false
@@ -169,15 +177,31 @@ extension WorkspaceModel {
             // only while it is still what the chat shows.
             var shown: (state: RunState, replaced: RunState)?
             @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
+            @MainActor func settleRefusedInput() async {
+                defer { pendingIntentsChanged(item.id) }
+                // A rejection settles execution, not the captured input.
+                // Retire it only with a durable draft still holding that input.
+                if !view.draftVersion.unsavedSubmissions.contains(where: { $0.id == commandID }),
+                   view.draft == text, view.attachments == attachments, view.skills == skills {
+                    do {
+                        try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
+                                                           draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                        view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
+                        return
+                    } catch { view.draftVersion.preservingSubmission(intent) }
+                }
+                offerSubmissionRecovery(intent, in: view)
+            }
             do {
                 try await prepareToolOutputUse(outputUse)
                 let connection = Result { try connectionLease(for: item) }
-                if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
+                // Newer typing may replace the editor snapshot, never the
+                // replacement captured by Resend or its independent intent.
+                try await store.recordSubmission(intent, draft: savedDraft, draftVersion: view.draftVersion, write: write)
+                pendingIntentsChanged(item.id)
                 let lease = try connection.get()
                 try requireConnection(lease)
                 let host = try await open(item)
-                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills, draftReviewTracked: true)
-                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 try requireUnarchived(item.id, revision: archiveRevision)
                 dispatched = true
@@ -210,7 +234,7 @@ extension WorkspaceModel {
                 // followed the way a sent message is.
                 if view.pendingBranch?.turnID == turnID, !view.browsingHistory, !view.historyState.loading { refresh(item.id) }
                 else { followSubmittedTurn(item.id) }
-                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
+                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID, draftVersion: view.draftVersion); pendingIntentsChanged(item.id) }
             } catch {
                 if helperAccepted {
                     // The helper made the branch. Local bookkeeping cannot
@@ -227,7 +251,7 @@ extension WorkspaceModel {
                    view.editGeneration == generation, view.editingMessageID == messageID {
                     view.submissionReviews.remove(commandID)
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
-                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    await settleRefusedInput()
                     undoShownState()
                     let refresh = await refreshRefusedSkills(view, sent: skills)
                     if view.editGeneration == generation { view.editNotice = refresh.notice }
@@ -236,18 +260,18 @@ extension WorkspaceModel {
                 }
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
-                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted }
+                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted; offerSubmissionRecovery(intent, in: view) }
                 else if case HostError.rejected(let code, _) = error {
                     view.submissionReviews.remove(commandID); draftChanged(view)
                     // Refused: no branch was made.
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
                     // At the chat's cost limit the conversation says so, with a way to raise it.
                     if code == SessionDisplay.costLimitCode { view.sendFailureCode = code; view.sendFailure = error.localizedDescription }
-                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    await settleRefusedInput()
                     if code == "connection_unavailable" { view.runState = .interrupted } else { undoShownState() }
                 }
-                else if dispatched { view.uncertain = true; view.runState = .interrupted }
-                else { view.submissionReviews.remove(commandID); draftChanged(view); undoShownState() }
+                else if dispatched { view.uncertain = true; view.runState = .interrupted; offerSubmissionRecovery(intent, in: view) }
+                else { view.submissionReviews.remove(commandID); draftChanged(view); await settleRefusedInput(); undoShownState() }
             }
         }
     }

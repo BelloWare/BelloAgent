@@ -1,4 +1,5 @@
 import AppKit
+import SQLite3
 import XCTest
 @testable import PiApp
 
@@ -72,7 +73,7 @@ import XCTest
             case .queuedEdit:
                 task = Task { _ = try? await model.queueEditRequest("queue.edit.save",sessionID:f.chat.id,params:["text":.string(f.output.path)]) }
             case .sidePublication:
-                task = Task { try? await model.publishPendingSide(side,view:f.view,draft:DraftRecord(id:side.id,text:f.output.path)) }
+                task = Task { try? await model.publishPendingSide(side,view:f.view) }
             case .keep:
                 model.sides[f.chat.id] = side
                 model.displays[side.id] = SessionDisplay(id:side.id)
@@ -180,6 +181,154 @@ import XCTest
             await gate.open(); await model.draftWrites.tasks[f.chat.id]?.value
             try await model.recycleUnreferencedToolOutputs()
             XCTAssertTrue(FileManager.default.fileExists(atPath:f.output.path),"The committed displaced/queued draft still owns the file")
+        }
+    }
+
+    func testFailedConflictPreservationKeepsOutputAfterTheComposerChanges() async throws {
+        try await assertPinnedInputKeepsOutput(submission: false)
+    }
+
+    func testFailedSubmissionPreservationKeepsOutputAfterTheComposerChanges() async throws {
+        try await assertPinnedInputKeepsOutput(submission: true)
+    }
+
+    func testSideInputTransferKeepsOutputThroughFailureAndParentRecovery() async throws {
+        let f = try await fixture("side-input-transfer")
+        f.view.draft = ""
+        let info = SideRecord(id: "unsaved-side", parentID: f.chat.id, workspaceID: f.chat.workspaceID, profileID: f.chat.profileID, title: "Side")
+        let side = SessionDisplay(id: info.id)
+        f.model.sides[f.chat.id] = info; f.model.displays[info.id] = side
+        let intent = CommandIntent(id: "captured", sessionID: side.id, turnID: "turn", text: f.output.path, state: "intent")
+        side.draftVersion.preservingSubmission(intent); side.recovered = [intent]
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_transfer BEFORE INSERT ON records WHEN NEW.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated transfer failure'); END", root: f.model.root)
+        do { try await f.model.moveSideDraft(info); XCTFail("Transfer must fail") } catch {}
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path))
+        XCTAssertEqual(side.draftVersion.unsavedSubmissions, [intent])
+        try RecoveredDraftTests.sql("DROP TRIGGER fail_transfer", root: f.model.root)
+        try await f.model.moveSideDraft(info)
+        XCTAssertTrue(side.draftVersion.unsavedSubmissions.isEmpty)
+        XCTAssertEqual(f.view.recovered.map(\.text), [f.output.path])
+        f.model.displays.removeAll()
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "The parent's durable recovery is now the only owner")
+    }
+
+    func testConflictRestorationOwnsPinnedInputThroughStorageFailure() async throws {
+        let f = try await fixture("failed-conflict-restoration")
+        try await f.store.put(DraftRecord(id: f.chat.id, text: "Winning draft"), kind: "draft", id: f.chat.id)
+        let copy = SavedDraftConflict(id: "restore", draft: DraftRecord(id: f.chat.id, text: "Restore this copy"))
+        try await f.store.put(copy.draft, kind: "draft-conflict:" + f.chat.id, id: copy.id)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(f.model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_restore BEFORE INSERT ON records WHEN NEW.kind LIKE 'draft-conflict:%' BEGIN SELECT RAISE(ABORT, 'generated restore failure'); END", nil, nil, nil), SQLITE_OK)
+        f.model.draftChanged(f.view); await f.model.draftWrites.tasks[f.chat.id]?.value
+        XCTAssertTrue(f.view.draftVersion.hasUnsavedConflict)
+        f.view.draft = "Later composer without the reference"
+        let gate = AsyncGate(); var prepared = false
+        f.model.toolOutputProducerStep = { if $0 == .draftRecovery { prepared = true; await gate.wait() } }
+        f.model.restoreConflictedDraft(copy)
+        XCTAssertTrue(f.model.toolOutputProducers.values.contains(.draftRecovery), "Conflict restoration must register before its pinned references can move to durable storage")
+        await gate.open(); await f.model.draftWrites.recoveries[f.chat.id]?.value
+        XCTAssertTrue(prepared, "Restoration must also wait for any previously submitted recycling")
+        let debounce = f.model.draftWrites.tasks[f.chat.id]; debounce?.cancel(); await debounce?.value
+        XCTAssertTrue(f.model.toolOutputProducers.isEmpty)
+        XCTAssertTrue(f.view.draftVersion.hasUnsavedConflict, "The injected restore failure keeps its pinned copy")
+        XCTAssertEqual(f.view.draft, "Later composer without the reference")
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path))
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_restore", nil, nil, nil), SQLITE_OK)
+        try await f.store.preserveDraftConflicts(f.view.draftVersion)
+        f.model.displays.removeAll()
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path))
+    }
+
+    private func assertPinnedInputKeepsOutput(submission: Bool) async throws {
+        let f = try await fixture(submission ? "pinned-submission" : "pinned-conflict")
+        let other = MetadataStore(url: f.model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: f.chat.id, text: "Another instance's draft"), kind: "draft", id: f.chat.id)
+        await other.close()
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(f.model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let kind = submission ? "pending:%" : "draft-conflict:%"
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_preservation BEFORE INSERT ON records WHEN NEW.kind LIKE '\(kind)' BEGIN SELECT RAISE(ABORT, 'generated preservation failure'); END", nil, nil, nil), SQLITE_OK)
+        if submission {
+            f.view.draft = "Remaining composer"
+            let intent = CommandIntent(id: "captured", sessionID: f.chat.id, turnID: "turn", text: f.output.path, state: "intent", epoch: nil)
+            let use = f.model.beginToolOutputUse(.submission)
+            do {
+                try await f.store.recordSubmission(intent, draft: f.view.savedDraft, draftVersion: f.view.draftVersion)
+                XCTFail("The injected preservation failure must reject the write")
+            } catch { XCTAssertEqual(error as? StoreError, .unavailable) }
+            f.model.finishToolOutputUse(use)
+            XCTAssertEqual(f.view.draftVersion.unsavedSubmissions.map(\.text), [f.output.path])
+        } else {
+            f.model.draftChanged(f.view)
+            await f.model.draftWrites.tasks[f.chat.id]?.value
+            XCTAssertEqual(f.view.draftVersion.unsavedConflicts.map(\.draft.text), [f.output.path])
+        }
+        XCTAssertTrue(f.view.draftVersion.hasUnsavedConflict)
+        XCTAssertTrue(f.model.toolOutputProducers.isEmpty, "The failed writer has released its transient ownership")
+        let durable = try await f.store.toolOutputReferences(root: f.model.root, candidates: ["deleted/result.log"], deleted: ["deleted"])
+        XCTAssertTrue(durable.keys.isEmpty, "Only the pinned input owns the output")
+        f.view.draft = "Later typing without the reference"
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "Pinned input must own its output after its producer finishes")
+
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_preservation", nil, nil, nil), SQLITE_OK)
+        try await f.store.preserveDraftConflicts(f.view.draftVersion)
+        XCTAssertFalse(f.view.draftVersion.hasUnsavedConflict)
+        f.model.displays.removeAll()
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "Committed recovery input owns the output without a display")
+        try await f.store.removeAll(kind: "draft-conflict:" + f.chat.id)
+        try await f.store.removeAll(kind: "pending:" + f.chat.id)
+        try await f.model.recycleUnreferencedToolOutputs()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.output.path), "Explicitly discarding the last copy releases the output")
+    }
+
+    func testFailedSideTransferReturnsOutputOwnershipToItsComposerAndParkedDraft() async throws {
+        for parked in [false, true] {
+            let f = try await fixture(parked ? "parked-transfer-failure" : "transfer-failure")
+            f.model.displays.removeAll()
+            let info = SideRecord(id: "side", parentID: f.chat.id, workspaceID: f.chat.workspaceID, profileID: f.chat.profileID, title: "Side", pending: true)
+            let side = SessionDisplay(id: info.id); side.selectionMetadataLoaded = true
+            if parked {
+                side.queueEditingID = "queued"
+                side.draftBeforeQueueEdit = DraftRecord(id: side.id, text: f.output.path)
+            } else { side.draft = f.output.path }
+            f.model.sides[f.chat.id] = info; f.model.displays[side.id] = side
+            let gate = AsyncGate(); var entered = false
+            f.model.sideDraftTransferStep = { entered = true; await gate.wait() }
+            var db: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(f.model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+            defer { sqlite3_close(db) }
+            XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_transfer BEFORE INSERT ON records WHEN NEW.kind='draft' BEGIN SELECT RAISE(ABORT, 'generated transfer failure'); END", nil, nil, nil), SQLITE_OK)
+            let transfer = Task { try await f.model.moveSideDraft(info) }
+            try await wait("Side transfer did not consume its source") { entered }
+            XCTAssertTrue(side.draft.isEmpty)
+            XCTAssertTrue(side.draftBeforeQueueEdit?.text.isEmpty != false)
+            try await f.model.recycleUnreferencedToolOutputs()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "The suspended transfer owns its captured input")
+            await gate.open()
+            do { try await transfer.value; XCTFail("The injected transfer write must fail") }
+            catch { XCTAssertEqual(error as? StoreError, .unavailable) }
+            XCTAssertEqual(parked ? side.draftBeforeQueueEdit?.text : side.draft, f.output.path)
+            XCTAssertTrue(f.model.toolOutputProducers.isEmpty)
+            await f.model.toolOutputCleanup?.value
+            try await f.model.recycleUnreferencedToolOutputs()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "Failed transfer returns ownership before releasing its producer")
+            XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_transfer", nil, nil, nil), SQLITE_OK)
+            try await f.model.moveSideDraft(info)
+            f.model.displays.removeAll()
+            try await f.model.recycleUnreferencedToolOutputs()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: f.output.path), "The durable destination now owns the reference")
+            try await f.store.remove(kind: "draft", id: f.chat.id)
+            try await f.model.recycleUnreferencedToolOutputs()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.output.path))
         }
     }
 

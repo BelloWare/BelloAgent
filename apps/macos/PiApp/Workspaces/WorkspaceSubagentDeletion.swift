@@ -110,6 +110,7 @@ extension WorkspaceModel {
     func deleteSubagentFamily(_ parent: ChatRecord) async throws -> [String] {
         guard !parent.isSubagent, !parent.imported, let store, displays[parent.id]?.hasWork != true,
               displays[parent.id]?.loading != true else { throw HostError.failure("Stop work before deleting this family.") }
+        guard displays[parent.id]?.draftVersion.hasUnsavedConflict != true else { throw StoreError.unavailable }
         try beginBudgetOwnerChange(parent.id)
         defer { budgetOwnerChanges.remove(parent.id) }
         let existing = try await store.pendingFamilyDeletions().filter { $0.ownerID == parent.id }
@@ -129,6 +130,7 @@ extension WorkspaceModel {
         var members = [owner]
         var known: Set<String> = [parent.id]
         for side in try await savedSideDescendants(of: parent) where known.insert(side.chat.id).inserted {
+            guard displays[side.chat.id]?.draftVersion.hasUnsavedConflict != true else { throw StoreError.unavailable }
             // Fail closed rather than overwrite another deletion's receipt.
             // Own the mark before any await, so every failure below releases it.
             guard deletingFamilies.insert(side.chat.id).inserted else { throw sideStillFinishing(side.chat) }
@@ -318,7 +320,13 @@ extension WorkspaceModel {
         guard unchanged, try await store.pastedImageReferencesUnchanged(metadata.token) else { return }
         guard !deferToolOutputCollection(since: producerRevision) else { return }
         var kept = references.keys.union(metadata.keys)
-        for view in displays.values where !deleted.contains(view.id) {
+        for view in displays.values {
+            // A failed preservation outlives its writer's producer token.
+            // These pinned inputs own references until they become durable,
+            // independently of the current composer or a chat tombstone.
+            kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.draftVersion.unsavedConflicts.map(\.draft)), candidates: candidates))
+            kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.draftVersion.unsavedSubmissions), candidates: candidates))
+            guard !deleted.contains(view.id) else { continue }
             kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(view.savedDraft), candidates: candidates))
             for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
                 kept.formUnion(try ToolOutputOwnership.references(in: JSONEncoder().encode(draft), candidates: candidates))
@@ -348,6 +356,7 @@ extension WorkspaceModel {
     }
 
     func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
+        guard !members.contains(where: { displays[$0.id]?.draftVersion.hasUnsavedConflict == true || sides[$0.id].flatMap { displays[$0.id] }?.draftVersion.hasUnsavedConflict == true }) else { throw StoreError.unavailable }
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
         guard let record = members.first(where: { $0.id == owner }),
@@ -406,7 +415,8 @@ extension WorkspaceModel {
         for member in members.sorted(by: { (rank($0), $0.id) > (rank($1), $1.id) }) {
             forgetReadState(member.id); forgetRunHold(member.id)
             try await store.removeDeletedSideKeep(member)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            for kind in ["chat", "draft", "anchor", "anchor-deleted", "capture-preference", "handoff", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            try await store.removeAll(kind: "draft-conflict:\(member.id)")
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
             contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id); subagentEfforts.removeValue(forKey: member.id)

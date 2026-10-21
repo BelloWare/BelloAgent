@@ -6,7 +6,7 @@ import Foundation
 extension WorkspaceModel {
     func acquireUpdateBarrier() -> Bool {
         if installPreparing { return true }
-        guard !hasActiveWork else { return false }
+        guard !hasActiveWork, attachmentImports == 0 else { return false }
         installPreparing = true; return true
     }
     func prepareForInstall() async throws {

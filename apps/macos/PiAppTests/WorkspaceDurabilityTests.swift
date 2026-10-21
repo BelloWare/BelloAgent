@@ -93,6 +93,7 @@ final class WorkspaceDurabilityTests: XCTestCase {
         model.displays[view.id] = view
         let future = Int64(Date().timeIntervalSince1970 * 1_000_000) + 1_000_000_000_000
         try await store.put(DraftRecord(id: view.id, text: "Before clock correction"), kind: "draft", id: view.id, revision: future)
+        view.draftVersion = try await store.draftVersion(id: view.id)
         view.draft = "After clock correction"; model.draftChanged(view)
         try await Task.sleep(for: .milliseconds(200))
         let debounced = try await store.get(DraftRecord.self, kind: "draft", id: view.id)

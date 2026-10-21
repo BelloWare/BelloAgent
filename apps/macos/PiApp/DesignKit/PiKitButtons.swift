@@ -125,7 +125,7 @@ extension PiKit {
         func styleFace() {}
         /// The face's corner radius for `size`: a capsule's unless a subclass says.
         func cornerRadius(for size: CGSize) -> CGFloat { min(size.width, size.height) / 2 }
-        /// Whether the corners are a circle's arc (an icon button's circle)
+        /// Whether the fill corners are a circle's arc (an icon button's circle)
         /// rather than SwiftUI's continuous capsule curve.
         var circularCorners = false
         /// The width of the outline, when it has one.
@@ -185,7 +185,10 @@ extension PiKit {
             let radius = cornerRadius(for: face.bounds.size)
             fill.cornerRadius = radius; shade.cornerRadius = radius
             stroke.cornerRadius = radius + strokeWidth / 2; stroke.borderWidth = strokeWidth
-            for layer in [fill, shade, stroke] { layer.cornerCurve = circularCorners ? .circular : .continuous }
+            for layer in [fill, shade] { layer.cornerCurve = circularCorners ? .circular : .continuous }
+            // Continuous capsule borders leave straight seams at their ends.
+            // Keep the fill and content geometry; only the outline uses arcs.
+            stroke.cornerCurve = circularCorners || radius >= min(face.bounds.width, face.bounds.height) / 2 ? .circular : .continuous
             content.contentsScale = piScale
             CATransaction.commit()
             content.setNeedsDisplay()

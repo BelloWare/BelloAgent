@@ -2,6 +2,16 @@ import XCTest
 @testable import PiApp
 
 final class MessageDetailTests: XCTestCase {
+    func testEditModelOverrideUsesTheSameUTF8AndPrintableLimit() {
+        let boundary = String(repeating: "界", count: 66) + "ab"
+        let accepted = WorkspaceModel.editTurnParams(messageID: "m", text: "edit", turnID: "t", attachments: [], skills: [], model: boundary)
+        XCTAssertEqual(accepted["model"], .string(boundary))
+        for invalid in [boundary + "c", "alias\u{7f}tail"] {
+            let rejected = WorkspaceModel.editTurnParams(messageID: "m", text: "edit", turnID: "t", attachments: [], skills: [], model: invalid)
+            XCTAssertNil(rejected["model"])
+        }
+    }
+
     func testModelDetailsUseLiteralBodyRouteAndKeepHeaderAndAliasReports() {
         func item(_ source: String, _ name: String) -> WireValue { .object(["kind": .string("model"), "source": .string(source), "value": .string(name)]) }
         let metadata: [String: WireValue] = ["requestedModel": .string("auto-router"), "identity": .object([

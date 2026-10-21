@@ -81,7 +81,10 @@ extension WorkspaceModel {
                 do {
                     try await self.prepareToolOutputUse(outputUse)
                     guard let store = self.store else { throw StoreError.unavailable }
-                    try await store.dismissSideKeep(issue.chat)
+                    guard !self.sidePublications.contains(issue.id), self.side(issue.id)?.keeping != true,
+                          self.side(issue.id)?.keepRequested != true, self.displays[issue.id]?.loading != true,
+                          self.displays[issue.id]?.draftVersion.hasUnsavedConflict != true else { throw StoreError.unavailable }
+                    try await store.dismissSideKeep(issue.chat, owner: self.inputPublicationOwner())
                     self.sideKeepResolutionRevision &+= 1
                     self.sideKeepIssues.removeAll { $0.chat == issue.chat }
                 } catch {
