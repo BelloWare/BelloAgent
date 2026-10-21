@@ -5034,3 +5034,390 @@ remained free (`cleanup.json`). Text logs and image evidence are retained; no
 named xcresult was requested. The final source manifest still matches after
 cleanup. No unresolved Round-16 finding or new owner decision remains. The
 existing legacy no-lease publication-policy follow-up from Round 14 is unchanged.
+
+
+## Round 17 — captured-input state and cross-instance ownership
+
+### State model (recorded before implementation)
+
+These are overlapping ownership states, not mutually exclusive copies. A
+captured input has a stable command ID, immutable text/images/skills and a
+session ID. Composer snapshots are replaceable; captured input is not. Queue
+rewrites additionally identify the held edit and exact saved-text digest.
+
+| State / home | Owner | Allowed transition and required ordering |
+| --- | --- | --- |
+| Captured in-memory pin | Capturing model's live submission task and `DraftVersion`; output-reference inventory includes it | Pin synchronously before any await/storage operation. Acquire the model's per-launch lifetime lease before publishing a pending record or dispatching. Failure retains the pin; later typing cannot replace it. |
+| Durable pending record (`intent`) | Recorded launch UUID; local `submittingCommands` distinguishes a live task from settled local failure | Commit independent input before dispatch, then release only its in-memory pin. Foreign models must acquire that launch's lease nonblockingly before exposing or acting on recovery. A held/unreadable lease is not abandonment. A crash releases the kernel lock, not the record. |
+| Dispatch / unknown outcome | Same launch/task, then settled owner after task exits | No recovery while any owning task/instance is live. Local settled failures can be recovered by their owner; other live instances leave them alone. Lost replies require journal/receipt/exact queue-digest reconciliation before recovery; uncertainty alone is neither admission nor acknowledgement. |
+| Durable acknowledged record / receipt | Helper evidence, settled by the owning/reconciling model | Positive acceptance suppresses recovery immediately. Retire durable pending and pins only after committed acknowledgement/receipt cleanup; delayed reads retain positive evidence across awaits. Never re-offer confirmed input. |
+| Recovered display entry | Presentation of an existing pin or durable record, not a durable home | Publish only after checking current inventory, acceptance and local/foreign ownership. Revalidate after awaits. Insert/Discard obtains and holds recovery authority through the storage operation; stale UI has no authority. |
+| Draft copy / parked or displaced draft | Current composer/editor and loaded revision, or durable draft/conflict record | Insert requires an atomic durable draft holding the input before consuming the independent record. The draft must belong to an indexed chat; an unregistered side draft is not a reachable home. Review markers prevent an uncertain returned submission from silently running twice. |
+| Side keep intent / unregistered side | Publication launch lease plus local publication task; keep intent links child to saved parent | Keep intent precedes side publication. Failed/missing-journal input retains the independent record and parent link. Before dropping the pane or consuming its input, move it atomically to an indexed parent recovery/draft, or successfully register the side. A foreign model may recover only a dead publisher. |
+| Conflict copy / failed preservation pin | Losing draft version; durable episode or pinned snapshot | Commit the independent captured record separately from replaceable conflict episodes. Never remove its last pin on failed storage. All retained references remain collection owners until committed or explicitly discarded. |
+| Settled: sent / restored | Positive helper evidence, or successful transfer into a reachable durable draft | Remove recovery entries, pins and stale cache only after the durable settlement; invalidate pending inventory on each commit. A later retry/debounce cannot recreate retired input. |
+| Discarded | Explicit user recovery/draft/chat deletion action with current ownership | Commit removal first; then remove pins/UI. No live input may be discarded by another instance or by a stale recovery control. Storage failure preserves the prior home and baseline. |
+
+Per-launch ownership is deliberately conservative: another instance cannot
+recover even a settled failure while its original instance's lease remains
+held; the original instance exposes its own settled failure in place. On
+crash/exit, a new reader can obtain the lease without waiting. Older records
+without an owner retain their existing legacy recovery behavior; new captures
+must always carry ownership before durable publication/dispatch. All recovery
+transactions recheck their current durable input, so absence or replacement
+cannot be treated as permission to replay an old display entry.
+
+Audit scope: ordinary Send/follow-up/Steer, historical Resend, queued Save and
+retry/Cancel settlement, side first Send, compaction/Resume and utility-title
+pending records; pins and conflict-preservation retries; hydration/snapshot
+reconciliation; Insert/Discard; acknowledgement/receipts; side publication,
+registration, Close/Quit/update/helper-loss transfer and missing-journal
+recovery; deletion/collector inventory. Findings, evidence and final caller
+inventory follow below after implementation and validation.
+
+
+### Findings and audit evidence
+
+Evidence root (text logs, no named result bundle):
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round17-captured-input-ownership/`.
+
+Both reported findings are **confirmed**. The first run, `failing-first.log`,
+ran the new tests against unchanged Round-16 production code: **2 tests failed,
+27 assertions**. The side test reported `Insert must commit in the indexed
+parent, not an unlisted side draft` (parent draft nil). The shared-root fixture
+reported `A foreign live owner is not recovery` for Send, Steer, Resend, queued
+Save and side first Send; stale Insert/Discard actions consumed live pending
+records. `fixed-first.log` subsequently passed both tests.
+
+The state-model sweep has also confirmed:
+
+- Dismissing a side-publication reminder could remove the only parent link for
+  independent input. `testDismissingSidePublicationCannotOrphanIndependentInput`
+  failed (`XCTAssertNotNil`, keep intent gone). Dismiss is not an input-discard
+  authorization: without an indexed child, the keep intent must stay until
+  its pending input is transferred or explicitly settled.
+- A recovery read could publish input consumed through another SQLite connection
+  during its history await. `testRecoveryReadRevalidatesAnotherInstancesCommittedRetirement`
+  failed; local generation counters cannot observe foreign commits. Recovery
+  now compares the durable inventory again before publishing; consuming actions
+  also compare the exact current record/pin inside their transaction.
+- A replacement display in the same model lacked the original display's live
+  IDs. `testReplacementDisplayCannotRecoverItsLaunchesLiveSubmission` failed.
+  The model now also owns live IDs until task settlement.
+- Snapshot caches survived foreign pending-record removal.
+  `testSnapshotInvalidatesForeignPendingRecordChanges` failed. SQLite's
+  `data_version` plus connection identity fences the cache and every awaited
+  settlement, while unchanged local streaming keeps its existing cache.
+- Transferred input retained the dead publisher's owner while recovery itself
+  held that lease, hiding the transferred input locally.
+  `testTransferredSideInputAdoptsTheRecoveringLaunch` failed twice. Migration
+  now writes the recovering launch as owner in the same transaction.
+- Publication ownership did not prove ownership of every input underneath it.
+  `testSideRecoveryCannotMoveInputOwnedByAnotherLiveLaunch` failed: a dead
+  publication owner could cause a different live input owner's record to move.
+  Transfer now obtains any additional foreign input leases without waiting,
+  inside the transaction, before moving input or retiring the parent link.
+
+`audit-first.log`: two failing audit tests (two assertions), plus a passing
+SIGKILL crash test. `ownership-sweep-first.log`: three failed tests, four
+assertions. `transfer-ownership-first.log` contains the separate live-owner
+transfer regression. `fixed-audit.log` is a compiler-only intermediate run:
+a lease-registration line was inserted in the adjacent conflict-restoration
+function; it was moved into submission recovery before rerunning. It is not
+counted as behavioral evidence.
+
+### Caller / transition audit
+
+| Path | Ownership / durability checked |
+| --- | --- |
+| `WorkspaceRun.acceptSubmission` / `deliverSubmission` | Launch lease acquired before capture; immutable pin before awaits; independent record before dispatch. New chat materializes first. Ordinary Send, follow-up, Steer and side first Send share this path. |
+| `WorkspaceEditing.sendEdit` | Same lease/pin/independent record; editor typing and review-marker snapshots do not own captured Resend. Refusal consumes only with an atomically matching durable draft; otherwise retains recovery. |
+| `QueuePanel.resolveQueuedEdit` | Queued Save and identical retry carry the launch owner; earlier-operation confirmation retires record and pin together. Unknown outcomes retain operation/digest. Cancel/Remove are explicit queue operations, not implicit recovery permission. |
+| `recordSubmission`, conflict preservation and `restoreConflict` | Independent captured records preserve owner through retries; pin release follows commit. Replaceable conflict episodes never overwrite captured text. Failed BEGIN/read/write/COMMIT preserves the prior baseline and pin. |
+| `recoverableIntents`, main/side hydration | Local task IDs plus foreign lease liveness; current local inventory and fresh durable inventory before publication; positive queue-digest/journal evidence survives awaits. |
+| `settleSnapshotIntents` | Cache checks foreign SQLite commits as well as local input generations; acceptance suppresses recovery before awaits; terminal receipt cleanup commits before pins/cache are retired. |
+| `recoverDraft` Insert / Discard | Current ownership admitted and held across awaits; exact durable record/pin checked atomically. An unregistered side's Insert targets its indexed parent draft; source input is removed only in that same commit. Failed parent load/write/commit leaves input reachable. |
+| `moveSideDraft`, Close, Quit, update, helper loss | Captured records move to the indexed parent before the side/display can disappear. The transfer acquires additional foreign leases and adopts the new owner's lease atomically. Ephemeral unsent composer/parked drafts still follow the existing parent-transfer policy. |
+| `reconcileSideKeeps`, registration, reminder dismissal | Publication lease proves publisher death, not arbitrary input death. Successful registration supplies an indexed child; missing journals migrate input before keep removal. A reminder cannot discard independent input. Legacy no-owner/missing-journal publications retain the existing review notice. |
+| Returned input, queue rewrite/remove bookkeeping | Changes follow explicit helper outcome evidence; acknowledged commands do not become recoverable. Draft-return withdrawal verifies durable contents instead of trusting an unchanged loaded snapshot. |
+| Deletion and output collection | Explicit confirmed chat/family deletion is user discard authorization and retains existing unload/tombstone barriers. Pins, pending rows, conflict copies, parked/displaced drafts and side transfers remain output-reference owners through commit/failure. No collector exclusion was added. |
+
+Final adversarial review, mutation results, complete validation and gallery
+inspection are recorded below when the final source is tested.
+
+
+Additional state-model checks:
+
+- A stable queued-Save command ID could replace a different launch's owner.
+  `retry-owner-loaded-first.log` failed the ownership, dispatch and recovery
+  assertions. `recordSubmission` now checks an existing owner before touching
+  the composer or pending record. The identical capture already has a verified
+  durable home, so its duplicate pin can retire; the original owner/record
+  remains and the second task does not dispatch. Its editor retains the
+  original Save operation/digest for later Cancel/changed-Save reconciliation.
+  The preceding `retry-owner-first.log` used an unloaded draft baseline and
+  additionally exposed the stale recovery pin after that refusal; its
+  compaction test independently failed live-input visibility.
+- `testLiveCompactionCannotAppearAsCapturedInputRecovery` failed because control
+  commands had durable records but no live local input ownership. Compaction,
+  Resume and utility-title tasks now participate in model-level task ownership;
+  compaction records are acknowledged on a successful reply. Their payloads
+  and helper requests are unchanged.
+- `dismissal-owner-first.log` failed
+  `testDismissCannotRetireAnotherLaunchesLivePublicationBeforeItsInputWrite`:
+  an empty pending list is not permission to retire a live publication. The
+  store now checks its lease, and the model guards local publication/imported
+  pins. The companion held-storage recovery test passed: another instance's
+  stale Insert/Discard cannot borrow the lease while recovery owns it.
+
+The first complete submission pass (`fixed-affected.log`) had **71 tests** with
+**14 assertions across six failed tests**. Those assertions expected Insert
+into an unregistered side. They were updated to verify the new, required
+parent destination (including its durable row) and unchanged side typing.
+Every injected persistence/rollback/retirement failure assertion remains.
+`fixed-submission.log` then passed **122 tests** (73 submission, 37 snapshot
+lifecycle, 12 send bookkeeping). The later pass includes the added lease-wait
+and pre-input-publication dismissal checks.
+
+
+### Adversarial self-review and final corrections
+
+The state model was checked against every newly changed condition, including
+both sides of each ownership check:
+
+| Condition | Newly selected branch; intended outcome |
+| --- | --- |
+| Lease acquisition before capture | A lease/filesystem error refuses admission with the composer intact. No input is emptied or dispatched. Successful captures, including control/title records, encode the owner before their first durable write. |
+| Existing pending record has a different owner | Matching captured payload plus a dead lease permits a retry. A held lease preserves the canonical record, releases only the verified duplicate pin, retains its Save digest and refuses dispatch. Invalid identity/payload fails without replacing either input. Same-launch ordinary retries retain their prior path. |
+| Model live-ID or display live-ID present | Recovery is hidden and Insert/Discard refuses, including a new display while the old display's task lives. Finish runs after failure/acceptance cleanup; utility-title ownership also spans its catch cleanup. |
+| Foreign owner valid / unavailable / absent | A valid dead owner's lease can be borrowed without waiting. A held or unreadable lease refuses recovery. Local settled input uses the launch's held lease. Legacy ownerless records retain existing decoding/recovery compatibility. No lease inode is unlinked. |
+| Recovery task holds a borrowed lease | Other instances cannot act during storage waits; the same model recognizes its own borrowed lease during snapshots. The action releases it only after its commit/failure cleanup. |
+| Durable inventory changed during an await | Hydration restarts using committed rows and current pins; a consumed/reowned input cannot publish from an old array. Exact-record comparison in the consuming transaction rejects a stale chooser even after publication. |
+| SQLite external revision changed | Snapshots invalidate their cached pending list and revalidate after settlement waits. Connection identity prevents reuse after reopening SQLite; unchanged local streaming retains the cache (the existing 20-snapshot performance regression passes). |
+| Task/lease eligibility changed without a record change | Recompute the eligible inventory before publication and retry if it differs. This covers both a task finishing on a replaced display and a foreign owner exiting while history is being read. |
+| Insert from an unregistered, unkept side | Target the saved parent; load its baseline, preserve concurrent typing through CAS, and commit its draft before removing the source input. Kept/indexed sides and main chats retain their own destination. Discard does not write a draft. No navigation or focus is taken by late completion. |
+| Source or destination is editing/sending/recovering | Keep the input and refuse replacement. Retained paused queue items alone do not block recovery. Failed parent writes/retirement keep the source input and its pin. |
+| Transfer sees an additional foreign input owner | Acquire that owner's lease inside the transaction or leave all input and the keep intent untouched. Successful transfer changes the pending owner to the recovering launch before source removal/pin release. |
+| Reminder dismissal has live publication or unindexed input | Leave the reminder/parent link. Indexed saved chats and settled empty publications retain normal dismissal. Local active publication and undurable pins also block dismissal. |
+| Compact accepted / control or title task ends | Positive replies acknowledge desktop pending state; task cleanup clears live ownership on every exit. Resume's Stop/cost-pause fences and all helper request payloads remain unchanged. |
+| Preflight notice before/after input reconciliation | Before storage completes, keep the existing uncertainty state and show the explanation. After the current inventory settles, an empty list clears uncertainty; unresolved input with a preflight sets it. A provisional paused state cannot insert a temporary resend gate. |
+
+Self-review specifically seeded a stale recovery entry before the refused
+foreign queued retry. `stale-retry-first.log` failed its visibility assertion.
+The owner refusal now drops that stale presentation and settling entry,
+invalidates its cache and keeps the canonical Save digest. The focused fix
+passed; its isolated mutation restores the failure.
+
+The first final headless run is preserved as `pre-review-headless.log`:
+**402 tests, seven assertions across two failures**. One kept-side fixture
+represents registration through `SideRecord.kept`, without populating the
+sidebar chat array. The parent-destination condition was tightened to require
+an unkept side as well as an absent indexed chat; kept-side close/recovery
+ordering is unchanged. The other failure began with SQLite **5 / BUSY** while
+the test connection dropped its injected trigger. Later assertions then saw
+the deliberately failing trigger still installed. The injection connection now
+uses a three-second busy timeout, like the production store, so DDL waits for
+ordinary actor commits; injected storage failures still occur at the same
+steps. `fixed-kept-and-storage.log` passed all **88** recovered-draft and
+submission tests. This was not ignored as an unrelated failure.
+
+A final state-model probe found an eligibility transition outside the display
+counter: `testRecoveryRechecksOwnershipReleasedDuringItsAcceptanceRead` failed
+**two assertions** in `released-owner-first.log` (replaced-display task and
+foreign lease release). The final inventory check now compares current
+eligibility too. Both it and the kept-side regression pass in
+`fixed-final-fences.log`, and their isolated mutations fail.
+
+The first record-owner mutation did not compile because removing the owner
+argument made its local binding unused under warnings-as-errors. It was
+corrected to an expression that still reads the binding while omitting the
+serialized owner, then rerun to obtain assertion failures. Compiler failure
+is not counted as mutation evidence. All final mutation runs use the corrected
+script and restore exact source in `finally`.
+
+The final gallery adds a second-instance fixture whose owning model is dropped
+without normal shutdown or draft flush. It checks that the lease actually
+releases and that the banner changes from hidden live input to reachable
+interrupted input, in light/dark at 760/300 points. The independent SIGKILL
+child-process test also exercises kernel lease release with the lock file left
+on disk. Ordinary storage-failure/rejected-Resend scenes remain in the gallery.
+
+### Validation-discovered provisional uncertainty
+
+The first locked window group passed **61 tests**, but the following complete
+`ConversationPaneTests` run failed **one of 85 tests, five assertions**. Evidence
+is retained in `first-window-conversation.log`. The existing packaged-helper
+regression `testAMessageSentWhileTheQueueIsPausedJoinsIt` could not submit
+“Added while paused”. A focused diagnostic reproduced all five assertions:
+`uncertain=true loading=false ready=true reviews=[] recovery=[] snapshot=true`.
+The temporary diagnostic print was removed; `ConversationRunTests.swift`
+remains unchanged.
+
+This was an exposed ordering defect, not an ignored flaky failure. Applying the
+stop notice set `uncertain` before asynchronous input reconciliation cleared it.
+The added foreign-database reads made that provisional resend gate observable.
+`testPreflightUncertaintyWaitsForTheReconciledInputInventory` holds the metadata
+actor and fails **two assertions** before the fix (`preflight-first.log`), both
+with and without retained input. The stop explanation now publishes immediately,
+while its uncertainty flag publishes with the current reconciled recovery
+inventory. Existing uncertainty remains protected during awaits; a settled empty
+inventory clears it, and a preflight with unresolved retained input sets it,
+matching the previous completed-snapshot behavior. No helper request changed.
+`fixed-preflight.log` passes both the held-storage regression and the original
+paused-queue scenario (**2 tests**). `mutation-preflight.log` restores the
+premature assignment and fails the held-storage regression (one test, two
+assertions). The complete affected classes are rerun below after
+this correction; earlier passing logs have the `pre-preflight-` prefix.
+
+### Final validation
+
+**661 native tests passed across 36 classes; zero failures or skips.**
+Every Round-16 class was rerun, plus DraftMarkTests, DraftSizeTests,
+PastedAttachmentTests and CostPauseFamilyTests for the changed storage/Resume
+callers. Counts exclude failing-first, exploratory and mutation runs. Window
+and gallery lanes held the shared full-lane lock; serial classes ran alone.
+
+| Class | Passed | Evidence log |
+| --- | ---: | --- |
+| `ConversationPaneTests` | 85 | `final-conversation.log` |
+| `CostPauseFamilyTests` | 3 | `final-window.log` |
+| `DraftConcurrencyTests` | 36 | `final-headless.log` |
+| `DraftLoadingTests` | 15 | `final-headless.log` |
+| `DraftMarkTests` | 5 | `final-storage-callers.log` |
+| `DraftOrderingTests` | 19 | `final-headless.log` |
+| `DraftSizeTests` | 2 | `final-storage-callers.log` |
+| `FamilyDeletionTests` | 10 | `final-headless.log` |
+| `HistoricalEditBookkeepingTests` | 2 | `final-headless.log` |
+| `HistoricalEditFocusTests` | 1 | `final-window.log` |
+| `HistoricalEditingTests` | 5 | `final-window.log` |
+| `LifecycleHelperTests` | 11 | `final-lifecycle.log` |
+| `MetadataDurabilityTests` | 10 | `final-headless.log` |
+| `PastedAttachmentTests` | 8 | `final-headless.log` |
+| `PendingChatProjectTests` | 24 | `final-headless.log` |
+| `QueueEditInteractionTests` | 17 | `final-queue.log` |
+| `QueuedEditPresentationTests` | 9 | `final-headless.log` |
+| `RecoveredDraftTests` | 13 | `final-headless.log` |
+| `RunHoldTests` | 18 | `final-headless.log` |
+| `SendBookkeepingTests` | 12 | `final-headless.log` |
+| `SessionOrganizationTests` | 9 | `final-headless.log` |
+| `SideKeepOrderingTests` | 12 | `final-window.log` |
+| `SideKeepRecoveryTests` | 15 | `final-window.log` |
+| `SideRelaunchTests` | 3 | `final-window.log` |
+| `SideTests` | 17 | `final-headless.log` |
+| `SubagentDeletionTests` | 19 | `final-headless.log` |
+| `SubagentReaderTests` | 58 | `final-subagent-reader.log` |
+| `SubmissionPersistenceTests` | 76 | `final-headless.log` |
+| `TitleGenerationTests` | 12 | `final-title.log` |
+| `ToolOutputProducerTests` | 13 | `final-window.log` |
+| `WorkspaceDisplayMemoryTests` | 2 | `final-headless.log` |
+| `WorkspaceDurabilityTests` | 9 | `final-headless.log` |
+| `WorkspaceFollowupTests` | 9 | `final-window.log` |
+| `WorkspaceRaceTests` | 58 | `final-headless.log` |
+| `WorkspaceRefreshLifecycleTests` | 38 | `final-headless.log` |
+| `WorkspaceValidationGalleryTests` | 6 | `final-gallery.log` |
+
+Exact final commands (also retained in their `.command` files):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftConcurrencyTests -only-testing:PiAppTests/DraftLoadingTests -only-testing:PiAppTests/DraftOrderingTests -only-testing:PiAppTests/FamilyDeletionTests -only-testing:PiAppTests/HistoricalEditBookkeepingTests -only-testing:PiAppTests/MetadataDurabilityTests -only-testing:PiAppTests/PendingChatProjectTests -only-testing:PiAppTests/QueuedEditPresentationTests -only-testing:PiAppTests/RecoveredDraftTests -only-testing:PiAppTests/RunHoldTests -only-testing:PiAppTests/SendBookkeepingTests -only-testing:PiAppTests/SessionOrganizationTests -only-testing:PiAppTests/SideTests -only-testing:PiAppTests/SubagentDeletionTests -only-testing:PiAppTests/SubmissionPersistenceTests -only-testing:PiAppTests/WorkspaceDisplayMemoryTests -only-testing:PiAppTests/WorkspaceDurabilityTests -only-testing:PiAppTests/WorkspaceRaceTests -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests -only-testing:PiAppTests/PastedAttachmentTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/DraftMarkTests -only-testing:PiAppTests/DraftSizeTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SideKeepOrderingTests -only-testing:PiAppTests/SideKeepRecoveryTests -only-testing:PiAppTests/SideRelaunchTests -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/HistoricalEditingTests -only-testing:PiAppTests/HistoricalEditFocusTests -only-testing:PiAppTests/WorkspaceFollowupTests -only-testing:PiAppTests/CostPauseFamilyTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationPaneTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QueueEditInteractionTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TitleGenerationTests
+```
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SubagentReaderTests
+```
+
+```sh
+TEST_RUNNER_PI_APP_WORKSPACE_VALIDATION_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round17-captured-input-ownership/gallery PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceValidationGalleryTests
+```
+
+Mutation runs used the final production source, disabled the indicated
+durability/ownership checks, and restored exact bytes in `finally` before
+the final native rerun. No compiler failure is counted.
+
+| Mutation log | Expected failed tests | Assertion failures |
+| --- | ---: | ---: |
+| `mutation-durable-homes.log` | 6 | 10 |
+| `mutation-final-fences.log` | 2 | 3 |
+| `mutation-ownership.log` | 7 | 31 |
+| `mutation-preflight.log` | 1 | 2 |
+| `mutation-record-owner.log` | 1 | 24 |
+| `mutation-stale-retry.log` | 1 | 1 |
+
+All **18 mutation executions failed as expected** (exit 65). `final-counts.json` lists
+the exact test names for each group. The two reported findings are pinned by
+`testFailedSideInsertCommitsAReachableParentDraftBeforeConsumingInput`
+(`mutation-durable-homes`) and
+`testEveryCapturedSubmissionIsHiddenFromAnotherLiveInstance`
+(`mutation-ownership`, `mutation-record-owner`). Separate mutations cover
+stale retry presentation, kept-side/released-owner boundaries and provisional
+preflight uncertainty.
+
+The final `tested-source-sha256.json` matches all Swift and generated project
+sources. No file was added/removed, so project regeneration was unnecessary.
+All failed exploratory runs are explained above. Helper and wire suites were
+not required: no helper sources, request payloads or wire contracts changed.
+CostPauseFamilyTests still exercise the packaged helper using generated
+loopback fixtures.
+
+### Gallery inspection and cleanup
+
+All **64 PNGs** were regenerated under the full-lane lock and visually inspected
+through **16 labelled sheets** at native point dimensions. Originals are in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-workspace/evidence/round17-captured-input-ownership/gallery/`;
+`gallery-inspection/manifest.json` maps every original to its inspected sheet.
+
+The eight new `foreign-input-{live,crashed}-{light,dark}-{760,300}.png` scenes
+show no recovery banner while the other launch owns the input, then a reachable
+one-line chooser after its model is dropped without shutdown. Current composer
+text stays unchanged. Existing live/settled Steer and follow-up, rejected Resend,
+failed storage, queued Save confirmation/refusal and one/40-copy scenes retain
+their visible recovery rules. The chooser stays within the narrow pane and the
+transcript keeps its reading area; no layout change was made this round.
+
+Pixel comparison against Round 16 covers its **56** matching originals:
+**51 are identical**. The other five differ only inside the transcript's
+Edit/Copy/Details hover controls; everything outside those bounds is identical.
+`gallery-pixel-comparison.json` gives counts and bounds, and the inspected
+`gallery-inspection/action-control-comparison.png` shows those before/after
+crops. The recovery banner, composer, transcript text and narrow scenes have no
+unexpected raster change.
+
+Unrelated existing visual follow-up: the transcript's separate action-pill
+renderer still shows thin vertical seams at capsule ends in both Round-16 and
+Round-17 images. Location: `apps/macos/PiApp/Transcript/TranscriptNativeParts.swift:505`
+(`TranscriptPanel`'s continuous edge curve, used by `TranscriptPillButton`).
+Scenario: hover a wide user row to expose Edit/Copy/Details. This is separate
+from the PiKit capsule renderer fixed in Round 7 and is outside captured-input
+ownership; recorded without changing it.
+
+`cleanup.json` records removal of the final automatic Xcode result bundle;
+text logs and all images remain. No clone folders remain under this workstream's
+build root. The shared lock was released, the source hash manifest still
+matches, and disk free space was approximately **11.4 GiB** after cleanup.
+`git diff --check` passes. Both Round-17 findings and the confirmed state-model
+sweep violations are fixed; the prior legacy-publication compatibility policy
+is unchanged. No merge, release, tag or shared-branch push was performed.

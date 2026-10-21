@@ -64,9 +64,12 @@ extension WorkspaceModel {
             }) { view.notice = PiQuestion.busyNotice }
             return
         }
+        let owner: String
+        do { owner = try inputPublicationOwner() }
+        catch { self.error = "The message could not be saved locally. " + error.localizedDescription; return }
         let outputUse = beginToolOutputUse(.submission)
-        let submission = acceptSubmission(item, view: view, store: store, steer: steer)
-        view.submittingCommands.insert(submission.intent.id)
+        let submission = acceptSubmission(item, view: view, store: store, steer: steer, owner: owner)
+        beginSubmission(submission.intent.id, in: view)
         sendSteps?("accepted")
         Task {
             defer { finishSubmission(submission.intent.id, in: view) }
@@ -104,7 +107,7 @@ extension WorkspaceModel {
     /// Takes the message out of the composer on Return, before anything
     /// suspends: what it says, whether its chat can still send it, and the
     /// row drawn for it at once.
-    private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool) -> Submission {
+    private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool, owner: String) -> Submission {
         view.queueEditNotice = ""
         let attachments = view.attachments, skills = view.skills, directCommand = view.directCommand
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
@@ -136,7 +139,7 @@ extension WorkspaceModel {
         }
         let named = drawsRow ? nameAfterFirstMessage(item.id, text: text.isEmpty && skills.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, skills: skills) : nil
         let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true, submissionOwner: owner)
         view.draftVersion.preservingSubmission(intent)
         return Submission(item: item, view: view, store: store, intent: intent, steer: steer, text: text, attachments: attachments, skills: skills,
                           directCommand: directCommand, commandID: commandID, turnID: turnID, connection: connection,
@@ -370,7 +373,16 @@ extension WorkspaceModel {
         var requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
         let commandID = UUID().uuidString
         let archiveRevision = archiveRevisions[id, default: 0]
-        let task = Task { do {
+        let inputView = displays[id]
+        if method == "context.compact" { beginSubmission(commandID, in: inputView) }
+        let task = Task {
+            defer {
+                if method == "context.compact" {
+                    if let inputView { finishSubmission(commandID, in: inputView) }
+                    else { liveSubmissionCommands.remove(commandID) }
+                }
+            }
+            do {
             defer { if isResume { resumeTasks[id] = nil; displays[id]?.resuming = false; updateHostActivity(workspaceID: item.workspaceID) } }
             let lease = try connectionLease(for: item)
             let host: HostSupervisor
@@ -383,13 +395,18 @@ extension WorkspaceModel {
             }
             if method == "context.compact" && !isEphemeral(item.id) {
                 guard let store else { throw StoreError.unavailable }
-                try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch, submissionOwner: try inputPublicationOwner()), kind: "pending:\(item.id)", id: commandID)
                 pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
             if method != "turn.stop" { try requireUnarchived(item.id, revision: archiveRevision) }
             if isResume { try requireResume(preparation) }
             _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
+            if method == "context.compact" {
+                inputView?.acceptedCommands.insert(commandID)
+                try await store?.acknowledgeCommand(sessionID: item.id, commandID: commandID)
+                pendingIntentsChanged(item.id)
+            }
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
                 pendingIntentsChanged(item.id)

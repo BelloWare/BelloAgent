@@ -4,6 +4,19 @@
 
 ## 0.1.130
 
+- [x] Recovering a failed, unregistered side submission commits the input to its saved parent's draft before consuming the independent record. [State model and validation](docs/validation/a130-workspace-0.1.130.md#round-17--captured-input-state-and-cross-instance-ownership).
+- [x] Every captured submission carries a launch lease; other instances cannot offer or consume live input, while crashed owners remain recoverable.
+- [x] Recovery actions hold ownership across storage waits and validate the exact current record before Insert or Discard.
+- [x] Recovery hydration rechecks foreign commits before publishing, so another instance's Insert or Discard cannot reappear.
+- [x] Recovery also rechecks released task/launch ownership after acceptance reads, even when the pending record is unchanged.
+- [x] Snapshot recovery caches invalidate on another database connection's commits.
+- [x] Live submission ownership survives display replacement within the same launch.
+- [x] Side-input transfers adopt their recovering launch and verify individual input owners before retiring the publication link.
+- [x] Dismissing a side-publication reminder cannot orphan independent input or retire a live publisher before its input write.
+- [x] An identical queued-Save retry preserves another live launch's ownership and outcome digest without dispatching or offering duplicate recovery.
+- [x] Compaction pending records remain hidden while live and are acknowledged after acceptance; Resume and title-task records share launch/task ownership.
+- [x] Snapshot stop notices no longer temporarily block paused-queue input while recovery storage is being reconciled.
+
 - [x] Queued-Save confirmation survives later recovery reads, navigation and snapshot acknowledgement pruning. [Validation](docs/validation/a130-workspace-0.1.130.md#round-16--recovery-reconciliation-ownership).
 - [x] Main-chat and saved-side hydration preserve submissions that fail while acceptance is being read, including after helper loss.
 - [x] A late recovery read cannot revive input already inserted into a draft or explicitly discarded.

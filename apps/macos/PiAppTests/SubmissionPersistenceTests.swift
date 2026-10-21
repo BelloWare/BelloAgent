@@ -4,6 +4,317 @@ import Darwin
 @testable import PiApp
 
 @MainActor final class SubmissionPersistenceTests: XCTestCase {
+    func testFailedSideInsertCommitsAReachableParentDraftBeforeConsumingInput() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "Captured side input before publication"
+        wire.rejectedMethod = "side.open"
+        model.send(sessionID: side.id)
+        try await eventually("Side publication rejected") { !view.loading && !view.recovered.isEmpty }
+        let input = try XCTUnwrap(view.recovered.first)
+        view.draft = "New side typing"; parent.draft = "Parent typing"; model.draftChanged(parent)
+        model.recoverDraft(input, insert: true)
+        await model.draftWrites.recoveries[side.id]?.value
+        let reopened = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        let saved = try await reopened.get(DraftRecord.self, kind: "draft", id: parent.id)
+        let pending = try await reopened.list(CommandIntent.self, kind: "pending:" + side.id)
+        XCTAssertEqual(saved?.text, "Parent typing\n\n" + input.text, "Insert must commit in the indexed parent, not an unlisted side draft")
+        XCTAssertEqual(parent.draft, saved?.text)
+        XCTAssertEqual(view.draft, "New side typing", "The unsaved side's independent typing stays in its own composer")
+        XCTAssertTrue(pending.isEmpty, "Only the reachable parent commit permits consumption")
+        let indexed = try await store.get(ChatRecord.self, kind: "chat", id: parent.id)
+        XCTAssertNotNil(indexed)
+        await reopened.close(); try await wire.host.shutdownAndWait()
+    }
+
+    func testEveryCapturedSubmissionIsHiddenFromAnotherLiveInstance() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save", "side"] {
+            let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            var view = parent
+            if method == "side" {
+                model.openSide(parentID: parent.id)
+                view = try XCTUnwrap(model.displays[try XCTUnwrap(model.sides[parent.id]).id])
+                view.snapshotInFlight = true
+            }
+            view.draft = "Live captured " + method
+            if method == "turn.steer" { view.runState = .running }
+            if method == "turn.edit" { view.editingMessageID = "original"; view.draftBeforeEdit = .init(id: view.id, text: "Parked") }
+            if method == "queue.edit.save" { view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"; view.draftBeforeQueueEdit = .init(id: view.id, text: "Parked") }
+            wire.heldMethod = method == "side" ? "turn.submit" : method
+            if method == "turn.edit" { model.sendEdit(sessionID: view.id) }
+            else if method == "queue.edit.save" { model.saveQueuedEdit(sessionID: view.id) }
+            else { model.send(steer: method == "turn.steer", sessionID: view.id) }
+            try await eventually("Captured command awaiting dispatch reply") { wire.held != nil }
+            let saved = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+            let input = try XCTUnwrap(saved.first)
+            let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(input)) as? [String: Any])
+            XCTAssertNotNil(encoded["submissionOwner"], "Every pending kind carries launch ownership: " + method)
+            let other = makeWorkspaceModel(stateRoot: model.root), observer = SessionDisplay(id: view.id)
+            other.prewarmsHelpers = false; other.chats = model.chats; other.displays[view.id] = observer
+            observer.selectionMetadataLoaded = true
+            other.commandAcceptanceRead = { _, _, _ in [] }
+            other.queueEditOperation = { _, _, _ in ["state": .string("active")] }
+            let item = try XCTUnwrap(model.record(view.id))
+            let recovered = try await other.recoverableIntents(saved, for: item, view: observer)
+            XCTAssertTrue(recovered.isEmpty, "A foreign live owner is not recovery: " + method)
+            // An old chooser or a direct action must not bypass admission.
+            for insert in [true, false] {
+                observer.recovered = [input]
+                other.recoverDraft(input, insert: insert)
+                await other.draftWrites.recoveries[view.id]?.value
+                let stillSaved = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: input.id)
+                XCTAssertNotNil(stillSaved, "Foreign Insert/Discard cannot consume live input: " + method)
+                XCTAssertEqual(observer.draft, "")
+            }
+            wire.release()
+            try await eventually("Submission settled") { view.submittingCommands.isEmpty }
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    func testCrashedInputOwnerReleasesRecoveryWithoutNormalClose() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let owner = UUID(), url = model.sidePublicationLeaseURL(owner), ready = model.root.appendingPathComponent("input-lease-ready")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", "import fcntl,sys,pathlib,signal\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\npathlib.Path(sys.argv[2]).touch()\nsignal.pause()", url.path, ready.path]
+        try process.run()
+        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL) }; process.waitUntilExit() }
+        try await eventually("Child owns captured input") { FileManager.default.fileExists(atPath: ready.path) }
+        let input = CommandIntent(id: "queued-input", sessionID: view.id, turnID: "queue-edit:edit", text: "Input from crashed owner", state: "intent", draftReviewTracked: true, queueEditID: "edit", submissionOwner: owner.uuidString)
+        try await store.recordSubmission(input, draft: nil)
+        model.queueEditOperation = { _, _, _ in throw HostError.failure("Generated unavailable queue status") }
+        model.commandAcceptanceRead = { _, _, _ in [] }
+        let item = try XCTUnwrap(model.record(view.id))
+        var recovered = try await model.recoverableIntents([input], for: item, view: view)
+        XCTAssertTrue(recovered.isEmpty)
+        kill(process.processIdentifier, SIGKILL)
+        try await eventually("Owner crashed without shutdown or draft flush") { !process.isRunning }
+        recovered = try await model.recoverableIntents([input], for: item, view: view)
+        XCTAssertEqual(recovered, [input])
+        model.recoverDraft(input, insert: true); await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, input.text)
+        let pending = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Do not unlink lease inodes")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testRecoveryReadRevalidatesAnotherInstancesCommittedRetirement() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let input = CommandIntent(id: "retained", sessionID: view.id, turnID: "turn", text: "One retained input", state: "intent", draftReviewTracked: true)
+        try await store.recordSubmission(input, draft: nil)
+        let other = makeWorkspaceModel(stateRoot: model.root), observer = SessionDisplay(id: view.id)
+        other.chats = model.chats; other.displays[view.id] = observer; observer.selectionMetadataLoaded = true
+        var release: CheckedContinuation<Void, Never>?, held = false
+        other.commandAcceptanceRead = { _, _, _ in
+            if !held { held = true; await withCheckedContinuation { release = $0 } }
+            return []
+        }
+        defer { release?.resume() }
+        let read = Task { try await other.recoverableIntents([input], for: try XCTUnwrap(other.record(view.id)), view: observer) }
+        try await eventually("Other instance reading acceptance") { release != nil }
+        model.offerSubmissionRecovery(input, in: view)
+        model.recoverDraft(input, insert: false); await model.draftWrites.recoveries[view.id]?.value
+        release?.resume(); release = nil
+        let recovered = try await read.value
+        XCTAssertTrue(recovered.isEmpty, "A foreign commit invalidates recovery even without a local pending counter change")
+        observer.recovered = [input]
+        other.recoverDraft(input, insert: true); await other.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(observer.draft, "", "A stale foreign chooser cannot replay consumed input")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testDismissingSidePublicationCannotOrphanIndependentInput() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("missing-side.jsonl").path
+        try await store.put(SideKeepIntent(chat: child), kind: "side-keep", id: child.id)
+        let input = CommandIntent(id: "retained", sessionID: child.id, turnID: "turn", text: "Input needing its parent link", state: "intent")
+        try await store.recordSubmission(input, draft: nil)
+        do { try await store.dismissSideKeep(child) } catch {}
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: child.id)
+        XCTAssertNotNil(keep, "Dismissing a reminder is not discarding its independent input")
+        let pending = try await store.get(CommandIntent.self, kind: "pending:" + child.id, id: input.id)
+        XCTAssertEqual(pending, input)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testReplacementDisplayCannotRecoverItsLaunchesLiveSubmission() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        view.draft = "Still being delivered"; wire.heldMethod = "turn.submit"
+        model.send(sessionID: view.id)
+        try await eventually("Submission in flight") { wire.held != nil }
+        let inputs = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        let replacement = SessionDisplay(id: view.id); replacement.selectionMetadataLoaded = true
+        model.commandAcceptanceRead = { _, _, _ in [] }
+        let recovered = try await model.recoverableIntents(inputs, for: try XCTUnwrap(model.record(view.id)), view: replacement)
+        XCTAssertTrue(recovered.isEmpty, "A live task belongs to the launch, not a replaceable display")
+        wire.release(); try await eventually("Submission settled") { !view.loading }
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testSnapshotInvalidatesForeignPendingRecordChanges() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let input = CommandIntent(id: "retained", sessionID: view.id, turnID: "turn", text: "Already recovered elsewhere", state: "intent", draftReviewTracked: true)
+        try await store.recordSubmission(input, draft: nil)
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertEqual(view.recovered, [input])
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.withdrawSubmission(sessionID: view.id, commandID: input.id, draft: nil)
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertTrue(view.recovered.isEmpty, "Another connection's commit invalidates the cached inventory")
+        await other.close(); try await wire.host.shutdownAndWait()
+    }
+
+    func testTransferredSideInputAdoptsTheRecoveringLaunch() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let owner = UUID(), url = model.sidePublicationLeaseURL(owner)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do { let lease = try WorkspaceLock(url: url); withExtendedLifetime(lease) {} }
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("missing-side.jsonl").path
+        try await store.put(SideKeepIntent(chat: child, publicationOwner: owner.uuidString), kind: "side-keep", id: child.id)
+        let input = CommandIntent(id: "retained", sessionID: child.id, turnID: "turn", text: "Input from dead side", state: "intent", submissionOwner: owner.uuidString)
+        try await store.recordSubmission(input, draft: nil)
+        await model.reconcileSideKeeps()
+        XCTAssertEqual(parent.recoverableSubmissions.map(\.text), [input.text], "The reconciliation's own acquired lease must not hide its transferred input")
+        let saved = try await store.get(CommandIntent.self, kind: "pending:" + parent.id, id: input.id)
+        let moved = try XCTUnwrap(saved)
+        XCTAssertNotEqual(moved.submissionOwner, owner.uuidString, "The recovering launch owns the moved input")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testSideRecoveryCannotMoveInputOwnedByAnotherLiveLaunch() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let publisher = UUID(), owner = UUID()
+        try FileManager.default.createDirectory(at: model.sidePublicationLeaseURL(owner).deletingLastPathComponent(), withIntermediateDirectories: true)
+        let lease = try WorkspaceLock(url: model.sidePublicationLeaseURL(owner))
+        defer { withExtendedLifetime(lease) {} }
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("missing-side.jsonl").path
+        try await store.put(SideKeepIntent(chat: child, publicationOwner: publisher.uuidString), kind: "side-keep", id: child.id)
+        let input = CommandIntent(id: "live", sessionID: child.id, turnID: "turn", text: "A different launch owns this input", state: "intent", submissionOwner: owner.uuidString)
+        try await store.recordSubmission(input, draft: nil)
+        await model.reconcileSideKeeps()
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: child.id)
+        let pending = try await store.get(CommandIntent.self, kind: "pending:" + child.id, id: input.id)
+        XCTAssertNotNil(keep); XCTAssertEqual(pending, input)
+        XCTAssertTrue(parent.recovered.isEmpty)
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testQueuedRetryCannotReplaceAnotherLaunchesLiveInputOwnership() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        view.queueEditingID = "queued"; view.queueEditID = "edit"; view.queueEditOriginal = "Original"
+        view.draftBeforeQueueEdit = .init(id: view.id, text: "Parked"); view.draft = "Same captured rewrite"
+        wire.heldMethod = "queue.edit.save"; model.saveQueuedEdit(sessionID: view.id)
+        try await eventually("First queued Save held") { wire.held != nil }
+        let before = try await store.list(CommandIntent.self, kind: "pending:" + view.id)
+        let original = try XCTUnwrap(before.first)
+        let other = makeWorkspaceModel(stateRoot: model.root), editor = SessionDisplay(id: view.id)
+        other.chats = model.chats; other.displays[view.id] = editor; editor.selectionMetadataLoaded = true
+        editor.queueEditingID = "queued"; editor.queueEditID = "edit"; editor.queueEditOriginal = "Original"
+        editor.draftBeforeQueueEdit = .init(id: view.id, text: "Parked"); editor.draft = original.text
+        editor.draftVersion = try await store.draftVersion(id: view.id)
+        var oldRecovery = original; oldRecovery.submissionOwner = UUID().uuidString
+        editor.recovered = [oldRecovery]
+        var dispatched = false
+        other.queueEditOperation = { _, _, _ in dispatched = true; throw HostError.rejected("session_missing", "Generated retired helper") }
+        other.saveQueuedEdit(sessionID: view.id)
+        try await eventually("Second Save settled") { !editor.queueEditResolving && editor.submittingCommands.isEmpty }
+        let after = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: original.id)
+        XCTAssertEqual(after?.submissionOwner, original.submissionOwner, "A stable queue command ID must not replace its live launch owner")
+        XCTAssertFalse(dispatched); XCTAssertTrue(editor.recoverableSubmissions.isEmpty)
+        XCTAssertEqual(editor.queueEditPendingOperation, "save", "Cancel must still reconcile the original Save")
+        XCTAssertEqual(editor.queueEditSentDigest, QueuedEditDraft.digest(original.text))
+        XCTAssertEqual(editor.draft, original.text)
+        wire.release(); try await eventually("First Save settled") { !view.queueEditResolving }
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testLiveCompactionCannotAppearAsCapturedInputRecovery() async throws {
+        let (model, view, wire) = try await fixture()
+        wire.heldMethod = "context.compact"; model.action("context.compact", sessionID: view.id)
+        try await eventually("Compaction reply held") { wire.held != nil }
+        try await snapshot(model, view: view, wire: wire)
+        XCTAssertTrue(view.recoverableSubmissions.isEmpty, "Control-command pending records also have a live task owner")
+        wire.release(); try await wire.host.shutdownAndWait()
+    }
+
+    func testDismissCannotRetireAnotherLaunchesLivePublicationBeforeItsInputWrite() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        var child = try XCTUnwrap(model.record(parent.id)); child.id = "side"; child.parentSessionID = parent.id
+        child.path = model.root.appendingPathComponent("not-yet-published.jsonl").path
+        let owner = try model.inputPublicationOwner()
+        try await store.put(SideKeepIntent(chat: child, publicationOwner: owner), kind: "side-keep", id: child.id)
+        // The other instance has an old reminder, but this launch has begun
+        // a new publication whose input record has not reached SQLite yet.
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        do { try await other.dismissSideKeep(child) } catch {}
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: child.id)
+        XCTAssertNotNil(keep, "Publication ownership is required even before any pending input row exists")
+        await other.close(); try await wire.host.shutdownAndWait()
+    }
+
+    func testRecoveryHoldsForeignOwnershipAcrossItsStorageWait() async throws {
+        let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let owner = UUID(), url = model.sidePublicationLeaseURL(owner)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let input = CommandIntent(id: "crashed", sessionID: view.id, turnID: "turn", text: "Recovered once", state: "intent", submissionOwner: owner.uuidString)
+        try await store.recordSubmission(input, draft: nil); model.offerSubmissionRecovery(input, in: view)
+        let gate = DraftBaselineGate(expectation(description: "Recovery storage held"))
+        let blocker = Task { await store.holdDraftBaseline(gate) }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        defer { gate.resume.signal() }
+        model.recoverDraft(input, insert: true)
+        let other = makeWorkspaceModel(stateRoot: model.root), observer = SessionDisplay(id: view.id)
+        other.chats = model.chats; other.displays[view.id] = observer; observer.selectionMetadataLoaded = true
+        other.commandAcceptanceRead = { _, _, _ in [] }
+        let recovered = try await other.recoverableIntents([input], for: try XCTUnwrap(other.record(view.id)), view: observer)
+        XCTAssertTrue(recovered.isEmpty, "The admitted recovery owns the input while storage waits")
+        observer.recovered = [input]
+        other.recoverDraft(input, insert: false); await other.draftWrites.recoveries[view.id]?.value
+        let pending = try await other.store?.get(CommandIntent.self, kind: "pending:" + view.id, id: input.id)
+        XCTAssertEqual(pending, input)
+        gate.resume.signal(); await blocker.value
+        await model.draftWrites.recoveries[view.id]?.value
+        XCTAssertEqual(view.draft, input.text)
+        XCTAssertNoThrow(try WorkspaceLock(url: url), "Recovery releases its borrowed lease after commit")
+        try await wire.host.shutdownAndWait()
+    }
+
+    func testRecoveryRechecksOwnershipReleasedDuringItsAcceptanceRead() async throws {
+        for foreign in [false, true] {
+            let (model, oldView, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+            let owner = foreign ? UUID().uuidString : try model.inputPublicationOwner()
+            let url = model.sidePublicationLeaseURL(try XCTUnwrap(UUID(uuidString: owner)))
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var lease: WorkspaceLock? = foreign ? try WorkspaceLock(url: url) : nil
+            defer { withExtendedLifetime(lease) {} }
+            let input = CommandIntent(id: "settling", sessionID: oldView.id, turnID: "turn", text: "Input returned while ownership was being checked", state: "intent", submissionOwner: owner)
+            try await store.recordSubmission(input, draft: nil)
+            let view = SessionDisplay(id: oldView.id); view.selectionMetadataLoaded = true
+            model.displays[view.id] = view
+            if !foreign { model.beginSubmission(input.id, in: oldView) }
+            var release: CheckedContinuation<Void, Never>?, held = false
+            model.commandAcceptanceRead = { _, _, _ in
+                if !held { held = true; await withCheckedContinuation { release = $0 } }
+                return []
+            }
+            defer { release?.resume() }
+            let read = Task { try await model.recoverableIntents([input], for: try XCTUnwrap(model.record(view.id)), view: view) }
+            try await eventually("Recovery held with live ownership") { release != nil }
+            if foreign { lease = nil }
+            else { model.finishSubmission(input.id, in: oldView); model.offerSubmissionRecovery(input, in: oldView) }
+            release?.resume(); release = nil
+            let recovered = try await read.value
+            XCTAssertEqual(recovered, [input], "Eligibility must be sampled again even without a local display or pending-record change")
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
     func testQueuedSaveConfirmationSurvivesLaterReconciliationAwaits() async throws {
         let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
         let intent = CommandIntent(id: "queue-edit:edit:digest", sessionID: view.id, turnID: "queue-edit:edit",
@@ -1061,7 +1372,10 @@ import Darwin
             try RecoveredDraftTests.sql("DROP TRIGGER fail_registration", root: model.root)
             view.draft = "After failure"
             model.recoverDraft(intent, insert: true); await model.draftWrites.recoveries[view.id]?.value
-            XCTAssertEqual(view.draft, "After failure\n\n" + intent.text, kind)
+            XCTAssertEqual(view.draft, "After failure", kind)
+            XCTAssertEqual(parent.draft, intent.text, kind)
+            let restored = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+            XCTAssertEqual(restored?.text, intent.text, kind)
             try await wire.host.shutdownAndWait()
         }
     }
@@ -1239,6 +1553,9 @@ import Darwin
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
         let db = try XCTUnwrap(database); defer { sqlite3_close(db) }
+        // Trigger changes may overlap ordinary actor commits. The injected
+        // failures, not an unrelated DDL lock race, decide each assertion.
+        XCTAssertEqual(sqlite3_busy_timeout(db, 3000), SQLITE_OK)
         if busy { XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK) }
         else { XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_capture \(rollback ? "AFTER" : "BEFORE") INSERT ON records WHEN NEW.kind LIKE '\(kind)' BEGIN SELECT RAISE(\(rollback ? "ROLLBACK" : "ABORT"), 'generated capture failure'); END", nil, nil, nil), SQLITE_OK) }
         let gate = DraftBaselineGate(expectation(description: "Metadata held for \(method)/\(kind)"))
@@ -1299,10 +1616,12 @@ import Darwin
             }
             model.recoverDraft(intent, insert: !discard)
             await model.draftWrites.recoveries[view.id]?.value
-            XCTAssertEqual(view.draft, discard ? "After cancellation" : "After cancellation\n\n" + captured)
+            let destination = method == "side" ? parent : view
+            XCTAssertEqual(view.draft, discard || method == "side" ? "After cancellation" : "After cancellation\n\n" + captured)
             if !discard {
-                let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
-                XCTAssertEqual(saved?.text, view.draft)
+                let saved = try await store.get(DraftRecord.self, kind: "draft", id: destination.id)
+                XCTAssertEqual(saved?.text, destination.draft)
+                XCTAssertTrue(destination.draft.contains(captured))
             }
             XCTAssertFalse(view.recovered.contains { $0.id == intent.id })
             XCTAssertFalse(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id }, "Recovered pins must not reappear on flush")

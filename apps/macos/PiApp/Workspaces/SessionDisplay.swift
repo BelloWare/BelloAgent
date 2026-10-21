@@ -940,6 +940,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// (`WorkspaceModel.pendingIntentsChanged`).
     var pendingIntentRevision = 0
     var pendingSubmissionRevision = -1
+    var pendingExternalRevision: MetadataStore.ExternalRevision?
     /// What the snapshot loop last read of them, and at which revision.
     var pendingIntents: (revision: Int, intents: [CommandIntent])?
     /// A successful helper reply is enough to suppress draft recovery even

@@ -219,6 +219,35 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         try await wait { !f.view.snapshotInFlight }
     }
 
+    @MainActor func testPreflightUncertaintyWaitsForTheReconciledInputInventory() async throws {
+        for retained in [false, true] {
+            let f = try await fixture(), store = try XCTUnwrap(f.model.store)
+            if retained {
+                try await store.recordSubmission(.init(id: "unanswered", sessionID: f.chat.id, turnID: "turn", text: "Retained input", state: "intent",
+                                                       submissionOwner: try f.model.inputPublicationOwner()), draft: nil)
+            }
+            let gate = DraftBaselineGate(expectation(description: "Snapshot input inventory held"))
+            let blocker = Task { await store.holdDraftBaseline(gate) }
+            await fulfillment(of: [gate.entered], timeout: 3)
+            defer { gate.resume.signal() }
+            f.model.refresh(f.chat.id)
+            try await wait { !f.commands.frames.isEmpty }
+            var result = snapshot(sequence: 1, revision: "paused:1", text: "Question")
+            result["state"] = .string("paused"); result["runStatus"] = .string("paused")
+            result["queuePaused"] = .bool(true); result["preflightError"] = .string("Run stopped.")
+            try reply(f.commands.frames[0], on: f.host, result: result)
+            try await wait { f.view.queuePaused }
+            XCTAssertFalse(f.view.uncertain, "A provisional notice cannot publish a resend gate before its input inventory is known")
+            XCTAssertTrue(f.view.recovered.isEmpty)
+            gate.resume.signal(); await blocker.value
+            try await wait { !f.view.snapshotInFlight }
+            XCTAssertEqual(f.view.uncertain, retained)
+            XCTAssertEqual(f.view.recovered.map(\.text), retained ? ["Retained input"] : [])
+            XCTAssertEqual(f.view.notice, "Run stopped.", "The explanation remains visible independently of recovery")
+            try await f.host.shutdownAndWait()
+        }
+    }
+
     @MainActor func testClearingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
         let f = try await fixture()
         f.view.queueEditNotice = "Cancellation is not confirmed."

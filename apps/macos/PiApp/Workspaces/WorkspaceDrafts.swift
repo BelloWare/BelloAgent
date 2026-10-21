@@ -136,7 +136,17 @@ extension WorkspaceModel {
             // Reload and merge current pins before publishing, without a gap
             // between this validation and the display update in either pane.
             guard revision.isCurrent(in: view) else { continue }
-            let unaccepted = unchecked.filter { intent in !confirmed.contains(intent.id) && !view.acceptedCommands.contains(intent.id) &&
+            // Local generations cannot observe another database connection.
+            // Validate the durable inventory as well before publishing a read
+            // that may have crossed Insert/Discard or a new owner's retry.
+            let durable = try await store.list(CommandIntent.self, kind: "pending:" + item.id)
+            guard current() else { return [] }
+            guard revision.isCurrent(in: view) else { continue }
+            if durable != saved { saved = durable; continue }
+            // A task on a replaced display, or a foreign launch's lease, can
+            // settle without changing this display or the durable record.
+            guard intents == retainingCapturedInput(saved, in: view) else { continue }
+            let unaccepted = unchecked.filter { intent in canRecoverSubmission(intent, in: view) && !confirmed.contains(intent.id) && !view.acceptedCommands.contains(intent.id) &&
                 !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) }
             // A Resume the helper never took ran nothing and holds no text.
             let resumes = unaccepted.filter { $0.turnID.hasPrefix(Self.resumeIntentPrefix) }
@@ -351,48 +361,86 @@ extension WorkspaceModel {
             } catch { self.error = "The conflicting draft could not be restored. Its saved copy was kept. \(error.localizedDescription)" }
         }
     }
+    /// The launch lease is durable ownership, not a timeout. A local settled
+    /// failure can recover in place; a foreign launch must be gone. Hold the
+    /// returned lease across recovery awaits, and check the durable record in
+    /// the consuming transaction. A stale chooser is not recovery authority.
+    func submissionRecoveryLease(_ intent: CommandIntent, in view: SessionDisplay) throws -> WorkspaceLock? {
+        guard !liveSubmissionCommands.contains(intent.id), !view.submittingCommands.contains(intent.id) else { throw StoreError.unavailable }
+        guard let owner = intent.submissionOwner else { return nil }
+        guard let id = UUID(uuidString: owner) else { throw StoreError.invalidRecord }
+        if let local = sidePublicationOwnership, local.id == id { return local.lock }
+        if let held = submissionRecoveryLeases.values.first(where: { $0.owner == owner }) { return held.lock }
+        return try WorkspaceLock(url: sidePublicationLeaseURL(id))
+    }
+    func canRecoverSubmission(_ intent: CommandIntent, in view: SessionDisplay) -> Bool {
+        do { _ = try submissionRecoveryLease(intent, in: view); return true }
+        catch { return false }
+    }
     /// Until the independent input record commits, the version owns its pin.
     /// Recovery visibility is separate from whether the helper may have acted.
     func offerSubmissionRecovery(_ intent: CommandIntent, in view: SessionDisplay) {
         guard !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
         if view.submittingCommands.contains(intent.id) { view.settlingSubmissions[intent.id] = intent; return }
-        guard !view.recovered.contains(where: { $0.id == intent.id }) else { return }
+        guard canRecoverSubmission(intent, in: view), !view.recovered.contains(where: { $0.id == intent.id }) else { return }
         view.recovered.append(intent)
     }
+    func beginSubmission(_ id: String, in view: SessionDisplay?) {
+        liveSubmissionCommands.insert(id); view?.submittingCommands.insert(id)
+    }
     func finishSubmission(_ id: String, in view: SessionDisplay) {
-        view.submittingCommands.remove(id)
+        liveSubmissionCommands.remove(id); view.submittingCommands.remove(id)
         if let intent = view.settlingSubmissions.removeValue(forKey: id) { offerSubmissionRecovery(intent, in: view) }
     }
     func retainingCapturedInput(_ intents: [CommandIntent], in view: SessionDisplay) -> [CommandIntent] {
         (intents + view.draftVersion.unsavedSubmissions.filter { pinned in !intents.contains { $0.id == pinned.id } })
-            .filter { !view.submittingCommands.contains($0.id) }
+            .filter { canRecoverSubmission($0, in: view) }
     }
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
         // The banner sits in the pane of the chat the submission belongs to,
         // a side's included: it acts on that chat, not on the selected one.
-        guard let view = displays[intent.sessionID], view.recoverableSubmissions.contains(where: { $0.id == intent.id }), draftWrites.recoveries[view.id] == nil else { return }
+        guard let view = displays[intent.sessionID], view.recoverableSubmissions.contains(where: { $0.id == intent.id }),
+              draftWrites.recoveries[view.id] == nil, submissionRecoveryLeases[intent.id] == nil else { return }
+        let ownership: WorkspaceLock?
+        do { ownership = try submissionRecoveryLease(intent, in: view) } catch { return }
         guard intent.state == "intent", !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else {
             view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }; return
         }
         guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing, view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {
             view.notice = "Finish sending, or save or cancel the message you are editing before recovering this submission."; return
         }
+        let destination: SessionDisplay
+        if insert, chatRecord(view.id) == nil, let side = side(view.id), !side.kept {
+            guard record(side.parentID) != nil else { return }
+            destination = displays[side.parentID] ?? SessionDisplay(id: side.parentID)
+            displays[side.parentID] = destination
+        } else { destination = view }
+        guard !destination.loading, destination.editingMessageID == nil, destination.queueEditingID == nil,
+              !destination.editPreparing, destination.queueEditBeginning == nil, destination.unreconciledQueuedEdit == nil,
+              draftWrites.recoveries[destination.id] == nil else {
+            view.notice = "Finish sending, or save or cancel the parent draft before recovering this submission."; return
+        }
         // Insert is not permission to repeat effects. Acceptance can arrive
         // during or after this transaction, after its intent is already gone.
-        let recovered = DraftRecord(id: view.id, text: intent.text, attachments: intent.attachments, skills: intent.skills, submissionReviews: [intent.id])
+        let recovered = DraftRecord(id: destination.id, text: intent.text, attachments: intent.attachments, skills: intent.skills, submissionReviews: [intent.id])
         func mergedDraft() -> DraftRecord {
-            var merged = view.savedDraft.merging(recovered)
+            var merged = destination.savedDraft.merging(recovered)
             // Side-transfer merging trims separators; recovered prompts must
             // retain indentation and trailing newlines exactly as submitted.
-            merged.text = view.draft + (view.draft.isEmpty || intent.text.isEmpty ? "" : "\n\n") + intent.text
+            merged.text = destination.draft + (destination.draft.isEmpty || intent.text.isEmpty ? "" : "\n\n") + intent.text
             return merged
         }
         if insert, let reason = Self.recoveryLimit(mergedDraft()) { view.notice = reason; return }
-        let previous = draftWrites.tasks[view.id]; previous?.cancel()
+        let previous = draftWrites.tasks[destination.id]; previous?.cancel()
         let outputUse = beginToolOutputUse(.draftRecovery)
+        if let ownership, let owner = intent.submissionOwner { submissionRecoveryLeases[intent.id] = (owner, ownership) }
         draftWrites.recoveries[view.id] = Task {
-            defer { finishToolOutputUse(outputUse) }
-            defer { view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }
+            defer { submissionRecoveryLeases.removeValue(forKey: intent.id); withExtendedLifetime(ownership) {}; finishToolOutputUse(outputUse) }
+            defer {
+                view.recoveringDraft = false; destination.recoveringDraft = false
+                draftWrites.recoveries.removeValue(forKey: view.id); draftWrites.recoveries.removeValue(forKey: destination.id)
+                draftChanged(destination)
+            }
             do { try await prepareToolOutputUse(outputUse) } catch { return }
             // A cancelled debounce may already be in the store. Let it finish
             // before the transaction reserves the draft's newer revision.
@@ -404,13 +452,15 @@ extension WorkspaceModel {
             do {
                 guard let store else { throw StoreError.unavailable }
                 if insert {
-                    try await materializeChat(view.id)
-                    try await loadDraftBaseline(view)
+                    try await materializeChat(destination.id)
+                    try await loadDraftBaseline(destination)
                 }
                 guard view.recoverableSubmissions.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
                       !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
                 guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing,
-                      view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {
+                      view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil,
+                      !destination.loading, destination.editingMessageID == nil, destination.queueEditingID == nil,
+                      !destination.editPreparing, destination.queueEditBeginning == nil, destination.unreconciledQueuedEdit == nil else {
                     view.notice = "Finish sending, or save or cancel the message you are editing before recovering this submission."; return
                 }
                 let merged = insert ? mergedDraft() : nil
@@ -418,16 +468,19 @@ extension WorkspaceModel {
                 // Freeze the validated candidate only for this commit. Late
                 // image conversions wait behind it; typing before it began
                 // was included above. Quit awaits this task as well.
-                view.recoveringDraft = true
-                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged, draftVersion: view.draftVersion, write: merged.map { _ in store.draftWriter.capture(view.id) })
+                view.recoveringDraft = true; destination.recoveringDraft = true
+                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged, draftVersion: destination.draftVersion,
+                                                   write: merged.map { _ in store.draftWriter.capture(destination.id) }, recovering: intent,
+                                                   sourceVersion: view.draftVersion)
                 if let merged {
-                    view.draft = merged.text; view.attachments = merged.attachments ?? []; view.skills = merged.skills ?? []; view.directCommand = false
-                    view.submissionReviews = merged.submissionReviews ?? []
+                    destination.draft = merged.text; destination.attachments = merged.attachments ?? []; destination.skills = merged.skills ?? []; destination.directCommand = false
+                    destination.submissionReviews = merged.submissionReviews ?? []
                 }
                 pendingIntentsChanged(view.id)
                 view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }
             } catch { self.error = "The retained submission could not be recovered. Its input was kept. \(error.localizedDescription)" }
         }
+        if destination !== view { draftWrites.recoveries[destination.id] = draftWrites.recoveries[view.id] }
     }
     /// These are helper submission limits, not a reason to truncate a saved
     /// message. Refuse the entire merge and keep its recoverable intent.

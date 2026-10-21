@@ -5,6 +5,7 @@ import SQLite3
 
 enum StoreError: Error, Equatable, LocalizedError {
     case unavailable, invalidRecord, staleRevision, draftConflict
+    case submissionOwned(CommandIntent)
     /// A conversation file could not be read. Distinct from `invalidRecord`,
     /// which is about writing desktop metadata: reporting a read failure with a
     /// write message told the user a save had failed when nothing was saved.
@@ -13,6 +14,7 @@ enum StoreError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unavailable: "Desktop storage is unavailable."
+        case .submissionOwned: "Another app instance is still handling this captured input."
         case .invalidRecord: "The desktop record could not be saved."
         case .staleRevision: "A newer version of this desktop record has already been saved."
         case .draftConflict: "Another app instance saved this draft. Both copies are saved. Reopen this chat to recover a conflicting draft."
@@ -183,6 +185,16 @@ actor MetadataStore {
         guard let database = connection?.handle else { throw StoreError.unavailable }
         return database
     }
+    struct ExternalRevision: Equatable, Sendable { let connection: UUID; let version: Int64 }
+    func externalRevision() throws -> ExternalRevision {
+        let database = try ready()
+        guard let connection else { throw StoreError.unavailable }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA data_version", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw StoreError.unavailable }
+        return .init(connection: connection.identity, version: sqlite3_column_int64(statement, 0))
+    }
     /// Ordered draft writes reserve only inside their synchronous commit.
     /// Persisted revisions also stay monotonic across clock corrections.
     func reserveRevision(kind: String, id: String) throws -> Int64 {
@@ -341,16 +353,26 @@ actor MetadataStore {
     /// An unsaved side has no lasting chat to own recovery. Move captured
     /// inputs to its saved parent atomically; a failed move keeps every
     /// source record and pin. The composer moves separately as a draft.
-    func transferSideSubmissions(from id: String, to parentID: String, version: DraftVersion, retiringKeep: Bool) throws -> [CommandIntent] {
+    func transferSideSubmissions(from id: String, to parentID: String, version: DraftVersion, retiringKeep: Bool, owner: String? = nil, publicationOwner: String? = nil) throws -> [CommandIntent] {
         let pinned = version.unsavedSubmissions
         let moved: [CommandIntent] = try orderedDraftWrite(id, payload: .submission) {
             try transaction {
                 guard try get(ChatRecord.self, kind: "chat", id: parentID) != nil else { throw StoreError.invalidRecord }
                 var inputs = try list(CommandIntent.self, kind: "pending:" + id)
                 inputs += pinned.filter { pin in !inputs.contains { $0.id == pin.id } }
+                // Publication and individual submissions can have different
+                // owners. The caller holds the publication lease; acquire any
+                // additional dead owner's lease before moving its input.
+                let foreign = Set(inputs.compactMap(\.submissionOwner)).subtracting([owner, publicationOwner].compactMap { $0 })
+                let leases = try foreign.map { value -> WorkspaceLock in
+                    guard let id = UUID(uuidString: value) else { throw StoreError.invalidRecord }
+                    return try WorkspaceLock(url: WorkspaceLock.publicationURL(root: url.deletingLastPathComponent(), id: id))
+                }
+                defer { withExtendedLifetime(leases) {} }
                 var moved: [CommandIntent] = []
                 for var intent in inputs {
                     intent.sessionID = parentID
+                    if let owner { intent.submissionOwner = owner }
                     try preserveSubmissions([intent])
                     try remove(kind: "pending:" + id, id: intent.id)
                     moved.append(intent)
@@ -1086,24 +1108,50 @@ actor MetadataStore {
     func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
         draftVersion?.preservingSubmission(intent)
         defer { if let write { draftWriter.finish(write) } }
-        try orderedDraftWrite(intent.sessionID, payload: .submission) {
-            try transaction {
-                do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion, write: write) } }
-                catch StoreError.staleRevision {
-                    // Newer typing owns the composer, but cannot cancel the
-                    // captured message. Its independent intent still commits.
+        do {
+            try orderedDraftWrite(intent.sessionID, payload: .submission) {
+                try transaction {
+                    var ownership: WorkspaceLock?
+                    if let existing = try get(CommandIntent.self, kind: "pending:" + intent.sessionID, id: intent.id),
+                       let owner = existing.submissionOwner, owner != intent.submissionOwner {
+                        guard existing.turnID == intent.turnID, existing.text == intent.text,
+                              (existing.attachments ?? []) == (intent.attachments ?? []), (existing.skills ?? []) == (intent.skills ?? []),
+                              let id = UUID(uuidString: owner) else { throw StoreError.invalidRecord }
+                        ownership = try? WorkspaceLock(url: WorkspaceLock.publicationURL(root: url.deletingLastPathComponent(), id: id))
+                        guard ownership != nil else { throw StoreError.submissionOwned(existing) }
+                    }
+                    defer { withExtendedLifetime(ownership) {} }
+                    do { if let draft { try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion, write: write) } }
+                    catch StoreError.staleRevision {
+                        // Newer typing owns the composer, but cannot cancel the
+                        // captured message. Its independent intent still commits.
+                    }
+                    try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
                 }
-                try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
             }
+        } catch StoreError.submissionOwned(let existing) {
+            // The identical queue retry already has a durable home. Its live
+            // owner remains authoritative; never replace it or dispatch again.
+            draftVersion?.preservedSubmission(intent.id)
+            throw StoreError.submissionOwned(existing)
         }
         draftVersion?.preservedSubmission(intent.id)
     }
     /// A submission the helper never acted on went back into the composer:
     /// the draft that holds its text again and the end of its record, in one
     /// commit.
-    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil) throws {
-        try orderedDraftWrite(sessionID, payload: draft == nil ? .submission : .draft, ticket: write) {
+    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?, draftVersion: DraftVersion? = nil, write: OrderedDraftWriter.Ticket? = nil,
+                            recovering: CommandIntent? = nil, sourceVersion: DraftVersion? = nil) throws {
+        try orderedDraftWrite(draft?.id ?? sessionID, payload: draft == nil ? .submission : .draft, ticket: write) {
             try transaction {
+                if let recovering {
+                    let durable = try get(CommandIntent.self, kind: "pending:" + sessionID, id: commandID)
+                    let pinned = (sourceVersion ?? draftVersion)?.unsavedSubmissions.first { $0.id == commandID }
+                    guard (durable ?? pinned) == recovering else { throw StoreError.staleRevision }
+                    if let draft, draft.id != sessionID {
+                        guard try get(ChatRecord.self, kind: "chat", id: draft.id) != nil else { throw StoreError.invalidRecord }
+                    }
+                }
                 if let draft {
                     try put(draft, kind: "draft", id: draft.id, draftVersion: draftVersion)
                     // An unchanged stale snapshot deliberately owns no write.
@@ -1115,7 +1163,7 @@ actor MetadataStore {
                 try remove(kind: "pending:\(sessionID)", id: commandID)
             }
         }
-        draftVersion?.preservedSubmission(commandID)
+        (sourceVersion ?? draftVersion)?.preservedSubmission(commandID)
     }
     func acknowledgeCommand(sessionID: String, commandID: String, draftVersion: DraftVersion? = nil) throws {
         try orderedDraftWrite(sessionID, payload: .submission) {
@@ -1203,10 +1251,20 @@ actor MetadataStore {
     /// Only the exact pending copy reviewed by the confirmation can be
     /// dismissed. Keep its journal discoverable for attachment retention,
     /// without leaving an automatic-registration intent or changing its bytes.
-    func dismissSideKeep(_ expected: ChatRecord) throws {
+    func dismissSideKeep(_ expected: ChatRecord, owner: String? = nil) throws {
         try transaction {
             guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
             guard current.chat == expected else { throw StoreError.staleRevision }
+            let ownership: WorkspaceLock?
+            if let publisher = current.publicationOwner, publisher != owner {
+                guard let id = UUID(uuidString: publisher) else { throw StoreError.invalidRecord }
+                ownership = try WorkspaceLock(url: WorkspaceLock.publicationURL(root: url.deletingLastPathComponent(), id: id))
+            } else { ownership = nil }
+            defer { withExtendedLifetime(ownership) {} }
+            // Dismiss removes a reminder, not captured input. Without an
+            // indexed chat this link is still the only route to that input.
+            guard try get(ChatRecord.self, kind: "chat", id: expected.id) != nil ||
+                !list(CommandIntent.self, kind: "pending:" + expected.id).contains(where: { $0.state == "intent" }) else { throw StoreError.unavailable }
             try put(current, kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(current.chat))
             try remove(kind: "side-keep", id: expected.id)
         }
@@ -1700,6 +1758,10 @@ struct CommandIntent: Codable, Sendable, Equatable {
     /// A queued rewrite settles by its hold's saved digest, rather than a
     /// new turn receipt. Its captured text is independent of later typing.
     var queueEditID: String? = nil
+    /// The capturing launch holds its lifetime lease until all its tasks end.
+    /// Foreign recovery must acquire that lease without waiting; absence is
+    /// legacy data, never the representation of a newly captured submission.
+    var submissionOwner: String? = nil
 }
 struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {
     var id: String = UUID().uuidString; var revision: String = UUID().uuidString

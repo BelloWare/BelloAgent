@@ -346,6 +346,9 @@ extension WorkspaceModel {
             }) }
             return
         }
+        let owner: String
+        do { owner = try inputPublicationOwner() }
+        catch { view.queueEditNotice = "The rewrite could not be saved locally. " + error.localizedDescription; return }
         let previousOperation = view.queueEditPendingOperation, previousDigest = view.queueEditSentDigest
         view.queueEditResolving = true; view.queueEditPendingOperation = operation; view.queueEditSentDigest = sentDigest
         draftChanged(view)
@@ -358,16 +361,17 @@ extension WorkspaceModel {
         // Retrying the same edit/text repeats its input record; a different
         // captured rewrite gets its own record and cannot erase the first.
         let intent = sent.map { CommandIntent(id: "queue-edit:" + editID + ":" + QueuedEditDraft.digest($0), sessionID: view.id, turnID: "queue-edit:" + editID, text: $0,
-                                              state: "intent", draftReviewTracked: true, queueEditID: editID) }
-        if let intent { view.draftVersion.preservingSubmission(intent); view.submittingCommands.insert(intent.id) }
+                                              state: "intent", draftReviewTracked: true, queueEditID: editID, submissionOwner: owner) }
+        if let intent { view.draftVersion.preservingSubmission(intent); beginSubmission(intent.id, in: view) }
         let write = intent.flatMap { _ in store?.draftWriter.capture(view.id) }
         // Protect captured references through their independent write. Input
         // becomes durable before queueEditRequest waits for recycling.
         let outputUse = intent.map { _ in beginToolOutputUse(.queuedEdit) }
         Task {
+            var retainedInput = intent
             defer {
                 if let intent { finishSubmission(intent.id, in: view) }
-                if let intent, !view.acceptedCommands.contains(intent.id) { offerSubmissionRecovery(intent, in: view) }
+                if let retainedInput, !view.acceptedCommands.contains(retainedInput.id) { offerSubmissionRecovery(retainedInput, in: view) }
                 if let outputUse { finishToolOutputUse(outputUse) }
             }
             if let intent {
@@ -376,9 +380,18 @@ extension WorkspaceModel {
                     try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write)
                     pendingIntentsChanged(view.id)
                 } catch {
-                    // This attempt never reached the helper. It says nothing
-                    // about an earlier identical Save that lost its reply.
-                    view.queueEditResolving = false; view.queueEditPendingOperation = previousOperation; view.queueEditSentDigest = previousDigest
+                    view.queueEditResolving = false
+                    if case StoreError.submissionOwned(let existing) = error {
+                        retainedInput = existing
+                        view.settlingSubmissions.removeValue(forKey: existing.id)
+                        view.recovered.removeAll { $0.id == existing.id }; if view.recovered.isEmpty { view.uncertain = false }
+                        pendingIntentsChanged(view.id)
+                        view.queueEditPendingOperation = "save"; view.queueEditSentDigest = QueuedEditDraft.digest(existing.text)
+                    } else {
+                        // This attempt never reached the helper. It says nothing
+                        // about an earlier identical Save that lost its reply.
+                        view.queueEditPendingOperation = previousOperation; view.queueEditSentDigest = previousDigest
+                    }
                     view.queueEditNotice = "The rewrite could not be saved locally. " + error.localizedDescription
                     draftChanged(view)
                     return

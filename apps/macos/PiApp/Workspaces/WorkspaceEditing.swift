@@ -147,10 +147,13 @@ extension WorkspaceModel {
             }) { view.notice = PiQuestion.busyNotice }
             return
         }
+        let owner: String
+        do { owner = try inputPublicationOwner() }
+        catch { view.editNotice = "The replacement could not be saved locally. " + error.localizedDescription; return }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true, submissionOwner: owner)
         view.draftVersion.preservingSubmission(intent)
         // An edit stays in the composer while the helper replies. Its saved
         // copy needs the same review gate as a normal send returned on failure.
@@ -163,7 +166,7 @@ extension WorkspaceModel {
         let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true
-        view.submittingCommands.insert(commandID)
+        beginSubmission(commandID, in: view)
         let outputUse = beginToolOutputUse(.messageEdit)
         Task {
             defer { finishSubmission(commandID, in: view) }

@@ -46,15 +46,18 @@ enum SideKeepState: Sendable {
 
 extension WorkspaceModel {
     func sidePublicationLeaseURL(_ id: UUID) -> URL {
-        root.appendingPathComponent("PublicationLeases", isDirectory: true).appendingPathComponent(id.uuidString + ".lock")
+        WorkspaceLock.publicationURL(root: root, id: id)
     }
-    private func sideKeepIntent(_ chat: ChatRecord) throws -> SideKeepIntent {
+    func inputPublicationOwner() throws -> String {
         if sidePublicationOwnership == nil {
             let id = UUID(), url = sidePublicationLeaseURL(id)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             sidePublicationOwnership = (id, try WorkspaceLock(url: url))
         }
-        return SideKeepIntent(chat: chat, publicationOwner: sidePublicationOwnership!.id.uuidString)
+        return sidePublicationOwnership!.id.uuidString
+    }
+    private func sideKeepIntent(_ chat: ChatRecord) throws -> SideKeepIntent {
+        SideKeepIntent(chat: chat, publicationOwner: try inputPublicationOwner())
     }
     /// Both are asked for once per sidebar row, and the sidebar redraws on every
     /// workspace change: a linear scan here is a scan of every chat per row.
@@ -333,7 +336,7 @@ extension WorkspaceModel {
                 try await materializeChat(info.parentID)
                 let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
                 let retiring = keep?.chat.path.map { !FileManager.default.fileExists(atPath: $0) } ?? false
-                let moved = try await store.transferSideSubmissions(from: info.id, to: info.parentID, version: side.draftVersion, retiringKeep: retiring)
+                let moved = try await store.transferSideSubmissions(from: info.id, to: info.parentID, version: side.draftVersion, retiringKeep: retiring, owner: inputPublicationOwner())
                 side.sideInputPendingTransfer = false
                 if retiring {
                     sideKeepResolutionRevision &+= 1
@@ -678,7 +681,7 @@ extension WorkspaceModel {
                         if ownership != nil, displays[intent.chat.id] == nil, !FileManager.default.fileExists(atPath: path),
                            let parentID = intent.chat.parentSessionID, let store,
                            try await !store.list(CommandIntent.self, kind: "pending:" + intent.chat.id).isEmpty {
-                            let moved = try await store.transferSideSubmissions(from: intent.chat.id, to: parentID, version: DraftVersion(), retiringKeep: true)
+                            let moved = try await store.transferSideSubmissions(from: intent.chat.id, to: parentID, version: DraftVersion(), retiringKeep: true, owner: inputPublicationOwner(), publicationOwner: intent.publicationOwner)
                             sideKeepResolutionRevision &+= 1
                             pendingIntentsChanged(parentID)
                             if let parent = displays[parentID] { for input in moved where input.state == "intent" { offerSubmissionRecovery(input, in: parent) } }

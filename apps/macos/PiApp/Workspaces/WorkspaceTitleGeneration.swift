@@ -329,6 +329,7 @@ extension WorkspaceModel {
         let display = SessionDisplay(id: taskID)
         var host: HostSupervisor?
         var commandID: String?
+        defer { if let commandID { finishSubmission(commandID, in: display) } }
         do {
             guard let claimed = try await store.createTitleTask(item, sourceID: sourceID) else { return }
             guard let index = chats.firstIndex(where: { $0.id == sourceID }) else { return }
@@ -342,8 +343,9 @@ extension WorkspaceModel {
             try Task.checkCancellation()
             let command = UUID().uuidString, turn = UUID().uuidString
             commandID = command
+            beginSubmission(command, in: display)
             try await store.put(CommandIntent(id: command, sessionID: taskID, turnID: turn, text: plan.prompt,
-                                              state: "intent", epoch: connected.epoch), kind: "pending:\(taskID)", id: command)
+                                              state: "intent", epoch: connected.epoch, submissionOwner: try inputPublicationOwner()), kind: "pending:\(taskID)", id: command)
             pendingIntentsChanged(taskID)
             try Task.checkCancellation()
             try requireConnection(lease)

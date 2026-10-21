@@ -3,6 +3,41 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceValidationGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testForeignOwnedInputInLightDarkAndNarrowLayouts() async throws {
+        guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for width: CGFloat in [760, 300] {
+                let pane = try ConversationPaneTests.Pane(messages: [
+                    TranscriptMessage(id: "question", role: "user", text: "Keep captured input safe while another window is delivering it.", turn: "turn"),
+                    TranscriptMessage(id: "answer", role: "assistant", text: "An interrupted submission becomes available here when its owning instance has exited.", turn: "turn")
+                ], width: width, height: 620)
+                defer { pane.close() }
+                pane.model.prewarmsHelpers = false; pane.hosted.appearance = NSAppearance(named: appearance)
+                // Drop this raw model without shutdown/flush: its per-launch
+                // lease must be released by lifetime, not a normal-close hook.
+                var owner: WorkspaceModel? = WorkspaceModel(stateRoot: pane.model.root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+                weak var lifetime = owner
+                let input = CommandIntent(id: "foreign", sessionID: pane.chat.id, turnID: "turn", text: "Captured in the other instance.", state: "intent", draftReviewTracked: true,
+                                          submissionOwner: try XCTUnwrap(owner).inputPublicationOwner())
+                try await pane.model.store?.recordSubmission(input, draft: nil)
+                pane.model.commandAcceptanceRead = { _, _, _ in [] }
+                pane.session.draft = "My current draft stays here."
+                for live in [true, false] {
+                    if !live { owner = nil; XCTAssertNil(lifetime) }
+                    _ = try await pane.model.recoverableIntents([input], for: pane.chat, view: pane.session)
+                    await pane.settle()
+                    let banner = try XCTUnwrap(ConversationPaneTests.views(RecoveredBannerView.self, in: pane.hosted).first)
+                    XCTAssertEqual(banner.isHidden, live)
+                    let image = try XCTUnwrap(pane.hosted.bitmapImageRepForCachingDisplay(in: pane.hosted.bounds))
+                    pane.hosted.cacheDisplay(in: pane.hosted.bounds, to: image)
+                    try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("foreign-input-\(live ? "live" : "crashed")-\(theme)-\(Int(width)).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testFailedQueuedSaveRetryInLightDarkAndNarrowLayouts() async throws {
         guard let path = testEnvironment("PI_APP_WORKSPACE_VALIDATION_GALLERY") else { throw XCTSkip("Set PI_APP_WORKSPACE_VALIDATION_GALLERY for these scenes") }
         let folder = URL(fileURLWithPath: path)

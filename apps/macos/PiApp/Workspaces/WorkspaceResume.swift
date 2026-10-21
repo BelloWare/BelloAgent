@@ -160,6 +160,8 @@ extension WorkspaceModel {
     /// own left (a side the root already resumed) is not an error.
     func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false, archiveRevision: Int? = nil, preparation: ResumePreparation? = nil) async -> [String: WireValue]? {
         let commandID = UUID().uuidString
+        beginSubmission(commandID, in: view)
+        defer { if let view { finishSubmission(commandID, in: view) } else { liveSubmissionCommands.remove(commandID) } }
         var params = turnOverrides(for: item)
         let preparation = preparation ?? resumePreparation(item.id)
         let archiveRevision = archiveRevision ?? archiveRevisions[item.id, default: 0]
@@ -184,7 +186,7 @@ extension WorkspaceModel {
                 // before it goes, and the helper's receipt settles it.
                 resumeSteps?("recording")
                 try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: Self.resumeIntentPrefix + commandID, text: "[Resume]",
-                                                  state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                                                  state: "intent", epoch: host.epoch, submissionOwner: try inputPublicationOwner()), kind: "pending:\(item.id)", id: commandID)
                 recorded = true; pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)

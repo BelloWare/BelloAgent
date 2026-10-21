@@ -364,7 +364,8 @@ extension WorkspaceModel {
         let toolNotice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
         let preflight = result["preflightError"]?.string
         view.preflightNotice = view.failureMessage == nil ? preflight ?? "" : ""
-        if preflight != nil { view.uncertain = true }
+        // The notice is immediately readable; uncertainty is published with
+        // the reconciled input inventory, not across its storage awaits.
         if !view.queueEditNotice.isEmpty || (preflight != nil && view.failureMessage == nil) {
             view.updateComposedNotice()
             return
@@ -411,8 +412,10 @@ extension WorkspaceModel {
         }
         while current() {
             let revision = SubmissionInventoryRevision(view)
+            let external = try await store?.externalRevision()
+            guard current() else { return false }
             let intents: [CommandIntent]
-            if let known = view.pendingIntents, known.revision == revision.pending, view.pendingSubmissionRevision == revision.submissions { intents = known.intents }
+            if let known = view.pendingIntents, known.revision == revision.pending, view.pendingSubmissionRevision == revision.submissions, view.pendingExternalRevision == external { intents = known.intents }
             else {
                 view.intentReads += 1
                 intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
@@ -444,6 +447,10 @@ extension WorkspaceModel {
             // Reconcile the changed inventory now: an idle or lost helper may
             // never deliver another snapshot to make retained input reachable.
             guard revision.isCurrent(in: view) else { continue }
+            let currentExternal = try await store?.externalRevision()
+            guard current() else { return false }
+            guard revision.isCurrent(in: view), currentExternal == external else { continue }
+            view.pendingExternalRevision = external
             view.pendingIntents = (revision.pending, intents)
             view.pendingSubmissionRevision = revision.submissions
             view.acceptedCommands.formIntersection(Set(intents.map(\.id)).union(view.draftVersion.unsavedSubmissions.map(\.id)).union(view.submittingCommands))
@@ -455,6 +462,7 @@ extension WorkspaceModel {
             }
             if recoverable != view.recovered { view.recovered = recoverable }
             if view.recovered.isEmpty { view.uncertain = false }
+            else if result["preflightError"]?.string != nil { view.uncertain = true }
             return true
         }
         return false
