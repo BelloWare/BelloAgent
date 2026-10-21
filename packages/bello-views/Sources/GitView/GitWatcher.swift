@@ -20,14 +20,22 @@ import CoreServices
     /// Where a linked worktree's branches live: the main repository's git
     /// directory, named by its `commondir` file.
     let commonDirectory: String?
-    private let interval: TimeInterval
-    private let onChange: () -> Void
+    /// Mutable so fixtures can hold a queued callback until a read finishes.
+    var interval: TimeInterval
+    private let onChange: (GitWatchChanges) -> Void
     private let handle: GitWatchStream
     private(set) var bridge: GitWatchBridge?
     private var generation = UUID()
     private let queue = DispatchQueue(label: "BelloViews.git.watch", qos: .utility)
     private var lastCall = -Double.greatestFiniteMagnitude
     private var trailing: DispatchWorkItem?
+    private var pending = GitWatchChanges()
+    var hasTrailingChange: Bool { trailing != nil }
+    /// Deliver the queued callback in tests without racing its timer.
+    func deliverTrailingChange() {
+        let work = trailing
+        work?.perform(); work?.cancel()
+    }
     deinit { handle.stop() }
     /// How long FSEvents itself gathers events before handing them over. Short
     /// enough that a saved file appears at once, long enough that one save is
@@ -54,7 +62,7 @@ import CoreServices
     /// not told.
     let stateOnly: Bool
     private let discoveringRepository: Bool
-    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, discoveringRepository: Bool = false, onChange: @escaping () -> Void) {
+    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, discoveringRepository: Bool = false, onChange: @escaping (GitWatchChanges) -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
         self.root = resolved; self.stateOnly = stateOnly; self.discoveringRepository = discoveringRepository
         self.gitDirectory = discoveringRepository ? nil : Self.gitDirectory(under: resolved)
@@ -100,13 +108,20 @@ import CoreServices
         let root = root, gitDirectory = gitDirectory, commonDirectory = commonDirectory, ignored = ignored, stateOnly = stateOnly, discoveringRepository = discoveringRepository, generation = UUID()
         self.generation = generation
         let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
+            let receivedAt = DispatchTime.now().uptimeNanoseconds
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && !ignored.covers($0) }) else { return }
+            let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && (discoveringRepository || !ignored.covers($0)) }
+            guard moved || !relevant.isEmpty else { return }
+            let changes = discoveringRepository ? .unknown : GitWatchChanges(relevant, receivedAt: receivedAt)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
-                if moved { self.rootChanged() } else { self.changed() }
+                if moved { self.rootChanged() } else {
+                    // Discovery has no verified working-tree ignore list.
+                    self.pending.formUnion(changes)
+                    self.changed()
+                }
             }
         }
         self.bridge = bridge
@@ -128,7 +143,7 @@ import CoreServices
 
     func stop() {
         generation = UUID()
-        trailing?.cancel(); trailing = nil
+        trailing?.cancel(); trailing = nil; pending = GitWatchChanges()
         bridge?.invalidate(); bridge = nil
         handle.stop()
         lastCall = -Double.greatestFiniteMagnitude
@@ -142,7 +157,7 @@ import CoreServices
         guard handle.isRunning else { return }
         Self.countRootChange()
         stop()
-        onChange()
+        onChange(.unknown)
     }
     /// Root changes seen in this process, so a test can prove the flag was
     /// acted on rather than the move being noticed some other way.
@@ -156,18 +171,26 @@ import CoreServices
         guard handle.isRunning else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastCall >= interval {
-            lastCall = now; onChange(); return
+            trailing?.cancel(); trailing = nil
+            deliverPending(); return
         }
         guard trailing == nil else { return }
         let generation = generation
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
-                self.trailing = nil; self.lastCall = ProcessInfo.processInfo.systemUptime; self.onChange()
+                self.trailing = nil; self.deliverPending()
             }
         }
         trailing = work
         DispatchQueue.main.asyncAfter(deadline: .now() + (interval - (now - lastCall)), execute: work)
+    }
+
+    private func deliverPending() {
+        let changes = pending; pending = GitWatchChanges()
+        guard changes.isInteresting(ignoring: ignored) else { return }
+        lastCall = ProcessInfo.processInfo.systemUptime
+        onChange(changes)
     }
 
     /// True for a path the panel would show: anything in the working tree, and
@@ -255,6 +278,13 @@ final class GitWatchBridge: @unchecked Sendable {
         handler?(paths, flags)
     }
     func invalidate() { lock.lock(); handler = nil; lock.unlock() }
+    /// Fixtures control exact batches without duplicating them through live FSEvents.
+    func isolatedCopy() -> GitWatchBridge? {
+        lock.lock(); defer { lock.unlock() }
+        guard let handler else { return nil }
+        self.handler = nil
+        return GitWatchBridge(handler: handler)
+    }
 }
 
 // These are C callbacks, not UI closures. Let FSEvents retain the borrowed
@@ -282,31 +312,94 @@ private func gitWatchCallback(_ stream: ConstFSEventStreamRef, _ info: UnsafeMut
     bridge.deliver(list, (0..<count).map { flags[$0] })
 }
 
+/// Retain paths until a queued refresh can use the newest ignored list.
+/// A root move, or too many paths to retain, keeps the old unconditional refresh.
+struct GitWatchChanges: Sendable {
+    private(set) var paths: Set<String> = []
+    private var latestEvent: UInt64 = 0
+    private var unconditional = false
+    private static let limit = 4_096
+    static var unknown: Self { var changes = Self(); changes.unconditional = true; return changes }
+    init(_ paths: [String] = [], receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        self.paths = Set(paths)
+        if !paths.isEmpty { latestEvent = receivedAt }
+        if self.paths.count > Self.limit { self = .unknown }
+    }
+    var isEmpty: Bool { paths.isEmpty && !unconditional }
+    mutating func formUnion(_ other: Self) {
+        if unconditional || other.unconditional { self = .unknown; return }
+        paths.formUnion(other.paths)
+        latestEvent = max(latestEvent, other.latestEvent)
+        if paths.count > Self.limit { self = .unknown }
+    }
+    func isInteresting(ignoring ignored: GitIgnoredPaths?) -> Bool {
+        unconditional || paths.contains { ignored?.covers($0, receivedAt: latestEvent) != true }
+    }
+}
+
 /// The ignored paths of one working tree, read by the FSEvents queue and set
 /// on the main actor.
 final class GitIgnoredPaths: @unchecked Sendable {
     private let lock = NSLock()
-    private var directories: [String] = []
+    /// No trailing separator: lookup walks path ancestors, not every directory.
+    private var directories: Set<String> = []
     private var files: Set<String> = []
-    /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
-    func update(root: String, relative: [String]) {
+    private var scanStartedAt: UInt64 = 0
+    private var shown: Set<String> = [], shownParents: Set<String> = []
+    /// The ignored-list read can be newer than the displayed status. Events
+    /// touching those rows must survive until another status read reconciles them.
+    func preserve(root: String, entries: [GitStatusEntry]) {
         let root = Self.comparable(root)
-        var directories: [String] = [], files: Set<String> = []
-        for entry in relative {
-            if entry.hasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
+        var shown: Set<String> = [], parents: Set<String> = []
+        for entry in entries {
+            // This row records an index removal; an ignored, untracked working
+            // copy cannot change it. Other states, including conflicts, stay protected.
+            if !entry.untracked && entry.indexState == "D" && entry.worktreeState == "." { continue }
+            for relative in [entry.path, entry.originalPath].compactMap({ $0 }) where !relative.isEmpty {
+                var path = root + "/" + relative
+                if path.utf8.last == 47 { path = String(decoding: path.utf8.dropLast(), as: UTF8.self) }
+                shown.insert(path)
+                while let slash = path.utf8.lastIndex(of: 47) {
+                    path = String(path[..<slash])
+                    if path.isEmpty || !parents.insert(path).inserted { break }
+                }
+            }
         }
-        lock.lock(); self.directories = directories; self.files = files; lock.unlock()
+        lock.lock(); self.shown = shown; shownParents = parents; lock.unlock()
     }
-    func covers(_ path: String) -> Bool {
+    /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
+    func update(root: String, relative: [String], scanStartedAt: UInt64) {
+        let root = Self.comparable(root)
+        var directories: Set<String> = [], files: Set<String> = []
+        for entry in relative {
+            if entry.utf8.last == 47 {
+                directories.insert(root + "/" + String(decoding: entry.utf8.dropLast(), as: UTF8.self))
+            } else { files.insert(root + "/" + entry) }
+        }
+        lock.lock(); self.directories = directories; self.files = files; self.scanStartedAt = scanStartedAt; lock.unlock()
+    }
+    func covers(_ path: String, receivedAt: UInt64? = nil) -> Bool {
         let path = Self.comparable(path)
         lock.lock(); defer { lock.unlock() }
-        if files.contains(path) { return true }
-        let directory = path.hasSuffix("/") ? path : path + "/"
-        return directories.contains { directory.hasPrefix($0) }
+        // Rechecks can discard only batches older than the scan's start.
+        // A mixed batch uses its newest event, conservatively keeping it all.
+        if let receivedAt, receivedAt >= scanStartedAt { return false }
+        var ancestor = path.utf8.last == 47 ? String(decoding: path.utf8.dropLast(), as: UTF8.self) : path
+        if shownParents.contains(ancestor) { return false }
+        var covered = files.contains(path)
+        while !ancestor.isEmpty {
+            if shown.contains(ancestor) { return false }
+            covered = covered || directories.contains(ancestor)
+            guard let slash = ancestor.utf8.lastIndex(of: 47) else { break }
+            ancestor = String(ancestor[..<slash])
+        }
+        return covered
     }
     /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
     /// "/private" (the root reads "/var/…") while FSEvents keeps it.
-    static func comparable(_ path: String) -> String { path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path }
+    static func comparable(_ path: String) -> String {
+        path.utf8.starts(with: "/private/".utf8) ? String(decoding: path.utf8.dropFirst("/private".utf8.count), as: UTF8.self) : path
+    }
 }
 
 /// Told when a repository's HEAD, refs or index change — a commit, a
@@ -318,7 +411,7 @@ final class GitIgnoredPaths: @unchecked Sendable {
     /// Discovery watches only the project and notices its `.git` marker.
     /// External metadata is resolved only after Git confirms the repository.
     public init(root: String, discoveringRepository: Bool = false, onChange: @escaping @MainActor () -> Void) {
-        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true, discoveringRepository: discoveringRepository, onChange: onChange)
+        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true, discoveringRepository: discoveringRepository) { _ in onChange() }
     }
     public func start() { watcher.start() }
     public func stop() { watcher.stop() }

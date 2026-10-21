@@ -6,13 +6,429 @@ import CoreServices
 @testable import GitView
 
 final class GitWorkingTreeWatcherTests: GitPanelTestCase {
+    @MainActor func testEventsAfterTheIgnoreScanStillRefresh() async throws {
+        try await newerThanIgnore(throttled: false, summary: false)
+    }
+
+    @MainActor func testThrottledEventsAfterTheIgnoreScanStillRefresh() async throws {
+        try await newerThanIgnore(throttled: true, summary: false)
+    }
+
+    @MainActor func testSummaryEventsAfterTheIgnoreScanStillRefresh() async throws {
+        try await newerThanIgnore(throttled: false, summary: true)
+    }
+
+    @MainActor func testThrottledSummaryEventsAfterTheIgnoreScanStillRefresh() async throws {
+        try await newerThanIgnore(throttled: true, summary: true)
+    }
+
+    @MainActor private func newerThanIgnore(throttled: Bool, summary: Bool) async throws {
+        let root = try repository("git-watch-newer-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "cache/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Ignore directories"], in: root)
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
+        defer { controller.stop() }
+        try await eventually("finish the initial empty scan") { controller.refreshesFinished > 0 && !controller.loading }
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge?.isolatedCopy())
+        watcher.interval = 3_600
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        var held: CheckedContinuation<Void, Never>?
+        var scans = 0
+        controller.ignoredDidRead = { ignored in
+            scans += 1
+            if scans == 1 {
+                XCTAssertEqual(ignored, ["cache/"])
+                await withCheckedContinuation { held = $0 }
+            }
+        }
+        defer { controller.ignoredDidRead = nil; held?.resume() }
+        let cache = root.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        try "object\n".write(to: cache.appendingPathComponent("first.o"), atomically: false, encoding: .utf8)
+        await Task.detached { bridge.deliver([cache.path], [0]) }.value
+        try await eventually("hold the completed ignore scan before publication") { held != nil }
+        XCTAssertTrue(controller.status.entries.isEmpty)
+        XCTAssertFalse(watcher.ignored.covers(cache.path), "The published cache still predates the directory")
+        try FileManager.default.removeItem(at: cache)
+        try "a regular file\n".write(to: cache, atomically: false, encoding: .utf8)
+        await Task.detached { bridge.deliver([cache.path], [0]) }.value
+        try await eventually("queue the newer replacement event") { watcher.hasTrailingChange }
+        if !throttled {
+            watcher.deliverTrailingChange()
+            XCTAssertTrue(controller.hasPendingAutomaticChange)
+        }
+        held?.resume(); held = nil
+        try await eventually("finish the held refresh and drain queued replacements") {
+            if watcher.hasTrailingChange { watcher.deliverTrailingChange() }
+            return controller.refreshesFinished > finished && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        XCTAssertGreaterThanOrEqual(controller.automaticRefreshes - before, 2, "The older scan cannot vouch for the newer event")
+        XCTAssertEqual(controller.status.entries.map(\.path), ["cache"], "The replacement file must become visible")
+        XCTAssertTrue(controller.status.entries.first?.untracked == true)
+    }
+
+    @MainActor func testIgnoredWritesAfterAStagedDeletionStayQuiet() async throws {
+        try await stagedDeletion(summary: false)
+    }
+
+    @MainActor func testSummaryIgnoredWritesAfterAStagedDeletionStayQuiet() async throws {
+        try await stagedDeletion(summary: true)
+    }
+
+    @MainActor private func stagedDeletion(summary: Bool) async throws {
+        let root = try repository("git-watch-staged-deletion")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        let log = root.appendingPathComponent("run.log")
+        try "*.log\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try "tracked\n".write(to: log, atomically: false, encoding: .utf8)
+        try git(["add", ".gitignore"], in: root); try git(["add", "-f", "run.log"], in: root)
+        try git(["commit", "-q", "-m", "Track log"], in: root)
+        try git(["rm", "--cached", "run.log"], in: root)
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
+        defer { controller.stop() }
+        var held: CheckedContinuation<Void, Never>?
+        var reads = 0
+        controller.statusDidRead = {
+            reads += 1
+            if reads == 1 { await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        try await eventually("hold the staged deletion before reading ignores") { held != nil }
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge?.isolatedCopy())
+        watcher.interval = 3_600
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        try "ignored write\n".write(to: log, atomically: false, encoding: .utf8)
+        await Task.detached { bridge.deliver([log.path], [0]) }.value
+        try await eventually("queue the log write during the reader refresh") {
+            if watcher.hasTrailingChange { watcher.deliverTrailingChange() }
+            return controller.hasMissedChange
+        }
+        held?.resume(); held = nil
+        try await eventually("finish the staged deletion read and any follow-up") {
+            if watcher.hasTrailingChange { watcher.deliverTrailingChange() }
+            return controller.refreshesFinished > finished && !controller.loading && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        let entry = try XCTUnwrap(controller.status.entries.first)
+        XCTAssertEqual(controller.status.entries.count, 1)
+        XCTAssertEqual(entry.path, "run.log"); XCTAssertEqual(entry.indexState, "D"); XCTAssertEqual(entry.worktreeState, ".")
+        XCTAssertTrue(watcher.ignored.covers(log.path), "The ignored working copy cannot change the staged-deletion row")
+        XCTAssertEqual(controller.automaticRefreshes, before, "A reconciled staged deletion must not keep refreshing for ignored writes")
+    }
+
+    @MainActor func testAnIgnoredReplacementOfADisplayedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: false)
+    }
+
+    @MainActor func testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: true)
+    }
+
+    @MainActor func testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: false, committed: true)
+    }
+
+    @MainActor func testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes() async throws {
+        try await ignoredReplacement(throttled: true, committed: true)
+    }
+
+    @MainActor func testASummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile() async throws {
+        try await ignoredReplacement(throttled: false, summary: true)
+    }
+
+    @MainActor func testAThrottledSummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile() async throws {
+        try await ignoredReplacement(throttled: true, summary: true)
+    }
+
+    @MainActor private func ignoredReplacement(throttled: Bool, committed: Bool = false, summary: Bool = false) async throws {
+        let root = try repository("git-watch-visible-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "cache/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Ignore directories"], in: root)
+        let cache = root.appendingPathComponent("cache")
+        try "a regular file\n".write(to: cache, atomically: false, encoding: .utf8)
+        if committed { try git(["add", "cache"], in: root); try git(["commit", "-q", "-m", "Track cache"], in: root) }
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
+        defer { controller.stop() }
+        try await eventually("read the regular file") { controller.refreshesFinished > 0 && !controller.loading }
+        let initialPaths = committed ? [] : ["cache"]
+        XCTAssertEqual(controller.status.entries.map(\.path), initialPaths)
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge?.isolatedCopy())
+        watcher.interval = 3_600
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        var held: CheckedContinuation<Void, Never>?
+        var reads = 0
+        controller.statusDidRead = {
+            reads += 1
+            if reads == 1 { await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        await Task.detached { bridge.deliver([cache.path], [0]) }.value
+        try await eventually("hold the status before replacing cache") { held != nil }
+        XCTAssertTrue(controller.isAutomaticallyRefreshing)
+        try FileManager.default.removeItem(at: cache)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        let object = cache.appendingPathComponent("first.o")
+        try "object\n".write(to: object, atomically: false, encoding: .utf8)
+        // A child-only batch must also preserve the deletion of its tracked ancestor.
+        let paths = committed ? [object.path] : [cache.path, object.path]
+        await Task.detached { bridge.deliver(paths, paths.map { _ in 0 }) }.value
+        try await eventually("queue the replacement batch in the throttle") { watcher.hasTrailingChange }
+        if !throttled {
+            watcher.deliverTrailingChange()
+            XCTAssertTrue(controller.hasPendingAutomaticChange)
+        }
+        // --others excludes an indexed file even when the worktree now holds
+        // a directory at that name. It cannot teach the watcher "cache/".
+        let ignored = try await GitService().ignoredPaths(in: root.path)
+        XCTAssertEqual(ignored, committed ? [] : ["cache/"])
+        held?.resume(); held = nil
+        if throttled {
+            try await eventually("learn ignores before delivering the queued batch") {
+                controller.refreshesFinished > finished && !controller.isAutomaticallyRefreshing
+            }
+            XCTAssertEqual(controller.status.entries.map(\.path), initialPaths, "The held snapshot predates the replacement")
+            watcher.deliverTrailingChange()
+        }
+        try await eventually("finish the read and its follow-up") {
+            if watcher.hasTrailingChange { watcher.deliverTrailingChange() }
+            return controller.refreshesFinished > finished && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        XCTAssertEqual(controller.automaticRefreshes - before, 2, "The stale status needs exactly one follow-up")
+        if committed {
+            XCTAssertEqual(controller.status.entries.map(\.path), ["cache"], "The tracked deletion must appear")
+            XCTAssertEqual(controller.status.entries.first?.worktreeState, "D")
+            XCTAssertFalse(watcher.ignored.covers(object.path), "The indexed ancestor is never learned as ignored")
+        } else {
+            XCTAssertTrue(controller.status.entries.isEmpty, "The untracked file was replaced by an ignored directory")
+            XCTAssertTrue(watcher.ignored.covers(object.path), "Once the stale row is gone, ignored writes are quiet again")
+        }
+    }
+
+    @MainActor func testIgnoredFilteringPreservesBothRenamePathsAndTheirRelatives() async throws {
+        let root = try repository("git-watch-visible-renames")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        for directory in ["cache", "renamed"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(directory), withIntermediateDirectories: false)
+        }
+        try "source\n".write(to: root.appendingPathComponent("cache/item"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try git(["mv", "cache/item", "renamed/item"], in: root)
+        let controller = GitController(roots: [root.path])
+        defer { controller.stop() }
+        try await eventually("read both names of the rename") { controller.refreshesFinished > 0 && !controller.loading }
+        let entry = try XCTUnwrap(controller.status.entries.first)
+        XCTAssertEqual(entry.path, "renamed/item"); XCTAssertEqual(entry.originalPath, "cache/item")
+        for restarted in [false, true] {
+            if restarted { controller.stop(); await controller.refresh() }
+            let ignored = try XCTUnwrap(controller.watcher).ignored
+            // Model a newer ignored list arriving after this rename snapshot.
+            ignored.update(root: root.path, relative: ["cache/", "renamed/", "cache-other/", "renamed-other/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+            for path in ["cache", "cache/", "cache/item", "cache/item/", "cache/item/child", "renamed", "renamed/item", "renamed/item/child"] {
+                XCTAssertFalse(ignored.covers(root.path + "/" + path), "A displayed rename still owns \(path), restarted: \(restarted)")
+            }
+            for path in ["cache/sibling", "renamed/sibling", "cache-other/item", "renamed-other/item"] {
+                XCTAssertTrue(ignored.covers(root.path + "/" + path), "An unrelated ignored path stays quiet: \(path)")
+            }
+        }
+    }
+
+    func testIgnoredFilteringUsesFilesystemSeparatorsBeforeCombiningCharacters() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["cache/", "source/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        ignored.preserve(root: "/repo", entries: [
+            GitStatusEntry(path: "cache/\u{301}item", originalPath: "source/\u{301}item",
+                           indexState: "R", worktreeState: ".", untracked: false)
+        ])
+        for directory in ["cache", "source"] {
+            for path in [directory, directory + "/"] {
+                XCTAssertFalse(ignored.covers("/repo/" + path), "A combining character must not hide a filesystem separator: \(path)")
+            }
+        }
+        ignored.update(root: "/repo", relative: [
+            "cache/item/\u{301}child", "source/item/\u{301}child", "cache/\u{301}sibling", "source/\u{301}sibling"
+        ], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        ignored.preserve(root: "/repo", entries: [
+            GitStatusEntry(path: "cache/item", originalPath: "source/item",
+                           indexState: "R", worktreeState: ".", untracked: false)
+        ])
+        for directory in ["cache", "source"] {
+            XCTAssertFalse(ignored.covers("/repo/" + directory + "/item/\u{301}child"))
+            XCTAssertTrue(ignored.covers("/repo/" + directory + "/\u{301}sibling"))
+        }
+    }
+
+    func testQueuedPathsStayBoundedWithoutHidingUncertainChanges() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["build/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        let paths = (0..<4_096).map { "/repo/build/unit\($0).o" }
+        var changes = GitWatchChanges(paths, receivedAt: 1)
+        XCTAssertFalse(changes.isInteresting(ignoring: ignored))
+        changes.formUnion(GitWatchChanges(["/repo/build/overflow.o"]))
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "Overflow keeps the previous conservative refresh")
+        XCTAssertTrue(changes.paths.isEmpty, "A stalled read cannot retain unlimited paths")
+        XCTAssertTrue(GitWatchChanges(paths + ["/repo/build/extra.o"]).isInteresting(ignoring: ignored))
+        changes = GitWatchChanges(["/repo/build/ignored.o"])
+        changes.formUnion(.unknown)
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "A root move is never filtered as an ignored file")
+        XCTAssertFalse(GitWatchChanges().isInteresting(ignoring: ignored))
+    }
+
+    func testQueuedRechecksUseTheNewestEventAndScanStart() {
+        let ignored = GitIgnoredPaths()
+        let path = "/repo/build/first.o"
+        XCTAssertTrue(GitWatchChanges([path], receivedAt: 10).isInteresting(ignoring: ignored))
+        ignored.update(root: "/repo", relative: ["build/"], scanStartedAt: 20)
+        XCTAssertFalse(GitWatchChanges([path], receivedAt: 10).isInteresting(ignoring: ignored))
+        XCTAssertTrue(GitWatchChanges([path], receivedAt: 20).isInteresting(ignoring: ignored), "Equal times cannot prove ordering")
+        var changes = GitWatchChanges([path], receivedAt: 21)
+        changes.formUnion(GitWatchChanges(["/repo/build/older.o"], receivedAt: 5))
+        changes.formUnion(GitWatchChanges())
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "Merging an older or empty batch cannot age newer events")
+        ignored.update(root: "/repo", relative: ["build/"], scanStartedAt: 30)
+        XCTAssertFalse(changes.isInteresting(ignoring: ignored), "A later scan can vouch for the whole batch")
+        XCTAssertTrue(changes.isInteresting(ignoring: nil), "A missing scan must keep the refresh")
+        changes.formUnion(GitWatchChanges(["/repo/source.swift"], receivedAt: 10))
+        XCTAssertTrue(changes.isInteresting(ignoring: ignored), "Every path must be covered")
+    }
+
+    func testIgnoredProtectionExcludesOnlyReconciledStagedDeletions() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["run.log"], scanStartedAt: 20)
+        let states: [(Character, Character, Bool, Bool)] = [
+            ("D", ".", false, false), ("D", "D", false, true), ("D", "U", false, true),
+            ("M", ".", false, true), ("A", ".", false, true), ("R", ".", false, true),
+            (".", "D", false, true), (".", "M", false, true), ("?", "?", true, true)
+        ]
+        for (index, worktree, untracked, protected) in states {
+            ignored.preserve(root: "/repo", entries: [GitStatusEntry(path: "run.log", originalPath: nil,
+                indexState: index, worktreeState: worktree, untracked: untracked)])
+            XCTAssertEqual(ignored.covers("/repo/run.log"), !protected, "\(index)\(worktree), untracked: \(untracked)")
+        }
+    }
+
+    @MainActor func testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores() async throws {
+        let root = try repository("git-watch-queued-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var changes = 0
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 3_600) { _ in changes += 1 }
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/build"], [0]) }.value
+        try await eventually("deliver the directory batch") { changes == 1 }
+        await Task.detached { bridge.deliver([root.path + "/build/out/first.o"], [0]) }.value
+        try await eventually("queue the separate file batch") { watcher.hasTrailingChange }
+        watcher.ignored.update(root: root.path, relative: ["build/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        watcher.deliverTrailingChange()
+        XCTAssertFalse(watcher.hasTrailingChange)
+        XCTAssertEqual(changes, 1, "The first refresh learned that the queued file is ignored")
+        let before = changes
+        await Task.detached { bridge.deliver([root.path + "/source.swift"], [0]) }.value
+        try await eventually("queue a subsequent source change") { watcher.hasTrailingChange }
+        watcher.deliverTrailingChange()
+        XCTAssertEqual(changes, before + 1)
+    }
+
+    @MainActor func testIgnoredEventsDuringAnAutomaticRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: true, tracked: false)
+    }
+
+    @MainActor func testIgnoredEventsDuringAReaderRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: false, tracked: false)
+    }
+
+    @MainActor func testIgnoredEventsDuringAnAutomaticSummaryRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: true, tracked: false, summary: true)
+    }
+
+    @MainActor func testIgnoredEventsDuringAReaderSummaryRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: false, tracked: false, summary: true)
+    }
+
+    @MainActor func testTrackedEventsDuringAnAutomaticRefreshStillRefresh() async throws {
+        try await queuedEvents(automatic: true, tracked: true)
+    }
+
+    @MainActor func testTrackedEventsDuringAReaderRefreshStillRefresh() async throws {
+        try await queuedEvents(automatic: false, tracked: true)
+    }
+
+    @MainActor private func queuedEvents(automatic: Bool, tracked: Bool, summary: Bool = false) async throws {
+        let root = try repository("git-watch-reading-ignore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "build/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        let source = root.appendingPathComponent("source.swift")
+        try "let value = 1\n".write(to: source, atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
+        defer { controller.stop() }
+        try await eventually("finish the initial read") { controller.refreshesFinished > 0 && !controller.loading }
+        let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge?.isolatedCopy())
+        let before = controller.automaticRefreshes, finished = controller.refreshesFinished
+        var held: CheckedContinuation<Void, Never>?
+        var reads = 0
+        controller.statusDidRead = {
+            reads += 1
+            if reads == 1 { await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        let build = root.appendingPathComponent("build/out", isDirectory: true)
+        func writeObject() throws {
+            try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
+            try "object\n".write(to: build.appendingPathComponent("first.o"), atomically: false, encoding: .utf8)
+        }
+        if automatic {
+            try writeObject()
+            await Task.detached { bridge.deliver([root.path + "/build"], [0]) }.value
+        } else { controller.startRefresh() }
+        try await eventually("hold the status snapshot before ignored paths are read") { held != nil }
+        guard controller.loading == !automatic, controller.isAutomaticallyRefreshing == automatic else {
+            XCTFail("The held snapshot must belong to the requested kind of refresh")
+            return
+        }
+        XCTAssertFalse(watcher.ignored.covers(build.path + "/first.o"))
+        // Arm the reader before writing: an earlier queued file event can
+        // otherwise start an automatic refresh before the reader task enters.
+        if !automatic { try writeObject() }
+        if tracked { try "let value = 2\n".write(to: source, atomically: false, encoding: .utf8) }
+        let paths = [build.path + "/first.o"] + (tracked ? [source.path] : [])
+        await Task.detached { bridge.deliver(paths, paths.map { _ in 0 }) }.value
+        // A reader refresh cannot be superseded; an automatic one queues one
+        // further pass. Wait for actual delivery, not an assumed FSEvents delay.
+        if automatic {
+            try await eventually("queue the batch during the held refresh") { controller.hasPendingAutomaticChange }
+        } else {
+            try await eventually("deliver the batch during the reader's refresh") { controller.hasMissedChange }
+        }
+        held?.resume(); held = nil
+        let expected = (automatic ? 1 : 0) + (tracked ? 1 : 0)
+        try await eventually("finish the held read and any required follow-up") {
+            controller.refreshesFinished > finished && reads >= (tracked ? 2 : 1) &&
+                !controller.loading && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
+        XCTAssertTrue(watcher.ignored.covers(build.path + "/first.o"))
+        if tracked {
+            XCTAssertGreaterThanOrEqual(controller.automaticRefreshes - before, expected,
+                                        "An unignored change must still cause a follow-up")
+        } else {
+            XCTAssertEqual(controller.automaticRefreshes - before, expected,
+                           "Recheck the queued paths after the refresh learns build/")
+        }
+        XCTAssertEqual(controller.status.entries.map(\.path), tracked ? ["source.swift"] : [])
+    }
+
     @MainActor func testDiscoveryWatchUsesOnlyTheProjectAndNoticesTheGitMarker() async throws {
         let root = try repository("git-discovery-watch"), outside = try repository("git-discovery-outside")
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
         try "gitdir: \(outside.path)\n".write(to: root.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
         try "../unverified-common\n".write(to: outside.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
         var changes = 0
-        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0, stateOnly: true, discoveringRepository: true) { changes += 1 }
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0, stateOnly: true, discoveringRepository: true) { _ in changes += 1 }
         XCTAssertNil(watcher.gitDirectory, "Discovery must not resolve metadata before Git verifies the repository")
         XCTAssertNil(watcher.commonDirectory)
         watcher.start(); defer { watcher.stop() }
@@ -22,6 +438,36 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         XCTAssertEqual(changes, 0)
         await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
         try await eventually("discover a .git directory or worktree marker appearing", timeout: 5) { changes == 1 }
+    }
+
+    @MainActor func testDiscoveryEventsBypassCachedIgnores() async throws {
+        let root = try repository("git-discovery-ignored")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var batches: [GitWatchChanges] = []
+        let watcher = GitWorkingTreeWatcher(root: root.path, stateOnly: true, discoveringRepository: true) { batches.append($0) }
+        watcher.ignored.update(root: root.path, relative: [".git/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("deliver discovery regardless of a cached ignore", timeout: 5) { batches.count == 1 }
+        XCTAssertTrue(batches.first?.isInteresting(ignoring: watcher.ignored) == true, "Discovery is unconditional")
+    }
+
+    @MainActor func testThrottledDiscoveryEventsSurviveNewIgnores() async throws {
+        let root = try repository("git-discovery-queued")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var batches: [GitWatchChanges] = []
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 3_600, stateOnly: true, discoveringRepository: true) { batches.append($0) }
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("deliver the first discovery batch") { batches.count == 1 }
+        await Task.detached { bridge.deliver([root.path + "/.git/HEAD"], [0]) }.value
+        try await eventually("queue a second discovery batch") { watcher.hasTrailingChange }
+        watcher.ignored.update(root: root.path, relative: [".git/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
+        watcher.deliverTrailingChange()
+        XCTAssertEqual(batches.count, 2, "A newly learned ignore must not discard discovery")
+        XCTAssertTrue(batches.allSatisfy { $0.isInteresting(ignoring: watcher.ignored) }, "Discovery batches stay unconditional")
     }
 
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
@@ -43,7 +489,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         let root = try repository("git-watch-generation")
         defer { try? FileManager.default.removeItem(at: root) }
         var changes = 0
-        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0) {
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0) { _ in
             MainActor.assertIsolated(); XCTAssertTrue(Thread.isMainThread); changes += 1
         }
         watcher.start(); defer { watcher.stop() }
@@ -267,14 +713,18 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         }
         try await Task.sleep(for: .milliseconds(2_000))
         XCTAssertEqual(controller.automaticRefreshes, before, "writes into ignored paths refresh nothing")
-        // A new ignored folder is not in the last read of what is ignored:
-        // its first change refreshes once, which learns it, and then it is quiet.
+        // A new folder needs a scan. Batches delivered after that scan starts
+        // conservatively need another; the held-read fixtures prove that settled
+        // pre-scan batches cost only one refresh. Once learned, writes stay quiet.
         let build = root.appendingPathComponent("build/out", isDirectory: true)
         try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
         try "o\n".write(to: build.appendingPathComponent("first.o"), atomically: false, encoding: .utf8)
-        try await Task.sleep(for: .milliseconds(2_000))
+        let watcher = try XCTUnwrap(controller.watcher)
+        try await eventually("learn build and drain uncertain batches") {
+            watcher.ignored.covers(build.path + "/first.o") && !controller.isAutomaticallyRefreshing && !watcher.hasTrailingChange
+        }
         let learned = controller.automaticRefreshes
-        XCTAssertLessThanOrEqual(learned - before, 1, "a new ignored folder costs at most one refresh")
+        XCTAssertGreaterThan(learned, before, "The new ignored folder is learned by the watcher")
         for index in 0..<20 {
             try "\(index)\n".write(to: build.appendingPathComponent("unit\(index).o"), atomically: false, encoding: .utf8)
             try await Task.sleep(for: .milliseconds(60))
@@ -309,7 +759,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
 
     func testIgnoredPathsCoverTheirFoldersAndFilesOnly() {
         let ignored = GitIgnoredPaths()
-        ignored.update(root: "/repo", relative: ["node_modules/", "build/", "debug.log"])
+        ignored.update(root: "/repo", relative: ["node_modules/", "build/", "debug.log"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
         XCTAssertTrue(ignored.covers("/repo/node_modules/pkg/index.js"))
         XCTAssertTrue(ignored.covers("/repo/node_modules"))
         XCTAssertTrue(ignored.covers("/repo/build/out/app.o"))
@@ -318,7 +768,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         XCTAssertFalse(ignored.covers("/repo/src/build.swift"))
         XCTAssertFalse(ignored.covers("/repo/debug.log.txt"))
         // FSEvents keeps "/private" where the resolved root drops it.
-        ignored.update(root: "/var/folders/x/repo", relative: ["node_modules/"])
+        ignored.update(root: "/var/folders/x/repo", relative: ["node_modules/"], scanStartedAt: DispatchTime.now().uptimeNanoseconds)
         XCTAssertTrue(ignored.covers("/private/var/folders/x/repo/node_modules/a.js"))
     }
 
@@ -461,7 +911,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         // panel elsewhere is open when this test starts and closes halfway,
         // as that one did.
         let elsewhere = try repository("git-watch-elsewhere"); defer { try? FileManager.default.removeItem(at: elsewhere) }
-        let other = GitWorkingTreeWatcher(root: elsewhere.path) {}
+        let other = GitWorkingTreeWatcher(root: elsewhere.path) { _ in }
         other.start(); defer { other.stop() }
         XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: elsewhere.path), 1)
         XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 0)
