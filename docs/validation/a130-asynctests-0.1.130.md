@@ -66,7 +66,7 @@ A different hazard, which neither this fix nor `@MainActor` addresses: an assert
 - `packages/swift-host/Tests/PiAgentCoreTests/HelperTestCase.swift`: `class HelperTestCase: XCTestCase` overrides the public `record(_:)`. An issue that arrives while the same thread is inside `super.record` for this test is held and recorded right after the outer one returns. It is skipped when `continueAfterFailure` is false, because XCTest keeps only the first failure then and may unwind the test from inside the call. A passing test never calls `record(_:)`, so passing runs pay nothing. All 158 helper test classes now derive from it.
 - `apps/macos/TestSupport/IssueRecordingGuard.m`: compiled into `PiAppTests` only. Its constructor replaces `-[XCTestCase recordIssue:]` with the same algorithm and installs a marker method. `@try/@finally` clears the per-thread state if XCTest unwinds. The app target has about 480 test classes, so a constructor avoids editing each declaration. This follows `TestIsolationGuard.m`, which already installs process-wide test guards the same way.
 
-Why not `@MainActor`: it only moves the test body to the main thread. Assertions in task-group children, detached tasks, actors, callbacks and nonisolated helpers such as `eventually` still run off the main thread. Main-actor work also makes the main run loop exit, and so drain, more often: a `@MainActor` test whose children failed lost up to 39 of 40. Moving 927 helper tests onto the main thread would also move their synchronous code there (`usleep` polling in `stopFixtureProcess`, `Process` waits, semaphores) with no recording benefit once the drop itself is fixed.
+Why not `@MainActor`: it only moves the test body to the main thread. Assertions in task-group children, detached tasks, actors, callbacks and nonisolated helpers such as `eventually` still run off the main thread. Main-actor work also makes the main run loop exit, and so drain, more often: a `@MainActor` test whose children failed lost up to 39 of 40. Moving 927 helper tests onto the main thread would also move their synchronous parts there, such as `stopFixtureProcess`'s `usleep` polling, with no recording benefit once the drop itself is fixed.
 
 ## Guards
 
@@ -95,6 +95,7 @@ Logs: `logs/app-probe-without-guard*.log`, `logs/app-probe-with-guard*.log`. The
 | --- | --- |
 | Helper suite, base, `--skip StreamingCostTests` (`logs/baseline-suite.log`) | 1,162 tests, 7 skipped, 0 failures; 478.3 s in XCTest, 7:59 wall; load 3.1 → 16.6 |
 | Helper suite, fix (`logs/fixed-suite.log`) | 1,163 tests (+`IssueRecordingTests`), 7 skipped, 0 failures; 449.2 s, 7:30 wall; load 22.6 → 4.7 |
+| `StreamingCostTests` alone under the full-lane lock (`logs/streaming-cost.log`) | 5 tests, 0 failures, 3.68 s; load 2.1 |
 | Wire / concurrent / acceptance, Release helper from `scripts/build-bundle.py` (`logs/wire.log`, `concurrent.log`, `acceptance.log`) | 40 / 4 / 3 tests OK |
 | Python, `python3 -m unittest discover -s scripts/tests` with `PI_BUILD_ROOT` (`logs/python.log`) | 148 tests OK (3 new), 155.5 s |
 | Focused app: `IssueRecordingGuardTests` | 1 test passed |
@@ -107,3 +108,5 @@ The pass/fail set is identical before and after, as the mechanism predicts. No t
 - If a later Xcode stops dropping the nested issue, `test_xctest_issue_recording.py` fails on its plain-XCTest control and says to retire both workarounds.
 - Validation records that quote failure counts from earlier helper or app runs (failing-first and mutation logs) may under-count. Their failing/passing conclusions hold.
 - Assertions in unawaited tasks remain a separate hazard: they are attributed to whichever test is running, or lost at the end of a run. None were found; the handoff note says to await them.
+- Not changed, same exposure: `packages/bello-views`, with 291 `async` tests in 34 classes across three test targets. It would need a copy of `HelperTestCase` in each target or a shared test-support target. **Needs a lead decision.**
+- The full app suite was not run here: the replaced method runs only for failing tests. `TestHostIsolationTests` (serial lane, unchanged `TestIsolationGuard.m`) was not rerun.
