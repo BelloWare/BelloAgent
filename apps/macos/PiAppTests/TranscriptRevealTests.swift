@@ -254,6 +254,66 @@ final class TranscriptRevealTests: XCTestCase {
         } catch { print("REVEALDBG " + state(chat, hit.messageID)); throw error }
     }
 
+    /// A sidebar Full chats match opened while ⌘F stays open: the page read
+    /// in for it, and a reply landing in the journal past that page, change
+    /// what the chat presents, and Find counts its query again once that
+    /// settles — keeping the sidebar's mark and the place it brought into view.
+    @MainActor func testASidebarMatchKeepsItsMarkThroughFindsRecount() async throws {
+        let chat = try await chat(turns: 60)
+        let pane = try XCTUnwrap(LongChatScroll.views(NativeTranscriptPane.self, in: chat.pane).first)
+        let document = try XCTUnwrap(chat.document), clip = try XCTUnwrap(chat.scroll?.contentView)
+        chat.model.findInFocusedConversation(.show, in: chat.window)
+        try await eventually("⌘F never showed the find bar") { chat.draw(); return pane.findBar != nil }
+        let search = try XCTUnwrap(pane.find.search)
+        var searches = 0
+        pane.find.search = { id, query, start in searches += 1; return try await search(id, query, start) }
+        pane.findBar?.field.text = "quokka"; pane.find.setQuery("quokka")
+        try await eventually("The zero-hit search never finished", timeout: .seconds(20)) { chat.draw(); return !pane.find.searching }
+        XCTAssertEqual(pane.findBar?.count.line.text, "No matches")
+        let counted = searches
+        // a30b's second finding, far above the window, as the sidebar's results show it.
+        let excerpt = "…## Finding 30.2 The parser in module 13 reads the token stream"
+        XCTAssertFalse(chat.view.messages.contains { $0.id == "a30b" }, "The match starts outside the window")
+        await SidebarSearchReveal.reveal(chat.model, chatID: chat.chat.id, messageID: "a30b",
+                                         mark: .excerpt(excerpt, highlight: (excerpt as NSString).range(of: "parser")))
+        func marked() -> Bool {
+            guard let text = document.focusText, !document.focusPending, document.highlights.focus?.fromFind == false,
+                  let manager = text.layoutManager, let container = text.textContainer, document.focusRange.location != NSNotFound,
+                  NSMaxRange(document.focusRange) <= (text.textStorage?.length ?? 0) else { return false }
+            let found = ((text.textStorage?.string ?? "") as NSString).substring(with: document.focusRange).lowercased()
+            let rect = text.convert(manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: document.focusRange, actualCharacterRange: nil), in: container), to: clip)
+            let colour = manager.temporaryAttributes(atCharacterIndex: document.focusRange.location, effectiveRange: nil)[.backgroundColor] as? NSColor
+            return found == "parser" && clip.bounds.contains(CGPoint(x: clip.bounds.midX, y: rect.midY)) && colour == TranscriptHighlights.focusColor
+        }
+        /// Where the mark stands below the viewport's top.
+        func markTop() -> CGFloat? {
+            guard let text = document.focusText, let manager = text.layoutManager, let container = text.textContainer,
+                  document.focusRange.location != NSNotFound, NSMaxRange(document.focusRange) <= (text.textStorage?.length ?? 0) else { return nil }
+            let glyphs = manager.glyphRange(forCharacterRange: document.focusRange, actualCharacterRange: nil)
+            return text.convert(manager.boundingRect(forGlyphRange: glyphs, in: container), to: clip).minY - clip.bounds.minY
+        }
+        do {
+            try await eventually("The sidebar's match was never marked and shown", timeout: .seconds(20)) { chat.draw(); return marked() }
+        } catch { print("REVEALDBG " + state(chat, "a30b")); throw error }
+        for _ in 0..<20 { chat.draw(); try await Task.sleep(for: .milliseconds(16)) }
+        let mark = try XCTUnwrap(document.highlights.focus), place = try XCTUnwrap(markTop())
+        // A reply lands in the journal past the page, as a run's rows do while
+        // the reader is in earlier history, and the chat's presentation moves.
+        let record: [String: WireValue] = ["type": .string("message"), "id": .string("late-quokka"), "parentId": .string(chat.lastID),
+                                           "message": .object(["role": .string("assistant"), "content": .string("A quokka arrived.")])]
+        let journal = try FileHandle(forWritingTo: URL(fileURLWithPath: try XCTUnwrap(chat.chat.path)))
+        try journal.seekToEnd(); try journal.write(contentsOf: try JSONEncoder().encode(record) + Data([10])); try journal.close()
+        chat.view.presentationChanges.send(chat.view.presentationChanges.value)
+        try await eventually("Find never counted again", timeout: .seconds(20)) {
+            chat.draw(); return searches > counted && !pane.find.searching && pane.find.matches.count == 1
+        }
+        for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(16)) }
+        XCTAssertEqual(pane.findBar?.count.line.text, "1 of 1", "The count follows the chat")
+        XCTAssertEqual(document.highlights.focus, mark, "The recount keeps the sidebar's mark, requesting nothing")
+        XCTAssertTrue(marked(), "The mark stays drawn, on screen")
+        XCTAssertEqual(try XCTUnwrap(markTop()), place, accuracy: 1, "The place the sidebar brought into view stays")
+    }
+
     /// A finished turn folds its work behind one line; revealing a message in
     /// that work opens the turn.
     @MainActor func testAMessageInAFoldedTurnOpensIt() async throws {

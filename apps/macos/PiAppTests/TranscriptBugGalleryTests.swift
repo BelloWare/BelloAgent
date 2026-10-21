@@ -172,6 +172,70 @@ final class TranscriptBugGalleryTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("recovery-\(name).png"))
         }
     }
+    /// Two image results of one reply read back from a generated journal:
+    /// the image alone, and text with an image. Their cards show the
+    /// descriptions the live cards showed, with Find on the first.
+    @MainActor func testReopenedImageResultCardsGallery() async throws {
+        guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let root = scratchRoot("image-result-gallery")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image: WireValue = .object(["type": .string("image"), "mimeType": .string("image/png"),
+                                        "data": .string(Data(repeating: 7, count: 3_000).base64EncodedString())])
+        let described = "[image/png result, 3000 bytes]"
+        func call(_ id: String) -> WireValue {
+            .object(["type": .string("toolCall"), "id": .string(id), "name": .string("chart_render"), "arguments": .object(["chart": .string(id)])])
+        }
+        func record(_ id: String, parent: String?, _ message: [String: WireValue]) -> WireValue {
+            .object(["type": .string("message"), "id": .string(id), "parentId": parent.map(WireValue.string) ?? .null, "message": .object(message)])
+        }
+        let records: [WireValue] = [.object(["type": .string("session"), "version": .number(3), "id": .string("image-gallery")]),
+            record("question", parent: nil, ["role": .string("user"), "content": .string("Render the sales chart, then the captioned one.")]),
+            record("reply", parent: "question", ["role": .string("assistant"), "content": .array([
+                .object(["type": .string("text"), "text": .string("Rendering both charts.")]), call("sales"), call("captioned")])]),
+            record("sales-result", parent: "reply", ["role": .string("toolResult"), "toolName": .string("chart_render"), "toolCallId": .string("sales"),
+                "content": .array([image]), "nativeDisplayText": .string(described), "nativeToolStats": .object(["outcome": .string("completed")])]),
+            record("captioned-result", parent: "sales-result", ["role": .string("toolResult"), "toolName": .string("chart_render"), "toolCallId": .string("captioned"),
+                "content": .array([.object(["type": .string("text"), "text": .string("Sales by month")]), image]),
+                "nativeDisplayText": .string("Sales by month\n" + described), "nativeToolStats": .object(["outcome": .string("completed")])]),
+            record("answer", parent: "captioned-result", ["role": .string("assistant"), "content": .string("Both charts are ready.")])]
+        var bytes = Data()
+        for value in records { bytes.append(try JSONEncoder().encode(value)); bytes.append(10) }
+        let file = root.appendingPathComponent("image-gallery.jsonl"); try bytes.write(to: file)
+        let read = try await HistoryReader(indexDirectory: root).read(path: file.path)
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(760)), ("dark", .darkAqua, 760), ("narrow", .aqua, 360)] {
+            let session = SessionDisplay(id: "image-result-gallery")
+            session.messages = read.messages
+            let page = TranscriptPage(); page.state = "idle"; page.bind(session)
+            for case .block(let block) in page.snapshot?.items ?? [] where block.presentation == .work || block.part != nil {
+                session.disclosure.setOpen(true, .work(block.key))
+            }
+            for id in ["sales", "captioned"] { session.disclosure.setOpen(true, .tool(ToolOccurrence.key("reply", id))) }
+            let scroll = TranscriptNativeScrollView(frame: CGRect(x: 0, y: 0, width: width, height: 720))
+            let document = TranscriptNativeDocument(page: page); scroll.documentView = document
+            let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance); window.contentView = scroll; window.makeKeyAndOrderFront(nil)
+            defer { window.contentView = nil; window.close() }
+            var environment = TranscriptRowEnvironment(); environment.colorScheme = appearance == .darkAqua ? .dark : .light
+            document.update(snapshot: page.snapshot, actions: .init(), environment: environment, disclosure: session.disclosure)
+            document.layoutRows(width: scroll.contentSize.width); document.finishDisclosureMotion()
+            for row in document.retainedRows { row.prepareToDraw(); row.layoutForViewport() }
+            document.highlights = TranscriptHighlights(query: "image/png", focus: .init(messageID: "reply", needle: "image/png", occurrence: 0, serial: 1,
+                                                                                         fromFind: true, scopeCall: "sales", record: "sales-result"))
+            try await eventually("The image description is highlighted in \(name)") {
+                scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                return !document.focusPending && document.focusText != nil
+            }
+            XCTAssertEqual(document.focusText.map { ($0.string as NSString).substring(with: document.focusRange) }, "image/png")
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+            for _ in 0..<4 { scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield(); try await Task.sleep(for: .milliseconds(10)) }
+            let bitmap = try XCTUnwrap(scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds))
+            scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("image-results-\(name).png"))
+        }
+    }
     @MainActor func testUserFindAndSummaryRowsGallery() async throws {
         guard let path = testEnvironment("PI_TRANSCRIPT_BUG_GALLERY") else { throw XCTSkip("Set PI_TRANSCRIPT_BUG_GALLERY") }
         let directory = URL(fileURLWithPath: path)
