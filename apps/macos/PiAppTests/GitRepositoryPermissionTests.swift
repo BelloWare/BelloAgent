@@ -3,6 +3,68 @@ import XCTest
 @testable import GitView
 
 final class GitRepositoryPermissionTests: XCTestCase {
+    @MainActor func testNestedProjectTrustKeepsBytePathBoundaries() async throws {
+        let root = scratchRoot("git-nested-trust").resolvingSymlinksInPath()
+        let outer = root.appendingPathComponent("outer"), inner = outer.appendingPathComponent("inner")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("marker"), program = root.appendingPathComponent("monitor"), global = root.appendingPathComponent("global")
+        try Data("#!/bin/sh\n: > '\(marker.path)'\nprintf 'token\\000'\n".utf8).write(to: program)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        try Data("[core]\nfsmonitor = \(program.path)\n".utf8).write(to: global)
+        let environment = ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_GLOBAL": global.path, "GIT_CONFIG_NOSYSTEM": "1"]
+        let service = GitService(environment: environment)
+        var configuration = VaultConfiguration()
+        configuration.workspaces = [WorkspaceRecord(id: "outer", path: outer.path, trusted: true),
+                                    WorkspaceRecord(id: "inner", path: inner.path, trusted: false)]
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        defer { model.shutdown() }
+        model.tabs.showsWindows = false; try await model.reloadConfiguration()
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: inner)
+        XCTAssertTrue(GitService.resolveTrust(outer.appendingPathComponent("inner-sibling").path))
+        XCTAssertFalse(GitService.resolveTrust(root.appendingPathComponent("outer-sibling").path))
+        for (index, extender) in ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"].enumerated() {
+            let name = extender + "repo-\(index)", repo = inner.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+            _ = try await service.run(["-c", "core.fsmonitor=false", "init", "-q", "--template="], in: repo.path, readOnly: false)
+            try Data("fixture\n".utf8).write(to: repo.appendingPathComponent("file"))
+            _ = try await service.run(["-c", "core.fsmonitor=false", "add", "file"], in: repo.path, readOnly: false)
+            XCTAssertFalse(GitService.resolveTrust(repo.path), name.debugDescription)
+            XCTAssertFalse(GitService.resolveTrust(alias.appendingPathComponent(name).path), "A symlink retains its destination's trust")
+            XCTAssertEqual(model.projectID(holding: repo.appendingPathComponent("file").path), "inner")
+            XCTAssertEqual(model.projectID(holding: alias.appendingPathComponent(name + "/file").path), "inner")
+            let reply = await model.replyFileResolver.resolve(repo.appendingPathComponent("file").path,
+                in: .init(roots: [outer.path], projects: [.init(path: outer.path, trusted: true), .init(path: inner.path, trusted: false)]))
+            XCTAssertNil(reply, "Reply links must select the same nested trust boundary")
+            _ = try await service.status(in: repo.path)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "The untrusted nested project cannot run a global marker program")
+            try? FileManager.default.removeItem(at: marker)
+            if index == 0 {
+                model.workspaces[1].trusted = true
+                _ = try await service.status(in: repo.path)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The fixture exercises allowed global fsmonitor execution")
+                try? FileManager.default.removeItem(at: marker)
+                model.workspaces[1].path = alias.path
+                let file = model.openFile(repo.appendingPathComponent("file"), project: "inner")
+                XCTAssertEqual(file.containingFolderRoot?()?.path, inner.path)
+                model.workspaces[1].trusted = false
+                _ = try await service.status(in: repo.path)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Revocation must not reuse the trusted inventory")
+                try? FileManager.default.removeItem(at: marker)
+            }
+        }
+        let plain = inner.appendingPathComponent("plain")
+        try Data("fixture\n".utf8).write(to: plain)
+        model.workspaces[1].trusted = true
+        model.workspaces.append(WorkspaceRecord(id: "denied-alias", path: inner.path, trusted: false))
+        XCTAssertFalse(GitService.resolveTrust(plain.path))
+        XCTAssertEqual(model.projectID(holding: plain.path), "denied-alias", "Equally specific canonical roots must not override a denial")
+        let reply = await model.replyFileResolver.resolve(plain.path,
+            in: .init(roots: [outer.path], projects: [.init(path: inner.path, trusted: false), .init(path: alias.path, trusted: true)]))
+        XCTAssertNil(reply)
+    }
+
     @MainActor func testReadProgramsUseTheCurrentProjectsTrust() async throws {
         let root = scratchRoot("git-read-trust"), repo = root.appendingPathComponent("repo"), marker = root.appendingPathComponent("ran")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)

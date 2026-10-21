@@ -196,7 +196,8 @@ public actor GitService {
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
                                             timeout: TimeInterval, handle: GitInvocation,
-                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true, trusted: Bool = false) throws -> Output {
+                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true, trusted: Bool = false,
+                                            sourceRepository: String? = nil) throws -> Output {
         try handle.check()
         let process = Process()
         process.executableURL = executable
@@ -214,7 +215,8 @@ public actor GitService {
         process.arguments = all
         process.currentDirectoryURL = directory
         process.environment = environment
-        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle) : nil
+        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config",
+                                                        repository: sourceRepository.map { URL(fileURLWithPath: $0, isDirectory: true) }, invocation: handle) : nil
         defer { confinement?.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
@@ -321,15 +323,16 @@ public actor GitService {
     /// never as text on the main thread.
     private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
                                        environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil, readOnly: Bool = true,
+                                       sourceRepository: String? = nil,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
         let executable = override ?? executable, gitOptions = override == nil, handle = GitInvocation(timeout: timeout), base = self.environment
         await acquireProcess()
         defer { releaseProcess() }
-        let trusted = if let trusted { trusted } else { await GitReadProcess.isTrusted(root) }
+        let trusted = if let trusted { trusted } else { await GitReadProcess.isTrusted(sourceRepository ?? root) }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
-                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly, trusted: trusted))) }
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly, trusted: trusted, sourceRepository: sourceRepository))) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -396,8 +399,9 @@ public actor GitService {
         }
     }
 
-    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil, readOnly: Bool = true) async throws -> Output {
-        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input, readOnly: readOnly) { $0 }
+    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil, readOnly: Bool = true,
+             sourceRepository: String? = nil) async throws -> Output {
+        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input, readOnly: readOnly, sourceRepository: sourceRepository) { $0 }
     }
 
     private func require(_ output: Output, _ what: String) throws -> Output {
@@ -729,7 +733,10 @@ public actor GitService {
                     let arguments = configuration + ["--git-dir=" + gitDirectory, "--work-tree=" + tree.path]
                         + GitChangeOptions().diffArguments(staged: false)
                         + ["--no-index", "--no-renames", "-O/dev/null", "--numstat", "-z", "--", directory ? empty.path : "/dev/null", operand]
-                    let output = try await self.run(arguments, in: tree.path)
+                    // Trust and program policy belong to the source. Bind
+                    // inventory to the same gitdir as the snapshot command,
+                    // even if the source's .git entry changed during copying.
+                    let output = try await self.run(arguments, in: tree.path, environment: ["GIT_DIR": gitDirectory], sourceRepository: root)
                     if output.status > 1 { _ = try await self.require(output, "Reading untracked counts") }
                     return Self.parseNumstat(output.stdout).filter { selected.contains($0.key) }
                 }

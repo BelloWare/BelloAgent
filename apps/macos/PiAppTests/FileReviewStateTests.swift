@@ -5,6 +5,38 @@ import XCTest
 @testable import PiApp
 
 final class FileReviewStateTests: XCTestCase {
+    @MainActor func testMarkedPathComponentsKeepBlameAndHistoryInTheirRepository() async throws {
+        let fixture = try FileReviewProjectFixture()
+        defer { fixture.close() }
+        let model = fixture.model, name = "\u{301}file", nested = fixture.repo.appendingPathComponent("\u{301}nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("fixture line\n".utf8).write(to: nested.appendingPathComponent(name))
+        try fixture.git(["-C", nested.path, "init", "-q", "--template=", "-b", "main"])
+        try fixture.git(["-C", nested.path, "add", "--", name])
+        try fixture.git(["-C", nested.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Fixture"])
+        let commit = try fixture.git(["-C", nested.path, "rev-parse", "HEAD"])
+        let tab = model.openFile(nested.appendingPathComponent(name), project: "review")
+        fixture.mount()
+        try await eventually("marked file read") { tab.status == .ready }
+        tab.blame.show()
+        try await eventually("marked blame answered") { tab.blame.state != .reading }
+        XCTAssertNotNil(tab.blame.blame, String(describing: tab.blame.state))
+        XCTAssertEqual(tab.blame.path, name)
+        tab.blame.hide()
+        model.showFileHistory(from: tab); await tab.historyTask?.value
+        let changes = model.tabs.tab(kind: ChangesTab.kind, key: "review") as? ChangesTab
+        XCTAssertNotNil(changes, "The nested repository remains inside its configured project")
+        if let changes {
+            try await eventually("marked file history") { !changes.controller.loading && !changes.controller.commits.isEmpty }
+            XCTAssertEqual(changes.controller.logFilter.path, name)
+            changes.goBack(); fixture.mount()
+        }
+        model.error = nil
+        model.showHistoricalChange(from: tab, target: GitHistoryTarget(commit: commit, path: name, line: 1), repository: nested.path)
+        XCTAssertNil(model.error)
+        await (model.tabs.tab(kind: ChangesTab.kind, key: "review") as? ChangesTab)?.navigation?.value
+    }
+
     @MainActor func testAFileFixtureThatFailsToOpenPreservesItsCallersResolver() throws {
         let root = scratchRoot("file-review-init")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

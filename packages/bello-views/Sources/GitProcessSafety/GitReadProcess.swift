@@ -17,11 +17,11 @@ public struct GitReadProcess {
     private let scratch: URL?
     private let configuration: GitConfiguration?
     public init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false,
-                invocation: GitInvocation = GitInvocation()) throws {
-        try self.init(process, arguments: arguments, environment: environment, trusted: trusted, regularFilesOnly: false, invocation: invocation)
+                repository: URL? = nil, invocation: GitInvocation = GitInvocation()) throws {
+        try self.init(process, arguments: arguments, environment: environment, trusted: trusted, regularFilesOnly: false, repository: repository, invocation: invocation)
     }
     init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false,
-         regularFilesOnly: Bool, invocation: GitInvocation = GitInvocation()) throws {
+         regularFilesOnly: Bool, repository: URL? = nil, invocation: GitInvocation = GitInvocation()) throws {
         let git = try Self.git.get()
         let arguments = Self.nonrecursive(arguments)
         var environment = environment
@@ -29,7 +29,7 @@ public struct GitReadProcess {
         var options: [String]?
         var configurationEnvironment = environment
         configurationEnvironment.removeValue(forKey: "GIT_INDEX_FILE")
-        if trusted, let directory = process.currentDirectoryURL {
+        if trusted, let directory = repository ?? process.currentDirectoryURL {
             // Non-recursive read policy depends on config, not the private
             // index a hunk review supplies. The Git command keeps that index.
             do {

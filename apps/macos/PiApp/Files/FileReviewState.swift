@@ -1,6 +1,7 @@
 import AppKit
 import FileView
 import GitView
+import GitProcessSafety
 
 /// TabHost stores this beside the canonical file reference. Older tabs only
 /// have `project`; optional reading state deliberately contains no file text.
@@ -76,7 +77,7 @@ extension WorkspaceModel {
                 (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true &&
                 roots.contains { root in
                     let path = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-                    return url.path.hasPrefix(path.hasSuffix("/") ? path : path + "/")
+                    return url.path.gitIsWithin(path)
                 }
             }.value
             guard !Task.isCancelled else { return }
@@ -92,18 +93,17 @@ extension WorkspaceModel {
                 guard let top, current.resolvingSymlinksInPath().path == url.path,
                       (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
                 let resolvedTop = URL(fileURLWithPath: top).resolvingSymlinksInPath().path
-                guard url.path.hasPrefix(resolvedTop + "/") else { return nil }
+                guard url.path.gitIsWithin(resolvedTop) else { return nil }
                 let folder = roots.first { root in
                     let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-                    return url.path.hasPrefix(resolved.hasSuffix("/") ? resolved : resolved + "/") &&
-                        (resolved == resolvedTop || resolved.hasPrefix(resolvedTop + "/") || resolvedTop.hasPrefix(resolved + "/"))
+                    return url.path.gitIsWithin(resolved) && (resolved.gitIsWithin(resolvedTop) || resolvedTop.gitIsWithin(resolved))
                 }
                 return folder.map { folder in
                     let resolved = URL(fileURLWithPath: folder).resolvingSymlinksInPath().path
                     // A nested repository must be read at its own root, not
                     // silently routed to an enclosing project's repository.
-                    let queryFolder = resolvedTop.hasPrefix(resolved + "/") ? top : folder
-                    return (queryFolder, String(url.path.dropFirst(resolvedTop.count + 1)))
+                    let queryFolder = resolvedTop.gitHasPrefix(resolved == "/" ? "/" : resolved + "/") ? top : folder
+                    return (queryFolder, url.path.gitDropFirst(resolvedTop.utf8.count + (resolvedTop == "/" ? 0 : 1)))
                 }
             }.value
             guard !Task.isCancelled, let self, !self.isShutDown, let tab, tab.readable,

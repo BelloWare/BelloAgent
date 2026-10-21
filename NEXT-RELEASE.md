@@ -4,6 +4,11 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1az: Git trust resolves canonical paths with byte-aware containment; the most specific project and any equally specific denial win. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ba: File ownership and reply links preserve nested untrusted boundaries beside combining marks and through symlink aliases. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bb: Folder roots, blame and file-to-history navigation keep canonical byte path boundaries and relative filenames. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bc: Untracked count snapshots retain the source repository's trust and scoped program inventory, preserving trusted global filters while confining untrusted reads. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] SECURITY-BOUNDARIES-1a: Folder trees, breadcrumb menus and Quick Open disable repository fsmonitor programs, including outside trusted projects. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1b: Background Git reads neutralise local/worktree programs, including submodules; trusted reads retain global/system programs. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1c: Trusted Git reads preserve global/system filters selected by repository attributes; local/worktree filters are neutralised and outside/untrusted reads stay confined. Explicit trusted writes retain normal hooks. [Validation](docs/validation/a130-security-0.1.130.md).

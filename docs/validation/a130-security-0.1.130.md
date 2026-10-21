@@ -1926,3 +1926,56 @@ Skipped checks are explicit opt-in measurements or captures: three Finder perfor
 The enabled `GitSafetyGalleryTests` run passed and regenerated **112 PNGs** in `$B/round9-gallery`. Visually inspected `untrusted-light-1180x780.png`, `untrusted-dark-310x600.png`, `http-redirect-dark-1180x780.png`, `http-redirect-light-310x600.png`, `amend-checked-dark-310x600-sheet.png`, `preflight-failure-light-700x640-sheet.png`, `conflict-light-920x600.png`, and `commit-box-dark-700x640.png`. Trust/redirect notices, file rows, diff presentation and sheet actions remain legible in the sampled light/dark and narrow layouts; narrow notices retain their existing ellipsis behavior. No new visual regression was observed.
 
 Removed only this workstream’s generated large fixture, exported baseline and final default XCTest result bundle after extracting the text/JSON evidence. No Clone directories remain under its native build root. The 112 gallery images, text logs and JSON records are retained; cleanup details are in `$B/logs/round9-cleanup.json`. The validation driver released its own full-lane lock on completion. Other workstreams’ locks and build products were untouched.
+
+## Round 10: canonical trust boundaries and snapshot context — 2026-10-21
+
+Both review findings are confirmed against `6fbe70bcf1c382c70ab96d09e0da92106afe2aec`. Project containment now compares canonical UTF-8 bytes with an exact root or slash boundary. The longest root is measured in bytes, and an equally specific untrusted alias cannot be displaced by a trusted one. This uses `GitBytes`; it does not depend on the separate `dev/a130-grapheme` branch's `CanonicalPath.swift`. Canonicalization and boundary semantics are intentionally the same so the lead can unify the helpers.
+
+Snapshot count reads keep their private working directory and bounded copied content. Their trust lookup and configuration inventory use the source repository; the captured Git directory is supplied both to the actual command and its inventory environment. This also prevents a later change to the source `.git` entry from selecting a different inventory than the command's captured directory. The existing invocation carries cancellation and its deadline through inventory and execution. Trusted global/system filters remain allowed, local program settings remain neutralized, and untrusted source projects remain confined.
+
+| Sweep location | Decision / coverage |
+| --- | --- |
+| `WorkspaceModel.swift` trust resolver | Canonicalize query and roots, compare byte containment, choose the longest byte root, preserve denial at equal specificity. This was the file's only Character-based path-prefix check. |
+| `WorkspaceTabs.swift` project ownership and folder roots | Canonicalize both sides (including symlink aliases), use the same containment and byte length, and preserve an equally specific denial. Absolute tool-card paths use a byte prefix. |
+| `ReplyFileResolver.swift` project selection | The same canonical boundary and longest-root denial rule applies before a file link can be offered; absolute path selection uses bytes. |
+| `WorkspaceChanges.swift`, `FileReviewState.swift`, `FileBlame.swift` | Ancestor/descendant checks use canonical byte containment; relative Git filenames drop byte counts, so the leading scalar is preserved. |
+| `ChangesTab.swift`, `SessionFloatingPanel.swift` | Existing permission checks re-read project trust and exact configured root membership; there is no Character prefix in those checks. |
+| `GitService.swift` temporary no-index counts | The only read command using a different cwd plus explicit `--git-dir`/`--work-tree` now carries source trust and inventory. Other read entry points use their repository cwd. |
+
+Adjacent paths outside this round's Git trust/context changes remain for the app grapheme workstream: `QuickOpen.swift:373–375` can omit a marked recent-path component; `FileTabViews.swift:223` can miss home-path abbreviation. `WorkspaceFolders.swift` absolute-input validation and `FileRecentState.read` reject an initial slash followed by a mark; these fail closed and do not grant Git execution. No changes were made to those separate display/input paths.
+
+The generated nested-project matrix covers U+0301, U+200D, U+FE0F and a regional-indicator pair, canonical symlink aliases, sibling boundaries, trust revocation and equally specific denials. The global fsmonitor program only creates a fixture marker. A second generated fixture uses a test-only `GIT_CONFIG_GLOBAL`, a conditional global clean filter, a competing local filter, and marker files under `.git`: trusted counts must be shown and only the global marker may be written; revoked trust permits neither marker. A positive Git `hash-object` check confirms the global filter is active.
+
+Initial failing-first runs: the original nested-trust regression produced **13 failed assertions**, including marker execution; the first snapshot selection produced **4 failed assertions**. Adding a positive control exposed that the conditional-include fixture needed Git's reported gitdir spelling instead of a Foundation `/var` alias. After that fixture correction, the finalized snapshot regression failed **5 assertions** on the old implementation and passed after the context fix (`round10-counts-confirmed-before.log`, `round10-counts-fixed.log`). The earlier fixture logs are retained and are not counted as final validation. Native sweep replays and mutations follow below.
+
+#### Failing-first replays and mutation checks
+
+The finalized native tests replayed the six app files from `6fbe70bc`: nested trust/ownership produced **22 failed assertions**, including the marker file, and blame/history produced **4 failed assertions**. Both passed with the fixes restored. The first native attempt had a compile-only test error (`WorkspaceModel.error` is optional); the fixture expectation was corrected to `nil`, and that attempt is not counted as test evidence. Its original log remains in `round10-trust-final-before-compile-initial.log`.
+
+Each mutation was run separately, then restored before the next. These are assertion failures from executed tests, not build errors:
+
+| Mutation | Failed assertions |
+| --- | ---: |
+| `mutation-WorkspaceModel` | 10 |
+| `mutation-WorkspaceTabs` | 9 |
+| `mutation-ReplyFileResolver` | 3 |
+| `mutation-WorkspaceChanges` | 1 |
+| `mutation-FileReviewState` | 1 |
+| `mutation-FileBlame` | 2 |
+| `mutation-snapshot-trust` | 5 |
+| `mutation-snapshot-inventory` | 2 |
+| `mutation-containment` | 7 |
+
+The six app mutations restore the corresponding file from round 9. The snapshot trust mutation resolves trust from scratch instead of source; the inventory mutation drops the source inventory and captured `GIT_DIR` while retaining trust, and the test detects the local marker file. The containment mutation substitutes Character-based `hasPrefix`. After all nine mutations, **9 package tests and both native regression selections passed**. The driver verified restoration and released its own full-lane lock. Logs and exact per-run commands/statuses: `$B/logs/round10-focused-checks.json` and `round10-<selection>.log`.
+
+Focused environment: `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`, `PI_BUILD_ROOT=$B CFFIXED_USER_HOME=$B/round10-home GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1`. Commands (replayed for the corresponding source variants):
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositoryPermissionTests/testNestedProjectTrustKeepsBytePathBoundaries
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests/testMarkedPathComponentsKeepBlameAndHistoryInTheirRepository
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryTests/testSnapshotCountsKeepSourceTrustAndProgramInventory
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitByteParsingTests/testCanonicalContainmentUsesBytesAndBoundaries
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter 'GitInventoryTests/testSnapshotCountsKeepSourceTrustAndProgramInventory|GitByteParsingTests'
+```
+
+Adversarial self-review checked canonical aliases, exact-root and sibling boundaries, byte-length precedence, equally specific denials, trust changes after a warm inventory, and marked components in blame/history. For counts it checked that the temporary cwd remains private, the captured gitdir is shared by inventory and command, conditional global filters still match, local programs remain masked, and the original cancellation/deadline reaches the inventory. The only source-context override is the internal untracked-count invocation. No additional in-scope issue was found.

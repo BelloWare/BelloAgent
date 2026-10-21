@@ -5,6 +5,11 @@ import Foundation
 public extension StringProtocol {
     func gitHasPrefix(_ prefix: String) -> Bool { utf8.starts(with: prefix.utf8) }
     func gitHasSuffix(_ suffix: String) -> Bool { utf8.suffix(suffix.utf8.count).elementsEqual(suffix.utf8) }
+    /// Both paths must already be canonical. A sibling sharing the root's
+    /// spelling is outside; a combining scalar cannot hide its slash boundary.
+    func gitIsWithin(_ root: String) -> Bool {
+        utf8.elementsEqual(root.utf8) || gitHasPrefix(root == "/" ? "/" : root + "/")
+    }
     func gitDropFirst(_ count: Int = 1) -> String { String(decoding: utf8.dropFirst(count), as: UTF8.self) }
     func gitDropLast(_ count: Int = 1) -> String { String(decoding: utf8.dropLast(count), as: UTF8.self) }
     func gitSplit(separator: UInt8, maxSplits: Int = .max, omittingEmptySubsequences: Bool = true) -> [String] {

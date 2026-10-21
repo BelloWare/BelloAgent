@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 struct ReplyFileLocation: Hashable, Sendable {
     let path: String
@@ -25,14 +26,14 @@ actor ReplyFileResolver {
             line = number; path = String(path[..<colon])
         }
         path = (path as NSString).expandingTildeInPath
-        let candidates = path.hasPrefix("/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
+        let candidates = path.gitHasPrefix("/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
         let projects = context.projects.map { (path: URL(fileURLWithPath: $0.path).standardizedFileURL.resolvingSymlinksInPath().path, trusted: $0.trusted) }
         var location: ReplyFileLocation?
         for candidate in candidates {
             let url = URL(fileURLWithPath: candidate).standardizedFileURL.resolvingSymlinksInPath()
-            let owner = projects.filter { url.path.hasPrefix($0.path.hasSuffix("/") ? $0.path : $0.path + "/") }
-                .max { $0.path.count < $1.path.count }
-            guard owner?.trusted == true else { continue }
+            let owners = projects.filter { url.path.gitIsWithin($0.path) }
+            guard let longest = owners.map({ $0.path.utf8.count }).max(),
+                  owners.filter({ $0.path.utf8.count == longest }).allSatisfy(\.trusted) else { continue }
             fileChecks += 1
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             location = ReplyFileLocation(path: url.path, line: line)

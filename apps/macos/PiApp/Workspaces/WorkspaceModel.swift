@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import AppKit
 import GitView
+import GitProcessSafety
 
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
@@ -573,12 +574,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         GitService.resolveTrust = { [weak self] directory in
-            let path = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
+            let path = FileTab.key(for: URL(fileURLWithPath: directory))
             let matches = (self?.workspaces ?? []).flatMap { project in
-                project.roots.map { (URL(fileURLWithPath: $0).resolvingSymlinksInPath().path, project.trusted) }
-            }.filter { path == $0.0 || path.hasPrefix($0.0 == "/" ? "/" : $0.0 + "/") }
-            guard let longest = matches.map({ $0.0.count }).max() else { return false }
-            return matches.filter { $0.0.count == longest }.allSatisfy { $0.1 }
+                project.roots.map { (FileTab.key(for: URL(fileURLWithPath: $0)), project.trusted) }
+            }.filter { path.gitIsWithin($0.0) }
+            guard let longest = matches.map({ $0.0.utf8.count }).max() else { return false }
+            return matches.filter { $0.0.utf8.count == longest }.allSatisfy { $0.1 }
         }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }

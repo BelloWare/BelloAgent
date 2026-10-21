@@ -1,5 +1,6 @@
 import AppKit
 import GitView
+import GitProcessSafety
 
 // A project's changes and history, in a tab beside the chats (`ChangesTab`):
 // opened from ⇧⌘G, the composer, a project's header and the sidebar.
@@ -25,7 +26,7 @@ extension WorkspaceModel {
         // The project's folder this repository is in, or that is in it.
         guard let folder = project.roots.first(where: { root in
             let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-            return resolved == top || resolved.hasPrefix(top + "/") || top.hasPrefix(resolved + "/")
+            return resolved.gitIsWithin(top) || top.gitIsWithin(resolved)
         }) else {
             error = "This file's repository is not one of \(project.name)'s folders."; return
         }

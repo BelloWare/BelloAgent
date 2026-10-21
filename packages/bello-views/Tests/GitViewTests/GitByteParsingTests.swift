@@ -4,6 +4,17 @@ import XCTest
 
 final class GitByteParsingTests: XCTestCase {
     private let extenders = ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"]
+    func testCanonicalContainmentUsesBytesAndBoundaries() {
+        for extender in extenders {
+            let root = "/fixture/" + extender + "project", child = root + "/" + extender + "file"
+            XCTAssertTrue(child.gitIsWithin(root))
+            XCTAssertTrue(root.gitIsWithin(root))
+            XCTAssertTrue(("/" + extender + "file").gitIsWithin("/"))
+            XCTAssertFalse((root + "-sibling/file").gitIsWithin(root))
+            XCTAssertFalse((root + extender + "/file").gitIsWithin(root))
+        }
+        XCTAssertFalse("/fixture/\u{e9}/file".gitIsWithin("/fixture/e\u{301}"), "Canonicalization belongs to the caller; the boundary compares the resulting bytes")
+    }
     private var root: URL!
     private var environment: [String: String]!
     override func setUpWithError() throws {

@@ -37,6 +37,47 @@ final class GitInventoryTests: XCTestCase {
 
     private var graphemeExtenders: [String] { ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"] }
 
+    @MainActor func testSnapshotCountsKeepSourceTrustAndProgramInventory() async throws {
+        let marker = root.appendingPathComponent(".git/global-marker"), localMarker = root.appendingPathComponent(".git/local-marker")
+        let globalProgram = root.appendingPathComponent(".git/global-filter"), localProgram = root.appendingPathComponent(".git/local-filter")
+        for (program, output) in [(globalProgram, marker), (localProgram, localMarker)] {
+            try Data("#!/bin/sh\n: > '\(output.path)'\ncat\n".utf8).write(to: program)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        }
+        try write(".git/global-filter-config", "[filter \"fixture\"]\nclean = \(globalProgram.path)\nrequired = true\n")
+        let gitDirectory = String(decoding: try git(["rev-parse", "--absolute-git-dir"]).utf8.dropLast(), as: UTF8.self)
+        try git(["config", "--global", "includeIf.gitdir:\(gitDirectory).path", root.appendingPathComponent(".git/global-filter-config").path])
+        try write(".gitattributes", "new.fixture filter=fixture\n"); try git(["add", ".gitattributes"])
+        try write("new.fixture", "first\nsecond\n")
+        try git(["hash-object", "--path=new.fixture", "new.fixture"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The generated global filter is active in Git")
+        try? FileManager.default.removeItem(at: marker)
+        let previous = GitService.resolveTrust, source = root.path
+        var trusted = true, queried: [String] = []
+        GitService.resolveTrust = { directory in queried.append(directory); return trusted && directory == source }
+        defer { GitService.resolveTrust = previous }
+        let service = GitService(environment: environment)
+        for localOverride in [false, true] {
+            if localOverride { try git(["config", "filter.fixture.clean", localProgram.path]) }
+            let status = try await service.status(in: source)
+            try? FileManager.default.removeItem(at: marker); try? FileManager.default.removeItem(at: localMarker)
+            do {
+                let counts = try await service.changeStats(in: source, status: status)
+                XCTAssertEqual(counts["new.fixture"], GitDiffStat(added: 2, removed: 0, binary: false))
+            } catch { XCTFail("Trusted snapshot counts must retain the global filter: \(error)") }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The source repository's conditional global filter runs")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: localMarker.path), "Snapshot reads still mask repository-local programs")
+        }
+        XCTAssertTrue(queried.allSatisfy { $0 == source }, "Private copies are not a new trust context")
+        trusted = false
+        try? FileManager.default.removeItem(at: marker); try? FileManager.default.removeItem(at: localMarker)
+        let status = try await service.status(in: source)
+        do { _ = try await service.changeStats(in: source, status: status) }
+        catch { XCTAssertTrue(error is GitFailure, error.localizedDescription) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localMarker.path))
+    }
+
     private func graphemeRepositories(_ body: (String) async throws -> Void) async throws {
         let base = root!
         defer { root = base }
