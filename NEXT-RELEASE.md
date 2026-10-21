@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] Queued Git events survive ignore scans that started before those events; uncertain batches keep their follow-up refresh. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
+- [x] Reconciled staged deletions no longer keep refreshing Changes for writes to ignored, untracked working copies. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
 - [x] Floating-panel Git discovery survives ignore rechecks; summary-only refreshes preserve displayed paths and coalesce new ignored folders. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-18--integrate-floating-panel-git-watchers).
 - [x] Git watcher regressions verify that clean tracked-file replacements retain their queued refreshes through both the controller and throttle queues. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-17--clean-tracked-file-replacement-review).
 - [x] Git ignore filtering preserves events touching displayed status paths, including both rename names, until a refresh reconciles them. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-16--displayed-git-paths-survive-newer-ignores).

@@ -4516,3 +4516,292 @@ Final review compared the resolved watcher against both parents, checked the
 summary publisher and queue-drain conditions, verified all mutations were
 restored, and found no dropped tests or conflict markers. `git diff --check`
 and `git diff --cached --check` pass. No new unresolved issue or owner decision.
+
+
+## Round 19 — ignore scan age and staged deletions
+
+2026-10-21. Both review findings against `54d1df34` are **confirmed and fixed**.
+Work stays on `dev/a130-gitfiles`; no merge, rebase, history rewrite or changes
+to the helper/wire. The lead's explicit rule governs the tradeoff: a queued
+batch may be discarded only if the ignore scan can vouch for it; otherwise a
+follow-up refresh is retained.
+
+### 1. Events newer than the ignore scan
+
+Added an instance-scoped `ignoredDidRead` seam after the completed read and
+before publication, alongside the existing held-status seam. Four generated-repo
+tests create ignored `cache/`, hold the completed scan, replace it with a
+non-ignored regular file `cache`, and deliver its event against the old cache:
+
+- `testEventsAfterTheIgnoreScanStillRefresh`
+- `testThrottledEventsAfterTheIgnoreScanStillRefresh`
+- `testSummaryEventsAfterTheIgnoreScanStillRefresh`
+- `testThrottledSummaryEventsAfterTheIgnoreScanStillRefresh`
+
+Before the fix, all four fail: the controller does one refresh, the queued event
+is discarded, and the displayed status remains empty. The throttle and controller
+queue fail independently, in full and summary-only controllers. Excerpt from
+`r19-red.log`:
+
+```text
+XCTAssertGreaterThanOrEqual failed: ("1") is less than ("2") - The older scan cannot vouch for the newer event
+XCTAssertEqual failed: ("[]") is not equal to ("["cache"]") - The replacement file must become visible
+```
+
+Fix: timestamp an accepted batch using monotonic uptime **at receipt, before
+its main-actor hop**. A union keeps the maximum timestamp, even if an older
+batch arrives later; empty batches do not change it. Each controller read records
+a cutoff immediately before dispatching `ignoredPaths`, in both refresh paths.
+This is a conservative lower bound on the actual scan start: delayed dispatch
+can retain an extra batch, but cannot let a later event be suppressed.
+
+The cutoff and ignored paths are published under the same lock. Both the
+watcher's throttle recheck and the controller's automatic/reader recheck use
+the batch's newest timestamp. A batch can be dropped only if **every** path is
+covered and its newest event is **strictly older** than the cutoff. Equal times,
+root moves, discovery and path-budget overflow retain the conservative refresh.
+A missing or failed scan supplies no new authority to discard a batch. A
+mixed-age batch is kept in its entirety.
+
+`testQueuedRechecksUseTheNewestEventAndScanStart` covers equality, no snapshot,
+newer/older/empty unions, a later covering scan, and a mixed covered/uncovered
+batch. No full tracked-file enumeration or additional Git command was added.
+
+### 2. Ignored working copies of staged deletions
+
+Two generated-repo tests force-add and commit `run.log`, ignore `*.log`, then
+`git rm --cached run.log`. They hold the initial staged-deletion status before
+the ignore scan and queue a log write during that read:
+
+- `testIgnoredWritesAfterAStagedDeletionStayQuiet`
+- `testSummaryIgnoredWritesAfterAStagedDeletionStayQuiet`
+
+Both fail before the fix. The published status is `D.` but the ignored log
+remains protected, so the queued write causes an unnecessary follow-up (one
+in the full controller and two in the summary repeat, including a live batch):
+
+```text
+XCTAssertTrue failed - The ignored working copy cannot change the staged-deletion row
+XCTAssertEqual failed: ("1") is not equal to ("0") - A reconciled staged deletion must not keep refreshing for ignored writes
+```
+
+Fix: omit only non-untracked `D.` entries from displayed-path preservation.
+The row records an index removal, so an ignored working copy cannot change that
+row. Suppression still requires coverage by the ignored snapshot; an uncovered
+path or newer queued event still refreshes. The state-matrix test
+`testIgnoredProtectionExcludesOnlyReconciledStagedDeletions` retains protection
+for modified/added/renamed entries, worktree deletions, untracked entries, and
+`DD`/`DU` conflicts. This is deliberately narrower than omitting all staged rows.
+
+### Failing first, fixture ordering and mutations
+
+The six new regression methods failed before either fix (**0 passed / 6 failed,
+16 assertions, exit 65**). The initial locked run and a focused repeat both
+caught all six; `r19-red.log` records the repeat. The focused methods do not
+create windows or use focus. After the fixes, these six methods, both new
+boundary/state tests, the four settled-ignore controller cases and two displayed
+replacement cases passed **14/14** (`r19-green.log`, exit 0).
+
+The held-read fixtures now take an isolated copy of the bridge callback and
+silence delivery from the live stream. They still read actual Git repositories,
+but the two synthetic batches are the complete input to the race. This removes
+uncontrolled duplicate FSEvents batches from exact refresh-count assertions.
+The copied callback retains the same weak owner and stream-generation checks;
+production does not call `isolatedCopy`.
+
+The round-15 deterministic assertions are **not weakened**: an automatic scan
+whose ignored-folder batches are settled before its start still costs exactly
+one refresh; an explicit reader scan needs no automatic follow-up. The same
+assertions apply to summary-only readers and the throttle case. Displayed-path
+replacement tests still require exactly one follow-up, and tracked/unignored
+changes still refresh.
+
+The separate real-FSEvents `testWritesIntoAnIgnoredFolderCauseNoRefresh` now
+waits for the new folder to be learned and accepted batches to drain instead of
+assuming a two-second sleep proves they preceded the scan. Its new-folder count
+may include conservative follow-ups for late batches, as the lead explicitly
+requires. The test still proves the watcher learns the folder, then checks that
+ongoing ignored writes cause **zero** further refreshes and an unignored change
+still appears. Exact at-most-one coverage stays in the deterministic fixtures.
+This expectation change is intentional; retaining the old unconditional bound
+would conflict with the new safety rule when FSEvents delivers a later batch.
+
+Five mutations, each restored in `finally`, were caught:
+
+| Mutation | Failing tests | Result |
+| --- | --- | --- |
+| Remove the event-age guard | Four newer-event cases + timestamp boundary test | 5 failures, exit 65 |
+| Timestamp publication instead of scan dispatch, in both controllers | Four newer-event cases | 4 failures, exit 65 |
+| Replace max timestamp with the last merged batch's timestamp | Timestamp union/boundary test | 1 failure, exit 65 |
+| Preserve `D.` rows again | Both staged-deletion cases + state matrix | 3 failures, exit 65 |
+| Skip both ignore rechecks, retaining only the empty-batch guard | Four settled-ignore controller cases + throttle case | 5 failures, exit 65 |
+
+The fifth mutation verifies that the deterministic round-15 tests still reject
+unnecessary follow-ups for settled pre-scan events. It ran under the full-lane
+lock and caught all five cases in 24.40 seconds. Retaining the empty-batch guard
+avoids introducing an unrelated infinite refresh loop.
+
+Evidence: `r19-mutation-*.log`, `r19-mutation-counts.json`, and
+`r19-settled-mutation-counts.json`. The unmutated sources are restored before
+each complete package/native/stress run.
+
+### Sweep and adversarial review
+
+- Checked every ignore publication: full and summary-only refreshes both capture
+  the cutoff before dispatch, and retain their cancellation/generation/root
+  guards after the held-read seam. A failed read does not publish a newer cutoff.
+- Checked every queue: watcher throttle, automatic pending batch and reader/busy
+  missed batch all retain their timestamp through unions and use the common
+  recheck. Only newly provable batches cross from refresh to discard; newer and
+  equal-time batches cross from discard to refresh, as intended.
+- The index-state condition changes only `D.` preservation. It does not change
+  rename-source/destination, ancestor/descendant, untracked or conflict handling.
+  Uncovered paths and all other index/worktree state pairs stay conservative.
+- No new global callback or clock was introduced. Test callbacks belong to the
+  controller and are cleared on teardown, with held continuations resumed.
+- Discovery, root moves, overflow, empty-batch handling and stream stop/generation
+  guards remain intact. A mixed-age batch may cause an extra refresh; this is
+  the owner-approved conservative tradeoff, not an attempt to infer event age.
+
+Separate pre-existing observation, outside the two assigned queued-recheck cases:
+`GitWatcher.swift:116`'s **initial acceptance filter** uses the already-published
+ignore cache. If `cache/` has been learned and is then replaced by a regular file
+`cache`, it can discard the event before any queued recheck sees it. A generated
+Git probe (`r19-acceptance-sweep.json`) confirms old ignores `["cache/"]`, new
+status `? cache`, and new ignores `[]`; the existing initial filter still uses
+the old covering path. This predates the recheck changes and is recorded for a
+separate fix under the scope rule. No claim is made that this round fixes all
+staleness in the initial ignore cache.
+
+### Validation commands
+
+Build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles`;
+evidence under its `evidence/` directory. All runs use generated homes and
+repositories, the isolated native test host, and the existing workstream build
+products. No real preferences/chats/credentials/Keychain, installed app, live or
+paid provider calls. No UI changed, so no gallery run is needed.
+
+Exact drivers (run from the worktree):
+
+```sh
+BUILD_A130_GITFILES=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r19-red \
+  python3 "$BUILD_A130_GITFILES/evidence/r19-red.py"
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r19-green \
+  python3 "$BUILD_A130_GITFILES/evidence/r19-green.py"
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r19-finish \
+  python3 "$BUILD_A130_GITFILES/evidence/r19-finish.py"
+```
+
+The final driver runs the first four mutations, then:
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/views-verify
+```
+
+It acquires the shared full-lane lock as `a130-gitfiles r19 pid=…` for the fifth
+mutation, native classes and stress, releasing only its own lock in `finally`.
+Each native class runs alone:
+
+```sh
+for cls in GitWorkingTreeWatcherTests SessionPanelTests SubagentPanelTests \
+  GitPathBoundaryTests GitRepositorySwitchTests GitPanelShownTests \
+  GitBranchesInteractionTests ChangesTabFrameTests ChangesTabTests \
+  GitPanelTimingTests GitIntegratedHistoryTests FileBlameTests; do
+  PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+    scripts/test-macos.sh -parallel-testing-enabled NO \
+    "-only-testing:PiAppTests/$cls"
+done
+```
+
+Stress repeats the fourteen round-18 methods plus the six new regression
+methods (twenty total), still inside the generated-home and lock wrappers:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+  scripts/test-macos.sh -parallel-testing-enabled NO -test-iterations 30 \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testEventsAfterTheIgnoreScanStillRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testThrottledEventsAfterTheIgnoreScanStillRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testSummaryEventsAfterTheIgnoreScanStillRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testThrottledSummaryEventsAfterTheIgnoreScanStillRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredWritesAfterAStagedDeletionStayQuiet \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testSummaryIgnoredWritesAfterAStagedDeletionStayQuiet \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfADisplayedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAnIgnoredReplacementOfACleanTrackedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledIgnoredReplacementOfACleanTrackedFileStillRefreshes \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testWritesIntoAnIgnoredFolderCauseNoRefresh \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledBatchIsRecheckedAgainstNewlyLearnedIgnores \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAnAutomaticRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAReaderRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testASummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testAThrottledSummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAnAutomaticSummaryRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testIgnoredEventsDuringAReaderSummaryRefreshAreRechecked \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testDiscoveryEventsBypassCachedIgnores \
+  -only-testing:PiAppTests/GitWorkingTreeWatcherTests/testThrottledDiscoveryEventsSurviveNewIgnores
+```
+
+Exact expanded argv and per-invocation results are also recorded by
+`r19-native.py` in `r19-native-counts.json`.
+
+
+### Validation results
+
+Complete `bello-views` package (`r19-views.log`, exit 0):
+
+| Target | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| FileViewTests | 100 | 0 | 0 |
+| FileFinderTests | 38 | 0 | 3 |
+| GitViewTests | 204 | 0 | 0 |
+| **Total** | **342** | **0** | **3** |
+
+The three skips are existing opt-in `FileFinderPerformanceTests` requiring
+`FINDER_PERF=1`. XCTest reported 565.636 seconds; the package invocation,
+including its incremental build, took 571.782 seconds.
+
+Focused native classes, each alone with parallel testing disabled and the
+full-lane lock held (`r19-green-<Class>.log`, every invocation exit 0):
+
+| Class | Passed | Failed | Invocation seconds |
+| --- | ---: | ---: | ---: |
+| GitWorkingTreeWatcherTests | 43 | 0 | 103.14 |
+| SessionPanelTests | 29 | 0 | 58.13 |
+| SubagentPanelTests | 8 | 0 | 5.73 |
+| GitPathBoundaryTests | 5 | 0 | 26.12 |
+| GitRepositorySwitchTests | 17 | 0 | 102.23 |
+| GitPanelShownTests | 13 | 0 | 33.92 |
+| GitBranchesInteractionTests | 20 | 0 | 106.68 |
+| ChangesTabFrameTests | 8 | 0 | 73.03 |
+| ChangesTabTests | 9 | 0 | 15.36 |
+| GitPanelTimingTests | 4 | 0 | 11.80 |
+| GitIntegratedHistoryTests | 10 | 0 | 45.78 |
+| FileBlameTests | 10 | 0 | 26.37 |
+| **Total** | **176** | **0** | **608.29** |
+
+No native skips or unrelated failures. Invocation times include each
+incremental build and test-host startup.
+
+Stress (`r19-stress.log`, exit 0): **600 passed / 0 failed / 0 skipped**, exactly
+**20 methods × 30 repetitions**. All six new regressions passed 30/30, as did
+the fourteen existing stress cases, including the real-FSEvents ignored-folder
+test. The failure rate was **0/600** overall and **0/30** for that original
+intermittent case. The invocation took 1,291.42 seconds (21.52 minutes).
+`r19-stress-counts.json` records and verifies every method's 30 passes.
+
+The locked fifth mutation, native classes and stress completed with exit 0 in
+1,924.18 seconds; the lock was released in `finally`. Final cleanup verified no
+automatic `.xcresult` bundle, clone directory or generated review home remains
+in this build root. Text/JSON evidence is retained; no extra DerivedData copy
+was created (`r19-final-checks.json`).
+
+Final adversarial review re-read the complete production diff and the changed
+test assertions. The new branches retain uncertain batches and exclude only
+the reconciled `D.` state from displayed-path protection; empty batches and
+all other protected states retain their intended behavior. All three source
+hashes match the validated post-fix versions, so none of the five mutations
+remains. `git diff --check` passes. Both assigned findings are resolved; the
+separate initial acceptance-filter observation above remains recorded for
+another workstream decision.

@@ -108,16 +108,18 @@ import CoreServices
         let root = root, gitDirectory = gitDirectory, commonDirectory = commonDirectory, ignored = ignored, stateOnly = stateOnly, discoveringRepository = discoveringRepository, generation = UUID()
         self.generation = generation
         let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
+            let receivedAt = DispatchTime.now().uptimeNanoseconds
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
             let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && (discoveringRepository || !ignored.covers($0)) }
             guard moved || !relevant.isEmpty else { return }
+            let changes = discoveringRepository ? .unknown : GitWatchChanges(relevant, receivedAt: receivedAt)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else {
                     // Discovery has no verified working-tree ignore list.
-                    self.pending.formUnion(discoveringRepository ? .unknown : GitWatchChanges(relevant))
+                    self.pending.formUnion(changes)
                     self.changed()
                 }
             }
@@ -276,6 +278,13 @@ final class GitWatchBridge: @unchecked Sendable {
         handler?(paths, flags)
     }
     func invalidate() { lock.lock(); handler = nil; lock.unlock() }
+    /// Fixtures control exact batches without duplicating them through live FSEvents.
+    func isolatedCopy() -> GitWatchBridge? {
+        lock.lock(); defer { lock.unlock() }
+        guard let handler else { return nil }
+        self.handler = nil
+        return GitWatchBridge(handler: handler)
+    }
 }
 
 // These are C callbacks, not UI closures. Let FSEvents retain the borrowed
@@ -307,21 +316,24 @@ private func gitWatchCallback(_ stream: ConstFSEventStreamRef, _ info: UnsafeMut
 /// A root move, or too many paths to retain, keeps the old unconditional refresh.
 struct GitWatchChanges: Sendable {
     private(set) var paths: Set<String> = []
+    private var latestEvent: UInt64 = 0
     private var unconditional = false
     private static let limit = 4_096
     static var unknown: Self { var changes = Self(); changes.unconditional = true; return changes }
-    init(_ paths: [String] = []) {
+    init(_ paths: [String] = [], receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds) {
         self.paths = Set(paths)
+        if !paths.isEmpty { latestEvent = receivedAt }
         if self.paths.count > Self.limit { self = .unknown }
     }
     var isEmpty: Bool { paths.isEmpty && !unconditional }
     mutating func formUnion(_ other: Self) {
         if unconditional || other.unconditional { self = .unknown; return }
         paths.formUnion(other.paths)
+        latestEvent = max(latestEvent, other.latestEvent)
         if paths.count > Self.limit { self = .unknown }
     }
     func isInteresting(ignoring ignored: GitIgnoredPaths?) -> Bool {
-        unconditional || paths.contains { ignored?.covers($0) != true }
+        unconditional || paths.contains { ignored?.covers($0, receivedAt: latestEvent) != true }
     }
 }
 
@@ -331,6 +343,7 @@ final class GitIgnoredPaths: @unchecked Sendable {
     private let lock = NSLock()
     private var directories: [String] = []
     private var files: Set<String> = []
+    private var scanStartedAt: UInt64 = 0
     private var shown: Set<String> = [], shownParents: Set<String> = []
     /// The ignored-list read can be newer than the displayed status. Events
     /// touching those rows must survive until another status read reconciles them.
@@ -338,6 +351,9 @@ final class GitIgnoredPaths: @unchecked Sendable {
         let root = Self.comparable(root)
         var shown: Set<String> = [], parents: Set<String> = []
         for entry in entries {
+            // This row records an index removal; an ignored, untracked working
+            // copy cannot change it. Other states, including conflicts, stay protected.
+            if !entry.untracked && entry.indexState == "D" && entry.worktreeState == "." { continue }
             for relative in [entry.path, entry.originalPath].compactMap({ $0 }) where !relative.isEmpty {
                 var path = root + "/" + relative
                 if path.hasSuffix("/") { path.removeLast() }
@@ -351,17 +367,20 @@ final class GitIgnoredPaths: @unchecked Sendable {
         lock.lock(); self.shown = shown; shownParents = parents; lock.unlock()
     }
     /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
-    func update(root: String, relative: [String]) {
+    func update(root: String, relative: [String], scanStartedAt: UInt64) {
         let root = Self.comparable(root)
         var directories: [String] = [], files: Set<String> = []
         for entry in relative {
             if entry.hasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
         }
-        lock.lock(); self.directories = directories; self.files = files; lock.unlock()
+        lock.lock(); self.directories = directories; self.files = files; self.scanStartedAt = scanStartedAt; lock.unlock()
     }
-    func covers(_ path: String) -> Bool {
+    func covers(_ path: String, receivedAt: UInt64? = nil) -> Bool {
         let path = Self.comparable(path)
         lock.lock(); defer { lock.unlock() }
+        // Rechecks can discard only batches older than the scan's start.
+        // A mixed batch uses its newest event, conservatively keeping it all.
+        if let receivedAt, receivedAt >= scanStartedAt { return false }
         let directory = path.hasSuffix("/") ? path : path + "/"
         guard files.contains(path) || directories.contains(where: { directory.hasPrefix($0) }) else { return false }
         var ancestor = path.hasSuffix("/") ? String(path.dropLast()) : path

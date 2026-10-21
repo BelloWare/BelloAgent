@@ -523,6 +523,8 @@ import AppKit
     nonisolated(unsafe) static var statusReadDelay: Duration = .zero
     /// Holds a completed status snapshot in tests while the working tree changes.
     var statusDidRead: (@MainActor () async throws -> Void)?
+    /// Holds a completed ignore scan before its result is published in tests.
+    var ignoredDidRead: (@MainActor ([String]?) async throws -> Void)?
     var headMessageDidRead: (@MainActor () async -> Void)?
     /// The automatic refresh under way, and the events queued during it.
     private var automaticRefresh: UUID?
@@ -600,9 +602,12 @@ import AppKit
                 guard current(generation) else { return }
                 publish(\.changeStats, stats)
                 if notice.hasPrefix("Counts unavailable.") { notice = "" }
-                if let ignored = try? await service.ignoredPaths(in: top),
+                let ignoredStartedAt = DispatchTime.now().uptimeNanoseconds
+                let ignored = try? await service.ignoredPaths(in: top)
+                try await ignoredDidRead?(ignored)
+                if let ignored,
                    current(generation), let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
-                    watcher.ignored.update(root: watcher.root, relative: ignored)
+                    watcher.ignored.update(root: watcher.root, relative: ignored, scanStartedAt: ignoredStartedAt)
                 }
                 guard current(generation) else { return }
                 refreshesFinished += 1
@@ -626,6 +631,7 @@ import AppKit
             } else if !automatic, let first = status.entries.first { selection = Selection(path: first.path, staged: !first.unstaged && first.staged) }
             async let branchList = service.branches(in: top)
             async let stashList = service.stashes(in: top)
+            let ignoredStartedAt = DispatchTime.now().uptimeNanoseconds
             async let ignoredList = service.ignoredPaths(in: top)
             // Reads cancelled because this refresh was replaced are not empty
             // lists: taking them for that blanked the branch menu and the
@@ -635,9 +641,10 @@ import AppKit
             do { branches = try await branchList } catch is CancellationError { return } catch {}
             do { stashes = try await stashList } catch is CancellationError { return } catch {}
             let ignored = try? await ignoredList
+            try await ignoredDidRead?(ignored)
             guard current(generation) else { return }
             if let ignored, let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
-                watcher.ignored.update(root: watcher.root, relative: ignored)
+                watcher.ignored.update(root: watcher.root, relative: ignored, scanStartedAt: ignoredStartedAt)
             }
             publish(\.branches, branches); publish(\.stashes, stashes)
             await reloadHistory(generation: generation, automatic: automatic)
