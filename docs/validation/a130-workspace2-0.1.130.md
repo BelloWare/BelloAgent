@@ -221,10 +221,10 @@ first: both wait for the same tool-output collection gate, after which the
 debounce sleeps 150 ms while the record follows only the keep-intent write
 (and, for an unsaved parent, its materialization) on the same store actor.
 
-## Separate observations for the lead (not fixed)
+## Separate observations for the lead (round 1)
 
-These are pre-existing, outside the three assigned findings, and need either a
-UX decision or a different function:
+These were pre-existing and outside the three round-1 findings. Round 2 below
+fixes all three:
 
 1. `/side <question>` while another side of the same chat is still publishing
    (`WorkspaceSides.swift` `openSide`, "Wait for the current side to finish
@@ -243,3 +243,142 @@ UX decision or a different function:
    click; after `open(item)` it dispatches `turn.retry`/`queue.resume` without
    the APP-WORKSPACE-3 archive-revision fence, so Archive (or Archive +
    Restore) during the open still continues the run.
+
+## Round 2 — the three reported issues
+
+After lead review and a read-only Astra review of `10d2636f` (no findings), the
+coordinator asked for the three observations above to be fixed under the same
+state model. Evidence: `evidence/round2/` (text logs, `.command` files).
+
+`round2/failing-first-final.log` ran the five new regressions with the round-2
+production sources stashed (production as of `10d2636f`): **5 tests, 34
+failures, 0 unexpected**. Only the "empty, idle side" control state passed.
+With the fixes, `round2/fixed-final.log` passes all five.
+
+### `/side Q` is never lost (item 1)
+
+- The slash handler empties the parent composer only after `openSide` returns
+  true, which with a question means a side captured Q as its first message (the
+  round-1 path: pinned under the launch lease, recorded before any publication
+  await). Every refusal returns false before the composer is touched, so Q and
+  `directCommand` stay exactly as typed and the composer's normal save keeps Q
+  durable. No restore or extra recovery path is needed because nothing is
+  removed.
+- Refusal notices: "Wait for the current side to finish opening before starting
+  another. Your question is still in this chat's composer." (the old text plus
+  the reassurance). A refused question also keeps the cursor in the parent
+  instead of moving it to the opening side; `/side` without a question and
+  menu/button opens behave as before.
+- A new side whose send refuses before capture (size, storage, launch lease) is
+  removed again, leaving no side holding Q, and the send's own message
+  explains. A connection that is gone would have been *captured but never
+  sent*, so it is refused before the send with the connection's own message.
+- `testSlashSideQuestionStaysInTheParentWhileAnotherSideIsPublishing`: before,
+  the composer was empty and the saved draft absent (Q lost). After, the
+  composer and its saved draft hold `/side Explain this failure`.
+- `testSlashSideQuestionTheSideCannotSendStaysInTheParent` (256 KiB + 1 byte
+  question; deleted connection): before, the composer was emptied and a
+  pending side held Q; after, the composer keeps the command and no side exists.
+
+### A pending side is never overwritten or raced (item 2)
+
+Choice: **refuse with a notice and keep Q in the parent composer** whenever the
+pending side holds anything of its own or is busy. An empty, idle pending side
+still takes Q as its first message, as before (no input is replaced or raced
+there). Queueing was not chosen: no path queues a message behind a pending
+side's first send (`send` refuses while it loads), and merging Q into the
+side's typing would change what that side sends. **Needs owner decision**: the
+notices below are new visible behavior where the old code silently replaced
+the side's typing (or left Q unsent there).
+
+- Busy (first send under way, or a recovery transaction): "Wait for this chat's
+  side to send its first message. Your question is still in this chat's
+  composer."
+- Holds input (typing, images or skills, an image arriving, returned-input
+  review, captured/recoverable/uncertain input, a pending transfer or conflict):
+  "This chat's side has an unsent draft. Send or close it first; your question
+  is still in this chat's composer."
+- `testSlashSideQuestionNeverReplacesOrRacesAPendingSide` covers "sending"
+  (empty composer during the first send), "sending and typed", "typed" and
+  "empty". Before: Q replaced the side composer in the first three, was sent in
+  place of the typing in "typed", and the parent was emptied. After: the side's
+  text is untouched, only its own first message is sent, and Q stays put; the
+  empty side takes and sends Q.
+- `sendSideQuestion` counts as captured only a submission that send itself
+  started, not one already in flight (defense in depth; the busy guard already
+  excludes that case).
+
+### Continue keeps its click's archive authority (item 3)
+
+- `continueAfterCostLimit` captures `archiveRevisions[id]` at the click and
+  checks `requireUnarchived` after opening the helper, before `turn.retry`, and
+  again before the `queue.resume` fallback (after an answered `turn.retry`).
+  Archive, or Archive then Restore, retires it with the existing "Archive
+  cancelled this operation" message; a new Continue works.
+- `testArchiveDuringCostLimitContinueOpeningRetiresIt` (archived; archived then
+  restored) and `testArchiveDuringCostLimitContinueStopsItsQueueFallback`
+  (`turn.retry` answered `nothing_to_retry` after Archive + Restore). Before:
+  `turn.retry`, respectively `queue.resume`, was dispatched; after: neither.
+- Entry-point audit: Retry (`action("turn.retry")`), Resume Follow-ups and the
+  queue's Resume (`action("queue.resume")`, also from `resumeOrSendQueued`),
+  Compact (`action`), Resume (`resumeRun`, ordinary and the round-1 family path)
+  and Send/Steer/Resend already capture the archive revision at the click and
+  check it before dispatch. Responses incomplete-reply retries are helper-side
+  policy retries with no app entry point. `continueAfterCostLimit` was the
+  only gap.
+
+### Round-2 mutation evidence
+
+`round2/mutations-round2.py` (same runner semantics as round 1, against the
+final round-2 source; `round2/pre-mutation-sha256.txt` matched after every
+run). All **7 mutations compiled and failed** (exit 65); `round2/mutations/results.json`.
+
+| Mutation | Source change | Failing test | Assertions |
+| --- | --- | --- | ---: |
+| `r2-m1-clear-before-side-takes-it` | slash handler empties the composer before `openSide` (old order) | all three `/side` tests | 14 |
+| `r2-m2-keep-uncaptured-side` | a side whose send refused before capture is kept | cannot-send (size, connection) | 2 |
+| `r2-m3-no-connection-precheck` | connection refusal not checked before the send | cannot-send (connection) | 3 |
+| `r2-m4-race-first-send` | no busy guard for a pending side's first send | pending side, sending states | 2 |
+| `r2-m5-replace-side-typing` | the side's typing no longer counts as its own input | pending side, typed state | 7 |
+| `r2-m6-no-archive-check-before-retry` | no archive check before `turn.retry` | Continue archived / restored | 4 |
+| `r2-m7-no-archive-check-before-queue-fallback` | no archive check before the `queue.resume` fallback | Continue queue fallback | 2 |
+
+r2-m4 fails only on the notice text: without the busy guard, `holdsNothing`
+still refuses a side whose first send is pinned (its input is captured), so Q
+stays in the parent either way; the guard supplies the accurate notice.
+
+### Round-2 validation
+
+**761 native tests passed across 46 classes; zero failures or skips**, all on
+the final round-2 sources (`round2/tested-source-sha256.txt`). The round-1
+classes were rerun, plus `CostLimitOpeningTests` for the changed Continue path.
+Parallel-lane classes ran together with parallel testing disabled; every
+serial-lane run held the shared full-lane lock (`round2/serial-runs-round2.sh`).
+
+| Run (log under `round2/`) | Classes and passed tests |
+| --- | --- |
+| `final-headless.log` (501) | AutomaticContextTests 11, ContextAndSkillPolicyTests 12, ConversationFamilyTests 22, CostLimitOpeningTests 1, CostPausePresentationTests 6, DeferredCreationTests 4, DraftConcurrencyTests 36, DraftLoadingTests 15, DraftOrderingTests 19, FamilyDeletionTests 10, MetadataDurabilityTests 10, ModelSwitchTests 24, OrganizationBatchTests 9, RecoveredDraftTests 13, RunHoldTests 18, SendBookkeepingTests 12, SessionOrganizationTests 9, SettingsSaveTests 15, SideBudgetIntegrationTests 18, SideKeepOrderingTests 12, SideKeepRecoveryTests 15, SideTests 17, SidebarMultiSelectionTests 4, SkillRefreshTests 15, SubagentDeletionTests 19, SubmissionPersistenceTests 81, WorkspaceConcurrencyTests 12, WorkspaceRaceTests 62 |
+| `final-window.log`, locked (154) | CompactionResponsivenessTests 1, ConnectionSwitchJournalTests 6, CostLimitTests 13, CostPauseFamilyTests 3, LaunchSelectionTests 21, PendingChatProjectTests 24, SideRelaunchTests 3, SubagentNavigationTests 7, SubagentOpeningTests 15, TopicOrganizationTests 14, WorkspaceFollowupTests 9, WorkspaceRefreshLifecycleTests 38 |
+| `final-lifecycle.log`, locked | LifecycleHelperTests 11 |
+| `final-queue.log`, locked | QueueEditInteractionTests 17 |
+| `final-subagent-reader.log`, locked | SubagentReaderTests 58 |
+| `final-native-application.log`, locked | NativeApplicationTests 12 |
+| `final-smooth-shell.log`, locked | SmoothShellTests 5 |
+| `final-shell-performance.log`, locked | AppShellPerformanceTests 3 |
+
+No helper, wire contract or request payload changed, so helper and wire suites
+were not required. No layout, component or style changed; the new refusals use
+the window's existing error banner, so no gallery was regenerated. The
+automatic result bundle was deleted after the last run. `git diff --check`
+passes.
+
+### Remaining observations (not fixed)
+
+- Continue has no in-flight guard and no Stop fence (`WorkspaceCostLimits.swift`
+  `continueAfterCostLimit`): two quick clicks start two tasks that each send
+  `turn.retry`, leaving the second to the helper's refusal (or to its
+  `queue.resume` fallback). Stop is not offered on a chat stopped at its limit,
+  so the missing Stop fence is not reachable from the UI today.
+- The parent composer's emptied snapshot after a captured `/side` question is
+  still the ordinary 150 ms debounced write beside the side's record (round-1
+  residual note above): unchanged, as for Send.

@@ -762,6 +762,51 @@ import XCTest
         XCTAssertTrue(intents?.isEmpty == true)
     }
 
+    /// The cost-limit notice's Continue keeps the archive authority of its
+    /// click: Archive (and Archive then Restore) while its helper opens
+    /// dispatches neither `turn.retry` nor `queue.resume`; a new Continue does.
+    func testArchiveDuringCostLimitContinueOpeningRetiresIt() async throws {
+        for restore in [false, true] {
+            let (model, view, wire) = try await fixture()
+            view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+            XCTAssertFalse(model.costReading(for: view.id).held, "The fixture offers Continue")
+            wire.heldMethod = "session.open"
+            model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+            try await eventually("Continue waits for its helper to open") { wire.held != nil }
+            _ = try await model.enqueueOrganization([view.id], change: .archived(true)).value
+            if restore { _ = try await model.enqueueOrganization([view.id], change: .archived(false)).value }
+            wire.release()
+            let continuing: ([String: WireValue]) -> Bool = { ["turn.retry", "queue.resume"].contains($0["method"]?.string ?? "") }
+            try await eventually("Continue settled") { model.error != nil || wire.frames.contains(where: continuing) }
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertFalse(wire.frames.contains(where: continuing), "Archive retired the Continue (\(restore ? "restored" : "archived"))")
+            XCTAssertEqual(model.error, "Archive cancelled this operation. Restore the chat if needed, then try again.")
+            guard restore else { continue }
+            model.error = nil
+            model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+            try await eventually("A new Continue continues") { wire.frames.contains { $0["method"]?.string == "turn.retry" } }
+            XCTAssertNil(model.error)
+        }
+    }
+
+    /// Archived and restored while its `turn.retry` is answered "nothing to
+    /// retry", Continue does not fall back to `queue.resume` either.
+    func testArchiveDuringCostLimitContinueStopsItsQueueFallback() async throws {
+        let (model, view, wire) = try await fixture()
+        view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+        wire.heldMethod = "turn.retry"
+        model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+        try await eventually("turn.retry awaiting its answer") { wire.held != nil }
+        _ = try await model.enqueueOrganization([view.id], change: .archived(true)).value
+        _ = try await model.enqueueOrganization([view.id], change: .archived(false)).value
+        wire.rejectedMethod = "turn.retry"; wire.rejectionCode = "nothing_to_retry"
+        wire.release()
+        try await eventually("Continue settled") { model.error != nil || wire.frames.contains { $0["method"]?.string == "queue.resume" } }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "queue.resume" }, "No queued follow-ups resume after Archive")
+        XCTAssertEqual(model.error, "Archive cancelled this operation. Restore the chat if needed, then try again.")
+    }
+
     func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
         try await stopAfterResumePreflight(queued: false)
     }
@@ -941,6 +986,7 @@ import XCTest
     var answered: [String] = []
     var heldMethod: String?
     var rejectedMethod: String?
+    var rejectionCode = "fixture_rejection"
     var heldSessionID: String?
     var held: [String: WireValue]?
     var heldFrames: [[String: WireValue]] = []
@@ -974,7 +1020,7 @@ import XCTest
         }
         guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }
         let rejected = frame["method"]?.string == rejectedMethod
-        if rejected { result = ["code": .string("fixture_rejection"), "message": .string("Fixture rejection")] }
+        if rejected { result = ["code": .string(rejectionCode), "message": .string("Fixture rejection")] }
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch), "commandId": command,
                              "ok": .bool(!rejected), "result": .object(result)]), connectionID: connection)
         answered.append(frame["method"]?.string ?? "")

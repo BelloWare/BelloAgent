@@ -115,29 +115,48 @@ extension WorkspaceModel {
         draftChanged(view)
         focusedSessionID = info.id; view.composerFocusRequest += 1
     }
-    func openSide(parentID: String? = nil, question: String = "") {
-        guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
+    /// Opens a side beside its chat, or brings back the empty one already
+    /// waiting. A `/side` question becomes that side's first message. True
+    /// when the side is there and, with a question, has captured it; the
+    /// caller's composer may then let go of the command. Otherwise `error`
+    /// says why, and a question stays with its caller, never taken.
+    @discardableResult func openSide(parentID: String? = nil, question: String = "") -> Bool {
+        guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return false }
         // A new side opens beside its chat, which is on screen: the sidebar
         // unfolds nothing for it. A side list the reader folded stays folded,
         // the new side listed under the fold (owner, 2026-10-12).
         quietSidebarReveal = sidebarLineage(of: parentID)
-        if let refusal = orphanedSideRefusal(parentID) { error = refusal; return }
-        guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }
-        guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return }
+        if let refusal = orphanedSideRefusal(parentID) { error = refusal; return false }
+        guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return false }
+        guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return false }
+        let questionKept = question.isEmpty ? "" : " Your question is still in this chat's composer."
         // Another side can open while one is shown: the shown side stays a
         // saved child chat in the sidebar and comes back on click. Only a side
         // that is still being published must finish first.
         if let existing = sides[parentID], existing.pending {
-            // The empty side is already waiting for its first message.
             quietSidebarReveal.insert(existing.id)
-            focusedSessionID = existing.id; displays[existing.id]?.composerFocusRequest += 1
-            if !question.isEmpty { displays[existing.id]?.draft = question; send(sessionID: existing.id) }
-            return
+            guard !question.isEmpty else {
+                // The empty side is already waiting for its first message.
+                focusedSessionID = existing.id; displays[existing.id]?.composerFocusRequest += 1
+                return true
+            }
+            // The question is that side's first message only while the side
+            // holds nothing of its own: its typing is never replaced, nor its
+            // first send under way raced. Otherwise the question stays put.
+            guard let shown = displays[existing.id], !shown.loading, shown.submittingCommands.isEmpty, draftWrites.recoveries[existing.id] == nil else {
+                error = "Wait for this chat's side to send its first message." + questionKept; return false
+            }
+            guard Self.holdsNothing(shown) else {
+                error = "This chat's side has an unsent draft. Send or close it first; your question is still in this chat's composer."; return false
+            }
+            focusedSessionID = existing.id; shown.composerFocusRequest += 1
+            return sendSideQuestion(question, in: shown)
         }
         if let existing = sides[parentID], !existing.kept || existing.keeping {
             quietSidebarReveal.insert(existing.id)
-            focusedSessionID = existing.id
-            error = "Wait for the current side to finish opening before starting another."; return
+            // A refused question keeps the cursor with it.
+            if question.isEmpty { focusedSessionID = existing.id }
+            error = "Wait for the current side to finish opening before starting another." + questionKept; return false
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
         quietSidebarReveal.insert(id)
@@ -150,14 +169,37 @@ extension WorkspaceModel {
         guard !question.isEmpty else {
             if selectedID == parentID { focusedSessionID = id }
             view.composerFocusRequest += 1
-            return
+            return true
         }
-        // `/side <question>` took the question out of the parent composer: it
-        // is this side's first message. Sending it as one captures it now and
-        // records it as its own input before parent opening or publication
-        // can wait, so a failure or a crash leaves it recoverable from the
-        // parent, as for any first message of a side.
-        view.draft = question; send(sessionID: id)
+        // `/side <question>`: the question is this side's first message.
+        // Sending it as one captures it now and records it as its own input
+        // before parent opening or publication can wait, so a failure or a
+        // crash leaves it recoverable from the parent, as for any first
+        // message of a side. A send refused before capture leaves no side.
+        if sendSideQuestion(question, in: view) { return true }
+        removePendingSide(info); return false
+    }
+    /// A pending side with nothing of its own to send or recover: no typing,
+    /// images or skills, and no returned, captured or uncertain input.
+    private static func holdsNothing(_ view: SessionDisplay) -> Bool {
+        view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.imageImports == 0 && view.submissionReviews.isEmpty &&
+            view.recovered.isEmpty && !view.uncertain && !view.sideInputPendingTransfer &&
+            view.draftVersion.unsavedSubmissions.isEmpty && !view.draftVersion.hasUnsavedConflict
+    }
+    /// `/side`'s question as an empty pending side's first message: true once
+    /// the send has captured it. A refusal before capture (storage, launch
+    /// lease, size) leaves the side empty again; a connection refusal, which
+    /// would capture input it could never send, is refused here first.
+    private func sendSideQuestion(_ question: String, in view: SessionDisplay) -> Bool {
+        guard let item = record(view.id) else { return false }
+        do { _ = try connectionLease(for: item) } catch { self.error = error.localizedDescription; return false }
+        let before = view.draft, inFlight = view.submittingCommands
+        view.draft = question; view.directCommand = false
+        send(sessionID: view.id)
+        // Captured only if this send began a submission of its own.
+        guard view.submittingCommands.subtracting(inFlight).isEmpty else { return true }
+        view.draft = before
+        return false
     }
     /// Creates the side on the helper: the recovery intent and draft, the
     /// parent's context snapshot as a durable child session, and its capture

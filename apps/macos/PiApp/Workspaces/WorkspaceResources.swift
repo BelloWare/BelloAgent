@@ -324,8 +324,11 @@ extension WorkspaceModel {
                 guard !steer, side(view.id) == nil else { error = "A side command opens from the main chat and cannot steer a run."; return true }
                 if let refusal = orphanedSideRefusal(view.id) { error = refusal; return true }
                 guard canOpenSide(view.id) else { error = "Side chats require a project conversation with tools available."; return true }
-                view.draft = ""; view.directCommand = false; draftChanged(view)
-                openSide(parentID: view.id, question: command.arguments); return true
+                // The command leaves the composer only once a side has taken
+                // it, its question captured as that side's first message. A
+                // refusal keeps it exactly as typed.
+                guard openSide(parentID: view.id, question: command.arguments) else { return true }
+                view.draft = ""; view.directCommand = false; draftChanged(view); return true
             }
             if command.name == "fork" {
                 guard !steer, command.arguments.isEmpty else { error = "The fork command takes no arguments and cannot steer a run."; return true }
