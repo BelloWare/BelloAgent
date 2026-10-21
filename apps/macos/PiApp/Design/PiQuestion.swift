@@ -299,14 +299,20 @@ struct ChatQuestion: Equatable, Sendable {
     @discardableResult
     func chooseImageFiles(about sessionID: String? = nil, _ chosen: @escaping ([URL]) -> Void) -> Bool {
         if let chooseFiles { chosen(chooseFiles()); return true }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.message = "Choose images to attach to this message."
+        let panel = Self.imageFilesPanel()
         return runPanel(panel, over: nil, about: sessionID) { response in
             if response == .OK { chosen(panel.urls) }
         }
+    }
+    /// Any image type: the import converts what the model cannot take
+    /// (`ComposerTextView.prepareImageFiles`).
+    static func imageFilesPanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose images to attach to this message."
+        return panel
     }
 
     /// A panel on a sheet, or application-modal when nothing can host it.

@@ -8,7 +8,7 @@ final class QueuedAttachmentLimitTests: XCTestCase {
             let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
             registerWorkspaceFixtureTeardown(model, root: root)
             let view = SessionDisplay(id: "chat"); view.selectionMetadataLoaded = true; model.displays[view.id] = view
-            let images = (0..<(limitedByCount ? 4 : 2)).map { AttachmentRecord(id: "i\($0)", path: "/fixture/\($0).png", sha256: "h", bytes: limitedByCount ? 10 : 8 * 1024 * 1024, mimeType: "image/png") }
+            let images = (0..<(limitedByCount ? 4 : 2)).map { AttachmentRecord(id: "i\($0)", path: "/fixture/\($0).png", sha256: "h", bytes: limitedByCount ? 10 : 16 * 1024 * 1024, mimeType: "image/png") }
             view.draftBeforeQueueEdit = DraftRecord(id: view.id, text: "Parked", attachments: images)
             view.queueEditingID = "queued"; view.queueEditID = "edit"; view.draft = "Rewrite"
             let extra = AttachmentRecord(id: "extra", path: "/fixture/extra.png", sha256: "h", bytes: 10, mimeType: "image/png")
