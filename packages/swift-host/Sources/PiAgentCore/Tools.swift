@@ -328,6 +328,7 @@ public actor NativeTools: ToolExecuting {
 /// enumerators, file handles and regex matchers remain local to one job.
 private struct FileToolContext: Sendable {
     let cwd: URL, roots: [URL]
+    static let binaryFile = AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded")
     func path(_ value: JSON, optional: Bool = false, existing: Bool = false) throws -> URL {
         if value.isNull && optional { return cwd }
         let text=try required(value,"path")
@@ -349,24 +350,35 @@ private struct FileToolContext: Sendable {
         var remaining = Int(info.st_size)
         var data = try file.read(upToCount:min(4100,remaining)) ?? Data()
         remaining -= data.count
-        let piType=PiImage.sniff(data)
-        if let mimeType=piType ?? PiImage.decodableType(data) {
+        // Pi's image read: the whole file within 16 MiB, processed as pi
+        // processes it. A format pi does not know is an image only if
+        // ImageIO reads it; otherwise it is the binary file it was.
+        func readImage(_ mimeType: String, from prefix: Data, piFormat: Bool) throws -> JSON {
             guard info.st_size <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
-            data.append(try file.read(upToCount:16 * 1024 * 1024 + 1 - data.count) ?? Data())
-            guard data.count <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
+            var image = prefix
+            image.append(try file.read(upToCount:16 * 1024 * 1024 + 1 - image.count) ?? Data())
+            guard image.count <= 16 * 1024 * 1024 else { throw AgentError("file_too_large","File exceeds the supported size limit") }
             try cancellation.checkCancellation()
-            // A format pi does not know is an image only if ImageIO reads
-            // it; otherwise it is the binary file pi's text read refuses.
-            if piType == nil, PiImage.uprightSize(data) == nil { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
-            switch PiImage.process(data, mimeType:mimeType) {
-            case .success(let image):
-                let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")
-                return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false,"stats":["path":JSON(url.path)]]
+            if !piFormat, PiImage.uprightSize(image) == nil { throw Self.binaryFile }
+            switch PiImage.process(image, mimeType:mimeType) {
+            case .success(let processed):
+                let note=(["Read image file [\(processed.mimeType)]"]+processed.hints).joined(separator:"\n")
+                return ["content":.array([textBlock(note),["type":"image","data":JSON(processed.data),"mimeType":JSON(processed.mimeType)]]),"isError":false,"stats":["path":JSON(url.path)]]
             case .failure(let failure):
                 var result=resultText("Read image file [\(mimeType)]\n"+failure.message)
                 result["stats"]=["path":JSON(url.path)]
                 return result
             }
+        }
+        if let mimeType=PiImage.sniff(data) { return try readImage(mimeType, from:data, piFormat:true) }
+        // Ours: once the text read refuses the file as binary, it may still
+        // be an image of a format pi does not know (`decodableType`).
+        func binaryOrImage() throws -> JSON {
+            try cancellation.checkCancellation()
+            try file.seek(toOffset:0)
+            let prefix = try file.read(upToCount:4100) ?? Data()
+            guard let mimeType=PiImage.decodableType(prefix) else { throw Self.binaryFile }
+            return try readImage(mimeType, from:prefix, piFormat:false)
         }
         let offset = try boundedInt(params["offset"],fallback:1,maximum:10_000_000), count = try boundedInt(params["limit"],fallback:2000,maximum:10_000)
         guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
@@ -382,7 +394,7 @@ private struct FileToolContext: Sendable {
                 let lead = tail[start], length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1
                 if tail.count - start < length { complete = start }
             }
-            guard String(data:tail.prefix(complete),encoding:.utf8) != nil else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
+            guard String(data:tail.prefix(complete),encoding:.utf8) != nil else { return try binaryOrImage() }
             tail = Data(tail.dropFirst(complete))
             for byte in data {
                 if previousCR && byte != 10 { viewerLine += 1 }
@@ -399,7 +411,7 @@ private struct FileToolContext: Sendable {
             data = remaining > 0 ? try file.read(upToCount:min(64 * 1024,remaining)) ?? Data() : Data()
             remaining -= data.count
         }
-        guard tail.isEmpty else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
+        guard tail.isEmpty else { return try binaryOrImage() }
         let text = preview(String(decoding:selected,as:UTF8.self),bytes:32768)
         var result = resultText(text + (offset - 1 + count < line || text.utf8.count < selectedBytes ? "\n[Truncated. \(line) total lines; read another range.]" : ""))
         result["stats"] = ["path":JSON(url.path)]

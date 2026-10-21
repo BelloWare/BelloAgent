@@ -97,19 +97,24 @@ a supported format". OpenAI takes PNG, JPEG, WebP and non-animated GIF.
   share one preparation that decides by content: a PNG, JPEG, GIF or WebP up
   to 8 MiB is attached as it is; anything else ImageIO reads (HEIC/HEIF, TIFF,
   BMP, AVIF, JPEG 2000, ICO, camera raw, a mislabeled file, an original over
-  8 MiB) becomes a private PNG within the helper's limits. The helper's
-  attachment contract is unchanged: four images, 8 MiB each, 16 MiB in all.
+  8 MiB) becomes a private PNG of at most 2,000 pixels, made smaller only to
+  fit the helper's 8 MiB gate, which the helper then sends as PNG or JPEG as
+  pi does (a transparent one also keeps within pi's 4.5 MB of base64, so it
+  stays PNG). Its chip shows the original file's name, saved with the draft
+  and never sent. The helper's attachment contract is unchanged: four images,
+  8 MiB each, 16 MiB in all.
 - **Animated images.** `PiImage.process` sends an animated GIF, WebP or PNG as
   its first frame, as PNG, with the hint `[Image converted from animated
   image/gif to image/png; only its first frame is shown.]`. Pi sends them as
   they are. This covers attachments, read results and tool-result images.
-- **Read tool.** When pi's `detectSupportedImageMimeType` finds no image and
-  the file's first bytes are not UTF-8 text, ImageIO's type identifies HEIC,
-  HEIF, AVIF, TIFF, JPEG 2000 and other formats; one ImageIO reads is converted
-  as pi converts a BMP (PNG, then pi's resize, with pi's conversion hint).
-  Pi fails these as binary. Text, pi's own five formats (including its refusal
-  of animated PNG), TGA and PICT (found by heuristics) and undecodable bytes
-  keep pi's result. The tool description is unchanged.
+- **Read tool.** When pi's text read refuses a file as binary, wherever its
+  first invalid bytes are, ImageIO's type of the file's first bytes identifies
+  HEIC, HEIF, AVIF, TIFF, JPEG 2000 and other formats; one ImageIO reads is
+  converted as pi converts a BMP (PNG, then pi's resize, with pi's conversion
+  hint), and one over 16 MiB is refused as too large. Pi fails these as
+  binary. Text, pi's own five formats (including its refusal of animated
+  PNG), TGA and PICT (found by heuristics) and undecodable bytes keep pi's
+  result. The tool description is unchanged.
 
 See [validation](validation/a130-images-0.1.130.md).
 

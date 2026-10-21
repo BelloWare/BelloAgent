@@ -58,21 +58,14 @@ enum PiImage {
     /// Ours, at the owner's request (0.1.130), not pi: the read tool also
     /// takes a still image in a format pi does not know (HEIC/HEIF, AVIF,
     /// TIFF, JPEG 2000, ICO, camera raw, …) as ImageIO finds it in a file's
-    /// first bytes, and converts it as pi converts a BMP. Only bytes pi's text
-    /// read refuses as binary qualify, so no text file reads differently;
-    /// pi's own formats keep `sniff`'s verdict, and TGA and PICT, which
-    /// ImageIO finds by heuristics that random data can satisfy, stay binary.
+    /// first bytes, and converts it as pi converts a BMP. The read asks only
+    /// once pi's text read has refused the file as binary, so no text file
+    /// reads differently, also when an image's first bytes pass as text (a
+    /// TIFF's black rows are zero bytes). Pi's own formats keep `sniff`'s
+    /// verdict, and TGA and PICT, which ImageIO finds by heuristics that
+    /// random data can satisfy, stay binary.
     static func decodableType(_ prefix: Data) -> String? {
-        // The text read's own test: complete UTF-8 scalars, a partial last
-        // one left for the next chunk.
-        let bytes = [UInt8](prefix)
-        var complete = bytes.count
-        if let start = bytes.lastIndex(where: { $0 & 0xC0 != 0x80 }) {
-            let lead = bytes[start], length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1
-            if bytes.count - start < length { complete = start }
-        }
-        guard String(bytes: bytes.prefix(complete), encoding: .utf8) == nil,
-              let source = CGImageSourceCreateWithData(prefix as CFData, nil),
+        guard let source = CGImageSourceCreateWithData(prefix as CFData, nil),
               let identifier = CGImageSourceGetType(source) as String?,
               !["public.jpeg", "public.png", "com.compuserve.gif", "org.webmproject.webp", "com.microsoft.bmp",
                 "com.truevision.tga-image", "com.apple.pict"].contains(identifier) else { return nil }

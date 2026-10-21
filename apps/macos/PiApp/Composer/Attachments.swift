@@ -118,9 +118,25 @@ struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; l
     var finish: () -> Void = {}
 }
 
+/// A file ready to attach. A private PNG converted from a file carries that
+/// file's name for the composer's chip; one from clipboard bytes has none.
+struct PreparedImageFile: Sendable, Equatable {
+    let url: URL; var name: String? = nil
+}
+
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     let id: String; let path: String; let sha256: String; let bytes: Int; let mimeType: String
+    /// What the chip shows for a private copy converted from a file: that
+    /// file's name. Presentation only: saved with drafts, never sent to the
+    /// helper (`wire`), and no part of the record's identity (`==`).
+    var name: String? = nil
     var wire: WireValue { .object(["id": .string(id), "path": .string(path), "sha256": .string(sha256), "bytes": .number(Double(bytes)), "mimeType": .string(mimeType)]) }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.path == rhs.path && lhs.sha256 == rhs.sha256 && lhs.bytes == rhs.bytes && lhs.mimeType == rhs.mimeType
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id); hasher.combine(path); hasher.combine(sha256); hasher.combine(bytes); hasher.combine(mimeType)
+    }
     /// The helper's own test (`loadImages`): the four formats OpenAI takes,
     /// by their first 12 bytes.
     static func mimeType(signature header: Data) -> String? {
@@ -249,16 +265,21 @@ extension WorkspaceModel {
         draftChanged(view)
         return true
     }
+    func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
+        attachImageFiles(urls.map { PreparedImageFile(url: $0) }, sessionID: sessionID)
+    }
     /// Shared by the file panel, paste and drag-and-drop, once each has
     /// prepared its files.
-    func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
-        guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
+    func attachImageFiles(_ files: [PreparedImageFile], sessionID: String? = nil) {
+        guard let id = sessionID ?? selectedID, let view = displays[id], !files.isEmpty else { return }
         guard supportsImages(id) else {
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
         let importing = beginImageImport(sessionID: id)
         Task { defer { importing.finish() }; do {
-            let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
+            let items = try await Task.detached {
+                try files.map { file in var record = try AttachmentRecord.inspect(file.url); record.name = file.name; return record }
+            }.value
             guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
             receiveAttachments(items, into: view)
         } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }

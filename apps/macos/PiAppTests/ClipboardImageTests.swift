@@ -50,7 +50,7 @@ final class ClipboardImageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         var attached: [URL] = [], rejection: String?
         let field = NativeComposer(text: "Keep this draft", send: { _ in }, inputRejected: { rejection = $0 },
-            attachFiles: { attached += $0 }, pastedImages: .init(root: root)).makeView()
+            attachFiles: { attached += $0.map(\.url) }, pastedImages: .init(root: root)).makeView()
         let editor = try XCTUnwrap(field.documentView as? ComposerTextView)
         let accepted = editor.pasteAttachments(from: board)
         XCTAssertTrue(accepted, label)
@@ -296,7 +296,7 @@ final class ClipboardImageTests: XCTestCase {
         let files = ["a.png", "b.jpg", "notes.txt"].map { root.appendingPathComponent($0) }
         try Self.image().write(to: files[0]); try Self.image(type: .jpeg).write(to: files[1])
         try Data("Generated notes".utf8).write(to: files[2])
-        var received: [URL] = []; editor.attachFiles = { received = $0 }
+        var received: [URL] = []; editor.attachFiles = { received = $0.map(\.url) }
         editor.imageRejected = { XCTFail($0) }
         board.writeObjects(files.map { $0 as NSURL })
         XCTAssertTrue(editor.pasteAttachments(from: board))

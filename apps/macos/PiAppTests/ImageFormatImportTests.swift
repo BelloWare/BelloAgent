@@ -27,6 +27,33 @@ final class ImageFormatImportTests: XCTestCase {
         CGImageDestinationAddImage(destination, image, quality.map { [kCGImageDestinationLossyCompressionQuality: $0] as CFDictionary })
         return CGImageDestinationFinalize(destination) ? output as Data : nil
     }
+    /// A phone-sized photo: a smooth scene of gradients and shapes under
+    /// `grain` of sensor-like noise, at quality 0.9.
+    static func photo(grain: CGFloat, type: UTType, width: Int = 4032, height: Int = 3024) -> Data? {
+        let rgb = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: rgb,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+              let gradient = CGGradient(colorsSpace: rgb, colors: [CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1),
+                                                                   CGColor(red: 0.9, green: 0.7, blue: 0.4, alpha: 1)] as CFArray, locations: [0, 1])
+        else { return nil }
+        context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: height), options: [])
+        for index in 0..<40 {
+            context.setFillColor(CGColor(red: CGFloat(index % 7) / 7, green: CGFloat(index % 5) / 5, blue: CGFloat(index % 3) / 3, alpha: 0.6))
+            context.fillEllipse(in: CGRect(x: index * 397 % width, y: index * 211 % height, width: 300 + index * 13, height: 200 + index * 9))
+        }
+        var pixels = Data(count: width * height * 4)
+        pixels.withUnsafeMutableBytes { arc4random_buf($0.baseAddress!, $0.count) }
+        guard let provider = CGDataProvider(data: pixels as CFData),
+              let noise = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4, space: rgb,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+                                  decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        context.setAlpha(grain); context.draw(noise, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage() else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        return CGImageDestinationFinalize(destination) ? output as Data : nil
+    }
     static func animatedGIF() -> Data? {
         guard let first = image(.png, width: 24, height: 16), let second = image(.png, width: 24, height: 16),
               let frames = [first, second].map({ CGImageSourceCreateWithData($0 as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) } }) as? [CGImage]
@@ -70,9 +97,19 @@ final class ImageFormatImportTests: XCTestCase {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let url = folder.appendingPathComponent(name); try data.write(to: url); return url
         }
+        /// The labels of the composer's image chips.
+        func chipLabels() -> [String] {
+            composer.refresh()
+            var labels: [String] = [], pending: [NSView] = [composer]
+            while let view = pending.popLast() {
+                if let chip = view as? PiKit.Chip { labels.append(chip.main.text) } else { pending += view.subviews.reversed() }
+            }
+            return labels
+        }
         /// Attaches `files` as `entry` does, waits until the import settles,
-        /// and returns what the draft gained (clearing it for the next call).
-        func attach(_ files: [URL], via entry: Entry, timeout: Duration = .seconds(30)) async throws -> [AttachmentRecord] {
+        /// and returns what the draft gained (clearing it for the next call
+        /// unless `keep`).
+        func attach(_ files: [URL], via entry: Entry, timeout: Duration = .seconds(30), keep: Bool = false) async throws -> [AttachmentRecord] {
             session.attachments = []; session.notice = ""; model.error = nil
             switch entry {
             case .chooser:
@@ -91,7 +128,7 @@ final class ImageFormatImportTests: XCTestCase {
             }
             try await eventually("\(entry) import settled", timeout: timeout) { model.attachmentImports == 0 && session.imageImports == 0 }
             let attached = session.attachments
-            session.attachments = []
+            if !keep { session.attachments = [] }
             return attached
         }
     }
@@ -172,6 +209,10 @@ final class ImageFormatImportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: bench.model.pastedImages.directory.path), "Nothing needed a private copy")
     }
 
+    /// A photo the model cannot take as it is reaches the helper as large as
+    /// its 8 MiB gate allows, up to the 2,000 pixels it sends; the helper then
+    /// chooses PNG or JPEG as pi does. Even pure noise, PNG's worst case,
+    /// fits at 2,000 pixels (about 7.7 MB).
     @MainActor func testLargePhotosAttachThroughEveryEntryPointWithinHelperLimits() async throws {
         let bench = try workbench("large")
         var photos: [(String, Data)] = [("large.jpg", try XCTUnwrap(Self.image(.jpeg, width: 4000, height: 3000, quality: 0.9)))]
@@ -191,32 +232,144 @@ final class ImageFormatImportTests: XCTestCase {
                 print("IMAGE \(entry) \(name) \(data.count) bytes → \(read.width)x\(read.height) PNG, \(size) bytes in \(ContinuousClock.now - started)")
                 XCTAssertEqual(record.mimeType, "image/png")
                 XCTAssertLessThanOrEqual(record.bytes, 8 * 1024 * 1024, "the helper's per-image limit")
-                XCTAssertLessThanOrEqual(max(read.width, read.height), 2000, "the helper's 2,000-pixel bound")
-                XCTAssertLessThan((size + 2) / 3 * 4, 4_718_592, "within pi's base64 bound, so the helper sends it as it is")
-                XCTAssertEqual(Double(read.width) / Double(read.height), 4.0 / 3, accuracy: 0.01)
+                XCTAssertEqual([read.width, read.height], [2000, 1500], "the helper's 2,000 pixels within its 8 MiB gate, not pi's base64 bound")
                 XCTAssertEqual(try Data(contentsOf: file), data)
             }
         }
     }
 
-    /// A file over 8 MiB starts at the helper's 2,000 pixels, as a large
-    /// clipboard PNG does, even when a PNG of all its pixels would fit.
-    @MainActor func testOversizedOriginalsStartAtTheHelpersBound() async throws {
-        let bench = try workbench("oversized")
+    /// A converted file starts at the helper's 2,000 pixels, even when a PNG
+    /// of all its pixels would fit in 8 MiB: the helper sends no more.
+    @MainActor func testConvertedFilesStartAtTheHelpersBound() async throws {
+        let bench = try workbench("bound")
         let context = try XCTUnwrap(CGContext(data: nil, width: 3000, height: 1500, bitsPerComponent: 8, bytesPerRow: 0,
                                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
         context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 1500))
         context.setFillColor(CGColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 1000, height: 1500))
+        let image = try XCTUnwrap(context.makeImage())
+        func encoded(_ type: UTType) throws -> Data {
+            let output = NSMutableData()
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, image, nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            return output as Data
+        }
+        let scan = try encoded(.bmp), photo = try encoded(.heic)
+        XCTAssertGreaterThan(scan.count, 8 * 1024 * 1024, "an uncompressed scan over 8 MiB")
+        XCTAssertLessThan(photo.count, 8 * 1024 * 1024, "a small HEIC")
+        for (name, data) in [("scan.bmp", scan), ("flat.heic", photo)] {
+            let file = try bench.file(name, data)
+            for entry in Entry.allCases {
+                let attached = try await bench.attach([file], via: entry)
+                XCTAssertNil(bench.model.error, "\(entry): \(bench.model.error ?? "")")
+                assertConverted(attached.first, from: file, bytes: data, width: 2000, height: 1000, in: bench, "\(entry) \(name)")
+            }
+        }
+    }
+
+    /// One with transparency stays within pi's 4.5 MB of base64, so the
+    /// helper sends it as PNG rather than flattening it into a JPEG.
+    @MainActor func testTransparentConversionsStayPNG() async throws {
+        let bench = try workbench("transparent")
+        let width = 1650, height = 1200
+        var pixels = Data(count: width * height * 4)
+        pixels.withUnsafeMutableBytes { arc4random_buf($0.baseAddress!, $0.count) }
+        let image = try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                                          provider: try XCTUnwrap(CGDataProvider(data: pixels as CFData)), decode: nil, shouldInterpolate: true, intent: .defaultIntent))
         let output = NSMutableData()
-        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.bmp.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.tiff.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
-        XCTAssertGreaterThan(output.length, 8 * 1024 * 1024, "an uncompressed scan over 8 MiB")
-        let file = try bench.file("scan.bmp", output as Data)
+        XCTAssertLessThanOrEqual(output.length, 8 * 1024 * 1024, "a TIFF the 8 MiB gate alone would keep at full size")
+        let file = try bench.file("overlay.tiff", output as Data)
         for entry in Entry.allCases {
             let attached = try await bench.attach([file], via: entry)
             XCTAssertNil(bench.model.error, "\(entry): \(bench.model.error ?? "")")
-            assertConverted(attached.first, from: file, bytes: output as Data, width: 2000, height: 1000, in: bench, "\(entry) scan.bmp")
+            let record = try XCTUnwrap(attached.first, "\(entry)")
+            let copy = URL(fileURLWithPath: record.path)
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(copy as CFURL, nil))
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            XCTAssertEqual(properties[kCGImagePropertyHasAlpha] as? Bool, true, "\(entry): transparency kept")
+            XCTAssertLessThan((record.bytes + 2) / 3 * 4, 4_718_592, "\(entry): the helper sends it as PNG")
+            XCTAssertEqual(record.mimeType, "image/png")
+        }
+    }
+
+    /// Converted files keep the name they had on the composer's chip; a
+    /// clipboard image, which has none, keeps its stored name.
+    @MainActor func testConvertedFilesKeepTheirNameOnTheChip() async throws {
+        let bench = try workbench("names")
+        let heic = try bench.file("IMG_2041.HEIC", try XCTUnwrap(Self.image(.heic)))
+        let png = try bench.file("diagram.png", try XCTUnwrap(Self.image(.png)))
+        for entry in Entry.allCases {
+            let attached = try await bench.attach([heic, png], via: entry, keep: true)
+            XCTAssertEqual(attached.count, 2, "\(entry)")
+            XCTAssertEqual(bench.chipLabels(), ["IMG_2041.HEIC", "diagram.png"], "\(entry)")
+            bench.session.attachments = []
+        }
+        let board = NSPasteboard(name: .init("image-formats-bytes-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        board.setData(try XCTUnwrap(Self.image(.tiff)), forType: .tiff)
+        XCTAssertTrue(bench.editor.pasteAttachments(from: board))
+        try await eventually("clipboard image attached") { bench.model.attachmentImports == 0 && !bench.session.attachments.isEmpty }
+        let pasted = try XCTUnwrap(bench.session.attachments.first)
+        XCTAssertEqual(bench.chipLabels(), [URL(fileURLWithPath: pasted.path).lastPathComponent])
+        XCTAssertTrue(bench.chipLabels().first?.hasPrefix("pasted-") == true)
+    }
+
+    /// The chip's name is presentation: saved with the draft (and read from
+    /// drafts saved before it existed), never sent to the helper, and no
+    /// part of the attachment's identity.
+    @MainActor func testAChipNameIsSavedWithTheDraftButNeverSent() async throws {
+        var named = AttachmentRecord(id: "image", path: "/fixture/pasted-copy.png", sha256: "digest", bytes: 10, mimeType: "image/png")
+        named.name = "IMG_2041.HEIC"
+        var unnamed = named; unnamed.name = nil
+        XCTAssertEqual(named, unnamed); XCTAssertEqual(named.hashValue, unnamed.hashValue)
+        XCTAssertEqual(named.wire, unnamed.wire, "never on the wire")
+        let params = WorkspaceModel.editTurnParams(messageID: "m", text: "t", turnID: "turn", attachments: [named], skills: [])
+        XCTAssertEqual(params["attachments"], .array([unnamed.wire]))
+        let draft = DraftRecord(id: "chat", text: "Draft", attachments: [named])
+        let decoded = try JSONDecoder().decode(DraftRecord.self, from: JSONEncoder().encode(draft))
+        XCTAssertEqual(decoded.attachments?.first?.name, "IMG_2041.HEIC")
+        let older = Data(#"{"id":"chat","text":"Draft","attachments":[{"id":"image","path":"/fixture/pasted-copy.png","sha256":"digest","bytes":10,"mimeType":"image/png"}]}"#.utf8)
+        let legacy = try JSONDecoder().decode(DraftRecord.self, from: older)
+        XCTAssertNil(legacy.attachments?.first?.name)
+        XCTAssertEqual(legacy, draft, "A draft without the name is the same draft")
+        XCTAssertTrue(legacy.holds(draft) && draft.holds(legacy))
+        XCTAssertEqual(DraftRecord(id: "chat", text: "").merging(draft).attachments?.first?.name, "IMG_2041.HEIC", "copies keep it")
+        // A queued message's rewrite parks a chosen image in the draft set
+        // aside for it, name and all.
+        let bench = try workbench("parked")
+        bench.session.queueEditingID = "queued"; bench.session.queueEditID = "edit"
+        bench.session.draftBeforeQueueEdit = DraftRecord(id: bench.session.id, text: "Parked draft")
+        let heic = try bench.file("IMG_2041.HEIC", try XCTUnwrap(Self.image(.heic)))
+        _ = try await bench.attach([heic], via: .chooser, keep: true)
+        XCTAssertTrue(bench.session.attachments.isEmpty, "the rewrite takes no images")
+        XCTAssertEqual(bench.session.draftBeforeQueueEdit?.attachments?.map(\.name), ["IMG_2041.HEIC"])
+    }
+
+    /// For the record, on demand: four photos through Attach Images…, each
+    /// converted copy saved where `PiImageFormatTests.testMeasureWhatTheHelperSends`
+    /// reads it.
+    @MainActor func testMeasureConvertedPhotos() async throws {
+        guard let path = testEnvironment("PI_APP_IMAGE_MEASURE") else { throw XCTSkip("Set PI_APP_IMAGE_MEASURE") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let bench = try workbench("measure")
+        let photos: [(String, Data?)] = [("smooth-12mp.heic", Self.photo(grain: 0.05, type: .heic)), ("noisy-12mp.heic", Self.photo(grain: 0.25, type: .heic)),
+                                         ("noise-14mb.jpg", Self.image(.jpeg, width: 4000, height: 3000, quality: 0.9)),
+                                         ("noise-14mb.heic", Self.image(.heic, width: 4000, height: 3000, quality: 0.9))]
+        for (name, data) in photos {
+            let data = try XCTUnwrap(data, name), file = try bench.file(name, data)
+            let started = ContinuousClock.now
+            let attached = try await bench.attach([file], via: .chooser, timeout: .seconds(120))
+            let elapsed = ContinuousClock.now - started
+            let record = try XCTUnwrap(attached.first, bench.model.error ?? name)
+            let copy = URL(fileURLWithPath: record.path), read = try XCTUnwrap(Self.read(copy))
+            print("MEASURE \(name): \(data.count) bytes → stored \(read.width)x\(read.height) \(record.mimeType), \(record.bytes) bytes, in \(elapsed)")
+            let saved = folder.appendingPathComponent(name + ".stored.png")
+            try? FileManager.default.removeItem(at: saved); try FileManager.default.copyItem(at: copy, to: saved)
         }
     }
 

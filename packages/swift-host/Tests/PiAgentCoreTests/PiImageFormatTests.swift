@@ -184,6 +184,45 @@ final class PiImageFormatTests: XCTestCase {
         XCTAssertEqual([sent.width, sent.height], [2000, 1000])
     }
 
+    /// A TIFF whose rows are black but its last, white one: its first bytes
+    /// are zero bytes, which pass as UTF-8 text. Once the text read finds its
+    /// binary bytes, the file is read as the image it is; text, and binary
+    /// that is no image, keep pi's result.
+    func testReadFindsAnImageWhoseFirstBytesPassAsText() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root))
+        func darkTIFF(_ side: Int) throws -> Data {
+            let context = try XCTUnwrap(CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: side, height: 1))
+            return try XCTUnwrap(ImageFormatFixtures.encoded(UTType.tiff.identifier, [try XCTUnwrap(context.makeImage())]))
+        }
+        let tiff = try darkTIFF(256)
+        XCTAssertNotNil(String(data: tiff.prefix(4100), encoding: .utf8), "The fixture's first bytes pass as text")
+        XCTAssertNil(String(data: tiff, encoding: .utf8), "The whole file does not")
+        try tiff.write(to: root.appendingPathComponent("dark.tiff"))
+        let read = try await tools.invoke(ToolCall(id: "d", name: "read", arguments: ["path": "dark.tiff"]), readOnly: true)
+        XCTAssertEqual(read["content"].list.first?["text"].text, "Read image file [image/png]\n[Image converted from image/tiff to image/png.]")
+        let sent = try XCTUnwrap(ImageFormatFixtures.read(try XCTUnwrap(Data(base64Encoded: read["content"].list.last?["data"].text ?? ""))))
+        XCTAssertEqual([sent.width, sent.height], [256, 256])
+        // Past 16 MiB it is refused as the large image it is.
+        let large = try darkTIFF(2400)
+        XCTAssertGreaterThan(large.count, 16 * 1024 * 1024)
+        try large.write(to: root.appendingPathComponent("large-dark.tiff"))
+        do { _ = try await tools.invoke(ToolCall(id: "l", name: "read", arguments: ["path": "large-dark.tiff"]), readOnly: true); XCTFail("read past 16 MiB") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "file_too_large") }
+        // A long text whose tail is not UTF-8, and no image, stays binary.
+        let log = Data(String(repeating: "Generated log line\n", count: 2000).utf8)
+        try (log + Data([0xff, 0xfe, 0x00, 0x81])).write(to: root.appendingPathComponent("log.txt"))
+        do { _ = try await tools.invoke(ToolCall(id: "b", name: "read", arguments: ["path": "log.txt"]), readOnly: true); XCTFail("a binary tail was read") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "binary_file") }
+        // And text is still text.
+        try log.write(to: root.appendingPathComponent("log.txt"))
+        let text = try await tools.invoke(ToolCall(id: "t", name: "read", arguments: ["path": "log.txt", "limit": 2]), readOnly: true)
+        XCTAssertEqual(text["content"].list.first?["text"].text, "Generated log line\nGenerated log line\n[Truncated. 2001 total lines; read another range.]")
+    }
+
     func testReadKeepsTextPisOwnVerdictsAndUnreadableBinaryAsTheyWere() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root))
@@ -203,6 +242,21 @@ final class PiImageFormatTests: XCTestCase {
             try data.write(to: root.appendingPathComponent(name))
             do { _ = try await tools.invoke(ToolCall(id: "b", name: "read", arguments: ["path": JSON(name)]), readOnly: true); XCTFail("\(name) was read") }
             catch let error as AgentError { XCTAssertEqual(error.code, "binary_file", name) }
+        }
+    }
+
+    /// For the record, on demand: what the helper sends for each converted
+    /// copy `ImageFormatImportTests.testMeasureConvertedPhotos` saved.
+    func testMeasureWhatTheHelperSends() throws {
+        guard let path = ProcessInfo.processInfo.environment["PI_IMAGE_MEASURE"] else { throw XCTSkip("Set PI_IMAGE_MEASURE") }
+        let files = try FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: path), includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix(".stored.png") }.sorted { $0.path < $1.path }
+        XCTAssertFalse(files.isEmpty)
+        for file in files {
+            let data = try Data(contentsOf: file), started = ContinuousClock.now
+            guard case .success(let sent) = PiImage.process(data, mimeType: "image/png") else { XCTFail(file.lastPathComponent); continue }
+            let elapsed = ContinuousClock.now - started, image = ImageFormatFixtures.read(Data(base64Encoded: sent.data) ?? Data())
+            print("SENDS \(file.lastPathComponent): \(data.count) bytes → \(sent.mimeType) \(image?.width ?? 0)x\(image?.height ?? 0), \(sent.data.utf8.count) base64 bytes, in \(elapsed); \(sent.hints)")
         }
     }
 }

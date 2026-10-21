@@ -4,6 +4,9 @@ Workstream `dev/a130-images`, based on `955545edf3675b3ec861e76a74dfd767eb392464
 Build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-images`; the
 text logs named below are in its `evidence/` directory.
 
+Round 1 is below; [round 2](#round-2--2026-10-21) (a review finding and two
+lead decisions) supersedes the points it names.
+
 Owner request (2026-10-20, verbatim): "regarding image support, please support
 jpg and more image format, and if openai model does not support, just convert
 to a supported format". OpenAI documents PNG, JPEG, WebP and non-animated GIF
@@ -57,7 +60,8 @@ from the image blocks the helper loads from the attachment path).
 - **Helper contract unchanged:** four images, 8 MiB each, 16 MiB per
   submission, PNG/JPEG/GIF/WebP signatures with matching MIME and digest. The
   app converts to fit it; no reason to widen it was found.
-- **Originals over 8 MiB start at the helper's 2,000 pixels**, as a clipboard
+- **Originals over 8 MiB start at the helper's 2,000 pixels** (superseded in
+  round 2: every converted file does, without pi's base64 bound), as a clipboard
   PNG over 8 MiB already did ("like oversized pastes", as briefed). A full-size
   PNG of a large photo cannot fit and costs seconds; the output is the same.
   Measured below. Conversions of files up to 8 MiB keep the existing order
@@ -71,7 +75,8 @@ from the image blocks the helper loads from the attachment path).
   frame.** One place covers attachments, the read tool and MCP tool images.
   APNG is treated like animated GIF/WebP. The hint is `[Image converted from
   animated image/gif to image/png; only its first frame is shown.]`.
-- **Read tool fallback is conservative.** Only when pi's sniff finds no image
+- **Read tool fallback is conservative.** (Round 2 moves the check to where
+  the text read refuses the file.) Only when pi's sniff finds no image
   and the first bytes are not valid UTF-8 (the text read's own test, so no
   text file changes); never for pi's own five formats (APNG and JPEG-LS keep
   pi's binary verdict), nor for TGA/PICT, which ImageIO detects heuristically
@@ -94,7 +99,8 @@ from the image blocks the helper loads from the attachment path).
 
 **Needs owner decision (optional follow-ups, not done):** a converted image's
 composer chip shows its private file name (`pasted-….png`), as pasted images
-already do; showing the original name would need a new attachment field.
+already do; showing the original name would need a new attachment field
+(done in round 2).
 Animated AVIF (`public.avis`) is not an image type to UTType, so the panel does
 not offer it.
 
@@ -189,3 +195,127 @@ unchanged.
 - An edit switch during preparation refuses the image (test), as paste does.
 - No change to clipboard-byte pastes, the sweep, the leases or the helper's
   limits; the read tool's 16 MiB bound and its description are unchanged.
+
+## Round 2 — 2026-10-21
+
+One read-only review finding and two lead decisions on round 1's flagged items.
+Same worktree, build root, fixtures and boundaries; logs are prefixed `r2-`,
+except the app mutations' `mutation-a7…a13*.log`.
+
+### 1. Read: an image whose first bytes pass as text (review, P2)
+
+Round 1 asked ImageIO only when the first 4,100 bytes were not UTF-8. A TIFF
+whose upper rows are black starts with zero bytes, which are valid UTF-8, so
+the read took the text path and ended in `binary_file`: TIFF support depended
+on pixel content. The read now asks ImageIO exactly where pi's text read
+refuses the file as binary, wherever its first invalid bytes are
+(`binaryOrImage`): it types the file's first 4,100 bytes (pi's five formats,
+TGA and PICT excluded), reads an image within 16 MiB (`file_too_large` past it)
+and converts it if ImageIO reads it, else `binary_file` as before. The
+up-front UTF-8 guard is gone; by construction no text read can change.
+`testReadFindsAnImageWhoseFirstBytesPassAsText`: the ImageIO-generated 256 ×
+256 dark TIFF (its first 4,100 bytes asserted valid UTF-8) reads as a 256 ×
+256 PNG; a 2400 × 2400 one (17.3 MB) is `file_too_large`; a 2,000-line log
+with an invalid UTF-8 tail stays `binary_file`; the same log without it reads
+as text.
+
+### 2. Chip names (lead decision)
+
+`AttachmentRecord.name` is optional and Codable; drafts saved before it decode
+without it. It is set from the chosen, pasted or dropped file's name when that
+file is converted: `prepareImageFiles` returns `PreparedImageFile` (URL and
+name) through the composer's attach callback to `attachImageFiles`. Clipboard
+bytes have no name and keep today's label; files attached as they are already
+show their own name. The chip shows `name ?? file name`. The name is
+presentation only: `wire` is unchanged (the helper contract is untouched) and
+`==`/`hash` ignore it, so draft equality, `holds`, merging, queued-edit parking
+and recovery copies behave as before, while copies of a record keep it. A sent
+message's attachments come back from the journal without it, so an edit of an
+earlier message shows the stored file name, as before.
+
+### 3. Converted photos at the helper's 2,000 pixels (lead decision)
+
+Converted files (`writeConverted`) are PNGs of at most 2,000 pixels, made
+smaller by quarters only to fit the helper's 8 MiB gate; the helper's
+`PiImage.process` then chooses PNG or JPEG as pi does. One refinement: an image
+with an alpha channel also keeps within pi's 4.5 MB of base64, so the helper
+sends it as PNG; its JPEG fallback would flatten transparency onto black, and
+black text on a transparent background would vanish. Clipboard bytes keep the
+base rule (PNG within 8 MiB as it is; others full size first, then 2,000 px
+within the base64 bound): they are mostly screenshots and UI captures whose PNG
+normalization the paste workstream chose and measured, so the rule does not
+obviously apply there.
+
+Measured with the real code (`testMeasureConvertedPhotos` on the round-1 and
+round-2 app, then `PiImageFormatTests.testMeasureWhatTheHelperSends` on each
+saved copy; logs `r2-failing-first-app.log`, `r2-measure-after-app.log`,
+`r2-measure-{before,after}-helper.log`; Debug builds, this shell's ImageIO has
+no hardware scaler). "Smooth" and "noisy" are 4032 × 3024 scenes under 5 % and
+25 % generated grain, HEIC at quality 0.9; the 14.4 MB files are pure noise.
+
+| Fixture | Round 1: stored copy, attach time | Round 1: model gets | Round 2: stored copy, attach time | Round 2: model gets |
+| --- | --- | --- | --- | --- |
+| Smooth 12 MP HEIC, 3.6 MB | 1500 × 1124 PNG, 1.97 MB, 6.1 s | PNG 1500 × 1124, 2.63 MB base64 | 2000 × 1500 PNG, 3.65 MB, 2.7 s | JPEG 2000 × 1500, 0.41 MB base64 |
+| Noisy 12 MP HEIC, 9.2 MB | 1500 × 1124 PNG, 3.04 MB, 4.4 s | PNG 1500 × 1124, 4.05 MB base64 | 2000 × 1500 PNG, 5.75 MB, 2.3 s | JPEG 2000 × 1500, 1.39 MB base64 |
+| 14.4 MB JPEG | 1125 × 844 PNG, 2.25 MB, 0.81 s | PNG 1125 × 844, 3.00 MB base64 | 2000 × 1500 PNG, 7.65 MB, 0.36 s | JPEG 2000 × 1500, 3.15 MB base64 |
+| 14.4 MB HEIC | 1125 × 842 PNG, 2.18 MB, 6.6 s | PNG 1125 × 842, 2.91 MB base64 | 2000 × 1500 PNG, 7.73 MB, 2.3 s | JPEG 2000 × 1500, 2.88 MB base64 |
+
+The model gets 2,000 × 1,500 in every case (before: 1,125–1,500), and
+attaching is faster (one thumbnail instead of two or three). The helper's
+`PiImage.process` now re-encodes these copies: 0.22–0.39 s each in the Debug
+helper (was 0.005–0.009 s for a pass-through), once when the message is sent;
+its result is journaled. It adds pi's own note, `[Image: original 2000x1500,
+displayed at 2000x1500. …]`, as pi does for any image it re-encodes.
+
+**Needs lead/owner decision: the 16 MiB per-message total.** Bigger copies use
+more of the helper's unchanged 16 MiB submission total (4 × 8 MiB would be
+32 MiB). Round 1's copies (1.97–3.04 MB) always let four photos into one
+message; round 2's (3.65–7.73 MB above) let four smooth ones in, but only two
+of the noisy or noise fixtures (three noisy copies are 17.3 MB, refused with
+the existing "four images and 16 MiB" notice). Options: raise the total to
+32 MiB in the app and helper (a contract change; the model input per image
+stays within pi's 4.5 MB base64), or cap converted copies at a quarter of the
+total, 4 MiB (smooth photos still reach 2,000 px, noisy ones 1,500). Not
+changed here: the lead's rule is implemented as decided.
+
+### Round 2 validation
+
+Failing first, on round 1 (`a930c713`) with the new tests (the name-field test
+needs the new API and was proven by mutation):
+
+| Log | Result on round 1 |
+| --- | --- |
+| `r2-failing-first-helper.log` | `PiImageFormatTests`: 6 tests, 1 failed: the dark TIFF read threw `binary_file` |
+| `r2-failing-first-app.log` | `ImageFormatImportTests`: 11 tests, 4 failed (15 failures): chips showed `pasted-….png` instead of `IMG_2041.HEIC` (3); the flat 3000 × 1500 HEIC was stored at 3000 × 1500 (3); the 14.4 MB photos at 1125 × 844/842 (6); the transparent TIFF's copy was 10.6 MB of base64 (3) |
+
+Mutation checks, each applied alone, rebuilt, run and restored (byte-compared):
+
+| Mutation | Tests that failed |
+| --- | --- |
+| h6 read retries ImageIO only when the first chunk is binary (round 1's rule) | `testReadFindsAnImageWhoseFirstBytesPassAsText` |
+| a7 the name is not carried to the record | `testConvertedFilesKeepTheirNameOnTheChip`, `testAChipNameIsSavedWithTheDraftButNeverSent` |
+| a8 the chip ignores the name | `testConvertedFilesKeepTheirNameOnTheChip` |
+| a9 the name is part of `==` | `testAChipNameIsSavedWithTheDraftButNeverSent` |
+| a10 the name goes on the wire | `testAChipNameIsSavedWithTheDraftButNeverSent` |
+| a11 converted copies keep pi's base64 bound | `testLargePhotosAttachThroughEveryEntryPointWithinHelperLimits` |
+| a12 transparency ignored | `testTransparentConversionsStayPNG` |
+| a13 converted copies start at full size | `testConvertedFilesStartAtTheHelpersBound` |
+
+Focused results with round 2:
+
+| Suite | Result |
+| --- | --- |
+| Helper image tests (`r2-helper-images.log`) | 32 tests, 0 failures |
+| Helper, full (`r2-helper-full.log`) | 1,151 tests, 8 skipped (7 + the on-demand measurement), 0 failures |
+| StreamingCostTests alone under the lane lock (`r2-helper-cost.log`) | 5 tests, 0 failures |
+| Wire / concurrent / acceptance on the rebuilt Release helper | 40 OK, 4 OK, 3 OK |
+| App, parallel-lane classes (`r2-app-parallel-classes.log`): round 1's seven plus DraftMarkTests, RecoveredDraftTests, QueuedAttachmentLimitTests, SideTests, HardeningTests, ContextAndSkillPolicyTests, RunHoldTests, SkillRefreshTests, WorkspaceFailureTests, HistoryReaderStateTailTests (attachment records and drafts) | 169 tests (1 on-demand skip), 0 failures |
+| App, serial-lane classes and gallery under the lane lock (`r2-app-serial.log`): ComposerPasteGalleryTests, ComposerPasteRoutingTests, QueueEditInteractionTests, PendingChatProjectTests, HistoricalEditingTests, SendImmediacyTests, the two ConversationPaneTests image-chooser tests | 71 tests (3 + 6 + 17 + 24 + 5 + 14 + 2), 0 failures |
+
+Gallery (`TEST_RUNNER_PI_APP_PASTE_GALLERY=$PI_BUILD_ROOT/gallery-images-r2`):
+the new `testConvertedImageChip` wrote `image-chip-{light,dark,narrow}.png`,
+viewed with the two refusal scenes. Attach Images… with `IMG_2041.HEIC` and
+`diagram.png` shows the chips `IMG_2041.HEIC` (a converted copy) and
+`diagram.png` (attached as it is) above the kept draft, readable with their
+remove buttons in light, dark and at 920 points; the sidebar row shows its
+existing draft marker. The refusal scenes are unchanged.
