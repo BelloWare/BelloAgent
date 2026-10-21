@@ -1750,7 +1750,7 @@ The sweep covers all of GitProcessSafety and the Git path/config/output readers 
 
 The table-driven fixtures place U+0301, U+200D, U+FE0F and a regional-indicator pair beside relevant delimiters. Generated-config cases additionally cover `. / : = " \ [ ] * ?`, space, TAB, LF and NUL; real Git accepts and reads back representable cases, while unsupported encodings select confinement. File and program fixtures only write marker files inside generated temporary directories. The matrix verifies both local-program suppression and allowed global fsmonitor execution.
 
-Before-fix evidence: the first four finding tests failed 29 assertions; the isolated restored-value test trapped at the old `GitInventoryCache.swift:203` with signal 5. After correcting fixture expectations, the finalized broad replay on round 8 executed **13 tests with 135 failed assertions, 0 unexpected** (`round9-before-final-fixtures.log`). Both the direct restored-value case and the real global-value restoration case independently reproduced the same trap (`round9-before-value.log`, `round9-before-global-value.log`). Exact commands and exit statuses are in `round9-before.json` under this workstream's build root.
+Before-fix evidence: the initial four-test selection produced 29 failed assertions; its marker-only program test initially passed, as explained in the fixture audit below. The isolated restored-value test trapped at the old `GitInventoryCache.swift:203` with signal 5. After correcting fixture expectations, the finalized broad replay on round 8 executed **13 tests with 135 failed assertions, 0 unexpected** (`round9-before-final-fixtures.log`). Both the direct restored-value case and the real global-value restoration case independently reproduced the same trap (`round9-before-value.log`, `round9-before-global-value.log`). Exact commands and exit statuses are in `round9-before.json` under this workstream's build root.
 
 Fixture corrections are retained in the preliminary logs: path assertions now use Git's own absolute spelling rather than Foundation's `/var` alias; fixture C-quoting uses scalar escapes rather than grapheme-sensitive replacement; fsmonitor readback uses the scratch config directly so the confined inventory's own false override does not mask the value being tested; ZWJ cases accept the existing control-character confinement. None of those preliminary results is counted as final validation.
 
@@ -1800,3 +1800,129 @@ The final integration focus passed **9/9** (`round9-final-integration-focused.lo
 The first complete merged package run executed **448 tests: 442 passed, 4 skipped, 2 failed** (`round9-final-views-initial.log`). Both failures were new upstream batching fixtures: `GIT_TRACE2_EVENT` targeted `.git/count-trace.json`, which the untrusted sandbox correctly refused to write. The tracing-only generated service now explicitly uses `trusted: true`; its empty fixture global/system configuration is unchanged. Both tests pass and measure four Git invocations each for 653 and 512 rows. No production confinement was relaxed.
 
 The marker audit also established why the preliminary prefix-only mutation survived: changing `base\n` to a longer file allowed Git status to decide from size without invoking its filter. The final fixture uses equal-size `edit\n`, positively checks that ordinary Git invokes the generated marker program, removes the marker, then runs Bello’s read. Restoring only the old prefix checks now fails **3 marker assertions** (U+0301, U+200D and U+FE0F), both in the failing-first replay and the repeated mutation; the fixed test passes. ZWJ follows the existing control-character confinement policy and may refuse a content-filter comparison; the fixture verifies sandbox selection and absence of the marker rather than requiring unconfined success. An initial strengthened-fixture run stopped at that expected refusal and is retained as `round9-equal-size-marker-fixed-initial.log`. Final fixture checks pass **3/3** (`round9-final-fixture-checks.json`). The full package and remaining validation are rerun below after these test-only corrections.
+
+#### Final validation on the merged result
+
+All commands below ran after the final fixture corrections. `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`; common environment: `PI_BUILD_ROOT=$B CFFIXED_USER_HOME=$B/round9-views-home GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1`. The shared full-lane lock covered this sequence, including every benchmark and native/gallery run, and was released in the driver’s `finally` block. Detailed command/status/duration records: `$B/logs/round9-final-validation.json`; toolchain: Apple Git 2.39.5, Swift 6.0.2, Xcode 16.1, macOS 14.8.
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| views | 444 | 4 | 0 |
+| helper-cost | 5 | 0 | 0 |
+| helper | 1157 | 7 | 0 |
+| wire | 40 | 0 | 0 |
+| concurrent | 4 | 0 | 0 |
+| acceptance | 3 | 0 | 0 |
+| Native (41 classes, including gallery) | 380 | 2 | 0 |
+
+Exact commands (extra environment shown where set):
+
+```sh
+swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round9-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round9-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round9-baseline/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round9-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --build-tests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --skip StreamingCostTests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositoryPermissionTests -only-testing:PiAppTests/WebhookExchangeTests -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WebhookTests
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/FilePageReadTests -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitPanelAuditTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitRenameTests -only-testing:PiAppTests/GitToolTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileBlameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitConfirmationSheetTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiscardQuestionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitHunkReviewTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitIntegratedHistoryTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelDiffCaptureTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelLayoutTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelRedrawTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelShownTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelWidthTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenPlacementTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FilePreviewRefreshTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitOperationSafetyTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFindTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CrashAuditRegressionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabFrameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiffTableTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round9-gallery scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+Native class results (each serial-lane class ran alone):
+
+| Class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabFrameTests | 8 | 0 | 0 |
+| ChangesTabTests | 9 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 10 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FilePageReadTests | 3 | 0 | 0 |
+| FilePreviewRefreshTests | 3 | 0 | 0 |
+| FileReviewStateTests | 21 | 0 | 0 |
+| FileTabTests | 17 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 | 0 |
+| GitConfirmationSheetTests | 7 | 0 | 0 |
+| GitDiffTableTests | 19 | 0 | 0 |
+| GitDiscardQuestionTests | 2 | 0 | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelAuditTests | 8 | 0 | 0 |
+| GitPanelDiffCaptureTests | 0 | 1 | 0 |
+| GitPanelLayoutTests | 4 | 0 | 0 |
+| GitPanelNarrowParityTests | 8 | 0 | 0 |
+| GitPanelRedrawTests | 4 | 0 | 0 |
+| GitPanelShownTests | 13 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPanelWidthTests | 3 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRenameTests | 6 | 0 | 0 |
+| GitRepositoryPermissionTests | 4 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitSafetyGalleryTests | 1 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 |
+| QuickOpenPlacementTests | 1 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| WebhookExchangeTests | 5 | 0 | 0 |
+| WebhookTests | 18 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+
+#### Large-repository latency
+
+Compared with `origin/dev/next` at `f80e83cbb61866b6d222cc45e9b111aa96037d45`, using the same generated 50,000-file / 20-submodule repository and 25 samples per operation. Each variant rebuilt the same scratch directory from clean products; compiler input lists and source hashes are retained in `round9-final-build-*.json`. Baseline uses the identical benchmark source with its pre-isolation API compile flag. Raw samples: `round9-final-perf-*.log`; measured summaries: `round9-final-performance.json`.
+
+| Variant | Status median / p95 (ms) | Changes median / p95 (ms) | Median change vs baseline (status / Changes) |
+| --- | ---: | ---: | ---: |
+| baseline | 249.788 / 260.985 | 2172.462 / 2222.164 | — |
+| branch | 172.778 / 183.739 | 2078.539 / 2105.712 | -30.83% / -4.32% |
+| branch-repeat | 168.722 / 180.434 | 2022.002 / 2097.959 | -32.45% / -6.93% |
+
+Both branch measurements meet the approximately 5% steady-state budget. The post-merge adversarial sweep rechecked every GitProcessSafety parser and its GitView/FileFinder consumers, including newly merged snapshot paths and display-option ordering. The broad delimiter matrix, positive marker control, mutation replays, full package run, native checks and generated loopback suites are recorded above. No unresolved finding remains from this round.
+
+The benchmark fixture contained **50,021 tracked entries: 50,001 regular files and 20 gitlinks** (`round9-large-fixture-counts.json`). Final implementation and test inputs are committed at `b318a621ae99a9b6abdd6f5333f8e4e3ff19f562`; only this validation record changed after that run began.
+
+Skipped checks are explicit opt-in measurements or captures: three Finder performance tests and the separately executed Git inventory benchmark in the package run; seven helper fixture-generation/performance cases; the native real-repository commit-browsing benchmark and optional diff-pane capture. The helper total, combining the separately run cost class and remaining suite, is **1,162 passed, 7 skipped, 0 failed**.
+
+The enabled `GitSafetyGalleryTests` run passed and regenerated **112 PNGs** in `$B/round9-gallery`. Visually inspected `untrusted-light-1180x780.png`, `untrusted-dark-310x600.png`, `http-redirect-dark-1180x780.png`, `http-redirect-light-310x600.png`, `amend-checked-dark-310x600-sheet.png`, `preflight-failure-light-700x640-sheet.png`, `conflict-light-920x600.png`, and `commit-box-dark-700x640.png`. Trust/redirect notices, file rows, diff presentation and sheet actions remain legible in the sampled light/dark and narrow layouts; narrow notices retain their existing ellipsis behavior. No new visual regression was observed.
+
+Removed only this workstream’s generated large fixture, exported baseline and final default XCTest result bundle after extracting the text/JSON evidence. No Clone directories remain under its native build root. The 112 gallery images, text logs and JSON records are retained; cleanup details are in `$B/logs/round9-cleanup.json`. The validation driver released its own full-lane lock on completion. Other workstreams’ locks and build products were untouched.
