@@ -13,14 +13,14 @@ final class ComposerAttachmentDestinationTests: XCTestCase {
         let storage = PastedImageStorage(root: root)
         let editor = ComposerTextView()
         var origin: [URL] = [], other: [URL] = []
-        let original = NativeComposer(text: "", send: { _ in }, sessionID: "first", attachFiles: { origin += $0 }, pastedImages: storage)
+        let original = NativeComposer(text: "", send: { _ in }, sessionID: "first", attachFiles: { origin += $0.map(\.url) }, pastedImages: storage)
         let coordinator = NativeComposer.Coordinator(original)
         editor.attachFiles = { coordinator.parent.attachFiles?($0) }
         editor.attachmentDestination = {
             coordinator.parent.attachFiles.map { .init(attach: $0, reject: coordinator.parent.inputRejected, storage: coordinator.parent.pastedImages) }
         }
         XCTAssertTrue(editor.pasteAttachments(from: board))
-        coordinator.parent = NativeComposer(text: "", send: { _ in }, sessionID: "second", attachFiles: { other += $0 })
+        coordinator.parent = NativeComposer(text: "", send: { _ in }, sessionID: "second", attachFiles: { other += $0.map(\.url) })
         let deadline = ProcessInfo.processInfo.systemUptime + 5
         while origin.isEmpty && other.isEmpty && ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(for: .milliseconds(5))

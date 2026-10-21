@@ -118,12 +118,40 @@ struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; l
     var finish: () -> Void = {}
 }
 
+/// A file ready to attach. A private PNG converted from a file carries that
+/// file's name for the composer's chip; one from clipboard bytes has none.
+struct PreparedImageFile: Sendable, Equatable {
+    let url: URL; var name: String? = nil
+}
+
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     let id: String; let path: String; let sha256: String; let bytes: Int; let mimeType: String
+    /// What the chip shows for a private copy converted from a file: that
+    /// file's name. Presentation only: saved with drafts, never sent to the
+    /// helper (`wire`), and no part of the record's identity (`==`).
+    var name: String? = nil
     var wire: WireValue { .object(["id": .string(id), "path": .string(path), "sha256": .string(sha256), "bytes": .number(Double(bytes)), "mimeType": .string(mimeType)]) }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.path == rhs.path && lhs.sha256 == rhs.sha256 && lhs.bytes == rhs.bytes && lhs.mimeType == rhs.mimeType
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id); hasher.combine(path); hasher.combine(sha256); hasher.combine(bytes); hasher.combine(mimeType)
+    }
+    /// The helper's own test (`loadImages`): the four formats OpenAI takes,
+    /// by their first 12 bytes.
+    static func mimeType(signature header: Data) -> String? {
+        let header = Data(header.prefix(12))
+        if header.starts(with: [137,80,78,71,13,10,26,10]) { return "image/png" }
+        if header.starts(with: [255,216,255]) { return "image/jpeg" }
+        if ["GIF87a", "GIF89a"].contains(String(decoding: header.prefix(6), as: UTF8.self)) { return "image/gif" }
+        if String(decoding: header.prefix(4), as: UTF8.self) == "RIFF", String(decoding: header.suffix(4), as: UTF8.self) == "WEBP" { return "image/webp" }
+        return nil
+    }
+    /// Every caller prepares the file first (`ComposerTextView.prepareImageFiles`),
+    /// so a refusal here means the file changed after it was prepared.
     static func inspect(_ url: URL) throws -> Self {
         let canonical = url.resolvingSymlinksInPath(), values = try canonical.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .contentModificationDateKey])
-        guard values.isRegularFile == true, let expected = values.fileSize, expected > 0, expected <= 8 * 1024 * 1024 else { throw HostError.failure("Select a regular image file up to 8 MiB") }
+        guard values.isRegularFile == true, let expected = values.fileSize, expected > 0, expected <= 8 * 1024 * 1024 else { throw HostError.failure(changed) }
         let handle = try FileHandle(forReadingFrom: canonical); defer { try? handle.close() }
         var hasher = SHA256(), count = 0, header = Data()
         while let data = try handle.read(upToCount: 65_536), !data.isEmpty {
@@ -132,14 +160,10 @@ struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
         }
         let after = try canonical.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         guard count == expected, after.fileSize == values.fileSize, after.contentModificationDate == values.contentModificationDate else { throw HostError.failure("Image changed; select it again") }
-        let mime: String
-        if header.starts(with: [137,80,78,71,13,10,26,10]) { mime = "image/png" }
-        else if header.starts(with: [255,216,255]) { mime = "image/jpeg" }
-        else if String(decoding: header.prefix(6), as: UTF8.self).hasPrefix("GIF8") { mime = "image/gif" }
-        else if String(decoding: header.prefix(4), as: UTF8.self) == "RIFF" && String(decoding: header.suffix(4), as: UTF8.self) == "WEBP" { mime = "image/webp" }
-        else { throw HostError.failure("Supported image formats are PNG, JPEG, GIF and WebP") }
+        guard let mime = mimeType(signature: header) else { throw HostError.failure(changed) }
         return .init(id: UUID().uuidString, path: canonical.path, sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes: count, mimeType: mime)
     }
+    static let changed = "The image changed while it was being attached. Attach it again."
 }
 extension WorkspaceModel {
     /// Count from paste initiation, before conversion, through inspection and
@@ -194,8 +218,20 @@ extension WorkspaceModel {
         // that is streaming into it.
         if !questions.chooseImageFiles(about: id, { [weak self] urls in
             guard let self, !urls.isEmpty else { return }
-            self.attachImageFiles(urls, sessionID: id)
+            self.importImageFiles(urls, sessionID: id)
         }) { displays[id]?.notice = PiQuestion.busyNotice }
+    }
+    /// Chosen files take the conversion pasted and dropped ones take
+    /// (`ComposerTextView.prepareImageFiles`), off the main thread, counted
+    /// as an import from the choice until the images are inspected.
+    func importImageFiles(_ urls: [URL], sessionID id: String) {
+        guard let view = displays[id], !urls.isEmpty else { return }
+        let importing = beginImageImport(sessionID: id), storage = pastedImages
+        Task { defer { importing.finish() }; do {
+            let prepared = try await Task.detached(priority: .userInitiated) { try ComposerTextView.prepareImageFiles(urls, storage: storage) }.value
+            guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
+            attachImageFiles(prepared, sessionID: id)
+        } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
     }
     /// Images inspected for `view`'s draft. A queued message's rewrite takes
     /// no images: ones that arrive while it is in the composer join the draft
@@ -214,11 +250,11 @@ extension WorkspaceModel {
         // validation and append. The visible queue rewrite has no images of
         // its own; its parked draft still has the same submission limits.
         let existing = view.queueEditingID != nil ? (view.draftBeforeQueueEdit?.attachments ?? []) : view.attachments
-        var room = 16 * 1024 * 1024
-        guard existing.count + items.count <= 4, (existing + items).allSatisfy({ image in
+        var room = SubmissionLimits.imageTotalBytes
+        guard existing.count + items.count <= SubmissionLimits.images, (existing + items).allSatisfy({ image in
             guard image.bytes >= 0, image.bytes <= room else { return false }; room -= image.bytes; return true
         }) else {
-            view.notice = "The images could not be attached: a submission supports four images and 16 MiB in total."
+            view.notice = "The images could not be attached: a submission supports four images and \(SubmissionLimits.imageTotalBytes / 1_048_576) MiB in total."
             // Streaming snapshots replace composer notices; the error strip stays until dismissed.
             error = view.notice
             return false
@@ -229,9 +265,13 @@ extension WorkspaceModel {
         draftChanged(view)
         return true
     }
-    /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
-        guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
+        attachImageFiles(urls.map { PreparedImageFile(url: $0) }, sessionID: sessionID)
+    }
+    /// Shared by the file panel, paste and drag-and-drop, once each has
+    /// prepared its files.
+    func attachImageFiles(_ files: [PreparedImageFile], sessionID: String? = nil) {
+        guard let id = sessionID ?? selectedID, let view = displays[id], !files.isEmpty else { return }
         guard supportsImages(id) else {
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
@@ -239,7 +279,9 @@ extension WorkspaceModel {
         guard importing.isCurrent() else { importing.finish(); return }
         let inspect = attachmentInspect
         Task { defer { importing.finish() }; do {
-            let items = try await Task.detached { try urls.map(inspect) }.value
+            let items = try await Task.detached {
+                try files.map { file in var record = try inspect(file.url); record.name = file.name; return record }
+            }.value
             guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
             receiveAttachments(items, into: view)
         } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }

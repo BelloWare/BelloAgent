@@ -36,7 +36,7 @@ final class ComposerImportSubmissionTests: XCTestCase {
         let view = SessionDisplay(id: chat.id); view.selectionMetadataLoaded = true; view.runState = .running
         view.draft = "Keep this draft"
         let images = (0..<(limitedByCount ? 4 : 2)).map {
-            AttachmentRecord(id: "i\($0)", path: "/fixture/\($0).png", sha256: "h", bytes: limitedByCount ? 10 : 8 * 1024 * 1024, mimeType: "image/png")
+            AttachmentRecord(id: "i\($0)", path: "/fixture/\($0).png", sha256: "h", bytes: limitedByCount ? 10 : 16 * 1024 * 1024, mimeType: "image/png")
         }
         view.attachments = images
         model.profiles = [profile]; model.chats = [chat]; model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view
@@ -50,7 +50,7 @@ final class ComposerImportSubmissionTests: XCTestCase {
         model.attachImageFiles([file], sessionID: chat.id)
         try await eventually("over-limit image import settled") { view.imageImports == 0 }
         let rejection = view.notice
-        XCTAssertTrue(rejection.contains("four images") && rejection.contains("16 MiB"))
+        XCTAssertTrue(rejection.contains("four images") && rejection.contains("32 MiB"))
         XCTAssertEqual(view.attachments, images); XCTAssertEqual(view.draft, "Keep this draft")
         XCTAssertFalse(view.uncertain); XCTAssertNil(view.failureMessage)
 

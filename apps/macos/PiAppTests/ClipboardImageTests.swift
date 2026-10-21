@@ -50,7 +50,7 @@ final class ClipboardImageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         var attached: [URL] = [], rejection: String?
         let field = NativeComposer(text: "Keep this draft", send: { _ in }, inputRejected: { rejection = $0 },
-            attachFiles: { attached += $0 }, pastedImages: .init(root: root)).makeView()
+            attachFiles: { attached += $0.map(\.url) }, pastedImages: .init(root: root)).makeView()
         let editor = try XCTUnwrap(field.documentView as? ComposerTextView)
         let accepted = editor.pasteAttachments(from: board)
         XCTAssertTrue(accepted, label)
@@ -296,7 +296,7 @@ final class ClipboardImageTests: XCTestCase {
         let files = ["a.png", "b.jpg", "notes.txt"].map { root.appendingPathComponent($0) }
         try Self.image().write(to: files[0]); try Self.image(type: .jpeg).write(to: files[1])
         try Data("Generated notes".utf8).write(to: files[2])
-        var received: [URL] = []; editor.attachFiles = { received = $0 }
+        var received: [URL] = []; editor.attachFiles = { received = $0.map(\.url) }
         editor.imageRejected = { XCTFail($0) }
         board.writeObjects(files.map { $0 as NSURL })
         XCTAssertTrue(editor.pasteAttachments(from: board))
@@ -316,12 +316,21 @@ final class ClipboardImageTests: XCTestCase {
         let editor = try XCTUnwrap(composer.field?.documentView as? ComposerTextView)
         let file = root.appendingPathComponent("changed.png"), bytes = try Self.image(type: .tiff)
         try bytes.write(to: file)
-        let board = board(); board.writeObjects([file as NSURL])
-        XCTAssertTrue(editor.pasteAttachments(from: board))
+        // Inspection never converts: a file that is no longer what its
+        // preparation found stays a refusal.
+        model.attachImageFiles([file], sessionID: chat.id)
         try await eventually("file inspection settled") { model.attachmentImports == 0 }
         XCTAssertTrue(session.attachments.isEmpty, "The ordinary file inspector's refusal must remain a refusal")
-        XCTAssertTrue(model.error?.contains("formats") == true)
+        XCTAssertTrue(model.error?.contains("changed") == true, model.error ?? "")
         XCTAssertFalse(FileManager.default.fileExists(atPath: model.pastedImages.directory.path))
+        // Preparation decides by content (0.1.130): the TIFF called .png converts.
+        model.error = nil
+        let board = board(); board.writeObjects([file as NSURL])
+        XCTAssertTrue(editor.pasteAttachments(from: board))
+        try await eventually("file conversion settled") { model.attachmentImports == 0 }
+        XCTAssertNil(model.error)
+        XCTAssertEqual(session.attachments.map(\.mimeType), ["image/png"])
+        XCTAssertNotEqual(session.attachments.first?.path, file.resolvingSymlinksInPath().path, "A private PNG, not the TIFF")
         XCTAssertEqual(try Data(contentsOf: file), bytes)
     }
 
