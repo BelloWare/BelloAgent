@@ -341,7 +341,8 @@ struct GitWatchChanges: Sendable {
 /// on the main actor.
 final class GitIgnoredPaths: @unchecked Sendable {
     private let lock = NSLock()
-    private var directories: [String] = []
+    /// No trailing separator: lookup walks path ancestors, not every directory.
+    private var directories: Set<String> = []
     private var files: Set<String> = []
     private var scanStartedAt: UInt64 = 0
     private var shown: Set<String> = [], shownParents: Set<String> = []
@@ -356,7 +357,7 @@ final class GitIgnoredPaths: @unchecked Sendable {
             if !entry.untracked && entry.indexState == "D" && entry.worktreeState == "." { continue }
             for relative in [entry.path, entry.originalPath].compactMap({ $0 }) where !relative.isEmpty {
                 var path = root + "/" + relative
-                if path.hasSuffix("/") { path.removeLast() }
+                if path.utf8.last == 47 { path = String(decoding: path.utf8.dropLast(), as: UTF8.self) }
                 shown.insert(path)
                 while let slash = path.utf8.lastIndex(of: 47) {
                     path = String(path[..<slash])
@@ -369,9 +370,11 @@ final class GitIgnoredPaths: @unchecked Sendable {
     /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
     func update(root: String, relative: [String], scanStartedAt: UInt64) {
         let root = Self.comparable(root)
-        var directories: [String] = [], files: Set<String> = []
+        var directories: Set<String> = [], files: Set<String> = []
         for entry in relative {
-            if entry.hasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
+            if entry.utf8.last == 47 {
+                directories.insert(root + "/" + String(decoding: entry.utf8.dropLast(), as: UTF8.self))
+            } else { files.insert(root + "/" + entry) }
         }
         lock.lock(); self.directories = directories; self.files = files; self.scanStartedAt = scanStartedAt; lock.unlock()
     }
@@ -381,20 +384,22 @@ final class GitIgnoredPaths: @unchecked Sendable {
         // Rechecks can discard only batches older than the scan's start.
         // A mixed batch uses its newest event, conservatively keeping it all.
         if let receivedAt, receivedAt >= scanStartedAt { return false }
-        let directory = path.hasSuffix("/") ? path : path + "/"
-        guard files.contains(path) || directories.contains(where: { directory.hasPrefix($0) }) else { return false }
-        var ancestor = path.hasSuffix("/") ? String(path.dropLast()) : path
+        var ancestor = path.utf8.last == 47 ? String(decoding: path.utf8.dropLast(), as: UTF8.self) : path
         if shownParents.contains(ancestor) { return false }
+        var covered = files.contains(path)
         while !ancestor.isEmpty {
             if shown.contains(ancestor) { return false }
+            covered = covered || directories.contains(ancestor)
             guard let slash = ancestor.utf8.lastIndex(of: 47) else { break }
             ancestor = String(ancestor[..<slash])
         }
-        return true
+        return covered
     }
     /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
     /// "/private" (the root reads "/var/…") while FSEvents keeps it.
-    static func comparable(_ path: String) -> String { path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path }
+    static func comparable(_ path: String) -> String {
+        path.utf8.starts(with: "/private/".utf8) ? String(decoding: path.utf8.dropFirst("/private".utf8.count), as: UTF8.self) : path
+    }
 }
 
 /// Told when a repository's HEAD, refs or index change — a commit, a

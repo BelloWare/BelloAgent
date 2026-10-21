@@ -4805,3 +4805,236 @@ hashes match the validated post-fix versions, so none of the five mutations
 remains. `git diff --check` passes. Both assigned findings are resolved; the
 separate initial acceptance-filter observation above remains recorded for
 another workstream decision.
+
+## Round 20 — indexed Git ignore rechecks
+
+2026-10-21, based on `615f6de8`. The reported quadratic matching is **confirmed
+and fixed**. Work remains on `dev/a130-gitfiles`; no merge or rebase. The
+production change stays inside `GitIgnoredPaths` in `GitWatcher.swift`, so the
+security branch's separate metadata/discovery prefix work can merge independently.
+No helper/wire or UI rendering changes.
+
+### Failing first and optimized measurements
+
+Added `GitIgnoredPathsTests.testLargeIgnoreRechecksAvoidScanningEveryDirectory`.
+It builds 20,000 synthetic ignored-directory names and a pre-scan batch of
+4,096 paths beneath the last 4,096 directories. Fixture construction is outside
+the measurement. The test measures both `GitWatchChanges.isInteresting` on the
+main actor and the untimestamped `covers` entry point used by the FSEvents queue.
+Every sample verifies that all paths matched, preventing an early miss from
+making a broken matcher look fast.
+
+The regression compares the best of three samples with a linear prefix-scan
+baseline, requiring an eightfold improvement. This deliberately generous
+relative bound avoids a tight wall-clock deadline on a busy test machine.
+Before the fix, both performance assertions failed:
+
+```text
+recheck 0.771929208 s is not less than 0.335406265625 s
+filter  0.767787333 s is not less than 0.335406265625 s
+```
+
+`testDirectoryIndexUsesByteSeparatorsAndPreservesShownAncestors` also failed
+before the fix for `cache/\u{301}item` and the `/private/\u{301}repo` alias.
+A filesystem separator cannot be treated as part of a grapheme cluster.
+Both tests ran against the old product code: **0 passed / 2 failed / 5 assertion
+failures**, exit 1 (`r20-red-optimized.log`).
+
+Initial optimized measurements, same generated fixture and best-of-three rule:
+
+| Matcher | Before | After |
+| --- | ---: | ---: |
+| Queued recheck, 4,096 paths × 20,000 directories | 771.929 ms | 2.402 ms |
+| FSEvents filter entry point, same inputs | 767.787 ms | 2.885 ms |
+| Linear comparison baseline | 2,683.250 ms | 2,679.959 ms |
+
+The initial fixed run passed **2/2**, exit 0 (`r20-green-optimized.log`). The
+recheck is about 321× faster than its prior implementation and well below the
+review's 50 ms reference; the test does not depend on that absolute deadline.
+
+The first plain `swift test -c release --filter GitIgnoredPathsTests` attempt
+failed at compilation before any test ran (`r20-red-release.log`): existing
+`FileDocumentTests.swift:451` and `FileFindTests.swift:191–216` reference
+`pagesEverLoaded` and `matchedColumns`, which are declared only under `DEBUG`
+(`FileDocument.swift:268`, `FileTextView.swift:826`). This is an unrelated,
+pre-existing Release test-target issue and was not changed. Optimized checks
+therefore use Release (`-O`) with `-Xswiftc -DDEBUG` to expose those existing
+test seams. `GitIgnoredPaths` has no `DEBUG` branches; no shipping build setting
+or production feature flag is changed. `r20-compiler-settings.json` verifies
+`-O` for the measured GitView module from SwiftPM's Release build description.
+
+### Minimal change and boundary preservation
+
+- Replace the directory array with a Set whose canonical keys omit the final
+  slash. Index construction remains one pass over the scan result, and the
+  paths and scan-start time still publish together under the existing lock.
+- Match by walking the event path and its ancestors, using byte `0x2f` as the
+  separator. Each level performs indexed lookups instead of scanning 20,000
+  unrelated directories. Exact-file matches remain exact: `exact.log/child`
+  and `exact.log/` do not become matches for an ignored file `exact.log`.
+- Use the same byte boundaries for trailing separators and the `/private`
+  spelling. The component test covers combining marks, prefix siblings,
+  directory events with/without a trailing slash, nested ignored directories,
+  index replacement, and both names of a displayed rename.
+- Keep walking after finding an ignored directory: a displayed ancestor higher
+  in the path still protects the event. An explicit fixture puts a displayed
+  `cache` file above ignored `cache/deep/` and checks the descendant event.
+
+No actor hop or delivery reorder was added. Round-19's scan-start comparison,
+newest-event union, missing/failed scan behavior, displayed-path protection and
+`D.` exclusion remain intact. Discovery, root moves, path-budget overflow and
+empty batches retain their previous behavior.
+
+### Sweep and adversarial review
+
+All event paths already call this shared matcher: the FSEvents filter
+at `GitWatcher.swift:115`, the throttle at `GitWatcher.swift:191`, and the
+controller recheck at `GitController.swift:501`. Full and summary-only ignore
+publications and both displayed-path preservation sites need no changes.
+There is no second directory-array scan left in the matcher. Unrelated
+metadata/root prefix tests elsewhere in `GitWatcher.swift` remain for the
+security branch; this change does not import or duplicate its work.
+
+The changed conditions were reviewed as follows:
+
+- Directory membership becomes true only for a complete ancestor key, preserving
+  component boundaries and excluding names such as `cache-other`.
+- The coverage flag may become true at any ancestor, but cannot short-circuit
+  displayed-path checks above it. A shown descendant is still caught by
+  `shownParents` before the walk; a shown path at/above the event is still caught
+  during it. Paths not covered by any ignore return false as before.
+- Byte comparisons additionally accept valid filesystem separators followed by
+  combining characters; the failing-first fixtures document that intended fix.
+- The timestamp and staged-deletion branches are unchanged. Existing round-19
+  tests remain the guard for those states.
+
+Round-19's separate initial acceptance-filter observation remains outside this
+performance fix: replacing an already-cached ignored directory with a regular
+file can still be filtered before a queue sees it. It is not claimed as fixed.
+
+### Commands and evidence
+
+All evidence is under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/evidence`.
+Generated homes and fixture inputs only; no installed app, real preferences,
+chats, credentials, Keychain or live/paid provider calls. The existing build
+root and package scratch path are reused. `xcodegen generate --quiet` ran after
+adding the package test file.
+
+```sh
+BUILD_A130_GITFILES=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r20-red-optimized \
+  swift test --package-path packages/bello-views \
+  --scratch-path "$BUILD_A130_GITFILES/views-verify" \
+  -c release -Xswiftc -DDEBUG --filter GitIgnoredPathsTests
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r20-green-optimized \
+  swift test --package-path packages/bello-views \
+  --scratch-path "$BUILD_A130_GITFILES/views-verify" \
+  -c release -Xswiftc -DDEBUG --filter GitIgnoredPathsTests
+python3 "$BUILD_A130_GITFILES/evidence/run-home-review.py" r20-finish \
+  python3 "$BUILD_A130_GITFILES/evidence/r20-finish.py"
+```
+
+The final driver mutation-checks the implementation, reruns the optimized
+fixture, then runs the complete package suite:
+
+```sh
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles/views-verify
+```
+
+It acquires the shared full-lane lock as `a130-gitfiles r20 pid=…` for each native
+class alone and the stress run, releasing only its own lock in `finally`:
+
+```sh
+for cls in GitWorkingTreeWatcherTests SessionPanelTests SubagentPanelTests \
+  GitPathBoundaryTests GitRepositorySwitchTests GitPanelShownTests \
+  GitBranchesInteractionTests ChangesTabFrameTests ChangesTabTests \
+  GitPanelTimingTests GitIntegratedHistoryTests FileBlameTests; do
+  PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-gitfiles \
+    scripts/test-macos.sh -parallel-testing-enabled NO \
+    "-only-testing:PiAppTests/$cls"
+done
+```
+
+The same twenty stress selectors listed in round 19 run with
+`-parallel-testing-enabled NO -test-iterations 30`; no selector or assertion in
+`GitWorkingTreeWatcherTests` changed in this round. Exact argv and counts are
+retained in `r20-native-counts.json`.
+
+### Mutation checks
+
+Each mutation is applied alone and restored in `finally`. These are optimized
+fixture runs using the same Release/test-seam flags described above:
+
+| Mutation | Failing method | Result |
+| --- | --- | --- |
+| Replace Set membership with a linear `contains(where:)` scan | `testLargeIgnoreRechecksAvoidScanningEveryDirectory` | 1 failed, exit 1 |
+| Split ancestors by Character `/` instead of byte `0x2f` | `testDirectoryIndexUsesByteSeparatorsAndPreservesShownAncestors` | 1 failed, exit 1 |
+| Restore Character-prefix matching for `/private/` | `testDirectoryIndexUsesByteSeparatorsAndPreservesShownAncestors` | 1 failed, exit 1 |
+| Return immediately on an ignored ancestor, before checking higher shown paths | `testDirectoryIndexUsesByteSeparatorsAndPreservesShownAncestors` | 1 failed, exit 1 |
+
+Evidence: `r20-mutation-*.log`, `r20-mutation-counts.json`. After restoration,
+the optimized fixture passed **2/2**, with a 2.945 ms recheck and 2.939 ms filter
+against the 2,673.019 ms linear baseline (`r20-final-optimized.log`, exit 0).
+Source hashes match the unmutated versions of the matcher, package fixture,
+native watcher fixture and controller (`r20-validated-sources.json`).
+
+### Validation results
+
+Complete package suite (`r20-views.log`, exit 0):
+
+| Target | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| FileViewTests | 100 | 0 | 0 |
+| FileFinderTests | 38 | 0 | 3 |
+| GitViewTests | 206 | 0 | 0 |
+| **Total** | **344** | **0** | **3** |
+
+The three skips are the existing opt-in finder performance cases requiring
+`FINDER_PERF=1`. The invocation took 613.77 seconds (XCTest: 610.36 seconds).
+The new scaling test took 30.378 seconds in Debug, mostly the intentional linear
+baseline: 9,737.402 ms best-of-three versus 9.740 ms for the indexed recheck and
+9.965 ms for the indexed filter. The optimized numbers above remain the Release
+performance evidence. Counts are in `r20-views-counts.json`.
+
+Focused native classes, each alone with parallel testing disabled and the
+shared lock held (`r20-green-<Class>.log`, every invocation exit 0):
+
+| Class | Passed | Failed | Invocation seconds |
+| --- | ---: | ---: | ---: |
+| GitWorkingTreeWatcherTests | 43 | 0 | 112.17 |
+| SessionPanelTests | 29 | 0 | 36.05 |
+| SubagentPanelTests | 8 | 0 | 4.31 |
+| GitPathBoundaryTests | 5 | 0 | 25.99 |
+| GitRepositorySwitchTests | 17 | 0 | 102.80 |
+| GitPanelShownTests | 13 | 0 | 33.85 |
+| GitBranchesInteractionTests | 20 | 0 | 96.05 |
+| ChangesTabFrameTests | 8 | 0 | 72.59 |
+| ChangesTabTests | 9 | 0 | 14.78 |
+| GitPanelTimingTests | 4 | 0 | 11.99 |
+| GitIntegratedHistoryTests | 10 | 0 | 45.68 |
+| FileBlameTests | 10 | 0 | 25.08 |
+| **Total** | **176** | **0** | **581.34** |
+
+No native skips or unrelated native failures. Times include incremental builds
+and test-host startup.
+
+The unchanged twenty-method watcher stress selection passed **600/600**, zero
+failures or skips: every method passed all 30 repetitions, including
+`testWritesIntoAnIgnoredFolderCauseNoRefresh` (**30/30** real-FSEvents runs).
+The stress invocation took 1,262.79 seconds; `r20-stress.log` and
+`r20-stress-counts.json` retain the evidence. This covers the scan-start,
+displayed-path, staged-deletion, summary-only and discovery cases together
+with the original ignored-folder guarantee.
+
+Final checks verified all four validated source hashes, all four caught and
+restored mutations, and the exact 20 × 30 stress counts. The shared lock was
+released in `finally`; no automatic `.xcresult` bundle, clone directory or
+generated review home remains in this build root (`r20-final-checks.json`).
+The complete new diff was adversarially reviewed again: directory membership
+cannot bypass a higher displayed ancestor, timestamp and `D.` conditions are
+unchanged, and no actor or delivery ordering changed. `git diff --check`
+passes. The assigned performance finding is resolved; the existing Release
+test-target build issue and separate initial acceptance-filter observation
+above remain recorded and outside this change.

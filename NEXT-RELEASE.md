@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Git ignore filtering indexes directories and walks byte-delimited path ancestors, keeping large queued batches off the quadratic scan path. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-20--indexed-git-ignore-rechecks).
 - [x] Queued Git events survive ignore scans that started before those events; uncertain batches keep their follow-up refresh. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
 - [x] Reconciled staged deletions no longer keep refreshing Changes for writes to ignored, untracked working copies. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
 - [x] Floating-panel Git discovery survives ignore rechecks; summary-only refreshes preserve displayed paths and coalesce new ignored folders. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-18--integrate-floating-panel-git-watchers).
