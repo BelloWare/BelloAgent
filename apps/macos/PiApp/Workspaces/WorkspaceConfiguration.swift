@@ -405,7 +405,7 @@ extension WorkspaceModel {
         // and a new connection that reused the id would open on its models.
         modelCatalog.invalidate(profileID: id)
         if profileChoice == id { profileChoice = profiles.first?.id ?? "" }
-        for item in affected { displays[item.id]?.notice = "This chat's connection was deleted. Choose another connection to continue." }
+        for item in affected { displays[item.id]?.notice = Self.connectionDeletedNotice }
     }
     /// Vault outcomes, for `log show --predicate 'subsystem == "com.belloware.PiApp"'` when a report says nothing changed.
     private static let vaultLog = Logger(subsystem: "com.belloware.PiApp", category: "vault")

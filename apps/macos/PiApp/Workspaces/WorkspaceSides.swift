@@ -144,51 +144,25 @@ extension WorkspaceModel {
         view.historyState = .empty; view.selectionMetadataLoaded = true
         var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + SideRecord.titleSuffix, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
-        if question.isEmpty {
-            // Nothing is created until the first message: no intent, journal or helper session.
-            info.pending = true; sides[parentID] = info
-            displays[id] = view
+        // Nothing is created until the first message: no intent, journal or helper session.
+        info.pending = true; sides[parentID] = info
+        displays[id] = view
+        guard !question.isEmpty else {
             if selectedID == parentID { focusedSessionID = id }
             view.composerFocusRequest += 1
             return
         }
-        sides[parentID] = info
-        displays[id] = view; view.loading = true; view.draft = question
-        let outputUse = beginToolOutputUse(.sidePublication)
-        Task {
-            defer { finishToolOutputUse(outputUse) }
-            do {
-                try await prepareToolOutputUse(outputUse)
-                try await publishPendingSide(info, view: view)
-                // This flag was set here, for the side's creation; the send
-                // below sets its own.
-                view.loading = false
-                view.draft = question; send(sessionID: id)
-            } catch {
-                view.loading = false; view.notice = error.localizedDescription
-                // Unwind the in-memory side for every failure, not only an
-                // explicit rejection. A side left half-open can be neither
-                // closed nor kept, and while it exists the app refuses to quit
-                // and blocks every update. The saved side-keep intent still
-                // lets a side the host did publish be recovered on restart.
-                // Only this side: a lost host may already have put another
-                // in its place holding what was typed here.
-                guard !view.draftVersion.hasUnsavedConflict else { self.error = error.localizedDescription; return }
-                let replaced = sides[parentID].map { $0.id != id } ?? false
-                if !replaced { sides.removeValue(forKey: parentID) }
-                displays.removeValue(forKey: id)
-                if !replaced, let original = displays[parentID] {
-                    if let recovery = draftWrites.recoveries[parentID] { await recovery.value }
-                    original.draft += (original.draft.isEmpty ? "" : "\n\n") + question; original.directCommand = false; draftChanged(original)
-                }
-                self.error = error.localizedDescription; updateHostActivity(workspaceID: parent.workspaceID)
-            }
-        }
+        // `/side <question>` took the question out of the parent composer: it
+        // is this side's first message. Sending it as one captures it now and
+        // records it as its own input before parent opening or publication
+        // can wait, so a failure or a crash leaves it recoverable from the
+        // parent, as for any first message of a side.
+        view.draft = question; send(sessionID: id)
     }
     /// Creates the side on the helper: the recovery intent and draft, the
     /// parent's context snapshot as a durable child session, and its capture
-    /// preference. Called when a side with a question opens, and when a
-    /// pending side sends its first message.
+    /// preference. Called when a pending side sends its first message,
+    /// including a question given with `/side`.
     /// A first send has its own input record before parent opening can wait.
     /// The side's draft remains only the current composer, including typing
     /// entered after Return emptied it.

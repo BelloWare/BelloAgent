@@ -42,6 +42,16 @@ extension WorkspaceModel {
             resumeTasks[id]?.task.cancel()
         }
     }
+    /// Archive retires a pending family Resume at the click, as Stop does,
+    /// when it would act on the archived chat: its root, or any side under
+    /// it. Restore does not revive it; only a new Resume continues the family.
+    /// A chat's own Resume keeps the archive revision it was accepted with.
+    func retireFamilyResume(for item: ChatRecord) {
+        let root = budgetOwner(for: item).id
+        guard resumeTasks[root]?.family == true else { return }
+        resumeStopRevisions[root, default: 0] += 1
+        resumeTasks[root]?.task.cancel()
+    }
 
     /// Resume in the focused chat (the Conversation menu), or `sessionID`'s
     /// (its paused row, its queue panel). One at a time per chat: a press
@@ -86,6 +96,10 @@ extension WorkspaceModel {
         // The family resumes from its root: an archived main chat is not
         // restarted from one of its sides; it is restored first.
         guard !root.isArchived else { displays[item.id]?.notice = Self.archivedNotice; return }
+        // Archive authority as of this click, for the root and for members
+        // only its helper names later: an Archive since, even one Restore
+        // undid, refuses that chat's continue.
+        let archived = archiveRevisions
         latestVersion(sessionID: item.id)
         var views: [SessionDisplay] = []
         for view in [displays[root.id], displays[item.id]] { if let view, !views.contains(where: { $0 === view }) { views.append(view) } }
@@ -100,7 +114,8 @@ extension WorkspaceModel {
             guard (try? requireResume(preparation)) != nil else { return }
             var members = read.members
             if read.paused || isCostPaused(root.id) {
-                if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id, preparation: preparation) {
+                if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id,
+                                                   archiveRevision: archived[root.id, default: 0], preparation: preparation) {
                     members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? members
                 } else if read.members.isEmpty && root.id == item.id { return }
             }
@@ -117,7 +132,7 @@ extension WorkspaceModel {
             for id in order {
                 guard (try? requireResume(preparation)) != nil else { return }
                 guard let member = record(id), !member.isArchived, member.workspaceID == root.workspaceID else { continue }
-                _ = await performResume(member, view: displays[id], member: true, preparation: preparation)
+                _ = await performResume(member, view: displays[id], member: true, archiveRevision: archived[id, default: 0], preparation: preparation)
             }
         }
         resumeTasks[root.id] = (task, true)

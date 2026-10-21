@@ -701,6 +701,67 @@ import XCTest
         XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id], "Stop must retire the side fan-out after an accepted root request")
     }
 
+    /// A cost-paused family's Resume admitted before Archive stays retired
+    /// after Restore, whether the root or a paused side was archived while
+    /// the root's helper reopened: only a new Resume continues the family.
+    func testArchiveAndRestoreDuringRootOpeningRetireAFamilyResume() async throws {
+        for archivingSide in [false, true] {
+            let (model, view, wire) = try await fixture()
+            view.runState = .paused; view.runStateKnown = true; view.costPaused = true
+            let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: wire.root.appendingPathComponent("side_side.jsonl").path, profileID: "p", parentSessionID: view.id)
+            model.chats.append(side); try await model.store?.put(side, kind: "chat", id: side.id)
+            wire.pausedMembers = [side.id]
+            wire.heldMethod = "session.open"; wire.heldSessionID = view.id
+            model.resumeRun(sessionID: view.id)
+            try await eventually("root opening held") { wire.held != nil }
+            let archived = archivingSide ? side.id : view.id
+            _ = try await model.enqueueOrganization([archived], change: .archived(true)).value
+            XCTAssertTrue(model.record(archived)?.isArchived == true)
+            _ = try await model.enqueueOrganization([archived], change: .archived(false)).value
+            XCTAssertTrue(model.record(archived)?.isArchived == false)
+            wire.release()
+            try await eventually("family Resume retired") { !view.resuming && model.resumeTasks[view.id] == nil }
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.count, 0,
+                           "Archive retired the family Resume; Restore must not revive it (\(archivingSide ? "side" : "root") archived)")
+            let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(view.id)")
+            XCTAssertTrue(intents?.isEmpty == true)
+            // A new click resumes the restored family as usual.
+            model.resumeRun(sessionID: view.id)
+            try await eventually("fresh family Resume finished") { !view.resuming && model.resumeTasks[view.id] == nil }
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id, side.id])
+        }
+    }
+
+    /// A member the archive cannot place in the family (its parent side is
+    /// saved but not loaded until the root opens) is still held to the
+    /// archive authority the family Resume captured: Archive and Restore
+    /// before its turn refuse its continue, while the root, untouched, resumes.
+    func testFamilyResumeKeepsItsArchiveAuthorityForMembersOutsideTheLoadedFamily() async throws {
+        let (model, view, wire) = try await fixture()
+        view.runState = .paused; view.runStateKnown = true; view.costPaused = true
+        let middle = ChatRecord(id: "middle", workspaceID: "w", title: "Middle", path: wire.root.appendingPathComponent("side_middle.jsonl").path, profileID: "p", parentSessionID: view.id)
+        let nested = ChatRecord(id: "nested", workspaceID: "w", title: "Nested", path: wire.root.appendingPathComponent("side_nested.jsonl").path, profileID: "p", parentSessionID: middle.id)
+        try await model.store?.put(middle, kind: "chat", id: middle.id)
+        model.chats.append(nested); try await model.store?.put(nested, kind: "chat", id: nested.id)
+        wire.pausedMembers = [nested.id]
+        wire.heldMethod = "session.open"; wire.heldSessionID = view.id
+        XCTAssertEqual(model.budgetOwner(for: nested).id, nested.id, "Until the root opens, the archive cannot name this member's family")
+        model.resumeRun(sessionID: view.id)
+        // Archived in the same turn as the click, before the root's opening loads the middle side.
+        let archive = model.enqueueOrganization([nested.id], change: .archived(true))
+        try await eventually("root opening held") { wire.held != nil }
+        _ = try await archive.value
+        _ = try await model.enqueueOrganization([nested.id], change: .archived(false)).value
+        XCTAssertTrue(model.record(nested.id)?.isArchived == false)
+        wire.release()
+        try await eventually("family Resume finished") { !view.resuming && model.resumeTasks[view.id] == nil }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id],
+                       "The member archived after the click is refused its continue")
+        let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(nested.id)")
+        XCTAssertTrue(intents?.isEmpty == true)
+    }
+
     func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
         try await stopAfterResumePreflight(queued: false)
     }

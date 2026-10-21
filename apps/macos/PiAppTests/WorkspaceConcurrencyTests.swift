@@ -22,6 +22,16 @@ private final class DelayedConcurrencyVault: VaultStorage, @unchecked Sendable {
     func replace(expected: Data?, with replacement: Data) throws { try storage.replace(expected: expected, with: replacement) }
 }
 
+/// Holds the metadata store's actor while encoded, so later writes queue.
+private struct ConcurrencyStoreBarrier: Encodable, Sendable {
+    let entered: DispatchSemaphore
+    let released: DispatchSemaphore
+    func encode(to encoder: Encoder) throws {
+        entered.signal(); released.wait()
+        var value = encoder.singleValueContainer(); try value.encode(true)
+    }
+}
+
 @MainActor private final class ConcurrencyHeartbeat {
     private(set) var samples = 0
     private(set) var maximumGap = 0.0
@@ -339,6 +349,125 @@ final class WorkspaceConcurrencyTests: XCTestCase {
         let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
         XCTAssertEqual(snapshot["profileId"], .string(chat.profileID))
         XCTAssertTrue(model.opened.contains(chat.id))
+    }
+
+    /// The destination is deleted in Settings while the switch waits for its
+    /// catalog, which finishes during the deletion or is cancelled by it.
+    /// Nothing is closed, rebound or published for a deleted connection: the
+    /// chat stays where it was, says why, and still opens there.
+    @MainActor func testAConnectionDeletedWhileItsCatalogLoadsIsNeverSwitchedTo() async throws {
+        for finishing in [true, false] {
+            let storage = DelayedConcurrencyVault(), model = try await fixture(count: 1, storage: storage)
+            let chat = try XCTUnwrap(model.chats.first), view = try XCTUnwrap(model.displays[chat.id])
+            let requested = DispatchSemaphore(value: 0), reply = DispatchSemaphore(value: 0)
+            let catalog = try ModelListGateway { _ in
+                requested.signal(); reply.wait()
+                return .json(#"[{"id":"router"},{"id":"second-router"}]"#)
+            }
+            defer { reply.signal(); catalog.stop() }
+            var doomed = ProfileRecord(); doomed.id = "doomed-connection"; doomed.name = "Doomed"
+            doomed.baseUrl = "http://127.0.0.1:9/v1"; doomed.modelId = "router"; doomed.catalogUrl = try await catalog.start() + "/catalog"
+            try await model.saveProfile(doomed, key: "synthetic-doomed-key")
+            await model.setModel("router", for: chat.id)
+            XCTAssertNil(model.error)
+            _ = try await model.open(chat)
+            XCTAssertNotNil(model.record(chat.id)?.path)
+            var steps: [String] = []
+            model.connectionSwitchSteps = { steps.append($0) }
+            let switching = Task { await model.setConnection(doomed.id, for: chat.id) }
+            try await eventually("The switch waits for the destination's catalog") { requested.wait(timeout: .now()) == .success }
+            if finishing {
+                let held = expectation(description: "The deletion is writing the vault")
+                storage.holdNextRead(held)
+                let deleting = Task { try await model.deleteProfile(doomed.id) }
+                await fulfillment(of: [held], timeout: 5)
+                XCTAssertTrue(model.deletingProfiles.contains(doomed.id))
+                XCTAssertTrue(model.profiles.contains { $0.id == doomed.id }, "The listing finishes while the deletion is still writing")
+                reply.signal()
+                await switching.value
+                storage.resume.signal()
+                try await deleting.value
+            } else {
+                try await model.deleteProfile(doomed.id)
+                reply.signal()
+                await switching.value
+            }
+            XCTAssertEqual(steps, [], "A deleted destination is never closed toward, rebound or published (\(finishing ? "finished" : "cancelled") listing)")
+            XCTAssertEqual(model.record(chat.id)?.profileID, chat.profileID)
+            XCTAssertNil(model.record(chat.id)?.journalRebind)
+            let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: chat.id)
+            XCTAssertEqual(stored?.profileID, chat.profileID); XCTAssertNil(stored?.journalRebind); XCTAssertEqual(stored?.model, "router")
+            XCTAssertFalse(view.notice.contains("Next turn uses"), "No success notice for a connection that is gone")
+            XCTAssertEqual(model.error, "That connection was deleted before this chat could switch to it. The chat stays on its current connection.")
+            XCTAssertTrue(model.opened.contains(chat.id), "Its session on its own connection stays open")
+            let host = try? await model.open(try XCTUnwrap(model.record(chat.id)))
+            XCTAssertNotNil(host, "The chat still opens on its own connection")
+            if let host {
+                let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
+                XCTAssertEqual(snapshot["profileId"], .string(chat.profileID))
+            }
+        }
+    }
+
+    /// The destination is deleted at a later step of the switch. Before the
+    /// journal moves, nothing moves; after it moved, it is bound back at once,
+    /// or by the next open once the move was confirmed. A deletion that begins
+    /// during the final record write did not count the chat as its own: the
+    /// chat then reads as any chat of a deleted connection, never "Next turn uses".
+    @MainActor func testADeletionAtEachSwitchStepIsNeverAnnouncedAsTheChatsConnection() async throws {
+        for step in ["closed", "rebound", "metadata", "published"] {
+            let model = try await fixture(count: 1)
+            let chat = try XCTUnwrap(model.chats.first), view = try XCTUnwrap(model.displays[chat.id])
+            let doomed = try await secondConnection(model, id: "doomed-connection")
+            _ = try await model.open(chat)
+            XCTAssertNotNil(model.record(chat.id)?.path)
+            let store = try XCTUnwrap(model.store)
+            let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+            let holding: () -> Bool = { entered.wait(timeout: .now()) == .success }
+            defer { released.signal() }
+            var steps: [String] = [], barrier: Task<Void, Error>?, queued = false
+            model.connectionSwitchSteps = { name in
+                steps.append(name)
+                if name == step { try await model.deleteProfile(doomed.id) }
+                if step == "published", name == "metadata" {
+                    // The record's write queues behind this until the deletion begins.
+                    barrier = Task { try await store.put(ConcurrencyStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+                    while !holding() { try await Task.sleep(for: .milliseconds(5)) }
+                    // Returning, the switch passes its last check and suspends
+                    // in the record's write before anything else can run.
+                    queued = true
+                }
+            }
+            let switching = Task { await model.setConnection(doomed.id, for: chat.id) }
+            if step == "published" {
+                try await eventually("The final write is queued") { queued }
+                let deleting = Task { try await model.deleteProfile(doomed.id) }
+                try await eventually("The deletion began") { model.deletingProfiles.contains(doomed.id) || !model.profiles.contains { $0.id == doomed.id } }
+                released.signal(); try await barrier?.value
+                await switching.value
+                try await deleting.value
+            } else { await switching.value }
+            XCTAssertFalse(view.notice.contains("Next turn uses"), "No success notice for a deleted connection (\(step))")
+            let stored = try await store.get(ChatRecord.self, kind: "chat", id: chat.id)
+            if step == "published" {
+                XCTAssertEqual(steps, ["closed", "marked", "rebound", "metadata"])
+                XCTAssertNil(model.error)
+                XCTAssertEqual(model.record(chat.id)?.profileID, doomed.id); XCTAssertEqual(stored?.profileID, doomed.id)
+                XCTAssertEqual(view.notice, "This chat's connection was deleted. Choose another connection to continue.")
+                continue
+            }
+            let reached = ["closed": ["closed"], "rebound": ["closed", "marked", "rebound"], "metadata": ["closed", "marked", "rebound", "metadata"]]
+            XCTAssertEqual(steps, reached[step], "The switch stops at the first check after the deletion (\(step))")
+            XCTAssertEqual(model.error, "That connection was deleted before this chat could switch to it. The chat stays on its current connection.", step)
+            XCTAssertEqual(model.record(chat.id)?.profileID, chat.profileID, step); XCTAssertEqual(stored?.profileID, chat.profileID, step)
+            // Bound back at once, or marked for the next open to bind back.
+            XCTAssertEqual(model.record(chat.id)?.journalRebind, step == "metadata" ? true : nil, step)
+            XCTAssertEqual(stored?.journalRebind, step == "metadata" ? true : nil, step)
+            let host = try await model.open(try XCTUnwrap(model.record(chat.id)))
+            let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
+            XCTAssertEqual(snapshot["profileId"], .string(chat.profileID), step)
+            XCTAssertNil(model.record(chat.id)?.journalRebind, step)
+        }
     }
 
     @MainActor func testTwentyBackgroundAccountingBurstsUpdateTotalsWithoutRewritingHiddenTranscripts() async throws {
