@@ -60,10 +60,12 @@ extension WorkspaceModel {
         if case .archived(true) = change { archiving = targets.filter { record($0)?.isSubagent == false } }
         else { archiving = [] }
         // Retire preparation at the click, before discovery or persistence
-        // yields. A later Restore cannot revive that accepted work.
+        // yields. A later Restore cannot revive that accepted work, including
+        // a family Resume that would act on the archived chat.
         for id in archiving {
             archiveRevisions[id, default: 0] += 1
             archivingSessions[id, default: 0] += 1
+            if let item = record(id) { retireFamilyResume(for: item) }
         }
         let task = organizationScheduler.enqueue(ids: Set(targets)) { [self] in
             defer {

@@ -350,14 +350,23 @@ extension WorkspaceModel {
     func continueAfterCostLimit(_ id: String) {
         guard !installPreparing, let item = record(id), !costReading(for: id).held else { return }
         guard !item.isArchived else { displays[id]?.notice = Self.archivedNotice; return }
+        // One click admits one continuation, shared with Retry: both send
+        // `turn.retry`, and a repeat while it is on its way sends nothing.
+        guard let oneShot = Self.runActionKey("turn.retry", id), runActionsInFlight.insert(oneShot).inserted else { return }
+        // Archive authority as of this click, as for Send and Resume: an
+        // Archive since, even one Restore undid, retires the continuation.
+        let archiveRevision = archiveRevisions[id, default: 0]
         Task {
+            defer { runActionsInFlight.remove(oneShot) }
             do {
                 let lease = try connectionLease(for: item)
                 let host = try await open(item)
                 try requireConnection(lease)
                 guard !costReading(for:id).held else { return }
+                try requireUnarchived(id, revision: archiveRevision)
                 do { _ = try await host.request("turn.retry", sessionID: id, params: turnOverrides(for: item)) }
                 catch HostError.rejected(let code, _) where code == "nothing_to_retry" {
+                    try requireUnarchived(id, revision: archiveRevision)
                     _ = try await host.request("queue.resume", sessionID: id)
                 }
                 refresh(id)

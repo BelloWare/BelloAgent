@@ -17,6 +17,11 @@ extension WorkspaceModel {
     var connectionChanged: HostError {
         .rejected("connection_changed", "This chat's connection changed while this was starting. Try again.")
     }
+    /// An open that would put another file in place of the journal the chat
+    /// is registered with (`open`): refused, never written over.
+    var journalChanged: HostError {
+        .rejected("journal_changed", "This chat's saved conversation changed while this was starting. Try again.")
+    }
     func connectionLease(for item: ChatRecord) throws -> ConnectionLease {
         let lease = ConnectionLease(profileID: item.profileID, deletionGeneration: profileDeletionGenerations[item.profileID, default: 0],
                                     chatID: item.id, chatGeneration: connectionGenerations[item.id, default: 0])
@@ -405,7 +410,7 @@ extension WorkspaceModel {
         // and a new connection that reused the id would open on its models.
         modelCatalog.invalidate(profileID: id)
         if profileChoice == id { profileChoice = profiles.first?.id ?? "" }
-        for item in affected { displays[item.id]?.notice = "This chat's connection was deleted. Choose another connection to continue." }
+        for item in affected { displays[item.id]?.notice = Self.connectionDeletedNotice }
     }
     /// Vault outcomes, for `log show --predicate 'subsystem == "com.belloware.PiApp"'` when a report says nothing changed.
     private static let vaultLog = Logger(subsystem: "com.belloware.PiApp", category: "vault")
