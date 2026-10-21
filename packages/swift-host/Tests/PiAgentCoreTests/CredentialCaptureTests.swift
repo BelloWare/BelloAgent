@@ -659,4 +659,141 @@ server.serve_forever()
         let emptyBody = try await traces.command("debug.body", session: "empty", params: ["attemptId": JSON(empty), "body": "response"])
         XCTAssertEqual(emptyBody["state"].text, "complete"); XCTAssertEqual(emptyBody["captureBytes"].int, 0)
     }
+
+    /// Whether `value`'s bytes hold `key`'s. String matching cannot be the
+    /// check: it misses a key ending inside a grapheme cluster.
+    private func holds(_ value: JSON, _ key: String) -> Bool { Data(value.encoded().utf8).range(of: Data(key.utf8)) != nil }
+    private func holds(_ value: Data, _ key: String) -> Bool { value.range(of: Data(key.utf8)) != nil }
+
+    /// "=" followed by a combining mark, ZWJ or variation selector is one Swift
+    /// Character, so String matching does not find "sk-fixture-secret=" in an
+    /// echoed "sk-fixture-secret=\u{301}"; the byte masker does. A generated
+    /// gateway echoes the key as its reported model in raw and escaped JSON,
+    /// streamed and not: no metadata, identity, packet or body keeps its bytes.
+    @MainActor func testGatewayModelEchoEndingInsideAGraphemeClusterIsMaskedInEveryCaptureSurface() async throws {
+        let source = #"""
+import http.server, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+class Gateway(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        key = self.headers['Authorization'].removeprefix('Bearer ')
+        kind, encoding, mark = self.path.split('/')[1].split('-')
+        echo = key + chr(int(mark, 16))
+        def encoded(value): return json.dumps(value, ensure_ascii=encoding == 'escaped').encode()
+        message = {'type':'message','id':'m1','role':'assistant','status':'completed','content':[{'type':'output_text','text':'Done.'}]}
+        final = {'id':'r1','object':'response','model':echo,'router_model_name':echo,'status':'completed','output':[message],'usage':{'input_tokens':10,'output_tokens':2}}
+        if kind == 'json':
+            body, media = encoded(final), 'application/json'
+        else:
+            events = [{'type':'response.created','response':{'id':'r1','model':echo,'router_model_name':echo,'status':'in_progress','output':[]}},
+                      {'type':'response.output_item.added','output_index':0,'item':{'type':'message','id':'m1','role':'assistant','content':[]}},
+                      {'type':'response.output_text.delta','output_index':0,'item_id':'m1','content_index':0,'delta':'Done.'},
+                      {'type':'response.output_item.done','output_index':0,'item':message},
+                      {'type':'response.completed','response':final}]
+            body, media = b''.join(b'data: ' + encoded(event) + b'\n\n' for event in events), 'text/event-stream'
+        self.send_response(200); self.send_header('Content-Type', media); self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body); self.wfile.flush()
+server = http.server.HTTPServer(('127.0.0.1', 0), Gateway)
+(root / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (root / 'ready.tmp').replace(root / 'ready.json')
+server.serve_forever()
+"""#
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try await PythonGateway.start(source: source, root: root); defer { gateway.stop() }
+        let key = "sk-fixture-secret="
+        for kind in ["sse", "json"] { for encoding in ["raw", "escaped"] { for mark in ["0301", "200D", "FE0F"] { for mode in ["memory", "persist"] {
+            let label = "\(kind), \(encoding), U+\(mark), \(mode)"
+            let packets = CredentialPackets(), traces = TraceStore { await packets.append($0) }
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            var raw = try fixtureProfile().raw
+            raw["baseUrl"] = JSON("http://127.0.0.1:\(gateway.port)/\(kind)-\(encoding)-\(mark)/v1")
+            let reply = try await ProviderClient(traces: traces).complete(profile: Profile(raw), apiKey: key, messages: [ChatMessage(role: "user", content: [textBlock("fixture")])], instructions: "fixture", tools: [], sessionID: "s", turnID: "t", purpose: "turn", onDelta: { _ in })
+            XCTAssertEqual(reply.message.text, "Done.", label)
+            // The journal keeps the reply's provider identity.
+            let identity = try XCTUnwrap(reply.message.providerIdentity, label)
+            XCTAssertFalse(holds(identity, key), label)
+            XCTAssertEqual(identity["status"].text, "incomplete", "A credential echo is omitted evidence, never a model: \(label)")
+            XCTAssertTrue(identity["effectiveModel"].isNull, label)
+            await traces.delivered()
+            let latest = await traces.latest("s"), id = try XCTUnwrap(latest["attemptId"].text, label)
+            let list = try await traces.command("debug.list", session: "s", params: [:])
+            let attempt = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])
+            let routing = await traces.identity(id), monitoring = await traces.monitoring(id)
+            for (name, value) in [("latest", latest), ("debug.list", list), ("debug.attempt", attempt), ("identity", routing), ("monitoring", monitoring)] {
+                XCTAssertFalse(holds(value, key), "\(name): \(label)")
+            }
+            XCTAssertEqual(attempt["identity"], identity, label)
+            let emitted = await packets.values
+            for packet in emitted { XCTAssertFalse(holds(packet, key), "\(packet["type"].text ?? ""): \(label)") }
+            var bodies: [Data] = []
+            if mode == "persist" {
+                XCTAssertTrue(emitted.contains { $0["type"].text == "finish" }, label)
+                for body in ["request", "response"] {
+                    bodies.append(emitted.filter { $0["type"].text == "bytes" && $0["body"].text == body }.reduce(into: Data()) { $0.append(Data(base64Encoded: $1["bytes"].text ?? "") ?? Data()) })
+                }
+            } else {
+                for body in ["request", "response"] {
+                    let page = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(id), "body": JSON(body)])
+                    XCTAssertTrue(page["next"].isNull, label)
+                    bodies.append(try XCTUnwrap(Data(base64Encoded: page["bytes"].text ?? ""), label))
+                }
+                let events = try await traces.command("debug.raw-events", session: "s", params: ["attemptId": JSON(id)])
+                XCTAssertFalse(holds(events, key), label)
+            }
+            XCTAssertFalse(bodies[1].isEmpty, label)
+            for body in bodies { XCTAssertFalse(holds(body, key), label) }
+            XCTAssertGreaterThan(attempt["response"]["credentialRedactions"].int ?? 0, 0, "The byte masker already found the echo: \(label)")
+        } } } }
+    }
+
+    /// The same echoes reach the metadata sanitizer from headers and usage.
+    func testMetadataSanitizersFindCredentialsEndingInsideAGraphemeCluster() {
+        let key = "sk-fixture-secret="
+        let credentials = CaptureCredentials(headers: ["Authorization": "Bearer " + key], configuredNames: [])
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let echo = key + mark
+            XCTAssertTrue(credentials.contains(echo), "U+\(String(mark.unicodeScalars.first!.value, radix: 16))")
+            XCTAssertEqual(credentials.metadataText("model " + echo), CaptureCredentials.fingerprint("model " + echo))
+            XCTAssertFalse(holds(credentials.metadata(.object(["raw": .object(["message": JSON(echo)]), echo: "value"]), includingKeys: true), key))
+            XCTAssertEqual(credentials.responseHeaders(["x-request-id": echo], metadataHeaders: [])["x-request-id"].text, "********")
+            var identity = RoutingIdentity(profile: try! fixtureProfile())
+            identity.head(["x-litellm-model-name": echo], excluding: credentials.contains)
+            identity.body(["model": JSON(echo), "router_model_name": JSON(echo)], streaming: false, excluding: credentials.contains)
+            XCTAssertEqual(identity.json["omittedEvidence"].int, 3); XCTAssertTrue(identity.json["evidence"].list.isEmpty)
+            XCTAssertFalse(holds(identity.captured(credentials), key))
+        }
+        // Canonically equivalent spellings stay matched, as before.
+        let accented = CaptureCredentials(headers: ["x-api-key": "caf\u{E9}-secret"], configuredNames: [])
+        XCTAssertTrue(accented.contains("cafe\u{0301}-secret"))
+        XCTAssertFalse(accented.contains("cafe-secret"))
+    }
+
+    /// A key that begins with a combining mark joins the scheme's space into
+    /// one Character; the scheme still ends at that space byte, so the bare
+    /// key is what bodies, echoes and metadata are checked for.
+    func testAuthorizationSchemeEndsAtItsSpaceByteBeforeACombiningMark() {
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let key = mark + "sk-fixture-secret", headers = ["Authorization": "Bearer " + key]
+            let credentials = CaptureCredentials(headers: headers, configuredNames: [])
+            XCTAssertEqual(credentials.requestHeaders(headers)["authorization"].text, "Bearer ********cret")
+            let body = credentials.requestBody(Data(("{\"echo\":\"" + key + "\"}").utf8))
+            XCTAssertEqual(body.replacements, 1); XCTAssertFalse(holds(body.bytes, key))
+            var masker = CaptureCredentials.ResponseMasker(credentials)
+            let response = masker.feed(Data(("data: {\"echo\":\"" + key + "\"}\n\n").utf8), final: true)
+            XCTAssertEqual(masker.replacements, 1); XCTAssertFalse(holds(response, key))
+            XCTAssertTrue(credentials.contains("echo: " + key))
+            XCTAssertEqual(headers["Authorization"], "Bearer " + key, "Wire headers remain unchanged")
+        }
+    }
+
+    /// A header name part after "-" can begin with a combining mark; the
+    /// sensitive part before it is still a part.
+    func testSensitiveHeaderNamePartsEndAtHyphenBytes() {
+        let privacy = CaptureCredentials(headers: [:], configuredNames: [])
+        for name in ["x-secret-\u{0301}v", "x-auth-\u{200D}id", "x-token-\u{FE0F}"] {
+            XCTAssertEqual(privacy.responseHeaders([name: "gateway-private-value"], metadataHeaders: [])[name].text, "********", name)
+        }
+        XCTAssertEqual(privacy.responseHeaders(["x-provider-\u{0301}build": "v1"], metadataHeaders: [])["x-provider-\u{0301}build"].text, "v1")
+    }
 }

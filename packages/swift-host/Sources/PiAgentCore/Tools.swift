@@ -331,7 +331,9 @@ private struct FileToolContext: Sendable {
     func path(_ value: JSON, optional: Bool = false, existing: Bool = false) throws -> URL {
         if value.isNull && optional { return cwd }
         let text=try required(value,"path")
-        if text.hasPrefix("/") || text.hasPrefix("~") { return canonical(text) }
+        // A leading "/" byte is absolute even when the first name begins with
+        // a combining mark, which `hasPrefix("/")` does not see as "/".
+        if text.utf8.first == UInt8(ascii: "/") || text.hasPrefix("~") { return canonical(text) }
         let primary=canonical(cwd.appendingPathComponent(text).path)
         guard existing, roots.count > 1, !FileManager.default.fileExists(atPath:primary.path) else { return primary }
         let elsewhere=roots.dropFirst().map { canonical($0.appendingPathComponent(text).path) }.filter { FileManager.default.fileExists(atPath:$0.path) }
@@ -437,9 +439,13 @@ private struct FileToolContext: Sendable {
             var hits: [String]=[]
             let options: NSRegularExpression.Options = p["ignoreCase"].flag == true ? [.caseInsensitive] : []
             let expression = call.name == "grep" ? try NSRegularExpression(pattern:p["literal"].flag == true ? NSRegularExpression.escapedPattern(for:pattern) : pattern,options:options) : nil
+            // The enumerator names files below the root's real path: with the
+            // "/private" `canonical` drops from /var and /tmp, and the names'
+            // on-disk Unicode form. Relative paths are cut from it as bytes.
+            let enumerated = realpath(root.path, nil).map { real in defer { free(real) }; return String(cString: real) }
             for file in candidates.sorted(by:{$0.path < $1.path}) {
                 try cancellation.checkCancellation()
-                let relative=within(file,root) && file != root ? String(file.path.dropFirst(root.path.count+1)) : file.lastPathComponent
+                let relative=file != root ? enumerated.flatMap { relativePath(file.path,in:$0) } ?? relativePath(file.path,in:root.path) ?? file.lastPathComponent : file.lastPathComponent
                 if call.name == "find" {
                     if fnmatch(pattern,relative,0) == 0 || fnmatch(pattern,file.lastPathComponent,0) == 0 { hits.append(relative) }
                 } else if (try? file.resourceValues(forKeys:[.isDirectoryKey]).isDirectory) != true {

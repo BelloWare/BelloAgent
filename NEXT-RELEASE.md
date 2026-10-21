@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] GRAPHEME-1: Capture finds configured credentials as bytes, so a gateway echo ending inside a grapheme cluster (the key, then a combining mark, ZWJ or variation selector) no longer survives in routing evidence, the effective model, journals or capture packets; Authorization schemes and sensitive header names split at bytes. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-1--confirmed-and-fixed-credential-boundary).
+- [x] GRAPHEME-3: Untrusted projects keep names that begin with a combining mark, ZWJ or variation selector: reply links, the canonical opener (chat links, Quick Open, Files panel) and history, blame, recents and Show Change compare canonical paths as bytes. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-3--confirmed-and-fixed-trust-boundary).
+- [x] GRAPHEME-6: Helper grep/find name files below their root exactly, including such names and roots under /var or /tmp; a "/" before a combining mark starts an absolute path. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-6--confirmed-and-fixed-helper-search-paths).
+
 - [x] Standalone-file test classes install their own project resolver and restore the previous callback. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-14--native-fixture-hook-ownership).
 - [x] Native-sheet test fixtures isolate and restore the shared question hooks.
 - [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.

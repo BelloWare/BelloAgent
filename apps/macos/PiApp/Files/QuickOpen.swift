@@ -370,9 +370,9 @@ import FileFinder
             // Recreate it so a deleted/replaced file is checked on every show.
             let current = URL(fileURLWithPath: key)
             guard key == url.standardizedFileURL.path,
-                  let root = roots.first(where: { key.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }),
+                  let root = roots.first(where: { CanonicalPath.isBelow(key, $0) }),
                   (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
-            let relative = String(key.dropFirst(root.count + (root.hasSuffix("/") ? 0 : 1)))
+            let relative = CanonicalPath.relative(key, in: root) ?? ""
             let rootName = project.roots.count > 1 ? URL(fileURLWithPath: root).lastPathComponent : nil
             return Self.row(key: key, url: URL(fileURLWithPath: key), relative: relative, highlights: [], rootName: rootName)
         }

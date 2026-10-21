@@ -25,13 +25,14 @@ actor ReplyFileResolver {
             line = number; path = String(path[..<colon])
         }
         path = (path as NSString).expandingTildeInPath
-        let candidates = path.hasPrefix("/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
+        // A leading "/" byte is absolute, also before a combining mark.
+        let candidates = path.utf8.first == UInt8(ascii: "/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
         let projects = context.projects.map { (path: URL(fileURLWithPath: $0.path).standardizedFileURL.resolvingSymlinksInPath().path, trusted: $0.trusted) }
         var location: ReplyFileLocation?
         for candidate in candidates {
             let url = URL(fileURLWithPath: candidate).standardizedFileURL.resolvingSymlinksInPath()
-            let owner = projects.filter { url.path.hasPrefix($0.path.hasSuffix("/") ? $0.path : $0.path + "/") }
-                .max { $0.path.count < $1.path.count }
+            let owner = projects.filter { CanonicalPath.isBelow(url.path, $0.path) }
+                .max { $0.path.utf8.count < $1.path.utf8.count }
             guard owner?.trusted == true else { continue }
             fileChecks += 1
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
