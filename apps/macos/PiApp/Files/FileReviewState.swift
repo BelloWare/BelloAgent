@@ -75,10 +75,7 @@ extension WorkspaceModel {
                 let current = URL(fileURLWithPath: url.path)
                 return current.resolvingSymlinksInPath().path == url.path &&
                 (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true &&
-                roots.contains { root in
-                    let path = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-                    return url.path.gitIsWithin(path)
-                }
+                roots.contains { root in CanonicalPath.isBelow(url.path, URL(fileURLWithPath: root).resolvingSymlinksInPath().path) }
             }.value
             guard !Task.isCancelled else { return }
             guard eligible else { return }
@@ -93,17 +90,18 @@ extension WorkspaceModel {
                 guard let top, current.resolvingSymlinksInPath().path == url.path,
                       (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
                 let resolvedTop = URL(fileURLWithPath: top).resolvingSymlinksInPath().path
-                guard url.path.gitIsWithin(resolvedTop) else { return nil }
+                guard let relative = CanonicalPath.relative(url.path, in: resolvedTop), !relative.isEmpty else { return nil }
                 let folder = roots.first { root in
                     let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-                    return url.path.gitIsWithin(resolved) && (resolved.gitIsWithin(resolvedTop) || resolvedTop.gitIsWithin(resolved))
+                    return CanonicalPath.isBelow(url.path, resolved) &&
+                        (CanonicalPath.isWithin(resolved, resolvedTop) || CanonicalPath.isBelow(resolvedTop, resolved))
                 }
                 return folder.map { folder in
                     let resolved = URL(fileURLWithPath: folder).resolvingSymlinksInPath().path
                     // A nested repository must be read at its own root, not
                     // silently routed to an enclosing project's repository.
-                    let queryFolder = resolvedTop.gitHasPrefix(resolved == "/" ? "/" : resolved + "/") ? top : folder
-                    return (queryFolder, url.path.gitDropFirst(resolvedTop.utf8.count + (resolvedTop == "/" ? 0 : 1)))
+                    let queryFolder = CanonicalPath.isBelow(resolvedTop, resolved) ? top : folder
+                    return (queryFolder, relative)
                 }
             }.value
             guard !Task.isCancelled, let self, !self.isShutDown, let tab, tab.readable,

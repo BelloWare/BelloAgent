@@ -78,7 +78,7 @@ final class TranscriptSurfaceMarker: NSView {
     private var liveKey: LiveKey?
 
     private var subscriptions: [AnyCancellable] = []
-    private var sessionSubscription: AnyCancellable?
+    private var sessionSubscription: AnyCancellable?, contentSubscription: AnyCancellable?
     private var refreshPending = false
     private var boundSession: ObjectIdentifier?
     private var boundGeneration: UUID?
@@ -155,6 +155,12 @@ final class TranscriptSurfaceMarker: NSView {
         if self.session !== session {
             self.session = session
             sessionSubscription = session.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }
+            // What the conversation presents changed — a token, a row, its
+            // tasks: an open find counts its query again once that settles.
+            contentSubscription = session.presentationChanges.dropFirst().sink { [weak self] _ in
+                guard let self, self.findBar != nil else { return }
+                self.find.contentChanged()
+            }
         }
         self.state = state; self.actions = actions; self.environment = environment; self.reduceMotion = reduceMotion
         refresh()

@@ -115,10 +115,9 @@ import GitProcessSafety
             // yet that is committed is read again.
             self.watchRepository(top)
             let resolvedTop = URL(fileURLWithPath: top).resolvingSymlinksInPath().path
-            guard url.path.gitIsWithin(resolvedTop) else {
+            guard let relative = CanonicalPath.relative(url.path, in: resolvedTop), !relative.isEmpty else {
                 self.finish(token, .unavailable("This file is outside its repository's working tree.")); return
             }
-            let relative = url.path.gitDropFirst(resolvedTop.utf8.count + (resolvedTop == "/" ? 0 : 1))
             guard let bytes = await document.snapshot(limit: GitService.blameByteLimit) else {
                 // Changed since it was read: the reload reads it again.
                 guard token == self.token else { return }

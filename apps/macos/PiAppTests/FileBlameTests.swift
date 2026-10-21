@@ -357,6 +357,45 @@ final class FileBlameTests: XCTestCase {
         XCTAssertFalse(tab.hasDocument, "and nothing reopened")
     }
 
+    /// A name that begins with a combining mark joins the "/" before it into
+    /// one Character, but the file is in its repository's working tree.
+    @MainActor func testAFileWhoseNameBeginsWithACombiningMarkIsInItsWorkingTree() async throws {
+        let (model, root) = try await model()
+        try git(["init", "-q", "-b", "main"], in: root)
+        let url = root.appendingPathComponent("\u{0301}marked.txt")
+        try "generated marked line\n".write(to: url, atomically: true, encoding: .utf8)
+        try git(["add", "--", url.lastPathComponent], in: root); try git(["commit", "-q", "-m", "Marked name"], in: root, author: "Ada")
+        let (window, hosted) = window(model)
+        let tab = model.openFile(url)
+        hosted.layoutSubtreeIfNeeded()
+        try await eventually("the text shown and read", timeout: .seconds(60)) { tab.focusView?.window === window && tab.status == .ready }
+        tab.blame.toggle()
+        try await eventually("blame settled", timeout: .seconds(60)) { tab.blame.state != .reading }
+        XCTAssertNotEqual(tab.blame.state, .unavailable("This file is outside its repository's working tree."))
+    }
+
+    /// A project folder inside its repository whose name begins with a
+    /// combining mark is still one of the project's folders for its history.
+    @MainActor func testShowChangeFindsAProjectFolderWhoseNameBeginsWithACombiningMark() async throws {
+        let (model, root) = try await model()
+        try git(["init", "-q", "-b", "main"], in: root)
+        let folder = root.appendingPathComponent("\u{0301}app"), url = folder.appendingPathComponent("file.txt")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "generated line\n".write(to: url, atomically: true, encoding: .utf8)
+        try git(["add", "--", folder.lastPathComponent + "/file.txt"], in: root); try git(["commit", "-q", "-m", "Marked folder"], in: root, author: "Ada")
+        let commit = try git(["rev-parse", "HEAD"], in: root)
+        let project = try XCTUnwrap(model.workspaces.firstIndex { $0.id == "w" })
+        model.workspaces[project].path = folder.path
+        let tab = model.openFile(url)
+        XCTAssertEqual(tab.projectID, "w"); XCTAssertTrue(tab.readable)
+        model.error = nil
+        model.showHistoricalChange(from: tab, target: GitHistoryTarget(commit: commit, path: "\u{0301}app/file.txt", line: 1), repository: root.path)
+        XCTAssertNil(model.error)
+        let changes = try XCTUnwrap(model.tabs.tab(kind: ChangesTab.kind, key: "w") as? ChangesTab)
+        XCTAssertEqual(changes.controller.root, folder.path)
+        changes.navigation?.cancel()
+    }
+
     /// The text the diff table has selected, if any.
     @MainActor private func selectedDiffText(in view: NSView) -> String? {
         func tables(_ view: NSView) -> [GitDiffTableView] { ((view as? GitDiffTableView).map { [$0] } ?? []) + view.subviews.flatMap { tables($0) } }

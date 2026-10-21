@@ -57,6 +57,34 @@ final class ReplyFileLinkTests: XCTestCase {
         XCTAssertNil(revoked)
     }
 
+    /// A "/" followed by a combining mark, ZWJ or variation selector is one
+    /// Swift Character with it, but the filesystem still finds the folder: the
+    /// untrusted nested project holds such names, and a leading "/" before
+    /// one still begins an absolute path.
+    @MainActor func testNestedTrustHoldsNamesThatBeginWithACombiningMark() async throws {
+        let root = try files(), resolver = ReplyFileResolver()
+        let nested = root.appendingPathComponent("private")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let trusted = ReplyFileResolver.Context(roots: [root.path], projects: [.init(path: root.path, trusted: true)])
+        let protected = ReplyFileResolver.Context(roots: [root.path], projects: trusted.projects + [.init(path: nested.path, trusted: false)])
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let label = "U+" + String(mark.unicodeScalars.first!.value, radix: 16), name = mark + "secret.swift"
+            let secret = nested.appendingPathComponent(name)
+            try Data("secret".utf8).write(to: secret)
+            let open = await resolver.resolve("private/" + name, in: trusted)
+            XCTAssertEqual(open.map { Array($0.path.utf8) }, Array(secret.resolvingSymlinksInPath().path.utf8), "positive control: \(label)")
+            for text in ["private/" + name, "private/" + name + ":1", secret.path] {
+                let refused = await resolver.resolve(text, in: protected)
+                XCTAssertNil(refused, "\(label): \(text)")
+            }
+            // "/" then the mark names the filesystem root's entry, not one
+            // in the chat's project.
+            try Data("project copy".utf8).write(to: root.appendingPathComponent(name))
+            let absolute = await resolver.resolve("/" + name, in: trusted)
+            XCTAssertNil(absolute, label)
+        }
+    }
+
     @MainActor func testOnlyCodeSpansBecomeFileLinksAndClickRevalidatesThem() async throws {
         let (surface, window) = MarkdownTextSurfaceTests.surface("Use `a.swift:2`; a.swift:2 in prose. `missing.swift`.")
         window.isReleasedWhenClosed = false

@@ -320,6 +320,56 @@ final class FileReviewStateTests: XCTestCase {
         XCTAssertTrue(try fixture.url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true)
     }
 
+    /// A name that begins with a combining mark, ZWJ or variation selector
+    /// joins the "/" before it into one Character. History still reads the
+    /// project's repository and asks for the file by its exact name; a nested
+    /// repository whose folder begins with one is read at its own root.
+    @MainActor func testHistoryFindsNamesThatBeginWithACombiningMark() async throws {
+        let fixture = try FileReviewProjectFixture()
+        defer { fixture.close() }
+        let model = fixture.model
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let label = "U+" + String(mark.unicodeScalars.first!.value, radix: 16)
+            let file = fixture.repo.appendingPathComponent(mark + "Marked.swift"), nested = fixture.repo.appendingPathComponent(mark + "Nested")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try "generated marked fixture\n".write(to: file, atomically: true, encoding: .utf8)
+            try "generated nested fixture\n".write(to: nested.appendingPathComponent("Inner.swift"), atomically: true, encoding: .utf8)
+            for (url, top, path) in [(file, fixture.repo, mark + "Marked.swift"), (nested.appendingPathComponent("Inner.swift"), nested, "Inner.swift")] {
+                var repositoryReads = 0
+                model.fileReviewNavigation.repositoryRoot = { _ in repositoryReads += 1; return top.path }
+                let tab = model.openFile(url)
+                model.showFileHistory(from: tab); await tab.historyTask?.value
+                XCTAssertEqual(repositoryReads, 1, "\(label): \(path)")
+                let changes = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab, "\(label): \(path)")
+                XCTAssertEqual(Array((changes.controller.logFilter.path ?? "").utf8), Array(path.utf8), label)
+                XCTAssertEqual(changes.controller.root, top.path, "\(label): \(path)")
+                model.tabs.close(tab)
+            }
+        }
+    }
+
+    /// Recent files whose names begin with a combining mark, ZWJ or variation
+    /// selector are still in their project's folder, named from it exactly.
+    @MainActor func testRecentsKeepNamesThatBeginWithACombiningMark() async throws {
+        let fixture = try FileReviewFixture()
+        defer { fixture.close() }
+        let quick = QuickOpen()
+        var expected = Set<[UInt8]>()
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let folder = fixture.root.appendingPathComponent(mark + "Folder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            for url in [fixture.root.appendingPathComponent(mark + "Recent.swift"), folder.appendingPathComponent("Inner.swift")] {
+                try "generated recent fixture\n".write(to: url, atomically: true, encoding: .utf8)
+                quick.noteOpened(url.resolvingSymlinksInPath(), projectID: "p")
+            }
+            expected.insert(Array((mark + "Recent.swift").utf8)); expected.insert(Array((mark + "Folder/Inner.swift").utf8))
+        }
+        quick.show(.init(id: "p", name: "Fixture", roots: [fixture.root.path], trusted: true), in: nil)
+        defer { quick.close(restoringFocus: false) }
+        try await eventually("validated") { quick.answered == "" }
+        XCTAssertEqual(Set(quick.rows.map { Array(($0.folder.isEmpty ? $0.name : $0.folder + "/" + $0.name).utf8) }), expected)
+    }
+
     @MainActor func testAnOlderRecentValidationCannotReplaceANewerFileQuery() async throws {
         let fixture = try FileReviewFixture()
         defer { fixture.close() }

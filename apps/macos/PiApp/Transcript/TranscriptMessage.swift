@@ -241,11 +241,15 @@ struct ToolResultRecord: Sendable, Equatable {
         }
     }
     /// The record as it sits in a journal's message row, or nil when the row
-    /// is not a tool result or names no call.
+    /// is not a tool result or names no call. Its output is what the live
+    /// card showed: the display text the helper recorded beside a result
+    /// with images (each image's description after any text), else the
+    /// result's text.
     static func of(_ message: [String: WireValue]) -> (call: String, record: ToolResultRecord)? {
         guard message["role"]?.string == "toolResult", let call = message["toolCallId"]?.string else { return nil }
         let blocks = message["content"]?.array ?? []
-        let output = message["content"]?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
+        let output = message["nativeDisplayText"]?.string ?? message["content"]?.string
+            ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
         let stats = message["nativeToolStats"]?.object ?? [:]
         func whole(_ value: WireValue?) -> Int? { value?.number.flatMap { Int(exactly: $0) } }
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,

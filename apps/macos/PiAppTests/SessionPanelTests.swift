@@ -71,12 +71,13 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: view).first { $0.accessibilityIdentifier() == id })
     }
 
-    @MainActor private func untrustedFileLinked(from root: URL, model: WorkspaceModel) throws -> (link: URL, target: URL) {
+    @MainActor private func untrustedFileLinked(from root: URL, model: WorkspaceModel, name: String = "secret.swift",
+                                                link linkName: String = "linked.swift", project: String = "private") throws -> (link: URL, target: URL) {
         let other = try repository("panel-private")
         addTeardownBlock { try? FileManager.default.removeItem(at: other) }
-        let target = other.appendingPathComponent("secret.swift"), link = root.appendingPathComponent("linked.swift")
+        let target = other.appendingPathComponent(name), link = root.appendingPathComponent(linkName)
         try "Generated private content\n".write(to: target, atomically: true, encoding: .utf8)
-        model.workspaces.append(WorkspaceRecord(id: "private", path: other.path, trusted: false))
+        model.workspaces.append(WorkspaceRecord(id: project, path: other.path, trusted: false))
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
         return (link, target)
     }
@@ -496,6 +497,50 @@ final class SessionPanelTests: GitPanelTestCase, SerialTestLane {
         }
         XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertFalse(try XCTUnwrap(model.workspace(for: "private")).trusted)
+    }
+
+    /// A target name that begins with a combining mark or ZWJ joins the "/"
+    /// before it into one Character; its untrusted project still holds it,
+    /// rather than leaving it outside every project and readable.
+    @MainActor func testFilesSymlinkToANameThatBeginsWithACombiningMarkKeepsTheDestinationsTrust() async throws {
+        let (model, pane, window, root) = try fixture()
+        let links = try ["\u{0301}", "\u{200D}"].enumerated().map { index, mark in
+            try untrustedFileLinked(from: root, model: model, name: mark + "secret.swift", link: "linked-\(index).swift", project: "private-\(index)")
+        }
+        pane.sessionPanel.select(.files)
+        let files = try XCTUnwrap(pane.sessionPanel.files), browser = files.browser
+        try await eventually("Files lists the symlinks") { links.allSatisfy { link in browser.rows.contains { $0.url == link.link } } }
+        for (index, (link, target)) in links.enumerated() {
+            for route in ["pointer", "keyboard", "accessibility"] {
+                let label = "\(index), \(route)"
+                pane.layoutSubtreeIfNeeded()
+                let table = files.tree.table
+                let row = try XCTUnwrap(browser.rows.firstIndex { $0.url == link })
+                switch route {
+                case "pointer":
+                    let rect = table.rect(ofRow: row)
+                    let point = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+                    let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 1, clickCount: 1, pressure: 1))
+                    table.mouseDown(with: event)
+                case "keyboard":
+                    browser.select(link); XCTAssertTrue(files.tree.navigate(keyCode: 36))
+                default:
+                    let cell = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true))
+                    XCTAssertTrue(cell.accessibilityPerformPress())
+                }
+                let tab = try XCTUnwrap(model.tabs.pane.activeTab as? FileTab, label)
+                XCTAssertEqual(Array(tab.key.utf8), Array(FileTab.key(for: target).utf8), label)
+                XCTAssertEqual(tab.projectID, "private-\(index)", label)
+                XCTAssertEqual(tab.project, .untrusted(name: target.deletingLastPathComponent().lastPathComponent), label)
+                XCTAssertNotNil(tab.missingReason, label)
+                XCTAssertFalse(tab.readable, label); XCTAssertNil(tab.document, label)
+                model.tabs.close(tab)
+            }
+        }
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertTrue(model.workspaces.filter { $0.id.hasPrefix("private-") }.allSatisfy { !$0.trusted })
     }
 
     @MainActor func testDiffFileMenuResolvesSymlinkDestinationTrust() async throws {

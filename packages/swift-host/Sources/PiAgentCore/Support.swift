@@ -78,7 +78,23 @@ private final class ISOTime: @unchecked Sendable {
 }
 
 func canonical(_ path: String) -> URL { URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath() }
-func within(_ path: URL, _ root: URL) -> Bool { path.path == root.path || path.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/") }
+/// Whether `path` is `root` or inside it. The separator is found as a "/"
+/// byte, as the filesystem finds it: a "/" before a combining mark, ZWJ or
+/// variation selector is one Character with it, which `hasPrefix` does not
+/// see. The Character comparison still accepts a canonically equivalent
+/// spelling of `root`.
+func within(_ path: URL, _ root: URL) -> Bool {
+    relativePath(path.path, in: root.path) != nil || path.path == root.path || path.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/")
+}
+/// `path` below `root` ("" for `root` itself), or nil outside it: cut as
+/// UTF-8 bytes after the "/" byte, so every byte of the names below stays.
+func relativePath(_ path: String, in root: String) -> String? {
+    let path = Array(path.utf8), root = Array(root.utf8)
+    if path == root { return "" }
+    let base = root.last == UInt8(ascii: "/") ? root : root + [UInt8(ascii: "/")]
+    guard path.starts(with: base) else { return nil }
+    return String(decoding: path[base.count...], as: UTF8.self)
+}
 func readBounded(_ url: URL, maximum: Int) throws -> Data {
     // Nonblocking open and fstat reject FIFOs/devices without hanging discovery.
     let fd=open(url.path,O_RDONLY|O_NONBLOCK|O_CLOEXEC)

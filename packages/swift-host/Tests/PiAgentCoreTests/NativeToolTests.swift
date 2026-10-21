@@ -368,3 +368,72 @@ extension NativeToolTests {
         XCTAssertEqual(try String(contentsOf:external,encoding:.utf8),"outside")
     }
 }
+
+/// A "/" followed by a combining mark, ZWJ or variation selector is one Swift
+/// Character, but the filesystem still sees the separator.
+extension NativeToolTests {
+    private static let marks = ["\u{0301}", "\u{200D}", "\u{FE0F}"]
+    private static func label(_ mark: String) -> String { "U+" + String(mark.unicodeScalars.first!.value, radix: 16) }
+
+    /// The fixture root is under /var, which the enumerator names /private/var,
+    /// so a plain directory is checked beside the marked ones.
+    @MainActor func testSearchResultsNameFilesBelowDirectoriesThatBeginWithACombiningMark() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))
+        try Data("other\n".utf8).write(to:root.appendingPathComponent("a.txt"))
+        for mark in [""] + Self.marks {
+            let label = mark.isEmpty ? "plain" : Self.label(mark), directory = mark + "dir", relative = directory + "/a.txt"
+            try FileManager.default.createDirectory(at:root.appendingPathComponent(directory),withIntermediateDirectories:true)
+            try Data(("needle " + label + "\n").utf8).write(to:root.appendingPathComponent(relative))
+            for path in [root.path, "."] {
+                let grep = try await tools.invoke(ToolCall(id:"g",name:"grep",arguments:["pattern":JSON("needle " + label),"path":JSON(path),"literal":true]),readOnly:true)
+                let hit = try XCTUnwrap(grep["content"].list.first?["text"].text?.components(separatedBy:"\n").first, label)
+                XCTAssertEqual(Array(hit.utf8), Array((relative + ":1: needle " + label).utf8), "\(label), \(path)")
+                // The path grep returned reads the file it found, not "a.txt".
+                let returned = String(hit[..<(hit.range(of:":1: ",options:.literal)?.lowerBound ?? hit.endIndex)])
+                let read = try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":JSON(returned)]),readOnly:true)
+                XCTAssertEqual(read["content"].list.first?["text"].text, "needle " + label + "\n", "\(label), \(path)")
+                for pattern in ["*a.txt", directory + "/*.txt"] {
+                    let find = try await tools.invoke(ToolCall(id:"f",name:"find",arguments:["pattern":JSON(pattern),"path":JSON(path)]),readOnly:true)
+                    let rows = (find["content"].list.first?["text"].text ?? "").components(separatedBy:"\n").map { Array($0.utf8) }
+                    XCTAssertTrue(rows.contains(Array(relative.utf8)), "\(label), \(path), \(pattern): \(rows.map { String(decoding:$0,as:UTF8.self) })")
+                }
+            }
+        }
+    }
+
+    @MainActor func testAnAbsolutePathWhoseFirstNameBeginsWithACombiningMarkIsNotReadFromTheWorkspace() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))
+        for mark in Self.marks {
+            let name = mark + "grapheme-absolute-fixture-" + UUID().uuidString + ".txt"
+            try Data("workspace copy\n".utf8).write(to:root.appendingPathComponent(name))
+            XCTAssertFalse(FileManager.default.fileExists(atPath:"/" + name))
+            do {
+                let read = try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":JSON("/" + name)]),readOnly:true)
+                XCTFail("\(Self.label(mark)): read the workspace's \(name) for /\(name): \(read)")
+            } catch let error as AgentError {
+                XCTAssertEqual(error.code, "file_unavailable", Self.label(mark))
+                XCTAssertEqual(Array(error.message.utf8), Array(("Cannot open /" + name).utf8), Self.label(mark))
+            }
+        }
+    }
+
+    func testPathContainmentComparesBytesAtTheSeparator() throws {
+        let root = URL(fileURLWithPath:"/proj")
+        for mark in Self.marks {
+            let file = URL(fileURLWithPath:"/proj/" + mark + "dir/a.txt")
+            XCTAssertTrue(within(file,root), Self.label(mark))
+            XCTAssertEqual(relativePath(file.path,in:root.path).map { Array($0.utf8) }, Array((mark + "dir/a.txt").utf8), Self.label(mark))
+            XCTAssertFalse(within(URL(fileURLWithPath:"/proj" + mark + "/a.txt"),root), Self.label(mark))
+            XCTAssertNil(relativePath("/proj" + mark + "/a.txt",in:"/proj"), Self.label(mark))
+        }
+        XCTAssertTrue(within(root,root)); XCTAssertEqual(relativePath("/proj",in:"/proj"), "")
+        XCTAssertFalse(within(URL(fileURLWithPath:"/project/a.txt"),root)); XCTAssertFalse(within(URL(fileURLWithPath:"/pro"),root))
+        XCTAssertEqual(relativePath("/etc/hosts",in:"/"), "etc/hosts")
+        // A canonically equivalent spelling of the root stays inside it.
+        let composed = try XCTUnwrap(URL(string:"file:///p/caf%C3%A9")), decomposed = try XCTUnwrap(URL(string:"file:///p/cafe%CC%81/a.txt"))
+        XCTAssertNotEqual(Array(composed.path.utf8), Array(decomposed.deletingLastPathComponent().path.utf8))
+        XCTAssertTrue(within(decomposed,composed))
+    }
+}

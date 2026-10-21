@@ -26,12 +26,13 @@ actor ReplyFileResolver {
             line = number; path = String(path[..<colon])
         }
         path = (path as NSString).expandingTildeInPath
-        let candidates = path.gitHasPrefix("/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
+        // A leading "/" byte is absolute, also before a combining mark.
+        let candidates = path.utf8.first == UInt8(ascii: "/") ? [path] : context.roots.map { ($0 as NSString).appendingPathComponent(path) }
         let projects = context.projects.map { (path: URL(fileURLWithPath: $0.path).standardizedFileURL.resolvingSymlinksInPath().path, trusted: $0.trusted) }
         var location: ReplyFileLocation?
         for candidate in candidates {
             let url = URL(fileURLWithPath: candidate).standardizedFileURL.resolvingSymlinksInPath()
-            let owners = projects.filter { url.path.gitIsWithin($0.path) }
+            let owners = projects.filter { CanonicalPath.isWithin(url.path, $0.path) }
             guard let longest = owners.map({ $0.path.utf8.count }).max(),
                   owners.filter({ $0.path.utf8.count == longest }).allSatisfy(\.trusted) else { continue }
             fileChecks += 1

@@ -26,7 +26,7 @@ extension WorkspaceModel {
         // The project's folder this repository is in, or that is in it.
         guard let folder = project.roots.first(where: { root in
             let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
-            return resolved.gitIsWithin(top) || top.gitIsWithin(resolved)
+            return CanonicalPath.isWithin(resolved, top) || CanonicalPath.isBelow(top, resolved)
         }) else {
             error = "This file's repository is not one of \(project.name)'s folders."; return
         }

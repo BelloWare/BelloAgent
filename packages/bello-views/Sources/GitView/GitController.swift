@@ -311,17 +311,18 @@ import AppKit
     private var historyReading = 0
     /// Watches the working tree so a file saved in an editor or a commit made
     /// in a terminal appears without the reader pressing Refresh.
-    private var watcher: GitWorkingTreeWatcher?
+    private(set) var watcher: GitWorkingTreeWatcher?
     /// Refreshes the watch started, for tests.
     private(set) var automaticRefreshes = 0
     var isWatching: Bool { watcher?.isWatching == true }
-    private var missedChange = false
+    private var missedChange = GitWatchChanges()
     /// Refreshes the reader asked for that are still running. A refresh nobody
     /// asked for must never supersede one of theirs.
     private var readerRefreshes = 0
     private func drainMissedChange() {
-        guard missedChange, !busy, readerRefreshes == 0, watcher != nil else { return }
-        workingTreeChanged()
+        guard !missedChange.isEmpty, !busy, readerRefreshes == 0, watcher != nil else { return }
+        let changes = missedChange; missedChange = GitWatchChanges()
+        workingTreeChanged(changes)
     }
     private struct CachedCommit { var detail: GitCommitDetail; var diff: [GitDiffFile]? = nil; var fileDiffs: [String: [GitDiffFile]] = [:] }
     private var commitCache: [String: CachedCommit] = [:]
@@ -366,7 +367,7 @@ import AppKit
 
     /// Refreshes without waiting, replacing any refresh already in flight so
     /// its git processes stop instead of racing the new one.
-    public func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
+    public func startRefresh() { automaticRefresh = nil; automaticChangePending = GitWatchChanges(); refreshTask?.cancel(); refreshTask = Task { await refresh() } }
     private func startHistoryReload() { history.cancel(); historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
     /// Stops every read this panel started. Hiding the panel stops them
     /// (`setShown`), so no `git show` keeps computing a patch for a panel
@@ -377,7 +378,7 @@ import AppKit
         generation += 1
         pendingAmendPrefill = nil
         watcher?.stop(); watcher = nil
-        refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = false
+        refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = GitWatchChanges()
         historyTask?.cancel(); historyTask = nil
         pageTask?.cancel(); pageTask = nil; historyReading += 1
         detailTask?.cancel(); detailTask = nil
@@ -475,7 +476,7 @@ import AppKit
     /// What changed while the panel was hidden, read without moving the
     /// reader; then the commit's read that hiding stopped, if there was one.
     private func startQuietRefresh() {
-        automaticRefresh = nil; automaticChangePending = false
+        automaticRefresh = nil; automaticChangePending = GitWatchChanges()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in await self?.refresh(automatic: true) }
     }
@@ -499,40 +500,49 @@ import AppKit
     /// selection, the ticks, the scroll position and the whole-diff gate stay
     /// where they are, and a spinner does not appear for a read nobody asked
     /// for. Only a file that has actually gone stops being selected.
-    private func workingTreeChanged() {
+    private func workingTreeChanged(_ changes: GitWatchChanges) {
+        guard changes.isInteresting(ignoring: watcher?.ignored) else { return }
         // While the reader's own action is running, its refresh will see the
         // change; if it somehow does not, the change is picked up after it.
-        guard !busy, readerRefreshes == 0 else { missedChange = true; return }
-        missedChange = false
+        guard !busy, readerRefreshes == 0 else { missedChange.formUnion(changes); return }
+        missedChange = GitWatchChanges()
         // A refresh already under way is let finish, and whatever changed
-        // during it makes one more after it. Cancelling it on every change
-        // meant a repository whose refresh outlasts the watcher's one-second
-        // interval (a build writing all the while) never finished one.
-        if automaticRefresh != nil { automaticChangePending = true; return }
+        // during it is rechecked against the ignored paths it learned.
+        // Cancelling it on every change meant a repository whose refresh
+        // outlasts the watcher's one-second interval never finished one.
+        if automaticRefresh != nil { automaticChangePending.formUnion(changes); return }
         automaticRefreshes += 1
-        let token = UUID(); automaticRefresh = token; automaticChangePending = false
+        let token = UUID(); automaticRefresh = token; automaticChangePending = GitWatchChanges()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             await self?.refresh(automatic: true)
             guard let self, self.automaticRefresh == token else { return }
             self.automaticRefresh = nil
-            if self.automaticChangePending, !Task.isCancelled { self.automaticChangePending = false; self.workingTreeChanged() }
+            let pending = self.automaticChangePending; self.automaticChangePending = GitWatchChanges()
+            if !Task.isCancelled { self.workingTreeChanged(pending) }
         }
     }
     /// A test seam: how long each status read takes on top of git's own time.
     nonisolated(unsafe) static var statusReadDelay: Duration = .zero
     /// Holds a completed status snapshot in tests while the working tree changes.
     var statusDidRead: (@MainActor () async throws -> Void)?
+    /// Holds a completed ignore scan before its result is published in tests.
+    var ignoredDidRead: (@MainActor ([String]?) async throws -> Void)?
     var headMessageDidRead: (@MainActor () async -> Void)?
-    /// The automatic refresh under way, and whether the tree changed during it.
+    /// The automatic refresh under way, and the events queued during it.
     private var automaticRefresh: UUID?
-    private var automaticChangePending = false
+    private var automaticChangePending = GitWatchChanges()
+    /// Pending reads and deliveries, so fixtures can hold the exact race.
+    var isAutomaticallyRefreshing: Bool { automaticRefresh != nil }
+    var hasPendingAutomaticChange: Bool { !automaticChangePending.isEmpty }
+    var hasMissedChange: Bool { !missedChange.isEmpty }
     private func updateWatch(on root: String?) {
         guard let root else { watcher?.stop(); watcher = nil; return }
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
         guard watcher?.root != resolved || watcher?.isWatching != true else { return }
         watcher?.stop()
-        let watcher = GitWorkingTreeWatcher(root: root) { [weak self] in self?.workingTreeChanged() }
+        let watcher = GitWorkingTreeWatcher(root: root) { [weak self] changes in self?.workingTreeChanged(changes) }
+        if repositoryRoot == root { watcher.ignored.preserve(root: watcher.root, entries: status.entries) }
         watcher.start()
         self.watcher = watcher
     }
@@ -544,7 +554,7 @@ import AppKit
         // Checked again here and not only where the task was made: the reader
         // may have started a refresh of their own in between, and theirs must
         // not be left half done with a spinner that never stops.
-        if automatic, busy || readerRefreshes > 0 { missedChange = true; return }
+        if automatic, busy || readerRefreshes > 0 { missedChange.formUnion(.unknown); return }
         generation += 1; let generation = generation
         if !automatic { readerRefreshes += 1; loading = true; notice = "" }
         defer {
@@ -595,9 +605,12 @@ import AppKit
                 guard current(generation) else { return }
                 publish(\.changeStats, stats)
                 if notice.hasPrefix("Counts unavailable.") { notice = "" }
-                if let ignored = try? await service.ignoredPaths(in: top),
+                let ignoredStartedAt = DispatchTime.now().uptimeNanoseconds
+                let ignored = try? await service.ignoredPaths(in: top)
+                try await ignoredDidRead?(ignored)
+                if let ignored,
                    current(generation), let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
-                    watcher.ignored.update(root: watcher.root, relative: ignored)
+                    watcher.ignored.update(root: watcher.root, relative: ignored, scanStartedAt: ignoredStartedAt)
                 }
                 guard current(generation) else { return }
                 refreshesFinished += 1
@@ -621,6 +634,7 @@ import AppKit
             } else if !automatic, let first = status.entries.first { selection = Selection(path: first.path, staged: !first.unstaged && first.staged) }
             async let branchList = service.branches(in: top)
             async let stashList = service.stashes(in: top)
+            let ignoredStartedAt = DispatchTime.now().uptimeNanoseconds
             async let ignoredList = service.ignoredPaths(in: top)
             // Reads cancelled because this refresh was replaced are not empty
             // lists: taking them for that blanked the branch menu and the
@@ -630,9 +644,10 @@ import AppKit
             do { branches = try await branchList } catch is CancellationError { return } catch {}
             do { stashes = try await stashList } catch is CancellationError { return } catch {}
             let ignored = try? await ignoredList
+            try await ignoredDidRead?(ignored)
             guard current(generation) else { return }
             if let ignored, let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
-                watcher.ignored.update(root: watcher.root, relative: ignored)
+                watcher.ignored.update(root: watcher.root, relative: ignored, scanStartedAt: ignoredStartedAt)
             }
             publish(\.branches, branches); publish(\.stashes, stashes)
             await reloadHistory(generation: generation, automatic: automatic)
@@ -683,6 +698,9 @@ import AppKit
         guard current(generation), !closed, !suspended else { return false }
         clearPreflight()
         repositoryGeneration += 1
+        if let root, let watcher, watcher.root == URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path {
+            watcher.ignored.preserve(root: watcher.root, entries: status.entries)
+        }
         repository = RepositorySnapshot(context: root.map { RepositoryContext(root: $0, generation: repositoryGeneration) }, status: status, read: true)
         recountChecked()
         // The snapshot's observers can stop us too. Nothing may restart the
