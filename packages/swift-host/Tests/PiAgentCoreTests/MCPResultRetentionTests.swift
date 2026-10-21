@@ -48,7 +48,7 @@ private actor HeldRetentionMCP: MCPTransport {
 /// An MCP call's "outcome unknown" marker stays until the call's result is in
 /// the chat's journal: a crash or a failed write before then keeps the
 /// evidence that a call which may have changed something ran.
-final class MCPResultRetentionTests: XCTestCase {
+final class MCPResultRetentionTests: HelperTestCase {
     private func mcpReply() -> ModelReply {
         let call = ToolCall(id: "mcp-call", name: "mcp", arguments: ["action": "invoke", "server": "test", "tool": "echo", "arguments": ["text": "sent"]])
         var message = ChatMessage(role: "assistant", content: [["type": "toolCall", "id": JSON(call.id), "name": JSON(call.name), "arguments": call.arguments]])

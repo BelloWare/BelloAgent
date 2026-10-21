@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideOriginIndexTests: XCTestCase {
+final class SideOriginIndexTests: HelperTestCase {
     func testColdOpenWithTwoHundredLongSavedSidesBoundsUnrelatedDiscovery() async throws {
         let root = canonical(try temporaryDirectory().path); defer { try? FileManager.default.removeItem(at:root) }
         for id in ["main","unrelated"] { let value = try session(id,root:root); await value.close() }

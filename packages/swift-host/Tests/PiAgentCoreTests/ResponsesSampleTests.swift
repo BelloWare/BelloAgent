@@ -4,7 +4,7 @@ import XCTest
 /// Minimal synthetic adaptation of the owner's Responses example. The opaque
 /// provider payload is deliberately synthetic; token/cost/model fields retain
 /// the supplied shape. These are parsing/capture tests, not a live gateway.
-final class ResponsesSampleTests: XCTestCase {
+final class ResponsesSampleTests: HelperTestCase {
     private func fixtureData(_ name:String) throws -> Data {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { root.deleteLastPathComponent() }

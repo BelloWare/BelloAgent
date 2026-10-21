@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentFamilyRecoveryTests: XCTestCase {
+final class AgentFamilyRecoveryTests: HelperTestCase {
     func testAcceptedStartReopensWithSameReceiptAndNeverExecutesChild() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let profile = try fixtureProfile(), url = root.appendingPathComponent("parent.jsonl")

@@ -21,7 +21,7 @@ private actor CompletedCaptures {
     var count: Int { attempts.count }
 }
 
-final class CaptureConcurrencyTests: XCTestCase {
+final class CaptureConcurrencyTests: HelperTestCase {
     /// An acknowledgment that took longer than 3 s used to switch capture off
     /// for good, for every chat on the helper: the log then missed every later
     /// request. A slow recorder now only delays the pages behind it.

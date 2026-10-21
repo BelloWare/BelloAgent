@@ -5,7 +5,7 @@ import XCTest
 /// load from the journal, where they are, instead of loading every row. Every
 /// read must answer exactly as the chat holding every row answered, and the
 /// chat must go on holding only the rows it loaded.
-final class OlderRowsTests: XCTestCase {
+final class OlderRowsTests: HelperTestCase {
     private struct Chat { let root: URL, state: URL, profile: Profile, resources: Resources, path: String }
 
     private func session(_ chat: Chat, path: String? = nil) throws -> AgentSession {

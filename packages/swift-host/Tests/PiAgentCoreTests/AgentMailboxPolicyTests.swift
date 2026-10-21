@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentMailboxPolicyTests: XCTestCase {
+final class AgentMailboxPolicyTests: HelperTestCase {
     func operation(_ index: Int, author: String = "subagent", at: Double = 100) -> AgentOperation {
         let message = AgentFamilyMessage(id:"message-\(index)",sequence:index+1,childID:"child",turn:1,author:author,kind:"note",text:"Useful discovery",task:"Task",epoch:"epoch")
         var op = AgentOperation(key:.init(parentSessionID:author == "parent" ? "parent" : "child",assistantMessageID:"a\(index)",toolCallID:"c\(index)"),digest:"d",receipt:["accepted":true],message:message,epoch:"epoch")

@@ -21,7 +21,7 @@ private actor HeldBatch: ToolExecuting {
 /// journal replays to, and comes with the metadata file a replay of its
 /// journal would write; the chat is left as it was. When that cannot be
 /// known, the fork is copied as before.
-final class ForkCloneTests: XCTestCase {
+final class ForkCloneTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], tools: any ToolExecuting = RecordingTools(), resume: String? = nil,

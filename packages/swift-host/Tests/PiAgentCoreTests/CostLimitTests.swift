@@ -156,7 +156,7 @@ private final class StateProbe: @unchecked Sendable {
     }
 }
 
-final class CostLimitTests: XCTestCase {
+final class CostLimitTests: HelperTestCase {
     /// A one-token recent tail, so any history is something to summarize.
     private static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
     private func session(_ root: URL, id: String = UUID().uuidString, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), limit: Double?, resume: String? = nil, policy: CompactionPolicy = CompactionPolicy(), probe: StateProbe? = nil) async throws -> AgentSession {

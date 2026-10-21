@@ -4,7 +4,7 @@ import XCTest
 /// When pending work reaches the model: steering after a complete tool batch,
 /// follow-ups only when the run would stop, and what a stopped or truncated
 /// turn leaves behind.
-final class SteeringAndFollowUpTests: XCTestCase {
+final class SteeringAndFollowUpTests: HelperTestCase {
     func testSteeringBeforeFollowUpAndCompleteToolBatch() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let client=ScriptClient([toolReply(["first","second"]),answer("steered"),answer("followup")],holdFirst:true),tools=RecordingTools(),traces=TraceStore()

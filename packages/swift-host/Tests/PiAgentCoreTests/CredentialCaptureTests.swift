@@ -7,7 +7,7 @@ private actor CredentialPackets {
     func append(_ packet: JSON) -> Bool { values.append(packet); return true }
 }
 
-final class CredentialCaptureTests: XCTestCase {
+final class CredentialCaptureTests: HelperTestCase {
     func testRoutingFixedValuesAndKeysSurviveMatchingCredentials() async throws {
         let base = RoutingIdentity(profile:try fixtureProfile()).json
         let labels = Array(base.map.keys) + ["reported", "unreported", "incomplete", "conflict", "model", "deployment", "group", "ask", "portable", "pinned", "header:x-litellm-model-name", "header:x-litellm-model-group", "body.model", base["boundary"].text!]

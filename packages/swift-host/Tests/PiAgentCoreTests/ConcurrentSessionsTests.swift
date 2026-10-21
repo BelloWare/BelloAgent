@@ -32,7 +32,7 @@ private actor HeldEditingTools: ToolExecuting {
 
 /// Chats of one workspace answer at the same time, and nothing makes their
 /// tool calls take turns, editing ones included (owner, 2026-10-08).
-final class ConcurrentSessionsTests: XCTestCase {
+final class ConcurrentSessionsTests: HelperTestCase {
     private func session(_ id: String, root: URL, client: ScriptClient, tools: any ToolExecuting, traces: TraceStore) throws -> AgentSession {
         try AgentSession(id:id,profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state-"+id),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces,autoCompaction:false)
     }

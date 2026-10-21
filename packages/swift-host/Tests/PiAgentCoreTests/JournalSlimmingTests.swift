@@ -4,7 +4,7 @@ import XCTest
 /// A journal written before 0.1.111 slimmed once (`JournalSlimming`): without
 /// the run-state records a later one supersedes, and opening to exactly the
 /// chat it was. Anything that goes wrong leaves the journal as it was.
-final class JournalSlimmingTests: XCTestCase {
+final class JournalSlimmingTests: HelperTestCase {
     func testDeletionDuringDiscardMustNotRepublishSource() async throws {
         let fixture = try chat(), path = try await journal(fixture, turns: 2)
         try rewriteWhole(path)

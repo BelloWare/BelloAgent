@@ -64,7 +64,7 @@ private actor RetainedReplyRetryClient: ModelClient {
 /// The reply a run is streaming survives a helper that dies mid-reply
 /// (`PartialReplyLog`): a reopen shows it as the interrupted reply a stop
 /// leaves, and sends nothing again.
-final class PartialReplyLogTests: XCTestCase {
+final class PartialReplyLogTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile
         func session(_ id: String, client: any ModelClient, resume: String? = nil, in directory: URL? = nil,

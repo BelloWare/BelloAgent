@@ -16,7 +16,7 @@ private extension AgentSession {
     func holdFinalLinks(at gate: SettlementGate) { beforeFinalRequestLinks = { await gate.wait() } }
 }
 
-final class SessionSettlementTests: XCTestCase {
+final class SessionSettlementTests: HelperTestCase {
     func testSteeringIsAcceptedFromLaunchThroughTheActiveRequest() async throws {
         let root = try temporaryDirectory()
         let client = ScriptClient([answer("Done"), answer("Steered"), answer("More")], holdFirst: true)

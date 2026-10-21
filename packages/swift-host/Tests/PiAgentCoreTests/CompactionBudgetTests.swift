@@ -45,7 +45,7 @@ private func summary(_ s: AgentSession, _ policy: CompactionPolicy = CompactionP
     return try await s.summarize([source,instruction],instructions:"Keep normal instructions",tools:[],profile:p,originalProfile:original,revision:revision)
 }
 
-final class CompactionBudgetTests: XCTestCase {
+final class CompactionBudgetTests: HelperTestCase {
     /// An earlier task's evidence, then the current objective. The one-token
     /// tail keeps only the objective, so these budget cases summarize history.
     private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, evidence: Int = 800, policy: CompactionPolicy = { var p=CompactionPolicy();p.keepRecentTokens=1;return p }()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {

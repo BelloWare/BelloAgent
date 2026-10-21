@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class CrashAuditTests: XCTestCase {
+final class CrashAuditTests: HelperTestCase {
     func testOutOfRangeRetainedTimingReopensAsUnavailableAndPreservesHistory() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile(), path = root.appendingPathComponent("timing.jsonl")

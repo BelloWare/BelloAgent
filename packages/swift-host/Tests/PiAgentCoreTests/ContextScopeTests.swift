@@ -28,7 +28,7 @@ private actor ContextDefinitionGate: ToolExecuting {
     func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON { resultText("unused") }
 }
 
-final class ContextScopeTests: XCTestCase {
+final class ContextScopeTests: HelperTestCase {
     func testPreparingIsPublishedBeforeSlowRecorderWithoutWaitingForMetrics() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PreparingClient()

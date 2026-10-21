@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class LongJournalTests: XCTestCase {
+final class LongJournalTests: HelperTestCase {
     private let oldLimit = 128 * 1024 * 1024
 
     /// Real bytes beyond the old ceiling, not a small injected limit. Unknown

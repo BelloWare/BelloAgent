@@ -4,7 +4,7 @@ import XCTest
 /// `JSON.parse` reads bytes itself; it must give exactly the values the
 /// `Codable` decoding it replaced gave, and refuse what it refused. Every
 /// journal line and protocol frame goes through it.
-final class JSONParseTests: XCTestCase {
+final class JSONParseTests: HelperTestCase {
     private func codable(_ data: Data) -> Result<JSON, Error> { Result { try JSONDecoder().decode(JSON.self, from: data) } }
     private func parsed(_ data: Data) -> Result<JSON, Error> { Result { try JSON.parse(data) } }
     /// Foundation's JSONDecoder aborts the process, through a `try!` of its
@@ -140,7 +140,7 @@ extension JSONParseTests {
 
 /// Opening a chat checks its chain with a scan of each record's id, parent
 /// and kind; the scan must read what the parser reads, or leave the line to it.
-final class JournalLineScanTests: XCTestCase {
+final class JournalLineScanTests: HelperTestCase {
     private func scanned(_ text: String) -> JournalLineScan.Fields? { JournalLineScan.fields(Data(text.utf8)) }
     private func parsedFields(_ text: String) -> JournalLineScan.Fields? {
         guard let item = try? JSON.parse(Data(text.utf8)) else { return nil }
@@ -188,7 +188,7 @@ final class JournalLineScanTests: XCTestCase {
 /// A run-state record's id and parent, read from the end of its line, are
 /// what a full parse reads; a line that does not end as the journal writes
 /// one is left to the scan.
-final class JournalStateTailTests: XCTestCase {
+final class JournalStateTailTests: HelperTestCase {
     private func line(_ record: JSON) -> Data { (try? record.data()) ?? Data() }
     private func state(_ data: JSON, id: String = "s1", parent: String? = "p0") -> JSON {
         ["customType": "pi-app.native.state.v1", "data": data, "id": JSON(id), "parentId": parent.map { JSON($0) } ?? .null,

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetUpgradeTests: XCTestCase {
+final class SideBudgetUpgradeTests: HelperTestCase {
     func testMissingDispatchedChildStillFailsClosedWithoutCompletedDeletion() async throws {
         for usage in SideBudgetUpgradeFixture.Usage.allCases {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

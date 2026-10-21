@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentForkTests: XCTestCase {
+final class SubagentForkTests: HelperTestCase {
     private let sourceID = "parent-with-subagents-long-identity"
     private func session(_ root: URL, _ id: String, path: String? = nil,
                          prepared: JournalReplayConsumer? = nil, client: any ModelClient = ScriptClient([])) throws -> AgentSession {

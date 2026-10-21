@@ -57,7 +57,7 @@ private actor EndlessTools: ToolExecuting {
 /// Resume (`run.continue`, pi's continue): a stopped, cut-off or failed run
 /// goes on from the chat's history with no new user message. A cut-off tool
 /// call is never run again; its recorded result goes to the model.
-final class ContinueRunTests: XCTestCase {
+final class ContinueRunTests: HelperTestCase {
     func testQueuedResumeAlsoHonorsThePreparedStopGeneration() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let host = NativeHostService(emit:{ _ in })

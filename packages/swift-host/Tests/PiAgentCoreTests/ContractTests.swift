@@ -3,7 +3,7 @@ import XCTest
 
 /// Host contract H1–H5: correlation headers/body metadata, multi-root
 /// workspaces, per-turn overrides, turn.edit branches and display kinds.
-final class ContractTests: XCTestCase {
+final class ContractTests: HelperTestCase {
     func testConversationPagingRetainsReasoningArgumentsAndMessageBoundaries() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile(), path = root.appendingPathComponent("copy.jsonl")

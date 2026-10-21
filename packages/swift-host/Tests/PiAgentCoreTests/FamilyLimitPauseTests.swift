@@ -3,7 +3,7 @@ import XCTest
 
 /// The shared cost limit pauses the whole family at once and resumes only on
 /// Resume (owner, 2026-10-16). Replaces 0.1.128's drain-then-block table.
-final class FamilyLimitPauseTests: XCTestCase {
+final class FamilyLimitPauseTests: HelperTestCase {
     enum Phase: String, CaseIterable { case idle, ownRequest, childrenDispatched, sideRequest, preLedgerRequest, tools }
     enum Crosser: String, CaseIterable { case own, backgroundChild, waitedChild, nestedSide, sideChild }
 

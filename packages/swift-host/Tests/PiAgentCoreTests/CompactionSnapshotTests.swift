@@ -13,7 +13,7 @@ private actor CompactionOutcomeClient: ModelClient {
     }
 }
 
-final class CompactionSnapshotTests: XCTestCase {
+final class CompactionSnapshotTests: HelperTestCase {
     /// A one-token tail, so two short turns have history to summarize.
     static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
     func testFailedAndCancelledCompactionDoNotPublishSuccess() async throws {

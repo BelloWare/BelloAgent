@@ -3,7 +3,7 @@ import XCTest
 
 /// A chat moved to another saved connection: the helper never answers an
 /// open on the new connection with the session loaded on the old one.
-final class ConnectionSwitchTests: XCTestCase {
+final class ConnectionSwitchTests: HelperTestCase {
     func testAnOpenOnAnotherConnectionIsNotAnsweredByTheLoadedSession() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let host = NativeHostService(emit: { _ in })

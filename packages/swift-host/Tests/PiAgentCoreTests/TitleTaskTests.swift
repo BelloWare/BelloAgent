@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class TitleTaskTests: XCTestCase {
+final class TitleTaskTests: HelperTestCase {
     func testHostTitleSessionUsesMiniModelWithoutToolsOrProjectResources() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         try Data("PRIVATE PROJECT INSTRUCTION".utf8).write(to: root.appendingPathComponent("AGENTS.md"))

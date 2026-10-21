@@ -15,7 +15,7 @@ private actor TimedCompactionClient: ModelClient {
     }
 }
 
-final class CompactionTaskRegressionTests: XCTestCase {
+final class CompactionTaskRegressionTests: HelperTestCase {
     func testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var raw=try fixtureProfile().raw; raw["contextWindow"]=10000; raw["maxOutputTokens"]=256

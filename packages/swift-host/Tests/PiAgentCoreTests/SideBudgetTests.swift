@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetTests: XCTestCase {
+final class SideBudgetTests: HelperTestCase {
     func testRecoveredCopyDropsOriginalPausedSidesButKeepsItsOwnHeldWork() async throws {
         for ownWork in [false,true] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

@@ -7,7 +7,7 @@ import XCTest
 /// journal holds is the source's records, each the same but for its parent,
 /// its time and a queued edit's run state, as when every record was parsed
 /// and encoded again.
-final class JournalEnvelopeTests: XCTestCase {
+final class JournalEnvelopeTests: HelperTestCase {
     private func line(_ text: String) -> Data { Data(text.utf8) }
     private func rewritten(_ text: String, id: String = "r1", parent: String? = "p2", time: String = "2026-09-30T00:00:00Z") -> String? {
         JournalEnvelope.rewritten(line(text), id: id, parentID: parent, timestamp: time).map { String(decoding: $0, as: UTF8.self) }

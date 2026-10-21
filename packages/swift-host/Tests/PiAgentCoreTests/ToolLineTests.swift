@@ -4,7 +4,7 @@ import XCTest
 /// Where an edit changed its file reaches the app: on the tool's card, live
 /// and as the journal brings it back, and in the result's recorded stats;
 /// the text the model is given is what it always was.
-final class ToolLineTests: XCTestCase {
+final class ToolLineTests: HelperTestCase {
     func testAnEditsLineIsOnItsCardLiveAndFromTheJournal() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         try "one\ntwo\nthree\n".write(to: root.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)

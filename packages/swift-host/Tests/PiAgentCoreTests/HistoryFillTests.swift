@@ -30,7 +30,7 @@ private actor Done {
 /// idle: then it is the fork an open of its whole journal gives. A send
 /// during the load goes as from any chat holding its latest rows; a load
 /// cancelled, failed or overtaken leaves such a chat.
-final class HistoryFillTests: XCTestCase {
+final class HistoryFillTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, client: ScriptClient = ScriptClient([]), resume: String? = nil, prepared: JournalReplayConsumer? = nil) throws -> AgentSession {

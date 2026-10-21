@@ -65,7 +65,7 @@ private actor ThreePartClient: ModelClient {
     }
 }
 
-final class TimelineDurabilityTests: XCTestCase {
+final class TimelineDurabilityTests: HelperTestCase {
     /// A completed reply retains all parts, with bounded journal writes.
     /// Provisional content lives in the partial log until settlement.
     func testASettledLedgerKeepsAllPartsWithBoundedJournalWrites() async throws {

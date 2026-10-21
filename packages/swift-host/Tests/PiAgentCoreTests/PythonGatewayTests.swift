@@ -5,7 +5,7 @@ import XCTest
 /// The fixture server every gateway test starts (`PythonGateway`) never
 /// outlives a start that failed: a server that never reports its port, or
 /// reports none, is stopped before the error reaches the test.
-final class PythonGatewayTests: XCTestCase {
+final class PythonGatewayTests: HelperTestCase {
     /// Writes its pid, then does what `after` says, then idles.
     private func server(_ after: String) -> String {
         """

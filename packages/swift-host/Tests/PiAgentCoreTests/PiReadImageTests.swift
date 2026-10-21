@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// Pi's read tool returns an image file as an image (read.ts), found by its
 /// bytes the way pi's detectSupportedImageMimeType finds it.
-final class PiReadImageTests: XCTestCase {
+final class PiReadImageTests: HelperTestCase {
     private func png(width: Int, height: Int) -> Data {
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!

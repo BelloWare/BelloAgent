@@ -3,7 +3,7 @@ import XCTest
 
 /// What a connection may point at: the route a base URL resolves to, and the
 /// URLs that are refused before any request is built.
-final class EndpointValidationTests: XCTestCase {
+final class EndpointValidationTests: HelperTestCase {
     func testEndpointsAndUnsafeURLs() throws {
         XCTAssertEqual(try fixtureProfile().endpoint.absoluteString,"http://127.0.0.1:12345/v1/responses")
         XCTAssertThrowsError(try fixtureProfile("anthropic-messages")) { XCTAssertEqual(($0 as? AgentError)?.code, "unsupported_api") }

@@ -3,7 +3,7 @@ import XCTest
 
 /// A live connection can keep producing bytes without ever answering. The
 /// configured deadline bounds each exchange, including setup and notifications.
-final class HTTPMCPDeadlineTests: XCTestCase {
+final class HTTPMCPDeadlineTests: HelperTestCase {
     private static let server = #"""
 import http.server, json, pathlib, sys, time
 state, phase, format = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]

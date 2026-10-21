@@ -22,7 +22,7 @@ private final class HostReplies: @unchecked Sendable {
 
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
-final class HostServiceTests: XCTestCase {
+final class HostServiceTests: HelperTestCase {
     func testQuiescenceRejectsSubmissionPreflightAdmission() async throws {
         for method in ["turn.submit", "turn.steer", "turn.edit"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
@@ -318,7 +318,7 @@ private final class ReadyFrames: @unchecked Sendable {
 /// A journal whose last record was cut off could not be reopened, and the
 /// recovery the app offered was rejected outright. `session.recover` copies
 /// every complete record to a new chat and leaves the original as it was.
-final class SessionRecoverTests: XCTestCase {
+final class SessionRecoverTests: HelperTestCase {
     func testRecoveryRefusesSourceRemovedOrReplacedBeforePublication() async throws {
         for replace in [false,true] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

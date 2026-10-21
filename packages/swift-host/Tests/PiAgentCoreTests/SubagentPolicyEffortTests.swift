@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentPolicyEffortTests: XCTestCase {
+final class SubagentPolicyEffortTests: HelperTestCase {
     static let policy = "Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks."
 
     func testPromptRuleOnlyWhenParentDelegationToolsAreOffered() async throws {

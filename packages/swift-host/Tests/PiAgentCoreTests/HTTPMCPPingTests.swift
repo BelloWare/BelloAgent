@@ -8,7 +8,7 @@ import XCTest
 /// pings during `tools/call` and holds the call's result until the answer
 /// arrives, so a client that does not answer, or answers on the wrong
 /// channel, never gets it.
-final class HTTPMCPPingTests: XCTestCase {
+final class HTTPMCPPingTests: HelperTestCase {
     private static let server = #"""
 import http.server, json, pathlib, sys, threading, time
 state = pathlib.Path(sys.argv[1]); answered = threading.Event()

@@ -22,7 +22,7 @@ private actor OrderClient: ModelClient {
 /// arrival order while it streams, the recorded order once it is journaled —
 /// and keeps `text`, `thinking` and `tools` beside it so a reader that only
 /// knows those fields is unaffected.
-final class ResponseOrderTests: XCTestCase {
+final class ResponseOrderTests: HelperTestCase {
     private func session(root: URL, id: String, client: any ModelClient) throws -> AgentSession {
         var profile = try fixtureProfile().raw; profile["contextWindow"] = 1_000_000
         return try AgentSession(id: id, profile: Profile(profile), apiKey: "fixture", cwd: root,

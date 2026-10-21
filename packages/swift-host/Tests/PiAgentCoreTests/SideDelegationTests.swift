@@ -3,7 +3,7 @@ import XCTest
 
 /// Sides never start or message sub-agents (owner, 2026-10-16). They keep the
 /// parent's offered tools for its prompt cache and refuse the call instead.
-final class SideDelegationTests: XCTestCase {
+final class SideDelegationTests: HelperTestCase {
     func testSidesAtEveryDepthRefuseDelegationWithTheParentsExactTools() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,

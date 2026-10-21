@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class ChildCostPublicationTests: XCTestCase {
+final class ChildCostPublicationTests: HelperTestCase {
     func testOriginalReaderProjectionMatchesEveryLegacyChildLedger() async throws {
         for shape in SideBudgetUpgradeFixture.Shape.allCases {
             for usage in SideBudgetUpgradeFixture.Usage.allCases {
