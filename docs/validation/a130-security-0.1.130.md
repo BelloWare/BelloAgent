@@ -1981,3 +1981,137 @@ swift test --package-path packages/bello-views --scratch-path /Users/admin/Libra
 Adversarial self-review checked canonical aliases, exact-root and sibling boundaries, byte-length precedence, equally specific denials, trust changes after a warm inventory, and marked components in blame/history. For counts it checked that the temporary cwd remains private, the captured gitdir is shared by inventory and command, conditional global filters still match, local programs remain masked, and the original cancellation/deadline reaches the inventory. The only source-context override is the internal untracked-count invocation. No additional in-scope issue was found.
 
 Integration: after committing the round-10 fixes as `a7b1b354`, fetched and merged `origin/dev/next` at `78729efa25784800ef1f12f41bdc1fb39b08cacd` with a merge commit, without rebasing. The merge was automatic; both release-entry sets and both WorkspaceModel changes are retained. Regenerated the project with `xcodegen generate --quiet`. `FileFolderTests` still contains `installStandaloneFileResolver(self)`, `testFixtureOwnsInheritedHooks`, and the fsmonitor marker regression. The merged result is the input to the validation below.
+
+#### Final validation on the merged result
+
+All commands below ran after the final round-10 fixes and mutation restorations. `B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`; common environment: `PI_BUILD_ROOT=$B CFFIXED_USER_HOME=$B/round10-views-home GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1`. The helper, loopback and package fixture suites ran first without changing app focus; package performance captures were disabled. The shared lock covered the subsequent benchmark and native/gallery sequence, and was released in the driver’s `finally` block. Detailed command/status/duration records: `$B/logs/round10-final-validation.json`; toolchain: Apple Git 2.39.5, Swift 6.0.2, Xcode 16.1, macOS 14.8.
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| views | 446 | 4 | 0 |
+| helper-cost | 5 | 0 | 0 |
+| helper | 1157 | 7 | 0 |
+| wire | 40 | 0 | 0 |
+| concurrent | 4 | 0 | 0 |
+| acceptance | 3 | 0 | 0 |
+| Native (45 classes, including gallery) | 417 | 2 | 0 |
+
+Exact commands (extra environment shown where set):
+
+```sh
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --build-tests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --skip StreamingCostTests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-baseline/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositoryPermissionTests -only-testing:PiAppTests/WebhookExchangeTests -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WebhookTests
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 -only-testing:PiAppTests/FileTabTests -only-testing:PiAppTests/FileHiddenReadTests -only-testing:PiAppTests/FilePageReadTests -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitPanelAuditTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitRenameTests -only-testing:PiAppTests/GitToolTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileBlameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitConfirmationSheetTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiscardQuestionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitHunkReviewTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitIntegratedHistoryTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelDiffCaptureTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelLayoutTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelRedrawTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelShownTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelWidthTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenPlacementTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FilePreviewRefreshTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitOperationSafetyTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFindTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CrashAuditRegressionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabFrameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitDiffTableTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelNarrowParityTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ReplyFileLinkTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+TEST_RUNNER_PI_SESSION_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-session-gallery scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelGalleryTests
+TEST_RUNNER_PI_FILE_REVIEW_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-file-gallery scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewGalleryTests
+TEST_RUNNER_PI_APP_GIT_SAFETY_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round10-gallery scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitSafetyGalleryTests
+```
+
+Native class results (each serial-lane class ran alone):
+
+| Class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabFrameTests | 8 | 0 | 0 |
+| ChangesTabTests | 9 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 10 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FileHiddenReadTests | 5 | 0 | 0 |
+| FilePageReadTests | 3 | 0 | 0 |
+| FilePreviewRefreshTests | 3 | 0 | 0 |
+| FileReviewGalleryTests | 1 | 0 | 0 |
+| FileReviewStateTests | 22 | 0 | 0 |
+| FileTabTests | 17 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 | 0 |
+| GitConfirmationSheetTests | 7 | 0 | 0 |
+| GitDiffTableTests | 19 | 0 | 0 |
+| GitDiscardQuestionTests | 2 | 0 | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelAuditTests | 8 | 0 | 0 |
+| GitPanelDiffCaptureTests | 0 | 1 | 0 |
+| GitPanelLayoutTests | 4 | 0 | 0 |
+| GitPanelNarrowParityTests | 8 | 0 | 0 |
+| GitPanelRedrawTests | 4 | 0 | 0 |
+| GitPanelShownTests | 13 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPanelWidthTests | 3 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRenameTests | 6 | 0 | 0 |
+| GitRepositoryPermissionTests | 5 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitSafetyGalleryTests | 1 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 17 | 0 | 0 |
+| QuickOpenPlacementTests | 1 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| ReplyFileLinkTests | 4 | 0 | 0 |
+| SessionPanelGalleryTests | 1 | 0 | 0 |
+| SessionPanelTests | 29 | 0 | 0 |
+| WebhookExchangeTests | 5 | 0 | 0 |
+| WebhookTests | 18 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+
+#### Large-repository latency
+
+Compared with `origin/dev/next` at `78729efa25784800ef1f12f41bdc1fb39b08cacd`, using the same generated 50,000-file / 20-submodule repository and 25 samples per operation. Each variant rebuilt the same scratch directory from clean products; compiler input lists and source hashes are retained in `round10-final-build-*.json`. Baseline uses the identical benchmark source with its pre-isolation API compile flag. Raw samples: `round10-final-perf-*.log`; measured summaries: `round10-final-performance.json`.
+
+| Variant | Status median / p95 (ms) | Changes median / p95 (ms) | Median change vs baseline (status / Changes) |
+| --- | ---: | ---: | ---: |
+| baseline | 260.171 / 272.541 | 2187.597 / 2215.576 | — |
+| branch | 173.302 / 180.483 | 2043.806 / 2082.438 | -33.39% / -6.57% |
+| branch-repeat | 172.176 / 182.651 | 2047.543 / 2086.832 | -33.82% / -6.40% |
+
+Both branch measurements meet the approximately 5% steady-state budget. The adversarial sweep rechecked canonical trust selection, symlink aliases and sibling boundaries, source-versus-scratch context, retained Git directory selection, local/global program settings, trust revocation, and the existing invocation cancellation/deadline. The marker controls, source replays, mutation runs and full suites are recorded above. No unresolved finding remains from this round.
+
+The measured fixture contained **50,021 tracked entries: 50,001 regular files and 20 gitlinks** (`round10-large-fixture-counts.json`). Final implementation and test inputs are committed at `6664f331fe328513a335fdd5b6d32df3e7982ff0`; only this validation record changed after that run began. All final commands exited successfully. The helper total, including its separately executed cost class, is **1,162 passed, 7 skipped, 0 failed**.
+
+Skipped cases are explicit opt-ins: three Finder measurements and the separately executed Git inventory benchmark in the package run; seven helper fixture-generation/performance cases; the native real-repository commit-browsing benchmark and optional diff-pane capture. All three enabled galleries passed. Wait-only driver restarts while other workstreams held the shared lock did not interrupt tests; completed helper and loopback results were retained before the package run. No final test was retried or left failing.
+
+Regenerated **158 PNGs**: 112 Git-safety scenes, 24 file-review scenes and 22 floating-panel scenes. Inspected `round10-gallery/untrusted-light-1180x780.png`, `untrusted-dark-310x600.png`, and `http-redirect-dark-1180x780.png`; `round10-file-gallery/history-light-1240x800.png`, `history-dark-420x600.png`, and `back-light-420x600.png`; and `round10-session-gallery/diff-1440x900-light.png`, `diff-classification-1440x900-dark.png`, and `pill-960x700-light.png`. Counts and binary labels, history navigation, restored selection, and trust/redirect notices remain legible in the sampled light/dark and narrow layouts. Existing notice ellipsis and horizontal file scrolling remain visible. No new visual regression was observed.
+
+Removed only this workstream's generated benchmark repository, exported baseline and final default XCTest result bundle after extracting text/JSON evidence. No Clone files remain under its native build root. The 158 gallery images, command logs, mutation evidence, source hashes and JSON counts are retained under `$B`; cleanup details are in `$B/logs/round10-cleanup.json`. The validation driver released its own lock. Other workstreams' locks and build products were untouched. Both assigned findings are resolved; the adjacent display/input cases noted in the sweep remain for the separate app grapheme workstream.
