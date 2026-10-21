@@ -1286,6 +1286,193 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertEqual(pane.document.highlights.focus?.record, "target")
     }
 
+    /// Whether the rendered rows mark `word` in the find colour.
+    @MainActor private func marked(_ word: String, in pane: NativeTranscriptPane) -> Bool {
+        for row in pane.document.retainedRows where row.superview != nil {
+            for text in TranscriptNativeDocument.textViews(in: row) {
+                let range = ((text.textStorage?.string ?? "") as NSString).range(of: word)
+                guard range.location != NSNotFound else { continue }
+                return text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil) as? NSColor == TranscriptHighlights.matchColor
+            }
+        }
+        return false
+    }
+    /// TRANSCRIPT-1: a plain reply streams a word a finished search found
+    /// nowhere. Neither View Raw nor fetched tool inputs change, yet once the
+    /// stream settles Find counts the word — without creating navigation
+    /// focus — and Next goes to it without the query being typed again.
+    @MainActor func testStreamedMatchRefreshesACompletedZeroHitFind() async throws {
+        let (model, pane, window) = try await findFixture(saved: false, source: "The reply starts plainly.")
+        let session = try XCTUnwrap(model.selected)
+        func draw() { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        pane.showFind(); pane.find.setQuery("zebra")
+        try await eventually("The zero-hit search finishes") { draw(); return !pane.find.searching }
+        let bar = try XCTUnwrap(pane.findBar)
+        XCTAssertEqual(bar.count.line.text, "No matches")
+        XCTAssertFalse(bar.next.isEnabled)
+        let raw = session.disclosure.rawReplies, inputs = session.toolInputs.snapshot()
+        for delta in [" Then", " a zebra", " crossed", " the road."] {
+            session.messages[1].text += delta; draw()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        session.messages[1].state = "complete"; draw()
+        XCTAssertEqual(session.disclosure.rawReplies, raw)
+        XCTAssertEqual(session.toolInputs.snapshot(), inputs, "Neither the source view nor fetched tool inputs changed")
+        try await eventually("The streamed word is marked") { draw(); return marked("zebra", in: pane) }
+        try await eventually("Find counts the streamed word") { draw(); return !pane.find.searching && pane.find.matches.count == 1 }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply"])
+        XCTAssertEqual(bar.count.line.text, "1 of 1")
+        XCTAssertTrue(bar.next.isEnabled)
+        XCTAssertTrue(bar.previous.isEnabled)
+        XCTAssertNil(pane.document.highlights.focus, "A refresh creates no navigation focus")
+        XCTAssertFalse(pane.document.focusPending)
+        pane.find.step(1)
+        try await eventually("Next lands on the streamed word") { draw(); return !pane.document.focusPending && pane.document.focusText != nil }
+        let text = try XCTUnwrap(pane.document.focusText)
+        XCTAssertEqual((text.string as NSString).substring(with: pane.document.focusRange), "zebra")
+        XCTAssertEqual(text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: pane.document.focusRange.location, effectiveRange: nil) as? NSColor,
+                       TranscriptHighlights.focusColor)
+    }
+    /// Tokens arriving more slowly than Find's typing pause, but faster than
+    /// the conversation settles, are one search once the reply settles,
+    /// never a search per token.
+    @MainActor func testStreamingRepliesAreSearchedOnceTheySettle() async throws {
+        let (model, pane, window) = try await findFixture(saved: false, source: "Counting tokens.")
+        let session = try XCTUnwrap(model.selected)
+        func draw() { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        pane.showFind(); pane.find.setQuery("token")
+        try await eventually("The first search finishes") { draw(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.count, 1)
+        let focus = try XCTUnwrap(pane.document.highlights.focus)
+        let search = try XCTUnwrap(pane.find.search)
+        var calls = 0
+        pane.find.search = { id, query, start in calls += 1; return try await search(id, query, start) }
+        defer { pane.find.search = search }
+        let deltas = 12
+        for index in 0..<deltas {
+            session.messages[1].text += " token \(index)."; draw()
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        let during = calls
+        session.messages[1].state = "complete"; draw()
+        try await eventually("The settled reply is counted") { draw(); return !pane.find.searching && pane.find.matches.count == deltas + 1 }
+        try await Task.sleep(for: .milliseconds(800))
+        print("FIND-STREAM deltas=\(deltas) searches-during=\(during) searches-total=\(calls)")
+        XCTAssertLessThanOrEqual(calls, 3, "A streaming reply is searched once it settles, not once per token")
+        XCTAssertEqual(pane.find.current, 0, "The first match stays the current one")
+        XCTAssertEqual(pane.document.highlights.focus?.serial, focus.serial, "Refreshing creates no new navigation request")
+    }
+    /// Rows changing while a search runs never cancel it: it finishes, and
+    /// one refresh follows once they are quiet. A search retired for another
+    /// reader's navigation is not restarted by them; it resumes with them.
+    @MainActor func testChangingRowsWaitForTheSearchUnderWayAndForResume() async throws {
+        let (model, pane, _) = try await findFixture(saved: false, source: "first needle")
+        let session = try XCTUnwrap(model.selected)
+        pane.showFind()
+        var calls = 0, holding = true, held: CheckedContinuation<Void, Never>?
+        defer { held?.resume() }
+        pane.find.search = { _, _, _ in
+            calls += 1
+            if holding { await withCheckedContinuation { held = $0 } }
+            return ContentSearch(hits: [ContentHit(id: "reply", position: 2, preview: "needle", count: calls)], total: 2, next: nil, revision: "fixture")
+        }
+        pane.find.setQuery("needle")
+        try await eventually("The first search is under way") { held != nil }
+        for index in 0..<4 { session.messages[1].text += " needle \(index)"; try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(calls, 1, "Changes wait for the search under way")
+        holding = false; held?.resume(); held = nil
+        try await eventually("The search finishes, then one refresh follows") { !pane.find.searching && calls == 2 }
+        XCTAssertEqual(pane.find.matches.count, 2)
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertEqual(calls, 2, "One refresh for all the changes")
+
+        holding = true
+        session.messages[1].text += " needle again"
+        try await eventually("A refresh is under way") { held != nil }
+        pane.find.retireReaderNavigation()
+        XCTAssertFalse(pane.find.searching)
+        session.messages[1].text += " and again"
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertEqual(calls, 3, "A retired search is not restarted by changing rows")
+        holding = false; held?.resume(); held = nil
+        pane.find.resumeReaderNavigation()
+        try await eventually("Resuming searches once") { !pane.find.searching && calls == 4 }
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertEqual(calls, 4)
+    }
+    /// While the chat runs, a refresh waits four times as long as the last
+    /// search took: a long chat changing in bursts is not searched again
+    /// after every burst. Once the run stops, it is searched again promptly.
+    @MainActor func testARunningChatWaitsInProportionToItsLastSearch() async throws {
+        let (model, pane, _) = try await findFixture(saved: false, source: "first needle")
+        let session = try XCTUnwrap(model.selected)
+        pane.showFind()
+        var calls = 0, started: [TimeInterval] = []
+        pane.find.search = { _, _, _ in
+            calls += 1; started.append(ProcessInfo.processInfo.systemUptime)
+            try await Task.sleep(for: .seconds(1))
+            return ContentSearch(hits: [ContentHit(id: "reply", position: 2, preview: "needle", count: 1)], total: 2, next: nil, revision: "fixture")
+        }
+        pane.find.setQuery("needle")
+        try await eventually("The first, one-second search finishes") { !pane.find.searching && calls == 1 }
+        session.state = "running"
+        XCTAssertTrue(session.busy)
+        for index in 0..<5 {
+            session.messages[1].text += " burst \(index)"
+            try await Task.sleep(for: .milliseconds(800))
+        }
+        XCTAssertEqual(calls, 1, "Bursts 0.8 s apart wait for four times the last search while the chat runs")
+        session.state = "idle"
+        let stopped = ProcessInfo.processInfo.systemUptime
+        try await eventually("The stopped chat is searched again") { !pane.find.searching && calls == 2 }
+        XCTAssertLessThan(started[1] - stopped, 2, "Once the run stops, the settled rows are searched promptly")
+        try await Task.sleep(for: .milliseconds(1_000))
+        XCTAssertEqual(calls, 2)
+    }
+    /// A refresh for streamed text keeps the reader's chosen match, its
+    /// highlight and the reader's place, and leaves the keyboard alone.
+    @MainActor func testStreamingRefreshKeepsTheReaderAndTheirChosenMatch() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, source: "needle here and needle again")
+        let session = try XCTUnwrap(model.selected)
+        func draw() { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        session.messages += [.init(id: "other-question", role: "user", text: "Read something else"),
+                             .init(id: "other-reply", role: "assistant", text: String(repeating: "Other plain paragraph.\n\n", count: 100)),
+                             .init(id: "live-question", role: "user", text: "One more"),
+                             .init(id: "live-reply", role: "assistant", text: "Streaming", state: "streaming")]
+        pane.refresh(); draw()
+        pane.showFind(); pane.find.setQuery("needle")
+        try await eventually("The initial search lands") {
+            draw(); return !pane.find.searching && !pane.document.focusPending && pane.document.focusText != nil
+        }
+        XCTAssertEqual(pane.find.matches.count, 2)
+        pane.find.step(1)
+        try await eventually("The reader chooses the second hit") { draw(); return !pane.document.focusPending }
+        XCTAssertEqual(pane.find.current, 1)
+        let focus = try XCTUnwrap(pane.document.highlights.focus), responder = window.firstResponder
+        let clip = pane.scrollView.contentView
+        pane.page.readerWillNavigate(upward: false)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: 750)); pane.scrollView.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: pane.scrollView)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: pane.scrollView)
+        draw()
+        let origin = clip.bounds.origin
+        XCTAssertGreaterThan(origin.y, 500, "The reader has left the hit behind")
+        for delta in [" with", " another needle", " arriving."] {
+            session.messages[5].text += delta; draw()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        session.messages[5].state = "complete"; draw()
+        try await eventually("The refresh counts the streamed needle") { draw(); return !pane.find.searching && pane.find.matches.count == 3 }
+        for _ in 0..<5 { await Task.yield(); draw() }
+        XCTAssertEqual(pane.find.current, 1, "The chosen match stays chosen")
+        XCTAssertEqual(pane.findBar?.count.line.text, "2 of 3")
+        XCTAssertEqual(pane.document.highlights.focus, focus, "Refreshing keeps the focused highlight without a new request")
+        XCTAssertFalse(pane.document.focusPending)
+        XCTAssertEqual(clip.bounds.origin.y, origin.y, accuracy: 1, "Refreshing never moves the reader")
+        XCTAssertTrue(window.firstResponder === responder, "Refreshing leaves the keyboard where it was")
+    }
+
     private var twoUsers: [WireValue] {
         ["question", "reply"].enumerated().map { index, id in
             .object(["type": .string("message"), "id": .string(id), "parentId": index == 0 ? .null : .string("question"),
@@ -1556,6 +1743,53 @@ final class TranscriptBugRegressionTests: XCTestCase {
         let session = try XCTUnwrap(model.selected), path = try XCTUnwrap(model.chats.first?.path)
         let hidden = try await model.history.searchContent(path: path, query: "alpha beta", start: 0, renderedAgentProse: true, presented: session.presentedMessages)
         XCTAssertTrue(hidden.hits.isEmpty, "The paired I/O card shows literal Markdown marks")
+    }
+
+    /// TRANSCRIPT-2: an MCP tool's image result, read back from its journal
+    /// with its call on the same page, keeps what its live card showed —
+    /// the description the helper recorded as `nativeDisplayText`, after any
+    /// text — in the call's completed card, where Find finds it. Receipts
+    /// without one keep their text. Copy Conversation keeps the helper's
+    /// source text, which never reads display text.
+    @MainActor func testReopenedImageResultsKeepTheirRecordedDescription() async throws {
+        let image: WireValue = .object(["type": .string("image"), "mimeType": .string("image/png"),
+                                        "data": .string(Data(repeating: 7, count: 3_000).base64EncodedString())])
+        let described = "[image/png result, 3000 bytes]"
+        let cases: [(name: String, content: [WireValue], display: String?, card: String)] = [
+            ("image only", [image], described, described),
+            ("text and image", [.object(["type": .string("text"), "text": .string("Rendered chart")]), image], "Rendered chart\n" + described, "Rendered chart\n" + described),
+            ("legacy text", [.object(["type": .string("text"), "text": .string("Legacy chart receipt")])], nil, "Legacy chart receipt"),
+            ("legacy image", [image], nil, "")]
+        for item in cases {
+            var receipt: [String: WireValue] = ["role": .string("toolResult"), "toolName": .string("chart_render"), "toolCallId": .string("call"),
+                "content": .array(item.content), "nativeToolStats": .object(["outcome": .string("completed")])]
+            if let display = item.display { receipt["nativeDisplayText"] = .string(display) }
+            let call = toolEntry("chart_render", arguments: .object(["chart": .string("sales")]))
+            let result: [String: WireValue] = ["type": .string("message"), "id": .string("result"), "parentId": .string("reply"), "message": .object(receipt)]
+            let entries: [WireValue] = [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": call["message"]!]), .object(result)]
+            let (model, pane, window) = try await findFixture(saved: true, entries: entries)
+            let rows = try XCTUnwrap(model.selected).presentedMessages, path = try XCTUnwrap(model.chats.first?.path)
+            XCTAssertEqual(rows.map(\.id), ["reply", "result"], "Call and receipt share the page")
+            let card = try XCTUnwrap(rows.first?.tools?.first)
+            XCTAssertEqual(card.state, "completed", item.name)
+            XCTAssertEqual(card.output, item.card, "\(item.name): the reopened card shows what the live card did")
+            XCTAssertFalse(TaskTranscriptPlan.rows(rows, lifecycle: nil).contains { if case .message(let row) = $0 { return row.id == "result" }; return false },
+                           "\(item.name): the card carries the receipt")
+            if !item.card.isEmpty {
+                XCTAssertTrue(plannedPayload(rows)["reply"]?.contains(item.card) == true, "\(item.name): the drawn card shows it")
+            }
+            for presented in [rows, []] {
+                let found = try await model.history.searchContent(path: path, query: "image/png", start: 0, renderedAgentProse: true, presented: presented)
+                XCTAssertEqual(found.hits.map(\.id), item.display == nil ? [] : ["result"], "\(item.name), presented=\(!presented.isEmpty)")
+                XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, item.display == nil ? 0 : 1, "\(item.name): one occurrence, on its receipt")
+            }
+            if item.display != nil { try await assertFind("image/png", in: pane, window: window, record: "result") }
+            else if !item.card.isEmpty { try await assertFind(item.card, in: pane, window: window, record: "result") }
+            var plain = receipt; plain["nativeDisplayText"] = nil
+            var source = result; source["message"] = .object(plain)
+            XCTAssertEqual(ConversationContent.text(result), ConversationContent.text(source), "\(item.name): copy text is the helper's source text")
+            XCTAssertEqual(ConversationContent.text(result).contains("[Image attachment omitted]"), item.content.contains(image), item.name)
+        }
     }
 
     private func recoveryLedger(terminal: String? = nil, legacy: Bool = false) throws -> [String: WireValue] {

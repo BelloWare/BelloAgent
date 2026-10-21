@@ -113,6 +113,17 @@ struct TranscriptFindCommand: Equatable {
     private var navigation: Task<Void, Never>?
     private var serial = 0
     private var needsResume = false
+    /// When the conversation last changed under this query, while its
+    /// results still wait to be counted again (`contentChanged`).
+    private var contentChangedAt: TimeInterval?
+    private var contentRefresh: Task<Void, Never>?
+    /// How long the last whole search took, from its first read to its last.
+    private var lastScan: TimeInterval = 0
+    /// How long a changed conversation stays quiet before it is searched
+    /// again. While the chat runs it also waits four times as long as the
+    /// last search took, so a long chat changing in bursts spends at most
+    /// about a fifth of its run searching again; once it stops, just this.
+    static let contentSettle: TimeInterval = 0.5
     /// The conversation's search: hits after `start`, with their counts.
     var search: ((String, String, Int) async throws -> ContentSearch)?
     /// Brings a message into view in the transcript.
@@ -122,17 +133,57 @@ struct TranscriptFindCommand: Equatable {
 
     func retireReaderNavigation() {
         if searching { task?.cancel(); task = nil; searching = false; needsResume = true }
+        // Resuming searches the conversation as it is then.
+        if needsResume { cancelContentRefresh() }
         stopNavigation()
     }
     func resumeReaderNavigation() {
         guard needsResume else { return }
         setQuery(query, restarting: true)
     }
+    /// The conversation's rows changed while the bar is open. Its query is
+    /// searched again once they have been quiet for a moment, as a refresh
+    /// (`setQuery(restarting:)`): a reply streaming in is one change, not a
+    /// search per token, and a search under way finishes before another
+    /// starts. A search retired for another reader's navigation is left to
+    /// resume with it.
+    func contentChanged() {
+        guard !query.isEmpty, !needsResume else { return }
+        contentChangedAt = ProcessInfo.processInfo.systemUptime
+        scheduleContentRefresh()
+    }
+    /// Seconds until the changed conversation has been quiet long enough,
+    /// or nil once nothing waits.
+    private var contentWait: TimeInterval? {
+        guard let changed = contentChangedAt else { return nil }
+        let quiet = pane?.session?.busy == true ? max(Self.contentSettle, lastScan * 4) : Self.contentSettle
+        return changed + quiet - ProcessInfo.processInfo.systemUptime
+    }
+    private func scheduleContentRefresh() {
+        guard contentRefresh == nil, contentChangedAt != nil, !searching, !needsResume else { return }
+        contentRefresh = Task { [weak self] in
+            // A run that stops shortens the wait: it is looked at again at
+            // least every `contentSettle`.
+            while let wait = self?.contentWait, wait > 0 {
+                try? await Task.sleep(for: .seconds(min(wait, Self.contentSettle)))
+                if Task.isCancelled { return }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.contentRefresh = nil
+            guard self.contentChangedAt != nil, !self.searching, !self.needsResume, !self.query.isEmpty else { return }
+            self.setQuery(self.query, restarting: true)
+        }
+    }
+    private func cancelContentRefresh() {
+        contentRefresh?.cancel(); contentRefresh = nil; contentChangedAt = nil
+    }
     func setQuery(_ text: String, restarting: Bool = false) {
         guard text != query || restarting else { return }
         let refreshing = restarting && text == query
         needsResume = false
         query = text
+        // This search reads the conversation as it is now.
+        cancelContentRefresh()
         task?.cancel(); failed = false
         if !refreshing { stopNavigation(); matches = []; current = nil }
         guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false); return }
@@ -141,6 +192,7 @@ struct TranscriptFindCommand: Equatable {
         task = Task { [weak self] in
             // Typing settles before the chat is searched.
             try? await Task.sleep(for: .milliseconds(150))
+            let began = ProcessInfo.processInfo.systemUptime
             var start = 0
             var refreshed: [Match] = []
             while !Task.isCancelled {
@@ -149,6 +201,7 @@ struct TranscriptFindCommand: Equatable {
                 catch {
                     guard let self, !Task.isCancelled, self.query == text else { return }
                     self.searching = false; self.failed = true; self.publish(focus: false)
+                    self.scheduleContentRefresh()
                     return
                 }
                 guard !Task.isCancelled, let self, self.query == text else { return }
@@ -165,6 +218,7 @@ struct TranscriptFindCommand: Equatable {
             }
             guard let self, !Task.isCancelled, self.query == text else { return }
             self.searching = false
+            self.lastScan = ProcessInfo.processInfo.systemUptime - began
             if refreshing {
                 let selected = self.current.flatMap { self.matches.indices.contains($0) ? self.matches[$0] : nil }
                 self.matches = refreshed
@@ -173,6 +227,8 @@ struct TranscriptFindCommand: Equatable {
             }
             else if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
             else { self.publish(focus: false) }
+            // Rows that changed while it ran are searched again once quiet.
+            self.scheduleContentRefresh()
         }
     }
     /// The first match in a message on the reader's screen, else the first.
@@ -187,6 +243,7 @@ struct TranscriptFindCommand: Equatable {
     }
     func clear() {
         needsResume = false
+        cancelContentRefresh()
         task?.cancel(); task = nil; stopNavigation(); query = ""; matches = []; current = nil; searching = false; failed = false
         pane?.document.highlights = TranscriptHighlights()
     }
