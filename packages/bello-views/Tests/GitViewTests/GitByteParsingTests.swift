@@ -155,7 +155,7 @@ final class GitByteParsingTests: ViewsTestCase {
             XCTAssertEqual(GitWorkingTreeWatcher.gitDirectory(under: checkout.path), root.path + "/" + storage)
             XCTAssertTrue(GitWorkingTreeWatcher.isInteresting(root.path + "/.git/refs/" + extender + "branch", under: root.path, stateOnly: true))
             let ignored = GitIgnoredPaths()
-            ignored.update(root: root.path, relative: ["folder/", extender + "ignored/"])
+            ignored.update(root: root.path, relative: ["folder/", extender + "ignored/"], scanStartedAt: 1)
             XCTAssertTrue(ignored.covers(root.path + "/folder/" + extender + "file"))
             XCTAssertTrue(ignored.covers(root.path + "/" + extender + "ignored/file"))
         }

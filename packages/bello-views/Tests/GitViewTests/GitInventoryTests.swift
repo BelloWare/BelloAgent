@@ -1506,7 +1506,7 @@ final class GitInventoryTests: ViewsTestCase {
     @MainActor func testWatcherInvalidatesConfigButNotWorkingFileSaves() async throws {
         let service = GitService(environment: environment, trusted: true)
         _ = try await service.status(in: root.path)
-        let watcher = GitWorkingTreeWatcher(root: root.path, onChange: {})
+        let watcher = GitWorkingTreeWatcher(root: root.path, onChange: { _ in })
         watcher.start(); defer { watcher.stop() }
         let warm = GitConfiguration.queryCount
         watcher.bridge?.deliver([root.appendingPathComponent("file").path], [0])

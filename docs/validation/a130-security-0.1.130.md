@@ -2351,3 +2351,18 @@ all pending-path mutable state is lock-protected, no lock spans a filesystem cal
 and abandoned work cannot publish a trust grant. The 250 ms admission check also
 rejects late completions if its timer was delayed by scheduling. No UI was changed.
 Final validation will be performed on the upstream-integrated result.
+
+
+### Upstream integration
+
+Merged `origin/dev/next` at `f6ac5cfd6937d9cd11eb1db55947c55ef4ade15c`
+with a merge commit, preserving both sides. Canonical file-path helpers retain
+our equal-specificity trust-denial rule and canonical folder aliases. Watcher
+configuration invalidation is combined with upstream's event timestamps and
+indexed ignore checks; a configuration change uses an unknown change batch so a
+later ignore scan cannot discard it. `FileFolderTests` retains its standalone
+resolver setup, inherited-hook ownership test and fsmonitor marker test.
+`xcodegen generate --quiet` regenerated the project. Two package fixtures needed
+upstream's new watcher callback/timestamp arguments; the initial integrated
+build log (`round12-merged-views.log`) records those compile errors, corrected
+before final validation. All views security fixtures continue to use `ViewsTestCase`.
