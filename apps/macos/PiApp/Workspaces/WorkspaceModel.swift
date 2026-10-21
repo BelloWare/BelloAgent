@@ -117,6 +117,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveRevisions: [String: Int] = [:]
     var resumeStopRevisions: [String: Int] = [:]
     var resumeTasks: [String: (task: Task<Void, Never>, family: Bool)] = [:]
+    /// Owned by `WorkspaceRun.swift` (`runActionKey`): one-shot Retry,
+    /// Continue and Compact presses on their way to a chat's helper.
+    var runActionsInFlight: Set<String> = []
     var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.

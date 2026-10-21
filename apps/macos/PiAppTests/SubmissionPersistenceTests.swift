@@ -1727,6 +1727,158 @@ import Darwin
         try await wire.host.shutdownAndWait()
     }
 
+    /// `/side <question>` empties the parent composer, so the question is the
+    /// side's captured first send: its own record commits before publication
+    /// waits. Process loss while the parent opens must leave the exact
+    /// question reachable from the indexed parent after relaunch.
+    func testSlashSideQuestionSurvivesProcessLossWhileItsParentOpens() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        let question = "Explain this failure"
+        model.opened.remove(parent.id); wire.heldMethod = "session.open"
+        parent.draft = "/side " + question; parent.directCommand = true
+        model.send(sessionID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id])
+        try await eventually("Parent opening held after the side's metadata committed") { wire.held != nil }
+        let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: side.id)
+        XCTAssertNotNil(keep, "The publication intent commits before the parent opens")
+        XCTAssertEqual(parent.draft, "", "The slash command took the question out of the parent composer")
+        // Reopening can take seconds; the emptied parent draft is saved by then.
+        await model.draftWrites.tasks[parent.id]?.value
+        let parentDraft = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+        XCTAssertFalse(parentDraft?.text.contains(question) == true)
+        // Process loss: no close, flush, transfer or failure path runs. The
+        // kernel releases the launch lease; only durable records remain.
+        model.sidePublicationOwnership = nil
+        let relaunched = makeWorkspaceModel(stateRoot: model.root, vault: model.vault)
+        relaunched.prewarmsHelpers = false
+        relaunched.automaticContextOperation = { _, _ in throw CancellationError() }
+        relaunched.commandAcceptanceRead = { _, _, _ in [] }
+        await relaunched.restore()
+        let reopened = try XCTUnwrap(relaunched.store)
+        let durable = try await reopened.selectionMetadata(id: parent.id, draft: false, anchor: false)
+        XCTAssertEqual(durable.recovered.map(\.text), [question], "The exact question is recoverable through the indexed parent")
+        XCTAssertTrue(relaunched.sideKeepIssues.isEmpty, "Not only a missing-file review notice")
+        let stranded = try await reopened.list(CommandIntent.self, kind: "pending:" + side.id)
+        XCTAssertTrue(stranded.isEmpty, "No input remains under the unpublished side")
+        if relaunched.selectedID != parent.id { await relaunched.select(parent.id) }
+        let shown = try XCTUnwrap(relaunched.displays[parent.id])
+        try await eventually("The parent offers the question") { shown.recoverableSubmissions.map(\.text) == [question] }
+        let input = try XCTUnwrap(shown.recoverableSubmissions.first)
+        relaunched.recoverDraft(input, insert: true); await relaunched.draftWrites.recoveries[parent.id]?.value
+        XCTAssertEqual(shown.draft, question)
+        let saved = try await reopened.get(DraftRecord.self, kind: "draft", id: parent.id)
+        XCTAssertEqual(saved?.text, question)
+        model.shutdown(); try await wire.host.shutdownAndWait()
+    }
+
+    /// The same command without a crash: the question is captured at once as
+    /// the side's first send, then published and dispatched exactly once.
+    func testSlashSideQuestionIsCapturedAtOnceAndSentOnce() async throws {
+        let (model, parent, wire) = try await fixture()
+        parent.draft = "/side Explain this failure"; parent.directCommand = true
+        model.send(sessionID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        XCTAssertEqual(view.submittingCommands.count, 1, "The question is captured before publication can wait")
+        XCTAssertEqual(view.draft, "", "and no longer sits in a replaceable side composer")
+        try await eventually("Side published and its question settled") { model.sides[parent.id]?.kept == true && !view.loading && view.submittingCommands.isEmpty }
+        let frames = wire.frames.filter { $0["method"]?.string == "turn.submit" }
+        XCTAssertEqual(frames.map { $0["sessionId"]?.string }, [side.id])
+        XCTAssertEqual(frames.first?["params"]?.object?["text"]?.string, "Explain this failure")
+        XCTAssertEqual(parent.draft, ""); XCTAssertEqual(view.draft, "")
+        XCTAssertNil(view.sendFailure); XCTAssertTrue(view.recoverableSubmissions.isEmpty)
+        try await wire.host.shutdownAndWait()
+    }
+
+    /// `/side Q` while another side of the chat is still publishing is
+    /// refused, and Q stays in the parent composer exactly as typed (and
+    /// durably, once that composer is saved), never lost.
+    func testSlashSideQuestionStaysInTheParentWhileAnotherSideIsPublishing() async throws {
+        let (model, parent, wire) = try await fixture(), store = try XCTUnwrap(model.store)
+        model.openSide(parentID: parent.id)
+        let first = try XCTUnwrap(model.sides[parent.id]), firstView = try XCTUnwrap(model.displays[first.id])
+        firstView.snapshotInFlight = true; firstView.draft = "First side message"
+        wire.heldMethod = "side.open"; model.send(sessionID: first.id)
+        try await eventually("First side still publishing") { wire.held != nil && model.sides[parent.id]?.pending == false }
+        let command = "/side Explain this failure"
+        parent.draft = command; parent.directCommand = true
+        model.send(sessionID: parent.id)
+        XCTAssertEqual(parent.draft, command, "A refused /side leaves the question where it was typed")
+        XCTAssertTrue(parent.directCommand)
+        XCTAssertEqual(model.sides[parent.id]?.id, first.id)
+        XCTAssertEqual(model.error, "Wait for the current side to finish opening before starting another. Your question is still in this chat's composer.")
+        model.draftChanged(parent); await model.draftWrites.tasks[parent.id]?.value
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+        XCTAssertEqual(saved?.text, command, "The question is never lost")
+        wire.release()
+        try await eventually("First side settled") { model.sides[parent.id]?.kept == true && !firstView.loading }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.compactMap { $0["params"]?.object?["text"]?.string }, ["First side message"])
+        try await wire.host.shutdownAndWait()
+    }
+
+    /// A question the new side could not capture (too large, or a connection
+    /// that is gone) stays in the parent composer, and no side is left
+    /// holding it.
+    func testSlashSideQuestionTheSideCannotSendStaysInTheParent() async throws {
+        for refusal in ["size", "connection"] {
+            let (model, parent, wire) = try await fixture()
+            let question = refusal == "size" ? String(repeating: "q", count: SubmissionLimits.messageBytes + 1) : "Explain this failure"
+            if refusal == "connection" { model.deletingProfiles.insert("p") }
+            parent.draft = "/side " + question; parent.directCommand = true
+            model.send(sessionID: parent.id)
+            XCTAssertTrue(parent.draft == "/side " + question && parent.directCommand, "The composer keeps the command as typed (\(refusal))")
+            XCTAssertNil(model.sides[parent.id], "No side is left holding a question it cannot send (\(refusal))")
+            XCTAssertNotNil(model.error, refusal)
+            model.deletingProfiles.remove("p")
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertFalse(wire.frames.contains { ["side.open", "turn.submit"].contains($0["method"]?.string ?? "") }, refusal)
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
+    /// `/side Q` while the chat has a pending side: Q never replaces that
+    /// side's unsent typing and never races its first send under way; it
+    /// stays in the parent composer with a notice. An empty, idle pending
+    /// side still takes Q as its first message.
+    func testSlashSideQuestionNeverReplacesOrRacesAPendingSide() async throws {
+        for state in ["sending", "sending and typed", "typed", "empty"] {
+            let (model, parent, wire) = try await fixture()
+            let sending = state.hasPrefix("sending")
+            if sending { model.opened.remove(parent.id); wire.heldMethod = "session.open" }
+            model.openSide(parentID: parent.id)
+            let side = try XCTUnwrap(model.sides[parent.id]), sideView = try XCTUnwrap(model.displays[side.id])
+            sideView.snapshotInFlight = true
+            if sending {
+                sideView.draft = "First side message"; model.send(sessionID: side.id)
+                try await eventually("The side's first send waits for its parent") { wire.held != nil }
+                XCTAssertTrue(model.sides[parent.id]?.pending == true && sideView.loading && sideView.draft.isEmpty)
+            }
+            if state == "sending and typed" { sideView.draft = "Typed in the side meanwhile" }
+            if state == "typed" { sideView.draft = "My unsent side draft" }
+            let sideDraft = sideView.draft, command = "/side Explain this failure"
+            parent.draft = command; parent.directCommand = true
+            model.send(sessionID: parent.id)
+            XCTAssertEqual(sideView.draft, sideDraft, "The side's typing is never replaced (\(state))")
+            if state == "empty" {
+                XCTAssertEqual(parent.draft, "", "An empty, idle pending side takes the question")
+                XCTAssertEqual(sideView.submittingCommands.count, 1)
+            } else {
+                XCTAssertEqual(parent.draft, command, "The question stays where it was typed (\(state))")
+                XCTAssertTrue(parent.directCommand, state)
+                XCTAssertEqual(model.error, sending
+                    ? "Wait for this chat's side to send its first message. Your question is still in this chat's composer."
+                    : "This chat's side has an unsent draft. Send or close it first; your question is still in this chat's composer.", state)
+            }
+            if sending { wire.release() }
+            try await eventually("Side settled (\(state))") { !sideView.loading && sideView.submittingCommands.isEmpty }
+            for _ in 0..<20 { await Task.yield() }
+            let sent = wire.frames.filter { $0["method"]?.string == "turn.submit" }.compactMap { $0["params"]?.object?["text"]?.string }
+            XCTAssertEqual(sent, sending ? ["First side message"] : state == "empty" ? ["Explain this failure"] : [], state)
+            XCTAssertEqual(sideView.draft, sideDraft, state)
+            if state != "empty" { XCTAssertEqual(parent.draft, command, state) }
+            try await wire.host.shutdownAndWait()
+        }
+    }
+
     func testFirstChatSendSurvivesTypingDuringMaterializationDraftWrite() async throws {
         let (model, view, wire) = try await fixture(), store = try XCTUnwrap(model.store)
         model.pendingChatIDs.insert(view.id)

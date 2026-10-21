@@ -701,6 +701,229 @@ import XCTest
         XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id], "Stop must retire the side fan-out after an accepted root request")
     }
 
+    /// A cost-paused family's Resume admitted before Archive stays retired
+    /// after Restore, whether the root or a paused side was archived while
+    /// the root's helper reopened: only a new Resume continues the family.
+    func testArchiveAndRestoreDuringRootOpeningRetireAFamilyResume() async throws {
+        for archivingSide in [false, true] {
+            let (model, view, wire) = try await fixture()
+            view.runState = .paused; view.runStateKnown = true; view.costPaused = true
+            let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: wire.root.appendingPathComponent("side_side.jsonl").path, profileID: "p", parentSessionID: view.id)
+            model.chats.append(side); try await model.store?.put(side, kind: "chat", id: side.id)
+            wire.pausedMembers = [side.id]
+            wire.heldMethod = "session.open"; wire.heldSessionID = view.id
+            model.resumeRun(sessionID: view.id)
+            try await eventually("root opening held") { wire.held != nil }
+            let archived = archivingSide ? side.id : view.id
+            _ = try await model.enqueueOrganization([archived], change: .archived(true)).value
+            XCTAssertTrue(model.record(archived)?.isArchived == true)
+            _ = try await model.enqueueOrganization([archived], change: .archived(false)).value
+            XCTAssertTrue(model.record(archived)?.isArchived == false)
+            wire.release()
+            try await eventually("family Resume retired") { !view.resuming && model.resumeTasks[view.id] == nil }
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.count, 0,
+                           "Archive retired the family Resume; Restore must not revive it (\(archivingSide ? "side" : "root") archived)")
+            let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(view.id)")
+            XCTAssertTrue(intents?.isEmpty == true)
+            // A new click resumes the restored family as usual.
+            model.resumeRun(sessionID: view.id)
+            try await eventually("fresh family Resume finished") { !view.resuming && model.resumeTasks[view.id] == nil }
+            XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id, side.id])
+        }
+    }
+
+    /// A member the archive cannot place in the family (its parent side is
+    /// saved but not loaded until the root opens) is still held to the
+    /// archive authority the family Resume captured: Archive and Restore
+    /// before its turn refuse its continue, while the root, untouched, resumes.
+    func testFamilyResumeKeepsItsArchiveAuthorityForMembersOutsideTheLoadedFamily() async throws {
+        let (model, view, wire) = try await fixture()
+        view.runState = .paused; view.runStateKnown = true; view.costPaused = true
+        let middle = ChatRecord(id: "middle", workspaceID: "w", title: "Middle", path: wire.root.appendingPathComponent("side_middle.jsonl").path, profileID: "p", parentSessionID: view.id)
+        let nested = ChatRecord(id: "nested", workspaceID: "w", title: "Nested", path: wire.root.appendingPathComponent("side_nested.jsonl").path, profileID: "p", parentSessionID: middle.id)
+        try await model.store?.put(middle, kind: "chat", id: middle.id)
+        model.chats.append(nested); try await model.store?.put(nested, kind: "chat", id: nested.id)
+        wire.pausedMembers = [nested.id]
+        wire.heldMethod = "session.open"; wire.heldSessionID = view.id
+        XCTAssertEqual(model.budgetOwner(for: nested).id, nested.id, "Until the root opens, the archive cannot name this member's family")
+        model.resumeRun(sessionID: view.id)
+        // Archived in the same turn as the click, before the root's opening loads the middle side.
+        let archive = model.enqueueOrganization([nested.id], change: .archived(true))
+        try await eventually("root opening held") { wire.held != nil }
+        _ = try await archive.value
+        _ = try await model.enqueueOrganization([nested.id], change: .archived(false)).value
+        XCTAssertTrue(model.record(nested.id)?.isArchived == false)
+        wire.release()
+        try await eventually("family Resume finished") { !view.resuming && model.resumeTasks[view.id] == nil }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "run.continue" }.compactMap { $0["sessionId"]?.string }, [view.id],
+                       "The member archived after the click is refused its continue")
+        let intents = try await model.store?.list(CommandIntent.self, kind: "pending:\(nested.id)")
+        XCTAssertTrue(intents?.isEmpty == true)
+    }
+
+    /// The cost-limit notice's Continue keeps the archive authority of its
+    /// click: Archive (and Archive then Restore) while its helper opens
+    /// dispatches neither `turn.retry` nor `queue.resume`; a new Continue does.
+    func testArchiveDuringCostLimitContinueOpeningRetiresIt() async throws {
+        for restore in [false, true] {
+            let (model, view, wire) = try await fixture()
+            view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+            XCTAssertFalse(model.costReading(for: view.id).held, "The fixture offers Continue")
+            wire.heldMethod = "session.open"
+            model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+            try await eventually("Continue waits for its helper to open") { wire.held != nil }
+            _ = try await model.enqueueOrganization([view.id], change: .archived(true)).value
+            if restore { _ = try await model.enqueueOrganization([view.id], change: .archived(false)).value }
+            wire.release()
+            let continuing: ([String: WireValue]) -> Bool = { ["turn.retry", "queue.resume"].contains($0["method"]?.string ?? "") }
+            try await eventually("Continue settled") { model.error != nil || wire.frames.contains(where: continuing) }
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertFalse(wire.frames.contains(where: continuing), "Archive retired the Continue (\(restore ? "restored" : "archived"))")
+            XCTAssertEqual(model.error, "Archive cancelled this operation. Restore the chat if needed, then try again.")
+            guard restore else { continue }
+            model.error = nil
+            model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+            try await eventually("A new Continue continues") { wire.frames.contains { $0["method"]?.string == "turn.retry" } }
+            XCTAssertNil(model.error)
+        }
+    }
+
+    /// Archived and restored while its `turn.retry` is answered "nothing to
+    /// retry", Continue does not fall back to `queue.resume` either.
+    func testArchiveDuringCostLimitContinueStopsItsQueueFallback() async throws {
+        let (model, view, wire) = try await fixture()
+        view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+        wire.heldMethod = "turn.retry"
+        model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+        try await eventually("turn.retry awaiting its answer") { wire.held != nil }
+        _ = try await model.enqueueOrganization([view.id], change: .archived(true)).value
+        _ = try await model.enqueueOrganization([view.id], change: .archived(false)).value
+        wire.rejectedMethod = "turn.retry"; wire.rejectionCode = "nothing_to_retry"
+        wire.release()
+        try await eventually("Continue settled") { model.error != nil || wire.frames.contains { $0["method"]?.string == "queue.resume" } }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "queue.resume" }, "No queued follow-ups resume after Archive")
+        XCTAssertEqual(model.error, "Archive cancelled this operation. Restore the chat if needed, then try again.")
+    }
+
+    /// One click admits one request. Repeated Continue, Retry or Compact
+    /// presses while the first attempt's helper is opening send nothing more
+    /// and add no notice; a `/compact` typed meanwhile stays in the composer.
+    /// Once that attempt has settled, the action works again.
+    func testRepeatedOneShotRunActionsWhileOpeningSendOneRequest() async throws {
+        for action in ["continue", "retry", "compact"] {
+            let (model, view, wire) = try await fixture()
+            view.applyCostReading(SessionCostReading(spentUSD: 0.25))
+            let method = action == "compact" ? "context.compact" : "turn.retry"
+            let sent = { wire.frames.filter { $0["method"]?.string == method }.count }
+            let press = {
+                switch action {
+                case "continue": model.costLimitNotice(.continueRun, sessionID: view.id, anchor: nil)
+                case "retry": model.action("turn.retry", sessionID: view.id)
+                default: model.action("context.compact", sessionID: view.id)
+                }
+            }
+            wire.heldMethod = "session.open"
+            press(); press()
+            try await eventually("The first \(action) waits for its helper") { wire.held != nil }
+            press()
+            if action == "compact" {
+                view.draft = "/compact keep the evidence list"; view.directCommand = true
+                model.send(sessionID: view.id)
+                XCTAssertEqual(view.draft, "/compact keep the evidence list", "A typed /compact is not dropped while one is on its way")
+            }
+            wire.release()
+            try await eventually("The first \(action) was sent") { sent() > 0 }
+            for _ in 0..<40 { await Task.yield() }
+            XCTAssertEqual(sent(), 1, "One click admits exactly one request (\(action))")
+            XCTAssertNil(model.error, action); XCTAssertEqual(view.notice, "", action)
+            // Settled, the action is available again: one more press, one more request.
+            try await eventually("\(action) works again once settled") { if sent() < 2 { press() }; return sent() >= 2 }
+            for _ in 0..<40 { await Task.yield() }
+            XCTAssertEqual(sent(), 2, action)
+        }
+    }
+
+    private func sameFile(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return URL(fileURLWithPath: lhs).standardizedFileURL.resolvingSymlinksInPath().path == URL(fileURLWithPath: rhs).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// The helper exits after a side is published, before the runtime open
+    /// that sends its first message (typed into the side, or `/side Q`). The
+    /// replacement helper replays the side's own journal, the family budget
+    /// stays with the parent, and the question is delivered once.
+    func testPublishedSideReopensItsOwnJournalAfterHelperLoss() async throws {
+        for entry in ["typed", "slash"] {
+            let (model, parent, wire) = try await fixture()
+            try await bindLossHandling(model, wire)
+            model.opened.insert(parent.id); wire.answersOpenWithPath = true
+            var lost = false
+            model.sendSteps = { step in
+                // Published: registered and open. The helper exits before
+                // the send opens the side's runtime for its first message.
+                guard step == "published", !lost, let connection = wire.host.connectionID else { return }
+                lost = true; wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+            }
+            let question = "Explain this failure"
+            if entry == "typed" {
+                model.openSide(parentID: parent.id)
+                let pending = try XCTUnwrap(model.sides[parent.id])
+                let typed = try XCTUnwrap(model.displays[pending.id]); typed.snapshotInFlight = true
+                typed.draft = question; model.send(sessionID: pending.id)
+            } else {
+                parent.draft = "/side " + question; parent.directCommand = true; model.send(sessionID: parent.id)
+            }
+            let sideID = try XCTUnwrap(model.sides[parent.id]).id, view = try XCTUnwrap(model.displays[sideID])
+            try await eventually("First side message settled (\(entry))") { !view.loading && view.submittingCommands.isEmpty }
+            XCTAssertTrue(lost, "The helper was lost between publication and the runtime open (\(entry))")
+            let journal = wire.root.appendingPathComponent("Workspaces/w/Sessions/side_\(sideID).jsonl").path
+            let reopened = wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == sideID }
+            XCTAssertEqual(reopened.count, 1, entry)
+            XCTAssertTrue(sameFile(reopened.first?["params"]?.object?["path"]?.string, journal), "The replacement helper replays the side's own journal (\(entry))")
+            let record = try XCTUnwrap(model.record(sideID))
+            let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: sideID)
+            XCTAssertTrue(sameFile(record.path, journal) && sameFile(stored?.path, journal), "The registered journal is never replaced (\(entry))")
+            XCTAssertEqual(model.budgetOwner(for: record).id, parent.id, "The family budget stays with the parent (\(entry))")
+            let sent = wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == sideID }.compactMap { $0["params"]?.object?["text"]?.string }
+            XCTAssertEqual(sent, [question], "Delivered once (\(entry))")
+            XCTAssertNil(view.sendFailure, entry)
+        }
+    }
+
+    /// A registered chat opens only its own journal. A caller holding the
+    /// record read before registration (no journal), or a helper answering
+    /// with another file, is refused; the registered path is never replaced.
+    func testOpenNeverReplacesARegisteredJournal() async throws {
+        for answer in ["stale caller", "other file"] {
+            let (model, parent, wire) = try await fixture()
+            try await bindLossHandling(model, wire)
+            model.opened.insert(parent.id); wire.answersOpenWithPath = true
+            model.openSide(parentID: parent.id)
+            let info = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[info.id])
+            view.snapshotInFlight = true
+            let stale = try XCTUnwrap(model.record(info.id))
+            XCTAssertNil(stale.path, "Read before publication")
+            view.draft = "First side message"; model.send(sessionID: info.id)
+            try await eventually("Side published and sent") { model.sides[parent.id]?.kept == true && !view.loading && view.submittingCommands.isEmpty }
+            let journal = try XCTUnwrap(model.record(info.id)?.path)
+            let connection = try XCTUnwrap(wire.host.connectionID)
+            wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+            XCTAssertFalse(model.opened.contains(info.id))
+            let opening = answer == "stale caller" ? stale : try XCTUnwrap(model.record(info.id))
+            if answer == "other file" { wire.openedPath = wire.root.appendingPathComponent("Workspaces/w/Sessions/\(info.id).jsonl").path }
+            let before = wire.frames.count
+            do { _ = try await model.open(opening); XCTFail("Opening another journal than the registered one must be refused (\(answer))") }
+            catch { XCTAssertEqual(error.localizedDescription, "This chat's saved conversation changed while this was starting. Try again.", answer) }
+            let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: info.id)
+            XCTAssertEqual(model.record(info.id)?.path, journal, answer); XCTAssertEqual(stored?.path, journal, answer)
+            XCTAssertFalse(model.opened.contains(info.id), answer)
+            let later = Array(wire.frames[before...]).filter { $0["sessionId"]?.string == info.id }.compactMap { $0["method"]?.string }
+            XCTAssertEqual(later, answer == "stale caller" ? [] : ["session.open", "session.close"], "No runtime is left on another journal (\(answer))")
+        }
+    }
+
     func testStopDuringResumeIntentPersistenceRemovesUndispatchedIntent() async throws {
         try await stopAfterResumePreflight(queued: false)
     }
@@ -880,6 +1103,11 @@ import XCTest
     var answered: [String] = []
     var heldMethod: String?
     var rejectedMethod: String?
+    var rejectionCode = "fixture_rejection"
+    /// Answer `session.open` as the helper does, naming the journal it
+    /// opened: the requested path, else a new `<id>.jsonl`, or `openedPath`.
+    var answersOpenWithPath = false
+    var openedPath: String?
     var heldSessionID: String?
     var held: [String: WireValue]?
     var heldFrames: [[String: WireValue]] = []
@@ -901,6 +1129,17 @@ import XCTest
             if !pausedMembers.isEmpty { result["cost"] = .object(["paused": .bool(true), "pausedMembers": .array(pausedMembers.map(WireValue.string))]) }
         }
         if frame["method"]?.string == "run.continue" { result["pausedMembers"] = .array(pausedMembers.map(WireValue.string)) }
+        if frame["method"]?.string == "session.open", answersOpenWithPath, let id = frame["sessionId"]?.string {
+            let path = openedPath ?? frame["params"]?.object?["path"]?.string ?? root.appendingPathComponent("Workspaces/w/Sessions/\(id).jsonl").path
+            if !FileManager.default.fileExists(atPath: path) {
+                do {
+                    try FileManager.default.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(), withIntermediateDirectories: true)
+                    let header: [String: WireValue] = ["type": .string("session"), "version": .number(3), "id": .string(id)]
+                    var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to: URL(fileURLWithPath: path))
+                } catch { XCTFail("Generated journal could not be written: \(error)") }
+            }
+            result["path"] = .string(path)
+        }
         let side = frame["method"]?.string == "side.open"
         if side || frame["method"]?.string == "session.fork", let id = frame["params"]?.object?[side ? "sideSessionId" : "forkSessionId"]?.string {
             let path = root.appendingPathComponent("Workspaces/w/Sessions/\(side ? "side" : "fork")_\(id).jsonl")
@@ -913,7 +1152,7 @@ import XCTest
         }
         guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }
         let rejected = frame["method"]?.string == rejectedMethod
-        if rejected { result = ["code": .string("fixture_rejection"), "message": .string("Fixture rejection")] }
+        if rejected { result = ["code": .string(rejectionCode), "message": .string("Fixture rejection")] }
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch), "commandId": command,
                              "ok": .bool(!rejected), "result": .object(result)]), connectionID: connection)
         answered.append(frame["method"]?.string ?? "")

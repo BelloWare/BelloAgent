@@ -59,6 +59,17 @@
 - [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
 - [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
 - [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+
+- [x] APP-WORKSPACE-7: `/side <question>` sends the question as the new side's first message, recorded before the parent opens, so a crash leaves it recoverable from the parent. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-7--confirmed-and-fixed)
+- [x] APP-WORKSPACE-8: Archiving any member of a cost-paused family retires its pending family Resume at the click; Restore cannot revive it, and members keep the archive authority captured with the click. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-8--confirmed-and-fixed)
+- [x] APP-WORKSPACE-9: A connection deleted while a chat switches to it is never rebound or published; the chat stays on its connection and says why, and a deletion during the final write shows the deleted-connection notice. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-9--confirmed-and-fixed)
+- [x] `/side Q` leaves the chat's composer only once a side has captured Q as its first message; every refusal keeps it exactly as typed, with a notice. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-2--the-three-reported-issues)
+- [x] `/side Q` never replaces a pending side's unsent typing or races its first send: Q stays in the chat's composer with a notice (needs owner decision); an empty, idle pending side still takes it.
+- [x] The cost-limit notice's Continue keeps its click's archive authority: Archive, or Archive then Restore, while its helper opens continues nothing.
+- [x] One press of Continue, Retry or Compact Now sends one request: repeats while it is on its way are ignored without a notice (no busy error, restarted compaction or duplicate retry), and a `/compact` typed meanwhile stays in the composer. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-3--one-request-per-continue-retry-or-compact-press)
+- [x] A published side whose helper exits before its first message goes out reopens its own `side_<id>.jsonl`, keeping its inherited history and family budget; an open never replaces a registered chat's journal with another file. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-4--a-published-side-reopens-its-own-journal)
+- [x] A refused `/side Q` leaves the keyboard in the chat's composer with the command and cursor as they were; only a side that captured the question takes the keyboard. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-5--the-keyboard-stays-with-a-refused-side-question)
+
 - [x] Recovering a failed, unregistered side submission commits the input to its saved parent's draft before consuming the independent record. [State model and validation](docs/validation/a130-workspace-0.1.130.md#round-17--captured-input-state-and-cross-instance-ownership).
 - [x] Every captured submission carries a launch lease; other instances cannot offer or consume live input, while crashed owners remain recoverable.
 - [x] Recovery actions hold ownership across storage waits and validate the exact current record before Insert or Discard.
