@@ -281,7 +281,7 @@ policies, not additional Pi agent loops.
   Settings and model files are both hash-bound; the inspector also shows the
   effective Pi-clamped level. Project-specific Pi setting overlays are not
   silently loaded; explicit app profile overrides remain visible.
-- Image references are bounded (4 / 16 MiB per turn; 8 MiB per file; 32 MiB
+- Image references are bounded (4 / 32 MiB per turn, 16 MiB before 0.1.130; 8 MiB per file; 32 MiB
   queued/steering reference budgets), hash-checked at execution, and passed to
   public Pi prompt `images`. Pi retains authoritative image inputs; React sees
   only an attachment marker. No arbitrary renderer filesystem bridge is added.

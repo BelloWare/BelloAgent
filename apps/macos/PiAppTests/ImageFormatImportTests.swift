@@ -373,23 +373,41 @@ final class ImageFormatImportTests: XCTestCase {
         }
     }
 
-    /// Converted copies count against the submission's four images and
-    /// 16 MiB like any other, on every entry point.
+    /// A message holds four images of 8 MiB, 32 MiB in all, as the bundled
+    /// helper loads them. Four noisy 12 MP photos, about 23 MB once converted,
+    /// attach on every entry point; a fifth image is still refused.
     @MainActor func testConvertedImagesKeepTheSubmissionLimits() async throws {
         let bench = try workbench("limits")
         let small = try (0..<5).map { try bench.file("photo-\($0).heic", try XCTUnwrap(Self.image(.heic))) }
-        // Noise TIFFs within 8 MiB whose PNGs are each over a third of 16 MiB.
-        let scans = try (0..<3).map { try bench.file("scan-\($0).tiff", try XCTUnwrap(Self.image(.tiff, width: 1650, height: 1200))) }
+        let noisy = try XCTUnwrap(Self.photo(grain: 0.25, type: .heic))
+        let photos = try (0..<4).map { try bench.file("IMG_\(2041 + $0).HEIC", noisy) }
         for entry in Entry.allCases {
-            for (files, limit) in [(small, "five images"), (scans, "over 16 MiB")] {
-                let attached = try await bench.attach(files, via: entry)
-                XCTAssertTrue(attached.isEmpty, "\(entry), \(limit)")
-                XCTAssertEqual(bench.model.error, "The images could not be attached: a submission supports four images and 16 MiB in total.", "\(entry), \(limit)")
-            }
-            let one = try await bench.attach([scans[0]], via: entry)
-            XCTAssertEqual(one.map(\.mimeType), ["image/png"], "\(entry)")
-            XCTAssertGreaterThan(one.first?.bytes ?? 0, 16 * 1024 * 1024 / 3, "\(entry): the fixture's copy is large enough")
-            XCTAssertLessThanOrEqual(one.first?.bytes ?? .max, 8 * 1024 * 1024, "\(entry): within the helper's per-image limit")
+            let refused = try await bench.attach(small, via: entry)
+            XCTAssertTrue(refused.isEmpty, "\(entry): five images")
+            XCTAssertEqual(bench.model.error, "The images could not be attached: a submission supports four images and 32 MiB in total.", "\(entry)")
+            let attached = try await bench.attach(photos, via: entry, timeout: .seconds(120))
+            XCTAssertNil(bench.model.error, "\(entry): \(bench.model.error ?? "")")
+            XCTAssertEqual(attached.map(\.name), photos.map(\.lastPathComponent), "\(entry)")
+            let total = attached.reduce(0) { $0 + $1.bytes }
+            print("IMAGE \(entry) four noisy 12 MP photos → \(attached.map(\.bytes)) bytes, \(total) in all")
+            XCTAssertGreaterThan(total, 16 * 1024 * 1024, "\(entry): more than the old 16 MiB")
+            XCTAssertTrue(attached.allSatisfy { $0.bytes <= 8 * 1024 * 1024 }, "\(entry): each within the helper's 8 MiB")
+        }
+    }
+
+    /// The submission's bounds themselves, on records: four images and
+    /// exactly 32 MiB fit; one byte more, or a fifth image, does not.
+    @MainActor func testASubmissionHoldsFourImagesUpTo32MiB() throws {
+        let bench = try workbench("bounds")
+        func images(_ sizes: [Int]) -> [AttachmentRecord] {
+            sizes.enumerated().map { AttachmentRecord(id: "i\($0.offset)-\(UUID().uuidString)", path: "/fixture/\($0.offset).png", sha256: "h", bytes: $0.element, mimeType: "image/png") }
+        }
+        let eight = 8 * 1024 * 1024, notice = "The images could not be attached: a submission supports four images and 32 MiB in total."
+        for (sizes, fits) in [([eight, eight, eight, eight], true), ([eight, eight, eight, eight + 1], false), ([1, 1, 1, 1, 1], false)] {
+            bench.session.attachments = []; bench.model.error = nil
+            XCTAssertEqual(bench.model.receiveAttachments(images(sizes), into: bench.session), fits, "\(sizes)")
+            XCTAssertEqual(bench.session.attachments.count, fits ? sizes.count : 0, "\(sizes)")
+            XCTAssertEqual(bench.model.error, fits ? nil : notice, "\(sizes)")
         }
     }
 

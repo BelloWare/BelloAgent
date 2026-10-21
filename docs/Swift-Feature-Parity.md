@@ -101,8 +101,9 @@ a supported format". OpenAI takes PNG, JPEG, WebP and non-animated GIF.
   fit the helper's 8 MiB gate, which the helper then sends as PNG or JPEG as
   pi does (a transparent one also keeps within pi's 4.5 MB of base64, so it
   stays PNG). Its chip shows the original file's name, saved with the draft
-  and never sent. The helper's attachment contract is unchanged: four images,
-  8 MiB each, 16 MiB in all.
+  and never sent. A message holds four images, 8 MiB each, 32 MiB in all (16
+  MiB before 0.1.130, raised so four converted photos fit), the same in the app
+  and the bundled helper.
 - **Animated images.** `PiImage.process` sends an animated GIF, WebP or PNG as
   its first frame, as PNG, with the hint `[Image converted from animated
   image/gif to image/png; only its first frame is shown.]`. Pi sends them as

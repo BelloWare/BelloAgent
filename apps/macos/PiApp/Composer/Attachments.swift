@@ -250,11 +250,11 @@ extension WorkspaceModel {
         // validation and append. The visible queue rewrite has no images of
         // its own; its parked draft still has the same submission limits.
         let existing = view.queueEditingID != nil ? (view.draftBeforeQueueEdit?.attachments ?? []) : view.attachments
-        var room = 16 * 1024 * 1024
-        guard existing.count + items.count <= 4, (existing + items).allSatisfy({ image in
+        var room = SubmissionLimits.imageTotalBytes
+        guard existing.count + items.count <= SubmissionLimits.images, (existing + items).allSatisfy({ image in
             guard image.bytes >= 0, image.bytes <= room else { return false }; room -= image.bytes; return true
         }) else {
-            view.notice = "The images could not be attached: a submission supports four images and 16 MiB in total."
+            view.notice = "The images could not be attached: a submission supports four images and \(SubmissionLimits.imageTotalBytes / 1_048_576) MiB in total."
             // Streaming snapshots replace composer notices; the error strip stays until dismissed.
             error = view.notice
             return false

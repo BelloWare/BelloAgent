@@ -245,6 +245,47 @@ final class PiImageFormatTests: XCTestCase {
         }
     }
 
+    /// Four converted 12 MP photos: 2,000-pixel PNGs of about 6 MB each, 24 MB
+    /// in all, within the 32 MiB a message holds (four images of 8 MiB). The
+    /// helper loads all four and each reaches the model within pi's bound.
+    func testFourLargeConvertedPhotosAreSentWithinPisBounds() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let rgb = CGColorSpaceCreateDeviceRGB(), width = 2000, height = 1500
+        var attachments: [JSON] = [], total = 0
+        for index in 0..<4 {
+            let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: rgb,
+                                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            let gradient = try XCTUnwrap(CGGradient(colorsSpace: rgb, colors: [CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1),
+                                                                               CGColor(red: 0.9, green: 0.7, blue: 0.4, alpha: 1)] as CFArray, locations: [0, 1]))
+            context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: height), options: [])
+            context.setAlpha(0.3); context.draw(ImageFormatFixtures.frame(width: width, height: height, red: index % 2 == 0), in: CGRect(x: 0, y: 0, width: width, height: height))
+            let data = try XCTUnwrap(ImageFormatFixtures.encoded(UTType.png.identifier, [try XCTUnwrap(context.makeImage())]))
+            XCTAssertGreaterThan(data.count, 16 * 1024 * 1024 / 4, "together more than the old 16 MiB")
+            XCTAssertLessThanOrEqual(data.count, 8 * 1024 * 1024)
+            let file = root.appendingPathComponent("photo-\(index).png"); try data.write(to: file); total += data.count
+            attachments.append(["path": JSON(file.path), "bytes": JSON(data.count), "sha256": JSON(sha256(data)), "mimeType": "image/png"])
+        }
+        print("ATTACH four converted photos: \(total) bytes")
+        var raw = try fixtureProfile().raw; raw["input"] = ["text", "image"]
+        let client = ScriptClient([answer("Four photos.")])
+        let session = try AgentSession(id: "four", profile: Profile(raw), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "Compare these.", attachments: attachments), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests
+        let user = try XCTUnwrap(requests.first?.last { $0.role == "user" })
+        let body = try ProviderClient.requestBody(profile: Profile(raw), messages: [user], instructions: "", tools: [], sessionID: "s")
+        let images = try XCTUnwrap(body["input"].list.last?["content"].list).filter { $0["type"].text == "input_image" }
+        XCTAssertEqual(images.count, 4)
+        for image in images {
+            let url = try XCTUnwrap(image["image_url"].text), data = try XCTUnwrap(url.split(separator: ",").last.map(String.init))
+            XCTAssertLessThan(data.utf8.count, PiImage.maxBytes, "pi's 4.5 MB of base64")
+            let sent = try XCTUnwrap(ImageFormatFixtures.read(try XCTUnwrap(Data(base64Encoded: data))))
+            XCTAssertEqual([sent.width, sent.height], [2000, 1500])
+        }
+        await session.close()
+    }
+
     /// For the record, on demand: what the helper sends for each converted
     /// copy `ImageFormatImportTests.testMeasureConvertedPhotos` saved.
     func testMeasureWhatTheHelperSends() throws {

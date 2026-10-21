@@ -248,9 +248,11 @@ extension WorkspaceModel {
         let images = draft.attachments ?? [], skills = draft.skills ?? []
         var limits: [String] = []
         if draft.text.utf8.count > SubmissionLimits.messageBytes { limits.append("more than 256 KiB of text") }
-        if images.count > 4 { limits.append("\(images.count) images (maximum 4)") }
-        if images.contains(where: { $0.bytes <= 0 || $0.bytes > 8 * 1024 * 1024 }) { limits.append("an image outside the 1 byte–8 MiB limit") }
-        if images.reduce(0.0, { $0 + Double($1.bytes) }) > 16 * 1024 * 1024 { limits.append("more than 16 MiB of images") }
+        if images.count > SubmissionLimits.images { limits.append("\(images.count) images (maximum \(SubmissionLimits.images))") }
+        if images.contains(where: { $0.bytes <= 0 || $0.bytes > SubmissionLimits.imageBytes }) { limits.append("an image outside the 1 byte–8 MiB limit") }
+        if images.reduce(0.0, { $0 + Double($1.bytes) }) > Double(SubmissionLimits.imageTotalBytes) {
+            limits.append("more than \(SubmissionLimits.imageTotalBytes / 1_048_576) MiB of images")
+        }
         if skills.count > 8 { limits.append("\(skills.count) skills (maximum 8)") }
         if skills.contains(where: { $0.arguments.utf8.count > 16_384 }) { limits.append("skill arguments over 16 KiB") }
         return limits.isEmpty ? nil : "Nothing was inserted: the combined draft would contain " + limits.joined(separator: ", ") + ". Make room in the composer, then insert again. The interrupted submission is still saved."

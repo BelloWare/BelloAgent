@@ -164,15 +164,28 @@ final class RecoveredDraftTests: XCTestCase {
     @MainActor func testByteAndArgumentLimitsKeepTheIntent() async throws {
         let (model, view, store, original) = try await fixture()
         var intent = original
-        var large = image(10); large = AttachmentRecord(id: large.id, path: large.path, sha256: large.sha256, bytes: 8 * 1024 * 1024, mimeType: large.mimeType)
-        view.attachments = [large, image(11)]
-        intent.attachments = [AttachmentRecord(id: "other", path: "/fixture/other", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png")]
+        view.attachments = (10..<13).map { AttachmentRecord(id: "i\($0)", path: "/fixture/i\($0).png", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png") }
+        // Four images, one byte over the 32 MiB a message holds.
+        intent.attachments = [AttachmentRecord(id: "other", path: "/fixture/other", sha256: "h", bytes: 8 * 1024 * 1024 + 1, mimeType: "image/png")]
         var chip = skill(1); chip.arguments = String(repeating: "x", count: 16_385); intent.skills = [chip]
         intent.text = String(repeating: "x", count: SubmissionLimits.messageBytes)
         try await store.put(intent, kind: "pending:chat", id: intent.id); view.recovered = [intent]
         model.recoverDraft(intent, insert: true)
         XCTAssertEqual(view.recovered, [intent]); XCTAssertEqual(view.draft, "Current draft")
-        XCTAssertTrue(view.notice.contains("256 KiB")); XCTAssertTrue(view.notice.contains("16 MiB")); XCTAssertTrue(view.notice.contains("arguments over 16 KiB"))
+        XCTAssertTrue(view.notice.contains("256 KiB")); XCTAssertTrue(view.notice.contains("more than 32 MiB of images")); XCTAssertTrue(view.notice.contains("arguments over 16 KiB"))
+    }
+
+    /// Four images of 8 MiB, 32 MiB in all, are what a message holds: the
+    /// recovered submission joins a draft that has three of them.
+    @MainActor func testFourImagesOfEightMiBStillInsert() async throws {
+        let (model, view, store, original) = try await fixture()
+        let images = (10..<14).map { AttachmentRecord(id: "i\($0)", path: "/fixture/i\($0).png", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png") }
+        view.attachments = Array(images.prefix(3))
+        var intent = original; intent.attachments = [images[3]]
+        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        model.recoverDraft(intent, insert: true)
+        try await eventually("recovery finished") { view.recovered.isEmpty }
+        XCTAssertEqual(view.attachments, images, view.notice)
     }
 
     @MainActor func testAStaleBannerCannotInsertAKnownAcceptedCommand() async throws {

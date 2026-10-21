@@ -482,7 +482,9 @@ func loadImages(_ attachments: [JSON]) throws -> [JSON] {
     var result: [JSON]=[], total=0
     for item in attachments {
         let bytes=try boundedInt(item["bytes"],maximum:8*1024*1024); total += bytes
-        guard bytes > 0, total <= 16*1024*1024 else { throw AgentError("attachment_limit", "Images exceed the submission limit") }
+        // Four images of 8 MiB: the app holds a draft to the same 32 MiB
+        // (SubmissionLimits), and pi's bound applies per image after this.
+        guard bytes > 0, total <= 32*1024*1024 else { throw AgentError("attachment_limit", "Images exceed the submission limit") }
         let file=canonical(try required(item["path"],"image path")), data=try readBounded(file,maximum:8*1024*1024)
         guard data.count == bytes, sha256(data) == item["sha256"].text else { throw AgentError("attachment_changed", "Selected image changed; select it again") }
         let b=Array(data.prefix(12)); let mime: String

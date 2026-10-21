@@ -5,7 +5,8 @@ Build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-images`; the
 text logs named below are in its `evidence/` directory.
 
 Round 1 is below; [round 2](#round-2--2026-10-21) (a review finding and two
-lead decisions) supersedes the points it names.
+lead decisions) and [round 3](#round-3--2026-10-21) (the 32 MiB message total)
+supersede the points they name.
 
 Owner request (2026-10-20, verbatim): "regarding image support, please support
 jpg and more image format, and if openai model does not support, just convert
@@ -57,7 +58,7 @@ from the image blocks the helper loads from the attachment path).
 
 ## Decisions
 
-- **Helper contract unchanged:** four images, 8 MiB each, 16 MiB per
+- **Helper contract unchanged** (round 3 raised the total to 32 MiB): four images, 8 MiB each, 16 MiB per
   submission, PNG/JPEG/GIF/WebP signatures with matching MIME and digest. The
   app converts to fit it; no reason to widen it was found.
 - **Originals over 8 MiB start at the helper's 2,000 pixels** (superseded in
@@ -119,7 +120,8 @@ mutation (below); on the base sources the chooser refused the HEIC before any
 draft check. `testConvertedImagesKeepTheSubmissionLimits` guards unchanged
 behavior: converted copies still meet the four-image and 16 MiB refusal on
 every entry point (five HEICs; three TIFF scans whose 5.9 MB PNGs exceed
-16 MiB together), and one such copy stays within 8 MiB.
+16 MiB together), and one such copy stays within 8 MiB. (Round 3 replaced the
+scans with four photos that now fit the 32 MiB total.)
 
 ### Focused results with the change
 
@@ -267,7 +269,8 @@ helper (was 0.005–0.009 s for a pass-through), once when the message is sent;
 its result is journaled. It adds pi's own note, `[Image: original 2000x1500,
 displayed at 2000x1500. …]`, as pi does for any image it re-encodes.
 
-**Needs lead/owner decision: the 16 MiB per-message total.** Bigger copies use
+**Resolved in [round 3](#round-3--2026-10-21): the total is now 32 MiB.** The
+question was the 16 MiB per-message total. Bigger copies use
 more of the helper's unchanged 16 MiB submission total (4 × 8 MiB would be
 32 MiB). Round 1's copies (1.97–3.04 MB) always let four photos into one
 message; round 2's (3.65–7.73 MB above) let four smooth ones in, but only two
@@ -319,3 +322,69 @@ viewed with the two refusal scenes. Attach Images… with `IMG_2041.HEIC` and
 `diagram.png` (attached as it is) above the kept draft, readable with their
 remove buttons in light, dark and at 920 points; the sidebar row shows its
 existing draft marker. The refusal scenes are unchanged.
+
+## Round 3 — 2026-10-21
+
+Lead decision on round 2's open question: a message holds four images of
+8 MiB, so 32 MiB in all (was 16 MiB), in the app and the bundled helper alike;
+the four-image and 8 MiB-per-image limits and `PiImage`'s 4.5 MB base64 bound
+per image are unchanged. Every place that encoded the figure:
+
+| Place | Change |
+| --- | --- |
+| `SubmissionLimits` (app) | New `images` (4), `imageBytes` (8 MiB) and `imageTotalBytes` (4 × 8 MiB) beside `messageBytes` |
+| `receiveAttachments` (composer, queued-edit parking, recovery waits) | Uses them; notice "…a submission supports four images and 32 MiB in total." |
+| `recoveryLimit` (inserting a recovered submission) | Uses them; "more than 32 MiB of images" |
+| `loadImages` (helper) | Total `32*1024*1024` |
+| `docs/Swift-Feature-Parity.md`, `docs/Compatibility.md`, NEXT-RELEASE.md | 32 MiB (16 MiB before 0.1.130) |
+
+No other app, helper, script or wire-test site encodes the image total (other
+16 MiB figures are tool output, response, write-content and read-tool bounds).
+The bound changes no stored format: drafts keep the same fields, so a draft
+saved by the old app still loads (`testAChipNameIsSavedWithTheDraftButNeverSent`
+decodes one), and it was within the smaller limits it now meets. With four
+images and 8 MiB each, a total over 32 MiB can only come from records past the
+per-image limit, which `loadImages` already refuses one by one; the app's
+check is kept as before. Downstream bounds are unchanged: each image still
+reaches the model within 4.5 MB of base64, as four could before.
+
+Tests (logs prefixed `r3-`):
+
+- `PiImageFormatTests.testFourLargeConvertedPhotosAreSentWithinPisBounds`: four
+  2,000 × 1,500 PNGs of 6.8 MB (27.3 MB in all) are loaded and sent; each
+  reaches the request as 2,000 × 1,500 within 4.5 MB of base64.
+- `ImageFormatImportTests.testConvertedImagesKeepTheSubmissionLimits`: four
+  noisy 12 MP HEICs attach on every entry point (5.75 MB copies, 23.0 MB in all,
+  named after their files); five images are refused with the new notice.
+- `ImageFormatImportTests.testASubmissionHoldsFourImagesUpTo32MiB`: four records
+  of exactly 8 MiB fit; 32 MiB + 1 byte and a fifth image are refused, with the
+  notice.
+- `RecoveredDraftTests`: a recovered image making 32 MiB + 1 byte is refused
+  with "more than 32 MiB of images"; one completing four 8 MiB images inserts.
+- `ComposerImportSubmissionTests` and `QueuedAttachmentLimitTests` byte cases now
+  use two 16 MiB records so they still cross the total; their notices read
+  "32 MiB".
+
+Failing first on round 2 (`89358925`): `r3-failing-first-helper.log`, 1 test
+failed with `attachment_limit` ("Images exceed the submission limit") for the
+27.3 MB of photos; `r3-failing-first-app.log`, 29 tests with 22 failures across
+both `ImageFormatImportTests` limit tests, both `ComposerImportSubmissionTests`
+notice checks and both `RecoveredDraftTests` cases (the four photos and the
+exactly 32 MiB records were refused with the 16 MiB notice).
+`QueuedAttachmentLimitTests` (2) passed there too, as guards.
+
+Mutations, each alone, rebuilt, run and restored: h7, the helper's total back
+to 16 MiB, failed `testFourLargeConvertedPhotosAreSentWithinPisBounds`
+(`r3-mutation-h7-helper-total-16mib.log`); a14, the app's
+`imageTotalBytes` back to 16 MiB, failed both `ImageFormatImportTests` limit
+tests and both `RecoveredDraftTests` cases (`mutation-a14-app-total-16mib.log`).
+
+| Suite | Result |
+| --- | --- |
+| Helper image tests (`r3-helper-images.log`) | 34 tests, 1 on-demand skip, 0 failures |
+| Helper, full (`r3-helper-full.log`) | 1,152 tests, 8 skipped, 0 failures |
+| StreamingCostTests alone under the lane lock (`r3-helper-cost.log`) | 5 tests, 0 failures |
+| Wire / concurrent / acceptance on the rebuilt Release helper | 40 OK, 4 OK, 3 OK |
+| App, round 2's parallel-lane attachment and draft classes (`r3-app-parallel-classes.log`) | 171 tests, 1 on-demand skip, 0 failures |
+| App, round 2's serial-lane classes and gallery under the lane lock (`r3-app-serial.log`) | 71 tests (3 + 6 + 17 + 24 + 5 + 14 + 2), 0 failures |
+
