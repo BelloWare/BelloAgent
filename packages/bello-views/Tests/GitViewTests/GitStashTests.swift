@@ -1,7 +1,7 @@
 import XCTest
 @testable import GitView
 
-final class GitStashTests: XCTestCase {
+final class GitStashTests: ViewsTestCase {
     func testStashSelectorIsRecheckedAfterListFingerprintRead() async throws {
         let f = try BranchFixture(); defer { f.close() }
         for number in 1...2 {

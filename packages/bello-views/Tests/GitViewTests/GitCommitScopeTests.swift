@@ -4,7 +4,7 @@ import XCTest
 /// What a commit takes is always said: the checked files' working-tree state,
 /// or the index as staged; neither is inferred from the other. Reword Last
 /// Commit changes the message and nothing else. Real repositories throughout.
-final class GitCommitScopeTests: XCTestCase {
+final class GitCommitScopeTests: ViewsTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {

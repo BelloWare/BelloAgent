@@ -3,7 +3,7 @@ import XCTest
 
 /// Only generated, local repositories. The fixture's config also protects
 /// GitService calls, which deliberately use the repository's own settings.
-final class GitHistoryQueryTests: XCTestCase {
+final class GitHistoryQueryTests: ViewsTestCase {
     private var root: URL!
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("history-query-" + UUID().uuidString)

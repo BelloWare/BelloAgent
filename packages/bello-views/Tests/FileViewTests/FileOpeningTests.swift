@@ -1,7 +1,7 @@
 import XCTest
 @testable import FileView
 
-final class FileOpeningTests: XCTestCase {
+final class FileOpeningTests: ViewsTestCase {
     @MainActor func testAFIFOWithoutAWriterFailsWithoutWaitingForOne() async throws {
         let root = scratchRoot("file-fifo")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

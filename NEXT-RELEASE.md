@@ -253,7 +253,7 @@
 - [x] Find searches selection-copy text, normalizing Markdown list markers, block/table breaks and preview chrome, with exact rendered highlight mapping and literal raw/code whitespace preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Copy and Find apply every marked block separator independently of color/style runs, keeping cached matches stable through syntax coloring. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
-- [x] Helper and app tests report every failing assertion. XCTest dropped a failure raised off the main thread while it recorded another one (as few as 30 of 40 after awaits), so `HelperTestCase` and `IssueRecordingGuard.m` record it afterwards. Test verdicts were never affected, and the full helper suite shows no hidden failures. Guards: `IssueRecordingTests`, `IssueRecordingGuardTests` and `scripts/tests/test_xctest_issue_recording.py`. [Validation](docs/validation/a130-asynctests-0.1.130.md).
+- [x] Helper, views-package and app tests report every failing assertion. XCTest dropped a failure raised off the main thread while it recorded another one (as few as 30 of 40 after awaits), so `HelperTestCase`, `ViewsTestCase` and `IssueRecordingGuard.m` record it afterwards. Test verdicts were never affected, and the full helper and views suites show no hidden failures. Guards: both packages' `IssueRecordingTests`, `IssueRecordingGuardTests` and `scripts/tests/test_xctest_issue_recording.py`. [Validation](docs/validation/a130-asynctests-0.1.130.md).
 
 ## 0.1.129
 

@@ -7,8 +7,8 @@ Workstream: `dev/a130-asynctests`, base `f80e83cb`. Xcode 16.1 (16B40), Swift 6.
 - **Reproduced.** Failures recorded off the main thread are dropped by XCTest itself, not by repository code: in the helper bundle a test with 40 failing assertions reported as few as 30 (`evidence/helper-bundle-30-runs.txt`).
 - **Root cause.** XCTest drops an issue that reaches it while the same thread is recording another issue of the same test. Assertions made off the main thread are queued for the main thread, which empties that queue inside each recording, so they hit this whenever the main thread starts recording while the test is still failing.
 - **No test can pass because of it.** The dropped issue is always nested inside an issue of the same test that XCTest has already counted. The gate's pass/fail verdicts stand. Failure **counts** and **messages** do not: failing-first and mutation evidence may under-report.
-- **Fix.** Every helper test class derives from `HelperTestCase`, and the app test bundle links `IssueRecordingGuard.m`. Each records a nested issue once the outer one is done. Production code is unchanged.
-- **Hidden failures: none.** The full helper suite passes before and after (1,162 → 1,163 tests, 0 failures), as the mechanism predicts.
+- **Fix.** Every helper test class derives from `HelperTestCase`, every views-package test class from `ViewsTestCase` (round 2, below), and the app test bundle links `IssueRecordingGuard.m`. Each records a nested issue once the outer one is done. Production code is unchanged.
+- **Hidden failures: none.** The full helper suite (1,162 → 1,163 tests) and views package (345 → 346) pass before and after with 0 failures, as the mechanism predicts.
 
 ## Root cause
 
@@ -104,9 +104,41 @@ The pass/fail set is identical before and after, as the mechanism predicts. No t
 
 ## For the lead
 
-- Branches merged later that add `final class …: XCTestCase` to the helper tests will fail `IssueRecordingTests` until they derive from `HelperTestCase`. The fix is a one-word change.
-- If a later Xcode stops dropping the nested issue, `test_xctest_issue_recording.py` fails on its plain-XCTest control and says to retire both workarounds.
-- Validation records that quote failure counts from earlier helper or app runs (failing-first and mutation logs) may under-count. Their failing/passing conclusions hold.
+- Branches merged later that add `final class …: XCTestCase` to the helper or views tests will fail the matching `IssueRecordingTests` until they derive from `HelperTestCase` or `ViewsTestCase`. The fix is a one-word change.
+- If a later Xcode stops dropping the nested issue, `test_xctest_issue_recording.py` fails on its plain-XCTest control and says to retire the workarounds.
+- Validation records that quote failure counts from earlier helper, views or app runs (failing-first and mutation logs) may under-count. Their failing/passing conclusions hold.
 - Assertions in unawaited tasks remain a separate hazard: they are attributed to whichever test is running, or lost at the end of a run. None were found; the handoff note says to await them.
-- Not changed, same exposure: `packages/bello-views`, with 291 `async` tests in 34 classes across three test targets. It would need a copy of `HelperTestCase` in each target or a shared test-support target. **Needs a lead decision.**
 - The full app suite was not run here: the replaced method runs only for failing tests. `TestHostIsolationTests` (serial lane, unchanged `TestIsolationGuard.m`) was not rerun.
+
+## Round 2: packages/bello-views (lead decision)
+
+The views package had the same exposure: 291 `async` tests in 34 classes across `FileViewTests`, `GitViewTests` and `FileFinderTests`. A throwaway probe in its test bundle (`evidence/probe-sources/views-bundle-ZZViewsIssueProbeTests.swift`, 10 runs, `probe-views/`) recorded:
+
+| Shape (intended) | Plain `XCTestCase` | `ViewsTestCase` |
+| --- | --- | --- |
+| deterministic nested issue (2) | 1 every run | 2 every run |
+| 8 × 5 bursts after sleeps (40) | 30–40, 6 of 10 runs short | 40 |
+| 40 × (3 ms sleep; `XCTAssertEqual`) (40) | 38–39, every run short | 40 |
+
+The fix has three parts:
+
+- **Shared base.** `Tests/BelloViewsTestSupport/ViewsTestCase.swift` holds `open class ViewsTestCase` with the same deferral as `HelperTestCase`, and nothing else.
+- **Manifest.** `Package.swift` appends the `BelloViewsTestSupport` target after the `Package(…)` initializer and adds it to every test target's dependencies. The existing target list is untouched, so the security branch's edits to it merge cleanly. No product includes the target: `swift package describe` lists only `FileView`, `GitView` and `FileFinder` in the three products. An Xcode build of the app test host compiled only those three (`Intermediates.noindex/BelloViews.build/Debug`), produced no `BelloViewsTestSupport` artifact, and its binaries contain no `ViewsTestCase` symbol (`logs/r2-app-IssueRecordingGuardTests.log`; that DerivedData was then deleted). The SwiftPM CLI's `swift build`, with or without `--product`, compiles every regular target including this one, which imports only XCTest. It is never linked into a product.
+- **Per-target alias.** Each test target has a two-line `ViewsTestCase.swift` (`typealias ViewsTestCase = BelloViewsTestSupport.ViewsTestCase`), so a test file needs no extra import. All 34 classes now derive from `ViewsTestCase`; each edit is that one-word base-class change.
+
+Guards:
+
+- `FileViewTests/IssueRecordingTests` checks every `XCTestCase` subclass in the views bundle. SwiftPM links all three targets into it, and the test also fails unless it finds classes from all three. Reverting `GitStashTests` to `XCTestCase` fails naming `GitViewTests.GitStashTests` (`logs/views-mutation-inheritance.log`).
+- `scripts/tests/test_xctest_issue_recording.py` now builds `ViewsTestCase` alongside `HelperTestCase` and expects 2 from each. Removing `ViewsTestCase`'s deferral fails with `1 != 2 : ViewsTestCase` (`evidence/mutation-viewstestcase-python-guard.txt`).
+
+| Run | Result |
+| --- | --- |
+| Views package, base (`logs/views-baseline.log`) | 345 tests, 3 skipped, 0 failures; 556.0 s, 9:17 wall; load 2.6 → 7.1 |
+| Views package, fix (`logs/views-fixed.log`) | 346 tests (+`IssueRecordingTests`), 3 skipped, 0 failures; 566.2 s, 9:27 wall; load 3.9 → 6.2 |
+| Helper `IssueRecordingTests` (`logs/r2-helper-IssueRecordingTests.log`) | 1 test passed |
+| Python, with `PI_BUILD_ROOT` (`logs/r2-python.log`) | 148 tests OK; the helper probe test now covers both bases |
+| App `IssueRecordingGuardTests` against the new manifest | 1 test passed |
+
+No views test newly fails, so no hidden failure appeared. The +10 s is noise; a passing test never calls `record(_:)`.
+
+`dev/a130-security` adds five `GitViewTests` classes (`GitByteParsingTests`, `GitHTTPRedirectTests`, `GitInventoryPerformanceTests`, `GitInventoryTests`, `GitRepositorySecurityTests`). At merge each needs the one-line change `final class X: XCTestCase {` → `final class X: ViewsTestCase {`, with no import, or `IssueRecordingTests` fails naming it. That branch also inserts lines straight after `FolderBrowserTests`' class line, so expect one small conflict there: keep their insertion and the `ViewsTestCase` base. A new views test target would get the dependency automatically, but it needs its own two-line `ViewsTestCase.swift` alias.

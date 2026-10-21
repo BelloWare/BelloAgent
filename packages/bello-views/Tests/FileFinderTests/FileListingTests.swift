@@ -7,7 +7,7 @@ import XCTest
 /// one a walk; bounded, and saying what it left out; a folder inside another
 /// listed on its own; the finder listing again only when asked after a
 /// moment, every asker waiting on one listing, and one stopped not kept.
-final class FileListingTests: XCTestCase {
+final class FileListingTests: ViewsTestCase {
     private var root: URL!
     private var git: TestGit!
 

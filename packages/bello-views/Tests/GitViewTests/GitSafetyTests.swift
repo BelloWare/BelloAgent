@@ -2,7 +2,7 @@ import XCTest
 @testable import GitView
 
 /// Generated repositories only. No inherited hooks, signing, remotes or helpers.
-final class GitSafetyTests: XCTestCase {
+final class GitSafetyTests: ViewsTestCase {
     @MainActor func testConfirmationScopePluralizesFilesAndTargetUsesAShortHash() async throws {
         try seed(); try write("file.txt", "changed\n"); try git(["add", "file.txt"])
         let controller = try await read(); defer { controller.letGo() }

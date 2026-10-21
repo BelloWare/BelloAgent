@@ -5,7 +5,7 @@ import XCTest
 /// each hold keep their entries whatever the budget, each independently of
 /// the others; letting go is idempotent; everything else goes, longest
 /// unused first, but for the entry just put.
-final class FileReadCacheTests: XCTestCase {
+final class FileReadCacheTests: ViewsTestCase {
     private func put(_ cache: inout FileReadCache, _ page: Int, cost: Int = 10) {
         cache.put(.page(page), .page(firstLine: page, lines: []), cost: cost, asked: cache.tick())
     }

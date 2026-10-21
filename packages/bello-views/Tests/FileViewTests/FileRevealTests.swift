@@ -5,7 +5,7 @@ import AppKit
 /// Lines a file is opened at (`FileTextView.reveal`): set apart and shown,
 /// the insertion point at the first, once the text has them; the last line
 /// if the text ends before them, whether it ended, was cut short or failed.
-final class FileRevealTests: XCTestCase {
+final class FileRevealTests: ViewsTestCase {
     @MainActor private func shown(_ source: FileTextSource) -> (NSWindow, FileTextScrollView) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
