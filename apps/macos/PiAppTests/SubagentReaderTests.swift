@@ -27,6 +27,34 @@ private actor ReaderLookupGate {
 }
 
 final class SubagentReaderTests: XCTestCase, SerialTestLane {
+    @MainActor func testPendingReaderBaselineDefersAnchorAndKeepsParentTyping() async throws {
+        let (model, _) = try fixture(), store = try XCTUnwrap(model.store)
+        model.prewarmsHelpers = false
+        let parent = try XCTUnwrap(model.selected), child = try XCTUnwrap(model.displays["chat-child"])
+        _ = try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(parent.id)), view: parent, current: { true })
+        try await store.put(TranscriptAnchor(id: "saved-reply", offset: 17, followsBottom: false), kind: "anchor", id: child.id)
+        let gate = DraftBaselineGate(expectation(description: "Reader metadata held"))
+        let blocker = Task { await store.holdDraftBaseline(gate) }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        defer { gate.resume.signal() }
+        let opening = Task { await model.openSubagentTab(child.id) }
+        try await eventually("Pending draft fixture did not settle") { model.subagentTab(child.id)?.loading != nil }
+        XCTAssertFalse(child.selectionMetadataLoaded)
+        parent.draft = "Typing beside the reader"; model.draftChanged(parent)
+        child.scrollAnchor = nil; model.anchorChanged(child)
+        XCTAssertNil(child.anchorWrite, "No versioned anchor write before its baseline")
+        gate.resume.signal(); await blocker.value; _ = await opening.value
+        await parent.anchorWrite?.value; await child.anchorWrite?.value
+        await model.draftWrites.tasks[parent.id]?.value
+        XCTAssertTrue(child.selectionMetadataLoaded)
+        let anchor = try await store.get(TranscriptAnchor.self, kind: "anchor", id: child.id)
+        let draft = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+        let childDraft = try await store.get(DraftRecord.self, kind: "draft", id: child.id)
+        XCTAssertNil(anchor); XCTAssertNil(childDraft, "Managed readers never gain a composer")
+        XCTAssertEqual(draft?.text, parent.draft)
+        XCTAssertTrue(parent.draftConflicts.isEmpty)
+    }
+
     @MainActor func testSupersededReloadCannotInheritANewerReveal() async throws {
         for hosted in [false, true] {
             for around in [nil, "obsolete-target"] as [String?] {
@@ -1077,6 +1105,14 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         let (model, _) = try fixture()
         let original = try XCTUnwrap(model.record("chat-child"))
         let kept = try await open(original.id, in: model)
+        let store = try XCTUnwrap(model.store)
+        let conflict = SessionDisplay(id: "conflicted-chat"); conflict.used = .distantPast
+        model.chats.append(ChatRecord(id: conflict.id, workspaceID: original.workspaceID, title: "Conflict", profileID: original.profileID))
+        model.displays[conflict.id] = conflict
+        conflict.draftVersion = try await store.draftVersion(id: conflict.id)
+        try await store.put(DraftRecord(id: conflict.id, text: "Other instance's draft"), kind: "draft", id: conflict.id)
+        conflict.draft = "Retained while child readers close"
+        try? await store.put(conflict.savedDraft, kind: "draft", id: conflict.id, draftVersion: conflict.draftVersion)
         model.displays["chat-side"]?.runState = .running
         for index in 0..<14 {
             var child = original; child.id = "child-\(index)"; child.delegation?.childSessionID = child.id
@@ -1088,6 +1124,9 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
             model.tabs.close(tab)
         }
         XCTAssertLessThanOrEqual(model.displays.count, 8)
+        XCTAssertTrue(model.displays[conflict.id] === conflict)
+        let copies = try await store.draftConflicts(id: conflict.id)
+        XCTAssertTrue(copies.contains(where: { $0.draft.text == conflict.draft }))
         XCTAssertNotNil(model.displays["chat-parent"]); XCTAssertNotNil(model.displays["chat-side"])
         XCTAssertNotNil(model.displays[kept.key]); XCTAssertTrue(model.subagentTab(kept.key) === kept)
     }

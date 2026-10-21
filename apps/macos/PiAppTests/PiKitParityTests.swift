@@ -70,7 +70,10 @@ import XCTest
         ]
         let titles = ["primary": "Save Changes", "secondary": "Reload", "ghost": "Show more", "ghostDanger": "Remove…", "danger": "Delete"]
         for (name, style, view) in styles {
-            try await check("button-\(name)", view) { PiKit.Button(titles[name]!, style: style) }
+            // The repaired capsule outline uses circular arcs; the old
+            // reference has a continuous edge. Its small raster difference
+            // uses the curve allowance; CapsuleRenderingTests rejects seams.
+            try await check("button-\(name)", share: style == .secondary ? Self.shapeShare : Self.allowedShare, view) { PiKit.Button(titles[name]!, style: style) }
             try await check("button-\(name)-disabled", view.disabled(true)) { let button = PiKit.Button(titles[name]!, style: style); button.isEnabled = false; return button }
         }
         try await check("button-primary-compact", SwiftUI.Button("Send") {}.buttonStyle(.piPrimaryCompact)) { PiKit.Button("Send", style: .primary, compact: true) }

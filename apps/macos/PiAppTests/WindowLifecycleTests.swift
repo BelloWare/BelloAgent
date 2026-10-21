@@ -36,6 +36,26 @@ final class WindowLifecycleTests: XCTestCase, SerialTestLane {
         for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
+    @MainActor func testClosingTheLastWindowKeepsAConflictedDraftDurable() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(root); defer { model.shutdown() }
+        let store = try XCTUnwrap(model.store), view = SessionDisplay(id: "chat")
+        view.selectionMetadataLoaded = true; model.displays[view.id] = view
+        view.draftVersion = try await store.draftVersion(id: view.id)
+        let other = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: view.id, text: "Other instance"), kind: "draft", id: view.id)
+        view.draft = "Losing draft before closing window"; model.draftChanged(view)
+        await model.draftWrites.tasks[view.id]?.value
+        let (window, restore) = onlyWindow(); defer { restore() }
+        let guarder = WindowActivityGuard.Coordinator(model); guarder.attach(window); defer { guarder.detach() }
+        XCTAssertTrue(guarder.windowShouldClose(window))
+        window.close()
+        let copies = try await other.list(DraftRecord.self, kind: "draft-conflict:" + view.id)
+        XCTAssertTrue(copies.contains(where: { $0.text == view.draft }))
+        XCTAssertTrue(model.displays[view.id] === view, "Window closing retains the workspace model")
+        await other.close(); await store.close(); try await model.traces.close()
+    }
+
     /// A run in flight refuses the close and says why in a sheet. The refusal
     /// itself must be immediate: a modal run loop here re-enters AppKit's
     /// window and application callbacks from inside this one.
@@ -103,6 +123,30 @@ final class WindowLifecycleTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(answers, [false], "Cancel must refuse the quit")
         XCTAssertFalse(model.installPreparing)
         XCTAssertEqual(view.draft, "Unsaved text")
+        try await model.traces.close(); await model.store?.close()
+    }
+
+    @MainActor func testQuitRechecksImagesStartedWhileTheStopQuestionIsOpen() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(root); defer { model.shutdown() }
+        let view = SessionDisplay(id: "chat"); view.state = "running"; view.selectionMetadataLoaded = true
+        model.displays[view.id] = view
+        let (window, restore) = onlyWindow(); defer { restore() }
+        let lifecycle = ApplicationLifecycle(); lifecycle.model = model
+        var answers: [Bool] = []; lifecycle.answerTermination = { answers.append($0) }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await settle { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let importing = model.beginImageImport(sessionID: view.id); defer { importing.finish() }
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await settle { !answers.isEmpty }
+        XCTAssertEqual(answers, [false])
+        XCTAssertFalse(model.isShutDown); XCTAssertFalse(model.installPreparing)
+        XCTAssertTrue(importing.isCurrent())
+        importing.finish(); view.state = "idle"
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await settle { answers.contains(true) }
+        XCTAssertEqual(answers, [false, true])
         try await model.traces.close(); await model.store?.close()
     }
 

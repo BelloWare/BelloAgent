@@ -364,7 +364,8 @@ extension WorkspaceModel {
         let toolNotice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
         let preflight = result["preflightError"]?.string
         view.preflightNotice = view.failureMessage == nil ? preflight ?? "" : ""
-        if preflight != nil { view.uncertain = true }
+        // The notice is immediately readable; uncertainty is published with
+        // the reconciled input inventory, not across its storage awaits.
         if !view.queueEditNotice.isEmpty || (preflight != nil && view.failureMessage == nil) {
             view.updateComposedNotice()
             return
@@ -397,6 +398,7 @@ extension WorkspaceModel {
         // recovery button must stop being actionable before any store await.
         view.acceptedCommands.formUnion(receipts.compactMap { $0["commandId"]?.string })
         try await protectReturnedDrafts(view.recovered, view: view)
+        guard current() else { return false }
         if !view.recovered.isEmpty {
             view.recovered.removeAll { view.acceptedCommands.contains($0.id) }
             if view.recovered.isEmpty { view.uncertain = false }
@@ -408,42 +410,62 @@ extension WorkspaceModel {
         if view.settleSending(receipts: receipts, queued: Set((currentQueue ?? []).compactMap { $0["turnId"]?.string })), let currentQueue {
             let queue = view.panelQueue(currentQueue); if view.queue != queue { view.queue = queue }
         }
-        let revision = view.pendingIntentRevision
-        var intents: [CommandIntent]
-        if let known = view.pendingIntents, known.revision == revision { intents = known.intents }
-        else {
-            view.intentReads += 1
-            intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
+        while current() {
+            let revision = SubmissionInventoryRevision(view)
+            let external = try await store?.externalRevision()
             guard current() else { return false }
-        }
-        var settled: Set<String> = []
-        try await protectReturnedDrafts(intents, view: view)
-        guard current() else { return false }
-        for var intent in intents {
-            guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
-                  state != "dispatched" else { continue }
-            intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
-            try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
+            let intents: [CommandIntent]
+            if let known = view.pendingIntents, known.revision == revision.pending, view.pendingSubmissionRevision == revision.submissions, view.pendingExternalRevision == external { intents = known.intents }
+            else {
+                view.intentReads += 1
+                intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
+                guard current() else { return false }
+            }
+            guard revision.isCurrent(in: view) else { continue }
+            let pending = intents + view.draftVersion.unsavedSubmissions.filter { pin in !intents.contains { $0.id == pin.id } }
+            try await protectReturnedDrafts(pending, view: view)
             guard current() else { return false }
-            try await store?.remove(kind: "pending:\(id)", id: intent.id)
+            for var intent in pending {
+                guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string else { continue }
+                if state == "dispatched" {
+                    if view.draftVersion.unsavedSubmissions.contains(where: { $0.id == intent.id }) {
+                        try await store?.acknowledgeCommand(sessionID: id, commandID: intent.id, draftVersion: view.draftVersion)
+                        pendingIntentsChanged(id)
+                        guard current() else { return false }
+                    }
+                    continue
+                }
+                intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
+                try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
+                guard current() else { return false }
+                try await store?.withdrawSubmission(sessionID: id, commandID: intent.id, draft: nil, draftVersion: view.draftVersion)
+                // Other reconciliation reads may still hold this record even
+                // when there was no pin and the snapshot drops its own copy.
+                pendingIntentsChanged(id)
+                guard current() else { return false }
+            }
+            // Reconcile the changed inventory now: an idle or lost helper may
+            // never deliver another snapshot to make retained input reachable.
+            guard revision.isCurrent(in: view) else { continue }
+            let currentExternal = try await store?.externalRevision()
             guard current() else { return false }
-            settled.insert(intent.id)
+            guard revision.isCurrent(in: view), currentExternal == external else { continue }
+            view.pendingExternalRevision = external
+            view.pendingIntents = (revision.pending, intents)
+            view.pendingSubmissionRevision = revision.submissions
+            view.acceptedCommands.formIntersection(Set(intents.map(\.id)).union(view.draftVersion.unsavedSubmissions.map(\.id)).union(view.submittingCommands))
+            // A dispatched receipt or a local acknowledgement proves acceptance,
+            // even while the intent waits here for its terminal receipt.
+            let recoverable = retainingCapturedInput(intents, in: view).filter { intent in
+                intent.state == "intent" && !view.acceptedCommands.contains(intent.id) && !receipts.contains { $0["commandId"]?.string == intent.id }
+                    && !intent.turnID.hasPrefix(Self.resumeIntentPrefix)
+            }
+            if recoverable != view.recovered { view.recovered = recoverable }
+            if view.recovered.isEmpty { view.uncertain = false }
+            else if result["preflightError"]?.string != nil { view.uncertain = true }
+            return true
         }
-        if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
-        // Held against the revision read: a write during the awaits
-        // above moves the revision on, and the next snapshot reads again.
-        guard revision == view.pendingIntentRevision else { return true }
-        view.pendingIntents = (revision, intents)
-        view.acceptedCommands.formIntersection(Set(intents.map(\.id)))
-        // A dispatched receipt or a local acknowledgement proves acceptance,
-        // even while the intent waits here for its terminal receipt.
-        let recoverable = intents.filter { intent in
-            intent.state == "intent" && !view.acceptedCommands.contains(intent.id) && !receipts.contains { $0["commandId"]?.string == intent.id }
-                && !intent.turnID.hasPrefix(Self.resumeIntentPrefix)
-        }
-        if recoverable != view.recovered { view.recovered = recoverable }
-        if view.recovered.isEmpty { view.uncertain = false }
-        return true
+        return false
     }
     /// The rows the reader holds, which a resident window does not let go
     /// of: the one holding their cursor or selection, and the one they read

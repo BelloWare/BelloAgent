@@ -43,6 +43,93 @@
 - [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
 - [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
 - [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+- [x] Recovering a failed, unregistered side submission commits the input to its saved parent's draft before consuming the independent record. [State model and validation](docs/validation/a130-workspace-0.1.130.md#round-17--captured-input-state-and-cross-instance-ownership).
+- [x] Every captured submission carries a launch lease; other instances cannot offer or consume live input, while crashed owners remain recoverable.
+- [x] Recovery actions hold ownership across storage waits and validate the exact current record before Insert or Discard.
+- [x] Recovery hydration rechecks foreign commits before publishing, so another instance's Insert or Discard cannot reappear.
+- [x] Recovery also rechecks released task/launch ownership after acceptance reads, even when the pending record is unchanged.
+- [x] Snapshot recovery caches invalidate on another database connection's commits.
+- [x] Live submission ownership survives display replacement within the same launch.
+- [x] Side-input transfers adopt their recovering launch and verify individual input owners before retiring the publication link.
+- [x] Dismissing a side-publication reminder cannot orphan independent input or retire a live publisher before its input write.
+- [x] An identical queued-Save retry preserves another live launch's ownership and outcome digest without dispatching or offering duplicate recovery.
+- [x] Compaction pending records remain hidden while live and are acknowledged after acceptance; Resume and title-task records share launch/task ownership.
+- [x] Snapshot stop notices no longer temporarily block paused-queue input while recovery storage is being reconciled.
+
+- [x] Queued-Save confirmation survives later recovery reads, navigation and snapshot acknowledgement pruning. [Validation](docs/validation/a130-workspace-0.1.130.md#round-16--recovery-reconciliation-ownership).
+- [x] Main-chat and saved-side hydration preserve submissions that fail while acceptance is being read, including after helper loss.
+- [x] A late recovery read cannot revive input already inserted into a draft or explicitly discarded.
+- [x] Recovery merges newly retained input, including pins committed during an outstanding acceptance or review read.
+- [x] Recovery rechecks live submission ownership before publishing, so an identical queued-Save retry never becomes actionable recovery.
+- [x] Snapshots stop settlement if their helper connection retires while returned-input review is being saved.
+- [x] A snapshot reloads a changed recovery inventory immediately instead of requiring another helper update.
+- [x] Receipt acknowledgement and retirement invalidate other pending-input reads, including confirmed input with no in-memory pin.
+
+- [x] A failed queued-Save retry preserves the earlier operation and digest, so Cancel or changed Save still checks its outcome. [Validation](docs/validation/a130-workspace-0.1.130.md#round-15--retry-and-reading-position-ownership).
+- [x] Local side registration Retry works under its own lifetime lease; live publication remains protected and unresolved notices stay actionable.
+- [x] Outstanding reading-position writes retain their display and loaded revision until they finish; obsolete task cleanup cannot release a replacement writer.
+- [x] A refused retry cannot settle an earlier unanswered queued operation; deferred Keep When Finished stays protected until publication settles or its helper ends.
+
+- [x] Confirming an earlier queued Save settles its captured input while preserving newer typing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-14--confirmed-input-settlement-and-publication-ownership).
+- [x] Confirmed queued input retires retry pins with its durable record; failed cleanup stays suppressed and retries safely.
+- [x] Side/fork publication records carry a lifetime lease, so another instance cannot recover live input; crashed publishers remain recoverable.
+- [x] Journal and snapshot acceptance retire captured-input pins only after committed acknowledgement or receipt cleanup.
+
+- [x] Failed side first sends retain their parent link and move captured input into parent recovery before Close/Quit or after relaunch. [Validation](docs/validation/a130-workspace-0.1.130.md#round-13--captured-input-ownership-and-reachable-side-recovery).
+- [x] Returning rejected input to a draft verifies its current durable contents before consuming the independent submission.
+- [x] Preserving captured input invalidates pending snapshots, including conflict-restoration retries, so recovery stays visible.
+- [x] Live Send, Steer, Resend, queued Save and side submissions never appear or act as recoverable; settled failures remain reachable.
+- [x] Closing or quitting a side waits for admitted recovery actions, so Dismiss cannot reappear as a parent recovery copy.
+
+- [x] Every captured Send, Steer, Resend, queued Save and side first send stays pinned and recoverable after any storage failure. [Validation](docs/validation/a130-workspace-0.1.130.md#round-12--retained-input-through-storage-failures).
+- [x] Retained-input recovery stays visible after rejection and edit cancellation, independently of execution uncertainty.
+- [x] A side with undurable captured input stays reachable until recovery or dismissal; quit/update cannot orphan its input.
+- [x] Rejected input leaves the recovery chooser and pending cache only after its returned draft commits.
+- [x] Failed connection preparation retains captured input when storage fails or newer typing replaces it.
+
+- [x] Tool-output collection retains pinned conflict and captured-input references after failed persistence. [Validation](docs/validation/a130-workspace-0.1.130.md#post-integration-storage-failure-review).
+- [x] Failed side-draft cleanup preserves its committed revision, avoiding false conflicts after storage recovers.
+- [x] Restore Draft protects pinned input while its recovery transaction moves references into durable storage.
+
+- [x] Integration: queued-message Save protects tool-output references before its captured-input persistence, keeping both submission durability and collection ordering. [Validation](docs/validation/a130-workspace-0.1.130.md#round-9-integration-with-devnext).
+
+- [x] Historical Resend persists its captured replacement independently; typing during storage cannot cancel the edit. [Round-9 validation](docs/validation/a130-workspace-0.1.130.md#round-9--independent-captured-submissions).
+- [x] Queued-message Saves persist independent captured input before dispatch; identical retries share a record, and recovery checks the saved text digest.
+- [x] Side first sends retain independent input while parent opening waits and after a failed opening restores only into an unsaved side.
+- [x] New-chat materialization lets newer typing replace its draft snapshot without cancelling the captured first send.
+- [x] Rejected historical edits retain captured input replaced by subsequent typing; removal requires an atomic save of a draft still holding that input.
+
+- [x] Draft snapshots, edit review markers and recovery writes share an ordered writer; delayed typing cannot overwrite a newer save. [Round-8 validation](docs/validation/a130-workspace-0.1.130.md#round-8--ordered-draft-writers).
+- [x] Superseded local drafts are rejected before conflict detection, preserving the latest losing copy and independent captured submissions.
+- [x] Delayed reading-position callbacks cannot overwrite newer direct saves or clears; scrolling and typing remain independently preserved.
+- [x] A connection-refused send saves the current composer, preserving typing entered after Return.
+
+- [x] Draft debounces wait for loaded revisions and reschedule typing admitted during cold, side and relaunch opens; single-instance typing no longer creates false conflicts.
+- [x] Pending draft clears and reading positions survive eviction, close and quit/update flushes before initial metadata finishes loading.
+- [x] Side-draft transfer preserves typing in an unread parent while retaining the durable transfer path for untouched parents.
+- [x] Original sub-agent readers load reading-position revisions; pending position changes are saved after hydration.
+- [x] Materialization, side registration, receipt review markers and interrupted-input recovery load draft baselines before writing; recovery rechecks acceptance and active edits afterward.
+- [x] Shared PiKit capsule outlines no longer draw vertical end seams; control geometry and noncapsule corners stay unchanged. [Round-7 validation](docs/validation/a130-workspace-0.1.130.md#round-7--loaded-baselines-and-capsule-outlines).
+
+- [x] Rejected submissions remain separate durable input records across conflict-episode edits and empty debounces. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Configuration tasks are shared only within their helper connection, chat lease and runtime generation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Retired configuration failures and late close replies cannot close or clear replacement runtimes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Replacement openings no longer wait for an old opening's retired configuration work. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] The Draft recovery chooser no longer draws vertical border artifacts beside its pill. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+
+- [x] Conflict restoration works with paused queues while protecting active sends and edits. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+- [x] Each conflict episode updates one durable copy; a fixed recovery row offers every retained copy and interrupted submission through its chooser. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+
+- [x] Conflicting drafts are saved durably before release, recoverable after reopening, and pinned across navigation, side transfer, quit/update and helper loss if saving fails. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Reading positions use loaded-revision checks for scrolling, side close and quit; stale instances cannot overwrite or resurrect newer positions. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Rejected submissions keep their captured input as well as the remaining draft when another instance wins a draft conflict. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+
+- [x] Update pausing preserves admitted clipboard images by refusing until imports finish. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] WIRE-CONTRACT-4: Model picks, saved defaults and edit overrides follow the helper's 200 UTF-8 byte limit. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] PERSISTENCE-COMPAT-1: Unchanged drafts do not overwrite another instance's saves; conflicting edits keep both copies and refuse the flush. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] CONCURRENCY-LIFECYCLE-3: Late opening/fork/side completions cannot restore a dead helper's runtime cache. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Late opening cleanup cannot stop or close a replacement helper's chat. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Onboarding connection tests count as active work; update pausing waits for them and barriers refuse new probes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
 
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
@@ -154,6 +241,11 @@
 - [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-5: Replacement keys reach opening/loaded chats, new sides and forks, and retried opens before later work uses their runtime. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-WORKSPACE-6: Switching sides cannot discard a first send or an unfinished image import; publication rechecks ownership after opening the parent. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] A late side-publication callback preserves the saved sibling's focus and boundary after navigation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-2: Quit refuses while images import, updates defer, and shutdown blocks new imports; Quit's confirmation rechecks imports before flushing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-3: Restart Terminal uses the relocated project folder while preserving terminal identity, name and generation checks. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
 - [x] GIT-FILES-1: Git preserves project-path whitespace, so Discard cannot target a trimmed sibling repository. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
 - [x] GIT-FILES-2: Image/PDF previews finish active reads during sibling-folder activity, then recheck queued changes.
 - [x] GIT-FILES-3: Identical normal and inverse terminal glyphs keep distinct cached foreground colours.

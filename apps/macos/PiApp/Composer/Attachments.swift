@@ -146,7 +146,7 @@ extension WorkspaceModel {
     /// recovery. An edit switch invalidates the destination; queue rewrites
     /// keep the original draft parked and continue to receive its images.
     func beginImageImport(sessionID: String) -> ComposerImageImport {
-        guard let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
+        guard !installPreparing, !isShutDown, let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
         let target = view.editingMessageID, generation = view.editGeneration
         view.imageImports += 1; attachmentImports += 1
         var finished = false
@@ -236,8 +236,10 @@ extension WorkspaceModel {
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
         let importing = beginImageImport(sessionID: id)
+        guard importing.isCurrent() else { importing.finish(); return }
+        let inspect = attachmentInspect
         Task { defer { importing.finish() }; do {
-            let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
+            let items = try await Task.detached { try urls.map(inspect) }.value
             guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
             receiveAttachments(items, into: view)
         } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
@@ -292,6 +294,6 @@ extension WorkspaceModel {
     private var pastedImageCleanupIsSafe: Bool {
         !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&
             draftWrites.tasks.isEmpty && draftWrites.recoveries.isEmpty && sideDraftTransfers.isEmpty && hostStarts.isEmpty && sessionOpenings.isEmpty &&
-            !sides.values.contains(where: \.keeping)
+            !sides.values.contains(where: \.keeping) && !displays.values.contains(where: { $0.draftVersion.hasUnsavedConflict })
     }
 }

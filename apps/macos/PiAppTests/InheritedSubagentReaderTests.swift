@@ -10,6 +10,39 @@ private actor OriginalReaderBackGate {
 }
 
 final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
+    @MainActor func testOriginalReaderLoadsAnchorBaselineBeforeSavingPendingPosition() async throws {
+        let root = scratchRoot("original-anchor-baseline"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.prewarmsHelpers = false; model.automaticContextOperation = { _, _ in throw CancellationError() }
+        model.chats.remove(at: 1)
+        let family = try SubagentDiscoveryTests.family(model)
+        try await model.store?.putChats(model.chats); await model.reconcileSubagents()
+        let child = try XCTUnwrap(model.record(family.child)), store = try XCTUnwrap(model.store)
+        var fork = model.chats[0]; fork.id = "fork"; fork.path = nil; model.chats.append(fork)
+        await model.select(fork.id)
+        let parent = try XCTUnwrap(model.selected)
+        try await store.put(TranscriptAnchor(id: "terminal", offset: 17, followsBottom: false), kind: "anchor", id: child.id)
+        let gate = DraftBaselineGate(expectation(description: "Original reader history held"))
+        let blocker = Task { await model.history.holdDraftBaseline(gate) }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        defer { gate.resume.signal() }
+        let request = model.beginSubagentOpening(child.id); request.reader.originalForkID = fork.id
+        defer { model.finishSubagentOpening(request) }
+        let loading = Task { await model.openSubagentTab(child.id, opening: request) }
+        try await eventually("Pending draft fixture did not settle") { model.displays[child.id] != nil }
+        let view = try XCTUnwrap(model.displays[child.id])
+        XCTAssertFalse(view.selectionMetadataLoaded)
+        parent.draft = "Typing beside an original reader"; model.draftChanged(parent)
+        view.scrollAnchor = nil; model.anchorChanged(view)
+        XCTAssertNil(view.anchorWrite)
+        gate.resume.signal(); await blocker.value; _ = await loading.value
+        await view.anchorWrite?.value; await model.draftWrites.tasks[parent.id]?.value
+        XCTAssertTrue(view.selectionMetadataLoaded)
+        let saved = try await store.get(TranscriptAnchor.self, kind: "anchor", id: child.id)
+        let draft = try await store.get(DraftRecord.self, kind: "draft", id: parent.id)
+        XCTAssertNil(saved); XCTAssertEqual(draft?.text, parent.draft); XCTAssertTrue(parent.draftConflicts.isEmpty)
+    }
+
     @MainActor func testColdOriginalReaderRefreshesCostWithoutReopeningOwnerOrChargingFork() async throws {
         for kind in AgentForkKind.allCases {
             let root = scratchRoot("original-cost-" + kind.rawValue), model = try SubagentOrganizationTests.fixture(root)

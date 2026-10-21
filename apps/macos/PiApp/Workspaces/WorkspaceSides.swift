@@ -27,6 +27,7 @@ struct SideKeepIntent: Codable, Sendable {
     /// Attachment discovery only: never listed for automatic registration.
     static let retainedKind = "side-keep-retained"
     var chat: ChatRecord
+    var publicationOwner: String? = nil
 }
 
 /// The exact pending copy consumed by a successful registration. A delayed
@@ -44,6 +45,20 @@ enum SideKeepState: Sendable {
 }
 
 extension WorkspaceModel {
+    func sidePublicationLeaseURL(_ id: UUID) -> URL {
+        WorkspaceLock.publicationURL(root: root, id: id)
+    }
+    func inputPublicationOwner() throws -> String {
+        if sidePublicationOwnership == nil {
+            let id = UUID(), url = sidePublicationLeaseURL(id)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            sidePublicationOwnership = (id, try WorkspaceLock(url: url))
+        }
+        return sidePublicationOwnership!.id.uuidString
+    }
+    private func sideKeepIntent(_ chat: ChatRecord) throws -> SideKeepIntent {
+        SideKeepIntent(chat: chat, publicationOwner: try inputPublicationOwner())
+    }
     /// Both are asked for once per sidebar row, and the sidebar redraws on every
     /// workspace change: a linear scan here is a scan of every chat per row.
     func side(_ id: String) -> SideRecord? { sidebarIndex.side(id, in: sides) }
@@ -158,6 +173,7 @@ extension WorkspaceModel {
                 // lets a side the host did publish be recovered on restart.
                 // Only this side: a lost host may already have put another
                 // in its place holding what was typed here.
+                guard !view.draftVersion.hasUnsavedConflict else { self.error = error.localizedDescription; return }
                 let replaced = sides[parentID].map { $0.id != id } ?? false
                 if !replaced { sides.removeValue(forKey: parentID) }
                 displays.removeValue(forKey: id)
@@ -173,11 +189,12 @@ extension WorkspaceModel {
     /// parent's context snapshot as a durable child session, and its capture
     /// preference. Called when a side with a question opens, and when a
     /// pending side sends its first message.
-    /// `draft` is what the kept side starts with on disk: the message being
-    /// sent, whose composer has already emptied (`send`), else what the
-    /// composer holds.
-    func publishPendingSide(_ info: SideRecord, view: SessionDisplay, draft: DraftRecord? = nil) async throws {
+    /// A first send has its own input record before parent opening can wait.
+    /// The side's draft remains only the current composer, including typing
+    /// entered after Return emptied it.
+    func publishPendingSide(_ info: SideRecord, view: SessionDisplay, submission: CommandIntent? = nil) async throws {
         guard let store else { throw StoreError.unavailable }
+        sidePublications.insert(info.id); defer { sidePublications.remove(info.id) }
         let outputUse = beginToolOutputUse(.sidePublication)
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
@@ -191,13 +208,23 @@ extension WorkspaceModel {
         var saved = info.chat
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
-        try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
-        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
-        let host = try await open(parent); host.isBusy = true
-        sides[parentID]?.pending = false
+        if submission != nil {
+            view.sideInputPendingTransfer = true
+            try await materializeChat(parentID)
+        }
+        try await store.put(sideKeepIntent(saved), kind: "side-keep", id: id)
+        let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
+        if let submission {
+            try await store.recordSubmission(submission, draft: draft, draftVersion: view.draftVersion, write: write)
+            pendingIntentsChanged(id)
+        } else { try await store.put(draft, kind: "draft", id: id, draftVersion: view.draftVersion, write: write) }
+        let host = try await open(parent), connection = host.connectionID; host.isBusy = true
         let result: [String: WireValue]
         var written = false
         do {
+            guard sides[parentID]?.id == id, displays[id] === view else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
+            sides[parentID]?.pending = false
+            sessionProfileRevisions[id] = sessionProfileRevisions[parentID] ?? profiles.first(where: { $0.id == info.profileID }).map { (host.connectionID, $0.revision) }
             // Sides share the main chat’s budget.
             result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
             written = true
@@ -208,24 +235,39 @@ extension WorkspaceModel {
             // be sent again or closed, and its text is where it was. Left
             // half-open, nothing could close, keep or replace it, and while it
             // existed the app refused to quit and blocked every update. A side
-            // the helper did write is still recovered from its intent; one it
-            // refused leaves nothing behind, since a draft side's text is
-            // never stored.
+            // the helper did write is still recovered from its intent. A
+            // refused side keeps only the parent link for captured input;
+            // its replaceable composer remains an ephemeral side draft.
             if sides[parentID]?.id == id, sides[parentID]?.kept != true { sides[parentID]?.pending = true }
             if !written {
-                try? await store.remove(kind: "side-keep", id: id)
-                try? await store.remove(kind: "draft", id: id)
+                // A failed first send still owns an independent input record.
+                // Keep its parent link until close/quit (or launch recovery)
+                // transfers that input; no journal is needed for recovery.
+                if submission == nil { try? await store.remove(kind: "side-keep", id: id) }
+                do {
+                    try await store.remove(kind: "draft", id: id)
+                    view.draftVersion = DraftVersion()
+                } catch {
+                    // Failed cleanup leaves the saved row and its baseline
+                    // intact, so retrying cannot conflict with our own write.
+                }
             }
             throw error
         }
         let preference = try await capturePreference(sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         _ = try await host.request("debug.mode", sessionID: id, params: ["mode": .string(preference.mode)])
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         view.captureMode = preference.mode
         let initial = try await host.request("session.status", sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
-        sides[parentID]?.boundary = result["side"]?.object ?? [:]; opened.insert(id); view.captureAvailable = true
-        if selectedID == parentID { focusedSessionID = id }
+        if sides[parentID]?.id == id { sides[parentID]?.boundary = result["side"]?.object ?? [:] }
+        try await reconcileSessionProfile(saved, host: host)
+        try requireHost(host, connection: connection, workspaceID: info.workspaceID)
+        opened.insert(id); view.captureAvailable = true
+        if selectedID == parentID, sides[parentID]?.id == id { focusedSessionID = id }
         updateHostActivity(workspaceID: info.workspaceID); refresh(id)
     }
     /// Drops a side that never sent a message, moving its whole unsent draft
@@ -234,7 +276,11 @@ extension WorkspaceModel {
     /// cannot be read or written, the side stays as it was. True when gone.
     @discardableResult
     func discardPendingSide(_ info: SideRecord) async -> Bool {
+        if let recovery = draftWrites.recoveries[info.id] { await recovery.value }
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
+        guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0 else {
+            error = "Wait for the current side to finish opening or adding images before switching."; return false
+        }
         if discardPendingSideNow(info) { return true }
         let view = displays[info.id]
         view?.loading = true
@@ -245,14 +291,18 @@ extension WorkspaceModel {
             return false
         }
         view?.loading = false
+        // An image can start arriving while the parent's stored draft is read.
+        guard (view?.imageImports ?? 0) == 0, view?.draftVersion.hasUnsavedConflict != true else { return false }
         if sides[info.parentID]?.id == info.id { removePendingSide(info) }
         return true
     }
     /// The same, at once, when nothing has to be read first: true when done.
     func discardPendingSideNow(_ info: SideRecord) -> Bool {
+        guard draftWrites.recoveries[info.id] == nil else { return false }
+        guard displays[info.id]?.draftVersion.hasUnsavedConflict != true else { error = StoreError.unavailable.localizedDescription; return false }
         guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
         // A draft on its way to the parent's saved draft is not done yet.
-        guard sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
+        guard displays[info.id]?.loading != true, (displays[info.id]?.imageImports ?? 0) == 0, sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
         removePendingSide(info); return true
     }
     private func removePendingSide(_ info: SideRecord) {
@@ -275,10 +325,34 @@ extension WorkspaceModel {
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
         while true {
+            if let recovery = draftWrites.recoveries[info.id] { await recovery.value }
             if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
             // One move of a side's draft at a time: another waits, then sees
             // what that one left in the side (all of it, if it failed).
             while let running = sideDraftTransfers[info.id] { await running.task.value }
+            guard side.submittingCommands.isEmpty else { throw HostError.failure("Wait for the side's submission to finish before closing it.") }
+            if side.sideInputPendingTransfer || !side.recovered.isEmpty || !side.draftVersion.unsavedSubmissions.isEmpty {
+                guard let store else { throw StoreError.unavailable }
+                try await materializeChat(info.parentID)
+                let keep = try await store.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
+                let retiring = keep?.chat.path.map { !FileManager.default.fileExists(atPath: $0) } ?? false
+                let moved = try await store.transferSideSubmissions(from: info.id, to: info.parentID, version: side.draftVersion, retiringKeep: retiring, owner: inputPublicationOwner())
+                side.sideInputPendingTransfer = false
+                if retiring {
+                    sideKeepResolutionRevision &+= 1
+                    sideKeepIssues.removeAll { $0.id == info.id }
+                }
+                pendingIntentsChanged(info.id); pendingIntentsChanged(info.parentID)
+                side.recovered.removeAll { input in moved.contains { $0.id == input.id } }
+                if let parent = displays[info.parentID] {
+                    for intent in moved where intent.state == "intent" { offerSubmissionRecovery(intent, in: parent) }
+                }
+            }
+            if side.draftVersion.hasUnsavedConflict {
+                guard let store else { throw StoreError.unavailable }
+                try await store.preserveDraftConflicts(side.draftVersion)
+                continue
+            }
             if moveSideDraftHere(info, from: side) { return }
             guard let store else { throw StoreError.unavailable }
             let moving = Self.unsentDraft(of: side, to: info.parentID)
@@ -291,13 +365,18 @@ extension WorkspaceModel {
             defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
             await sideDraftTransferStep?()
             do {
-                let saved = try await store.get(DraftRecord.self, kind: "draft", id: info.parentID) ?? DraftRecord(id: info.parentID, text: "")
+                let version = try await store.draftVersion(id: info.parentID)
+                let saved = version.snapshot.draft ?? DraftRecord(id: info.parentID, text: "")
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // The parent's draft may have loaded meanwhile: it takes the
                 // draft itself, and the saved one follows from it.
-                if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
-                let merged = saved.receiving(moving)
-                try await store.put(merged, kind: "draft", id: info.parentID)
+                if let parent = displays[info.parentID] {
+                    if !parent.selectionMetadataLoaded, parent.hasUnsavedDraft { try await loadDraftBaseline(parent) }
+                    if parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
+                }
+                let merged = saved.receiving(moving), revision = version.snapshot.revision
+                try await store.put(merged, kind: "draft", id: info.parentID, draftVersion: version, write: store.draftWriter.capture(info.parentID))
+                if let parent = displays[info.parentID], parent.draftVersion.snapshot.revision == revision { parent.draftVersion = version }
                 if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // Or loaded the copy from before this write: given the draft
                 // too, unless what it loaded already holds all of it.
@@ -323,8 +402,9 @@ extension WorkspaceModel {
     /// to move or the parent's loaded draft took it; false when only its
     /// saved draft can.
     func moveSideDraftHere(_ info: SideRecord, from shown: SessionDisplay? = nil) -> Bool {
-        guard draftWrites.recoveries[info.parentID] == nil else { return false }
+        guard draftWrites.recoveries[info.id] == nil, draftWrites.recoveries[info.parentID] == nil else { return false }
         guard let side = shown ?? displays[info.id] else { return true }
+        guard !side.draftVersion.hasUnsavedConflict, !side.sideInputPendingTransfer, side.recovered.isEmpty, side.submittingCommands.isEmpty else { return false }
         let moving = Self.unsentDraft(of: side, to: info.parentID)
         guard !moving.isBlank else { return true }
         guard let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) else { return false }
@@ -413,17 +493,14 @@ extension WorkspaceModel {
                 await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }
                 let oldDraft = view.savedDraft
-                let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
+                let revision = SubmissionInventoryRevision(view)
+                let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded)
                 guard current() else { return }
-                if !view.selectionMetadataLoaded {
-                    if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
-                       view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
-                    if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
-                    view.selectionMetadataLoaded = true
-                }
-                let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: child, view: view)
+                view.draftConflicts = metadata?.conflicts ?? []
+                guard let metadata else { throw StoreError.unavailable }
+                self.adoptDraftBaseline(metadata, into: view, draftAtStart: oldDraft)
+                _ = try await self.recoverableIntents(metadata.recovered, for: child, view: view, revision: revision, current: current)
                 guard current() else { return }
-                view.recovered = recovered; view.uncertain = !recovered.isEmpty
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
                 var page = try await self.readInitialWindow(child, holding: view.scrollAnchor)
@@ -457,8 +534,10 @@ extension WorkspaceModel {
     private func performKeepSide(_ id: String, whenFinished: Bool) {
         guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, let host = hosts[info.workspaceID] else { return }
         view.loading = true
+        sidePublications.insert(id)
         let outputUse = beginToolOutputUse(.keep)
         Task { defer {
+            sidePublications.remove(id)
             finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
@@ -468,7 +547,7 @@ extension WorkspaceModel {
             guard let store else { throw StoreError.unavailable }
             var chat = info.chat
             chat.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
-            try await store.put(SideKeepIntent(chat: chat), kind: "side-keep", id: id)
+            try await store.put(sideKeepIntent(chat), kind: "side-keep", id: id)
             let result = try await host.request("side.keep", sessionID: id, params: ["whenFinished": .bool(whenFinished)]).object ?? [:]
             if result["ephemeral"]?.bool == false { try await registerKeptSide(id: id, path: result["path"]?.string) }
             else { sides[info.parentID]?.keepRequested = true }
@@ -528,9 +607,9 @@ extension WorkspaceModel {
         }
         try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
-        let draft: DraftRecord
-        if let view { draft = view.savedDraft }
-        else { draft = try await store.get(DraftRecord.self, kind: "draft", id: id) ?? DraftRecord(id: id, text: "") }
+        let draft: DraftRecord, version: DraftVersion
+        if let view { try await loadDraftBaseline(view); draft = view.savedDraft; version = view.draftVersion }
+        else { version = try await store.draftVersion(id: id); draft = version.snapshot.draft ?? DraftRecord(id: id, text: "") }
         var retained = intent.chat
         // The file as the helper names it, which is how every snapshot will
         // name it. The app's own spelling of the same file (/private/tmp for
@@ -545,7 +624,7 @@ extension WorkspaceModel {
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
-        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat)
+        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat, draftVersion: version, write: store.draftWriter.prepare(retained.id))
         await finishSideKeepRegistration(retained, expected: intent.chat)
     }
     private func finishSideKeepRegistration(_ saved: ChatRecord, expected: ChatRecord) async {
@@ -573,7 +652,41 @@ extension WorkspaceModel {
                 var issues: [SideKeepIssue] = []
                 for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
                     do {
+                        // The lifetime lease protects other instances, while
+                        // local task ownership distinguishes publication from
+                        // a settled failure that Retry can register.
+                        let ownership: WorkspaceLock?
+                        if let owner = intent.publicationOwner {
+                            guard let id = UUID(uuidString: owner) else { throw StoreError.invalidRecord }
+                            if let local = sidePublicationOwnership, local.id == id {
+                                let localSide = side(intent.chat.id)
+                                guard !sidePublications.contains(intent.chat.id), localSide?.keeping != true, localSide?.keepRequested != true else {
+                                    if let issue = sideKeepIssues.first(where: { $0.chat == intent.chat }) { issues.append(issue) }
+                                    continue
+                                }
+                                ownership = local.lock
+                            } else {
+                                // Never wait for a live publisher or another
+                                // recovery. An existing notice stays until its
+                                // intent is actually settled.
+                                guard let lease = try? WorkspaceLock(url: sidePublicationLeaseURL(id)) else {
+                                    if let issue = sideKeepIssues.first(where: { $0.chat == intent.chat }) { issues.append(issue) }
+                                    continue
+                                }
+                                ownership = lease
+                            }
+                        } else { ownership = nil }
+                        defer { withExtendedLifetime(ownership) {} }
                         guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
+                        if ownership != nil, displays[intent.chat.id] == nil, !FileManager.default.fileExists(atPath: path),
+                           let parentID = intent.chat.parentSessionID, let store,
+                           try await !store.list(CommandIntent.self, kind: "pending:" + intent.chat.id).isEmpty {
+                            let moved = try await store.transferSideSubmissions(from: intent.chat.id, to: parentID, version: DraftVersion(), retiringKeep: true, owner: inputPublicationOwner(), publicationOwner: intent.publicationOwner)
+                            sideKeepResolutionRevision &+= 1
+                            pendingIntentsChanged(parentID)
+                            if let parent = displays[parentID] { for input in moved where input.state == "intent" { offerSubmissionRecovery(input, in: parent) } }
+                            continue
+                        }
                         try await registerKeptSide(id: intent.chat.id, path: path)
                     } catch {
                         // A missing file may still be awaiting publication. Keep
@@ -595,8 +708,10 @@ extension WorkspaceModel {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }
         if info.pending { if !discardPendingSideNow(info) { Task { await discardPendingSide(info) } }; return }
         view.loading = true
+        sidePublications.insert(id)
         let outputUse = beginToolOutputUse(.sideClose)
         Task { defer {
+            sidePublications.remove(id)
             finishToolOutputUse(outputUse)
             view.loading = false
             updateHostActivity(workspaceID: info.workspaceID)
@@ -611,15 +726,17 @@ extension WorkspaceModel {
                 guard let host = hosts[info.workspaceID], host.isReady else { throw HostError.failure("The side could not be saved. Reopen its project to recover its journal; the panel remains open.") }
                 var saved = info.chat
                 saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
-                try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
+                try await store.put(sideKeepIntent(saved), kind: "side-keep", id: id)
                 let result = try await host.request("side.close", sessionID: id).object ?? [:]
                 try await registerKeptSide(id: id, path: result["path"]?.string)
             }
-            // A side whose saved draft never loaded holds nothing of the user's
-            // yet: writing its empty composer would erase the one on disk.
+            // Untouched, unread drafts stay on disk; typing before loading
+            // must get its baseline and be saved before the pane closes.
+            if !view.selectionMetadataLoaded, view.hasUnsavedDraft || view.anchorWritePending { try await loadDraftBaseline(view) }
             if view.selectionMetadataLoaded {
-                try await store.put(view.savedDraft, kind: "draft", id: id)
-                if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
+                try await store.put(view.savedDraft, kind: "draft", id: id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                await view.anchorWrite?.value
+                try await store.putAnchor(view.scrollAnchor, id: id, version: view.anchorVersion, write: store.draftWriter.capture(view.id, payload: .anchor))
             }
             view.presentation.cancel()
             // Another side may have opened on this chat during the awaits
@@ -657,16 +774,18 @@ extension WorkspaceModel {
         defer { finishToolOutputUse(outputUse) }
         try await prepareToolOutputUse(outputUse)
         let id = UUID().uuidString
+        sidePublications.insert(id); defer { sidePublications.remove(id) }
         let title = atMessageID == nil ? parent.title + " — fork" : parent.title + " · fork"
         var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String(title.prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         fork.topicID = effectiveTopicID(for: parent)
         if atMessageID != nil { fork.parentSessionID = parent.id }
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
-        try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
-        let host = try await open(parent)
+        try await store.put(sideKeepIntent(fork), kind: "side-keep", id: id)
+        let host = try await open(parent), connection = host.connectionID
         var params: [String: WireValue] = ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]
         if let atMessageID { params["atMessageId"] = .string(atMessageID) }
         let result: [String: WireValue]
+        sessionProfileRevisions[id] = sessionProfileRevisions[parentID] ?? profiles.first(where: { $0.id == parent.profileID }).map { (host.connectionID, $0.revision) }
         do { result = try await host.request("session.fork", sessionID: parentID, params: params).object ?? [:] }
         catch {
             // Refused before a file was written (a reply whose tools still
@@ -676,19 +795,32 @@ extension WorkspaceModel {
         }
         guard result["sessionId"]?.string == id else { throw HostError.failure("The fork identity changed. Its recovery intent was preserved.") }
         try await registerKeptSide(id: id, path: result["path"]?.string)
-        let view = SessionDisplay(id: id); displays[id] = view; opened.insert(id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        let view = SessionDisplay(id: id); displays[id] = view
         let preference = try await capturePreference(sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
         _ = try await host.request("debug.mode", sessionID: id, params: ["mode": .string(preference.mode)])
-        view.captureMode = preference.mode; view.captureAvailable = true
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        view.captureMode = preference.mode
         let initial = try await host.request("session.status", sessionID: id)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
         observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
+        try await reconcileSessionProfile(fork, host: host)
+        try requireHost(host, connection: connection, workspaceID: parent.workspaceID)
+        opened.insert(id); view.captureAvailable = true
         refresh(id)
         return fork
     }
     func discardLostSides(workspaceID: String) {
         // A draft side has nothing on the helper to lose: it stays, with its text.
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
+            // Pinned input may keep this display, but the ended helper no
+            // longer owns its deferred Keep. Its journal can be reconciled.
+            sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false
+            // Failed conflict-copy writes still own their original display.
+            guard displays[info.id]?.draftVersion.hasUnsavedConflict != true, displays[info.id]?.sideInputPendingTransfer != true,
+                  displays[info.id]?.recovered.isEmpty != false, displays[info.id]?.submittingCommands.isEmpty != false else { continue }
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
             sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)

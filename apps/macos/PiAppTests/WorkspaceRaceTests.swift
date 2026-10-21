@@ -28,6 +28,473 @@ import XCTest
         return (model, view, wire)
     }
 
+    private func bindLossHandling(_ model: WorkspaceModel, _ wire: WorkspaceRaceHost) async throws {
+        model.boundHostConnections.removeValue(forKey: "w")
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+    }
+
+    func testHelperLossKeepsTheDurableConflictCopy() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let store = try XCTUnwrap(model.store)
+        view.draftVersion = try await store.draftVersion(id: view.id)
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: view.id, text: "Other instance's draft"), kind: "draft", id: view.id)
+        view.draft = "Losing input before helper exit"; model.draftChanged(view)
+        await model.draftWrites.tasks[view.id]?.value
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        let copies = try await other.list(DraftRecord.self, kind: "draft-conflict:" + view.id)
+        XCTAssertTrue(copies.contains(where: { $0.text == "Losing input before helper exit" }))
+        XCTAssertTrue(model.displays[view.id] === view)
+        await other.close()
+    }
+
+    func testOldOpeningCleanupCannotCloseTheReplacementHelpersRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let chat = try XCTUnwrap(model.record(view.id)), lease = try model.connectionLease(for: chat)
+        let gate = AsyncGate(); var waiting = false
+        let old = Task { try await model.withConnectionOpen(chat, lease: lease, host: wire.host) { waiting = true; await gate.wait() } }
+        try await eventually("old opening held") { waiting }
+        try await wire.host.shutdownAndWait()
+        model.profileDeletionGenerations[chat.profileID, default: 0] += 1
+        _ = try await model.open(chat)
+        let before = wire.frames.filter { $0["method"]?.string == "turn.stop" || $0["method"]?.string == "session.close" }.count
+        await gate.open(); _ = try? await old.value
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.stop" || $0["method"]?.string == "session.close" }.count, before)
+        XCTAssertTrue(model.opened.contains(chat.id), "Cleanup of an old lease must not unload the replacement runtime")
+    }
+
+    func testOpenReplyFollowedByHelperLossCannotRepublishItsRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        wire.heldMethod = "debug.mode"
+        let opening = Task { try await model.open(try XCTUnwrap(model.record(view.id))) }
+        try await eventually("capture reply held") { wire.held != nil }
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.release()
+        wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        _ = try? await opening.value
+        XCTAssertFalse(model.opened.contains(view.id), "A reply resumed after loss must not restore the dead runtime")
+        try await wire.host.shutdownAndWait()
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+        let before = wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == view.id }.count
+        _ = try await model.open(try XCTUnwrap(model.record(view.id)))
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == view.id }.count, before + 1)
+    }
+
+    func testForkRegistrationAfterHelperLossKeepsTheForkButReopensItsRuntime() async throws { try await forkRegistrationAfterLoss(reconnectEarly: false) }
+    func testForkRegistrationCannotPublishOnAReplacementConnection() async throws { try await forkRegistrationAfterLoss(reconnectEarly: true) }
+
+    private func forkRegistrationAfterLoss(reconnectEarly: Bool) async throws {
+        let (model, parent, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        wire.heldMethod = "session.fork"
+        let creation = Task { try await model.createFork(parentID: parent.id) }
+        try await eventually("fork reply held") { wire.held != nil }
+        let id = try XCTUnwrap(wire.held?["params"]?.object?["forkSessionId"]?.string)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        defer { released.signal() }
+        let blocker = Task { try await model.store?.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "registration") }
+        try await eventually("store held before registration") { entered.wait(timeout: .now()) == .success }
+        wire.release()
+        try await wire.host.shutdownAndWait()
+        if reconnectEarly {
+            try await wire.host.connect(cwd: model.root, state: model.root.appendingPathComponent("replacement-host"))
+            _ = try await wire.host.request("workspace.open")
+            model.boundHostConnections["w"] = wire.host.connectionID
+        }
+        released.signal(); try await blocker.value
+        _ = try? await creation.value
+        let fork = try XCTUnwrap(model.record(id))
+        XCTAssertFalse(model.opened.contains(id), "Durable registration cannot publish a dead helper session")
+        _ = try await model.host(for: try XCTUnwrap(model.workspaces.first))
+        _ = try await model.open(fork)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == id }.count, 1)
+    }
+
+    func testSidePublicationReplyFollowedByLossCannotRepublishItsRuntime() async throws {
+        let (model, parent, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        wire.heldMethod = "session.status"; wire.heldSessionID = side.id
+        let publication = Task { try await model.publishPendingSide(side, view: view) }
+        try await eventually("side status reply held") { wire.held != nil }
+        let connection = try XCTUnwrap(wire.host.connectionID)
+        wire.release(); wire.host.receive(.failed("Generated helper loss"), connectionID: connection)
+        _ = try? await publication.value
+        let saved = try XCTUnwrap(model.record(side.id))
+        XCTAssertFalse(model.opened.contains(side.id))
+        try await wire.host.shutdownAndWait()
+        _ = try await model.open(saved)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.open" && $0["sessionId"]?.string == side.id }.count, 1)
+    }
+
+    func testOpeningReconcilesReplacementCredentialsBeforeSendingAgain() async throws {
+        let (model, view, wire) = try await fixture()
+        wire.heldMethod = "session.open"
+        view.draft = "First"; model.send(sessionID: view.id)
+        try await eventually("opening with the original key") { wire.held != nil }
+        XCTAssertEqual(wire.held?["params"]?.object?["apiKey"]?.string, "generated-fixture-key")
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B", headers: "{\"X-Fixture\":\"B\"}")
+        wire.release()
+        try await eventually("first send settled") { !view.loading }
+        view.draft = "Second"; model.send(sessionID: view.id)
+        try await eventually("second send settled") { !view.loading }
+        let configurations = wire.frames.filter { $0["method"]?.string == "session.configure" }
+        XCTAssertEqual(configurations.last?["params"]?.object?["apiKey"]?.string, "replacement-B")
+        XCTAssertEqual(configurations.last?["params"]?.object?["profile"]?.object?["headers"]?.object?["X-Fixture"]?.string, "B")
+        let submits = wire.frames.indices.filter { wire.frames[$0]["method"]?.string == "turn.submit" }
+        XCTAssertEqual(submits.count, 2)
+        if let configured = wire.frames.lastIndex(where: { $0["method"]?.string == "session.configure" }), let second = submits.last { XCTAssertLessThan(configured, second) }
+        else { XCTFail("Replacement credentials must reach the runtime before its next turn") }
+    }
+
+    func testConflictDuringOpeningKeepsCapturedSubmissionAfterEmptyDebounce() async throws {
+        let (model, view, wire) = try await fixture()
+        let store = try XCTUnwrap(model.store)
+        view.draft = "Captured input waiting for the helper"
+        try await store.put(view.savedDraft, kind: "draft", id: view.id)
+        view.draftVersion = try await store.draftVersion(id: view.id)
+        let other = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        try await other.put(DraftRecord(id: view.id, text: "Other instance's newer draft"), kind: "draft", id: view.id)
+        wire.heldMethod = "session.open"
+        model.send(sessionID: view.id)
+        try await eventually("opening held while the empty composer is saved") { wire.held != nil && model.draftWrites.tasks[view.id] == nil }
+        let captured = try await other.list(CommandIntent.self, kind: "pending:" + view.id)
+        XCTAssertEqual(captured.map(\.text), ["Captured input waiting for the helper"], "Captured input must have its own durable record before opening finishes")
+        let copies = try await other.draftConflicts(id: view.id)
+        XCTAssertEqual(copies.map(\.draft.text), [""], "The debounce owns only the composer snapshot")
+        wire.release()
+        try await eventually("rejected submission returned") { !view.loading }
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "turn.submit" })
+        await other.close()
+    }
+
+    /// A credential read may outlive the runtime that admitted it. Hold that
+    /// continuation independently of the transport (whose requests fail on loss).
+    private func holdConfiguration(_ model: WorkspaceModel, _ wire: WorkspaceRaceHost, chat: ChatRecord, gate: AsyncGate) throws -> Task<Void, Error> {
+        let lease = try model.configurationLease(for: chat, host: wire.host)
+        let task = Task {
+            await gate.wait()
+            try model.requireConfiguration(lease, host: wire.host)
+        }
+        model.sessionConfigurations[chat.id] = (UUID(), lease, task)
+        return task
+    }
+
+    func testReplacementOpeningDoesNotAwaitRetiredConfiguration() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        let gate = AsyncGate()
+        let old = try holdConfiguration(model, wire, chat: chat, gate: gate)
+        try await wire.host.shutdownAndWait()
+        var finished = false
+        let replacement = Task { defer { finished = true }; return try await model.open(chat) }
+        try await eventually("replacement reached capture setup") { wire.frames.filter { $0["method"]?.string == "debug.mode" }.count == 2 }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(finished, "Replacement opening must not wait for a retired configuration's credentials")
+        await gate.open(); _ = try? await old.value
+        do { _ = try await replacement.value } catch { XCTFail("Retired configuration rejected the replacement: \(error)") }
+        XCTAssertTrue(model.opened.contains(chat.id))
+    }
+
+    func testReplacementOpeningDoesNotAwaitRetiredOpeningConfiguration() async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        let gate = AsyncGate()
+        let old = try holdConfiguration(model, wire, chat: chat, gate: gate)
+        let opening = Task { try await old.value }
+        model.sessionOpenings[chat.id] = (UUID(), opening)
+        try await wire.host.shutdownAndWait()
+        var finished = false
+        let replacement = Task { defer { finished = true }; return try await model.open(chat) }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(finished, "An opening waiting for retired configuration must not block a replacement")
+        await gate.open(); _ = try? await opening.value
+        do { _ = try await replacement.value } catch { XCTFail("An obsolete opening rejected the replacement: \(error)") }
+        XCTAssertTrue(model.opened.contains(chat.id))
+    }
+
+    func testRetiredConfigurationFailureCannotCloseReplacementHelper() async throws {
+        try await retiredConfigurationCleanup(restart: true)
+    }
+
+    func testRetiredConfigurationFailureCannotCloseReassignedChat() async throws {
+        try await retiredConfigurationCleanup(restart: false)
+    }
+
+    func testRetiredConfigurationFailureCannotCloseReopenedRuntime() async throws {
+        try await retiredConfigurationCleanup(restart: false, reassign: false)
+    }
+
+    func testReconciliationDoesNotShareConfigurationFromAnotherLease() async throws {
+        let (model, view, wire) = try await fixture()
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        let gate = AsyncGate()
+        let old = try holdConfiguration(model, wire, chat: chat, gate: gate)
+        model.connectionGenerations[chat.id, default: 0] += 1
+        var finished = false
+        let current = Task { defer { finished = true }; try await model.reconcileSessionProfile(chat, host: wire.host) }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(finished, "A task under the previous chat lease cannot be shared")
+        await gate.open(); _ = try? await old.value
+        do { try await current.value } catch { XCTFail("The retired lease rejected current reconciliation: \(error)") }
+    }
+
+    func testConfigurationCloseReplyCannotClearReopenedRuntime() async throws {
+        try await configurationCloseReply(rejected: false)
+    }
+
+    func testConfigurationCloseFailureCannotReleaseReopenedRuntime() async throws {
+        try await configurationCloseReply(rejected: true)
+    }
+
+    private func configurationCloseReply(rejected: Bool) async throws {
+        let (model, view, wire) = try await fixture()
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        wire.rejectedMethod = "session.configure"; wire.heldMethod = "session.close"
+        let saving = Task { try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B") }
+        try await eventually("unsupported configuration reached close fallback") { wire.held != nil }
+        // An unload event can precede the close reply. A new opening now owns
+        // the same session ID and helper connection, but a different runtime.
+        model.helperSessionDidUnload(chat.id)
+        _ = try await model.open(chat)
+        let configured = model.sessionProfileRevisions[chat.id]?.revision
+        wire.rejectedMethod = rejected ? "session.close" : nil
+        wire.release(); try await saving.value
+        XCTAssertTrue(model.opened.contains(chat.id))
+        XCTAssertEqual(model.sessionProfileRevisions[chat.id]?.revision, configured)
+        XCTAssertFalse(model.releasedHelperSessions.contains(chat.id))
+    }
+
+    func testUnsupportedConfigurationStillClosesItsCurrentIdleRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        wire.rejectedMethod = "session.configure"
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B")
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.close" }.count, 1)
+        XCTAssertFalse(model.opened.contains(chat.id))
+        wire.rejectedMethod = nil
+        _ = try await model.open(chat)
+        XCTAssertEqual(wire.frames.last { $0["method"]?.string == "session.open" }?["params"]?.object?["apiKey"]?.string, "replacement-B")
+    }
+
+    private func retiredConfigurationCleanup(restart: Bool, reassign: Bool = true) async throws {
+        let (model, view, wire) = try await fixture()
+        try await bindLossHandling(model, wire)
+        let chat = try XCTUnwrap(model.record(view.id))
+        _ = try await model.open(chat)
+        let gate = AsyncGate()
+        let old = try holdConfiguration(model, wire, chat: chat, gate: gate)
+        let saving = Task { try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B") }
+        try await eventually("save is reconciling the loaded session") { model.configuration.profiles.first?.apiKey == "replacement-B" }
+        try await Task.sleep(for: .milliseconds(50))
+        if restart { try await wire.host.shutdownAndWait() }
+        else {
+            // Switching away and back retires the lease even on the same helper.
+            if reassign { model.connectionGenerations[chat.id, default: 0] += 1 }
+            model.helperSessionDidUnload(chat.id)
+        }
+        // Isolate failure cleanup from sharing an obsolete task (covered above).
+        model.sessionConfigurations.removeValue(forKey: chat.id)
+        _ = try await model.open(chat)
+        let before = wire.frames.filter { $0["method"]?.string == "session.close" }.count
+        await gate.open(); _ = try? await old.value; try await saving.value
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.close" }.count, before, "A retired save must not close a replacement runtime")
+        XCTAssertTrue(model.opened.contains(chat.id), "A retired save must not clear replacement bookkeeping")
+    }
+
+    func testOpeningRepeatsConfigurationWhenAnotherSaveIntervenes() async throws {
+        let (model, view, wire) = try await fixture()
+        wire.heldMethod = "session.open"
+        view.draft = "First"; model.send(sessionID: view.id)
+        try await eventually("opening held") { wire.held != nil }
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B")
+        wire.release(holding: "session.configure")
+        try await eventually("reconciliation held or send finished") { wire.held != nil || !view.loading }
+        XCTAssertNotNil(wire.held, "Opening must reconcile the replacement key")
+        guard wire.held != nil else { return }
+        let saving = Task { try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-C") }
+        try await eventually("second replacement saved") { model.configuration.profiles.first?.apiKey == "replacement-C" }
+        wire.release()
+        try await saving.value
+        try await eventually("send settled") { !view.loading }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "session.configure" }.compactMap { $0["params"]?.object?["apiKey"]?.string }, ["replacement-B", "replacement-C"])
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
+    }
+
+    func testRetryAfterCaptureSetupFailureReconcilesTheExistingRuntime() async throws {
+        let (model, view, wire) = try await fixture()
+        let chat = try XCTUnwrap(model.record(view.id))
+        wire.rejectedMethod = "debug.mode"
+        do { _ = try await model.open(chat); XCTFail("Fixture capture setup must fail") }
+        catch HostError.rejected(let code, _) { XCTAssertEqual(code, "fixture_rejection") }
+        XCTAssertFalse(model.opened.contains(chat.id))
+        wire.rejectedMethod = nil
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B")
+        _ = try await model.open(chat)
+        XCTAssertEqual(wire.frames.last { $0["method"]?.string == "session.configure" }?["params"]?.object?["apiKey"]?.string, "replacement-B", "The helper may already hold the runtime from the failed opening")
+    }
+
+    func testLoadedRuntimeWaitsForReplacementConfiguration() async throws {
+        let (model, view, wire) = try await fixture()
+        _ = try await model.open(try XCTUnwrap(model.record(view.id)))
+        wire.heldMethod = "session.configure"
+        let saving = Task { try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B") }
+        try await eventually("replacement configuration held") { wire.held != nil }
+        view.draft = "After the saved replacement"; model.send(sessionID: view.id)
+        // Give the accepted send a chance to get through an incorrectly
+        // cached open. The configuration remains held for this whole interval.
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(wire.frames.contains { $0["method"]?.string == "turn.submit" })
+        wire.release(); try await saving.value
+        try await eventually("send finished after configuration") { !view.loading }
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
+    }
+
+    func testStopDoesNotWaitForCredentialReconciliation() async throws {
+        let (model, view, wire) = try await fixture()
+        _ = try await model.open(try XCTUnwrap(model.record(view.id)))
+        wire.heldMethod = "session.configure"
+        let saving = Task { try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B") }
+        try await eventually("replacement configuration held") { wire.held != nil }
+        view.state = "running"; model.stop(sessionID: view.id)
+        try await eventually("Stop dispatched without waiting for configuration") { wire.frames.contains { $0["method"]?.string == "turn.stop" } }
+        XCTAssertNotNil(wire.held)
+        wire.release(); try await saving.value
+    }
+
+    func testNewSideReconcilesCredentialsSavedDuringPublication() async throws {
+        let (model, parent, wire) = try await fixture()
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.snapshotInFlight = true; view.draft = "First side message"
+        wire.heldMethod = "side.open"
+        model.send(sessionID: side.id)
+        try await eventually("side publication held") { wire.held != nil }
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B")
+        wire.release()
+        try await eventually("side send settled") { !view.loading }
+        XCTAssertEqual(wire.frames.last { $0["method"]?.string == "session.configure" && $0["sessionId"]?.string == side.id }?["params"]?.object?["apiKey"]?.string, "replacement-B")
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }.count, 1)
+    }
+
+    func testNewForkReconcilesCredentialsSavedDuringPublication() async throws {
+        let (model, parent, wire) = try await fixture()
+        wire.heldMethod = "session.fork"
+        let creation = Task { try await model.createFork(parentID: parent.id) }
+        try await eventually("fork publication held") { wire.held != nil }
+        try await model.saveProfile(try XCTUnwrap(model.profiles.first), key: "replacement-B")
+        wire.release()
+        let fork = try await creation.value
+        _ = try await model.open(fork)
+        XCTAssertEqual(wire.frames.last { $0["method"]?.string == "session.configure" && $0["sessionId"]?.string == fork.id }?["params"]?.object?["apiKey"]?.string, "replacement-B")
+    }
+
+    func testPendingSideWithAnImageImportCannotBeDiscarded() async throws {
+        let (model, parent, _) = try await fixture()
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id])
+        let importing = model.beginImageImport(sessionID: side.id); defer { importing.finish() }
+        XCTAssertFalse(model.discardPendingSideNow(side))
+        let discarded = await model.discardPendingSide(side)
+        XCTAssertFalse(discarded); XCTAssertNotNil(model.displays[side.id])
+    }
+
+    func testSidePublicationDoesNotTakeFocusBackFromASavedSibling() async throws {
+        let (model, parent, wire) = try await fixture()
+        let side = SideRecord(id: "side", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Side", pending: true)
+        let view = SessionDisplay(id: side.id)
+        view.selectionMetadataLoaded = true; view.snapshotInFlight = true; view.draft = "First side message"
+        model.sides[parent.id] = side; model.displays[side.id] = view
+        var sibling = side.chat; sibling.id = "sibling"
+        model.chats.append(sibling); try await model.store?.put(sibling, kind: "chat", id: sibling.id)
+        wire.heldMethod = "debug.mode"; wire.heldSessionID = side.id
+        model.send(sessionID: side.id)
+        try await eventually("saved side capture setup held") { wire.held != nil }
+        XCTAssertTrue(model.side(side.id)?.kept == true)
+        await model.openFromSidebar(sibling.id)
+        XCTAssertEqual(model.focusedSessionID, sibling.id)
+        wire.release()
+        try await eventually("first send finished") { !view.loading }
+        XCTAssertEqual(model.focusedSessionID, sibling.id, "Late publication must not take the sibling's focus")
+        XCTAssertEqual(model.sides[parent.id]?.boundary["parentSessionId"]?.string, parent.id)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }.count, 1)
+    }
+
+    func testPendingSideImportStartedDuringDraftTransferRemainsReachable() async throws {
+        let (model, parent, _) = try await fixture()
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id]), view = try XCTUnwrap(model.displays[side.id])
+        view.draft = "Move this draft"; parent.selectionMetadataLoaded = false
+        let store = try XCTUnwrap(model.store)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        let barrier = Task { try await store.put(WorkspaceRaceStoreBarrier(entered: entered, released: released), kind: "fixture", id: "barrier") }
+        defer { released.signal() }
+        try await eventually("parent draft read held") { entered.wait(timeout: .now()) == .success }
+        let discard = Task { await model.discardPendingSide(side) }
+        try await eventually("side draft transfer held") { model.sideDraftTransfers[side.id] != nil }
+        let importing = model.beginImageImport(sessionID: side.id); defer { importing.finish() }
+        released.signal(); try await barrier.value
+        let discarded = await discard.value
+        XCTAssertFalse(discarded)
+        XCTAssertTrue(model.displays[side.id] === view, "The in-progress import still needs its side destination")
+        XCTAssertTrue(importing.isCurrent())
+    }
+
+    func testSiblingNavigationCannotDiscardAPublishingSide() async throws { try await publishingSideNavigation("sidebar") }
+    func testDirectDiscardCannotRemoveAPublishingSide() async throws { try await publishingSideNavigation("discard") }
+    func testSidePublicationRechecksOwnershipAfterParentOpening() async throws { try await publishingSideNavigation("replace") }
+
+    private func publishingSideNavigation(_ action: String) async throws {
+        let (model, parent, wire) = try await fixture()
+        let side = SideRecord(id: "side", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Side", pending: true)
+        let view = SessionDisplay(id: side.id)
+        view.selectionMetadataLoaded = true; view.snapshotInFlight = true; view.draft = "First side message"
+        model.sides[parent.id] = side; model.displays[side.id] = view
+        var sibling = side.chat; sibling.id = "sibling"; sibling.title = "Saved sibling"
+        sibling.path = model.root.appendingPathComponent("Workspaces/w/Sessions/side_sibling.jsonl").path
+        model.chats.append(sibling); try await model.store?.put(sibling, kind: "chat", id: sibling.id)
+        wire.heldMethod = "session.open"
+        model.send(sessionID: side.id)
+        try await eventually("parent opening for first side send") { wire.held != nil }
+        switch action {
+        case "sidebar": await model.openFromSidebar(sibling.id)
+        case "discard":
+            XCTAssertFalse(model.discardPendingSideNow(side))
+            let discarded = await model.discardPendingSide(side); XCTAssertFalse(discarded)
+        default:
+            model.sides[parent.id] = SideRecord(id: "replacement", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Replacement", pending: true)
+        }
+        if action != "replace" {
+            XCTAssertTrue(model.displays[side.id] === view, "Publishing side must remain reachable")
+            XCTAssertEqual(model.sides[parent.id]?.id, side.id)
+        }
+        wire.release()
+        try await eventually("side send settled") { !view.loading }
+        let publishes = wire.frames.filter { $0["method"]?.string == "side.open" }
+        let submits = wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }
+        if action == "replace" {
+            XCTAssertTrue(publishes.isEmpty, "Lost ownership must be detected before creating a helper side")
+            XCTAssertEqual(model.sides[parent.id]?.pending, true, "An obsolete publisher must not change the replacement")
+        } else {
+            XCTAssertEqual(publishes.count, 1); XCTAssertEqual(submits.count, 1)
+            XCTAssertTrue(model.displays[side.id] === view)
+            let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: side.id)
+            XCTAssertNotNil(saved)
+        }
+    }
+
     func testCaptureSettingsPreserveOptOutAndTimestampThroughReloadAndOpen() async throws {
         let (model, view, wire) = try await fixture()
         let settings = ConnectionSettingsController(model: model)
@@ -92,7 +559,7 @@ import XCTest
         XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" && $0["sessionId"]?.string == side.id }.count, 1)
     }
 
-    func testRemovedChatAbortsMaterializingSubmission() async throws {
+    func testDirectDiscardRefusesCapturedFirstSendBeforeItsRecordCommits() async throws {
         try await pendingSend(discardDirectly: true)
     }
 
@@ -124,8 +591,11 @@ import XCTest
         model.send(sessionID: view.id)
         try await eventually("first metadata write pending") { model.pendingChatSaveCounts[view.id] == 1 }
         XCTAssertTrue(view.loading); XCTAssertFalse(view.busy)
-        if discardDirectly { model.discardPendingChat(view.id) }
-        else {
+        if discardDirectly {
+            model.discardPendingChat(view.id)
+            XCTAssertNotNil(model.record(view.id), "Captured input pins even the direct placeholder-discard path")
+            XCTAssertTrue(model.displays[view.id] === view)
+        } else {
             model.deleteChat(view.id)
             XCTAssertNotNil(model.record(view.id), "Delete must refuse an accepted first send")
             XCTAssertTrue(model.displays[view.id] === view)
@@ -134,9 +604,8 @@ import XCTest
         released.signal(); try await barrier.value
         try await eventually("send settled") { !view.loading }
         let saved = try await store.get(ChatRecord.self, kind: "chat", id: view.id)
-        XCTAssertEqual(saved != nil, !discardDirectly)
-        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, discardDirectly ? 0 : 1)
-        if discardDirectly { XCTAssertFalse(model.opened.contains(view.id)) }
+        XCTAssertNotNil(saved)
+        XCTAssertEqual(wire.frames.filter { $0["method"]?.string == "turn.submit" }.count, 1)
     }
 
     func testArchiveDuringSendOpeningReturnsUnsentDraft() async throws { try await archiveDuringOpening("turn.submit") }
@@ -410,6 +879,8 @@ import XCTest
     var frames: [[String: WireValue]] = []
     var answered: [String] = []
     var heldMethod: String?
+    var rejectedMethod: String?
+    var heldSessionID: String?
     var held: [String: WireValue]?
     var heldFrames: [[String: WireValue]] = []
     var stopRevision = 0
@@ -417,11 +888,11 @@ import XCTest
     lazy var host = HostSupervisor(commandSender: { [weak self] frame in
         guard let self else { return }
         self.frames.append(frame)
-        if frame["method"]?.string == self.heldMethod { self.held = frame; self.heldFrames.append(frame) }
+        if frame["method"]?.string == self.heldMethod, self.heldSessionID == nil || frame["sessionId"]?.string == self.heldSessionID { self.held = frame; self.heldFrames.append(frame) }
         else { self.answer(frame) }
     })
     init(root: URL) { self.root = root }
-    func release() { let frames = heldFrames; heldFrames = []; held = nil; heldMethod = nil; for frame in frames { answer(frame) } }
+    func release(holding method: String? = nil) { let frames = heldFrames; heldFrames = []; held = nil; heldMethod = method; for frame in frames { answer(frame) } }
     private func answer(_ frame: [String: WireValue]) {
         var result: [String: WireValue] = [:]
         if frame["method"]?.string == "turn.stop" { stopRevision += 1 }
@@ -441,8 +912,10 @@ import XCTest
             } catch { XCTFail("Generated fork could not be written: \(error)") }
         }
         guard let connection = host.connectionID, let epoch = host.epoch, let command = frame["commandId"] else { return }
+        let rejected = frame["method"]?.string == rejectedMethod
+        if rejected { result = ["code": .string("fixture_rejection"), "message": .string("Fixture rejection")] }
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch), "commandId": command,
-                             "ok": .bool(true), "result": .object(result)]), connectionID: connection)
+                             "ok": .bool(!rejected), "result": .object(result)]), connectionID: connection)
         answered.append(frame["method"]?.string ?? "")
     }
 }

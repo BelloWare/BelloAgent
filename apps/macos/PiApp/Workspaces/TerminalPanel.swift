@@ -146,11 +146,11 @@ import Combine
     /// emulator and scrollback. Only that terminal; nothing else changes.
     /// Nil when that terminal, at that generation, is no longer there.
     @discardableResult
-    func restart(_ id: UUID, in workspaceID: String, generation: Int) -> TerminalSession? {
+    func restart(_ id: UUID, in workspaceID: String, generation: Int, directory: String? = nil) -> TerminalSession? {
         guard var project = projects[workspaceID], let index = project.sessions.firstIndex(where: { $0.id == id }),
               project.sessions[index].generation == generation else { return nil }
         let old = project.sessions[index]
-        let fresh = TerminalSession(workspaceID: workspaceID, directory: old.directory, id: old.id, number: old.number,
+        let fresh = TerminalSession(workspaceID: workspaceID, directory: directory ?? old.directory, id: old.id, number: old.number,
                                     customName: old.customName, generation: old.generation + 1)
         project.sessions[index] = fresh
         projects[workspaceID] = project
@@ -225,7 +225,7 @@ import Combine
                                                   cancelIsDefault: true, over: window) else { return nil }
         }
         switch ending {
-        case .restart: return restart(id, in: workspace.id, generation: generation)
+        case .restart: return restart(id, in: workspace.id, generation: generation, directory: workspace.path)
         case .close: close(id, in: workspace.id, generation: generation); return nil
         }
     }
