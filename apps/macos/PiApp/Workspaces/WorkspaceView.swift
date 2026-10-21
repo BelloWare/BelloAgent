@@ -23,6 +23,7 @@ import Combine
     private let region = WorkspaceRegionView()
     private let chats = WorkspaceChatsLayer()
     private(set) var conversation: ConversationPaneView?
+    private let sessionPanelState = SessionPanelState()
     private var welcome: WorkspaceWelcomeView?
     private var onboarding: OnboardingContentView?
     let splitHandle: PiKit.ResizeHandle
@@ -219,7 +220,7 @@ import Combine
 
         // The chat, or what shows in its place.
         if let session = model.selected, let chat = model.chat {
-            let view = conversation ?? ConversationPaneView(model: model)
+            let view = conversation ?? ConversationPaneView(model: model, panelState: sessionPanelState)
             if conversation == nil { conversation = view }
             view.inheritedEnabled = enabled && onChats
             if shownChat?.session != ObjectIdentifier(session) || shownChat?.chat != chat {

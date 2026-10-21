@@ -4,6 +4,45 @@ import XCTest
 /// Host contract H1–H5: correlation headers/body metadata, multi-root
 /// workspaces, per-turn overrides, turn.edit branches and display kinds.
 final class ContractTests: XCTestCase {
+    func testConversationPagingRetainsReasoningArgumentsAndMessageBoundaries() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), path = root.appendingPathComponent("copy.jsonl")
+        let message = ChatMessage(role: "assistant", content: [textBlock("COPY-TEXT"),
+            ["type": "thinking", "thinking": "COPY-REASONING"],
+            ["type": "toolCall", "id": "call", "name": "echo", "arguments": ["text": "COPY-ARGUMENT"]]])
+        do {
+            let journal = try SessionJournal(url: path, id: "copy", cwd: root, binding: profile.binding, create: true)
+            try journal.append(["type": "message", "message": message.pi], id: "answer")
+            try journal.append(["type": "message", "message": ["role": "toolResult", "toolCallId": "call", "toolName": "echo", "content": "COPY-RESULT"]], id: "receipt")
+            try journal.append(["type": "message", "message": ["role": "assistant", "content": "COPY-FINAL"]], id: "final")
+        }
+        let session = try AgentSession(id: "copy", profile: profile, apiKey: "fixture", cwd: root, directory: root, readOnly: true,
+            resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: path.path)
+        let found = try await session.contentSearch(["query": ""])
+        let page = try await session.contentPage(["first": 1, "last": 1, "index": 1, "revision": found["revision"]])
+        let text = try XCTUnwrap(page["text"].text)
+        for marker in ["COPY-TEXT", "COPY-REASONING", "COPY-ARGUMENT", "## assistant", "[Tool echo]"] {
+            XCTAssertTrue(text.contains(marker), "Missing \(marker) from conversation copy")
+        }
+        let plain = try await session.messageRead(id: "answer", field: "text", offset: 0)
+        XCTAssertEqual(plain["text"].text, "COPY-TEXT", "The separate message-text API stays unchanged")
+        for (arguments, expected) in [(Optional<JSON>.none, "{}"), (Optional(JSON.null), "null")] {
+            var call: JSON = ["type": "toolCall", "name": "echo"]
+            if let arguments { call["arguments"] = arguments }
+            let copy = ChatMessage(role: "assistant", content: [call]).retainedConversationText
+            XCTAssertEqual(copy, "## assistant\n\n\n[Tool echo]\n\(expected)\n\n\n")
+        }
+        let retained = try await session.contentSearch(["query": "", "retained": true])
+        let rows = [("answer", text), ("receipt", "## toolResult\n\nCOPY-RESULT\n\n"), ("final", "## assistant\n\nCOPY-FINAL\n\n")]
+        let identity = rows.flatMap { [$0.0, $0.1] }.map { "\($0.utf8.count):\($0)" }.joined()
+        XCTAssertEqual(retained["digest"].text, sha256(Data(identity.utf8)))
+        do {
+            _ = try await session.contentPage(["first": 1, "last": 1, "index": 1, "revision": retained["revision"], "incarnation": "retired"])
+            XCTFail("An equal sequence in another runtime cannot inherit a live selection")
+        } catch let error as AgentError { XCTAssertEqual(error.code, "history_changed") }
+        await session.close()
+    }
+
     // MARK: H1
     func testResponsesBodyCarriesSessionMetadataAndMessagesCannotOpen() async throws {
         let user=ChatMessage(role:"user",content:[textBlock("hello")])

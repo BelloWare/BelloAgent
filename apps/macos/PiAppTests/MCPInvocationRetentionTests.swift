@@ -107,6 +107,63 @@ import XCTest
         model.releaseUpdateBarrier()
     }
 
+    func testFolderChangesRefuseClosedInspectorExecutionAndPendingRetention() async throws {
+        for removing in [false, true] {
+            let (model, host, commands, folder) = try await fixture()
+            let extra = folder.deletingLastPathComponent().appendingPathComponent("extra").resolvingSymlinksInPath()
+            try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+            let project = try XCTUnwrap(model.workspaces.first)
+            try await model.updateConfiguration {
+                $0.workspaces = [WorkspaceRecord(id: project.id, path: project.path, trusted: true, paths: removing ? [extra.path] : [])]
+            }
+            model.opened.insert("chat")
+            let request = Task { try await model.resourceRequest("mcp.invoke", sessionID: "chat") }
+            defer { request.cancel() }
+            try await wait { commands.frames.count == 1 }
+            // Closing Resources cancels the caller; the dispatched work remains physical.
+            request.cancel()
+            func change() async throws {
+                if removing { try await model.removeFolder(extra.path, from: project.id) }
+                else { try await model.addFolders([extra.path], to: project.id) }
+            }
+            for retained in [false, true] {
+                let before = model.configuration.workspaces, frameCount = commands.frames.count
+                var finished = false, rejected = false
+                let changing = Task {
+                    defer { finished = true }
+                    do { try await change() } catch { rejected = true }
+                }
+                try await wait { finished || commands.frames.count > frameCount }
+                XCTAssertTrue(finished && rejected, "Folder admission must refuse execution and retention, retained=\(retained)")
+                XCTAssertEqual(commands.frames.count, frameCount, "No session unloading before rejecting the folder change")
+                XCTAssertEqual(model.configuration.workspaces, before)
+                XCTAssertTrue(host.isReady); XCTAssertTrue(model.opened.contains("chat"))
+                guard finished && rejected else {
+                    changing.cancel()
+                    if let frame = commands.frames.dropFirst(frameCount).first { try reply(frame, on: host, result: .object([:])) }
+                    _ = await changing.result
+                    return
+                }
+                if !retained {
+                    try reply(commands.frames[0], on: host, result: .object(["content": .array([])]))
+                    try await wait { commands.frames.count == 2 }
+                    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 1)
+                }
+            }
+            try reply(commands.frames[1], on: host, result: .object(["acknowledged": .bool(true)]))
+            _ = await request.result
+            let changing = Task { try await change() }
+            try await wait { commands.frames.count == 3 }
+            XCTAssertEqual(commands.frames[2]["method"]?.string, "session.releaseDependents")
+            try reply(commands.frames[2], on: host, result: .object(["released": .array([])]))
+            try await wait { commands.frames.count == 4 }
+            XCTAssertEqual(commands.frames[3]["method"]?.string, "session.close")
+            try reply(commands.frames[3], on: host, result: .object([:]))
+            try await changing.value
+            XCTAssertEqual(model.workspaces.first?.paths, removing ? [] : [extra.path])
+        }
+    }
+
     func testTimedOutInvocationPinsActivityUntilItsPhysicalReplyOrHostExit() async throws {
         for lateReply in [true, false] {
             let (model, host, commands, _) = try await fixture(acknowledgmentTimeout: .seconds(1))

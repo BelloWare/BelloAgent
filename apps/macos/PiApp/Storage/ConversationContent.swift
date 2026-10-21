@@ -10,7 +10,18 @@ struct ContentHit: Codable, Sendable, Identifiable {
     var drawing: Drawing? = nil
     var omittedOutputs: Set<String>? = nil
 }
-struct ContentSearch: Codable, Sendable { var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String }
+struct ContentSearch: Codable, Sendable {
+    struct Source: Codable, Sendable, Equatable { var sessionID: String; var workspaceID: String; var path: String?; var hostEpoch: String? }
+    var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String
+    var digest: String? = nil, incarnation: String? = nil
+    var rowHashes: Data? = nil
+    /// Imports keep their journal header ID while the desktop record gets a new ID.
+    var journalID: String? = nil
+    var source: Source? = nil
+    func sameSnapshot(as other: ContentSearch) -> Bool {
+        revision == other.revision && incarnation == other.incarnation && journalID == other.journalID && source == other.source
+    }
+}
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }
 
@@ -249,31 +260,22 @@ enum ConversationContent {
             return true
         }
     }
-    static func text(_ entry: [String: WireValue]) -> String {
-        if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
-        let message = entry["message"]?.object ?? [:], content = message["content"]
-        let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        if let timeline, timeline.supported {
-            let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
-            let evidence = "## \(title)\n\n" + timeline.retainedText + "\n\n"
-            // If a source exceeds retained event bounds, preserve the original
-            // complete canonical content too, explicitly separate from arrival order.
-            if !timeline.segments.contains(where: \.truncated) && timeline.omittedEvents == 0 { return evidence }
-            var canonical = entry
-            var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
-            canonical["message"] = .object(plain)
-            return evidence + "## Full saved response\n\n" + text(canonical)
-        }
-        let body = content?.string ?? (content?.array ?? []).map { value -> String in
-            let block = value.object ?? [:]
-            switch block["type"]?.string {
-            case "text": return block["text"]?.string ?? ""
-            case "thinking": return "\n[Exposed reasoning]\n\(block["thinking"]?.string ?? "")\n"
-            case "toolCall": return "\n[Tool \(block["name"]?.string ?? "tool")]\n\(block["arguments"]?.pretty ?? "{}")\n"
-            case "image": return "\n[Image attachment omitted]\n"
-            default: return ""
-            }
-        }.joined()
-        return "## \(message["role"]?.string ?? "system")\n\n\(body)\n\n"
+    static func text(_ entry: [String: WireValue], adopted: Bool = false) -> String {
+        if entry["type"]?.string == "compaction" { return RetainedConversation.compaction(entry["summary"]?.string ?? "") }
+        if entry["type"]?.string == "branch" { return RetainedConversation.edit }
+        let message = entry["message"]?.object ?? [:]
+        var timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
+        var detail = message["nativeDetail"]?.string
+        if adopted { timeline?.finish("completed"); detail = "Compaction · Checkpoint durably adopted" }
+        else { RetainedConversation.endWithoutReceipt(kind: message["nativeKind"]?.string, timeline: &timeline, detail: &detail) }
+        return RetainedConversation.message(role: message["role"]?.string ?? "system", kind: message["nativeKind"]?.string,
+            detail: detail,
+            content: message["content"], timeline: timeline)
     }
+}
+
+extension WireValue: RetainedConversationValue {
+    var retainedString: String? { string }
+    var retainedArray: [WireValue] { array ?? [] }
+    var retainedObject: [String: WireValue] { object ?? [:] }
 }

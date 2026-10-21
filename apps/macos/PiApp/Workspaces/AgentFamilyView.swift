@@ -13,6 +13,14 @@ import Combine
     private var activityObserver: ShellObserver?
     private var enabled = true
     private var allowsDisplay = true
+    var openFloating: ((Bool) -> Bool)?
+    private var floatingShown = false
+    private var offersEmpty = false
+    func setFloating(shown: Bool, offersEmpty: Bool) {
+        guard floatingShown != shown || self.offersEmpty != offersEmpty else { return }
+        floatingShown = shown; self.offersEmpty = offersEmpty
+        if let model { update(model: model, sessionID: sessionID, enabled: enabled, allowsDisplay: allowsDisplay) }
+    }
     override init(frame: NSRect) {
         super.init(frame: frame); addSubview(button)
         button.setAccessibilityIdentifier("agent-family-pill")
@@ -30,28 +38,30 @@ import Combine
             observer.observe(model); observer.observe(publisher: model.activityChanged); activityObserver = observer
             request = model.agentFamilyRequests.sink { [weak self] owner in
                 MainActor.assumeIsolated {
-                    guard let self, self.family?.ownerID == owner, !self.isHiddenOrHasHiddenAncestor,
+                    guard let self, self.family?.ownerID == owner, self.superview?.isHiddenOrHasHiddenAncestor != true,
                           self.window?.isKeyWindow == true else { return }
-                    self.open()
+                    self.open(focusAgents: true)
                 }
             }
         }
         self.sessionID = sessionID; self.enabled = enabled; self.allowsDisplay = allowsDisplay; button.isEnabled = enabled
         let next = model.conversationFamily(model.familyPickerOwner(sessionID))
-        let hidden = !allowsDisplay || next.isEmpty
+        let hidden = !allowsDisplay || floatingShown || (next.isEmpty && !offersEmpty)
         if isHidden != hidden { isHidden = hidden; superview?.needsLayout = true }
         if hidden { popover.close() }
         guard next != family else { return }
         family = next
-        button.title = next.title
-        let label = [next.title, next.activity.label].filter { !$0.isEmpty }.joined(separator: ", ")
+        button.title = next.isEmpty ? "Agents" : next.title
+        let label = [button.title, next.activity.label].filter { !$0.isEmpty }.joined(separator: ", ")
         button.toolTip = label + ". Open sides and sub-agents."
         button.setAccessibilityLabel(button.toolTip)
         button.working = next.activity.active > 0
         needsLayout = true
         if next.isEmpty { popover.close() }
     }
-    func open() {
+    func open(focusAgents: Bool = false) {
+        guard enabled, window != nil else { return }
+        if openFloating?(focusAgents) == true { return }
         guard enabled, !isHidden, let model, window != nil else { return }
         let width = min(400, max(280, (window?.contentView?.bounds.width ?? 400) - 48))
         popover.toggle(from: button, width: width, maximumHeight: 480, animates: !PiKit.Motion.reduced, withinWindow: true) { [weak self, weak model] in
@@ -135,7 +145,12 @@ import Combine
     private var openButtons: [FamilyPickerRow] = []
     private var controls: [PiKit.ButtonBase] = []
     private var selectedID: String?
-    init(model: WorkspaceModel, sessionID: String, close: @escaping () -> Void, ownerWindow: NSWindow?) {
+    private let embedded: Bool
+    var inheritedEnabled = true {
+        didSet { if oldValue != inheritedEnabled { family = nil; refresh() } }
+    }
+    init(model: WorkspaceModel, sessionID: String, close: @escaping () -> Void, ownerWindow: NSWindow?, embedded: Bool = false) {
+        self.embedded = embedded
         self.model = model; self.sessionID = sessionID; self.close = close; self.ownerWindow = ownerWindow
         super.init(frame: .zero)
         let observer = ShellObserver { [weak self] in self?.refresh() }; observer.observe(model); observer.observe(publisher: model.activityChanged); self.observer = observer
@@ -166,6 +181,12 @@ import Combine
         let focusID = hadFocus?.accessibilityIdentifier()
         stack?.removeFromSuperview(); openButtons = []; controls = []
         var rows: [NSView] = []
+        if embedded, value.isEmpty {
+            rows.append(ShellStack(.vertical, spacing: 6, padding: NSEdgeInsets(top: 8, left: 16, bottom: 12, right: 16), [
+                .view(shellLine("Your agents, together", font: PiKit.Font.body, color: .piInk), .fill),
+                .view(PiKit.WrappedText("Sides and sub-agents appear here as you work.", font: PiKit.Font.caption, color: .piInkSecondary), .fill)
+            ]))
+        }
         func newSide() {
             guard !value.sides.isEmpty || value.canAddSide else { return }
             let action = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
@@ -192,8 +213,9 @@ import Combine
                 }
                 let ownerTitle = model.record(ownerID)?.title ?? "Unavailable parent"
                 let detail = [ownerID == value.ownerID ? nil : "in " + ownerTitle, member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let compactDetail = [member.statusLabel, member.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
                 let attribution = model.costReading(for:member.chat.id).costAttribution.map { ". " + $0 } ?? ""
-                let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
+                let row = row(member.label, detail: embedded ? compactDetail : detail, id: "open-agent-" + member.chat.id,
                     label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail + attribution, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
                     close(); Task { await model?.openSubagentTab(member.chat.id) }
                 }
@@ -230,8 +252,9 @@ import Combine
         if value.agentCount > 0 { controls.append(contentsOf: [stopAll, inspect]); rows.append(ShellStack(.horizontal, spacing: 8, [.view(stopAll), .spacer(0), .view(inspect)])) }
         let stack = ShellStack(.vertical, spacing: 2, padding: NSEdgeInsets(top: 8, left: 6, bottom: 8, right: 6), rows.map { .view($0, .fill) })
         self.stack = stack; addSubview(stack)
+        if !inheritedEnabled { for control in controls { control.isEnabled = false } }
         let enabled = controls.filter(\.isEnabled)
-        for (index, control) in enabled.enumerated() { control.nextKeyView = enabled[(index + 1) % enabled.count] }
+        if !embedded { for (index, control) in enabled.enumerated() { control.nextKeyView = enabled[(index + 1) % enabled.count] } }
         if !openButtons.contains(where: { $0.accessibilityIdentifier() == selectedID && $0.isEnabled }) { selectedID = openButtons.first(where: \.isEnabled)?.accessibilityIdentifier() }
         needsLayout = true
         PiKit.sizeChanged(self)
@@ -256,7 +279,11 @@ import Combine
     }
     func height(forWidth width: CGFloat) -> CGFloat { stack?.height(forWidth: width) ?? 0 }
     override func layout() { super.layout(); stack?.frame = bounds }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { window?.makeFirstResponder(self) } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if embedded { ownerWindow = window }
+        else if window != nil { window?.makeFirstResponder(self) }
+    }
     override func keyDown(with event: NSEvent) {
         let enabled = openButtons.filter(\.isEnabled)
         if let responder = window?.firstResponder as? NSView,

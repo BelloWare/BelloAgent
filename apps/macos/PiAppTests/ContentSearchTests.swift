@@ -6,6 +6,222 @@ import XCTest
 /// text finds, in the same order and counts, with its ASCII shortcut and its
 /// records decoded a run at a time.
 final class ContentSearchTests: XCTestCase {
+    func testCachedRangeRejectsALaterRowRewrittenAfterCapture() async throws {
+        try await changedCopyRow(fixedTimes: false, cached: false)
+    }
+    func testCachedRangeRejectsALaterRowWithUnchangedStamp() async throws {
+        try await changedCopyRow(fixedTimes: true, cached: false)
+    }
+    func testCachedRangeRevalidatesTheDecodedRowCache() async throws {
+        try await changedCopyRow(fixedTimes: true, cached: true)
+    }
+    private func changedCopyRow(fixedTimes: Bool, cached: Bool) async throws {
+        let root = scratchRoot("copy-row-revalidation"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try copyJournal(["OUTSIDE RANGE", "FIRST SELECTED ROW", "ORIGINAL later row"])
+        try bytes.write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 2, last: 3))
+        let first = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+            first: 2, last: 3, cursor: .init(index: 2, offset: 0), digest: digest)
+        XCTAssertTrue(first.text.contains("FIRST SELECTED ROW"))
+        let next = try XCTUnwrap(first.next)
+        XCTAssertEqual(next.index, 3)
+        let original = try XCTUnwrap(HistoryReader.currentRevision(path: path.path))
+        if fixedTimes { try await reader.holdStampTimes(path: path.path) }
+        let changed = Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "ORIGINAL", with: "MODIFIED").utf8)
+        XCTAssertEqual(changed.count, bytes.count)
+        let rewrite: @Sendable () throws -> Void = {
+            let file = try FileHandle(forWritingTo: path); defer { try? file.close() }
+            try file.write(contentsOf: changed)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: path.path)
+        }
+        if cached {
+            try rewrite()
+            // Another copy API can populate the shared decoded-row slot. Its
+            // stamp/key alone cannot prove that text belongs to the held range.
+            let page = try await reader.copyContentPage(path: path.path, first: 2, last: 3, cursor: next, revision: found.revision)
+            XCTAssertTrue(page.text.contains("MODIFIED later row"))
+        } else {
+            // The page has already captured its stamp and immutable offset
+            // index when this real in-place rewrite occurs.
+            await reader.observeContentReads(rewrite)
+        }
+        do {
+            let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+                first: 2, last: 3, cursor: next, digest: digest)
+            XCTFail("Accepted changed selected text: \(page.text)")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("History changed"), error.localizedDescription)
+        }
+        let actual = try XCTUnwrap(HistoryReader.currentRevision(path: path.path))
+        XCTAssertNotEqual(actual, original, "The fixture changes real timestamps, even when the reader simulates unchanged times")
+        XCTAssertEqual(actual.stamp.split(separator: ":").prefix(3), original.stamp.split(separator: ":").prefix(3), "Same device, inode and length")
+        XCTAssertEqual(try Data(contentsOf: path), changed)
+        await reader.releaseIndexes()
+    }
+    private func copyJournal(_ rows: [String]) throws -> Data {
+        var data = Data("{\"type\":\"session\",\"version\":3,\"id\":\"copy-fixture\"}\n".utf8)
+        for (n, text) in rows.enumerated() {
+            data.append(try JSONEncoder().encode(WireValue.object(["type": .string("message"), "id": .string("r\(n)"),
+                "parentId": n == 0 ? .null : .string("r\(n - 1)"),
+                "message": .object(["role": .string("assistant"), "content": .string(text)])])))
+            data.append(10)
+        }
+        return data
+    }
+    func testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation() async throws {
+        let root = scratchRoot("copy-row-hashing"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rows = ["OUTSIDE RANGE", "First selected row", String(repeating: "x", count: 16 * 1_048_576), "Last selected row"]
+        try copyJournal(rows).write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 2, last: 4))
+        let before = await reader.decodedRecords, hashBefore = await reader.contentHashedBytes
+        var cursor: ContentCursor? = .init(index: 2, offset: 0), pages = 0, exported = 0
+        let started = Date()
+        while let at = cursor {
+            let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID,
+                first: 2, last: 4, cursor: at, digest: digest)
+            exported += page.text.utf8.count; pages += 1; cursor = page.next
+        }
+        let hashes = await reader.contentHashedBytes - hashBefore, decodes = await reader.decodedRecords - before
+        let expected = rows.dropFirst().reduce(0) { $0 + "## assistant\n\n\($1)\n\n".utf8.count }
+        XCTAssertEqual(exported, expected); XCTAssertGreaterThan(pages, 1_000)
+        XCTAssertEqual(decodes, 5, "Validate three rows, then decode each subsequent row once")
+        XCTAssertLessThanOrEqual(hashes, 2 * exported, "Neither the selected range nor a large cached row is hashed again per page")
+        print("Retained export: pages=\(pages) exportedBytes=\(exported) hashedBytes=\(hashes) decodes=\(decodes) seconds=\(Date().timeIntervalSince(started))")
+        await reader.releaseIndexes()
+    }
+    final class AppendingWriter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        var count: Int { lock.withLock { calls } }
+        func append(to path: String) throws {
+            try lock.withLock {
+                calls += 1
+                guard calls <= 3 else { return }
+                let parent = calls == 1 ? "saved" : "append-\(calls - 1)"
+                try ContentSearchTests.append(Data("{\"type\":\"message\",\"id\":\"append-\(calls)\",\"parentId\":\"\(parent)\",\"message\":{\"role\":\"assistant\",\"content\":\"outside selection\"}}\n".utf8), to: path)
+            }
+        }
+    }
+    func testValidatedDiskPageDoesNotRetryWhileOutsideRowsAppend() async throws {
+        let root = scratchRoot("copy-append-progress"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n{\"type\":\"message\",\"id\":\"saved\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"SELECTED ANSWER\"}}\n".utf8).write(to: path)
+        let reader = HistoryReader(indexDirectory: root), writer = AppendingWriter()
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 1, last: 1))
+        await reader.observeContentPages { try writer.append(to: path.path) }
+        let page = try await reader.retainedContentPage(path: path.path, journalID: "chat", first: 1, last: 1, cursor: .init(index: 1, offset: 0), digest: digest)
+        XCTAssertTrue(page.text.contains("SELECTED ANSWER"))
+        XCTAssertEqual(writer.count, 1, "A validated page must return even when the writer keeps appending")
+        await reader.releaseIndexes()
+    }
+    func testValidatedDiskPageChecksJournalIdentityAcrossPathReplacement() async throws {
+        for changedIdentity in [false, true] {
+            let root = scratchRoot("copy-replaced-path"), path = root.appendingPathComponent("chat.jsonl")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"original-journal\"}\n{\"type\":\"message\",\"id\":\"saved\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"SELECTED ANSWER\"}}\n".utf8)
+            try bytes.write(to: path)
+            let reader = HistoryReader(indexDirectory: root)
+            let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+            let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 1, last: 1))
+            await reader.observeContentPages {
+                let replacement = changedIdentity ? Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "original-journal", with: "different-journal").utf8) : bytes
+                try replacement.write(to: path, options: .atomic)
+            }
+            do {
+                let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID, first: 1, last: 1, cursor: .init(index: 1, offset: 0), digest: digest)
+                XCTAssertFalse(changedIdentity, "A different journal cannot borrow the selection")
+                XCTAssertTrue(page.text.contains("SELECTED ANSWER"))
+            } catch {
+                XCTAssertTrue(changedIdentity, "Replacing the file with the same journal must preserve its validated selection: \(error)")
+            }
+            await reader.releaseIndexes()
+        }
+    }
+    func testRetainedFingerprintsYieldDuringFiveThousandToolCalls() async throws {
+        try await fingerprintFairness(rows: 10_000, calls: true)
+    }
+    func testRetainedFingerprintsYieldDuringTwentyTwoThousandRows() async throws {
+        try await fingerprintFairness(rows: 22_000, calls: false)
+    }
+    @MainActor func testSavedSearchReusesOnlyTheKnownSnapshotFingerprints() async throws {
+        let root = scratchRoot("copy-known-snapshot"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try LongChatScroll.journal(turns: 40)
+        try bytes.write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let first = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        let next = try await reader.searchContent(path: path.path, query: "", start: try XCTUnwrap(first.next), retained: true, knownRevision: first.revision)
+        XCTAssertNil(next.rowHashes); XCTAssertEqual(next.revision, first.revision)
+        let independent = try await reader.searchContent(path: path.path, query: "", start: try XCTUnwrap(first.next), retained: true)
+        XCTAssertEqual(independent.rowHashes, first.rowHashes)
+        let modified = Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "question", with: "changed question").utf8)
+        try modified.write(to: path)
+        let changed = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true, knownRevision: first.revision)
+        XCTAssertNotEqual(changed.revision, first.revision); XCTAssertNotNil(changed.rowHashes)
+        await reader.releaseIndexes()
+    }
+    func testLegacyRowsWithoutIDsKeepTheirCapturedIdentity() async throws {
+        let root = scratchRoot("copy-legacy-identity"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"Legacy retained text\"}}\n".utf8).write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        let found = try await reader.searchContent(path: path.path, query: "", start: 0, retained: true)
+        XCTAssertNil(found.journalID)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(found.rowHashes), first: 1, last: 1))
+        let page = try await reader.retainedContentPage(path: path.path, journalID: found.journalID, first: 1, last: 1, cursor: .init(index: 1, offset: 0), digest: digest)
+        XCTAssertTrue(page.text.contains("Legacy retained text"))
+        await reader.releaseIndexes()
+    }
+    private func fingerprintFairness(rows: Int, calls: Bool) async throws {
+        let root = scratchRoot("copy-fingerprint-fairness"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var data = Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n".utf8)
+        let body = String(repeating: "retained text ", count: 80)
+        for index in 0..<rows {
+            let message: WireValue
+            if calls, index % 2 == 0 {
+                message = .object(["role": .string("assistant"), "content": .array([.object([
+                    "type": .string("toolCall"), "id": .string("call-\(index)"), "name": .string("read"),
+                    "arguments": .object(["path": .string(body)])])])])
+            } else {
+                message = .object(["role": .string(calls ? "toolResult" : "assistant"), "content": .string(body),
+                    "toolCallId": .string("call-\(index - 1)")])
+            }
+            data.append(try JSONEncoder().encode(WireValue.object(["type": .string("message"), "id": .string("r\(index)"),
+                "parentId": index == 0 ? .null : .string("r\(index - 1)"), "message": message])))
+            data.append(10)
+        }
+        try data.write(to: path)
+        let reader = HistoryReader(indexDirectory: root)
+        _ = try await reader.read(path: path.path, whole: true)
+        let initial = await reader.decodedRecords, scanned = expectation(description: "Search reaches fingerprints")
+        await reader.observeSearchReads { if $0 == .scanned { scanned.fulfill() } }
+        let started = Date(), search = Task { try await reader.searchContent(path: path.path, query: "", start: 0, retained: true) }
+        await fulfillment(of: [scanned], timeout: 20)
+        let requested = Date(), (page, count) = try await reader.pageDuringFingerprintScan(path: path.path)
+        let latency = Date().timeIntervalSince(requested)
+        XCTAssertFalse(page.messages.isEmpty)
+        XCTAssertLessThan(count - initial, rows, "The page must run before the full fingerprint scan finishes")
+        XCTAssertLessThan(latency, 1.0, "A transcript read must not wait for the complete fingerprint scan")
+        let found = try await search.value
+        XCTAssertEqual(found.hits.count, 100); XCTAssertEqual(found.rowHashes?.count, rows * 32)
+        print("Fingerprint fairness: rows=\(rows) bytes=\(data.count) pageSeconds=\(latency) decodedBeforePage=\(count - initial) totalSeconds=\(Date().timeIntervalSince(started))")
+        await reader.releaseIndexes()
+    }
     /// A deterministic writer at a real search boundary, with no timing race.
     /// The lock protects the one-shot flag when captured by a Sendable observer.
     final class Once: @unchecked Sendable {
@@ -185,5 +401,12 @@ final class ContentSearchTests: XCTestCase {
             XCTAssertEqual(found.prefix(100).map(\.0), expected.map(\.0), "positions for \(query)")
             XCTAssertEqual(found.prefix(100).map(\.1), expected.map(\.1), "counts for \(query)")
         }
+    }
+}
+
+private extension HistoryReader {
+    func pageDuringFingerprintScan(path: String) throws -> (HistoryPage, Int) {
+        let page = try read(path: path)
+        return (page, decodedRecords)
     }
 }

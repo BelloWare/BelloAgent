@@ -398,3 +398,681 @@ That rerun passes **25/25** (`native-HistoryExtentTests.log`). All other native 
 The gallery regenerated **40 PNGs**. Inspected `child-report` in light/dark at 1240×800 and 640×600 under `$B/gallery-round3/readers`; no new clipping or overlap. All native/focus runs held the shared lock, and every owned lock was released. No clone folders remain in this build root; no additional DerivedData root was created.
 
 The final adversarial review checked task creation versus execution, original workspace/hosted navigation tokens, stale completion and cleanup ownership, initial-load recovery, unchanged ready/preparing presentations, native selection/disclosure retention, reload-intent lifetime on completion and close, epoch-fenced snapshot decoding, and validated helper handoff versus changed lineages/files. It found and corrected the nearby Home/reveal/position handoff described above. The held uncancelled reveal and extent-recovery tests independently verify that preserving mounted identity does not admit retired reads. `git diff --check` passes. All mutations are restored. No issue remains unresolved in this scope, and no owner product decision is needed.
+
+
+## Round 3 hunt
+
+Starting point: `fe734912` on `dev/a130-wire`, already fast-forwarded by the lead after the earlier work was merged. This round uses only `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire`; text evidence is in `logs/round3-hunt` there. All inputs are generated or repository fixtures, all services loopback, vaults memory-backed, and native runs that open/focus windows or capture images hold the shared focus lock. Model-only runs use the focused-test exception. No installed app, user preferences, chats, credentials or Keychain are used.
+
+### WIRE-CONTRACT-1 — complete retained conversation copy
+
+Confirmed. `ContractTests/testConversationPagingRetainsReasoningArgumentsAndMessageBoundaries` failed on four assertions before the fix: missing reasoning, tool arguments, assistant heading and tool heading (`helper-before.log`). Conversation paging now has its own formatter matching saved-history copy, while message-text reads retain their previous contract. The formatter handles ordinary blocks, image omission, compaction/edit boundaries and timeline evidence, including full canonical content when timeline retention is partial.
+
+The final adversarial formatter comparison also caught absent arguments being collapsed into explicit JSON null. Disk copy represents an absent field as `{}`, so this mismatch would prevent an otherwise unchanged handoff. The added helper assertion failed once (`helper-arguments-before.log`), and the extended native parity/handoff test failed three assertions/errors (`native-arguments-before.log`, including the rejected handoff). The formatter now distinguishes an absent field from a present null. The helper check passes; reverting this distinction reproduces the failure (`helper-arguments-mutation.log`, 1 test / 1 assertion). The native fixture exercises both present and absent arguments through live copy, the held-selection handoff and a fresh disk selection. Full helper, Release wire and affected native copy checks were repeated after this correction.
+
+### WIRE-CONTRACT-2 — copy selection after idle retirement
+
+Confirmed. `ConversationCopyTests/testIdleHandoffContinuesUnicodePagesAndRejectsChangedContent` failed before the app change with “History changed. Refresh the range before copying” on the first disk continuation (`native-copy-before.log`, 1 test / 1 failure).
+
+Each sheet now owns an opaque selection token, its original source/revision, project/chat/path and helper/runtime identities. The helper supplies a digest of the ordered message IDs and complete copy text; its live revision includes the sequence, and live pages also validate the runtime incarnation. On retirement, the app verifies the journal's chat identity and complete conversation digest, then continues with the filesystem revision and the original UTF-16 cursor. The disk reader caches one verified handoff for an unchanged file stamp. Its hashing runs on the history actor; helper hashing releases each 128-row block. Idle shutdown remains eligible while the sheet is open.
+
+The generated assistant exceeds 70 KiB of UTF-8 text and spans multiple pages, with distinct prose/reasoning/argument markers and emoji. Positive checks cover live/disk byte parity, idle retirement between pages, and both compaction and historical-edit golden journals. Negative checks reject changed content, a different journal identity, and a replacement runtime deliberately reusing the same session ID, row counts and sequence. The original message-text API and rendered transcript Find path are unchanged.
+
+### CONCURRENCY-LIFECYCLE-5 — folder admission during Inspector work
+
+Confirmed. The new `MCPInvocationRetentionTests/testFolderChangesRefuseClosedInspectorExecutionAndPendingRetention` failed before the fix (1 test / 2 assertions, `native-folders-before.log`): folder admission entered the session-unloading preflight (`session.releaseDependents`) while Inspector execution remained outstanding.
+
+The folder admission predicate omitted `resourceInvocations`, although update and idle admission already observed this pin. The existing resource pin spans execution, durable saving, retention acknowledgement and physical settlement after caller timeout/cancellation. Add/remove/relocate/re-trust/remove-project all share this admission predicate. The opposite race is already fenced by `host(for:)` and `startHost(for:)` refusing `workspaceChangesInFlight`.
+
+### HELPER-AGENTS-IO-2 / PERSISTENCE-COMPAT-3 — native handoff replay
+
+Confirmed with generated v1/v2/v3 variants of `fixtures/native/historical-edit-after.jsonl`, testing markers both first and after a harmless custom record. Before the fix the test failed 12 assertions for v2/v3: exported context differed from v1 and omitted the restored original prefix (`helper-before.log`). Both portable-preview native checks now use `JournalRecordKind.isMarker`; the existing `ConversationReplay` supplies restored context and excludes the invalidated summary. The helper's preview remains off the host actor.
+
+The initial test setup was corrected to open a fixture workspace before previewing. A later copy-digest assertion exposed an incomplete synthetic tool exchange: replay correctly inserted an unknown-outcome receipt. The fixture now includes the tool receipt and final response, representing the completed-turn scenario; production interruption handling is unchanged.
+
+
+### Mutation evidence and nearby checks
+
+| Finding | Mutation | Observed failure |
+| --- | --- | --- |
+| WIRE-CONTRACT-1 | Return `retainedDisplayText` from conversation paging again | 1 helper test / 5 assertions: the four missing pieces plus the digest/content mismatch |
+| WIRE-CONTRACT-2 | Validate the disk handoff but pass the original helper revision to disk paging | 1 native test / 1 failure, the original history-changed error |
+| CONCURRENCY-LIFECYCLE-5 | Remove the resource pin from folder admission | 1 native test / 2 assertions, unloading preflight admitted before completion |
+| HELPER-AGENTS-IO-2 | Restore both v1-only native checks | 1 helper test / 12 assertions, restored v2/v3 context missing |
+| Additional runtime fence | Omit the incarnation from the app's live page request | 1 native test / 1 assertion: new runtime content reached the old selection despite equal sequence/counts |
+| Formatter parity edge | Collapse absent arguments into JSON null | 1 helper test / 1 assertion; absent fields must copy as `{}` while explicit null stays `null` |
+
+All mutations compiled, failed behaviorally, and were restored. Evidence: `helper-mutation.log` (2 tests / 17 assertions), `native-copy-mutation.log`, `native-folders-mutation.log`, and `native-epoch-mutation.log`. The runtime test passes with the fence (`native-epoch-fixed.log`). The three model copy tests pass with the handoff (`native-copy-fixed.log`).
+
+Sweep:
+
+- Copy format: ordinary text/string/array bodies, reasoning, tool arguments, image placeholders, compaction summaries, edit boundaries, complete/partial/supported timeline evidence, and user display text versus retained source. Golden before/after historical-edit journals copy identically through both sources. `session.message.read` and `session.tool.input` retain their existing contracts.
+- Framing: conversation text pages remain bounded at 16,384 UTF-16 units. The new search fields are one SHA-256 digest and one runtime UUID; the existing bounded-reply/transfer path remains intact. The Release wire suite includes oversized captures and rejection echoes.
+- Source ownership: native Copy Range, Copy Conversation and Export share the selection source; the SwiftUI test reference also passes the captured selection. A new search cannot lend a retired selection a new source. Same-ID runtime replacement is fenced independently of sequence. Disk handoff validates chat identity, ordered message identities, formatted content and the file stamp. Changed content/identity remain rejected. No transcript presentation identity or navigation token is modified by these reads.
+- Folder changes: add, remove, relocate, re-trust/reconfigure and project removal share `requireIdle` / `workspaceHasActiveWork`. The reverse admission is already guarded in `host(for:)` and `startHost(for:)`. Update and idle checks already use the same resource pin. The regression cancels the sheet's caller, rejects both addition and removal during execution and retention, verifies the result file before ACK, then successfully retries both after ACK.
+- Native markers: both portable paths now use the same supported-marker predicate as journal readers. Recovery's v1/v3-only check is intentional: managed children are explicitly refused via `subagentOrigin`. No recovery, import, preview scheduling or TraceStore masking code was changed.
+
+**Needs owner decision — separate source-search coverage:** `packages/swift-host/Sources/PiAgentCore/SessionReads.swift:128` still searches `retainedDisplayText`. A reasoning-only or tool-argument-only query therefore misses the live row, while the disk source formatter contains those blocks. This round preserves query matching and fixes the assigned copy/paging behavior. A generated Release-helper probe confirms both queries return 0 hits while their copy page contains the marker (`source-search-probe.py` / `.log`); it makes **0 provider POSTs**. Whether to expand live source-search matches is a separate visible search change.
+
+### Commands and completed checks
+
+All commands run from this worktree, with:
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire
+```
+
+Helper red/green/mutation selection:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ContractTests/testConversationPagingRetainsReasoningArgumentsAndMessageBoundaries|ReplayParityTests/testPortableHandoffRestoresEditedContextForEveryNativeMarker'
+```
+
+`helper-before.log`: 2 failed tests / 16 assertions. `helper-fixed.log`: 2 passed. The later class run (`--filter 'ContractTests|ReplayParityTests'`, including matching SubagentContractTests) passes 21 tests.
+
+Full helper checks on the final helper sources:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+```
+
+`helper-final.log`: **1,127 passed, 7 skipped**, 1,134 executed in 399.146 s. `helper-cost-final.log`: **5 passed** in 3.422 s. Total **1,132 passed / 7 existing opt-in skips / 0 failures**. Skips remain the fixture writer and opt-in fork/history/open performance measurements.
+
+Release helper / wire checks:
+
+```sh
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+`bundle-final.log`: pass. `wire-final.log`: **40 passed**, 35.395 s. `concurrent-final.log`: **4 passed**, 21.289 s. `acceptance-final.log`: **3 passed**, 3.476 s.
+
+Focused model regression and mutation:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationCopyTests/testIdleHandoffContinuesUnicodePagesAndRejectsChangedContent
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/MCPInvocationRetentionTests/testFolderChangesRefuseClosedInspectorExecutionAndPendingRetention
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationCopyTests/testAReplacementRuntimeCannotReuseTheSelectionsSequence
+```
+
+The model-only invocations open no windows or focus probes and use the focused-test exception. Mounted/window/gallery checks use `native-lane.sh`, which takes the shared `full-lane.lock`, writes its own owner token and removes it only when the token still matches, including failure. No other workstream's lock was removed. The lock owner's label changed through its continuing performance/UI checks; no orphan-lock cleanup was performed.
+
+Final headless native classes:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/HardeningTests -only-testing:PiAppTests/MCPInvocationRetentionTests
+```
+
+`native-headless-final.log`: **40 passed / 0 failures** in 25.530 s (ContentSearch 7, Hardening 12, MCPInvocationRetention 10, StorageTruth 11).
+
+Related history and admission classes:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/HistoryIndexFilesTests -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/MCPRemovalTests -only-testing:PiAppTests/SideBudgetIntegrationTests
+```
+
+`native-related-final.log`: **42 passed / 1 opt-in performance skip / 0 failures**, 43 executed in 10.696 s (HistoryIndexFiles 3 passed + 1 skip, HistoryReaderCheckpoint 7, MCPRemoval 14, SideBudgetIntegration 18). `scripts/test-lanes.py list` confirms both grouped model runs contain only parallel-lane classes.
+
+Final window and serial classes, each invocation under the shared lock:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceTests -only-testing:PiAppTests/WorkspaceManagerSheetTests -only-testing:PiAppTests/ToolOutputProducerTests -only-testing:PiAppTests/WorkspaceDurabilityTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests
+PI_BUILD_ROOT="$B" TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round3-hunt/copy" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationCopyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/PayloadNativeControlTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/PayloadNativeParityTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ConversationResultsGeometryTests
+```
+
+| Text log | Passed | Skipped | Failures |
+| --- | ---: | ---: | ---: |
+| `native-ui-final.log` | 44 | 0 | 0 |
+| `native-transcript-final.log` | 116 | 0 | 0 |
+| `native-copy-final.log` | 6 | 0 | 0 |
+| `native-payload-controls-final.log` | 22 | 0 | 0 |
+| `native-payload-parity-final.log` | 7 | 0 | 0 |
+| `native-results-geometry-final.log` | 1 | 0 | 0 |
+| All final native runs, including model classes above | **278** | **1** | **0** |
+
+The 44-test group comprises Workspace 17, WorkspaceManagerSheet 10, ToolOutputProducer 8 and WorkspaceDurability 9. Every detected serial class runs alone. The existing mounted sheet successfully copies its held assistant range and exports the full conversation after idle retirement, including retirement while export waits before the chooser.
+
+Gallery: regenerated and visually inspected `gallery-round3-hunt/copy/{light,dark,narrow}.png` (1080 × 700 light/dark, 900 × 700 narrow). All show the three retained rows, correct range and enabled copy/export actions, with no clipped controls. The first capture caught a stale window-server frame despite completed search state; the new gallery fixture now uses the established consecutive-frame stability check and clears field editing before capture. Its full six-test class was rerun successfully, including the final absent-arguments regression (6.583 s); initial images and the first passing functional run remain as `copy-first-pass` / `native-copy-first-pass.log`. No product code changed for the capture-timing correction.
+
+Iteration evidence is retained, not counted as red behavior proof: the initial native fixture needed an explicit Data split type (`native-compile.log`); Swift actor checking required moving hash updates outside the autorelease-pool closure (`native-selection-compile.log`). One Release build detected a source edit during compilation (`bundle-source-edit.log`); it was rebuilt with sources held fixed before the passing wire runs. The first headless class pass hit a new fixture's incomplete successful-unload handshake (`native-headless-fixture-retry.log`, 1 failing test / 2 failures); the fixture now acknowledges `session.releaseDependents` followed by `session.close`, and all 40 pass. No unrelated test failure has been observed in the completed final checks.
+
+**Separate fixture cleanup follow-up:** the unchanged wide-search fixtures remove their temporary directory while their `HistoryReader` can still own its SQLite index (`apps/macos/PiAppTests/TranscriptBugRegressionTests.swift:625`, `:664`, and similar defers). `native-transcript-final.log` contains eight SQLite “vnode unlinked while in use” diagnostics for generated `wide-search-*` indexes. All 116 tests pass. This cleanup issue is outside the assigned product fixes and is recorded rather than changed.
+
+
+### Adversarial self-review of the implementation
+
+Reviewed the complete diff against `fe734912`, including the generated project entry. The fixes preserve the separate message-text contract, UI navigation/presentation identity, result-retention sequencing, workspace scoping, cancellation and export output-use pins. The handoff requires matching project/chat/path and journal header identity; its digest covers ordered IDs and exact formatted copy bytes, so matching row counts, prefixes or file sizes alone cannot authorize a handoff. Runtime incarnation is independent of sequence, with a deliberate equal-sequence replacement regression and a failing mutation. Failed/current helper reads are not retried as write commands; recovery reads validated saved history only.
+
+Reviewed complete versus partial/unsupported response timelines, compaction replay prefixes, branch markers, Unicode offsets, selection replacement, disk cache invalidation, helper retirement while awaiting IPC, and source disappearance while preparing export. The bounded helper reply path and the 16,384-unit text page limit are retained. The helper emits the optional digest/incarnation only for retained-selection searches, preserving existing wire callers. The original matching semantics of source search are the explicit follow-up above; rendered Find is unchanged.
+
+The Release helper tested by all three Python suites has SHA-256 `bfe18747c58c1db62cfb938dbc2c115779f33fbf5baaba669122aac98a65602f`, rechecked after the final native run. New generated fixture cases use registered teardown. No cloned test-host directories were present in this workstream's `native-tests/Build/Products`; the remaining automatically named result bundle was removed. Text logs and gallery images remain in this workstream's build root. All owned shared locks were released. `git diff --check` passes.
+
+## Round 4 review
+
+Review of `31969162cf5e85ef6cbd7e65f45ec4859a4255eb`, plus the lead's decision to align live source search with Copy Conversation. Work remains on `dev/a130-wire`; no merge or fast-forward. Logs for this round are under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round4-review` (`B` below is that build root).
+
+### Findings and failing-first evidence
+
+1. **Empty/uncovered timeline loses canonical content — confirmed.** `ConversationReadTests.testEmptyAndUncoveredTimelinesKeepCanonicalAnswer` feeds the reported Responses event sequence through both `ProviderAccumulator` and `ProviderDisplayEvents`: the collected answer exists while the supported timeline is empty. It also covers nonempty evidence that belongs to another part. `helper-red.log`: both assertions fail because `COLLECTED-ANSWER` is absent.
+
+   `RetainedConversation.swift` is now compiled into both targets, using the project's existing shared-source convention. The JSON adapters supply values; one implementation formats message boundaries, reasoning, tool arguments, image placeholders, timeline evidence, edits and compactions. Timeline coverage is checked against canonical parts, including adjacent/interleaved contributions, corrections and normalized tool JSON. Unproven coverage adds the complete saved response; existing complete evidence keeps its order. Unsupported timelines use canonical content. Separate message-text reads remain unchanged.
+
+   Mutation: short-circuiting the coverage proof to accept any supported, untruncated timeline fails the same test with **2 failures** (`mutation-timeline.log`). Restored code passes. The native timeline corpus verifies live copy, live search and held disk handoff for covered, uncovered, empty, partial/truncated and unsupported timelines.
+
+2. **Inherited compaction produces incompatible handoff identity — confirmed.** `ConversationCopyTests.testKeptCompactedSideRetainsCopyIdentityAfterRetirement` appends a generated checkpoint, opens a real helper side with `side.open`, checks that `keepNow` saved a `message` with `nativeKind: compaction`, and copies through the existing selection after idle retirement. Before the fix it throws “History changed. Refresh the range before copying” (`native-red.log`).
+
+   Both representations now use the shared compaction heading and summary. Only inherited message rows lose their replay prefix; a top-level checkpoint's summary is already the saved summary and is not stripped again. This keeps intentionally repeated prefix text intact.
+
+   Mutation: removing `nativeKind` from the disk adapter recreates the handoff rejection: **1 failing test / 1 failure** (`mutation-compaction.log`). The restored test passes, as do the existing historical edit/compaction corpus and Unicode page/handoff tests.
+
+   **Same-pattern sweep: adopted compaction progress — confirmed and fixed in the same read functions.** A modern checkpoint durably adopts its preceding execution row. Helper replay updates that row's terminal evidence/title, while the disk copy/search adapters ignored the offset index's existing `adopted` flag. The generated `testAdoptedCompactionProgressKeepsTheSameCopyIdentity` reproduces the rejected handoff (`adopted-red.log`: **1 failing test / 1 failure**). The disk adapter now applies the same proven adoption state already used by helper replay and disk transcript projection before calling the shared formatter. `adopted-green.log`: **1 passed**. Copy and source-search call sites each have a mutation that omits the flag; the regression checks both the held copy and a query for the adopted title.
+
+   `mutation-adopted-copy.log` rejects the held handoff; `mutation-adopted-search.log` loses the adopted-title hit. Each is **1 failing test / 1 failure**. Both call sites are restored. This correction changes only the app's interpretation of the existing index metadata; the tested helper source/binary remains unchanged.
+
+3. **Whole-history work occupies the session actor and repeats — confirmed.** The generated 130-row fixture holds the first formatting row at a semaphore. Before the fix, Stop cannot execute within 500 ms; Next Results increases formatted-row observations from 130 to 260 (`helper-red.log`). No wall-clock race or large real journal is needed to establish actor occupancy.
+
+   The session captures its retained arrays/index and a generation/revision key, then uses `BlockingWorkExecutor` to decode, format and hash away from the actor. Completed results are published only after checking cancellation, closure and the captured key. One immutable cache per snapshot stores formatted text in an immediately unlinked, mode-0600 file with a close-on-exec descriptor; only row offsets/IDs remain in memory. Search and copy use positional reads on workers and validate again before publication. Next Results and copy pages reuse the formatted rows and digest. Cache generation follows retained row changes, independently of unsaved streaming/display generations. The existing shared-load primitive coalesces readers and cancels work after its last reader departs; close cancels the load and releases the cache.
+
+   Mutations: moving the build back onto the actor fails the Stop barrier (**1 failure**, `mutation-actor.log`); bypassing the cache fails the format-count assertion (**1 failure**, `mutation-cache.log`). Additional tests reject equal-count row changes while formatting, invalidate a completed cache after changed content, retain it across unsaved streaming, cancel/close without publishing a partial result, and let one concurrent reader finish when the other cancels. All seven `ConversationReadTests` pass after restoration.
+
+4. **Live search misses reasoning/tool-only queries — confirmed; lead decision applied.** The two marker-only queries return no live hits but one saved hit each (`helper-red.log`, `native-red.log`). Search now reads the same cached shared-formatter text as copy, using the disk reader's case-insensitive matching semantics. The previous Round 3 “needs owner decision” search item is resolved by this lead instruction. Rendered Find and the separate message-text API retain their existing contracts.
+
+   Mutation: building the source snapshot with `retainedDisplayText` instead of conversation text loses both marker hits (**2 failures**, `mutation-search.log`). `ConversationCopyTests.testLiveAndDiskSearchFindReasoningAndToolArguments` checks matching live/disk row IDs after idle retirement.
+
+The combined initial helper run was **4 failing tests / 6 failures**. The initial native run was **2 failing tests / 5 failures** (including the expected thrown handoff rejection). These are runtime failures, not compile failures. The focused restored helper run is **31 passed / 1 opt-in skip / 0 failures** (`helper-restored.log`); the restored native regression run is **3 passed / 0 failures** (`native-green.log`).
+
+### Nearby sweep and adversarial self-review
+
+- Traced live search and paging, disk source search, disk copy pages and handoff digest computation. They now reach the same formatter, including both disk branch shortcuts. Checked ordinary string/array content, covered/uncovered/empty/partial/unsupported timelines, correction and continuation parts, exposed reasoning, tool arguments (absent `{}` versus explicit `null`, sorted keys and unescaped slashes), image omission, top-level checkpoints, inherited summaries and historical edit markers. The native corpus additionally exercises both sides of helper retirement; the existing contract test independently computes the ordered ID/text digest.
+- Checked retained row changes in append, presentation updates, branch edits, compaction, full-history adoption, checkpoint replay and side preservation. Array mutation advances the retained generation, including equal-count replacement. Loading older rows completes before capture; unreadable offsets use the existing off-actor full-history recovery. No whole-history formatting or hashing remains in `SessionReads` or its actor closures.
+- Reviewed cache ownership, cancellation before/after publication, last-reader retirement, joined-reader cancellation, same-ID runtime replacement and stale load cleanup. The runtime incarnation gate, strong revision check, app selection ownership and navigation/presentation identities remain intact. A stale worker cannot clear a newer load or publish its obsolete cache.
+- Reviewed storage and wire bounds: no persistent extra journal, no named temporary capture path, no inherited cache descriptor, and no extra DerivedData root. Text still uses 16,384-unit UTF-16 pages without splitting surrogates; search retains 100 hits and 240-byte previews. Captures, tools, permissions, vaults and provider replay are unchanged.
+- The final source audit rechecked worker publication guards, independent reader cancellation, cache descriptor lifetime, and generated project membership. SHA-256 verification matches the production sources used by the final helper/wire runs and restored native tests (`source-hashes.txt`). `xcodegen generate --quiet` regenerated the project after adding the shared formatter.
+- Diff review is local and read-only; no other workstream's HostService/TraceStore functions were edited. All fixtures are generated/loopback with test homes and in-memory credentials. No installed application, real preferences, chats, Keychain or paid provider was used.
+
+**Separate pre-existing follow-up — needs owner decision:** `SessionReplay.swift:323` (`endWithoutReceipt`) changes unfinished execution/request-ledger rows to an interrupted/partial presentation in memory. `HistoryReader.swift:778` and `ConversationContent.swift:257` still copy the original saved missing-receipt evidence. A generated unfinished request-ledger probe confirms that a held live copy then rejects its disk handoff without any source-row edit (`unfinished-progress-probe.log`: **1 failing probe / 1 failure**, “History changed”). The probe and reproduction script are retained as `unfinished-progress-probe.swift` / `.py` in the round's logs; the temporary diagnostic test is removed from the suite.
+
+Unlike a durably adopted checkpoint, a missing terminal receipt does not by itself prove interruption: a disk reader can also encounter a still-running child that has no attached helper reader. Applying interruption to all such disk rows would misstate live work. Making helper source copies exclude recovery annotations would instead change their existing copy/search text. The conservative choice is to preserve both existing evidence policies and flag the decision: should source copy/search show raw retained evidence or normalized recovery annotations, with an explicit source policy carried through handoff? This follow-up is not silently normalized or presented as a terminal receipt. The assigned ordinary-answer, inherited-summary and durable-compaction cases are fixed.
+
+### Validation commands and results
+
+Failing-first and focused restored helper runs:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter 'ConversationReadTests|ContractTests|OlderRowsTests|HistoryReadCancellationTests'
+```
+
+Each helper mutation uses the first command with `--filter ConversationReadTests/<test name>` as recorded in `helper-mutations.py`; the source is restored in `finally`. The compaction mutation uses the native command below with only `testKeptCompactedSideRetainsCopyIdentityAfterRetirement` and also restores in `finally`.
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testKeptCompactedSideRetainsCopyIdentityAfterRetirement \
+  -only-testing:PiAppTests/ConversationCopyTests/testLiveAndDiskSearchFindReasoningAndToolArguments \
+  -only-testing:PiAppTests/ConversationCopyTests/testTimelineCorpusCopiesAndHandsOffIdentically
+```
+
+The initial native red run selected the first two methods. These model-only methods do not open windows or change focus and use the focused-run lock exception.
+
+Full helper and Release wire commands:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+`bundle-final.log`: pass. `wire-final.log`: **40 passed**, 35.637 s. `concurrent-final.log`: **4 passed**, 21.823 s. `acceptance-final.log`: **3 passed**, 3.483 s.
+
+`helper-final.log`: **1,134 passed / 7 opt-in skips / 0 failures**, 1,141 executed in 417.359 s. `helper-cost-final.log`: **5 passed / 0 failures**, 3.403 s. Combined helper total: **1,139 passed / 7 skips / 0 failures**. Release helper SHA-256: `2a9bfff4236ea5c3f0b59871fd610846896a8b634dd9a1183be6cb3e576590ee`.
+
+Affected native classes:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round4-review/copy" \
+  "$B/logs/round4-review/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+"$B/logs/round4-review/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+"$B/logs/round4-review/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+```
+
+`native-headless-final.log`: **40 passed / 1 opt-in performance skip / 0 failures**, 41 executed in 4.498 s after the adopted-progress correction (ContentSearch 7, Hardening 12, HistoryReaderCheckpoint 7, HistoryIndexFiles 3 + 1 skip, StorageTruth 11). Each serial class runs alone; window/gallery checks use `native-lane.sh`, which takes the shared lock and releases only its own owner token on exit, including failure.
+
+**Retained validation failure:** an initial headless run failed `HardeningTests.testNativeSupervisorStartsTheBundledSwiftHostAndExitsOnEOF` because its test app lacked both the helper and manifest. A separately invoked bundle stage overlapped the embedding step: `build-bundle.py` removes and recreates the staging directories, and the test app had copied empty directories. `native-headless-staging-race.log` records **39 passed / 1 skip / 1 failure**; `staging-race-evidence.log` records the populated staging files and missing embedded files. Staging was serialized and the complete 41-test group rerun successfully above. This was validation orchestration, not an ignored test failure or product change.
+
+`native-copy-final.log`: **10 passed / 0 skips / 0 failures**, 8.100 s, including the complete class and opt-in gallery. Inspected all three generated images under `gallery-round4-review/copy`: light/dark at 1080 × 700 points and narrow at 900 × 700 points. The source previews, message counts, range fields and action buttons remain legible and correctly placed; long preview text uses the existing ellipsis without covering controls.
+
+`native-workspace-final.log`: **17 passed / 0 skips / 0 failures**, 0.533 s. `native-transcript-final.log`: **116 passed / 0 skips / 0 failures**, 146.506 s. **Final native total: 183 passed / 1 opt-in performance skip / 0 failures** (184 executed). The copy, workspace and transcript classes each ran alone with the shared full-lane lock. Acquisition uses atomic `mkdir`; a directory-removal notification avoids missing brief gaps between other lanes. The owner-token guard released only this workstream's lock after every run.
+
+The final native logs also retain **15** SQLite “vnode unlinked while in use” diagnostics for generated `native-fixture-*` request databases in the unchanged `WorkspaceTests` cleanup (for example, `apps/macos/PiAppTests/WorkspaceTests.swift:238` and `:274`), and **8** for the already-recorded `wide-search-*` history indexes (`TranscriptBugRegressionTests.swift:625`, `:664`, and similar defers). These fixtures delete their temporary roots before every database handle has closed. All tests pass; these unrelated fixture cleanup warnings are recorded, not suppressed or repaired in this branch.
+
+All seven mutations were caught and restored. Final read-only adversarial review and `git diff --check` pass; the tested production source hashes still match after all native runs. Only this build root's generated result bundle was removed; no cloned test-host directories remained. Text logs and the three inspected PNGs are retained. No installed app was launched, no real preferences/chats/Keychain or paid provider was accessed, and no other workstream's lock or build root was modified.
+
+## Round 5 review
+
+Review of `9298a94d3d370c8ee9dc1fa0b88adaca1f3792e2`, including the lead's decision to apply recovery presentation to disk source copy/search. Work continues on `dev/a130-wire`. Evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round5-review`; `B` below is the existing build root.
+
+### Findings and failing-first evidence
+
+1. **`session_closed` interrupts an unchanged held selection — confirmed.** `ConversationCopyTests.testClosedRuntimePageRebindsBeforeUnloadAcknowledgement` takes a real retained selection and uses the existing supervisor command-sender seam to hold page replies. It replies `session_closed` while the same host epoch is ready and the session remains in `opened`. Before the fix, copying throws that rejection (`native-red.log`). The retirement classification now includes `session_closed`; the existing source/path, cancellation, full digest and saved revision checks still own the handoff. The same test also changes the saved bytes and requires rejection.
+
+2. **Paged export rereads a large row quadratically — confirmed.** `ConversationReadTests.testSixteenMiBRowExportReadsItsBytesOnce` generates one 16 MiB assistant body, counts actual positional-read bytes, exports through ordinary 16,384-unit pages, and checks the exported length and SHA-256. Before the fix, only three pages read **50,331,696 bytes** from a **16,777,232-byte** formatted row (`helper-red.log`, **1 failure**). The regression stops a broken implementation at that point rather than reading roughly 16 GiB.
+
+   The snapshot now caches exactly one decoded `NSString`, under a per-snapshot lock. This matches the disk reader and avoids repeating either full-row I/O or Swift-to-Foundation conversion. The existing text-page boundary logic has a shared `NSString` entry point. Search still uses positional reads independently; paging, decoding and cache replacement remain on blocking workers. The byte observer is nil in production and reports actual successful reads in tests. The eviction/Unicode regression checks that only one row remains cached, that switching rows reloads the evicted one, that a page never splits a surrogate pair, and that cached reads still honor cancellation.
+
+   `helper-green.log`: the full **1,025-page** export reads **16,777,232 bytes once**, produces exactly those bytes, and takes **0.029 s** after snapshot creation. All **9 ConversationReadTests pass**. This is a deterministic I/O bound; the elapsed time is a measurement, not a machine-sensitive threshold.
+
+3. **Recovery-only annotations disagree across held handoff — lead decision implemented.** The previous round's owner-decision item is resolved. `testRecoveredOperationsCopyAndSearchIdenticallyAfterRetirement` adds unfinished request-ledger and compaction-execution rows, plus completed/failed controls, to the generated parity corpus. The original copy throws “History changed” despite an unchanged journal (`native-red.log`). Saved source copy/search now applies the same no-terminal-receipt presentation as helper replay through `RetainedConversation.endWithoutReceipt`. The helper's existing recovery function delegates to that shared implementation; its behavior is unchanged. Durably adopted checkpoints retain their explicit completed presentation, and existing terminal receipts are preserved. No synthetic terminal record is written to the journal.
+
+The initial native run has **2 failing tests / 2 failures**; the focused restored native run has **3 passed / 0 failures**, including adopted-compaction parity (`native-green.log`). The helper's initial test-authoring interpolation typo was corrected before the runtime failing-first run; its compiler log is retained separately as `helper-test-compile.log`.
+
+### Commands and nearby sweep
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests/testSixteenMiBRowExportReadsItsBytesOnce
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testClosedRuntimePageRebindsBeforeUnloadAcknowledgement \
+  -only-testing:PiAppTests/ConversationCopyTests/testRecoveredOperationsCopyAndSearchIdenticallyAfterRetirement \
+  -only-testing:PiAppTests/ConversationCopyTests/testAdoptedCompactionProgressKeepsTheSameCopyIdentity
+python3 "$B/logs/round5-review/mutations.py"
+```
+
+The red native run selects the first two tests. These focused model tests do not create windows or change focus. Mutation commands and their exact filters are also saved in `mutations.py`, which restores original source bytes in `finally`.
+
+Checked the held-copy source/epoch/error classification, the disk digest/revision rebind cache, the separate initial source-search and rendered Find routes, helper snapshot cancellation/publication guards, UTF-16 paging, row eviction and immutable snapshot lifetime, and both source-copy/search disk adapters. The only held-copy retirement-code list is in `WorkspaceContent`; ordinary errors continue to propagate. The disk reader already caches one decoded `NSString`; the helper now has the same bounded-row strategy. Separate message-text and tool-input APIs keep their prior contracts. Recovery normalization is shared by replay and disk formatting, with adoption applied first; the prior completed and inherited-compaction corpus remains covered.
+
+### Mutation checks and adversarial self-review
+
+All three mutations fail at runtime and were restored in `finally`:
+
+- Disable the decoded-row cache hit: `mutation-cache.log`, **1 test / 1 failure**, with **50,331,696 bytes read after three pages**, reproducing the original bound violation.
+- Remove `session_closed` from retirement classification: `mutation-closed.log`, **1 test / 1 failure**, throwing that rejection before handoff.
+- Remove disk recovery normalization: `mutation-recovery.log`, **1 test / 1 failure**, throwing “History changed” on the unchanged parity corpus.
+
+Read-only adversarial review checked that the additional retirement result does not bypass digest validation (the regression also edits equal-length saved bytes), row caching retains only one immutable decoded row and serializes concurrent page access, cache hits still check cancellation, and the same UTF-16 boundary checks serve both string entry points. The cache cannot outlive its snapshot or publish a different revision; it does not change the existing actor-side validation. Copy allocation and I/O are proportional to the exported text, with at most one decoded full row retained between pages. Recovery changes only the shared presentation; explicit terminal receipts and durable checkpoint adoption take precedence. No journal evidence, permissions or capture/tool/vault boundaries are changed.
+
+### Integration with dev/next
+
+Committed the fixes as `bb3ebe8d`, then ran `git fetch origin` and `git merge --no-ff --no-commit origin/dev/next`. The incoming tip is `649ea623291c9417443d61d3bb55314d8a2f5d9a`. The sole conflict is concurrent additions to `NEXT-RELEASE.md`; all entries from both sides are retained. Source files merge cleanly. The automatic `Sessions.swift` merge retains both the conversation snapshot cache and upstream's saved task-time recovery. Upstream's response-timeline indexing/canonicalization, compaction timing and sidebar metadata eligibility changes are preserved without modification. The merge is a two-parent commit on `dev/a130-wire`, with no rebase, fast-forward, history rewrite or change to `dev/next`.
+
+### Merged-result validation
+
+The tested merge is `0255fcb494c77f2861832be40d7eec5e7b1e54e9`. Commands use the same build root and fixture-only inputs:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests -only-testing:PiAppTests/SidebarSearchScopeTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round5-review/copy" \
+  "$B/logs/round5-review/native-lane.sh" native-copy-merged -only-testing:PiAppTests/ConversationCopyTests
+"$B/logs/round5-review/native-lane.sh" native-workspace-merged -only-testing:PiAppTests/WorkspaceTests
+"$B/logs/round5-review/native-lane.sh" native-transcript-merged -only-testing:PiAppTests/TranscriptBugRegressionTests
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+Each `test-macos.sh` run invokes `PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py` and `xcodegen generate` before the native checks. Staging is serialized. The headless run builds the merged Release helper before the wire suites; subsequent native runs reuse that same unchanged helper. Window/gallery classes run alone under the shared full-lane lock, released with an owner-token check after each run.
+
+`native-headless-merged.log`: **52 passed / 1 opt-in performance skip / 0 failures**, 53 executed in 5.742 s (ContentSearch 7, Hardening 12, HistoryIndexFiles 3 + 1 skip, HistoryReaderCheckpoint 7, StorageTruth 11, incoming SidebarSearchScope 12).
+
+`wire-merged.log`: **40 passed**, 39.644 s. `concurrent-merged.log`: **4 passed**, 23.924 s. `acceptance-merged.log`: **3 passed**, 3.500 s. Release helper SHA-256: `2d7d73aa94abfcef1d027e9927a8064f60efa9ce7436c973551eb19865adcb3f`.
+
+`helper-merged.log`: **1,148 passed / 7 opt-in skips / 0 failures**, 1,155 executed in 425.347 s. The merged 16 MiB regression again exports **1,025 pages / 16,777,232 bytes**, reads exactly **16,777,232 bytes**, and measures **0.030 s** after snapshot construction.
+
+`native-copy-merged.log`: **12 passed / 0 skips / 0 failures**, 9.203 s. Inspected all three regenerated images in `gallery-round5-review/copy`: light and dark at 1080 × 700 points, narrow at 900 × 700 points. Source previews, message counts, range fields and copy/export controls are legible, correctly placed and unobscured; long row previews use the existing ellipsis. `native-workspace-merged.log`: **17 passed / 0 skips / 0 failures**, 0.520 s.
+
+`native-transcript-merged.log`: **116 passed / 0 skips / 0 failures**, 141.625 s. **Final native total: 197 passed / 1 opt-in performance skip / 0 failures**, 198 executed.
+
+`helper-cost-merged.log`: **5 passed / 0 failures**, 3.393 s, in its own process after the other helper and native runs finished. **Final helper total: 1,153 passed / 7 opt-in skips / 0 failures**, 1,160 executed. All wire/concurrent/acceptance suites pass as listed above.
+
+The merged native runs retain the previously observed SQLite “vnode unlinked while in use” fixture-cleanup diagnostics: **18** in the incoming SidebarSearchScope fixtures (`native-headless-merged.log`), **15** in WorkspaceTests, and **8** in TranscriptBugRegressionTests. These concern generated search-scope, native-fixture and wide-search databases removed before every database handle closes (for example, `SidebarSearchScopeTests.swift:10`, `WorkspaceTests.swift:238`, and `TranscriptBugRegressionTests.swift:625`). All associated tests pass. This unrelated test-cleanup follow-up is recorded without changing another workstream's fixtures.
+
+Final read-only adversarial review rechecked the merged adapters, runtime-retirement classification, cache locking/lifetime/cancellation, unchanged shared page boundaries, recovery/adoption precedence, and upstream timeline serialization. No further assigned defect remains. `git diff --check` passes, the generated project matches, and `source-hashes.txt` / `release-helper-sha256.txt` still match the exact production files and Release binary used by the merged tests. All three mutations are restored. The shared lock was released after every window/gallery run; no foreign lock was removed. Removed only this build root's final autogenerated result bundle; no test clone directories remained (`cleanup.txt`). Text logs and the three inspected PNGs are retained. No installed app, real preferences/chats, Keychain, live capture or paid provider was used.
+
+## Round 6 review
+
+Review of `f519e27c1d538cecaf7ea7cc91e5e51c2389da88`. Work remains on `dev/a130-wire`; there is no merge or fast-forward in this round. Evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round6-review`; `B` below is the existing build root.
+
+### Finding and failing-first evidence
+
+**Streaming invalidates unchanged retained selections — confirmed.** The two helper regressions submit a real turn with a generated streaming client and deliver a `.text` delta through the provider callback into `AgentSession.delta`. One delta arrives between search and the first copy page; the other arrives between copy pages. Both assert that event sequence advanced while retained content generation did not. Before the fix, both throw `history_changed`: `helper-red.log`, **2 tests / 2 failures**.
+
+The native regressions use a loopback Responses gateway with three explicit barriers. They wait until each actual delta appears in the helper snapshot, search while the response is running, and copy an earlier completed multi-page Unicode answer. One covers deltas before the first page and between pages, then hands the remaining pages to disk. The other hands the entire selection to disk immediately while the physical response remains running, with its active ledger outside the selected range. Before the fix, both throw “History changed”: `native-red.log`, **2 tests / 2 failures**. Removing the session from the model's `opened` set retires only this reader's live source, allowing the test to prove disk handoff while the physical response is still held at its barrier.
+
+Initial test setup used a synthetic historical tool name, so the helper rejected submission before the fixture could stream (`native-fixture-setup.log`, **1 test / 2 timeout assertions**). It was corrected to a supported historical `read` call before the runtime red runs above. A subsequent native build exposed the frozen SwiftUI test reference's direct call to the changed copy method; `native-reference-adapter-build.log` records that compile error. Its adapter now computes the same selected digest once before paging. Neither authoring/build issue is counted as failing-first product evidence.
+
+### Fix and nearby sweep
+
+The shared retained formatter now supplies a length-delimited SHA-256 fingerprint of each row's ID and complete copy text. Search captures ordered fixed-size fingerprints, and the reader derives its digest from **only the selected first/last range**. The live strong snapshot revision uses retained content generation; range-aware pages validate the selected digest and runtime incarnation. Event sequence is not part of that identity. A different unselected row, append or active request ledger does not invalidate it; changed selected IDs/text still do.
+
+Fingerprint creation, base64 preparation, selected-range hashing and text paging run off the helper session actor. The immutable snapshot caches the fingerprint manifest, and its page lock caches one selected-range digest alongside the existing one-row decoded text cache. The app computes its selected digest on the history reader and caches it for later pages. Next Results continues to reuse the formatted snapshot. The old whole-history digest remains in the wire search response for existing clients; the new app copy path does not use it for selection validation or disk handoff.
+
+Disk source searches also retain row fingerprints. The disk handoff checks the selected rows with the same shared fingerprint/digest functions, caches the validated range for its stamped file snapshot, and retries if a writer changes the stamp between validation and paging. It validates both selections originally captured live and selections originally captured on disk. It does not compare or normalize an unselected active ledger. Existing shared recovery presentation still applies when a ledger itself is copied.
+
+`testSavedSelectionsValidateOnlyTheirRange` changes rows before/after the selected range, appends between pages, then changes selected bytes and requires rejection. The helper's corresponding test changes an unselected retained row (including generation), then selected text. A generated 25,000-row manifest exceeds one wire frame; `testLargeRangeIdentityUsesBoundedDisplayTransfer` verifies bounded acknowledged transfer frames and exact reassembly. No new unbounded helper packet is introduced.
+
+**Same-function race found by adversarial review — confirmed and fixed.** A second search could supersede the snapshot build awaited by a range copy after an unrelated row changed. The old build's internal cancellation escaped even though the copy task remained active. A deterministic worker barrier reproduces it: `superseded-load-red.log`, **1 test / 1 failure**, `CancellationError()`. The copy now retries this cancellation only when its captured snapshot key changed and its caller is not cancelled. Closure and caller cancellation still propagate; selected content is validated against the replacement snapshot before publication. `helper-restored.log`: **14 ConversationReadTests passed / 0 failures**.
+
+The sweep covered live source search/page, both original live and disk selections, held-source retirement (`session_closed`, `session_missing`, changed runtime/epoch), equal-count selected/unselected changes, saved append/rewrite races, selection-token changes across awaits, shared-load retirement, cache cancellation/closure, UTF-16 page boundaries and large transfer framing. Separate rendered Find, message-text and tool-input APIs retain their existing contracts. The selected-range digest is cached, so it is not recomputed on every export page. The existing counted 16 MiB export regression remains in the full helper run.
+
+### Commands and mutation checks
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests/testStreamingDelta
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testCompletedRangeSurvivesStreamingAndDiskHandoffDuringTheResponse \
+  -only-testing:PiAppTests/ConversationCopyTests/testCompletedRangeHandsOffWithAnActiveUnselectedLedger
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests/testSupersededSnapshotLoadRetriesAnUnchangedSelectedRange
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+python3 "$B/logs/round6-review/mutations.py"
+```
+
+The restored focused native run additionally selects `testSavedSelectionsValidateOnlyTheirRange` and the existing `testClosedRuntimePageRebindsBeforeUnloadAcknowledgement`: **4 passed / 0 failures** (`native-green.log`). These methods create no windows or focus changes.
+
+All five mutations fail at runtime, and each source is restored in `finally`:
+
+- Reintroduce sequence-based selection validation: `mutation-sequence.log`, **2 tests / 2 failures**, both real delta placements rejected.
+- Include all disk rows in handoff validation: `mutation-whole-history.log`, **1 test / 1 failure**, the unselected live ledger breaks handoff.
+- Bypass selected live digest comparison: `mutation-selected-live.log`, **1 test / 1 failure**, changed selected text is incorrectly accepted.
+- Bypass selected disk digest comparison: `mutation-selected-disk.log`, **1 test / 2 failures**, both changed selected ranges are incorrectly accepted.
+- Remove the obsolete-build cancellation retry: `mutation-superseded-load.log`, **1 test / 1 failure**, the unchanged copy receives the internal cancellation again.
+
+The first four commands/edits are in `mutations.py`. The fifth removes the `catch is CancellationError ... key != contentKey` clause and runs the single superseded-load helper method shown above. The original source bytes were restored before final validation. A final source-hash manifest records all ten modified source/fixture files.
+
+### Final validation
+
+Commands use the same build root and generated or loopback fixtures:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round6-review/copy" \
+  bash "$B/logs/round6-review/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round6-review/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round6-review/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round6-review/components" \
+  bash "$B/logs/round6-review/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round6-review/components" \
+  bash "$B/logs/round6-review/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+PYTHONPYCACHEPREFIX="$B/python-cache" python3 -m py_compile fixtures/native/ui-gateway.py
+```
+
+Every native script run stages the Release helper with `PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py` and regenerates the project. Staging is serialized; no separate bundle build overlaps it. Window/gallery classes run separately under the shared full-lane lock. The wrapper releases only its matching owner token, including on failure. The frozen visual-reference adapter has no layout changes; its two caller classes are included above.
+
+`helper-final.log`: **1,153 passed / 7 opt-in skips / 0 failures**, 1,160 executed in 418.697 s. `helper-cost-final.log`: **5 passed / 0 failures**, 3.564 s in its separate process. **Final helper total: 1,158 passed / 7 skips / 0 failures**. The counted 16 MiB export again emits **1,025 pages / 16,777,232 bytes**, reads exactly **16,777,232 bytes**, and measures **0.029 s** after snapshot creation.
+
+`wire-final.log`: **40 passed**, 35.532 s. `concurrent-final.log`: **4 passed**, 24.770 s. `acceptance-final.log`: **3 passed**, 3.462 s. The Release helper SHA-256 is `3b12c0390733d1167191403310d4cad48fa781ea8bdbee3b6223961ee71e18ea`. Fixture Python compilation and `git diff --check` pass.
+
+`native-headless-final.log`: **40 passed / 1 opt-in performance skip / 0 failures**, 41 executed in 4.662 s (ContentSearch 7, Hardening 12, HistoryReaderCheckpoint 7, HistoryIndexFiles 3 + 1 skip, StorageTruth 11). `native-copy-final.log`: **15 passed / 0 failures**, 11.716 s. `native-workspace-final.log`: **17 passed / 0 failures**, 0.558 s. `native-transcript-final.log`: **116 passed / 0 failures**, 142.041 s.
+
+Inspected all three regenerated copy-sheet PNGs in `gallery-round6-review/copy`: light/dark at 1080 × 700 points and narrow at 900 × 700 points. The retained previews, message count, range fields and copy/export actions are legible and unobscured; long previews use the existing ellipsis. All three retain the existing layout.
+
+The native logs retain the previously recorded SQLite “vnode unlinked while in use” diagnostics: **15** in WorkspaceTests and **8** in TranscriptBugRegressionTests. These are generated fixture databases removed before all handles close (`WorkspaceTests.swift:238`, `:274`; `TranscriptBugRegressionTests.swift:625`, `:664`, and similar defers). All associated tests pass; this unrelated cleanup follow-up remains recorded without changing its fixtures.
+
+`native-parity-final.log`: **7 passed / 0 failures**, 198.636 s. `native-geometry-final.log`: **1 passed / 0 failures**, 5.005 s. **Final native total: 196 passed / 1 opt-in performance skip / 0 failures**, 197 executed. Also inspected the generated light/dark no-data conversation-sheet captures; the frozen-reference parity and full results-height checks pass.
+
+Final adversarial self-review rechecked selected-range boundaries and ID/text framing, snapshot generation versus event sequence, runtime-incarnation and source/path fences, app selection-token ownership across awaits, cancellation versus superseded worker retirement, disk stamp revalidation/retry, cache locking and eviction, and bounded transfer framing. Changed selected bytes are rejected on both live and disk paths; unrelated rows are not part of the selected digest. All whole-history helper work still runs on blocking workers, and repeated pages reuse the selected digest and decoded row. No further assigned defect remains.
+
+`source-hashes.txt` and `release-helper-sha256.txt` match the final tested sources and Release binary. The generated project is unchanged, Python syntax and final diff checks pass, and all mutations are restored. The shared lock was released after every window/gallery run; the final check observes another workstream's owner and leaves it untouched. Removed only this build root's final autogenerated result bundle; no clone folders remained (`cleanup.txt`). Text logs and inspected PNGs are retained. No installed app, real preferences/chats, Keychain, live capture or paid provider was used. No permissions, capture, tool, vault or data boundary changed.
+
+## Round 8
+
+Review of `fbb66e3bdf8aef4a59c57ca7d7ae64838b090c72`, on `dev/a130-wire`. No merge, rebase, or fast-forward in this round. Evidence lives in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round8`; `B` below is that workstream's existing build root. All fixtures are generated, imported from generated temporary files, or served over loopback.
+
+### Findings, regressions, and decisions
+
+1. **Imported conversation identity — confirmed.** `testImportedSelectionUsesTheJournalIdentity` performs the real desktop import, obtains its new UUID, searches the unchanged external journal, and copies its retained range. Before the fix it throws `unreadableRecord` (`copy-red.log`). The search snapshot now carries `journalID` independently of the desktop source record ID, workspace, and path. Disk pages validate the captured journal ID. `testImportedJournalCopiesRangesConversationAndExportWithItsOwnIdentity` exercises the sheet's Copy Range, Copy Conversation, and Export against a multi-page Unicode imported answer, then replaces the journal's header identity at the same path and requires the held copy to leave the clipboard untouched.
+
+2. **Saved fingerprint scan monopolizes HistoryReader — confirmed.** Two generated fixtures contain 5,000 tool calls with their results (10,000 rows, 12,646,710 bytes) and 22,000 assistant rows (27,312,706 bytes). After warming only the offset index, each starts a cold retained search, requests a concurrent transcript page at the fingerprint boundary, and atomically measures that page's decode count. Before the fix the page runs only after all row fingerprints: **10,220 / 22,220 decodes**, **0.893 / 1.389 seconds** latency (`content-red.log`). The tests assert that the page precedes the end of the scan, with an additional generous one-second bound. After bounded yielding, the first restored run reports **248 / 248 decodes**, **0.00984 / 0.00681 seconds** page latency (`content-green.log`). Total search durations were 1.026 / 1.583 seconds; yielding improves admission, not the amount of retained text to fingerprint. Fingerprinting shares search's 32-record / 16 MiB decode budget; one oversized record runs alone. The captured file, offset index, and journal ID survive yields, and the original stamp is validated before publishing or caching hashes. Selected-range rebinding also yields in bounded batches.
+
+3. **Repeated fingerprint manifests — confirmed.** A 26,000-row live search initially returns 1,121,101 bytes; before the fix its next page returns 1,121,539 bytes and fails the missing-manifest and 64 KiB reply assertions (`helper-red.log`). The caller now acknowledges `knownRevision` and `knownIncarnation` only when it holds that source's manifest. Matching live pages omit the manifest; independent readers and changed revisions/incarnations receive it. The restored reply is **12,207 bytes**, versus **1,121,120** for the initial reply with its added journal identity (`helper-green.log`). Disk search accepts the same revision acknowledgement and skips manifest work/return when it matches. `ConversationCopyReader` keeps fingerprints only for an exact source/revision/incarnation/journal identity match. Its regression first fails when a matching page omits hashes (`copy-red.log`), and also checks changed revision, runtime, and host source cannot borrow stale hashes. Existing bounded-transfer coverage remains for the first large manifest.
+
+4. **Retries after a validated page — confirmed.** A helper worker barrier changes an unselected retained row after the immutable page has passed digest validation. Before the fix it pages twice; the regression requires one pass (`helper-red.log`). The helper now returns that validated immutable page while retaining closure, cancellation, and runtime fences. A disk writer appends at every validation/publication boundary (three times, so the regression is finite); before the fix the disk reader rebinds/pages four times (`content-red.log`). Disk paging now captures a bounded journal prefix, validates only the selected row identities/text, and retains the cursor's decoded text from that same pass. It returns that page without a stamp-retry loop. A changed journal header is still rejected, including replacement at the same pathname; replacing a file with the same journal preserves the validated selection. A later page captures and validates its own current selected range. Exact-stamp range and decoded-row caches remain bounded. Legacy strict `copyContentPage` behavior is unchanged.
+
+Failing-first runtime totals: **7 tests / 9 assertions or thrown failures** across `helper-red.log` (2 tests / 3 failures), `content-red.log` (3 tests / 4 failures), and `copy-red.log` (2 tests / 2 failures). An initial native compilation needed the required description argument on the test's `eventually` calls (`fingerprint-red.log`); it is not product-failure evidence. A queued window run was cancelled before acquiring another workstream's lock; the import and manifest red tests above perform no focus changes.
+
+### Commands
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" \
+  --filter 'ConversationReadTests/(testSearchSendsFingerprintsOnlyWhenTheReaderNeedsTheSnapshot|testValidatedCopyPageReturnsWhileUnselectedRowsChange)'
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests/testRetainedFingerprintsYieldDuringFiveThousandToolCalls \
+  -only-testing:PiAppTests/ContentSearchTests/testRetainedFingerprintsYieldDuringTwentyTwoThousandRows \
+  -only-testing:PiAppTests/ContentSearchTests/testValidatedDiskPageDoesNotRetryWhileOutsideRowsAppend
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationCopyTests/testImportedSelectionUsesTheJournalIdentity \
+  -only-testing:PiAppTests/ConversationCopyTests/testNextResultsKeepsOnlyTheMatchingFingerprintManifest
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --filter ConversationReadTests
+python3 "$B/logs/round8/helper-mutations.py"
+python3 "$B/logs/round8/native-mutations.py"
+```
+
+### Adversarial self-review and nearby sweep
+
+The sweep checked source identity at search and page admission; imported desktop IDs versus retained header IDs; same-path replacement before and during copying; missing legacy IDs; source/revision/runtime changes during Next Results; independent readers entering at nonzero `start`; per-snapshot cache publication after yields; cancellation/closure after worker return; source offsets and presentation-update target IDs; adopted compaction/unfinished-ledger parity; bounded wire transfer of the first manifest; selected edits versus unselected updates/appends; UTF-16 boundaries; and the counted large-row export. The shared formatter, message-text API, rendered Find, navigation ownership, mounted presentation identity, permission/capture/tool/vault boundaries, HostService, and TraceStore were not changed.
+
+Two edge cases in the first draft were caught and covered before final validation:
+
+- Legacy rows with no explicit ID use the index's existing `record-<offset>` identity. The draft's new source-ID check rejected these; `legacy-red.log` has **1 test / 1 failure**. Identity validation now uses exactly the same fallback as indexing. Headerless legacy snapshots keep their optional journal identity rather than borrowing a desktop ID.
+- A validated copy must survive an atomic replacement with the **same** journal identity and selected text. The draft additionally fenced inode identity; `path-replacement-red.log` has **1 test / 1 failure**. The final check validates the current journal header instead. The same test also replaces the header ID and requires rejection. Header validation retains the reader's existing 32 MiB record bound; it does not introduce a smaller header-size limit.
+
+The new saved Next Results test needed `@MainActor` for its existing `LongChatScroll` fixture builder (`copy-green-build-error.log`). An initial yield-removal mutation captured a non-Sendable search pass inside an autorelease-pool closure and failed compilation (`mutation-fingerprint-yields.log`); that is not mutation evidence. The corrected mutation removes only the yield/decode budget and fails at runtime: **2 tests / 3 assertions**, page latencies **0.954 / 1.371 seconds**, and **10,220 / 22,220** decodes before the competing read (`mutation-fingerprint-yields-runtime.log`).
+
+### Final validation commands
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$B/swift-verify" --skip-build --filter StreamingCostTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+python3 "$B/logs/round8/fingerprint-mutation.py"
+python3 "$B/logs/round8/compatibility-mutations.py"
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round8/copy" \
+  bash "$B/logs/round8/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round8/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round8/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round8/components" \
+  bash "$B/logs/round8/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round8/components" \
+  bash "$B/logs/round8/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+python3 scripts/test-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+`helper-full.log`: **1,155 passed / 7 opt-in skips / 0 failures**, 1,162 executed in 452.838 seconds. The 16 MiB counted export still reads exactly **16,777,232 bytes** for **1,025 pages / 16,777,232 exported bytes**, measured at 0.0267 seconds after snapshot construction. `wire-final.log`: **40 passed** (36.240 s); `concurrent-final.log`: **4 passed** (27.995 s); `acceptance-final.log`: **3 passed** (3.469 s).
+
+`native-headless-final.log`: ContentSearchTests **13 passed**, HardeningTests **12 passed**, HistoryReaderCheckpointTests **7 passed**, HistoryIndexFilesTests **3 passed / 1 opt-in skip**, StorageTruthTests **11 passed**. Total **46 passed / 1 skip / 0 failures**, 47 executed in 10.085 seconds. The final fairness measurements are **0.01089 / 0.00686 seconds**, both **248 decodes** before the competing page.
+
+All ten mutation checks fail at runtime, with exact original source bytes restored in `finally`:
+
+| Mutation log (`logs/round8/`) | Regression outcome |
+| --- | --- |
+| `mutation-helper-manifest.log` — always resend hashes | 1 test / 1 failure |
+| `mutation-helper-page-retry.log` — retry a validated page | 1 test / 1 failure (two page passes) |
+| `mutation-desktop-identity.log` — use desktop ID for rebinding | 1 test / 1 thrown rejection |
+| `mutation-reader-manifest.log` — discard matching held hashes | 1 test / 1 thrown rejection |
+| `mutation-fingerprint-yields-runtime.log` — synchronous fingerprint loop | 2 tests / 3 assertions |
+| `mutation-disk-page-stamp.log` — require unchanged file stamp after validation | 1 test / 1 thrown rejection |
+| `mutation-legacy-id.log` — omit the index's synthetic-ID fallback | 1 test / 1 thrown rejection |
+| `mutation-journal-replacement.log` — skip final journal identity validation | 1 test / 1 assertion |
+| `mutation-selected-digest.log` — skip selected-row digest comparison | 1 test / 2 assertions (both selected text changes accepted) |
+| `mutation-disk-manifest.log` — ignore the acknowledged disk revision | 1 test / 1 assertion |
+
+The original four findings have direct red/green and mutation coverage. No owner decision is needed. `source-hashes.txt` captures the restored source/test files; the Release helper used by wire validation has SHA-256 `0fffd7541475f3752fb0890e2be8d08b2dec974cc8727574bc41b07b0e914cc0` (`release-helper-sha256.txt`).
+
+`native-copy-final.log`: **18 passed / 0 skips / 0 failures**, 12.175 s, including the real imported sheet's range, whole-conversation and export actions and the previous streaming/disk-handoff cases. Inspected all three regenerated `gallery-round8/copy` PNGs: light and dark at 1080 × 700 points, narrow at 900 × 700 points. Headers, retained previews, range fields, status and footer actions are legible, correctly placed and unobscured; the existing long-preview ellipsis is preserved. `native-workspace-final.log`: **17 passed / 0 failures**, 0.657 s. `native-transcript-final.log`: **116 passed / 0 failures**, 144.695 s.
+
+The recorded performance comparison isolates fingerprint generation with a warm offset index. Existing cold journal index construction remains synchronous and unchanged (`HistoryReader.buildIndex`); this round adds yielding to the fingerprint and selected-range formatting passes, not a new journal-indexing architecture.
+
+The unchanged generated-fixture cleanup diagnostics recur: **15** SQLite “vnode unlinked while in use” messages in WorkspaceTests and **8** in TranscriptBugRegressionTests, at the existing temporary database cleanup sites (`WorkspaceTests.swift:238`, `:274`; `TranscriptBugRegressionTests.swift:625`, `:664`). Those tests all pass. No such diagnostic appears in the headless storage/search or copy/export runs. This pre-existing cleanup follow-up is recorded without changing unrelated fixtures.
+
+Identity sweep also verified that `WorkspaceHosts.open` still rejects imported originals, and `SessionJournal` verifies a native runtime's header ID against its runtime ID. Thus live snapshots can publish that validated runtime/journal ID, while imported disk snapshots carry the original external header ID. No writable-helper path was opened for imported originals.
+
+`native-parity-final.log`: **7 passed / 0 failures**, 201.690 s. `native-geometry-final.log`: **1 passed / 0 failures**, 5.042 s. **Final native total: 205 passed / 1 opt-in skip / 0 failures**, 206 executed. `helper-cost-final.log`: **5 passed / 0 failures**, 3.560 s in its own process after the other runs. **Final helper total: 1,160 passed / 7 opt-in skips / 0 failures**, 1,167 executed. Release wire/concurrent/acceptance totals remain **40 / 4 / 3 passed**, with no failures.
+
+The final adversarial review checked the exact restored, tested diff and found no remaining assigned defect. Source/test hashes and the Release helper hash were rechecked after all runs and still match. All window/gallery runs held the shared full-lane lock; every owned lock was released, including failed runs, and no foreign lock was deleted. Removed this build root's last automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and gallery PNGs are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture, or paid provider was used. `git diff --check` passes, and the generated project is unchanged.
+
+## Round 9
+
+Review of `2790d4bd9bdde1b112c4199448f43310ff0efb14`, on `dev/a130-wire`. Evidence is in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round9`; `B` below denotes that existing build root. All journals, index files, preferences and test homes are generated fixtures.
+
+### Index retention — confirmed
+
+`testRetainedCopiesRegisterNewAndEvictedIndexes` captures selections from twelve distinct journals with a separate source reader, releases its indexes, then copies each selected range through a fresh disk reader. It repeats the copies in the same order to exercise rebuilding evicted indexes. Before the fix both passes retain **12 indexes / 12 files / 12 open files**. The test checks the actual cache count and filesystem entries after each copy, and tracks device/inode identities to detect descriptors left open even after unlinking. Shutdown must remove the files and close every observed descriptor.
+
+The nearby sweep found the same missing registration when a rendered search is canceled after indexing but before publication. `testCancelledRenderedSearchIndexesStayBounded` cancels twelve real search tasks at that boundary; before the fix it also leaves **12 indexes / 12 files / 12 open files**. `testRetainedCopyRefreshesIndexRecency` shows that copying a cached index did not refresh its recency: opening a ninth chat evicted the index just copied.
+
+`index-red.log` contains **3 failing tests / 24 assertions**, with all three scenarios failing at runtime. The pre-fix run changes only the test counter to report `indexes.count` instead of the recency-list length, which previously hid unregistered indexes; it does not change retention.
+
+`journalIndex` now registers any retained index before returning to its caller, covering both new and cached indexes before an asynchronous copy/search can yield or cancel. Existing read/search publication registration remains in place. The LRU size, immutable in-flight snapshots, selected-range identity/digest checks, formatting and wire protocol are unchanged. `index-green.log` has **6 passed / 1 opt-in skip / 0 failures**. Both copy passes and canceled searches hold exactly **8 indexes / 8 files / 8 open files**, and shutdown releases all of them.
+
+Removing acquisition registration reproduces **3 failing tests / 24 assertions** (`index-mutation.log`). `index-mutation.py` restores the exact source bytes in `finally`; the final class runs rebuild that restored source.
+
+### Nearby sweep and adversarial review
+
+- `buildIndex` is the sole assignment into `indexes`, and is called only by `journalIndex`. Registration at that common boundary covers checkpoint indexes, whole-journal fallback, replaced snapshots and cached acquisitions.
+- All four direct acquisitions were checked: `read` and its whole-journal fallback, rendered `searchContent`, and `retainedContentPage`. Normal source search, edit inputs, message-role lookup, automatic-context admission, window reads and changed-history reads route through `read`.
+- Strict legacy `copyContentPage` can request a whole-journal `read` for a partial index; otherwise it only consumes an existing entry. `message` either consumes an existing index or scans the source without installing one.
+- Canceled rendered search was the additional unregistered installer path. Rejected searches, damaged/incomplete journals, construction cancellation, replacement, eviction and `releaseIndexes` were checked for ownership. A snapshot held by an active read remains strongly owned until that read finishes; eviction does not invalidate its SQLite handle.
+- The tests verify actual files and open descriptors independently of the cache metric, refresh recency for an already cached copy, and cover copies both before any disk index exists and after eviction. No owner decision is needed.
+
+### Commands and final validation
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testRetainedCopiesRegisterNewAndEvictedIndexes \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testRetainedCopyRefreshesIndexRecency \
+  -only-testing:PiAppTests/HistoryIndexFilesTests/testCancelledRenderedSearchIndexesStayBounded
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryIndexFilesTests
+python3 "$B/logs/round9/index-mutation.py"
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round9/copy" \
+  bash "$B/logs/round9/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round9/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round9/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round9/components" \
+  bash "$B/logs/round9/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round9/components" \
+  bash "$B/logs/round9/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+```
+
+The window/gallery wrapper runs each class alone with `-parallel-testing-enabled NO` under the shared full-lane lock, releasing only its own lock on exit. This round changes only app-side index ownership and its test counter; no helper or wire behavior changed, so the helper and Python wire/concurrent/acceptance suites are not rerun.
+
+`native-headless-final.log`: ContentSearchTests **13 passed**, HardeningTests **12 passed**, HistoryReaderCheckpointTests **7 passed**, HistoryIndexFilesTests **6 passed / 1 opt-in skip**, StorageTruthTests **11 passed**. Total **49 passed / 1 skip / 0 failures**, 50 executed in 10.228 seconds. All three index measurements remain **8 / 8 / 8**; no SQLite cleanup diagnostics appear.
+
+`native-copy-final.log`: **18 passed / 0 failures**, 11.770 seconds. Inspected the regenerated light, dark and narrow copy-sheet images in `gallery-round9/copy`: headings, retained previews, range fields and footer actions are readable and unobscured; long previews retain their existing ellipsis. `native-workspace-final.log`: **17 passed / 0 failures**, 0.630 seconds. The same **15** generated-fixture SQLite “vnode unlinked while in use” cleanup diagnostics recorded in round 8 recur at `WorkspaceTests.swift:238` and `:274`; no such diagnostic appears in the copy/export run.
+
+`native-transcript-final.log`: **116 passed / 0 failures**, 145.557 seconds. Its same **8** pre-existing fixture-cleanup diagnostics recur at `TranscriptBugRegressionTests.swift:625` and `:664`. Those unrelated temporary database cleanup sites remain unchanged.
+
+`native-parity-final.log`: **7 passed / 0 failures**, 199.270 seconds. `native-geometry-final.log`: **1 passed / 0 failures**, 5.025 seconds. Neither emits SQLite cleanup diagnostics. **Final native total: 208 passed / 1 opt-in skip / 0 failures**, 209 executed across the same ten classes as round 8.
+
+Final adversarial self-review found no remaining assigned defect. The source/test hashes in `source-hashes.txt` still match the restored files after all runs; `git diff --check` passes and the generated project is unchanged. All window/gallery runs held the shared lock and released only their own acquisition. Removed this build root's final automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and generated gallery images are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture or paid provider was used. No merge, rebase, fast-forward, tag or release was performed.
+
+## Round 10
+
+Review of `6ee1183a9245f67003353dac1893511c0e555437`, on `dev/a130-wire`. Evidence is in `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-wire/logs/round10`; `B` below denotes that existing build root. All journals, index files, preferences and test homes are generated fixtures.
+
+### Cached range validation — confirmed
+
+Three regressions first validate rows 2–3 of a generated journal, then physically rewrite the later selected row in place, replacing `ORIGINAL` with equal-length `MODIFIED` while keeping the same row ID, device, inode and file length:
+
+- `testCachedRangeRejectsALaterRowRewrittenAfterCapture` rewrites after the page captures its stamp and offset index, before it reads the later row. The real filesystem stamp changes.
+- `testCachedRangeRejectsALaterRowWithUnchangedStamp` makes the same write while a per-reader test seam holds that fixture inode's observed timestamps constant. It preserves actual device/inode/size checks and simulates unchanged filesystem timestamps; the test independently confirms that the physical write changed the real stamp.
+- `testCachedRangeRevalidatesTheDecodedRowCache` uses the strict legacy copy API to populate the shared decoded-row slot with the changed text before requesting the held selection's next page, also with held timestamps.
+
+Before the fix all three return `MODIFIED later row`; `content-red.log` has **4 tests / 3 failing tests / 3 assertions**, with the fourth, counted export test passing. The observer and byte counter in that baseline only expose the race and cost; they do not change range validation.
+
+The held `contentHandoff` now retains the selected range's 32-byte row fingerprints from its successful validation. Every later decoded row must match its corresponding fingerprint before slicing or publication, including text obtained from the shared decoded-row cache. A mismatch raises the existing **History changed. Refresh the range before copying** error. The decoded slot keeps the computed fingerprint with its immutable text; every other slot writer clears that fingerprint when replacing the text. This retains one decoded row and one range manifest, avoids whole-range rehashing per page, and avoids hashing a large cached row for every page.
+
+`content-green.log` has **4 passed / 0 failures**. The initial implementation draft used nil-coalescing around the hash computation; Swift 6 rejected the resulting actor-isolated `NSString` capture (`content-green-build-error.log`). An explicit conditional fixes the compile error without changing isolation or sendability.
+
+### Cost and mutation evidence
+
+`testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation` exports a three-row range containing one 16 MiB ASCII row, starting at row 2. It asserts the complete byte count, five row decodes (three for range validation, two later row loads), and at most twice the exported text bytes hashed. The counter measures canonical UTF-8 text passed to the fingerprint function; the unchanged function also hashes each row's ID and length delimiters. The focused green run exports **16,777,299 bytes / 1,027 pages**, hashes **33,554,564 text bytes**, and performs **5 decodes**, in **0.0989 seconds** after search. The pre-fix cost is **16,777,299 hashed text bytes / 5 decodes / 0.0941 seconds**; the added bounded work is one verification hash for each subsequently loaded row.
+
+`content-mutations.py` restores exact source bytes in `finally` after each mutation:
+
+| Mutation log (`logs/round10/`) | Runtime result |
+| --- | --- |
+| `mutation-row-membership.log` — omit the row-to-held-fingerprint comparison | All **3 tests fail / 3 assertions**, returning changed text through both disk and cache paths |
+| `mutation-cached-row-hashing.log` — discard the cached row's fingerprint on reuse | **1 test / 1 failure**: **17,213,440,132 bytes** hashed for the same 16,777,299-byte export; **8.720 seconds**, still 5 decodes |
+
+### Nearby sweep and adversarial review
+
+- The selected-range digest is checked before its fingerprints are cached. Fingerprint lookup is relative to `first`, with tests selecting a range that does not start at row 1. The cached range is reused only for the same path, stamp, bounds and digest.
+- Both sources of later text are checked: direct `content(..., validatingIdentity: true)` decoding and the shared `decoded` slot. Its exact path/stamp/ID/field key remains required. The legacy copy writer and all three `message` writers clear the optional fingerprint; only validated immutable text retains one.
+- The range manifest and offset index are captured locally across validation yields, so actor reentry cannot substitute another selection. Cancellation remains checked before cache publication.
+- Existing source-ID checks, imported journal-header identity, headerless legacy IDs, final same-path journal replacement validation, LRU registration, formatting, UTF-16 page boundaries, unselected appends and live-to-disk handoff behavior are unchanged. No helper or wire code changed.
+- A cached immutable page may still return its original selected bytes after a disk rewrite; any newly decoded bytes must match the selected fingerprint. Timestamp equality is a cache hint, not authority to copy different text.
+
+No owner decision is needed.
+
+### Commands and final validation
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRejectsALaterRowRewrittenAfterCapture \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRejectsALaterRowWithUnchangedStamp \
+  -only-testing:PiAppTests/ContentSearchTests/testCachedRangeRevalidatesTheDecodedRowCache \
+  -only-testing:PiAppTests/ContentSearchTests/testRetainedExportHashesAndDecodesEachRowOnlyOnceAfterRangeValidation
+python3 "$B/logs/round10/content-mutations.py"
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/StorageTruthTests
+TEST_RUNNER_PI_APP_CONVERSATION_COPY_GALLERY="$B/gallery-round10/copy" \
+  bash "$B/logs/round10/native-lane.sh" native-copy-final -only-testing:PiAppTests/ConversationCopyTests
+bash "$B/logs/round10/native-lane.sh" native-workspace-final -only-testing:PiAppTests/WorkspaceTests
+bash "$B/logs/round10/native-lane.sh" native-transcript-final -only-testing:PiAppTests/TranscriptBugRegressionTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round10/components" \
+  bash "$B/logs/round10/native-lane.sh" native-parity-final -only-testing:PiAppTests/PayloadNativeParityTests
+TEST_RUNNER_PI_COMPONENT_GALLERY="$B/gallery-round10/components" \
+  bash "$B/logs/round10/native-lane.sh" native-geometry-final -only-testing:PiAppTests/ConversationResultsGeometryTests
+```
+
+The window/gallery wrapper runs each class alone with `-parallel-testing-enabled NO` under the shared full-lane lock, releasing only its own lock on exit. This round changes only app-side retained-content validation and its test seams; no helper or wire behavior changed, so the helper and Python wire/concurrent/acceptance suites are not rerun.
+
+`native-headless-final.log`: ContentSearchTests **17 passed**, HardeningTests **12 passed**, HistoryReaderCheckpointTests **7 passed**, HistoryIndexFilesTests **6 passed / 1 opt-in skip**, StorageTruthTests **11 passed**. Total **53 passed / 1 skip / 0 failures**, 54 executed in **10.761 seconds**. The final 16 MiB export still hashes **33,554,564 text bytes / 5 decodes / 1,027 pages**, in **0.1017 seconds**. The existing 5k-call and 22k-row fingerprint fairness regressions pass with concurrent page latencies **0.01137 / 0.00642 seconds**, each after **248 decodes**. No SQLite cleanup diagnostics appear in this run.
+
+`native-copy-final.log`: **18 passed / 0 failures**, **11.706 seconds**, including imported range/whole-conversation/export actions and streaming/retirement handoffs. Inspected all regenerated light, dark and narrow images in `gallery-round10/copy`: headings, retained previews, range fields, status and footer actions remain readable and unobscured; long previews retain their existing ellipsis. No SQLite cleanup diagnostic appears.
+
+`native-workspace-final.log`: **17 passed / 0 failures**, **0.659 seconds**. The same **15** generated-fixture SQLite “vnode unlinked while in use” diagnostics recorded in rounds 8–9 recur at the existing `WorkspaceTests.swift:238` and `:274` cleanup sites. Those unrelated fixtures remain unchanged.
+
+`native-transcript-final.log`: **116 passed / 0 failures**, **141.153 seconds**. Its same **8** pre-existing SQLite cleanup diagnostics recur at `TranscriptBugRegressionTests.swift:625` and `:664`; those unrelated temporary database cleanup sites remain unchanged.
+
+`native-parity-final.log`: **7 passed / 0 failures**, **198.877 seconds**. `native-geometry-final.log`: **1 passed / 0 failures**, **5.047 seconds**. Neither emits SQLite cleanup diagnostics. **Final native total: 212 passed / 1 opt-in skip / 0 failures**, 213 executed across the same ten classes as round 9 (`native-summary.txt`).
+
+Final adversarial self-review found no remaining assigned defect. The restored source/test hashes in `source-hashes.txt` still match after all runs; `git diff --check` passes and the generated project is unchanged. Every window/gallery run held the shared lock and released only its own acquisition. Removed this build root's final automatically named result bundle; no clone folders remained (`cleanup.txt`). Text logs and generated images are retained. No installed Bello Agent app, real preferences/chats, Keychain, live capture or paid provider was used. No merge, rebase, fast-forward, tag or release was performed.

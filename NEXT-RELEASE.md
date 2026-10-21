@@ -4,6 +4,7 @@
 
 ## 0.1.130
 
+- [x] Floating-panel Git discovery survives ignore rechecks; summary-only refreshes preserve displayed paths and coalesce new ignored folders. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-18--integrate-floating-panel-git-watchers).
 - [x] Git watcher regressions verify that clean tracked-file replacements retain their queued refreshes through both the controller and throttle queues. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-17--clean-tracked-file-replacement-review).
 - [x] Git ignore filtering preserves events touching displayed status paths, including both rename names, until a refresh reconciles them. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-16--displayed-git-paths-survive-newer-ignores).
 - [x] Git refreshes recheck queued event paths against newly learned ignores, avoiding extra scans after an ignored directory appears. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-15--ignored-git-events-queued-during-refresh).
@@ -13,8 +14,41 @@
 - [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.
 - [x] Skill-popover test fixtures own their hover timing and file actions without replacing the caller's hooks on teardown.
 - [x] Failed file-review fixture construction leaves the caller's project resolver intact.
+- [x] Pasted-image sweeps prioritize orphan images and skip sidecars blocked by unrecognized files, preventing later generations from starving without deleting unknown files. [Validation](docs/validation/a130-paste-0.1.130.md#round-6--sweep-selection-progress).
+- [x] Pasted-image sweeps hold at most 32 generation leases, skip wholly retained generations, and retire empty abandoned sidecars while preserving live owners. [Validation](docs/validation/a130-paste-0.1.130.md#round-5--bounded-sweep-leases-and-sidecar-retirement).
+- [x] A live app instance's unsent pasted images survive another instance's startup sweep; per-generation lifetime leases protect conversion and drafts while abandoned generations remain collectable. [Validation](docs/validation/a130-paste-0.1.130.md#cross-instance-pasted-image-ownership--2026-10-20).
+- [x] Main chats show a floating Agents / Diff / Files card when space permits, with lazy project readers, per-window tabs/collapse and the existing narrow pill fallback. [Validation and screenshots](docs/validation/a130-panel-0.1.130.md).
+- [x] Panel review fixes: stable tab accessibility identities, repository discovery retries after `git init`, and no stale deletion counts for unreadable untracked replacements. [Evidence](docs/validation/a130-panel-0.1.130.md#follow-up-review-2026-10-20).
+- [x] Panel Files opens resolve symlink destination ownership through the canonical opener, preserving untrusted-project boundaries. [Evidence](docs/validation/a130-panel-0.1.130.md#destination-trust-follow-up-2026-10-20).
+- [x] Changes and panel grouping follow raw `git status`; Git computes each reported row’s counts, including rename/copy pairs and bounded untracked files with Git’s attributes and binary thresholds. [Evidence](docs/validation/a130-panel-0.1.130.md#git-owned-grouping-and-counts-follow-up-2026-10-20).
+- [x] Panel counts ignore diff ordering files and report unavailable reads; repository removal/recreation revalidates discovery and restores Diff without switching chats. [Evidence](docs/validation/a130-panel-0.1.130.md#ordering-and-repository-lifecycle-follow-up-2026-10-20).
+- [x] Untracked count snapshots split case-colliding files and directories; ambiguous Unicode keys and attribute aliases report unavailable counts without overwriting another path. [Evidence](docs/validation/a130-panel-0.1.130.md#snapshot-name-collisions--round-8-2026-10-20).
+- [x] Panel count requests keep rename/copy pairs together across batch limits and deduplicate shared sources, avoiding unnecessary Git reads for large directory renames. [Evidence](docs/validation/a130-panel-0.1.130.md#paired-count-batching--round-9-2026-10-20).
+
 
 - [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
+- [x] Saved copy/export pages verify each decoded row against the held selection's fingerprints, rejecting in-place rewrites without rehashing the range per page. [Validation](docs/validation/a130-wire-0.1.130.md#round-10).
+- [x] Saved copy handoffs and canceled searches register their indexes with the eight-entry LRU, closing and removing evicted index files. [Validation](docs/validation/a130-wire-0.1.130.md#round-9).
+- [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
+- [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.
+- [x] Search readers reuse fingerprints for a matching snapshot; Next Results sends a new manifest only when the reader needs it.
+- [x] Copy/export returns an already validated selected-range page without retrying for unrelated appends.
+- [x] Copy/export selections validate only their selected retained rows, surviving streaming deltas and saved-history handoff during a running response. [Validation](docs/validation/a130-wire-0.1.130.md#round-6-review).
+- [x] Retained-range copies recover when another reader supersedes their snapshot build, while preserving caller cancellation and closure checks.
+- [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+- [x] Large live conversation exports reuse one decoded row across pages, avoiding repeated full-row reads and allocations.
+- [x] Live and saved conversation copies share one formatter; empty or incomplete timeline evidence keeps the canonical answer. [Validation](docs/validation/a130-wire-0.1.130.md#round-4-review).
+- [x] Kept sides normalize inherited compaction rows identically, preserving copy/export selections after helper retirement.
+- [x] Saved conversation copy and search reflect durably adopted compaction progress, matching the live helper's retained text.
+- [x] Retained conversation formatting and hashing run off the session actor and are cached per snapshot for search and copy pages.
+- [x] Live conversation source search includes the reasoning and tool arguments retained by saved-history search and Copy Conversation.
+- [x] Saved conversation copy/search applies the same recovery presentation as helper replay for unfinished request and compaction rows. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+
+- [x] Live Copy Conversation includes retained reasoning, tool arguments and message boundaries, matching saved-history copies. [Validation](docs/validation/a130-wire-0.1.130.md#round-3-hunt).
+- [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
+- [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
+- [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+
 - [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
 - [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
 - [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).

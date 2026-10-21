@@ -15,14 +15,103 @@ final class HistoryIndexFilesTests: XCTestCase {
         return root
     }
     private func files(_ directory: URL) -> [String] { ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted() }
-    private func journal(at url: URL, records: Int) throws {
-        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
+    private func journal(at url: URL, records: Int, id: String = "fixture") throws {
+        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"\(id)\"}\n".utf8)
         for index in 0..<records {
             let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any,
                                         "message": ["role": index % 2 == 0 ? "user" : "assistant", "content": [["type": "text", "text": "message \(index)"]]]]
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
         try bytes.write(to: url)
+    }
+    private func identities(_ directory: URL) throws -> Set<HistoryIndexFiles.FileIdentity> {
+        try Set(files(directory).map { name in
+            var status = stat()
+            guard lstat(directory.appendingPathComponent(name).path, &status) == 0 else { throw StoreError.unreadableRecord }
+            return HistoryIndexFiles.FileIdentity(device: UInt64(UInt32(bitPattern: status.st_dev)), inode: status.st_ino)
+        })
+    }
+
+    func testRetainedCopiesRegisterNewAndEvictedIndexes() async throws {
+        let root = try scratch(), folder = try scratch(), sourceFolder = try scratch()
+        let reader = HistoryReader(indexDirectory: folder), source = HistoryReader(indexDirectory: sourceFolder)
+        var selections: [(path: URL, snapshot: ContentSearch, digest: String)] = []
+        for n in 0..<12 {
+            let path = root.appendingPathComponent("chat-\(n).jsonl")
+            try journal(at: path, records: 2, id: "chat-\(n)")
+            let snapshot = try await source.searchContent(path: path.path, query: "", start: 0, retained: true)
+            let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(snapshot.rowHashes), first: 1, last: 2))
+            selections.append((path, snapshot, digest))
+        }
+        await source.releaseIndexes()
+        var observed: Set<HistoryIndexFiles.FileIdentity> = []
+        // First hand off without a disk index; then copy the held selections
+        // again in order, rebuilding indexes evicted by the preceding chats.
+        for pass in 0..<2 {
+            for (n, selection) in selections.enumerated() {
+                var cursor: ContentCursor? = .init(index: 1, offset: 0), text = ""
+                while let at = cursor {
+                    let page = try await reader.retainedContentPage(path: selection.path.path, journalID: selection.snapshot.journalID,
+                        first: 1, last: 2, cursor: at, digest: selection.digest)
+                    text += page.text; cursor = page.next
+                }
+                XCTAssertTrue(text.contains("message 0")); XCTAssertTrue(text.contains("message 1"))
+                let count = await reader.retainedIndexCount
+                XCTAssertEqual(count, min(8, pass * selections.count + n + 1))
+                XCTAssertEqual(files(folder).count, count, "Only retained indexes keep their files")
+                observed.formUnion(try identities(folder))
+            }
+            let held = try XCTUnwrap(HistoryIndexFiles.openFiles()).intersection(observed)
+            print("INDEX copy pass \(pass): \(await reader.retainedIndexCount) indexes, \(files(folder).count) files, \(held.count) open")
+            XCTAssertEqual(held.count, 8, "Eviction also closes descriptors, including unlinked files")
+        }
+        await reader.releaseIndexes()
+        XCTAssertEqual(files(folder), [])
+        XCTAssertTrue(try XCTUnwrap(HistoryIndexFiles.openFiles()).intersection(observed).isEmpty)
+    }
+
+    func testRetainedCopyRefreshesIndexRecency() async throws {
+        let root = try scratch(), folder = try scratch(), reader = HistoryReader(indexDirectory: folder)
+        let first = root.appendingPathComponent("chat-0.jsonl")
+        try journal(at: first, records: 2)
+        let snapshot = try await reader.searchContent(path: first.path, query: "", start: 0, retained: true)
+        let digest = try XCTUnwrap(RetainedConversation.rangeDigest(try XCTUnwrap(snapshot.rowHashes), first: 1, last: 2))
+        let firstFile = try XCTUnwrap(files(folder).first)
+        for n in 1..<8 {
+            let path = root.appendingPathComponent("chat-\(n).jsonl")
+            try journal(at: path, records: 2); _ = try await reader.read(path: path.path)
+        }
+        _ = try await reader.retainedContentPage(path: first.path, journalID: snapshot.journalID,
+            first: 1, last: 2, cursor: .init(index: 1, offset: 0), digest: digest)
+        let ninth = root.appendingPathComponent("chat-8.jsonl")
+        try journal(at: ninth, records: 2); _ = try await reader.read(path: ninth.path)
+        XCTAssertTrue(files(folder).contains(firstFile), "Copying an existing index makes it recently used")
+        XCTAssertEqual(files(folder).count, 8)
+        await reader.releaseIndexes()
+    }
+
+    func testCancelledRenderedSearchIndexesStayBounded() async throws {
+        let root = try scratch(), folder = try scratch(), reader = HistoryReader(indexDirectory: folder)
+        await reader.observeSearchReads { stage in
+            if stage == .indexed { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        var observed: Set<HistoryIndexFiles.FileIdentity> = []
+        for n in 0..<12 {
+            let path = root.appendingPathComponent("chat-\(n).jsonl")
+            try journal(at: path, records: 2)
+            let search = Task { try await reader.searchContent(path: path.path, query: "", start: 0, renderedAgentProse: true) }
+            do { _ = try await search.value; XCTFail("The search was canceled after index construction") }
+            catch is CancellationError { }
+            let count = await reader.retainedIndexCount
+            XCTAssertLessThanOrEqual(count, 8); XCTAssertEqual(files(folder).count, count)
+            observed.formUnion(try identities(folder))
+        }
+        let held = try XCTUnwrap(HistoryIndexFiles.openFiles()).intersection(observed)
+        print("INDEX canceled searches: \(await reader.retainedIndexCount) indexes, \(files(folder).count) files, \(held.count) open")
+        XCTAssertLessThanOrEqual(held.count, 8)
+        await reader.releaseIndexes()
+        XCTAssertEqual(files(folder), [])
+        XCTAssertTrue(try XCTUnwrap(HistoryIndexFiles.openFiles()).intersection(observed).isEmpty)
     }
 
     func testAnIndexFileNamesItsProcessAndGoesWithTheIndex() throws {

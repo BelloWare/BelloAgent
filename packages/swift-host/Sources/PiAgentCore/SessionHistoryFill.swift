@@ -99,6 +99,8 @@ extension AgentSession {
     func cancelHistoryLoads() {
         cancelHistoryFill()
         olderRowsLoad?.cancel(); fullHistoryLoad?.cancel()
+        contentLoad?.load.cancel()
+        Discarded.release(contentCache); contentCache = nil
     }
 
     /// Stops the load under way; what it made is not taken.

@@ -22,7 +22,15 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try await ignoredReplacement(throttled: true, committed: true)
     }
 
-    @MainActor private func ignoredReplacement(throttled: Bool, committed: Bool = false) async throws {
+    @MainActor func testASummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile() async throws {
+        try await ignoredReplacement(throttled: false, summary: true)
+    }
+
+    @MainActor func testAThrottledSummaryRefreshPreservesAnIgnoredReplacementOfADisplayedFile() async throws {
+        try await ignoredReplacement(throttled: true, summary: true)
+    }
+
+    @MainActor private func ignoredReplacement(throttled: Bool, committed: Bool = false, summary: Bool = false) async throws {
         let root = try repository("git-watch-visible-ignore")
         defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
@@ -31,7 +39,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         let cache = root.appendingPathComponent("cache")
         try "a regular file\n".write(to: cache, atomically: false, encoding: .utf8)
         if committed { try git(["add", "cache"], in: root); try git(["commit", "-q", "-m", "Track cache"], in: root) }
-        let controller = GitController(roots: [root.path])
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
         defer { controller.stop() }
         try await eventually("read the regular file") { controller.refreshesFinished > 0 && !controller.loading }
         let initialPaths = committed ? [] : ["cache"]
@@ -188,6 +196,14 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try await queuedEvents(automatic: false, tracked: false)
     }
 
+    @MainActor func testIgnoredEventsDuringAnAutomaticSummaryRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: true, tracked: false, summary: true)
+    }
+
+    @MainActor func testIgnoredEventsDuringAReaderSummaryRefreshAreRechecked() async throws {
+        try await queuedEvents(automatic: false, tracked: false, summary: true)
+    }
+
     @MainActor func testTrackedEventsDuringAnAutomaticRefreshStillRefresh() async throws {
         try await queuedEvents(automatic: true, tracked: true)
     }
@@ -196,7 +212,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try await queuedEvents(automatic: false, tracked: true)
     }
 
-    @MainActor private func queuedEvents(automatic: Bool, tracked: Bool) async throws {
+    @MainActor private func queuedEvents(automatic: Bool, tracked: Bool, summary: Bool = false) async throws {
         let root = try repository("git-watch-reading-ignore")
         defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
@@ -204,7 +220,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         let source = root.appendingPathComponent("source.swift")
         try "let value = 1\n".write(to: source, atomically: false, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        let controller = GitController(roots: [root.path])
+        let controller = GitController(roots: [root.path], summaryOnly: summary)
         defer { controller.stop() }
         try await eventually("finish the initial read") { controller.refreshesFinished > 0 && !controller.loading }
         let watcher = try XCTUnwrap(controller.watcher), bridge = try XCTUnwrap(watcher.bridge)
@@ -259,6 +275,54 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
                            "Recheck the queued paths after the refresh learns build/")
         }
         XCTAssertEqual(controller.status.entries.map(\.path), tracked ? ["source.swift"] : [])
+    }
+
+    @MainActor func testDiscoveryWatchUsesOnlyTheProjectAndNoticesTheGitMarker() async throws {
+        let root = try repository("git-discovery-watch"), outside = try repository("git-discovery-outside")
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        try "gitdir: \(outside.path)\n".write(to: root.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        try "../unverified-common\n".write(to: outside.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        var changes = 0
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0, stateOnly: true, discoveringRepository: true) { _ in changes += 1 }
+        XCTAssertNil(watcher.gitDirectory, "Discovery must not resolve metadata before Git verifies the repository")
+        XCTAssertNil(watcher.commonDirectory)
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/ordinary.txt", root.path + "/.git/objects/ab/cd"], [0, 0]) }.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(changes, 0)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("discover a .git directory or worktree marker appearing", timeout: 5) { changes == 1 }
+    }
+
+    @MainActor func testDiscoveryEventsBypassCachedIgnores() async throws {
+        let root = try repository("git-discovery-ignored")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var batches: [GitWatchChanges] = []
+        let watcher = GitWorkingTreeWatcher(root: root.path, stateOnly: true, discoveringRepository: true) { batches.append($0) }
+        watcher.ignored.update(root: root.path, relative: [".git/"])
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("deliver discovery regardless of a cached ignore", timeout: 5) { batches.count == 1 }
+        XCTAssertTrue(batches.first?.isInteresting(ignoring: watcher.ignored) == true, "Discovery is unconditional")
+    }
+
+    @MainActor func testThrottledDiscoveryEventsSurviveNewIgnores() async throws {
+        let root = try repository("git-discovery-queued")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var batches: [GitWatchChanges] = []
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 3_600, stateOnly: true, discoveringRepository: true) { batches.append($0) }
+        watcher.start(); defer { watcher.stop() }
+        let bridge = try XCTUnwrap(watcher.bridge)
+        await Task.detached { bridge.deliver([root.path + "/.git"], [0]) }.value
+        try await eventually("deliver the first discovery batch") { batches.count == 1 }
+        await Task.detached { bridge.deliver([root.path + "/.git/HEAD"], [0]) }.value
+        try await eventually("queue a second discovery batch") { watcher.hasTrailingChange }
+        watcher.ignored.update(root: root.path, relative: [".git/"])
+        watcher.deliverTrailingChange()
+        XCTAssertEqual(batches.count, 2, "A newly learned ignore must not discard discovery")
+        XCTAssertTrue(batches.allSatisfy { $0.isInteresting(ignoring: watcher.ignored) }, "Discovery batches stay unconditional")
     }
 
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {

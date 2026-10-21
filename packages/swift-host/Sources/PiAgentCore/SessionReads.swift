@@ -113,30 +113,67 @@ extension AgentSession {
         guard let message=try await retainedMessage(id) else { throw AgentError("message_missing", "Message is not retained") }; return try textPage(field == "thinking" ? message.thinking : message.retainedDisplayText,offset:offset)
     }
     public func eventPage(since: Int?) -> JSON { let since=since ?? max(0,sequence-128); return ["events":.array(events.filter{($0["seq"].int ?? 0)>since}.prefix(128).map{$0}),"seq":JSON(sequence),"resyncRequired":JSON(since < (events.first?["seq"].int ?? 1)-1)] }
-    public func contentSearch(_ params: JSON) async throws -> JSON {
+    private var contentKey: RetainedContent.Key { .init(generation: contentGeneration, revision: contentRevision) }
+
+    private func retainedContent() async throws -> RetainedContent {
+        try throwIfClosed(); try Task.checkCancellation()
         if olderRows > 0 { try await loadOlderRows() }
-        let query=params["query"].text ?? "", start=try boundedInt(params["start"],maximum:100000); guard query.count <= 256 else { throw AgentError("search_limit", "Search query too long") }
-        return try withShownRows { shown in
-            // Rows not loaded are read back a block at a time, several at
-            // once, and let go of before the next block.
-            var hits: [JSON]=[], cursor=min(start,shown.count), block=256
-            while cursor < shown.count && hits.count < 100 {
-                let end=min(shown.count,cursor+block)
-                try shown.prefetch(cursor..<end)
-                try autoreleasepool {
-                    while cursor < end && hits.count < 100 { let m=try shown.row(cursor), text=m.retainedDisplayText; if query.isEmpty || text.localizedCaseInsensitiveContains(query) { hits.append(["id":JSON(m.id),"position":JSON(cursor+1),"preview":JSON(preview(text,bytes:240)),"count":JSON(occurrences(of:query,in:text))]) }; cursor += 1 }
+        let key = contentKey
+        if let contentCache, contentCache.key == key { return contentCache }
+        let reader: @Sendable () async throws -> Void
+        if let pending = contentLoad, pending.key == key, let joined = pending.load.reader() { historyLoadJoins += 1; reader = joined }
+        else {
+            contentLoad?.load.cancel()
+            Discarded.release(contentCache); contentCache = nil
+            let load = SharedHistoryLoad()
+            guard let first = load.reader() else { throw CancellationError() }
+            reader = first; contentLoad = (key, load)
+            let older = olderIndex, visible = visible, url = older == nil ? nil : journal?.url, step = historyPageStep
+            load.start(Task {
+                var made: RetainedContent?
+                do {
+                    made = try await BlockingWorkExecutor.shared.run { cancellation in
+                        try RetainedContent.build(key: key, older: older, visible: visible, url: url, cancellation: cancellation, step: step)
+                    }
+                    try self.throwIfClosed(); try Task.checkCancellation()
+                    guard self.contentKey == key else { throw AgentError("history_changed", "History changed; refresh the selection") }
+                    self.contentCache = made
+                    load.finish(.success(()))
+                } catch {
+                    Discarded.release(consume made)
+                    load.finish(.failure(error))
                 }
-                shown.forget(); block=min(block*2,4096)
-            }
-            return ["hits":.array(hits),"total":JSON(shown.count),"next":cursor < shown.count ? JSON(cursor) : .null,"revision":JSON(contentRevision)]
+                if self.contentLoad?.load === load { self.contentLoad = nil }
+            })
         }
+        do { try await reader() }
+        catch is OlderRows.Unreadable {
+            try throwIfClosed(); try Task.checkCancellation()
+            // A stale offset is recovered by the existing off-actor full read.
+            try await loadFullHistory()
+            return try await retainedContent()
+        } catch { try throwIfClosed(); throw error }
+        try throwIfClosed(); try Task.checkCancellation()
+        guard contentKey == key, let contentCache, contentCache.key == key else { throw AgentError("history_changed", "History changed; refresh the selection") }
+        return contentCache
     }
-    /// Case-insensitive occurrences of `query` in `text` (zero for an empty query).
-    func occurrences(of query: String, in text: String) -> Int {
-        guard !query.isEmpty else { return 0 }
-        var count = 0, from = text.startIndex
-        while let found = text.range(of: query, options: [.caseInsensitive], range: from..<text.endIndex) { count += 1; from = found.upperBound }
-        return count
+    public func contentSearch(_ params: JSON) async throws -> JSON {
+        let query = params["query"].text ?? "", start = try boundedInt(params["start"], maximum: 100000)
+        guard query.count <= 256 else { throw AgentError("search_limit", "Search query too long") }
+        let content = try await retainedContent()
+        var result = try await BlockingWorkExecutor.shared.run { try content.search(query: query, start: start, cancellation: $0) }
+        try throwIfClosed(); try Task.checkCancellation()
+        guard content.key == contentKey else { throw AgentError("history_changed", "History changed; refresh the selection") }
+        result["revision"] = JSON(contentRevision)
+        if params["retained"].flag == true {
+            result["digest"] = JSON(content.digest); result["incarnation"] = JSON(displayEpoch)
+            result["journalID"] = JSON(id)
+            if params["knownRevision"].text != content.revision || params["knownIncarnation"].text != displayEpoch {
+                result["rowHashes"] = JSON(content.encodedRowHashes)
+            }
+            result["revision"] = JSON(content.revision)
+        }
+        return result
     }
     // A branch shortens the visible timeline, so its count alone cannot
     // identify a selection. Rows not loaded count as a chat holding every row
@@ -146,13 +183,33 @@ extension AgentSession {
         return "\(olderIndex.shown + visible.count):\(olderIndex.historyRows + history.count)"
     }
     public func contentPage(_ params: JSON) async throws -> JSON {
-        if olderRows > 0 { try await loadOlderRows() }
-        guard params["revision"].text == contentRevision else { throw AgentError("history_changed", "History changed; refresh the selection") }
-        let first=try boundedInt(params["first"],fallback:1,maximum:100000), last=try boundedInt(params["last"],maximum:100000), index=try boundedInt(params["index"],fallback:1,maximum:100000), offset=try boundedInt(params["offset"],maximum:128*1024*1024)
-        return try withShownRows { shown in
-            guard first>=1,last>=first,last<=shown.count,index>=first,index<=last else { throw AgentError("invalid_range", "Invalid history range") }
-            let m=try shown.row(index-1), page=try textPage(m.retainedDisplayText,offset:offset)
-            return ["text":page["text"],"next":page["next"].isNull ? (index<last ? ["index":JSON(index+1),"offset":0] : .null) : ["index":JSON(index),"offset":page["next"]]]
+        if let incarnation = params["incarnation"].text, incarnation != displayEpoch { throw AgentError("history_changed", "The conversation runtime changed; validate the retained selection") }
+        let first = try boundedInt(params["first"], fallback: 1, maximum: 100000), last = try boundedInt(params["last"], maximum: 100000)
+        let index = try boundedInt(params["index"], fallback: 1, maximum: 100000), offset = try boundedInt(params["offset"], maximum: 128*1024*1024)
+        let digest = params["digest"].text
+        if digest != nil, params["incarnation"].text != displayEpoch { throw AgentError("history_changed", "The conversation runtime changed; validate the retained selection") }
+        while true {
+            let key = contentKey
+            let content: RetainedContent
+            do { content = try await retainedContent() }
+            catch let error as AgentError where digest != nil && error.code == "history_changed" { continue }
+            catch is CancellationError where digest != nil && !Task.isCancelled && key != contentKey { continue }
+            // Legacy readers bind the whole snapshot. Range-aware readers carry
+            // their original row identities, so an unrelated row may change.
+            if digest == nil, ![contentRevision, content.revision].contains(params["revision"].text ?? "") {
+                throw AgentError("history_changed", "History changed; refresh the selection")
+            }
+            let step = historyPageStep
+            let page = try await BlockingWorkExecutor.shared.run {
+                let page = try content.page(first: first, last: last, index: index, offset: offset, digest: digest, cancellation: $0)
+                step?("contentPage")
+                return page
+            }
+            try throwIfClosed(); try Task.checkCancellation()
+            if digest == nil, content.key != contentKey {
+                throw AgentError("history_changed", "History changed; refresh the selection")
+            }
+            return page
         }
     }
 }

@@ -61,10 +61,11 @@ import CoreServices
     /// Only where HEAD is and what is staged: saves in the working tree are
     /// not told.
     let stateOnly: Bool
-    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, onChange: @escaping (GitWatchChanges) -> Void) {
+    private let discoveringRepository: Bool
+    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, discoveringRepository: Bool = false, onChange: @escaping (GitWatchChanges) -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
-        self.root = resolved; self.stateOnly = stateOnly
-        self.gitDirectory = Self.gitDirectory(under: resolved)
+        self.root = resolved; self.stateOnly = stateOnly; self.discoveringRepository = discoveringRepository
+        self.gitDirectory = discoveringRepository ? nil : Self.gitDirectory(under: resolved)
         self.commonDirectory = gitDirectory.flatMap(Self.commonDirectory(of:))
         self.interval = interval
         self.onChange = onChange
@@ -104,18 +105,19 @@ import CoreServices
 
     func start() {
         guard !handle.isRunning else { return }
-        let root = root, gitDirectory = gitDirectory, commonDirectory = commonDirectory, ignored = ignored, stateOnly = stateOnly, generation = UUID()
+        let root = root, gitDirectory = gitDirectory, commonDirectory = commonDirectory, ignored = ignored, stateOnly = stateOnly, discoveringRepository = discoveringRepository, generation = UUID()
         self.generation = generation
         let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }
+            let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && (discoveringRepository || !ignored.covers($0)) }
             guard moved || !relevant.isEmpty else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else {
-                    self.pending.formUnion(GitWatchChanges(relevant))
+                    // Discovery has no verified working-tree ignore list.
+                    self.pending.formUnion(discoveringRepository ? .unknown : GitWatchChanges(relevant))
                     self.changed()
                 }
             }
@@ -192,7 +194,7 @@ import CoreServices
     /// True for a path the panel would show: anything in the working tree, and
     /// inside `.git` only what says where HEAD is and what is staged. A stage
     /// writes `index.lock` and a dozen object files; none of those are it.
-    nonisolated static func isInteresting(_ path: String, under root: String, gitDirectory: String? = nil, commonDirectory: String? = nil, stateOnly: Bool = false) -> Bool {
+    nonisolated static func isInteresting(_ path: String, under root: String, gitDirectory: String? = nil, commonDirectory: String? = nil, stateOnly: Bool = false, discoveringRepository: Bool = false) -> Bool {
         // One spelling of each: FSEvents keeps "/private" where the resolved
         // root does not.
         let path = GitIgnoredPaths.comparable(path), root = GitIgnoredPaths.comparable(root), gitDirectory = gitDirectory.map(GitIgnoredPaths.comparable)
@@ -211,6 +213,7 @@ import CoreServices
         guard let first = parts.first else { return false }
         guard first == ".git" else { return !stateOnly }
         parts.removeFirst()
+        if discoveringRepository && parts.isEmpty { return true }
         return isGitState(parts.joined(separator: "/")[...])
     }
     /// True for the few names that say where HEAD is and what is staged.
@@ -381,8 +384,10 @@ final class GitIgnoredPaths: @unchecked Sendable {
 /// commit of it even when the file itself did not change.
 @MainActor public final class GitStateWatch {
     private let watcher: GitWorkingTreeWatcher
-    public init(root: String, onChange: @escaping @MainActor () -> Void) {
-        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true) { _ in onChange() }
+    /// Discovery watches only the project and notices its `.git` marker.
+    /// External metadata is resolved only after Git confirms the repository.
+    public init(root: String, discoveringRepository: Bool = false, onChange: @escaping @MainActor () -> Void) {
+        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true, discoveringRepository: discoveringRepository) { _ in onChange() }
     }
     public func start() { watcher.start() }
     public func stop() { watcher.stop() }
