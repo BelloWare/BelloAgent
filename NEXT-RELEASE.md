@@ -255,6 +255,8 @@
 
 - [x] An open Find counts text that streams in after its search: it searches again once the conversation has been quiet for 0.5 s (while the chat runs, for four times its last search), never per token or over a search under way, keeping the reader's place, chosen match and keyboard; Next reaches the new matches. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-1--confirmed-and-fixed).
 - [x] Image-result tool cards read back from a journal show the description their live card showed, including text-and-image results, and Find reaches it; legacy receipts keep their text and Copy Conversation keeps the shared source text. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-2--confirmed-and-fixed).
+- [x] Find's recounts keep a place another reader marked — a sidebar Full chats match, an Inspector, transcript or link reveal — and its landing under way; only Find's own navigation replaces it. [Validation](docs/validation/a130-transcript2-0.1.130.md#round-2--review-of-2f65aa99).
+- [x] Find searches nothing for a reader that is hidden, closed or covered: retiring a reader suspends its refreshes even at rest, and a transcript under the Reports page, a covering tab or a hidden window waits; shown again, one search counts what arrived. [Validation](docs/validation/a130-transcript2-0.1.130.md#round-2--review-of-2f65aa99).
 
 ## 0.1.129
 

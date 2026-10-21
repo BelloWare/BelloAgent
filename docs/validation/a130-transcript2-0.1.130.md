@@ -294,3 +294,133 @@ and no parallel clones were made (`-parallel-testing-enabled NO`).
   2–3 s at 400 turns and ~22 s at 2,000 turns. Making repeated searches of an
   unchanged journal prefix incremental would cut that further; it is outside
   this fix.
+
+## Round 2 — review of 2f65aa99
+
+A read-only review found two P2 issues in the automatic refresh. Both were
+confirmed by tests that fail on 2f65aa99 (`r2-failing-first.log`: 5 executed,
+5 failed, 12 assertion failures).
+
+### Recounts took back other readers' marks
+
+**Trace.** A refresh is `setQuery(_, restarting: true)`, whose
+`publish(focus: false)` rebuilt the highlights from the query and carried over
+only a focus Find had made (`fromFind`). A sidebar Full chats hit
+(`SidebarSearchReveal.reveal` → `revealInTranscript`) installs a mark with
+`fromFind == false`; opened off the page it reads a new window, which changes
+what the chat presents, so the automatic recount 0.5 s later replaced the
+highlights: the mark disappeared, and `focusPending` was cleared, cancelling a
+landing still under way. Inspector, transcript and chat-link reveals install the
+same kind of mark, and the View Raw / fetched-input restarts and
+`resumeReaderNavigation` take the same path.
+
+**Fix.** `publish` takes `keepingMarks`, which every refreshing call site passes
+(start, pages, completion and failure of a recount). A recount keeps any focus
+Find did not make, so the highlights stay equal: no new request, `focusPending`
+untouched, the count still updates. A newly typed query and Next/Previous
+behave as before (Find's own focus replaces the mark).
+
+### Retiring a reader at rest left its refreshes running
+
+**Trace.** `retireReaderNavigation` suspended work only when a search was
+running (`needsResume`). `SubagentTab.didHide` → `renewNavigation` retires a
+hidden child tab's Find with no search running, so a queued content refresh
+survived, later changes queued more, and whole-journal searches ran for a tab
+nobody sees (hidden tabs keep their panes).
+
+**Fix.** Retiring a reader whose query is active (`retired`) cancels the queued
+refresh and keeps only the fact that rows changed; changes while retired queue
+nothing. `resumeReaderNavigation` — which `resumeVisibleReaders` calls for every
+reader that shows again — clears it and runs one coalesced refresh (or, as
+before, the full search a retirement interrupted). `clear()` resets it.
+
+**Other hide paths checked:**
+
+| Path | Before | Now |
+|---|---|---|
+| Main pane switching chats | `applyFind` closes the old chat's bar (`clear`) | unchanged, no gap |
+| Child tab hidden behind another tab (`didHide`) | retired, but refreshes kept running | suspended until resumed |
+| Child tab closed | `TabHost.close` unregisters the tab before `willClose`, so `renewNavigation` does not retire; a pane still alive kept searching | its transcript has left the window: the visibility gate below |
+| Popped-out window: tab switch / close | the same `SubagentTab` paths | as above |
+| Popped-out window minimized or ordered out | not retired | visibility gate |
+| Reports page over the chats | a page change bumps `messageNavigationRevision`, retiring the chat's Find, but nothing resumes it until Chats returns; a queued refresh still ran | suspended until resumed; its scroll view is also hidden (`ConversationPageVisibilityView`), so the gate holds too |
+| Side covered by a pane tab | not retired; its scroll view hidden | visibility gate |
+
+The visibility gate: a queued refresh starts only while its transcript is in a
+visible window and not hidden (`NativeTranscriptPane.showsTranscript`);
+otherwise it waits, checking again every 0.5 s, and runs once when the
+transcript shows again — one search for everything that arrived. Typed queries
+and Next/Previous are not gated.
+
+The reveal flow itself passes through retire/resume cycles (each advancing
+navigation, including automatic history jumps, bumps the revision and resumes
+the visible readers a turn later), so a change recorded while retired is
+searched only because `resumeReaderNavigation` schedules it: removing that
+step fails the sidebar regression as well as the hidden-tab one (below).
+
+**Regressions:**
+
+- `TranscriptRevealTests.testASidebarMatchKeepsItsMarkThroughFindsRecount` — the
+  review's scenario through the real sidebar reveal: a zero-hit query, a Full
+  chats hit 30 turns above the window opened with its excerpt mark, then a reply
+  with the query lands in the journal past that page and the chat's
+  presentation moves. After the recount the bar reads “1 of 1”, the focus is
+  the sidebar's (same serial), still drawn on screen in the focus colour, and
+  the mark stands where it did in the viewport. Base (`r2-failing-first-sidebar.log`):
+  `("nil") is not equal to (…a30b…)`, `The mark stays drawn, on screen`, and its
+  place gone. (A first version appended the reply to the browsed window
+  itself, which the app never does; the window's history room then changed
+  identically with and without the fix, so the test now writes the journal
+  and compares the mark's place in the viewport, not the absolute origin.)
+- `TranscriptBugRegressionTests.testFindRecountKeepsAnotherReadersPendingMark` —
+  another reader's mark is installed and a recount starts before it lands: the
+  mark and `focusPending` survive, the place lands, and Next is Find's focus
+  again. Base: the mark is `nil` at once and never lands.
+- `TranscriptBugRegressionTests.testACoveredTranscriptIsSearchedOnceItShowsAgain`
+  — the transcript's scroll view hidden (as under the Reports page), then its
+  window ordered out: 4 deltas each, zero searches while covered, exactly one
+  after it shows again, 9 matches at the end. Base: `("1") is not equal to ("0")`
+  and `("2") is not equal to ("1")`.
+- `SubagentReaderTests.testAHiddenChildTabsFindIsSearchedOnceWhenShownAgain` —
+  the review's scenario: a child tab's query finishes, another tab hides it,
+  three needles stream into it; zero searches while hidden, exactly one after
+  `activate`, 3 matches. Base: `("2") is not equal to ("1") - Nothing is searched
+  for a hidden reader`.
+- `SubagentReaderTests.testAClosedChildTabsFindSearchesNothingMore` — the real
+  pane of a popped-out child tab, Find open, tab closed, rows arrive: no search.
+  Base: `("2") is not equal to ("1")`.
+
+**Mutations** (`r2-final.sh` in the session scratchpad, one lock hold; each
+edit is restored with `git checkout HEAD` and checked with `git diff --quiet
+HEAD -- apps` before the next step):
+
+| Mutation | Log | Result (5 new tests) |
+|---|---|---|
+| A recount drops marks again (`keepingMarks` line removed) | `r2-mutation-keeping-marks.log` | 2 failed: the sidebar and pending-mark tests |
+| Retiring a reader at rest no longer suspends it | `r2-mutation-retire-at-rest.log` | 1 failed: `("2") is not equal to ("1") - Nothing is searched for a hidden reader` |
+| Resume no longer searches what changed while retired | `r2-mutation-resume-owed.log` | 2 failed: `Shown again, the child is searched once`, `Find never counted again` |
+| No visibility gate | `r2-mutation-visibility.log` | 2 failed: covered transcript (`("1") is not equal to ("0")`, `("2") is not equal to ("1")`) and closed tab (`("2") is not equal to ("1")`) |
+
+**Runs.** The same commands as above, with the new methods:
+
+| Run | Executed | Passed | Failed | Skipped |
+|---|---:|---:|---:|---:|
+| `r2-failing-first.log` (new tests, 2f65aa99 product code) | 5 | 0 | 5 | 0 |
+| `r2-failing-first-sidebar.log` (final sidebar test, 2f65aa99 controller) | 1 | 0 | 1 | 0 |
+| `r2-fixed.log` (new tests and round-1 regressions, first sidebar version) | 11 | 10 | 1 | 0 |
+| `r2-fixed-final.log` (new tests, final) | 5 | 5 | 0 | 0 |
+| `r2-serial-final.log` | 281 | 278 | 0 | 3 |
+| `r2-parallel-final.log` | 82 | 81 | 0 | 1 |
+
+`r2-fixed.log`'s one failure is the first sidebar version's absolute-origin
+check, which moved identically with and without the fix (see above); every
+other method passed, including the six round-1 regressions. Serial classes:
+`TranscriptBugRegressionTests` 124, `SubagentReaderTests` 59,
+`SubagentMarkdownTests` 19, `ContentSearchTests` 17, `ResponseChronologyTests` 14,
+`TranscriptRevealTests` 12, `TranscriptFindTests` 11, `WireContractTests` 10
+(+1 `PI_PERF_WIRE` skip), `ChatFileLinkTests` 7, `TranscriptUpdateIsolationTests` 5,
+`TranscriptFindProbeTests` 2 skipped (`PI_LONG_PROBE`). Parallel classes as in
+round 1 (81 passed, `HistoryIndexFilesTests` +1 `PI_PERF_HISTORY_JOURNAL` skip).
+No unrelated failures. Round 2 changes no layout or strings, so no gallery scene
+was regenerated. The app and tests were compiled with `xcodebuild
+build-for-testing` (same DerivedData) before each locked run.
