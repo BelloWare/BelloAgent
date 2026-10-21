@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 @testable import PiAgentCore
 
-final class HTTPRedirectTests: XCTestCase {
+final class HTTPRedirectTests: HelperTestCase {
     private static let server = #"""
 import http.server, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
