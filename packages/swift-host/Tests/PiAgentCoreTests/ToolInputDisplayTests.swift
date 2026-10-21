@@ -17,7 +17,7 @@ private actor SteppedClient: ModelClient {
     }
 }
 
-final class ToolInputDisplayTests: XCTestCase {
+final class ToolInputDisplayTests: HelperTestCase {
     private func session(_ root: URL, id: String, seed: [ChatMessage] = [], client: any ModelClient = ScriptClient([])) throws -> AgentSession {
         var profile = try fixtureProfile().raw; profile["contextWindow"] = 1_000_000
         return try AgentSession(id: id, profile: Profile(profile), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,

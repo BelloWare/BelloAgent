@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class PausedFamilyCompactionTests: XCTestCase {
+final class PausedFamilyCompactionTests: HelperTestCase {
     private func session(_ client: PausedSummaryClient, root: URL) async throws -> AgentSession {
         let owner = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: DisabledTools(), traces: TraceStore(),

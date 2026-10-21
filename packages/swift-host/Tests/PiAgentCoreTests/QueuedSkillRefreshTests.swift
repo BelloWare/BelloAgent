@@ -7,7 +7,7 @@ import XCTest
 /// off), the queue stays paused on a notice naming it (`skill_updated`), and
 /// the reader's Resume sends the updated version. A skill that keeps
 /// changing says so instead of looping.
-final class QueuedSkillRefreshTests: XCTestCase {
+final class QueuedSkillRefreshTests: HelperTestCase {
     private struct Fixture {
         let root: URL, skill: URL, resources: Resources, session: AgentSession, client: ScriptClient, frozen: [FrozenSkill], selection: JSON
     }

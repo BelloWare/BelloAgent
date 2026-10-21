@@ -6,7 +6,7 @@ import AppKit
 /// sets where every character sits, its line height where every line does,
 /// its line numbers' font how wide the gutter is, and its colours what the
 /// text is drawn in. The engine knows no app.
-final class FileTextStyleTests: XCTestCase {
+final class FileTextStyleTests: ViewsTestCase {
     @MainActor func testTheHostsFontAndLineHeightPlaceTheText() throws {
         let scroll = FileTextScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         let text = scroll.textView
@@ -82,7 +82,7 @@ final class FileTextStyleTests: XCTestCase {
 
 /// The line numbers sit beside the text, never over it, however the view is
 /// made and sized, and in a window whose content runs under its title bar.
-final class FileTextGutterPlacementTests: XCTestCase {
+final class FileTextGutterPlacementTests: ViewsTestCase {
     @MainActor func testTheTextStartsWhereTheLineNumbersEnd() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)

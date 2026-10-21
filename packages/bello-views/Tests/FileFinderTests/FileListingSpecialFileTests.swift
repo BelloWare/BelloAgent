@@ -1,7 +1,7 @@
 import XCTest
 @testable import FileFinder
 
-final class FileListingSpecialFileTests: XCTestCase {
+final class FileListingSpecialFileTests: ViewsTestCase {
     @MainActor func testAFIFOIgnoreFileIsSkippedWithoutWaitingForAWriter() async throws {
         let root = scratchRoot("finder-fifo")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

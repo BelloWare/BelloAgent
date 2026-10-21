@@ -3,7 +3,7 @@ import XCTest
 
 /// The instruction and skill catalog: what reaches a request, what an
 /// explicit selection authorizes, and the metadata a skill may not carry.
-final class ResourceCatalogTests: XCTestCase {
+final class ResourceCatalogTests: HelperTestCase {
     func testCodexInstructionsExplicitSkillAndRevocation() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let cwd=root.appendingPathComponent("repo/sub"),home=root.appendingPathComponent("home"),skill=home.appendingPathComponent(".codex/skills/review")

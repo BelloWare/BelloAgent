@@ -60,7 +60,7 @@ private final class CheckpointStop: @unchecked Sendable {
     func changed() { lock.lock();let value=committing ? task:nil;lock.unlock();value?.cancel() }
 }
 
-final class CompactionSafetyTests: XCTestCase {
+final class CompactionSafetyTests: HelperTestCase {
     /// A one-token tail, for cases about something other than pi's cut.
     static let smallTail: CompactionPolicy = { var policy=CompactionPolicy(); policy.keepRecentTokens=1; return policy }()
     func testSummaryCapFollowsPiPastTheOld4096() async throws {

@@ -5,7 +5,7 @@ import XCTest
 /// sessions, exit and change their catalogs. A call the server rejected
 /// outright never ran and must not block the workspace; a connection that
 /// died is set up again for the next call, never replaying the old one.
-final class MCPRecoveryTests: XCTestCase {
+final class MCPRecoveryTests: HelperTestCase {
     static let stdioServer = #"""
 import json, pathlib, sys
 state = pathlib.Path(sys.argv[1])

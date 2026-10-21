@@ -110,7 +110,7 @@ func processCPUMilliseconds() -> Double {
 
 /// What a streamed token costs the helper: the CPU it burns and the bytes it
 /// puts on the wire. Both must scale with the delta, not with the page.
-final class StreamingCostTests: XCTestCase {
+final class StreamingCostTests: HelperTestCase {
     private func history(count: Int, bytes: Int) -> [ChatMessage] {
         (0..<count).map { index in
             var message = ChatMessage(role: index.isMultiple(of: 2) ? "user" : "assistant", content: [textBlock("Row \(index): " + String(repeating: "x", count: bytes))])

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class TurnCapacityTests: XCTestCase {
+final class TurnCapacityTests: HelperTestCase {
     func testExplicitEffortDoesNotDependOnProfileReasoningFlagAndDefaultOmitsOptions() throws {
         var raw = try fixtureProfile().raw; raw["reasoning"] = false; raw["thinkingLevelMap"] = ["high": "unsupported-profile-effort"]
         let base = try Profile(raw)

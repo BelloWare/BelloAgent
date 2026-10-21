@@ -3,7 +3,7 @@ import XCTest
 import GitProcessSafety
 import Darwin
 
-final class FolderBrowserTests: XCTestCase {
+final class FolderBrowserTests: ViewsTestCase {
     @MainActor func testStdinIncludesDoNotConsumeFolderPaths() async throws {
         let root = try fixture(), git = try TestGit(fixture())
         try git.run(["init", "-q"], in: root)

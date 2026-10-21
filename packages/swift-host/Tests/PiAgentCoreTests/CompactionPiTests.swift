@@ -37,7 +37,7 @@ private func tasks(_ prefix: String, _ count: Int, chars: Int) -> [ChatMessage] 
     (0..<count).flatMap { n in [user("\(prefix)\(n)","\(prefix)\(n) "+String(repeating:"u",count:chars)),reply("\(prefix)\(n)-reply","Done \(prefix)\(n).",root:"\(prefix)\(n)")] }
 }
 
-final class CompactionPiTests: XCTestCase {
+final class CompactionPiTests: HelperTestCase {
     private func session(_ root: URL, _ client: PiSummaryClient, seed: [ChatMessage], window: Int = 100_000, modelOutputLimit: Int? = nil,
                          policy: CompactionPolicy = CompactionPolicy()) throws -> AgentSession {
         var raw=try fixtureProfile().raw; raw["contextWindow"]=JSON(window)

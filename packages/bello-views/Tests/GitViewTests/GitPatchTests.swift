@@ -1,7 +1,7 @@
 import XCTest
 @testable import GitView
 
-final class GitPatchTests: XCTestCase {
+final class GitPatchTests: ViewsTestCase {
     func testRawHunksKeepCRLFAndMissingFinalNewline() throws {
         let raw = Data("diff --git a/file b/file\nindex 111..222 100644\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\r\n+new\r\n@@ -12 +12 @@\n-last\n\\ No newline at end of file\n+end\n\\ No newline at end of file\n".utf8)
         let patch = try GitPatch(raw: raw, path: "file")

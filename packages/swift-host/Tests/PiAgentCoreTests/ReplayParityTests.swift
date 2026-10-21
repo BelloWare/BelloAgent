@@ -7,7 +7,7 @@ import XCTest
 /// shown, and the same context a request sends. The one difference is the
 /// open's context also keeping rows no request sends (every request, count
 /// and compaction leaves them out), until a record resets the context.
-final class ReplayParityTests: XCTestCase {
+final class ReplayParityTests: HelperTestCase {
     func testPortableHandoffRestoresEditedContextForEveryNativeMarker() async throws {
         var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
         let source = try String(contentsOf: repo.appendingPathComponent("fixtures/native/historical-edit-after.jsonl"), encoding: .utf8)

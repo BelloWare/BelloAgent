@@ -20,7 +20,7 @@ private final class MutationReplies: @unchecked Sendable {
     }
 }
 
-final class MutationLedgerTests: XCTestCase {
+final class MutationLedgerTests: HelperTestCase {
     func testExpiredMutationsRemainRejectedAfterRecentBindingsAreEvicted() {
         var ledger = MutationLedger(recentLimit: 4)
         for index in 0..<10_000 { ledger.record("mutation-\(index)", fingerprint: "payload-\(index)") }

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SessionMonitoringTests: XCTestCase {
+final class SessionMonitoringTests: HelperTestCase {
     func testCursorPhaseBurstAndBoundedGap() throws {
         var buffer = SessionMonitoringBuffer()
         for phase in ["model", "model", "tool", "idle"] { buffer.activity(phase, at: 1) }

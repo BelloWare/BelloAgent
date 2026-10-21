@@ -3,7 +3,7 @@ import XCTest
 @testable import GitProcessSafety
 
 /// Every executable is a generated marker writer. Nothing contacts a remote.
-final class GitRepositorySecurityTests: XCTestCase {
+final class GitRepositorySecurityTests: ViewsTestCase {
     private var root: URL!
     private var environment: [String: String] { ["PATH": "/usr/bin:/bin", "HOME": root.path,
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"] }

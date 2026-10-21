@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentSteeringCommandTests: XCTestCase {
+final class AgentSteeringCommandTests: HelperTestCase {
     func testStartWithWaitIDListsItsAcceptedTurnBeforeAndAfterReopen() async throws {
         try await startWaitLookup(legacy: false)
     }

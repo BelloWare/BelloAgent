@@ -14,7 +14,7 @@ private actor TraceBufferSink {
     func body(_ id: String) -> Data { bodies[id] ?? Data() }
 }
 
-final class TraceBufferPerformanceTests: XCTestCase {
+final class TraceBufferPerformanceTests: HelperTestCase {
     func testGrowingBuffersPreserveEveryByteEventAndInspectorSnapshot() async throws {
         let profile = try fixtureProfile()
         let chunk = Data((0..<32_768).map { UInt8(65 + $0 % 26) })

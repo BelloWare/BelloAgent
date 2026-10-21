@@ -2,7 +2,7 @@ import XCTest
 @testable import GitView
 
 /// Opt-in, generated-only benchmark shared verbatim with the baseline package.
-final class GitInventoryPerformanceTests: XCTestCase {
+final class GitInventoryPerformanceTests: ViewsTestCase {
     @MainActor func testLargeRepositoryStatusAndChangesRefresh() async throws {
         guard let folder = ProcessInfo.processInfo.environment["BELLO_GIT_INVENTORY_BENCHMARK"] else {
             throw XCTSkip("Set BELLO_GIT_INVENTORY_BENCHMARK to a generated fixture folder")

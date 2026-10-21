@@ -25,7 +25,7 @@ private actor HeldTurnClient: ModelClient {
     }
 }
 
-final class CompactionQueueTests: XCTestCase {
+final class CompactionQueueTests: HelperTestCase {
     private func session(_ client: HeldTurnClient, root: URL) async throws -> AgentSession {
         let session = try AgentSession(id: "compact-queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: CompactionSnapshotTests.smallTail)
         for index in 0..<2 {

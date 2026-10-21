@@ -15,7 +15,7 @@ private final class QueueCheckpointFailure: @unchecked Sendable {
     }
 }
 
-final class QueueDeliveryRecoveryTests: XCTestCase {
+final class QueueDeliveryRecoveryTests: HelperTestCase {
     func testFollowUpCheckpointFailureDoesNotRequeueCommittedUserMessage() async throws { try await checkRecovery(steer: false) }
     func testSteeringCheckpointFailureDoesNotRequeueCommittedUserMessage() async throws { try await checkRecovery(steer: true) }
 

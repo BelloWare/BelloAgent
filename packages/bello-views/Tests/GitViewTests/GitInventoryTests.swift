@@ -4,7 +4,7 @@ import CoreServices
 @testable import GitView
 @testable import GitProcessSafety
 
-final class GitInventoryTests: XCTestCase {
+final class GitInventoryTests: ViewsTestCase {
     private var root: URL!
     private var environment: [String: String]!
     override func setUpWithError() throws {

@@ -27,7 +27,7 @@ private func editReply(_ modes: [String]) -> ModelReply {
 
 /// What a tool card says happened, live and from the journal: a tool that
 /// ran and failed, a tool whose effects are unknown, and one that never ran.
-final class ToolOutcomeTests: XCTestCase {
+final class ToolOutcomeTests: HelperTestCase {
     private func cards(_ snapshot: JSON) -> [String] {
         snapshot["messages"].list.filter { $0["role"].text == "assistant" }.flatMap { $0["tools"].list }.compactMap { $0["state"].text }
     }

@@ -2,7 +2,7 @@ import Combine
 import XCTest
 @testable import GitView
 
-final class GitRepositoryStateTests: XCTestCase {
+final class GitRepositoryStateTests: ViewsTestCase {
     private static let summaryService = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"])
     @MainActor func testSummaryAndChangesMatchRawStatusAcrossRenameScopes() async throws {
         for scope in ["global/local", "local/worktree"] {

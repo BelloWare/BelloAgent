@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class EditRecoveryTests: XCTestCase {
+final class EditRecoveryTests: HelperTestCase {
     func testRejectedEditLeavesJournalAndVisibleContextIntact() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let session = try AgentSession(id: "edit", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer("original answer")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)

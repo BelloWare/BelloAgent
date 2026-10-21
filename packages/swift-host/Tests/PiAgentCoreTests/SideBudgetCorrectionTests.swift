@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetCorrectionTests: XCTestCase {
+final class SideBudgetCorrectionTests: HelperTestCase {
     func testKnownChildMirrorsIgnoreOnlyDerivedAncestryAndLocalRevision() throws {
         let origin = subagentFixtureOrigin(parent:"side")
         let plan = SubagentPlan(origin:origin,task:"Private side task",resultMessageID:"result")

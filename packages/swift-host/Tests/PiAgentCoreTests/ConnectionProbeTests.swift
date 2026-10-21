@@ -4,7 +4,7 @@ import XCTest
 import FoundationNetworking
 #endif
 
-final class ConnectionProbeTests: XCTestCase {
+final class ConnectionProbeTests: HelperTestCase {
     func testOneSmallModelSpecificRequestWithNoToolsOrWorkspaceResources() async throws {
         let client = ProbeClient(.success(answer("Connected.")))
         var raw = try fixtureProfile().raw

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentSteeringLegacyTests: XCTestCase {
+final class AgentSteeringLegacyTests: HelperTestCase {
     func testLegacyFallbackSnapshotIsFrozenOnceAndSurvivesReopen() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let profile = try fixtureProfile()

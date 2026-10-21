@@ -3,7 +3,7 @@ import XCTest
 
 /// The built-in tools: what they return to the model, and what happens to a
 /// command that outlives its deadline while a child still holds the pipes.
-final class NativeToolTests: XCTestCase {
+final class NativeToolTests: HelperTestCase {
     func testRetainedTwentyMiBShellLogCanBeReadInSmallPages() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let outputs = root.appendingPathComponent("out"), tools = NativeTools(cwd:root,outputs:outputs,mcp:MCPManager(cwd:root))

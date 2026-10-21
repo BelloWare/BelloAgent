@@ -4,7 +4,7 @@ import XCTest
 /// The skills a user message was sent with reach its display row: the app
 /// draws them as pills at the start of the message's bubble. The model still
 /// receives each skill's expansion ahead of the text, exactly as before.
-final class SkillDisplayTests: XCTestCase {
+final class SkillDisplayTests: HelperTestCase {
     func testUserRowsCarryTheSkillsTheyWereSentWithLiveAndAfterReopening() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let skillRoot = root.appendingPathComponent(".codex/skills/review"), agents = skillRoot.appendingPathComponent("agents")

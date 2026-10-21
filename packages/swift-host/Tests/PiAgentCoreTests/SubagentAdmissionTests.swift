@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentAdmissionTests: XCTestCase {
+final class SubagentAdmissionTests: HelperTestCase {
     func testLateCorrectionReachingTheLimitPausesDispatchedRequestsAtOnce() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let owner = try familyFixture(root: root), profile = try fixtureProfile()

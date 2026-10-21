@@ -3,7 +3,7 @@ import XCTest
 
 /// Pi 0.85.1's context rules in a running session. The fixture's window is
 /// 100,000 tokens, so pi's compaction threshold is 100,000 - 16,384 = 83,616.
-final class PiContextSessionTests: XCTestCase {
+final class PiContextSessionTests: HelperTestCase {
     func testMalformedUsageSnapshotAndReopenRemainSafe() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var raw = try fixtureProfile().raw; raw["contextWindow"] = 2048; raw["maxOutputTokens"] = 128

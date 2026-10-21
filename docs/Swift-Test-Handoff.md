@@ -37,6 +37,26 @@ Keep only the latest result bundle for each class, with full text logs for
 earlier runs. `TestHostIsolationTests` writes the test defaults domain and
 therefore runs alone in the serial lane.
 
+## Every failure is recorded (0.1.130)
+
+XCTest (Xcode 16.1) queues an assertion made off the main thread (after an
+`await` in a nonisolated test, or in a task, actor or callback) for the main
+thread, and drops one that the main thread reaches while it records another:
+the test still fails, but with fewer failures and messages than it had. Every
+helper test class therefore derives from `HelperTestCase`, every
+`packages/bello-views` test class from `ViewsTestCase` (its test-only
+`BelloViewsTestSupport` target, named in each test target by a typealias), and
+the app's test bundle links `apps/macos/TestSupport/IssueRecordingGuard.m`;
+each records such an assertion once the other is done. The helper's and the
+views package's `IssueRecordingTests` fail for a test class that derives from
+`XCTestCase` directly, `IssueRecordingGuardTests` checks the app guard is
+installed, and `scripts/tests/test_xctest_issue_recording.py` runs all three
+against XCTest. `@MainActor` alone does not avoid it: assertions in
+tasks and callbacks still run off the main thread. An assertion in a task the
+test does not await lands on whichever test is running when it fires, or is
+lost if the run ends first; await it. Evidence:
+[a130-asynctests](validation/a130-asynctests-0.1.130.md).
+
 ## Test lanes
 
 The native suite runs in two lanes, and `scripts/verify-release.sh` runs

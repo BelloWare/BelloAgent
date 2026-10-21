@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetReplayTests: XCTestCase {
+final class SideBudgetReplayTests: HelperTestCase {
     // Exhaustive, deterministic products of the historical ledger shapes.
     // Compare the public recovery paths, not a second copy of their reducer.
     func testLegacyShapesHaveIdenticalReplayAndRecoveryTotalsBeforeAndAfterOrphaning() throws {

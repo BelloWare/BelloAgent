@@ -6,7 +6,7 @@ import XCTest
 /// folded a character at a time to one of the same length, so a match is
 /// always as long as the query; nothing for an empty query, one too long, or
 /// one holding a line ending.
-final class FileMatcherTests: XCTestCase {
+final class FileMatcherTests: ViewsTestCase {
     private func matches(_ line: String, _ query: String, matchCase: Bool = false) -> [Range<Int>] {
         FileMatcher(query: query, matchCase: matchCase).matches(in: line)
     }

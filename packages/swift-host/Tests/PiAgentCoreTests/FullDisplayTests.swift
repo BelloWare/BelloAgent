@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class FullDisplayTests: XCTestCase {
+final class FullDisplayTests: HelperTestCase {
     func testLongMultipartReplyAndReasoningSurviveProjectionAndJournalRoundTrip() throws {
         let prose = String(repeating:"## Content 🙂\n\nFull response paragraph.\n",count:2000) + "END OF RESPONSE"
         let reasoning = String(repeating:"Returned reasoning. ",count:3000) + "END OF REASONING"

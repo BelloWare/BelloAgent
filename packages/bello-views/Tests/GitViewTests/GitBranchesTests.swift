@@ -1,7 +1,7 @@
 import XCTest
 @testable import GitView
 
-final class GitBranchesTests: XCTestCase {
+final class GitBranchesTests: ViewsTestCase {
     func testUnfamiliarTrackingStatusNeverClaimsTheBranchIsInSync() {
         for status in ["[future status]", "[ahead many]", "[ahead -1]", "[ahead 1, ahead 2]", "[]"] {
             let tracking = GitBranchTracking(upstream: "origin/topic", description: status)

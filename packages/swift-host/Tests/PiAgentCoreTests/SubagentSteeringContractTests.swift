@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentSteeringContractTests: XCTestCase {
+final class SubagentSteeringContractTests: HelperTestCase {
     func testV3SwitchAndRoleContracts() throws {
         XCTAssertTrue(SubagentPolicy.steeringEnabled)
         XCTAssertTrue(SubagentPolicy.capabilities.contains("subagents-steering-v3"))

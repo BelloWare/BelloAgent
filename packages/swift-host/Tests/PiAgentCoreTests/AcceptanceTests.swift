@@ -20,7 +20,7 @@ private actor AcceptanceCaptureSink {
     func accept(_ packet: JSON) -> Bool { packets.append(packet); return true }
 }
 
-final class AcceptanceTests: XCTestCase {
+final class AcceptanceTests: HelperTestCase {
     func testSideDuringModelAndToolUsesCompleteBoundaryAndIndependentCancellation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), resources = Resources(cwd: root, home: root)

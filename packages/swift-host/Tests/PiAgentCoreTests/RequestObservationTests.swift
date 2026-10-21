@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class RequestObservationTests: XCTestCase {
+final class RequestObservationTests: HelperTestCase {
     private func observation(_ attempt: String = "a", purpose: String = "turn", session: String = "s") throws -> RequestObservation {
         RequestObservation(sessionID:session,turnID:"t",attemptID:attempt,purpose:purpose,fingerprint:"request-body-hash",profile:try fixtureProfile())
     }

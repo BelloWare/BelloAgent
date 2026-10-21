@@ -16,7 +16,7 @@ private actor FailedResponseClient: ModelClient {
     }
 }
 
-final class FailurePresentationTests: XCTestCase {
+final class FailurePresentationTests: HelperTestCase {
     func testFailureIsAnErrorWithDetailsAndRestoresWithoutReplayingQueuedWork() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), client = FailedResponseClient()

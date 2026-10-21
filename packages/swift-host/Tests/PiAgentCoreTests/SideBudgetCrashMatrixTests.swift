@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetCrashMatrixTests: XCTestCase {
+final class SideBudgetCrashMatrixTests: HelperTestCase {
     func testFallbackAfterSideAppendFailurePreservesTheAdmittedScope() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let main = try session("main",root:root)

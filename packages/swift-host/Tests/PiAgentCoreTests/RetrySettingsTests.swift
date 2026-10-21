@@ -24,7 +24,7 @@ private actor TimedClient: ModelClient {
 /// The retry setting the app sends every helper (Settings ▸ Connections ▸
 /// Retries): pi's settings.retry, with exponential back-off for every
 /// automatic retry of a provider request.
-final class RetrySettingsTests: XCTestCase {
+final class RetrySettingsTests: HelperTestCase {
     private func session(_ root: URL, _ client: TimedClient, seed: [ChatMessage]? = nil, window: Int = 100_000) throws -> AgentSession {
         var raw = try fixtureProfile().raw; raw["contextWindow"] = JSON(window); raw["maxOutputTokens"] = 256
         return try AgentSession(id: UUID().uuidString, profile: Profile(raw), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,

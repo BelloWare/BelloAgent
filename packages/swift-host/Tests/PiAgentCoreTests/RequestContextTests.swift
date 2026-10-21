@@ -7,7 +7,7 @@ import CoreGraphics
 
 /// Pi 0.85.1's context estimate on the helper's messages. The expectations
 /// port coding-agent/test/compaction.test.ts and agent-session-stats.test.ts.
-final class RequestContextTests: XCTestCase {
+final class RequestContextTests: HelperTestCase {
     func testOutputRoomClampsBeforeSubtractingAnEnormousUsage() {
         XCTAssertEqual(PiContext.outputRoom(contextWindow:2048,requestTokens:9_223_372_036_854_774_784),1)
         XCTAssertEqual(PiContext.outputRoom(contextWindow:2048,requestTokens:Int.max),1)

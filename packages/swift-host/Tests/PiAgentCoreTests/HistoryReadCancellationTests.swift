@@ -39,7 +39,7 @@ private final class PageDecodeGate: @unchecked Sendable {
     func release() { condition.lock(); open = true; condition.broadcast(); condition.unlock() }
 }
 
-final class HistoryReadCancellationTests: XCTestCase {
+final class HistoryReadCancellationTests: HelperTestCase {
     private struct Fixture {
         let root: URL, host: NativeHostService, session: AgentSession, replies: PageReplies, epoch: String
         func command(_ id: String, method: String = "session.history", params: JSON = ["version": 2, "position": 0], token: String? = nil) async {

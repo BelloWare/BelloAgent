@@ -6,7 +6,7 @@ import XCTest
 /// (`ConversationReplay(upTo:in:)`) and copies it, reading nothing past it.
 /// Where a fork ends, what it holds, and the error a damaged journal gives,
 /// are what reading every record each time gave.
-final class ForkPointTests: XCTestCase {
+final class ForkPointTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil) throws -> AgentSession {

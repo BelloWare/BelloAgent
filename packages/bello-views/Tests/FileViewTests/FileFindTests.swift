@@ -8,7 +8,7 @@ import AppKit
 /// the selection meanwhile has the last word; matches are drawn only on the
 /// lines drawn; a match along a long line is scrolled to sideways; a file
 /// read again is searched again.
-final class FileFindTests: XCTestCase {
+final class FileFindTests: ViewsTestCase {
     private var folder: URL!
 
     override func setUp() async throws {

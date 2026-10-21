@@ -2,7 +2,7 @@ import XCTest
 import Network
 @testable import GitView
 
-final class GitHTTPRedirectTests: XCTestCase {
+final class GitHTTPRedirectTests: ViewsTestCase {
     @MainActor func testAlternativeHTTPURLFormsNeverForwardPrivateHeaders() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("git-http-forms-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

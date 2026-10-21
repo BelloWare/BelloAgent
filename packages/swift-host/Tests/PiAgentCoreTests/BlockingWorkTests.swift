@@ -35,7 +35,7 @@ private final class WorkerBarrier: @unchecked Sendable {
     }
 }
 
-final class BlockingWorkTests: XCTestCase {
+final class BlockingWorkTests: HelperTestCase {
     func testTwentyJobsOverlapOnFourOSWorkerThreadsAndNeverExceedTheBound() async throws {
         let workers = BlockingWorkExecutor(), barrier = WorkerBarrier()
         defer { barrier.release() }

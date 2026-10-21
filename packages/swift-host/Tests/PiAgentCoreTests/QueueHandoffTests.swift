@@ -22,7 +22,7 @@ private actor CompactionQueueClient: ModelClient {
     }
 }
 
-final class QueueHandoffTests: XCTestCase {
+final class QueueHandoffTests: HelperTestCase {
     func testFollowUpsQueuedDuringManualCompactionRunExactlyOnceWithoutResume() async throws {
         try await exercise(fail: false, cancel: false)
     }

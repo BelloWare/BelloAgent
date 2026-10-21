@@ -2,7 +2,7 @@ import XCTest
 @testable import GitView
 @testable import GitProcessSafety
 
-final class GitByteParsingTests: XCTestCase {
+final class GitByteParsingTests: ViewsTestCase {
     private let extenders = ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"]
     func testCanonicalContainmentUsesBytesAndBoundaries() {
         for extender in extenders {

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentCoordinatorTests: XCTestCase {
+final class SubagentCoordinatorTests: HelperTestCase {
     func testListingRetriesAJournalSnapshotOvertakenByResultConsumption() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 1), gate = DelegationListingGate(), registry = DelegationRegistry()

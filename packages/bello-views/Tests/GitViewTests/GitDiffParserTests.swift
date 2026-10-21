@@ -4,7 +4,7 @@ import XCTest
 /// The diff parser on its own, without a repository or a window: files,
 /// hunks, lines with their numbers, the counts a card shows, and the rows a
 /// side-by-side card pairs.
-final class GitDiffParserTests: XCTestCase {
+final class GitDiffParserTests: ViewsTestCase {
     static let patch = """
     diff --git a/Sources/Engine/Router.swift b/Sources/Engine/Router.swift
     --- a/Sources/Engine/Router.swift
