@@ -89,7 +89,7 @@ enum ImageFormatFixtures {
 /// Owner request (0.1.130): OpenAI takes PNG, JPEG, WebP and non-animated
 /// GIF, so an animated image reaches the model as its first frame, and the
 /// read tool converts the still formats pi does not know.
-final class PiImageFormatTests: XCTestCase {
+final class PiImageFormatTests: HelperTestCase {
     func testAnimatedGIFWebPAndPNGAreSentAsTheirFirstFrame() throws {
         let animations = [("image/gif", ImageFormatFixtures.animatedGIF(), true), ("image/png", ImageFormatFixtures.animatedPNG(), true),
                           ("image/webp", ImageFormatFixtures.animatedWebP, false)]
