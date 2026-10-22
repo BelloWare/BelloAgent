@@ -4,6 +4,27 @@ import XCTest
 import GitProcessSafety
 
 final class GitRepositoryPermissionTests: XCTestCase {
+    @MainActor func testWriteAdmissionDoesNotResolveProjectPaths() async throws {
+        let root = scratchRoot("git-write-admission")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var config = VaultConfiguration()
+        config.workspaces = [WorkspaceRecord(id: "fixture", path: root.path, trusted: true)]
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let tab = ChangesTab(projectID: "fixture", name: "fixture", roots: [root.path])
+        let resolver = FileTab.resolveProject
+        var resolutions = 0
+        FileTab.resolveProject = { id in resolutions += 1; return resolver(id) }
+        defer { FileTab.resolveProject = resolver; tab.controller.letGo() }
+        XCTAssertTrue(tab.controller.mayWrite())
+        XCTAssertEqual(resolutions, 0, "Admission needs only in-memory trust, never the filesystem-backed project resolver")
+        model.workspaces[0].trusted = false
+        resolutions = 0
+        XCTAssertFalse(tab.controller.mayWrite())
+        XCTAssertEqual(resolutions, 0)
+    }
+
     @MainActor func testSlowTrustPathDoesNotBlockMainActorOrOtherGitReads() async throws {
         let root = scratchRoot("git-slow-trust").resolvingSymlinksInPath()
         let local = root.appendingPathComponent("local"), slow = root.appendingPathComponent("slow")
@@ -138,7 +159,7 @@ final class GitRepositoryPermissionTests: XCTestCase {
         model.workspaces[1].trusted = false
         let newRead = Task { try await GitReadProcess.isTrusted(child.path) }
         try await Task.sleep(for: .milliseconds(40))
-        XCTAssertEqual(gate.invocations, 2, "A new revision must resolve its own canonical roots")
+        XCTAssertEqual(gate.invocations, 1, "A new revision confines instead of repeating a blocked path lookup")
         gate.release()
         let oldTrust = try await oldRead.value, newTrust = try await newRead.value
         XCTAssertFalse(oldTrust, "The original snapshot is stale")

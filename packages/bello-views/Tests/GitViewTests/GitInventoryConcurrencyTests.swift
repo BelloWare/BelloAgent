@@ -3,6 +3,30 @@ import XCTest
 @testable import GitProcessSafety
 
 final class GitInventoryConcurrencyTests: ViewsTestCase {
+    @MainActor func testCancellationDoesNotWaitForAStartingChild() async throws {
+        let root = root!, gate = ProbeGate(), process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.currentDirectoryURL = root
+        process.arguments = ["-c", ": > marker"]
+        process.environment = ["PATH": "/usr/bin:/bin"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        let child = GitChildProcess(process), invocation = GitInvocation()
+        child.beforeSpawn = { gate.block() }
+        XCTAssertTrue(invocation.adopt(child))
+        let launch = Work { try child.run() }
+        defer { gate.release(); child.killIfRunning() }
+        let entered = try await wait { gate.calls == 1 }; XCTAssertTrue(entered)
+        let cancel = Work { invocation.stop() }
+        let prompt = try await wait({ cancel.isFinished }, timeout: 0.2)
+        XCTAssertTrue(prompt, "Cancellation must not wait for spawn's filesystem work")
+        gate.release()
+        let finished = try await wait { launch.isFinished && cancel.isFinished }; XCTAssertTrue(finished)
+        child.waitUntilExit()
+        XCTAssertThrowsError(try launch.get()) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("marker").path))
+    }
+
     private var root: URL!
     private var environment: [String: String]!
     override func setUpWithError() throws {
@@ -19,9 +43,90 @@ final class GitInventoryConcurrencyTests: ViewsTestCase {
         GitConfiguration.invalidate()
     }
     override func tearDownWithError() throws {
+        GitFileStamp.beforeProbe = nil
         GitFileStamp.beforeValidation = nil
         GitConfiguration.invalidate()
         try? FileManager.default.removeItem(at: root)
+    }
+
+    @MainActor func testStalledInventoryProbeConfinesWithoutRepeatingOrHoldingTheRead() async throws {
+        let root = root!, environment = environment!, gate = ProbeGate()
+        let target = root.path + "/inactive-config"
+        try Data("[includeIf \"onbranch:never\"]\npath = \(target)\n".utf8).append(to: root.appendingPathComponent(".git/config"))
+        GitFileStamp.beforeProbe = { if $0 == target { gate.block() } }
+        defer { gate.release(); GitFileStamp.beforeProbe = nil }
+        // Release even with the pre-fix synchronous probe, to report failures
+        // instead of leaving the test runner stuck.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.release() }
+        let begin = ProcessInfo.processInfo.systemUptime
+        let first = Work { () -> Bool in
+            let process = Process(); process.currentDirectoryURL = root
+            let policy = try GitReadProcess(process, arguments: ["status", "--porcelain"], environment: environment,
+                                            trusted: true, invocation: GitInvocation(timeout: 1))
+            defer { policy.remove() }
+            return process.executableURL?.path == "/usr/bin/sandbox-exec"
+        }
+        let entered = try await wait { gate.calls > 0 }; XCTAssertTrue(entered)
+        let completed = try await wait({ first.isFinished }, timeout: 0.5)
+        XCTAssertTrue(completed, "Inventory probes must leave time for the confined read")
+        let second = Work { () -> Bool in
+            let process = Process(); process.currentDirectoryURL = root
+            let policy = try GitReadProcess(process, arguments: ["status", "--porcelain"], environment: environment,
+                                            trusted: true, invocation: GitInvocation(timeout: 1))
+            defer { policy.remove() }; return process.executableURL?.path == "/usr/bin/sandbox-exec"
+        }
+        let another = try await wait({ second.isFinished }, timeout: 0.5)
+        XCTAssertTrue(another); XCTAssertEqual(gate.calls, 1, "A stuck path gets only one filesystem probe")
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - begin, 1)
+        let service = GitService(environment: environment, trusted: true)
+        let result = try await service.run(["status", "--porcelain"], in: root.path, timeout: 1)
+        XCTAssertEqual(result.status, 0, "Git can read this repository without touching the inactive include")
+        XCTAssertEqual(gate.calls, 1)
+        gate.release()
+        let drained = try await wait { first.isFinished && second.isFinished }; XCTAssertTrue(drained)
+        XCTAssertTrue(try first.get()); XCTAssertTrue(try second.get())
+    }
+
+    @MainActor func testStalledWarmStampUsesConfinedReadWithinDeadline() async throws {
+        let root = root!, environment = environment!, gate = ProbeGate()
+        let service = GitService(environment: environment, trusted: true)
+        _ = try await service.run(["status", "--porcelain"], in: root.path)
+        GitFileStamp.beforeValidation = { if $0.gitHasSuffix("/.git/config") { gate.block() } }
+        defer { gate.release(); GitFileStamp.beforeValidation = nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.release() }
+        let start = ProcessInfo.processInfo.systemUptime
+        let output = try await service.run(["status", "--porcelain"], in: root.path, timeout: 1)
+        XCTAssertEqual(output.status, 0)
+        XCTAssertEqual(gate.calls, 1)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.5)
+    }
+
+    @MainActor func testCancellingAColdFilesystemProbeReleasesTheReadSlot() async throws {
+        let root = root!, environment = environment!, gate = ProbeGate()
+        GitFileStamp.beforeProbe = { if $0 == root.path { gate.block() } }
+        defer { gate.release(); GitFileStamp.beforeProbe = nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.release() }
+        let service = GitService(environment: environment, trusted: true)
+        let read = Task { try await service.run(["status", "--porcelain"], in: root.path) }
+        let entered = try await wait { gate.calls > 0 }; XCTAssertTrue(entered)
+        let start = ProcessInfo.processInfo.systemUptime
+        read.cancel()
+        do { _ = try await read.value; XCTFail("Cancelled inventory completed") }
+        catch { XCTAssertTrue(error is CancellationError, "\(error)") }
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+        let running = await service.processesRunning; XCTAssertEqual(running, 0)
+    }
+
+    private final class ProbeGate: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var count = 0, released = false
+        var calls: Int { condition.lock(); defer { condition.unlock() }; return count }
+        func block() {
+            condition.lock(); count += 1
+            while !released { condition.wait() }
+            condition.unlock()
+        }
+        func release() { condition.lock(); released = true; condition.broadcast(); condition.unlock() }
     }
 
     private final class Gate: @unchecked Sendable {

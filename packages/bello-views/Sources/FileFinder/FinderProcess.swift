@@ -73,8 +73,11 @@ enum FinderProcess {
         defer { if !inputClosed { try? writer?.close() } }
         let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
         defer { try? out.close(); try? err.close() }
-        guard handle.adopt(process) else { throw CancellationError() }
-        do { try process.run() } catch { throw Failure(description: "git could not start: \(error.localizedDescription)") }
+        let child = GitChildProcess(process)
+        guard handle.adopt(child) else { throw CancellationError() }
+        do { try child.run() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw Failure(description: "git could not start: \(error.localizedDescription)") }
         let descriptors = [out.fileDescriptor, err.fileDescriptor]
         for descriptor in descriptors { _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) }
         var kept = Data(), ended = [false, false]
@@ -84,14 +87,14 @@ enum FinderProcess {
         while true {
             let now = ProcessInfo.processInfo.systemUptime
             if now >= deadline, failure == nil { failure = "git took too long"; handle.stop() }
-            if handle.isStopped, process.isRunning { handle.stop() }
-            if !process.isRunning {
+            if handle.isStopped, child.isRunning { handle.stop() }
+            if !child.isRunning {
                 if exitedAt == nil { exitedAt = now }
                 if ended.allSatisfy({ $0 }) { break }
                 if now - (exitedAt ?? now) >= 0.25 { failure = failure ?? "git's output did not end"; break }
             }
             if let writer, let input, !inputClosed {
-                if inputOffset < input.count, failure == nil, process.isRunning {
+                if inputOffset < input.count, failure == nil, child.isRunning {
                     let count = input.withUnsafeBytes { bytes in
                         write(writer.fileDescriptor, bytes.baseAddress!.advanced(by: inputOffset), min(16_384, input.count - inputOffset))
                     }
@@ -100,7 +103,7 @@ enum FinderProcess {
                         failure = failure ?? "git's input could not be written"; handle.stop()
                     }
                 }
-                if inputOffset == input.count || failure != nil || !process.isRunning {
+                if inputOffset == input.count || failure != nil || !child.isRunning {
                     try? writer.close(); inputClosed = true
                 }
             }
@@ -121,9 +124,9 @@ enum FinderProcess {
             if let writer, !inputClosed { polls.append(pollfd(fd: writer.fileDescriptor, events: Int16(POLLOUT), revents: 0)) }
             _ = poll(&polls, nfds_t(polls.count), 20)
         }
-        process.waitUntilExit()
+        child.waitUntilExit()
         if handle.isStopped, failure == nil { throw CancellationError() }
         if let failure { throw Failure(description: failure) }
-        return Output(stdout: kept, status: process.terminationStatus)
+        return Output(stdout: kept, status: child.terminationStatus)
     }
 }

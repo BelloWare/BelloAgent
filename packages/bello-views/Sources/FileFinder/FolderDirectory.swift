@@ -5,9 +5,10 @@ public struct FolderEntry: Sendable, Equatable {
     public let url: URL
     public let isDirectory: Bool
     public let isDimmed: Bool
-    public var name: String { url.lastPathComponent }
-    public init(url: URL, isDirectory: Bool, isDimmed: Bool = false) {
+    public let name: String
+    public init(url: URL, isDirectory: Bool, isDimmed: Bool = false, name: String? = nil) {
         self.url = FileBreadcrumb.normalized(url); self.isDirectory = isDirectory; self.isDimmed = isDimmed
+        self.name = name ?? url.lastPathComponent
     }
 }
 
@@ -38,7 +39,7 @@ public struct FolderDirectory: Sendable {
         // separately; this safety ceiling is disclosed, never a silent cut.
         let (raw, complete) = try FileListing.entries(of: directory, in: folder.path,
             limits: limits)
-        var entries: [FolderEntry] = []
+        var entries: [FolderEntry] = [], unrepresentable = false
         for value in raw.prefix(limits.files) {
             try Task.checkCancellation()
             switch value.kind {
@@ -46,14 +47,15 @@ public struct FolderDirectory: Sendable {
             case .link: if FileListing.kind(of: folder.path, value.name) != .file { continue }
             case .other: continue
             }
-            let name = String(decoding: value.name, as: UTF8.self)
+            guard let name = String(bytes: value.name, encoding: .utf8) else { unrepresentable = true; continue }
             let url = folder.appendingPathComponent(name, isDirectory: false)
             var status = stat()
             let hidden = name.gitHasPrefix(".") || (lstat(url.path, &status) == 0 && status.st_flags & UInt32(UF_HIDDEN) != 0)
-            entries.append(FolderEntry(url: url, isDirectory: value.kind == .folder, isDimmed: hidden))
+            entries.append(FolderEntry(url: url, isDirectory: value.kind == .folder, isDimmed: hidden, name: name))
         }
         var warnings: [String] = complete ? [] : ["Only the first \(limits.files.formatted()) entries or \(limits.pathBytes.formatted()) bytes of names were read."]
         func warn(_ message: String) { if !warnings.contains(message) { warnings.append(message) } }
+        if unrepresentable { warn("Some filenames are not valid UTF-8 and could not be shown safely.") }
         var ignored = Set<String>()
         if FileListing.gitAvailable, try await FileListing.repositoryTop(of: folder.path, environment: environment) != nil {
             // check-ignore keeps tracked files, just as Quick Open's ls-files
@@ -90,6 +92,7 @@ public struct FolderDirectory: Sendable {
                 switch FileListing.contents(of: cursor.path + "/.gitignore", limit: FileListing.ignoreFileLimit, following: false) {
                 case .data(let data): rules.stack.append(IgnoreFile(base: Array(prefix.utf8), contents: data))
                 case .tooLarge: warn("An ignore file over 1 MiB was not applied.")
+                case .unavailable: warn("An ignore file could not be checked promptly, so it is not applied.")
                 case .missing: break
                 }
             }
@@ -99,7 +102,7 @@ public struct FolderDirectory: Sendable {
                 if inherited || rules.isIgnored(Array((prefix + entry.name).utf8), nameStart: prefix.utf8.count, isDirectory: entry.isDirectory) { ignored.insert(entry.name) }
             }
         }
-        entries = entries.map { FolderEntry(url: $0.url, isDirectory: $0.isDirectory, isDimmed: $0.isDimmed || ignored.contains($0.name)) }
+        entries = entries.map { FolderEntry(url: $0.url, isDirectory: $0.isDirectory, isDimmed: $0.isDimmed || ignored.contains($0.name), name: $0.name) }
         entries.sort {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             let order = $0.name.localizedStandardCompare($1.name)

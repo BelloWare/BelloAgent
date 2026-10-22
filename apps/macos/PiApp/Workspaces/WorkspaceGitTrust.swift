@@ -2,12 +2,13 @@ import Foundation
 import GitProcessSafety
 
 /// Filesystem calls on a disconnected volume may not return even when their
-/// caller is cancelled. Coalesce calls within one workspace revision, cap their
-/// number, and let
+/// caller is cancelled. Coalesce calls by path, cap their number, and let
 /// reads use confinement when any root cannot be resolved promptly. Completed
 /// paths are not cached: symlinks can change without a workspace revision.
 final class WorkspaceGitTrustPaths: @unchecked Sendable {
     private final class Pending: @unchecked Sendable {
+        let revision: Int
+        init(revision: Int) { self.revision = revision }
         let deadline = ProcessInfo.processInfo.systemUptime + 0.25
         var result: String?
         var waiters: [UUID: AsyncStream<Void>.Continuation] = [:]
@@ -27,11 +28,16 @@ final class WorkspaceGitTrustPaths: @unchecked Sendable {
         }
         for path in paths {
             try Task.checkCancellation(); try invocation.check()
-            let key = Data(String(revision).utf8) + Data([0]) + Data(path.utf8)
+            let key = Data(path.utf8)
             let job: Pending? = lock.withLock {
-                if let current = pending[key] { current.waiters[id] = completion; return current }
+                if let current = pending[key] {
+                    // A trust change cannot reuse an older lookup, or start a
+                    // second thread on the same stalled filesystem path.
+                    guard current.revision == revision else { return nil }
+                    current.waiters[id] = completion; return current
+                }
                 guard pending.count < 64 else { return nil }
-                let job = Pending(); job.waiters[id] = completion; pending[key] = job
+                let job = Pending(revision: revision); job.waiters[id] = completion; pending[key] = job
                 Self.queue.async { [self] in
                     // A queued lookup that has already expired cannot help its
                     // read. An executing filesystem call stays off all actors.

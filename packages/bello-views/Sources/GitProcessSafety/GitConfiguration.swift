@@ -3,8 +3,8 @@ import Darwin
 
 /// Git reports the scope of includes as the scope of their including file.
 /// Never infer trust from a pathname: a local include can name a global file.
-public struct GitConfiguration {
-    struct Entry {
+public struct GitConfiguration: Sendable {
+    struct Entry: Sendable {
         let scope: String
         let origin: String
         let name: String
@@ -40,7 +40,10 @@ public struct GitConfiguration {
         }
     }
     private init(loading directory: URL, environment: [String: String], invocation: GitInvocation, ancestors: [URL], stored: Bool) throws {
-        let discovery = GitFileStamp.discovery(in: directory)
+        let discovery = try GitFileProbe.run(paths: [directory.path], invocation: invocation) { try GitFileStamp.discovery(in: directory, invocation: invocation) }
+        func stamp(_ path: String, directoryIdentity: Bool = false) throws -> GitFileStamp {
+            try GitFileProbe.run(paths: [path], invocation: invocation) { GitFileStamp(path, directoryIdentity: directoryIdentity) }
+        }
         policy = GitInventoryMemo(); redirects = GitInventoryMemo()
         let options = ["config", "--null", "--list", "--includes", "--show-scope", "--show-origin"]
         let output = try Self.query(options, in: directory, environment: environment, invocation: invocation)
@@ -83,17 +86,18 @@ public struct GitConfiguration {
         // reads config. --show-origin may still report relative filenames.
         let originBase = !top.isEmpty ? top : (!gitDirectory.isEmpty ? gitDirectory : directory.path)
         func absolute(_ file: String) -> String { file.gitHasPrefix("/") ? file : originBase + "/" + file }
-        func resolved(_ file: String) -> String { file.isEmpty ? "" : URL(fileURLWithPath: absolute(file)).resolvingSymlinksInPath().path }
+        func resolved(_ file: String) throws -> String { file.isEmpty ? "" : try stamp(absolute(file)).watchedPath }
+        let resolvedTop = try resolved(top)
         // --show-toplevel is the effective worktree, including core.worktree;
         // a linked worktree also has its own gitdir and shared commondir.
-        identity = Data(["toplevel", resolved(top), "gitdir", resolved(gitDirectory),
-                         "commondir", resolved(common), "worktree", resolved(top)].joined(separator: "\0").utf8)
+        identity = try Data(["toplevel", resolvedTop, "gitdir", resolved(gitDirectory),
+                         "commondir", resolved(common), "worktree", resolvedTop].joined(separator: "\0").utf8)
         // Unresolved repository/worktree identity is safe to query afresh, but
         // cannot be a reusable inventory (including a non-repository folder).
         var canCache = !top.isEmpty && !gitDirectory.isEmpty && !common.isEmpty
         var canReadUnconfined = true
         var ancestor = directory.path
-        while canCache, ancestor != resolved(top) {
+        while canCache, ancestor != resolvedTop {
             // An unrecognized candidate below the selected root can become a
             // repository through an external commondir without changing .git.
             if discovery.contains(where: { ($0.path == ancestor + "/.git" || $0.path == ancestor + "/commondir") && $0.exists }) {
@@ -113,7 +117,10 @@ public struct GitConfiguration {
             if let system = environment["GIT_CONFIG_SYSTEM"] {
                 // Git lexically normalizes this particular environment path.
                 // Do not expand a leading tilde as NSString would.
-                files.append(URL(fileURLWithPath: absolute(system)).standardizedFileURL.path)
+                let file = absolute(system)
+                files.append(try GitFileProbe.run(paths: [file], invocation: invocation) {
+                    URL(fileURLWithPath: file, isDirectory: false).standardizedFileURL.path
+                })
             } else {
                 // Git installations need not use /etc/gitconfig. Ask the
                 // selected Git; an empty/unrecognizable result disables reuse.
@@ -177,8 +184,8 @@ public struct GitConfiguration {
             try invocation.check()
             let file = includeFiles[cursor]; cursor += 1
             guard seen.insert(Data(file.utf8)).inserted else { continue }
-            let stamp = GitFileStamp(file); includeStamps.append(stamp)
-            guard seen.count <= 256, Self.staticConfiguration(file) else { canReadUnconfined = false; break }
+            let stamp = try stamp(file); includeStamps.append(stamp)
+            guard seen.count <= 256, try Self.staticConfiguration(file, invocation: invocation) else { canReadUnconfined = false; break }
             if !stamp.exists { continue }
             // Git already expanded every directive in reported origins.
             // Only unseen conditional branches need a separate parse; never
@@ -215,7 +222,7 @@ public struct GitConfiguration {
             while seen.insert(Data(reference.utf8)).inserted, seen.count <= 16 {
                 let file = try path(["rev-parse", "--path-format=absolute", "--git-path", reference])
                 guard !file.isEmpty else { canCache = false; break }
-                branchStamps.append(GitFileStamp(file))
+                branchStamps.append(try stamp(file))
                 let next = try Self.query(["symbolic-ref", "--quiet", "--no-recurse", reference],
                                           in: directory, environment: environment, invocation: invocation)
                 if next.status == 1 { reference = ""; break }
@@ -230,7 +237,7 @@ public struct GitConfiguration {
         var indexStamp: GitFileStamp?
         if !top.isEmpty, !stored {
             let root = URL(fileURLWithPath: top, isDirectory: true)
-            indexStamp = GitFileStamp(absolute(environment["GIT_INDEX_FILE"] ?? gitDirectory + "/index"))
+            indexStamp = try stamp(absolute(environment["GIT_INDEX_FILE"] ?? gitDirectory + "/index"))
             let index = try Self.query(["ls-files", "--stage", "--sparse", "--full-name", "-z"], in: root, environment: environment,
                                        limit: 64 * 1_048_576, invocation: invocation)
             guard index.status == 0 else { throw Failure("Git submodules could not be checked safely.") }
@@ -239,49 +246,55 @@ public struct GitConfiguration {
                 guard let tab = record.firstIndex(of: 9), let path = String(data: record[record.index(after: tab)...], encoding: .utf8) else {
                     throw ConfinementRequired()
                 }
-                let child = root.appendingPathComponent(path)
-                files.append(child.appendingPathComponent(".git").path)
-                guard FileManager.default.fileExists(atPath: child.appendingPathComponent(".git").path) else { continue }
+                let child = root.appendingPathComponent(path, isDirectory: true)
+                files.append(child.appendingPathComponent(".git", isDirectory: false).path)
+                guard try stamp(child.appendingPathComponent(".git", isDirectory: false).path).exists else { continue }
                 children.append(try Self.inventory(in: child, environment: environment, invocation: invocation, ancestors: ancestors + [directory]))
             }
         }
         // Deinitializing a checkout leaves its repository here. Fetch and
         // inherited -c options can still reach it, including nested modules.
         func moduleType(at path: String) throws -> mode_t? {
-            let stamp = GitFileStamp(path)
-            guard stamp.cacheable else { throw ConfinementRequired() }
-            moduleStamps.append(stamp)
-            var value = stat()
-            guard lstat(path, &value) == 0 else {
-                guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
-                return nil
+            let (recorded, kind): (GitFileStamp, mode_t?) = try GitFileProbe.run(paths: [path], invocation: invocation) {
+                let recorded = GitFileStamp(path)
+                guard recorded.cacheable else { throw ConfinementRequired() }
+                var value = stat()
+                guard lstat(path, &value) == 0 else {
+                    guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
+                    return (recorded, nil)
+                }
+                // Git follows aliases; stamp their entire resolution chain.
+                if value.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK), stat(path, &value) != 0 {
+                    guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
+                    return (recorded, nil)
+                }
+                return (recorded, value.st_mode & mode_t(S_IFMT))
             }
-            // Git follows module-directory aliases. Inventory their spelled
-            // paths and stamp the full chain, including dangling targets.
-            if value.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK), stat(path, &value) != 0 {
-                guard errno == ENOENT || errno == ENOTDIR else { throw ConfinementRequired() }
-                return nil
-            }
-            return value.st_mode & mode_t(S_IFMT)
+            moduleStamps.append(recorded)
+            return kind
         }
+
         func storedModules(in folder: URL, depth: Int = 0) throws {
             try invocation.check()
             guard depth <= 16 else { throw ConfinementRequired() }
             guard try moduleType(at: folder.path) == mode_t(S_IFDIR) else { return }
             let contents: [URL]
-            do { contents = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
-            catch { throw ConfinementRequired() }
+            do { contents = try GitFileProbe.run(paths: [folder.path], invocation: invocation) {
+                try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            } }
+            catch is CancellationError { throw CancellationError() }
+            catch { try invocation.check(); throw ConfinementRequired() }
             for child in contents {
                 try invocation.check()
                 guard try moduleType(at: child.path) == mode_t(S_IFDIR) else { continue }
-                let markers = ["HEAD", "config", "commondir"].map { child.appendingPathComponent($0).path }
+                let markers = ["HEAD", "config", "commondir"].map { child.appendingPathComponent($0, isDirectory: false).path }
                 let types = try markers.map { try moduleType(at: $0) }
                 // Git needs a file HEAD; a grouping directory can contain
                 // ordinary files named config/commondir. A repository without
                 // config is also valid when its objects/refs directories exist.
                 let hasMetadata = types[1...].contains(mode_t(S_IFREG))
                 let hasObjectStore = types[0] == mode_t(S_IFREG) && !hasMetadata
-                    ? try ["objects", "refs"].allSatisfy { try moduleType(at: child.appendingPathComponent($0).path) == mode_t(S_IFDIR) } : false
+                    ? try ["objects", "refs"].allSatisfy { try moduleType(at: child.appendingPathComponent($0, isDirectory: false).path) == mode_t(S_IFDIR) } : false
                 if types[0] == mode_t(S_IFREG), hasMetadata || hasObjectStore {
                     // Foundation encodes environment values like argv too.
                     do { try Self.requireUnchangedBytes([child.path]) }
@@ -304,43 +317,47 @@ public struct GitConfiguration {
                 } else { try storedModules(in: child, depth: depth + 1) }
             }
         }
-        if !common.isEmpty { try storedModules(in: URL(fileURLWithPath: common).appendingPathComponent("modules")) }
+        if !common.isEmpty { try storedModules(in: URL(fileURLWithPath: common, isDirectory: true).appendingPathComponent("modules", isDirectory: true)) }
         self.children = children
-        var stamps = Set(files.map { Data($0.utf8) }).sorted(by: { $0.lexicographicallyPrecedes($1) }).map { bytes in
+        var stamps = try Set(files.map { Data($0.utf8) }).sorted(by: { $0.lexicographicallyPrecedes($1) }).map { bytes in
             let path = String(decoding: bytes, as: UTF8.self)
             if let indexStamp, indexStamp.path.utf8.elementsEqual(bytes) { return indexStamp }
-            return GitFileStamp(path)
+            return try stamp(path)
         }
         stamps += discovery + branchStamps + includeStamps + moduleStamps
-        stamps += [top, gitDirectory, common].filter { !$0.isEmpty }.map { GitFileStamp($0, directoryIdentity: true) }
-        if !top.isEmpty { stamps.append(GitFileStamp(top + "/.git", directoryIdentity: true)) }
+        stamps += try [top, gitDirectory, common].filter { !$0.isEmpty }.map { try stamp($0, directoryIdentity: true) }
+        if !top.isEmpty { stamps.append(try stamp(top + "/.git", directoryIdentity: true)) }
         // Hunk reads create private indexes in .git. Those do not change its
         // identity; objects/refs and HEAD determine whether Git still finds it.
-        stamps += Set([gitDirectory, common]).filter { !$0.isEmpty }.flatMap { directory in
-            ["objects", "refs"].map { GitFileStamp(directory + "/" + $0, directoryIdentity: true) }
+        stamps += try Set([gitDirectory, common]).filter { !$0.isEmpty }.flatMap { directory in
+            try ["objects", "refs"].map { try stamp(directory + "/" + $0, directoryIdentity: true) }
         }
         // Include repository/discovery paths as well as config origins.
         // Retargeting any link in either chain changes Git's conditions.
         for stamp in stamps {
             try invocation.check()
-            let chain = stamp.resolution
+            let chain = try GitFileProbe.run(paths: [stamp.path], invocation: invocation) { try stamp.resolve(invocation: invocation) }
             canCache = canCache && chain.complete
             stamps += chain.stamps
         }
         stamps += children.flatMap(\.stamps)
         self.stamps = Array(Set(stamps))
-        permitsUnconfinedRead = canReadUnconfined && configurationFiles.allSatisfy { Self.staticConfiguration($0, allowNull: true) }
+        permitsUnconfinedRead = try canReadUnconfined && configurationFiles.allSatisfy { try Self.staticConfiguration($0, allowNull: true, invocation: invocation) }
         cacheable = permitsUnconfinedRead && canCache && self.stamps.allSatisfy(\.cacheable) && children.allSatisfy(\.cacheable)
         // Recheck the data after capturing origins, including missing include
         // files. Filesystem timestamps need not share Date's clock precision.
         let confirmed = try Self.query(options, in: directory, environment: environment, invocation: invocation)
-        guard confirmed.status == 0, confirmed.data == output.data, self.stamps.allSatisfy({ !$0.cacheable || $0.unchanged }) else {
+        guard confirmed.status == 0, confirmed.data == output.data, try GitFileStamp.validate(self.stamps, invocation: invocation, skipUncacheable: true) else {
             throw Failure("Git configuration changed while its inventory was being read. Try again.")
         }
     }
 
-    private static func staticConfiguration(_ path: String, allowNull: Bool = false) -> Bool {
-        let stamp = GitFileStamp(path), chain = stamp.resolution
+    private static func staticConfiguration(_ path: String, allowNull: Bool = false, invocation: GitInvocation) throws -> Bool {
+        try GitFileProbe.run(paths: [path], invocation: invocation) { try staticConfiguration(path, allowNull: allowNull, checking: invocation) }
+    }
+
+    private static func staticConfiguration(_ path: String, allowNull: Bool, checking invocation: GitInvocation) throws -> Bool {
+        let stamp = GitFileStamp(path), chain = try stamp.resolve(invocation: invocation)
         guard chain.complete else { return false }
         let paths = [stamp] + chain.stamps
         // Check ancestors as well: /tmp/fd-link/0 may resolve through /dev/fd,
@@ -352,6 +369,7 @@ public struct GitConfiguration {
             if allowNull, paths[0].watchedPath == "/dev/null" { continue }
             return false
         }
+        try invocation.check()
         var value = stat()
         if stat(path, &value) == 0 { return value.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) || (allowNull && paths[0].watchedPath == "/dev/null") }
         guard errno == ENOENT || errno == ENOTDIR else { return false }
@@ -482,28 +500,29 @@ public struct GitConfiguration {
         process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = diagnostics ? pipe : FileHandle.nullDevice
         let reader = pipe.fileHandleForReading
         defer { try? reader.close() }
-        guard invocation.adopt(process) else { throw CancellationError() }
-        try process.run()
-        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL) }; process.waitUntilExit() }
+        let child = GitChildProcess(process)
+        guard invocation.adopt(child) else { throw CancellationError() }
+        try child.run()
+        defer { if child.isRunning { kill(child.processIdentifier, SIGKILL) }; child.waitUntilExit() }
         let fd = reader.fileDescriptor
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         var bytes = Data(), buffer = [UInt8](repeating: 0, count: 65_536)
         var ended = false
-        while !ended || process.isRunning {
+        while !ended || child.isRunning {
             try invocation.check()
             let count = read(fd, &buffer, buffer.count)
             if count > 0 { bytes.append(contentsOf: buffer.prefix(count)) }
             else if count == 0 { ended = true }
             else if errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { break }
             if bytes.count > limit {
-                kill(process.processIdentifier, SIGKILL); process.waitUntilExit()
+                kill(child.processIdentifier, SIGKILL); child.waitUntilExit()
                 throw Failure("Git's configuration safety check exceeded its read limit.")
             }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             _ = poll(&descriptor, 1, 20)
         }
-        process.waitUntilExit()
-        return Output(data: bytes, status: process.terminationStatus)
+        child.waitUntilExit()
+        return Output(data: bytes, status: child.terminationStatus)
     }
     struct Failure: LocalizedError {
         let message: String

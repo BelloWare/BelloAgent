@@ -1,8 +1,37 @@
 import XCTest
+import Darwin
 @testable import GitView
 @testable import GitProcessSafety
 
 final class GitByteParsingTests: ViewsTestCase {
+    func testUnicodeArgumentsKeepPathsAcrossReadsAndWrites() async throws {
+        try git(["config", "core.precomposeUnicode", "false"])
+        let service = GitService(environment: environment, trusted: true)
+        for name in ["caf\u{e9}-nfc.txt", "cafe\u{301}-nfd.txt"] {
+            let path = root.path + "/" + name
+            let descriptor = path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL, 0o600) }
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            if descriptor >= 0 { _ = "base\n".withCString { Darwin.write(descriptor, $0, 5) }; close(descriptor) }
+            try git(["add", "."]); try git(["commit", "-qm", "Fixture"])
+            let listed = try await service.run(["ls-files", "-z", "--", name], in: root.path)
+            XCTAssertEqual(listed.stdout, Data((name + "\0").utf8))
+            for args in [["show", "HEAD:" + name], ["blame", "--porcelain", "--", name], ["log", "--format=%s", "--", name]] {
+                let read = try await service.run(args, in: root.path)
+                XCTAssertEqual(read.status, 0, args.debugDescription); XCTAssertFalse(read.stdout.isEmpty, args.debugDescription)
+            }
+            try Data("changed\n".utf8).write(to: URL(fileURLWithPath: path))
+            let diff = try await service.run(["diff", "--numstat", "--", name], in: root.path)
+            XCTAssertFalse(diff.stdout.isEmpty)
+            try await service.stage([name], in: root.path)
+            let staged = try await service.run(["diff", "--cached", "--numstat", "--", name], in: root.path)
+            XCTAssertFalse(staged.stdout.isEmpty)
+            try await service.unstage([name], in: root.path)
+            _ = try await service.run(["restore", "--worktree", "--", name], in: root.path, readOnly: false)
+            let restored = try await service.run(["diff", "--numstat", "--", name], in: root.path)
+            XCTAssertTrue(restored.stdout.isEmpty)
+        }
+    }
+
     private let extenders = ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"]
     func testCanonicalContainmentUsesBytesAndBoundaries() {
         for extender in extenders {

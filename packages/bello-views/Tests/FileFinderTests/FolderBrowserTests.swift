@@ -4,6 +4,45 @@ import GitProcessSafety
 import Darwin
 
 final class FolderBrowserTests: ViewsTestCase {
+    func testStalledIgnoreFileProbeDoesNotBlockFolderReads() async throws {
+        let root = try fixture(), path = root.path + "/.gitignore"
+        try file(".gitignore", at: root, text: "*.tmp\n"); try file("fixture.tmp", at: root)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let probe = Task.detached {
+            try? GitFileProbe.run(paths: [path], invocation: GitInvocation()) {
+                entered.signal(); _ = release.wait(timeout: .now() + 5)
+            }
+        }
+        defer { release.signal() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        _ = await probe.value // Its bounded wait ends; the filesystem call does not.
+        let start = ProcessInfo.processInfo.systemUptime
+        let listing = try await FolderDirectory.read(root, relativeTo: root, environment: Self.environment(root))
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.5)
+        XCTAssertTrue(listing.warning?.contains("could not be checked promptly") == true)
+        XCTAssertTrue(listing.entries.contains { $0.name == "fixture.tmp" })
+    }
+
+    func testLiteralUnicodeIgnorePathsKeepTheirBytes() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        try git.run(["config", "core.precomposeUnicode", "false"], in: root)
+        let nfc = "caf\u{e9}.tmp", nfd = "cafe\u{301}.tmp"
+        for (name, rule) in [(nfc, nfc), (nfd, nfc), (nfd, nfd), (nfc, nfd)] {
+            try file(".gitignore", at: root, text: rule + "\n")
+            // Darwin's raw syscalls preserve this spelling on APFS.
+            let path = root.path + "/" + name
+            let descriptor = path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL, 0o600) }
+            XCTAssertGreaterThanOrEqual(descriptor, 0); if descriptor >= 0 { close(descriptor) }
+            defer { path.withCString { _ = unlink($0) } }
+            let expected = try git.run(["check-ignore", "-z", "--stdin"], in: root, input: Data((name + "\0").utf8), allowFailure: true)
+            XCTAssertEqual(!expected.isEmpty, name.utf8.elementsEqual(rule.utf8), "Git's byte-exact fixture oracle")
+            let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+            XCTAssertNil(listing.warning)
+            XCTAssertEqual(listing.entries.first { $0.name == name }?.isDimmed, !expected.isEmpty, "\(name.debugDescription), rule \(rule.debugDescription)")
+        }
+    }
+
     @MainActor func testFinderTrustCallbackSharesCancellationAndDeadline() async throws {
         let previous = GitReadProcess.resolveTrust
         defer { GitReadProcess.resolveTrust = previous }

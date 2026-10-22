@@ -3198,3 +3198,262 @@ No installed app, real preferences/chats, Keychain, capture or paid provider was
 used. There are no unresolved code findings; the only validation limitation is
 that Homebrew Git is absent, so its diagnostics were compared in source rather
 than tested with that binary.
+
+
+## Round 16 — admission, bounded filesystem probes, exact Git arguments
+
+Starting point: accepted round 15 `48dbf044`. `git fetch origin` on 2026-10-22
+confirmed `origin/dev/next` remains `391f3c6133dd126d1ef95c72e638bdbf32394ab4`,
+already merged into this branch. No new integration or history rewrite was needed.
+All fixtures use generated files and marker file programs; global Git configuration
+comes from the fixture's isolated HOME/GIT_CONFIG_GLOBAL, never the real home.
+
+### Decisions and implementation
+
+1. `ChangesTab.isProjectTrusted` reads the current workspace record. Both write
+   admission and the repeated history-navigation trust predicate use it, retaining
+   the existing roots/repository/generation checks. The project-name URL explicitly
+   uses `isDirectory: false` so even label construction does not infer file type.
+2. `GitFileProbe` runs filesystem probes on a background queue with at most eight
+   in-flight workers. Its byte-keyed path registry retains a stalled path until
+   the actual probe exits. Retries wait only for a still-prompt probe, then select
+   confinement; they never launch another probe for that same path while it is
+   stuck. Each wait is at most 100 ms or half the invocation's remaining time,
+   leaving time for the confined Git command. Cancellation is checked at 5 ms
+   intervals and between stamp/ancestor/symlink steps. A cancelled or expired
+   invocation is never replaced with a fresh command deadline.
+   Warm validation uses one worker and registers only the stamp currently being
+   checked, avoiding both a dispatch per stamp and a reservation of shared
+   ancestors such as `/` while an unrelated include is blocked. No filesystem
+   work occurs under the memo, cache, or probe-registry locks. Completed probe
+   results are not reused by another invocation. A kernel call already blocked
+   cannot be stopped; the originating read and its process slot can still leave.
+   Workspace trust lookup also coalesces by path across revisions: a new revision
+   confines instead of sharing an old result or launching another stalled lookup.
+   Completed canonical roots remain uncached, preserving symlink revalidation.
+3. `GitChildProcess` shares the policy's existing Process description and pipes,
+   but launches with `posix_spawn`, raw UTF-8 argv/environment/cwd, explicit file
+   descriptor actions, default child signal dispositions, and a separate process
+   group. GitService, FinderProcess and configuration queries all use it. Existing
+   cancellation, output/diagnostic limits, null stdin, sandbox rules, and Git
+   batching remain in their executors. NUL is refused before spawn. Folder entries
+   retain their original directory-entry names instead of reconstructing arguments
+   from a normalized URL; invalid UTF-8 directory names are omitted with a warning.
+   Ignore output retains canonical-equivalent matching for Git's default
+   `core.precomposeUnicode` output, while the names sent to Git remain byte exact.
+   The old conservative representation guards for generated inventory overrides
+   remain in place; this change does not relax their confinement policy.
+
+### Sweep 1 — main-actor admission, trust and ownership
+
+| Checked path | Finding / disposition |
+| --- | --- |
+| ChangesTab controller creation / `mayWrite`, GitController `perform` and `performRepositoryWrite` | Replaced the eager FileTab resolver with in-memory trust. Controller admission/identity guards themselves do no filesystem work. Roots and current trust are still checked at action time. |
+| WorkspaceChanges history-navigation continuation | Found the same permission-only FileTab resolver call; replaced it with the in-memory predicate. `changesProject` now creates its display URL with explicit file type. |
+| WorkspaceModel Git trust callback | Snapshots only roots/trust/revision on the main actor; canonicalization is on WorkspaceGitTrustPaths workers, with cancellation/deadline and revision revalidation. Fixed duplicate pending probes after revision changes. |
+| FileTab `readable`, FileBlame and FileReviewState trust/generation guards, panel repository/draft ownership guards | Trust predicates use stored project state / identities. FileReviewState's canonical containment and resource checks are already detached from the main actor. |
+| ReplyFileResolver | Canonicalization and regular-file checks are on its dedicated actor; the main actor snapshots the context. No new synchronous Git-admission work. |
+| File-opening and watcher setup inherited from dev/next | Separate older synchronous I/O remains in WorkspaceTabs `openFile` / `projectID(holding:)` / `fileProjectState`, FileTab initialization, WorkspaceChanges initial history folder selection, FileBlame repository containment, and GitWorkingTreeWatcher setup. These resolve actual file/watch identity rather than the new permission-only Git admission predicate. See the explicit follow-up list below. |
+
+The sweep included `resolvingSymlinksInPath`, `FileTab.key`, `realpath`, `stat`,
+FileManager calls, implicit URL file-type inference, and transitive resolver calls
+in ChangesTab, FileTab, WorkspaceModel/WorkspaceTabs/WorkspaceChanges,
+GitController, FileBlame/FileReviewState, ReplyFileResolver and panel readers.
+
+### Sweep 2 — inventory and configuration filesystem probes
+
+| Probe | Result |
+| --- | --- |
+| Cold repository-discovery markers and ancestors | Bounded worker; cancellation checks between marker/ancestor steps. |
+| Canonical repository identity and system-config path normalization | Bounded worker, including Foundation path normalization that can consult the filesystem. |
+| Local/global/system/worktree/include/index/HEAD stamps and absent include targets | Bounded worker keyed by path; unresolved probes select confinement. |
+| Full symlink resolution chains / lstat / stat / readlink | Bounded worker, with invocation checks between components. |
+| Inactive and recursive include regular-file checks | Bounded worker; device/FIFO/socket/stdin confinement remains unchanged. |
+| Populated/stored submodule markers, directory traversal, config inventory | Bounded metadata probes; subprocess queries retain the same invocation; no relaxed redirect value is emitted if inventory fails. |
+| Warm memo validation and final inventory confirmation | Bounded batched stamp checks outside cache/memo locks. Existing event/publication and deferred watcher-refresh semantics are unchanged. |
+| Workspace trust canonicalization | Already bounded and off-main; now one pending lookup per spelling across workspace revisions, preserving stale-snapshot confinement. |
+| FinderProcess configuration queries | Same bounded Git invocation and sandbox; exact launcher preserves existing cancellation and byte limits. |
+| FileListing / FolderDirectory global and per-directory ignore-file reads | Found synchronous open/fstat/read probes beyond Git's process timeout; added the shared bounded probe. An unavailable ignore file produces the existing listing warning surface instead of silently hanging. |
+| Toolchain discovery / private scratch storage | Fixed system `xcrun` / `xcode-select` discovery and local scratch setup do not inspect repository-controlled config. They remain outside the repository probe inventory. |
+
+### Sweep 3 — repository-derived Git arguments
+
+| Invocation family | Result |
+| --- | --- |
+| Folder/tree/menu check-ignore | Raw directory-entry UTF-8 names, bounded argv batches after `--`; no filename-fed stdin. Four NFC/NFD filename/rule combinations are compared against a fixture-only raw-stdin Git oracle with `core.precomposeUnicode=false`. |
+| Quick Open / nested repository ls-files, rev-parse, ignore config queries | FinderProcess uses the same exact launcher; repository discovery and path terminators keep the existing byte parser. |
+| GitService status, ls-files/pathspecs, diff, log/history references, show object:path, blame | Shared byte-exact argv/env/cwd launch. Read policy remains non-recursive and confined when inventory cannot prove safety. Blame still uses its private contents file, never repository file contents on stdin. |
+| Stash, hunk/index snapshots, stage/unstage, discard/restore, branch names | All route through GitService's exact executor. Existing literal pathspecs, `--`, validation, private indexes and explicit-write admission remain intact. |
+| Configuration queries / include paths / ref-chain inputs | Same exact launch. Existing generated-config and representation fallback guards remain conservative. |
+| Hook launch and network Git | Same executor preserves arguments; explicit trusted-write hooks and repository-wide extraHeader redirect refusal retain their existing policy. |
+| Other Process sites in these packages | Only fixed xcode-select/xcrun toolchain lookup remains on Foundation Process; neither takes repository-derived arguments. |
+
+### Failing-first and mutations
+
+Logs are text under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/logs/round16-*.log`.
+
+| Evidence | Result |
+| --- | --- |
+| `red-native`: write admission resolver counter | 1 test fails, 2 assertions: both trusted and revoked admission call the filesystem-backed resolver. |
+| `red-views`: literal NFC ignore plus two blocked-probe tests | 3 tests fail, 7 assertions/errors. NFC is not dimmed; cancellation takes about 2.02 s; blocked inventory misses the deadline instead of selecting confinement. |
+| `mutation-foundation-argv` | 2 tests fail, 10 assertions: restore Foundation filesystem-representation conversion before spawn; ignore and read/write path coverage detect it. |
+| `mutation-url-filename` | Literal Unicode ignore test fails when argv names are reconstructed from URL.lastPathComponent. |
+| `mutation-unbounded-probe` | Both cold probe/cancellation tests fail when probes execute directly on the read worker. |
+| `mutation-unbounded-ignore` | Ignore-file listing regression fails when direct open/fstat/read bypasses the bounded probe. |
+| `mutation-native-trust` | 2 tests fail, 3 assertions: restore eager admission and revision-keyed pending lookups. |
+| `mutation-warm-probe` | 1 test fails when stamp validation executes synchronously; the same status read succeeds within its deadline after restoration. |
+| `red-spawn-cancellation` / `mutation-spawn-lock` | Self-review found that holding the new child state lock during launch could delay cancellation. The regression fails first (1 test, 2 assertions); moving the blocking launch phase back under the lock fails again. Restored launch state uses short critical sections, checks cancellation again before spawn and kills a child cancelled during spawn as soon as its PID is available. |
+| Restored focused checks | `restored-final-probes`: FolderBrowserTests, GitInventoryConcurrencyTests and GitByteParsingTests pass; `restored-native-trust`: all 11 GitRepositoryPermissionTests pass. |
+
+An initial implementation exposed two issues in existing tests: POSIX children
+must reset inherited signal masks/dispositions to retain prompt cancellation, and
+Git may precompose check-ignore output even when the filesystem stores decomposed
+names. Both were corrected, then the existing security/Unicode/cancellation
+classes passed. These intermediate failures are retained in the text logs;
+final suite counts below are from the restored implementation.
+
+### Adversarial self-review
+
+Checked cancellation before adoption and between adoption/spawn; a stopped child
+cannot start later, and a CancellationError is not relabelled as a launch failure.
+Checked argv lifetime, NUL refusal, allocation failure, duplicate stderr/stdout
+pipe handles, null-device descriptors, inherited descriptor closure, group signals,
+reaping and PID reuse. Retained every existing read policy and stderr/output limit.
+Checked probe registry release on success/failure/cancellation, the global cap,
+byte-distinct path keys, old-revision trust results, and cache-lock ordering. Warm
+checks register the current source only; a blocked include cannot reserve `/` for
+all repositories. Only the calling invocation may consume a completed probe.
+Checked that configuration query cancellation, read deadline, cached policy
+lifetime, deferred configuration events, and ignored-path event queues still use
+the existing ownership rules. No HTTP or helper behavior was changed.
+
+### Older call sites recorded for separate work
+
+The scope clarification sent during this round received no answer before final
+validation began; the stated default was to keep this round focused and document
+file-opening/watcher work already outside the Git admission path. These synchronous UI liveness risks on stalled volumes are outside the new
+permission-only write-admission call. The two additional WorkspaceTabs canonicalization
+calls from round 10 are included explicitly; no claim is made that these broader
+file-opening APIs are now asynchronous:
+
+- `apps/macos/PiApp/Workspaces/WorkspaceTabs.swift:13,34,57,61,75`: explicit file
+  opening, folder-boundary selection, project ownership and display-state roots
+  canonicalize paths synchronously. Round 10 added canonicalization in the
+  folder-boundary callback and of the queried ownership path; the roots and file
+  initialization were already synchronous. Moving the full path requires an asynchronous
+  file-opening/ownership API, beyond changing the Git admission predicate.
+- `apps/macos/PiApp/Workspaces/WorkspaceChanges.swift:25,28` and
+  `apps/macos/PiApp/Files/FileBlame.swift:117`: initial file/history containment
+  resolves paths synchronously; the repeated trust predicate is fixed above.
+- `packages/bello-views/Sources/GitView/GitController.swift:541,612,649,701` and
+  `GitWatcher.swift:67–97`: watcher identity/setup canonicalizes and reads Git
+  metadata synchronously. This code was already on origin/dev/next; a bounded
+  asynchronous watcher setup is a separate lifecycle change.
+
+### Final validation
+
+The final views run includes the launcher cancellation fix; its earlier full run
+is retained as `round16-pre-spawn-review-final-views.log` but excluded from these
+counts. The helper build/suites ran fresh during this round and were retained
+after that views-only fix because no helper source or dependency changed.
+
+All commands ran from the worktree root with this isolated environment:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+export CFFIXED_USER_HOME="$PI_BUILD_ROOT/round16-home"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests"
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --build-tests
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --skip-build --skip StreamingCostTests
+python3 scripts/test-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+```
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| bello-views (483 total) | 479 | 4 opt-in performance tests | 0 |
+| Helper: StreamingCostTests | 5 | 0 | 0 |
+| Helper: all other tests (1,184 total) | 1,176 | 8 | 0 |
+| Wire | 40 | 0 | 0 |
+| Concurrent native host | 4 | 0 | 0 |
+| Native acceptance | 3 | 0 | 0 |
+
+Text logs are `logs/round16-final-<suite>.log` under the build root. The exact
+argv, environment additions, exit status and elapsed time of every command are
+also recorded in `logs/round16-final-validation.json`.
+
+Native validation used the same environment and the following focused commands.
+The five parallel classes are permitted by `scripts/test-lanes.py list`; every
+serial-lane class ran alone.
+
+```sh
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 \
+  -only-testing:PiAppTests/GitChangelistReadTests \
+  -only-testing:PiAppTests/GitCommitBrowsingTests \
+  -only-testing:PiAppTests/GitHistoryFilterTests \
+  -only-testing:PiAppTests/GitPathBoundaryTests \
+  -only-testing:PiAppTests/GitToolTests
+for class in WorkspaceTests GitRepositoryPermissionTests FileBlameTests FileReviewStateTests \
+  GitBranchesInteractionTests GitHunkReviewTests GitIntegratedHistoryTests ChangesTabTests \
+  GitOperationSafetyTests FileFolderTests FileFindTabTests QuickOpenTests GitWorkingTreeWatcherTests \
+  GitPanelTimingTests CrashAuditRegressionTests GitRepositorySwitchTests ReplyFileLinkTests \
+  ChatFileLinkTests SessionPanelTests FileTabTests FilePreviewRefreshTests
+do
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/"$class"
+done
+TEST_RUNNER_PI_FILE_REVIEW_GALLERY="$PI_BUILD_ROOT/round16-gallery" \
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewGalleryTests
+```
+
+| Native class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabTests | 9 | 0 | 0 |
+| ChatFileLinkTests | 8 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 12 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FilePreviewRefreshTests | 3 | 0 | 0 |
+| FileReviewGalleryTests | 1 | 0 | 0 |
+| FileReviewStateTests | 24 | 0 | 0 |
+| FileTabTests | 17 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 opt-in benchmark | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRepositoryPermissionTests | 11 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 43 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| ReplyFileLinkTests | 5 | 0 | 0 |
+| SessionPanelTests | 30 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+| **Total (27 classes)** | **347** | **1** | **0** |
+
+The shared lock was held from 12:17:51 through 12:27:51 +0800 on 2026-10-22,
+including all native tests and gallery capture, and released in the driver's
+`finally` block. The gallery generated 24 images (restored file, recents, history,
+and return-to-file; light/dark; 1240×800, 920×600, 420×600). Inspected each scene
+at light/wide, dark/medium, and narrow sizes: controls remain readable, narrow
+history stacks its panes, and file selection/scroll state survives navigation.
+
+`xcodegen generate --quiet`, `git diff --check`, and the hash check of all 17
+changed/new Swift files passed. A final fetch still found `origin/dev/next` at
+`391f3c61`. Automatic Xcode results were extracted to JSON and removed, and no
+test clone folders remain under this workstream's build root. Text logs, source
+hashes, counts and gallery images remain there. No installed app, real
+preferences/chats, Keychain, live capture or paid provider was used. There are
+no failing final validation checks; the separate file-opening/watcher liveness
+follow-ups are listed above.

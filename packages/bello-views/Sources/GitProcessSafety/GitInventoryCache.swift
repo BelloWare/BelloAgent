@@ -3,10 +3,15 @@ import Darwin
 
 /// Device/inode and nanosecond ctime also catch same-size edits with restored
 /// mtimes. Keep the symlink and its target: either can change independently.
-struct GitFileStamp: Hashable {
+struct GitFileStamp: Hashable, Sendable {
 #if DEBUG
     private static let validationLock = NSLock()
     nonisolated(unsafe) private static var validationHook: (@Sendable (String) -> Void)?
+    nonisolated(unsafe) private static var probeHook: (@Sendable (String) -> Void)?
+    static var beforeProbe: (@Sendable (String) -> Void)? {
+        get { validationLock.withLock { probeHook } }
+        set { validationLock.withLock { probeHook = newValue } }
+    }
     static var beforeValidation: (@Sendable (String) -> Void)? {
         get { validationLock.withLock { validationHook } }
         set { validationLock.withLock { validationHook = newValue } }
@@ -18,6 +23,9 @@ struct GitFileStamp: Hashable {
     let cacheable: Bool
     private let directoryIdentity: Bool
     init(_ path: String, directoryIdentity: Bool = false) {
+#if DEBUG
+        Self.beforeProbe?(path)
+#endif
         self.init(path, watchedPath: URL(fileURLWithPath: path).resolvingSymlinksInPath().path, directoryIdentity: directoryIdentity)
     }
     private init(_ path: String, watchedPath: String, directoryIdentity: Bool) {
@@ -55,14 +63,22 @@ struct GitFileStamp: Hashable {
         return cacheable && current.cacheable && identity == current.identity
     }
     var exists: Bool { !identity.isEmpty }
+    static func validate(_ stamps: [GitFileStamp], invocation: GitInvocation, skipUncacheable: Bool = false) throws -> Bool {
+        try GitFileProbe.allSatisfy(stamps, path: { $0.path }, invocation: invocation) { stamp in
+            skipUncacheable && !stamp.cacheable || stamp.unchanged
+        }
+    }
 
-    var resolution: (stamps: [GitFileStamp], complete: Bool) {
+    var resolution: (stamps: [GitFileStamp], complete: Bool) { (try? resolve(invocation: nil)) ?? ([], false) }
+
+    func resolve(invocation: GitInvocation?) throws -> (stamps: [GitFileStamp], complete: Bool) {
         guard path.gitHasPrefix("/") else { return ([], false) }
         var pending = path.gitSplit(separator: 47), resolved: [String] = []
         var result = [GitFileStamp("/", directoryIdentity: true)], links = 0
         // Walk each symlink target too, before processing "..". The final
         // inode alone cannot detect a changed relative gitdir: condition.
         while !pending.isEmpty {
+            try invocation?.check()
             let component = pending.removeFirst()
             if component == "." { continue }
             if component == ".." { if !resolved.isEmpty { resolved.removeLast() }; continue }
@@ -93,14 +109,16 @@ struct GitFileStamp: Hashable {
         return (result, result.allSatisfy(\.cacheable))
     }
 
-    static func discovery(in directory: URL) -> [GitFileStamp] {
+    static func discovery(in directory: URL, invocation: GitInvocation) throws -> [GitFileStamp] {
         var path = directory.path, result: [GitFileStamp] = []
         while true {
             // Directory identity ignores ordinary working-file saves. The
             // markers also cover bare repositories and a newly created .git.
-            result += [GitFileStamp(path, directoryIdentity: true), GitFileStamp(path + "/.git", directoryIdentity: true),
-                       GitFileStamp(path + "/HEAD"), GitFileStamp(path + "/commondir"), GitFileStamp(path + "/objects", directoryIdentity: true),
-                       GitFileStamp(path + "/refs", directoryIdentity: true)]
+            for (marker, identity) in [(path, true), (path + "/.git", true), (path + "/HEAD", false),
+                                       (path + "/commondir", false), (path + "/objects", true), (path + "/refs", true)] {
+                try invocation.check()
+                result.append(GitFileStamp(marker, directoryIdentity: identity))
+            }
             if path == "/" { break }
             path = (path as NSString).deletingLastPathComponent
         }
@@ -184,7 +202,7 @@ final class GitInventoryCache: @unchecked Sendable {
         do {
             return try memo.get(invocation: invocation, valid: { configuration in
                 guard configuration.cacheable else { return false }
-                return try configuration.stamps.allSatisfy { stamp in try invocation.check(); return stamp.unchanged }
+                return try GitFileStamp.validate(configuration.stamps, invocation: invocation)
             }, retain: { _ in retained }, build: {
                 // Register actual rebuilds too; a warm entry can fail its stamps.
                 let current = lock.withLock {

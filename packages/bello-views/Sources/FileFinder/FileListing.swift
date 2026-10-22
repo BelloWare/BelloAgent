@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 // The files of a project's folders, for finding one by name: what git lists
 // in a folder that is in a repository (tracked files, ignored or not, and
@@ -200,16 +201,25 @@ enum FileListing {
         switch contents(of: path, limit: ignoreFileLimit) {
         case .data(let data): return IgnoreFile(base: [], contents: data)
         case .tooLarge: warn("The global ignore file “\(shown(path))” is over 1 MB, so it is not applied.")
+        case .unavailable: warn("The global ignore file could not be checked promptly, so it is not applied.")
         case .missing: break
         }
         return nil
     }
 
-    enum Contents: Equatable { case data(Data), tooLarge, missing }
+    enum Contents: Equatable { case data(Data), tooLarge, missing, unavailable }
 
     /// The regular file at `path`, when it is at most `limit` bytes; a link
     /// to one when `following`.
     static func contents(of path: String, limit: Int, following: Bool = true) -> Contents {
+        // A regular file on a disconnected mount can block even with
+        // O_NONBLOCK. Ignore scans use the same bounded, coalesced probes.
+        do { return try GitFileProbe.run(paths: [path], invocation: GitInvocation()) {
+            readContents(of: path, limit: limit, following: following)
+        } } catch { return .unavailable }
+    }
+
+    private static func readContents(of path: String, limit: Int, following: Bool) -> Contents {
         let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | (following ? 0 : O_NOFOLLOW))
         guard descriptor >= 0 else { return .missing }
         defer { close(descriptor) }
@@ -242,6 +252,7 @@ enum FileListing {
             switch contents(of: absolute + "/.gitignore", limit: ignoreFileLimit, following: false) {
             case .data(let data): rules.stack.append(IgnoreFile(base: base, contents: data))
             case .tooLarge: listing.warn("“\(String(decoding: base, as: UTF8.self)).gitignore” is over 1 MB, so it is not applied.")
+            case .unavailable: listing.warn("An ignore file could not be checked promptly, so it is not applied.")
             case .missing: break
             }
             guard let directory = opendir(absolute) else {

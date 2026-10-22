@@ -226,8 +226,11 @@ public actor GitService {
         if input != nil { stdin = Pipe(); process.standardInput = stdin } else { process.standardInput = FileHandle.nullDevice }
         let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
         defer { try? out.close(); try? err.close() }
-        guard handle.adopt(process) else { throw CancellationError() }
-        do { try process.run() } catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
+        let child = GitChildProcess(process)
+        guard handle.adopt(child) else { throw CancellationError() }
+        do { try child.run() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
         if let stdin, let input {
             // Written on a thread of its own while this one drains the
             // output: a long input written first would block on a full pipe
@@ -246,8 +249,8 @@ public actor GitService {
         while true {
             let now = ProcessInfo.processInfo.systemUptime
             if now >= deadline, failure == nil { failure = "Git timed out; no partial output was applied."; handle.stop() }
-            if handle.isStopped, process.isRunning { handle.stop() }
-            if !process.isRunning {
+            if handle.isStopped, child.isRunning { handle.stop() }
+            if !child.isRunning {
                 if exitedAt == nil { exitedAt = now }
                 if eof.allSatisfy({ $0 }) { break }
                 if now - (exitedAt ?? now) >= 0.25 {
@@ -274,11 +277,11 @@ public actor GitService {
             var polls = fds.enumerated().map { pollfd(fd: eof[$0.offset] ? -1 : $0.element, events: Int16(POLLIN), revents: 0) }
             _ = poll(&polls, nfds_t(polls.count), 20)
         }
-        process.waitUntilExit()
+        child.waitUntilExit()
         if let failure { throw GitFailure(message: failure) }
         if handle.isStopped { throw CancellationError() }
         let diagnostics = String(decoding: streams[1], as: UTF8.self)
-        if redirects.protected, process.terminationStatus != 0,
+        if redirects.protected, child.terminationStatus != 0,
            diagnostics.range(of: "redirect|error: 30[12378]", options: .regularExpression) != nil {
             throw GitFailure(message: "Git refused an HTTP redirect because this repository has http.extraHeader configured. Use the final remote URL.")
         }
@@ -287,7 +290,7 @@ public actor GitService {
         if readOnly, Self.hasFilterFailure(streams[1]) {
             throw GitFailure(message: "Git's content filter could turn this file into other lines. Read-only queries cannot run repository programs.")
         }
-        return Output(stdout: streams[0], stderr: diagnostics, status: process.terminationStatus)
+        return Output(stdout: streams[0], stderr: diagnostics, status: child.terminationStatus)
     }
 
     static func hasFilterFailure(_ diagnostics: Data) -> Bool {

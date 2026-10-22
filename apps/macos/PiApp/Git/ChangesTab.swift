@@ -25,6 +25,9 @@ import GitView
     /// What the app knows of a project: its folder name and folders, or nil
     /// once it was removed. Set once by the app.
     static var resolveProject: (String) -> (name: String, roots: [String])? = { _ in nil }
+    /// Admission reads workspace state only; resolving a folder belongs to
+    /// the cancellable background read, not a main-actor permission check.
+    static var isProjectTrusted: (String) -> Bool = { _ in false }
     static var openLocation: (URL, Int) -> Void = { _, _ in }
     /// Brings a tab to the front: set once by the app.
     static var activate: (HostedTab) -> Void = { _ in }
@@ -75,7 +78,7 @@ import GitView
         let controller = GitController(roots: roots)
         controller.mayWrite = { [weak self] in
             guard let self else { return false }
-            return FileTab.resolveProject(self.projectID).isTrusted && Self.resolveProject(self.projectID)?.roots == self.roots
+            return Self.isProjectTrusted(self.projectID) && Self.resolveProject(self.projectID)?.roots == self.roots
         }
         madeController = controller
         return controller

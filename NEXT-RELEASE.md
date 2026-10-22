@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1bj: Git write admission and history trust rechecks use in-memory workspace state, without resolving project paths on the main actor. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bk: Git inventory and ignore-file probes have bounded, cancellable waits; stalled paths select confinement, remain coalesced until their probe returns, and cannot consume a thread per retry or trust revision. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bl: Git subprocesses preserve UTF-8 argument and environment bytes with posix_spawn; literal NFC/NFD ignore rules, history paths and explicit file writes no longer target Foundation-normalized spellings. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] SECURITY-BOUNDARIES-1bi: Successful Git reads accept CRLF warnings and trusted global-program progress; only Git's anchored filter-failure diagnostics reject optional-filter output, including truncated messages. [Validation](docs/validation/a130-security-0.1.130.md).
 
 - [x] SECURITY-BOUNDARIES-1bg: Git inventory stamp validation runs outside memo/cache locks; stalled paths cannot hold other readers, watcher invalidation or trust clearing. [Validation](docs/validation/a130-security-0.1.130.md).
