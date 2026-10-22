@@ -15,6 +15,9 @@ visibly in the window. PI_APP_UI_FIXTURE_LENIENT_LIMIT=1 lets a conversation
 request carry any output limit up to the catalog ceiling, which is what a chat
 with a smaller context window sends. PI_APP_UI_FIXTURE_REAL_USAGE=1 reports each
 Responses request's size (bytes over four) as its input tokens.
+PI_APP_UI_FIXTURE_NO_CAPTURES=1 keeps no record of the requests (nothing in
+captures.json, an empty /captures): a test that grows a chat of thousands of
+turns would otherwise hold, and rewrite on every request, every request it sent.
 
 PI_APP_UI_FIXTURE_MODEL selects the exact accepted request alias (default:
 ui-fixture). Any configured non-default alias exercises synthetic routing:
@@ -43,6 +46,7 @@ def encode(value):
 class Gateway(http.server.BaseHTTPRequestHandler):
     records = []
     lock = threading.Lock()
+    captures = os.environ.get("PI_APP_UI_FIXTURE_NO_CAPTURES") != "1"
     historical_tool_schemas = {
         "bash": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}},
                  "required": ["command"], "additionalProperties": False}
@@ -52,6 +56,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
     def checkpoint(cls):
         # Preserve independently observed wire data even if the UI harness
         # exits before its final GET. Never recover this from the native archive.
+        if not cls.captures:
+            return
         with cls.lock:
             temporary = Path("captures.json.tmp")
             temporary.write_bytes(encode(cls.records))
@@ -247,8 +253,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                   "sessionID": self.headers.get("x-session-id"), "turnID": self.headers.get("x-turn-id"), "model": requested_model,
                   "secondaryRootVerified": secondary_read and tool_result, "resolvedModel": resolved_model,
                   "ownerBillingSample": owner_billing, "connectionTest": connection_test}
-        with self.lock:
-            self.records.append(record)
+        if self.captures:
+            with self.lock:
+                self.records.append(record)
         if owner_billing:
             # Request validation and tool-result validation above must finish
             # before this scenario can return a success. No owner IDs or opaque
@@ -295,6 +302,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             data = b"data: " + encode(event) + b"\n\n"
             self.wfile.write(data)
             self.wfile.flush()
+            if not self.captures:
+                return
             received.extend(data)
             with self.lock:
                 record["response"] = base64.b64encode(received).decode()

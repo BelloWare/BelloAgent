@@ -315,8 +315,10 @@ import AppKit
                 cardContent.addSubview(banner); editingBanner = banner
                 return banner
             }()
-            banner.update(detail: state.editBlocker ?? state.editNotice, detailColor: state.editBlocker == nil ? .piInkSecondary : .piDanger,
-                          cancelEnabled: !state.editSubmitting && !state.disabled, offersReview: state.editReview, reviewEnabled: !state.disabled)
+            // Reading the original is not a refusal: the banner says so in its
+            // own colour, beside its spinner, with the question in the field.
+            banner.update(detail: state.editBlocker ?? state.editNotice, detailColor: state.editBlocker == nil || state.editPreparing ? .piInkSecondary : .piDanger,
+                          waiting: state.editPreparing, cancelEnabled: !state.editSubmitting && !state.disabled, offersReview: state.editReview, reviewEnabled: !state.disabled)
         } else { editingBanner?.removeFromSuperview(); editingBanner = nil }
         if state.queueEditing {
             let banner = queueBanner ?? {

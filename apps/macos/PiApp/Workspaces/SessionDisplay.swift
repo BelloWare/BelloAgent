@@ -820,6 +820,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var editInputReviewRequired = false
     @Published var editMissingAttachments: Set<String> = []
     @Published var editNotice = ""
+    /// The question in the composer came from its row on screen, and its
+    /// complete original — its images and skills, what Send is checked
+    /// against — is not read yet (`WorkspaceModel.editMessage`). Saved with
+    /// the draft (`MessageEditDraft.inputPending`), so a restart reads it again.
+    @Published var editInputPending = false
     var editSourceTimeline: String?
     var editSourceTextDigest: String?
     /// The branch this reader's edit is making (`sendEdit`), until the
@@ -844,7 +849,7 @@ struct TranscriptVersionView: Equatable, Sendable {
             var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews); saved.queuedEdit = unreconciledQueuedEdit
             return saved
         }
-        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews) }
+        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews, inputPending: editInputPending ? true : nil) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews)
     }
     func restoreDraft(_ saved: DraftRecord) {
@@ -852,7 +857,7 @@ struct TranscriptVersionView: Equatable, Sendable {
         submissionReviews = saved.submissionReviews ?? []
         editingMessageID = saved.edit?.messageID
         editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest
-        editInputReviewRequired = saved.edit?.inputReviewRequired ?? false
+        editInputReviewRequired = saved.edit?.inputReviewRequired ?? false; editInputPending = saved.edit?.inputPending == true
         editGeneration = UUID(); editPreparing = false; editSubmitting = false; editNotice = ""; editMissingAttachments = []
         draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills, submissionReviews: $0.originalSubmissionReviews) }
     }
