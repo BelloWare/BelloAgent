@@ -284,10 +284,58 @@ public actor GitService {
         }
         // Git may report success after an optional clean/process filter failed.
         // Do not present unconverted bytes as a successful repository comparison.
-        if readOnly, diagnostics.contains("external filter") {
+        if readOnly, Self.hasFilterFailure(streams[1]) {
             throw GitFailure(message: "Git's content filter could turn this file into other lines. Read-only queries cannot run repository programs.")
         }
         return Output(stdout: streams[0], stderr: diagnostics, status: process.terminationStatus)
+    }
+
+    static func hasFilterFailure(_ diagnostics: Data) -> Bool {
+        // gitEnvironment sets LANG=en_US.UTF-8, so convert.c/sub-process.c
+        // diagnostics are English. Match Git's error/fatal lines, not warnings
+        // or a permitted program's progress. Names can contain literal LFs.
+        let text = String(decoding: diagnostics, as: UTF8.self)
+        let whole = NSRange(location: 0, length: text.utf16.count)
+        let lineStart = "(?:\\A|\\n)(?:error|fatal): "
+        // Find each family's first prefix, then its suffix. Names can span
+        // lines, so retrying the whole pattern at every line is quadratic.
+        func contains(_ prefix: String, _ suffix: String, in range: NSRange) throws -> Bool {
+            guard let start = try NSRegularExpression(pattern: prefix).firstMatch(in: text, range: range) else { return false }
+            let rest = NSRange(location: NSMaxRange(start.range), length: NSMaxRange(range) - NSMaxRange(start.range))
+            return try NSRegularExpression(pattern: suffix + "(?:\\n|\\z)").firstMatch(in: text, range: rest) != nil
+        }
+        do {
+            guard let first = try NSRegularExpression(pattern: lineStart).firstMatch(in: text, range: whole) else { return false }
+            if try NSRegularExpression(pattern: lineStart + "path name too long for external filter(?:\\n|\\z)").firstMatch(in: text, range: whole) != nil { return true }
+            let messages = [
+                ("cannot fork to run external filter '", "'"),
+                ("cannot feed the input to external filter '", "'"),
+                ("external filter '", "' failed(?: -?[0-9]+)?"),
+                ("read from external filter '", "' failed"),
+                ("external filter '", "' is not available anymore although not all paths have been filtered"),
+                ("cannot fork to run subprocess '", "'"),
+                ("initialization for subprocess '", "' failed"),
+            ]
+            for (prefix, suffix) in messages {
+                if try contains(lineStart + NSRegularExpression.escapedPattern(for: prefix), suffix, in: whole) { return true }
+            }
+            let rest = NSRange(location: NSMaxRange(first.range), length: text.utf16.count - NSMaxRange(first.range))
+            for (prefix, suffix) in [(": clean filter '", "' failed"), (": smudge filter ", " failed")] {
+                if try contains(NSRegularExpression.escapedPattern(for: prefix), suffix, in: rest) { return true }
+            }
+        } catch { return true }
+        // usage.c's vreportf caps a diagnostic at 4096 bytes including its LF.
+        // A long command can truncate the failure suffix, even within UTF-8.
+        let starts = ["cannot fork to run external filter '", "cannot feed the input to external filter '",
+                      "external filter '", "read from external filter '",
+                      "cannot fork to run subprocess '", "initialization for subprocess '"]
+        let prefixes = ["error: ", "fatal: "].flatMap { prefix in starts.map { Array((prefix + $0).utf8) } }
+        let bytes = Array(diagnostics)
+        for start in bytes.indices where start == 0 || bytes[start - 1] == 10 {
+            if bytes.count - start >= 4096, bytes[start + 4095] == 10,
+               prefixes.contains(where: { bytes[start...].starts(with: $0) }) { return true }
+        }
+        return false
     }
 
     /// Git's own threads. Waiting for a process is a blocking call, and a

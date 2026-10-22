@@ -4,6 +4,8 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1bi: Successful Git reads accept CRLF warnings and trusted global-program progress; only Git's anchored filter-failure diagnostics reject optional-filter output, including truncated messages. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] SECURITY-BOUNDARIES-1bg: Git inventory stamp validation runs outside memo/cache locks; stalled paths cannot hold other readers, watcher invalidation or trust clearing. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1bh: Cold Git inventories preserve reuse through unrelated ignored-folder events; source events prevent caching and deliver a deferred configuration refresh. [Validation](docs/validation/a130-security-0.1.130.md).
 

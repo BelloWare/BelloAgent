@@ -45,6 +45,117 @@ final class GitRepositorySecurityTests: ViewsTestCase {
         try? FileManager.default.removeItem(at: marker)
     }
 
+    private func rawRead(_ arguments: [String], environment: [String: String]) throws -> GitService.Output {
+        let process = Process(), output = Pipe(), diagnostics = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git"); process.currentDirectoryURL = root
+        process.arguments = arguments; process.environment = environment
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = diagnostics
+        try process.run()
+        let stdout = output.fileHandleForReading.readDataToEndOfFile(), stderr = diagnostics.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return GitService.Output(stdout: stdout, stderr: String(decoding: stderr, as: UTF8.self), status: process.terminationStatus)
+    }
+
+    func testCRLFWarningWithExternalFilterFilenamePreservesSuccessfulReads() async throws {
+        let name = "external filter.txt"
+        try write(name, "base\n"); try git(["add", "--", name])
+        try git(["config", "core.autocrlf", "true"]); try git(["config", "core.safecrlf", "warn"])
+        try write(name, "edit\n")
+        var env = environment; env["LANG"] = "en_US.UTF-8"; env["GIT_OPTIONAL_LOCKS"] = "0"
+        let service = GitService(environment: env, trusted: true)
+        for arguments in [["status", "--porcelain=v2", "-z"], ["diff", "--no-ext-diff", "--no-textconv", "--", name]] {
+            let raw = try rawRead(arguments, environment: env)
+            XCTAssertEqual(raw.status, 0, raw.stderr)
+            XCTAssertTrue(raw.text.contains(name))
+            if arguments.first == "diff" {
+                XCTAssertTrue(raw.stderr.contains("warning: in the working copy of 'external filter.txt', LF will be replaced by CRLF"), raw.stderr)
+                XCTAssertTrue(raw.text.contains("-base\n+edit\n"), raw.text)
+            }
+            do {
+                let result = try await service.run(arguments, in: root.path)
+                XCTAssertEqual(result.status, 0); XCTAssertEqual(result.stdout, raw.stdout)
+            } catch { XCTFail("A CRLF warning must not reject a successful \(arguments[0]): \(error)") }
+        }
+    }
+
+    func testGlobalFilterProgressPreservesSuccessfulReads() async throws {
+        let command = try program("global-progress", tail: "printf 'progress: external filter is copying\\n' >&2\ncat")
+        try write(".git/global-fixture", "[filter \"fixture\"]\nclean = \(command)\nrequired = true\n")
+        try write(".gitattributes", "file.txt filter=fixture\n"); try write("file.txt", "changed\n")
+        var env = environment; env["GIT_CONFIG_GLOBAL"] = root.appendingPathComponent(".git/global-fixture").path
+        env["LANG"] = "en_US.UTF-8"; env["GIT_OPTIONAL_LOCKS"] = "0"
+        let service = GitService(environment: env, trusted: true)
+        for arguments in [["status", "--porcelain=v2", "-z"], ["diff", "--no-ext-diff", "--no-textconv", "--", "file.txt"]] {
+            let raw = try rawRead(arguments, environment: env)
+            XCTAssertEqual(raw.status, 0, raw.stderr); XCTAssertTrue(raw.stderr.contains("progress: external filter is copying"), raw.stderr)
+            try? FileManager.default.removeItem(at: root.appendingPathComponent("ran"))
+            do {
+                let result = try await service.run(arguments, in: root.path)
+                XCTAssertEqual(result.status, 0); XCTAssertEqual(result.stdout, raw.stdout)
+            } catch { XCTFail("A permitted global program's progress must not reject a successful read: \(error)") }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("ran").path), "The permitted global filter must run")
+        }
+    }
+
+    func testOptionalFilterFailureStillRejectsZeroExitReads() async throws {
+        let command = try program("global-failure", tail: "exit 1")
+        try write(".gitattributes", "file.txt filter=fixture\n"); try write("file.txt", "changed\n")
+        var env = environment; env["GIT_CONFIG_GLOBAL"] = root.appendingPathComponent(".git/global-fixture").path
+        env["LANG"] = "en_US.UTF-8"; env["GIT_OPTIONAL_LOCKS"] = "0"
+        let service = GitService(environment: env, trusted: true)
+        for value in [command, command + " " + String(repeating: "x", count: 5_000)] {
+            try write(".git/global-fixture", "[filter \"fixture\"]\nclean = \(value)\nrequired = false\n")
+            for arguments in [["status", "--porcelain=v2", "-z"], ["diff", "--no-ext-diff", "--no-textconv", "--", "file.txt"]] {
+                let raw = try rawRead(arguments, environment: env)
+                XCTAssertEqual(raw.status, 0, raw.stderr); XCTAssertTrue(raw.stderr.contains("error: external filter '"), raw.stderr)
+                do { _ = try await service.run(arguments, in: root.path); XCTFail("An optional filter failure must not become a successful comparison (command bytes: \(value.utf8.count))") }
+                catch { XCTAssertTrue(error.localizedDescription.contains("content filter"), error.localizedDescription) }
+            }
+        }
+    }
+
+    func testFilterFailureDiagnosticsUseGitMessageFormsAndLineBoundaries() {
+        func hasFilterFailure(_ text: String) -> Bool { GitService.hasFilterFailure(Data(text.utf8)) }
+        let failures = [
+            "cannot fork to run external filter 'fixture'",
+            "cannot feed the input to external filter 'fixture'",
+            "external filter 'fixture' failed", "external filter 'fixture' failed 1", "external filter 'fixture' failed -1",
+            "read from external filter 'fixture' failed",
+            "external filter 'fixture' is not available anymore although not all paths have been filtered",
+            "path name too long for external filter",
+            "cannot fork to run subprocess 'fixture'", "initialization for subprocess 'fixture' failed",
+            "file.txt: clean filter 'fixture' failed", "file.txt: smudge filter fixture failed",
+            "file\nname: clean filter 'fixture' failed", "file\nname: smudge filter fixture failed",
+            "external filter 'fixture\ncommand' failed",
+            "external filter '\u{301}fixture' failed",
+        ]
+        for message in failures {
+            for prefix in ["error: ", "fatal: "] {
+                for surrounding in [("", ""), ("progress\n", "\nnext line\n")] {
+                    XCTAssertTrue(hasFilterFailure(surrounding.0 + prefix + message + surrounding.1), message)
+                }
+            }
+            XCTAssertFalse(hasFilterFailure("warning: " + message + "\n"), message)
+            XCTAssertFalse(hasFilterFailure("progress: error: " + message + "\n"), message)
+        }
+        for harmless in ["progress: external filter is copying\n", "error: external filter 'fixture' finished\n",
+                         "fatal: initialization for subprocess 'fixture' completed\n", "error: file.txt: clean filter 'fixture' succeeded\n",
+                         "warning: in the working copy of 'external filter.txt', LF will be replaced by CRLF\n"] {
+            XCTAssertFalse(hasFilterFailure(harmless), harmless)
+        }
+        for prefix in ["error: external filter '", "fatal: read from external filter '"] {
+            var truncated = Data(prefix.utf8)
+            truncated += Data(repeating: 120, count: 4094 - truncated.count)
+            truncated += Data([0xc3, 10]) // A diagnostic truncated within a UTF-8 scalar.
+            XCTAssertTrue(GitService.hasFilterFailure(truncated))
+            XCTAssertFalse(GitService.hasFilterFailure(Data("progress: ".utf8) + truncated))
+        }
+        XCTAssertFalse(hasFilterFailure(String(repeating: "error: x\n", count: 7_000)))
+        XCTAssertFalse(hasFilterFailure(String(repeating: "error: external filter '", count: 2_000)))
+        XCTAssertTrue(hasFilterFailure("warning: in the working copy of 'name\nerror: external filter 'fixture' failed\n.txt', LF will be replaced by CRLF\n"),
+                      "A newline in a filename may cause a conservative refusal, never suppress a real failure")
+    }
+
     func testGlobalOnlyProgramsDoNotAcquireLocalOverrides() async throws {
         let global = root.appendingPathComponent(".git/global-only")
         for (name, tail) in [("glob\u{00e1}l-monitor", "printf 'token\\000'"), ("global-clean", "cat")] {

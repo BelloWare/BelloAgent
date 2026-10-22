@@ -2980,3 +2980,221 @@ remained. Text logs, exact commands and source provenance are retained in the
 assigned build root. Cleanup left 20,491,841,536 bytes free. No installed app,
 real preferences/chats, Keychain, paid provider, live capture, release or tag
 was used. There are no unresolved findings in this round.
+
+
+## Round 15 — distinguish filter failures from harmless stderr (2026-10-22)
+
+Scope: the accepted Round 14 parent is `9fc7cf9e`. Only GitService's read
+result check and its package regression fixtures change in this round. The
+inventory, confinement, trust, redirect and watcher policies remain unchanged.
+
+### Diagnosis and implementation
+
+The previous `diagnostics.contains("external filter")` rejected successful
+comparisons merely because Git's CRLF warning named `external filter.txt`, or
+because an allowed global program mentioned those words in its progress text.
+The result check now requires an `error: ` or `fatal: ` prefix at byte-zero or
+after LF and one of Git's conversion/subprocess failure message forms. It uses
+`NSRegularExpression` directly, avoiding Swift String's grapheme-boundary search
+behavior when a combining mark follows a quote. `gitEnvironment` sets
+`LANG=en_US.UTF-8`; the source comment records why English diagnostics apply.
+
+The matcher permits literal LFs in file/program names. A filename containing a
+newline can at most cause a false refusal (fail-safe), never hide a real failure.
+Progress or warning text that impersonates a complete Git error line may likewise
+be refused conservatively. Ordinary warnings, inline mentions of an error and
+near-miss success messages are accepted. The existing error presentation remains
+unchanged.
+
+Apple Git's diagnostic formatter caps each message at 4096 bytes including its
+final LF. A long optional filter command can therefore lose the closing quote
+and failure suffix while Git still exits 0. Such a record is refused only when
+it starts with a known filter-failure prefix and reaches that exact byte limit.
+The size check uses the original stderr bytes, including when truncation cuts a
+UTF-8 scalar. This preserves the old failure refusal without the broad substring
+match. Required clean/smudge failures and process-filter startup failures are
+covered as well.
+
+### Source/version audit
+
+`which -a git` reports only `/usr/bin/git`, version **2.39.5 (Apple Git-154)**.
+`xcrun --find git` selects Xcode 16.1’s developer Git, with the same version.
+Neither `/opt/homebrew/bin/git` nor `/usr/local/bin/git` nor a Homebrew Git cellar
+is present; `brew list --versions git` reports no installed formula. No system
+Git installation was changed. The available runtime was tested; Homebrew coverage
+is a source comparison, not a claimed runtime run.
+
+Apple's [Git-154 convert.c](https://github.com/apple-oss-distributions/Git/blob/Git-154/src/git/convert.c)
+and [sub-process.c](https://github.com/apple-oss-distributions/Git/blob/Git-154/src/git/sub-process.c)
+are byte-identical to the corresponding upstream 2.39.5 files. The
+[Homebrew formula metadata](https://formulae.brew.sh/api/formula/git.json) reports
+stable 2.56.0; its [convert.c](https://github.com/git/git/blob/v2.56.0/convert.c)
+and [sub-process.c](https://github.com/git/git/blob/v2.56.0/sub-process.c) have the
+same relevant message forms. Downloaded sources and hashes are retained under
+`$B/round15-git-source` and `round15-adversarial-review.json`.
+
+| Recognized message family | Apple Git-154 source lines | Git 2.56.0 source lines |
+| --- | --- | --- |
+| Cannot fork/feed an external filter | convert.c:654, 674 | convert.c:667, 687 |
+| External filter failed, with or without numeric status | convert.c:681, 722, 777 | convert.c:694, 735, 790 |
+| Read from external filter failed | convert.c:716, 719 | convert.c:729, 732 |
+| Path too long for an external filter | convert.c:837 | convert.c:850 |
+| External filter no longer available with paths remaining | convert.c:935 | convert.c:948 |
+| Required clean/smudge filter failed | convert.c:1416, 1449, 1492 | convert.c:1442, 1475, 1518 |
+| Cannot fork subprocess / subprocess initialization failed | sub-process.c:97, 105 | sub-process.c:95, 103 |
+
+Handshake errors in sub-process.c return through the initialization-failure
+message; unrelated nonzero Git errors retain their existing handling. The
+4096-byte formatter is in [Apple usage.c](https://github.com/apple-oss-distributions/Git/blob/Git-154/src/git/usage.c#L14)
+and [Git 2.56.0 usage.c](https://github.com/git/git/blob/v2.56.0/usage.c#L11).
+
+### Regression and mutation evidence
+
+All executable fixtures are generated marker-file programs. Global programs use
+an isolated `GIT_CONFIG_GLOBAL` and fixture HOME; no real global config is read.
+Raw Git and GitService run the same status/diff commands, and successful stdout
+must agree byte-for-byte. Git emits the CRLF warning during diff in this fixture;
+status must still return the correct file entry.
+
+| Check | Result |
+| --- | --- |
+| Original substring behavior, failing first | CRLF diff and both global-progress reads rejected; optional failure correctly refused. Initial log also contained a fixture assertion expecting status to emit a CRLF warning; that assertion was corrected before final validation. |
+| Final fixture with substring mutation restored | 3 tests: 2 fail / 1 pass, 3 assertions fail (CRLF diff plus global-progress status/diff). |
+| Failure detection disabled | 1 test fails, 4 assertions fail: ordinary and 5000-byte-argument optional-filter commands each return 0 from raw status/diff but must be refused by Bello. |
+| Initial exact-message matcher without truncation handling | 1 test fails, 2 assertions fail for the long command; byte-limit handling fixes both. |
+| Fixed focused regression set | 4 tests pass: CRLF, global progress, optional failure and the diagnostic form/boundary table. |
+
+The table fixture covers every recognized form with error/fatal prefixes at the
+start and after LF, benign warning/inline prefixes, near-miss success messages,
+negative numeric status, names containing literal newlines or a combining mark,
+UTF-8 truncation and a filename that impersonates a diagnostic line. The mutation
+script restores the fixed source in `finally`. Evidence is in
+`$B/logs/round15-failing-first.log`, `round15-mutation-substring.log`,
+`round15-mutation-disabled.log`, `round15-truncated-first.log` and
+`round15-focused.log`.
+
+### Adversarial self-review
+
+- Swept the package for other substring-based filter-result checks: this was the
+  only one. No other trust, program or network path was changed.
+- Checked warning/progress acceptance independently from genuine optional
+  failure refusal, with direct Git exit status and output as the oracle.
+- Checked literal newlines, combining marks, negative status and truncated raw
+  bytes; no Character-based delimiter parsing or force-unwrapped parse was added.
+- Compared startup, single-file and process-filter diagnostics against the pinned
+  source versions, including the formatter's output limit.
+- An adversarial 63 KB stderr stream containing 7000 short error-prefixed lines
+  exposed quadratic retries in the first matcher (8169 ms). The final matcher
+  searches each family's first prefix and then its suffix once, preserving
+  multiline-name semantics; the same generated probe took 26.8 ms. Warning-only
+  and long-command probes also remained below 30 ms. Both repeated-prefix cases
+  are included in the table test. `round15-diagnostic-probe-first.log` and
+  `round15-diagnostic-probe.log` retain the measurements. The preliminary package
+  run was stopped for this correction and is not counted; final mutations and
+  all required suites were restarted on the revised source.
+- Only package source/tests and these two release/validation documents change.
+  There is no helper, wire or UI-rendering change; this round therefore does not
+  require helper/wire/acceptance reruns or gallery regeneration.
+
+### Upstream integration
+
+The fresh fetch found `origin/dev/next` had advanced to
+`391f3c6133dd126d1ef95c72e638bdbf32394ab4`: the expected-later `dev/a130-guard`
+merge had already landed. Merge commit `68ec5337` integrates it without rebasing
+or rewriting history. Both release-note sets are retained. The four in-progress
+Round 15 files were saved/restored around the merge and their contents verified;
+there were no conflicts. `xcodegen generate --quiet` regenerated the project for
+the added/removed test support files. All final package/native validation below
+runs on this merged result, including the three per-target issue-recording guards.
+The pre-merge package run was deliberately stopped and is not counted.
+
+### Final merged validation (round 15)
+
+All counts below are fresh on the final source after merge `68ec5337`. The two
+interrupted preliminary package runs are excluded. Source hashes are retained in
+`$B/logs/round15-tested-source.json` and were rechecked after validation.
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| bello-views | 472 | 4 | 0 |
+| Native Git/trust/file/watcher classes (24) | 325 | 1 | 0 |
+
+The package skips are opt-in performance fixtures; the native skip is the
+opt-in commit-browsing benchmark. All three newly integrated per-target issue
+recording guards passed. No helper/wire implementation or app source changed,
+so helper, wire, concurrent and acceptance suites were not rerun in this round,
+as permitted by the Round 15 scope. There is no UI rendering change.
+
+Exact final commands (text logs and exit statuses: `$B/logs/round15-final-*`):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+export CFFIXED_USER_HOME=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round15-home
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1
+swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositoryPermissionTests
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitToolTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileBlameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitHunkReviewTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitIntegratedHistoryTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitOperationSafetyTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFindTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CrashAuditRegressionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ReplyFileLinkTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChatFileLinkTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+```
+
+The shared full-lane lock covered the native/focus runs and was released in the
+validation driver’s `finally` block. Every serial class ran alone; the five
+parallel-safe Git classes used four workers. No extra DerivedData copy or named
+result bundle was created.
+
+| Native class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabTests | 9 | 0 | 0 |
+| ChatFileLinkTests | 8 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 12 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FileReviewStateTests | 24 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRepositoryPermissionTests | 10 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 43 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| ReplyFileLinkTests | 5 | 0 | 0 |
+| SessionPanelTests | 30 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+
+### Final audit and cleanup
+
+The shared lock was held from 10:42:55 through 10:58:14 +0800 and released.
+The last automatic Xcode result was extracted to JSON and removed; no clone
+folders remained. Text logs, commands and source hashes are retained in the
+assigned build root. `git diff --check` and the tested-source hash check passed.
+A final fetch still found `origin/dev/next` at `391f3c61`, already integrated.
+No installed app, real preferences/chats, Keychain, capture or paid provider was
+used. There are no unresolved code findings; the only validation limitation is
+that Homebrew Git is absent, so its diagnostics were compared in source rather
+than tested with that binary.
