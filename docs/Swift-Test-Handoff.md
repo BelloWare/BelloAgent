@@ -47,10 +47,13 @@ helper test class therefore derives from `HelperTestCase`, every
 `packages/bello-views` test class from `ViewsTestCase` (its test-only
 `BelloViewsTestSupport` target, named in each test target by a typealias), and
 the app's test bundle links `apps/macos/TestSupport/IssueRecordingGuard.m`;
-each records such an assertion once the other is done. The helper's and the
-views package's `IssueRecordingTests` fail for a test class that derives from
-`XCTestCase` directly, `IssueRecordingGuardTests` checks the app guard is
-installed, and `scripts/tests/test_xctest_issue_recording.py` runs all three
+each records such an assertion once the other is done. The helper's
+`IssueRecordingTests` and each views test target's own guard
+(`FileViewIssueRecordingTests`, `GitViewIssueRecordingTests`,
+`FileFinderIssueRecordingTests`, since Xcode runs each target as a bundle of
+its own) fail for a test class that derives from `XCTestCase` directly,
+`IssueRecordingGuardTests` checks the app guard is installed, and
+`scripts/tests/test_xctest_issue_recording.py` runs all three
 against XCTest. `@MainActor` alone does not avoid it: assertions in
 tasks and callbacks still run off the main thread. An assertion in a task the
 test does not await lands on whichever test is running when it fires, or is

@@ -142,3 +142,29 @@ Guards:
 No views test newly fails, so no hidden failure appeared. The +10 s is noise; a passing test never calls `record(_:)`.
 
 `dev/a130-security` adds five `GitViewTests` classes (`GitByteParsingTests`, `GitHTTPRedirectTests`, `GitInventoryPerformanceTests`, `GitInventoryTests`, `GitRepositorySecurityTests`). At merge each needs the one-line change `final class X: XCTestCase {` → `final class X: ViewsTestCase {`, with no import, or `IssueRecordingTests` fails naming it. That branch also inserts lines straight after `FolderBrowserTests`' class line, so expect one small conflict there: keep their insertion and the `ViewsTestCase` base. A new views test target would get the dependency automatically, but it needs its own two-line `ViewsTestCase.swift` alias.
+
+## Round 3: one guard per views test target
+
+Finding (Codex review, confirmed by the lead): `FileViewTests/IssueRecordingTests` read the classes of its own image and required all three test targets in it. `swift test` links the three targets into one bundle, so the gate passed. Xcode and `xcodebuild` build each test target as a bundle of its own, so there the guard failed falsely and checked nothing in `GitViewTests` or `FileFinderTests`.
+
+Fix (test-only; branch `dev/a130-guard`, base `a515d752`):
+
+- `Tests/BelloViewsTestSupport/LinkedTestClasses.swift` reads the classes of the image that holds a given test class. It returns the test targets found, by module name, and the `XCTestCase` subclasses that do not derive from `ViewsTestCase`. The loop is the old guard's.
+- Each test target has its own guard deriving from `ViewsTestCase`: `FileViewIssueRecordingTests` (the old `IssueRecordingTests`, renamed), `GitViewIssueRecordingTests` and `FileFinderIssueRecordingTests`. Each asserts three things. It finds its own target, so a wrong image cannot pass empty. Every `XCTestCase` subclass beside it derives from `ViewsTestCase`. Where it finds more than one target, it finds exactly `LinkedTestClasses.packageTargets`, so `swift test` still notices a target that stops being linked, or a new one that is not listed. Under `swift test` all three guards check the combined bundle; under Xcode each checks its own.
+
+Text logs are under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-guard/logs/`. `xcodebuild` ran the package scheme `BelloViews-Package` with `-derivedDataPath` under that build root and `CODE_SIGNING_ALLOWED=NO`. The default DerivedData was unchanged.
+
+| Check | Result |
+| --- | --- |
+| Base, `xcodebuild test -only-testing:FileViewTests/IssueRecordingTests` (`xcode-base-FileViewTests-IssueRecordingTests.log`) | Fails: `["FileViewTests"]` is not equal to all three (the false failure) |
+| Temporary probe in Xcode's `FileViewTests` bundle, not committed (`xcode-probe-FileViewTests-only.log`) | The helper finds `["FileViewTests"]`. The old exact-set assertion fails; the new per-target check passes |
+| The same probe under `swift test` (`swift-probe-combined.log`) | Finds all three targets; both pass |
+| Fix, the three guards under `xcodebuild` (`xcode-fix-guards.log`) | Each passes in its own bundle |
+| Fix, the three guards under `swift test` (`swift-fix-guards.log`) | 3 passed |
+| Mutation: `GitStashTests` back to `XCTestCase`, `swift test` (`swift-mutation-GitStashTests.log`) | All three guards fail naming `GitViewTests.GitStashTests` |
+| The same mutation under `xcodebuild` (`xcode-mutation-GitStashTests.log`) | Only `GitViewIssueRecordingTests` fails; the other two bundles do not hold the class |
+| Mutation: `FileFinderTests` dropped from `Package.swift`, `swift test` (`swift-mutation-unlinked-FileFinderTests.log`) | Both remaining guards fail: `FileViewTests` and `GitViewTests` alone are not all three |
+| Views package, `swift test` (`views-full.log`) | 350 tests (base 348, plus two guards), 3 skipped, 0 failures; 579.0 s, 9:40 wall; load 1.95 → 1.48 |
+| `scripts/tests/test_xctest_issue_recording.py` under unittest (pytest is not installed) (`python-issue-recording.log`) | 3 tests OK. It builds `ViewsTestCase.swift`, whose doc comment changed |
+
+`dev/a130-security` (at `9fc7cf9e`) adds six `GitViewTests` classes. All derive from `ViewsTestCase` already, and none shares a name with the new files. It also adds a regular `GitProcessSafety` target. That target holds no test classes, so the guards skip it, and the package still has the three test targets in `packageTargets`. A new test target needs its own guard and an entry in `packageTargets`, besides its `ViewsTestCase.swift` alias.
