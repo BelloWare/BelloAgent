@@ -106,11 +106,12 @@ extension WorkspaceModel {
         return true
     }
 
-    /// Flat has no project headers. Use the focused/selected chat's project,
-    /// then the chosen or last remembered workspace, then the first trusted one.
+    /// Flat has no project headers. Use the project Flat is narrowed to, the
+    /// focused/selected chat's project, then the chosen or last remembered
+    /// workspace, then the first trusted one.
     var flatNewChatProjectID: String? {
         let trusted = Set(workspaces.filter { $0.trusted && !$0.isScratch }.map(\.id))
-        let candidates = [focusedSessionID.flatMap(record)?.workspaceID, selectedID.flatMap(record)?.workspaceID,
+        let candidates = [sidebarFlatProject, focusedSessionID.flatMap(record)?.workspaceID, selectedID.flatMap(record)?.workspaceID,
                           selectedWorkspaceID, selectionMemory.remembered?.projectID]
         return candidates.compactMap { $0 }.first { trusted.contains($0) }
             ?? workspaces.first { trusted.contains($0.id) }?.id

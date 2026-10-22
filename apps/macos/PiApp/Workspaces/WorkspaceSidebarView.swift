@@ -22,6 +22,8 @@ import Combine
                                items: SidebarSearch.Scope.allCases.map { ($0, $0.title) },
                                horizontalPadding: 6, keyboardFocusable: true, accessibilityName: "Search scope")
     let clearFilter = PiKit.IconButton(symbol: "xmark", label: "Clear search", size: 20)
+    /// Flat's project chips, in the search scope's place while no search is on.
+    let projectFilter = SidebarProjectFilterBar()
     private var searchKeyLoopFrame = CGRect.null
     private let filterKeys = SidebarFilterDelegate()
     let selectionBar: SidebarSelectionBarView
@@ -118,6 +120,9 @@ import Combine
         list.removeTopic = { [weak self] id in self?.remove(topic: id) }
         list.setShownRoots = { [weak self] group, count, project in self?.glide { $0.model.setSidebarShownRoots(group, to: count, in: project) } }
         list.setSideFolded = { [weak self] id, folded in self?.glide { $0.model.setSidebarSideFolded(id, folded: folded) } }
+        list.chooseProject = { [weak self] id in self?.chooseProject(id) }
+        projectFilter.onChoose = { [weak self] id in self?.chooseProject(id) }
+        projectFilter.isHidden = true
         list.dropTargetChanged = { [weak self] target in
             guard let self, self.dropTarget?.project != target?.project || self.dropTarget?.topic != target?.topic else { return }
             self.dropTarget = target; self.refresh(animated: false)
@@ -142,7 +147,7 @@ import Combine
         settings.onPress = { [weak self] in self?.model.showProfiles = true }
 
         selectionBar.isHidden = true
-        for view in [headerMenu!, newChat, manage, filterField, searchScope, selectionBar, scroll, empty, hairline,
+        for view in [headerMenu!, newChat, manage, filterField, searchScope, projectFilter, selectionBar, scroll, empty, hairline,
                      report, inspector, resources, background, archive, settings] as [NSView] { addSubview(view) }
         model.sidebarFilter = filter
         // Content matches arrive after the titles: the list takes them in.
@@ -209,6 +214,8 @@ import Combine
         filterField.field.isEnabled = enabled
         clearFilter.isEnabled = enabled
         for scope in SidebarSearch.Scope.allCases { searchScope.tab(scope)?.isEnabled = enabled }
+        if model.sidebarListsFlat { projectFilter.update(chips: model.sidebarProjectChips, chosen: model.sidebarFlatProject) }
+        projectFilter.isEnabled = enabled
         refreshSearchChrome()
         empty.add.isEnabled = enabled
         for button in [selectionBar.copy, selectionBar.archiveWord, selectionBar.clearWord, selectionBar.archiveIcon, selectionBar.clearIcon] {
@@ -241,10 +248,29 @@ import Combine
         let pillFocused = (window?.firstResponder as? NSView)?.isDescendant(of: searchScope) == true
         let hidden = filter.isEmpty && !filterFocused && !pillFocused
         if clearFilter.isHidden != filter.isEmpty { clearFilter.isHidden = filter.isEmpty }
-        if searchScope.isHidden != hidden {
+        // Flat's project chips hold the scope's place while no search is on.
+        let chips = hidden && model.sidebarListsFlat && projectFilter.offersChoice
+        if searchScope.isHidden != hidden || projectFilter.isHidden == chips {
+            // One taking the other's place fades in (`PiKit.Motion.quick`).
+            let swapped: NSView? = !hidden && !projectFilter.isHidden ? searchScope : chips && !searchScope.isHidden ? projectFilter : nil
             searchScope.isHidden = hidden
+            projectFilter.isHidden = !chips
+            if let swapped, window != nil, !PiKit.Motion.reduced, let layer = swapped.layer ?? { swapped.wantsLayer = true; return swapped.layer }() {
+                let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0; fade.toValue = 1
+                fade.duration = PiKit.Motion.quick; fade.timingFunction = PiKit.Motion.timing(.easeOut)
+                layer.add(fade, forKey: "swap")
+            }
             window?.recalculateKeyViewLoop()
         }
+    }
+
+    /// A chip or a row's project tag: the list narrows to that project, or
+    /// lists every project again (nil), from its top; rows glide.
+    private func chooseProject(_ id: String?) {
+        guard model.sidebarProjectFilter != id else { return }
+        let clip = scroll.contentView
+        if clip.bounds.minY != 0 { clip.scroll(to: CGPoint(x: clip.bounds.minX, y: 0)); scroll.reflectScrolledClipView(clip) }
+        glide { $0.model.setSidebarProjectFilter(id) }
     }
 
     /// A button's look changed only when it changes: setting it redraws it.
@@ -382,6 +408,7 @@ import Combine
         y += fieldHeight + 6
         let scopeSize = searchScope.intrinsicContentSize
         searchScope.frame = CGRect(x: PiSpacing.md, y: y, width: scopeSize.width, height: scopeSize.height)
+        projectFilter.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: scopeSize.height)
         // Reserve the pill's slot: entering/leaving search never moves a row.
         y += scopeSize.height + 6
         if barShown {

@@ -305,6 +305,8 @@ struct ChatRowStats: Equatable {
         /// Project and topic tags in the combined Flat list only.
         var projectTag: String?
         var projectTagFullName: String?
+        /// The project tag is a button that narrows Flat to its project.
+        var choosesProject = false
         var topicTag: String?
         var hasSide = false
         var expanded = true
@@ -333,6 +335,8 @@ struct ChatRowStats: Equatable {
     private(set) var content: Content?
     var toggle: () -> Void = {}
     var archive: () -> Void = {}
+    /// The project tag was pressed (`SidebarProjectFilter.swift`).
+    var chooseProject: () -> Void = {}
     /// The buttons at the row's end changed (the archive confirmation).
     var controlsChanged: (() -> Void)?
 
@@ -348,7 +352,7 @@ struct ChatRowStats: Equatable {
     private let dot = UnreadDotView()
     /// A separate compact line keeps both tags visible at the narrowest width
     /// without taking space from the title or its archive/fold controls.
-    let projectTag = PiKit.Badge(text: "")
+    let projectTag = SidebarProjectTag()
     let topicTag = PiKit.Badge(text: "")
     private let tags: ShellStack
     private let archiveButton = PiKit.IconButton(symbol: "archivebox", label: "Archive chat", size: 18)
@@ -372,9 +376,9 @@ struct ChatRowStats: Equatable {
         pin.setAccessibilityElement(true); pin.setAccessibilityRole(.image); pin.setAccessibilityLabel("Pinned chat")
         draftMark.setAccessibilityElement(true); draftMark.setAccessibilityRole(.image); draftMark.setAccessibilityLabel("Has a draft")
         draftMark.toolTip = "Unsent draft"; draftMark.isHidden = true
-        for tag in [projectTag, topicTag] {
-            tag.compact = true; tag.isHidden = true; tag.setAccessibilityElement(false)
-        }
+        topicTag.compact = true; topicTag.setAccessibilityElement(false)
+        projectTag.setAccessibilityIdentifier("chooseProject")
+        for tag in [projectTag, topicTag] as [NSView] { tag.isHidden = true }
         tags.isHidden = true
         for view in [icon, row1, metrics, subtitle, tags] as [NSView] { addSubview(view) }
         bindActions()
@@ -402,6 +406,10 @@ struct ChatRowStats: Equatable {
         chevron.onPress = { [weak self] in
             guard token?.isCurrent != false else { return }
             self?.toggle()
+        }
+        projectTag.onPress = { [weak self] in
+            guard token?.isCurrent != false, self?.content?.choosesProject == true else { return }
+            self?.chooseProject()
         }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -450,6 +458,8 @@ struct ChatRowStats: Equatable {
         projectTag.isHidden = new.projectTag == nil
         projectTag.text = new.projectTag ?? ""
         projectTag.toolTip = (new.projectTagFullName ?? new.projectTag).map { "Project: " + $0 }
+        projectTag.pressable = new.choosesProject && new.projectTag != nil
+        projectTag.setAccessibilityLabel(new.projectTagFullName ?? new.projectTag)
         tags.isHidden = new.projectTag == nil && new.topicTag == nil
         topicTag.isHidden = new.topicTag == nil
         topicTag.text = new.topicTag ?? ""

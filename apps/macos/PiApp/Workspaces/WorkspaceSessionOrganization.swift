@@ -39,13 +39,14 @@ struct SidebarChatEntry: Identifiable {
     private var chatOrder: [String]?
     private var managedByOwner: [String: [ChatRecord]]?
     private var filterMatches: (query: String, ids: Set<String>)?
+    private var projectChips: [SidebarProjectChip]?
     /// How many of these answers were actually computed rather than reused.
     /// A sidebar pass must not grow this with the number of rows it draws.
     private(set) var computations = 0
 
     func invalidate() {
         PerformanceProbe.shared.count("sidebarIndexInvalidations")
-        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil; managedByOwner = nil; filterMatches = nil
+        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil; managedByOwner = nil; filterMatches = nil; projectChips = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
         if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true) }
         // An empty project was grouped too, even though it has no buckets.
@@ -96,6 +97,12 @@ struct SidebarChatEntry: Identifiable {
         if let filterMatches, filterMatches.query == query { return filterMatches.ids }
         let ids = build(); filterMatches = (query, ids); return ids
     }
+    /// Flat's project chips (`SidebarProjectFilter.swift`).
+    func chips(_ build: () -> [SidebarProjectChip]) -> [SidebarProjectChip] {
+        if let projectChips { return projectChips }
+        computations += 1
+        let value = build(); projectChips = value; return value
+    }
     func subagents(of owner: String, in chats: [ChatRecord]) -> [ChatRecord] {
         if managedByOwner == nil {
             managedByOwner = Dictionary(grouping: chats.filter { $0.isSubagent && $0.delegationIssue == nil }, by: { $0.delegation!.budgetOwnerSessionID })
@@ -117,8 +124,9 @@ extension WorkspaceModel {
             let query = sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
             let archive = sidebarShowsArchived
             if sidebarListsFlat {
+                let project = sidebarFlatScope(query: query)
                 return (archive ? [false, true] : [false]).flatMap { archived in
-                    SidebarSessionPresentation.filtered(sidebarFlatEntries(archived: archived, collapsed: []), by: query,
+                    SidebarSessionPresentation.filtered(sidebarFlatEntries(archived: archived, collapsed: [], project: project), by: query,
                         contentMatches: query.isEmpty ? [] : sidebarFilterMatches(query: query))
                         .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                         .map(\.chat.id)
@@ -182,13 +190,15 @@ extension WorkspaceModel {
         }
     }
 
-    /// Every listed project's chats in one cached tree. The same family,
-    /// pinned and held-activity ordering as Topics, built once per invalidation.
-    func sidebarFlatEntries(archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
-        let key = SidebarIndex.EntryKey(project: nil, topic: nil, archived: archived, collapsed: collapsed.sorted(), flat: true)
+    /// Every listed project's chats in one cached tree, or one `project`'s
+    /// (Flat's project filter). The same family, pinned and held-activity
+    /// ordering as Topics, built once per invalidation.
+    func sidebarFlatEntries(archived: Bool, collapsed: Set<String>, project: String? = nil) -> [SidebarChatEntry] {
+        let key = SidebarIndex.EntryKey(project: project, topic: nil, archived: archived, collapsed: collapsed.sorted(), flat: true)
         return sidebarIndex.entries(key) {
             let listed = Set(sidebarProjects.map(\.id))
-            let visible = chats.filter { !$0.isBackgroundTask && $0.isArchived == archived && listed.contains($0.workspaceID) }
+            let visible = chats.filter { !$0.isBackgroundTask && $0.isArchived == archived && listed.contains($0.workspaceID)
+                && (project == nil || $0.workspaceID == project) }
                 .sorted { sidebarPrecedes($0, $1) }
             return sidebarTree(visible, collapsed: collapsed)
         }
