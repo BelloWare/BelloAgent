@@ -135,8 +135,8 @@ import Combine
 }
 
 @MainActor final class AgentFamilyPopoverView: NSView, PiKit.WidthSizing {
-    private let model: WorkspaceModel
-    private let sessionID: String
+    let model: WorkspaceModel
+    private(set) var sessionID: String
     private let close: () -> Void
     private weak var ownerWindow: NSWindow?
     private var stack: ShellStack?
@@ -173,9 +173,31 @@ import Combine
         ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: 5, left: 30, bottom: 3, right: 10),
             [.view(PiKit.TextLine(PiKit.Line(title, font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true)), .fill)])
     }
+    /// The list of another chat, as the card's Agents tab follows the chat
+    /// shown beside it. It starts as a list of its own did: nothing in it
+    /// focused, its first row the one Return opens.
+    func show(sessionID: String) {
+        guard sessionID != self.sessionID else { return }
+        if let responder = window?.firstResponder as? NSView, responder === self || responder.isDescendant(of: self) {
+            window?.makeFirstResponder(nil)
+        }
+        self.sessionID = sessionID; selectedID = nil
+        refresh()
+        selectFirstIfLost()
+    }
+    /// Whether two families read the same in this list: only their owner
+    /// differs, and no row names anyone (a chat with no sides or agents yet).
+    /// Such a chat keeps the rows; New Side reads the owner when pressed.
+    private static func readsTheSame(_ shown: ConversationFamily, _ next: ConversationFamily) -> Bool {
+        guard next.rows.isEmpty, next.sides.isEmpty, next.agentCount == 0 else { return false }
+        var shown = shown; shown.ownerID = next.ownerID; shown.agents.ownerID = next.agents.ownerID
+        return shown == next
+    }
     func refresh() {
         let value = model.conversationFamily(model.familyPickerOwner(sessionID))
-        guard value != family else { return }; family = value
+        guard value != family else { return }
+        if let family, Self.readsTheSame(family, value) { self.family = value; selectFirstIfLost(); return }
+        family = value
         let hadFocus = window?.firstResponder as? NSView
         let restoreFocus = hadFocus.map { $0 === self || $0.isDescendant(of: self) } ?? false
         let focusID = hadFocus?.accessibilityIdentifier()
@@ -189,8 +211,10 @@ import Combine
         }
         func newSide() {
             guard !value.sides.isEmpty || value.canAddSide else { return }
-            let action = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
-                close(); model?.openNewFamilySide(value.ownerID)
+            let action = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak self, weak model, close] in
+                // The family shown when pressed: another chat's can keep this row.
+                guard let owner = self?.family?.ownerID else { return }
+                close(); model?.openNewFamilySide(owner)
             }
             action.leadingSymbol = "plus"; action.isEnabled = value.canAddSide; rows.append(action)
         }
@@ -240,25 +264,32 @@ import Combine
             }
         }
         if !reachedMainAgents { newSide() }
-        let active = value.activity.runningAgents + value.activity.queuedAgents + value.activity.stoppingAgents
-        let stopAll = PiKit.Button("Stop All…", style: .ghost, compact: true)
-        stopAll.isEnabled = active > 0
-        stopAll.setAccessibilityIdentifier("stop-all-agents")
-        stopAll.setAccessibilityLabel("Stop all \(active) running or queued sub-agents")
-        stopAll.onPress = { [weak self] in self?.confirmStopAll() }
-        let inspect = PiKit.Button("Inspect Family", symbol: "info.circle", style: .ghost, compact: true)
-        inspect.setAccessibilityIdentifier("inspect-agent-family")
-        inspect.onPress = { [weak model, close] in close(); model?.inspect(value.ownerID) }
-        if value.agentCount > 0 { controls.append(contentsOf: [stopAll, inspect]); rows.append(ShellStack(.horizontal, spacing: 8, [.view(stopAll), .spacer(0), .view(inspect)])) }
+        // Stop All and Inspect Family exist only for a family with agents.
+        if value.agentCount > 0 {
+            let active = value.activity.runningAgents + value.activity.queuedAgents + value.activity.stoppingAgents
+            let stopAll = PiKit.Button("Stop All…", style: .ghost, compact: true)
+            stopAll.isEnabled = active > 0
+            stopAll.setAccessibilityIdentifier("stop-all-agents")
+            stopAll.setAccessibilityLabel("Stop all \(active) running or queued sub-agents")
+            stopAll.onPress = { [weak self] in self?.confirmStopAll() }
+            let inspect = PiKit.Button("Inspect Family", symbol: "info.circle", style: .ghost, compact: true)
+            inspect.setAccessibilityIdentifier("inspect-agent-family")
+            inspect.onPress = { [weak model, close] in close(); model?.inspect(value.ownerID) }
+            controls.append(contentsOf: [stopAll, inspect]); rows.append(ShellStack(.horizontal, spacing: 8, [.view(stopAll), .spacer(0), .view(inspect)]))
+        }
         let stack = ShellStack(.vertical, spacing: 2, padding: NSEdgeInsets(top: 8, left: 6, bottom: 8, right: 6), rows.map { .view($0, .fill) })
         self.stack = stack; addSubview(stack)
         if !inheritedEnabled { for control in controls { control.isEnabled = false } }
         let enabled = controls.filter(\.isEnabled)
         if !embedded { for (index, control) in enabled.enumerated() { control.nextKeyView = enabled[(index + 1) % enabled.count] } }
-        if !openButtons.contains(where: { $0.accessibilityIdentifier() == selectedID && $0.isEnabled }) { selectedID = openButtons.first(where: \.isEnabled)?.accessibilityIdentifier() }
+        selectFirstIfLost()
         needsLayout = true
         PiKit.sizeChanged(self)
         if restoreFocus { window?.makeFirstResponder(enabled.first { $0.accessibilityIdentifier() == focusID } ?? self) }
+    }
+    /// The row Return opens: the one selected while it is still there, else the first.
+    private func selectFirstIfLost() {
+        if !openButtons.contains(where: { $0.accessibilityIdentifier() == selectedID && $0.isEnabled }) { selectedID = openButtons.first(where: \.isEnabled)?.accessibilityIdentifier() }
     }
     private func confirmStopAll() {
         guard let family, let ownerWindow else { return }

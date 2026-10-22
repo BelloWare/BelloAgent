@@ -28,6 +28,8 @@ import AppKit
         /// The response's fold, first in the words' menu.
         var fold: (title: String, perform: () -> Void)? = nil
         var environment: TranscriptRowEnvironment
+        /// The width the row places the part at, known before it has.
+        var width: CGFloat = 0
     }
     enum Kind { case words, card, work }
     static let warningFace = TranscriptPlainTextFace(size: 11, monospaced: false, lineSpacing: 0, label: "Warning")
@@ -66,7 +68,9 @@ import AppKit
         self.kind = kind
         switch kind {
         case .words:
-            let inputs = TranscriptRowInputs(item: Self.wordsItem(row.source), fresh: false, actions: model.actions, width: bounds.width,
+            // A part just built has no frame yet; its row knows the width.
+            let width = bounds.width > 0 ? bounds.width : model.width
+            let inputs = TranscriptRowInputs(item: Self.wordsItem(row.source), fresh: false, actions: model.actions, width: width,
                                              environment: model.environment, disclosure: TranscriptRowDisclosure(raw: model.raw),
                                              toggle: model.toggleRow ?? { _ in })
             let reply = self.reply ?? {
@@ -246,7 +250,7 @@ import AppKit
             card: card, cardOpen: key.map { disclosure.openTools.contains($0) && !disclosure.responseFolded } ?? false,
             fetched: key.flatMap { disclosure.toolInputs[$0] }, toggleCard: { if let key { toggle(.tool(key)) } },
             cardExpanded: key.map { disclosure.expandedTools.contains($0) }, setCardExpanded: { if let key { setOpen(.toolLines(key), $0) } },
-            raw: disclosure.raw, toggleRow: toggle, fold: fold, environment: inputs.environment))
+            raw: disclosure.raw, toggleRow: toggle, fold: fold, environment: inputs.environment, width: inputs.width))
         // The words are their own element (the reply's); a work row's line is.
         setAccessibilityElement(false)
     }
@@ -433,7 +437,7 @@ import AppKit
         }
         for (view, segment) in zip(parts, segments) {
             view.update(TranscriptNativePartView.Model(part: segment, message: message, actions: inputs.actions, open: true, toggle: {},
-                                                       environment: inputs.environment))
+                                                       environment: inputs.environment, width: inputs.width))
         }
         if open, message.responseTimeline?.supported == true, message.responseTimeline?.terminal == nil {
             let text = noReceipt ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); noReceipt = text; return text }()
