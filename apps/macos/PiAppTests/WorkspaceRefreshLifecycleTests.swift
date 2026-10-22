@@ -615,7 +615,7 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
 
         for (index, text) in ["Continue the reopened chat", "Continue from the earlier window"].enumerated() {
             if index == 1 {
-                // The helper pages whole turns, a thousand rows of them: this
+                // The helper pages whole turns, 250 rows of them: this
                 // short chat is one page of its. The earlier window is read
                 // from the journal, three turns of it, with the session closed
                 // as the reopen above was; sending opens it again.

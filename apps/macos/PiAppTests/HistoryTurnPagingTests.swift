@@ -47,7 +47,10 @@ final class HistoryTurnPagingTests: XCTestCase {
             let shown = page.messages.map(\.id)
             XCTAssertTrue(shown.first?.hasPrefix("q") == true, "\(label) starts at \(shown.first ?? "-"), not at a question")
             XCTAssertNil(page.partialTurnInput, label)
-            XCTAssertLessThanOrEqual(shown.count, HistoryWindowPolicy.pageRows, label)
+            // A page's rows, or one turn alone that is longer than a page.
+            let questions = shown.filter { $0.hasPrefix("q") }.count
+            XCTAssertTrue(shown.count <= HistoryWindowPolicy.pageRows || questions == 1, "\(label): \(shown.count) rows in \(questions) turns")
+            XCTAssertLessThanOrEqual(shown.count, HistoryWindowPolicy.residentRows, label)
             let after = (ids.firstIndex(of: shown.last ?? "") ?? ids.count) + 1
             XCTAssertEqual(page.endsTurn, after >= ids.count || ids[after].hasPrefix("q"), "\(label) says where it ends")
             XCTAssertTrue(after >= ids.count || ids[after].hasPrefix("q"), "\(label) ends inside a turn, before \(ids[min(after, ids.count - 1)])")

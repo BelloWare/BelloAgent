@@ -222,7 +222,10 @@ final class HistoryWindowTests: HelperTestCase {
             XCTAssertTrue(page["partialTurnInput"].isNull)
             let after = (ids.firstIndex(of: shown.last ?? "") ?? ids.count) + 1
             XCTAssertEqual(page["endsTurn"].flag, after >= ids.count || ids[after].hasPrefix("u"))
-            XCTAssertLessThanOrEqual(shown.count, HistoryWindowPolicy.pageRows)
+            // A page's rows, or one turn alone that is longer than a page.
+            let questions = shown.filter { $0.hasPrefix("u") }.count
+            XCTAssertTrue(shown.count <= HistoryWindowPolicy.pageRows || questions == 1, "page \(pages): \(shown.count) rows in \(questions) turns")
+            XCTAssertLessThanOrEqual(shown.count, HistoryWindowPolicy.residentRows)
             walked = shown + walked
             if page["older"].isNull { break }
             page = try await session.historyWindow(["cursor": page["older"]])
@@ -248,7 +251,7 @@ final class HistoryWindowTests: HelperTestCase {
                                        resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: [question, huge, target, next], autoCompaction: false)
         addTeardownBlock { await session.close() }
         // A turn's budget smaller than its long reply (180 KB), as the
-        // resident window's 24 MB is smaller than a reply longer still.
+        // resident window's 6 MB is smaller than a reply longer still.
         await session.limitHistoryPages(.init(rows: 1_000, bytes: 64 * 1024, turnRows: 3_000, turnBytes: 128 * 1024))
         let page = try await session.historyWindow(["around": "target"])
         XCTAssertEqual(page["messages"].list.map { $0["id"].text }, ["target", "u2"])

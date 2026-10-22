@@ -63,8 +63,10 @@ final class FullDisplayTests: HelperTestCase {
         let snapshot=await session.snapshot(["includeMetrics":false])
         XCTAssertEqual(snapshot["messages"].list.last?["text"].text,large)
         // An answer longer than a page's bytes is its turn's page on its own,
-        // complete, and the pages either side of it still reach it.
-        let huge=String(repeating:"Complete saved response 🙂\n",count:170_000)+"TAIL"
+        // complete, and the pages either side of it still reach it. (About
+        // twice a page's bytes: within what one turn alone may take.)
+        let huge=String(repeating:"Complete saved response 🙂\n",count:HistoryWindowPolicy.pageBytes/15)+"TAIL"
+        XCTAssertGreaterThan(huge.utf8.count,HistoryWindowPolicy.pageBytes); XCTAssertLessThan(huge.utf8.count*2,HistoryWindowPolicy.residentBytes)
         var answer=ChatMessage(role:"assistant",content:[textBlock(huge)]); answer.id="a"
         var next=ChatMessage(role:"user",content:[textBlock("And then?")]); next.id="u2"
         var short=ChatMessage(role:"assistant",content:[textBlock("Then this.")]); short.id="a2"

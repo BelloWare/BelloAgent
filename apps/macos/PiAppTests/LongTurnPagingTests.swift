@@ -294,6 +294,18 @@ final class LongTurnPagingTests: XCTestCase, SerialTestLane {
     }
 }
 
+extension XCTestCase {
+    /// A resident window of `rows` rows (bytes in proportion) in place of the
+    /// app's, for a probe choosing the window's size.
+    func usesProbeWindow(_ rows: String?, label: String) {
+        guard let rows = rows.flatMap(Int.init) else { return }
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: rows, bytes: HistoryWindowPolicy.residentBytes / HistoryWindowPolicy.residentRows * rows)
+        addTeardownBlock { TranscriptPaging.residentCaps = caps }
+        print("\(label) a window of \(rows) rows")
+    }
+}
+
 /// The measurement behind SCROLL-1 (opt-in, `PI_TURN_PROBE=1`): a tool-heavy
 /// chat (`ToolHeavyJournal`, `PI_TURN_PROBE_TURNS` turns, 30 by default)
 /// opened from its journal, read back page by page to its first message,
@@ -303,6 +315,16 @@ final class LongTurnPagingTests: XCTestCase, SerialTestLane {
 final class LongTurnPagingProbeTests: XCTestCase, SerialTestLane {
     override func setUpWithError() throws {
         try XCTSkipUnless(testEnvironment("PI_TURN_PROBE") == "1", "Set PI_TURN_PROBE=1 to measure tool-heavy paging")
+        // `PI_TURN_PROBE_PAGE_ROWS`: pages of this many rows (and bytes in
+        // proportion) in place of the app's, to choose its page size.
+        if let rows = testEnvironment("PI_TURN_PROBE_PAGE_ROWS").flatMap(Int.init) {
+            let limits = TranscriptPaging.pageLimits
+            TranscriptPaging.pageLimits = .init(rows: rows, bytes: HistoryWindowPolicy.pageBytes / HistoryWindowPolicy.pageRows * rows,
+                                                turnRows: HistoryWindowPolicy.residentRows, turnBytes: HistoryWindowPolicy.residentBytes)
+            addTeardownBlock { TranscriptPaging.pageLimits = limits }
+            print("TURNPROBE pages of \(rows) rows")
+        }
+        usesProbeWindow(testEnvironment("PI_TURN_PROBE_RESIDENT_ROWS"), label: "TURNPROBE")
     }
     private var turns: Int { Int(testEnvironment("PI_TURN_PROBE_TURNS") ?? "") ?? 30 }
     private static func footprint() -> Double {
@@ -373,6 +395,18 @@ final class LongTurnPagingProbeTests: XCTestCase, SerialTestLane {
         }
         func mean(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count) }
         print("TURNPROBE read back \(turns) turns: \(pages) pages, read mean/max \(Self.ms(mean(reads)))/\(Self.ms(reads.max() ?? 0)) ms, landing mean/max \(Self.ms(mean(lands)))/\(Self.ms(lands.max() ?? 0)) ms, window \(view.messages.count) rows, footprint +\(String(format: "%.1f", Self.footprint() - opening)) MB")
+        // A chat the helper has open reads the same page over the wire: its
+        // frame is decoded off the main actor, its rows on it.
+        let rows = Array(view.messages.suffix(TranscriptPaging.pageLimits.rows)).map { row -> TranscriptMessage in var row = row; row.accounting = nil; return row }
+        let wire = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(rows))
+        var decodes: [Double] = []
+        for _ in 0..<5 {
+            let started = ProcessInfo.processInfo.systemUptime
+            let decoded = try TranscriptMessage.page(wire)
+            decodes.append(ProcessInfo.processInfo.systemUptime - started)
+            XCTAssertEqual(decoded.count, rows.count)
+        }
+        print("TURNPROBE a helper page of \(rows.count) rows decoded on the main thread: mean/max \(Self.ms(mean(decodes)))/\(Self.ms(decodes.max() ?? 0)) ms, projector \((try? TranscriptMessage.projected(wire)) != nil ? "yes" : "no")")
     }
 
     /// From the newest message to the first and back, 120 points a frame.

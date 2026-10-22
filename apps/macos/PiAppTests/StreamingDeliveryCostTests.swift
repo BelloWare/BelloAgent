@@ -9,7 +9,9 @@ import Combine
 /// and publishing it. Printed as PERF lines; the asserts only pin the budget
 /// the main actor has, so a slow machine does not fail the suite on noise.
 final class StreamingDeliveryCostTests: XCTestCase {
-    static let rowCount = 300
+    /// The rows the window holds; `PI_DELTA_ROWS` measures another window
+    /// (the resident window holds up to `HistoryWindowPolicy.residentRows`).
+    static let rowCount = testEnvironment("PI_DELTA_ROWS").flatMap(Int.init) ?? 300
     /// A row shaped like the helper's display projection.
     private static func row(_ index: Int) -> WireValue {
         .object(["id": .string("m\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
