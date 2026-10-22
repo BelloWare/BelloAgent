@@ -2,6 +2,15 @@
 
 **Released 2026-10-22:** 0.1.130 (build 134, tag `v0.1.130`) is the latest release; record `docs/validation/Bello-Agent-0.1.130-2026-10-22.md`.
 
+## 0.1.131
+
+Owner, 2026-10-22: "once you release the current version, please check this and try to replicate this and actually fix this."
+
+- [ ] SCROLL-1: opening a long chat shows a turn's tool calls grouped ("42 calls") when the whole turn is loaded but as detailed rows when the loaded window starts inside it, and scrolling through a long chat loads too little at a time. Grouping must not depend on how much is loaded; the owner suggests loading far more rows at once (about 1,000).
+- [ ] EDIT-1: editing an earlier message can take very long to start even when the message is on screen.
+- [ ] PERF-1 (0.1.130 soak): beside the floating Agents, Diff and Files card a newly shown reply's text is laid out at the 840 pt page width, then again at the narrower column; the card's own refresh and drawing add about 0.5 s per two minutes of chat switching. Lay a reply out once at its real width and cut the card's repeated work.
+- Deferred from 0.1.130: see Known in the 0.1.130 record.
+
 ## 0.1.130
 
 - [x] SECURITY-BOUNDARIES-1bm: Git inventory reuse validates exact on-disk path spelling with bounded probes, including case-only and NFC/NFD renames without a watcher; per-repository override scopes remain case-sensitive. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
