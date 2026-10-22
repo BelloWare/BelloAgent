@@ -63,7 +63,8 @@ TextKit layout (`_fillLayoutHoleForCharacterRange`, main thread) at 1,178 →
 - Evidence counters: `NativeMarkdownContainer.textLayouts`/`textLayoutWidth`
   (TextKit layout completed to the end, via the layout manager's delegate) and
   `TranscriptLayoutClock.markdownTextLayouts`.
-- The card keeps its Agents list while it is on screen and the chat changes
+- The card keeps its Agents list while the list is on screen (the card shown,
+  Agents chosen) and the chat changes
   (`AgentFamilyPopoverView.show(sessionID:)`: focus in the list is let go and
   the list scrolls to its top, as a new list's did). A family that reads the
   same — no sides and no agents, only its owner differs — keeps its rows; New
@@ -179,6 +180,21 @@ Their profiles agree with the one kept: TextKit 2,067 / 2,050 / 2,058 samples
 (1,118–1,122 as replies joined the page), the card 585 / 586 / 662. The kept
 run's end line reads 4.60, 30 s after the soak's last action, during
 `xcodebuild`'s teardown; its in-run maximum was 3.74.
+
+## Round 2 (review)
+
+**Finding (P2):** with Diff or Files chosen, switching chats kept the hidden
+Agents list and `show(sessionID:)` rebuilt the new chat's whole family behind
+the other tab, where a list of its own had waited until Agents was chosen.
+The list is now kept only while Agents is the chosen tab; otherwise it is let
+go as before and built when Agents shows.
+
+- `SessionCardSwitchTests.testAChatOpenedBesideAnotherTabBuildsItsAgentsOnlyWhenShown`
+  (Files chosen, then a chat with a side): on `ebb2e952` it failed — the side's
+  row was built behind Files (`r2-failing-first.log`, 3 executed, 1 failed).
+  The failing state is the mutation (the one condition removed).
+- With the fix: `SessionCardSwitchTests` 3/3 (`r2-card.log`);
+  `SessionPanelTests`, under the lock, 30/30 (`r2-session-panel.log`).
 
 ## Notes
 

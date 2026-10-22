@@ -96,10 +96,11 @@ enum SessionPanelLayout {
         if chatID != chat.id {
             invalidateRepository()
             chatID = chat.id
-            // A list on screen follows the chat from its top, keeping the rows
-            // that read the same (most chats have no sides or agents yet).
-            // One out of sight is built again when the card shows.
-            if let agents, agents.model === model, presented {
+            // The list on screen follows the chat from its top, keeping the
+            // rows that read the same (most chats have no sides or agents
+            // yet). One out of sight — the card hidden, or Diff or Files
+            // chosen — is built again when Agents shows.
+            if let agents, agents.model === model, presented, state.selection == .agents {
                 agents.show(sessionID: chat.id)
                 if scroll.contentView.bounds.origin != .zero {
                     scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)

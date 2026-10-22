@@ -168,4 +168,28 @@ final class SessionCardSwitchTests: XCTestCase {
         try await eventually("a side of the chat shown") { bench.model.sides[shown]?.pending == true }
         XCTAssertNil(bench.model.sides[bench.chats[0].id], "not a side of the chat the row was built for")
     }
+
+    /// A list out of sight is not built: with Files shown, opening a chat
+    /// with a side builds none of its Agents rows until Agents is chosen
+    /// again, as when each chat had a list of its own. Kept across the
+    /// switch, the list was rebuilt for the new family behind the Files tab.
+    @MainActor func testAChatOpenedBesideAnotherTabBuildsItsAgentsOnlyWhenShown() async throws {
+        let bench = try Bench(self, width: 1_000)
+        let parent = bench.chats[1]
+        var side = ChatRecord(id: "side-" + UUID().uuidString, workspaceID: parent.workspaceID, title: "Release checklist", path: nil,
+                              profileID: parent.profileID)
+        side.parentSessionID = parent.id
+        bench.model.chats.append(side)
+        await bench.show(0)
+        let panel = bench.pane.sessionPanel
+        XCTAssertNotNil(panel.agents, "the card opens on Agents")
+        panel.select(.files); await bench.settle()
+        XCTAssertEqual(panel.selectedTab, .files)
+        func rows() -> [FamilyPickerRow] { ConversationPaneTests.views(FamilyPickerRow.self, in: panel) }
+        await bench.show(1)
+        XCTAssertEqual(panel.selectedTab, .files, "the card stays on Files")
+        XCTAssertTrue(rows().isEmpty, "Agents rows were built behind the Files tab: \(rows().compactMap { $0.accessibilityIdentifier() })")
+        panel.select(.agents); await bench.settle()
+        XCTAssertTrue(rows().contains { $0.accessibilityIdentifier() == "open-side-" + side.id }, "choosing Agents builds the chat's list, with its side")
+    }
 }
