@@ -153,6 +153,9 @@ extension LayoutCycleTests {
             model.error = nil
             return total * 1000
         }
+        // The sheets this test opens, each in a window of its own. A window an
+        // earlier test left is that test's to answer for: named, not counted.
+        let earlier = Set(NSApp.windows.map(ObjectIdentifier.init))
         let before = await cost()
         for _ in 0..<10 {
             model.showProfiles = true; try await Task.sleep(for: .milliseconds(700))
@@ -160,9 +163,14 @@ extension LayoutCycleTests {
         }
         let after = await cost()
         try await Task.sleep(for: .milliseconds(300))
-        let swiftUISheets = NSApp.windows.filter(Self.presentedBySwiftUI).count
-        let holding = NSApp.windows.filter { $0.styleMask.contains(.docModalWindow) && !$0.isVisible && $0.contentView != nil }.count
-        print(String(format: "COST before %.1f ms, after ten Settings sheets %.1f ms, closed sheets holding views %d, SwiftUI sheet windows %d", before, after, holding, swiftUISheets))
+        func holdsViews(_ window: NSWindow) -> Bool { window.styleMask.contains(.docModalWindow) && !window.isVisible && window.contentView != nil }
+        let opened = NSApp.windows.filter { !earlier.contains(ObjectIdentifier($0)) }
+        let swiftUISheets = opened.filter(Self.presentedBySwiftUI).count
+        let holding = opened.filter { holdsViews($0) }.count
+        let left = NSApp.windows.filter { earlier.contains(ObjectIdentifier($0)) && holdsViews($0) }
+            .map { "\(type(of: $0)) \"\($0.title)\" holding \($0.contentView.map { "\(type(of: $0))" } ?? "")" }
+        print(String(format: "COST before %.1f ms, after ten Settings sheets %.1f ms, closed sheets holding views %d, SwiftUI sheet windows %d", before, after, holding, swiftUISheets)
+              + (left.isEmpty ? "" : "; left by earlier tests: \(left)"))
         XCTAssertEqual(swiftUISheets, 0, "Every sheet is a window of the app's own (`piSheetWindow`), not one SwiftUI keeps")
         XCTAssertEqual(holding, 0, "A closed sheet's window lets go of its views")
         XCTAssertLessThan(after, before * 1.6, "Closed sheets no longer redraw with every change to the model (before \(Int(before)) ms, after \(Int(after)) ms)")
@@ -201,7 +209,14 @@ extension LayoutCycleTests {
             appMenu.performActionForItem(at: appMenu.index(of: item))
             for _ in 0..<60 {
                 try await Task.sleep(for: .milliseconds(50))
-                if let window = NSApp.windows.first(where: { $0.isVisible && !before.contains(ObjectIdentifier($0)) }) { return window }
+                if let window = NSApp.windows.first(where: { $0.isVisible && !before.contains(ObjectIdentifier($0)) }) {
+                    // The window puts its form back when it becomes key or
+                    // main or comes on screen. The test host is often not the
+                    // active app, and another app's window may cover this
+                    // one: it is brought in front, as activation would.
+                    window.orderFrontRegardless()
+                    return window
+                }
             }
             XCTFail("The installed Settings menu must open its native window")
             throw CancellationError()

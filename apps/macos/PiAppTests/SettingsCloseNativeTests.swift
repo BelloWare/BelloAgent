@@ -211,8 +211,12 @@ import XCTest
         var answers: [Bool] = [], retries = 0
         lifecycle.answerTermination = { answers.append($0) }
         lifecycle.retryTermination = { retries += 1 }
+        // The question is the sheet that is new. A sheet an earlier test left
+        // on its own window, still closing, would be taken for it and
+        // answered in its place, and the question would stay up.
+        let earlier = Set(NSApp.windows.compactMap(\.attachedSheet).map(ObjectIdentifier.init))
         XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApplication.shared), .terminateLater)
-        var host: NSWindow? { NSApp.windows.first { $0.attachedSheet != nil } }
+        var host: NSWindow? { NSApp.windows.first { $0.attachedSheet.map { !earlier.contains(ObjectIdentifier($0)) } == true } }
         try await eventually("the stop-and-quit question is up") { host != nil }
         editor.draft.profile.name = "Typed during the question"
         let parent = try XCTUnwrap(host), question = try XCTUnwrap(parent.attachedSheet)
