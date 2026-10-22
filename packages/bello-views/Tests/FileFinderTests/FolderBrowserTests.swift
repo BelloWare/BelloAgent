@@ -1,7 +1,235 @@
 import XCTest
 @testable import FileFinder
+@testable import GitProcessSafety
+import Darwin
 
 final class FolderBrowserTests: ViewsTestCase {
+    @MainActor func testFinderToolLookupSharesCancellationAndDeadline() async throws {
+        let previous = GitToolLookup.current, root = try fixture()
+        let binary = try previous.get(invocation: GitInvocation())
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        GitToolLookup.current = GitToolLookup { _ in entered.signal(); _ = release.wait(timeout: .now() + 2); return binary }
+        defer { release.signal(); GitToolLookup.current = previous }
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await FinderProcess.git(["--version"], in: root.path, limit: 4096, timeout: cancel ? 1 : 0.06, environment: Self.environment(root)) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("Stopped lookup must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+        }
+        XCTAssertEqual(entered.wait(timeout: .now()), .success)
+        XCTAssertEqual(entered.wait(timeout: .now()), .timedOut, "Both reads share one lookup")
+        release.signal()
+        let output = try await FinderProcess.git(["--version"], in: root.path, limit: 4096, environment: Self.environment(root))
+        XCTAssertEqual(output.status, 0)
+    }
+
+    func testMissingGitStillListsPlainFolders() async throws {
+        let previous = GitToolLookup.current, root = try fixture()
+        GitToolLookup.current = GitToolLookup { _ in throw GitToolLookupError.unavailable }
+        defer { GitToolLookup.current = previous }
+        try file("fixture.txt", at: root)
+        let listing = try await FileListing.list(root.path, limits: FileListingLimits(), environment: Self.environment(root))
+        XCTAssertEqual(listing.count, 1)
+        let directory = try await FolderDirectory.read(root, relativeTo: root, environment: Self.environment(root))
+        XCTAssertEqual(directory.entries.map(\.name), ["fixture.txt"])
+    }
+
+    func testStalledIgnoreFileProbeDoesNotBlockFolderReads() async throws {
+        let root = try fixture(), path = root.path + "/.gitignore"
+        try file(".gitignore", at: root, text: "*.tmp\n"); try file("fixture.tmp", at: root)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let probe = Task.detached {
+            try? GitFileProbe.run(paths: [path], invocation: GitInvocation()) {
+                entered.signal(); _ = release.wait(timeout: .now() + 5)
+            }
+        }
+        defer { release.signal() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        _ = await probe.value // Its bounded wait ends; the filesystem call does not.
+        let start = ProcessInfo.processInfo.systemUptime
+        let listing = try await FolderDirectory.read(root, relativeTo: root, environment: Self.environment(root))
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.5)
+        XCTAssertTrue(listing.warning?.contains("could not be checked promptly") == true)
+        XCTAssertTrue(listing.entries.contains { $0.name == "fixture.tmp" })
+    }
+
+    func testLiteralUnicodeIgnorePathsKeepTheirBytes() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        try git.run(["config", "core.precomposeUnicode", "false"], in: root)
+        let nfc = "caf\u{e9}.tmp", nfd = "cafe\u{301}.tmp"
+        for (name, rule) in [(nfc, nfc), (nfd, nfc), (nfd, nfd), (nfc, nfd)] {
+            try file(".gitignore", at: root, text: rule + "\n")
+            // Darwin's raw syscalls preserve this spelling on APFS.
+            let path = root.path + "/" + name
+            let descriptor = path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL, 0o600) }
+            XCTAssertGreaterThanOrEqual(descriptor, 0); if descriptor >= 0 { close(descriptor) }
+            defer { path.withCString { _ = unlink($0) } }
+            let expected = try git.run(["check-ignore", "-z", "--stdin"], in: root, input: Data((name + "\0").utf8), allowFailure: true)
+            XCTAssertEqual(!expected.isEmpty, name.utf8.elementsEqual(rule.utf8), "Git's byte-exact fixture oracle")
+            let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+            XCTAssertNil(listing.warning)
+            XCTAssertEqual(listing.entries.first { $0.name == name }?.isDimmed, !expected.isEmpty, "\(name.debugDescription), rule \(rule.debugDescription)")
+        }
+    }
+
+    @MainActor func testFinderTrustCallbackSharesCancellationAndDeadline() async throws {
+        let previous = GitReadProcess.resolveTrust
+        defer { GitReadProcess.resolveTrust = previous }
+        GitReadProcess.resolveTrust = { _, invocation in
+            while true {
+                try invocation.check()
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) { continuation.resume() }
+                }
+            }
+        }
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, timeout: cancel ? 1 : 0.06, environment: git.environment) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("Stopped trust resolution must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+        }
+    }
+
+    @MainActor func testStdinIncludesDoNotConsumeFolderPaths() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        let names = ["ordinary.tmp", "-option.tmp", "space name.tmp", "line\nbreak.tmp", "tab\tname.tmp", "quote\"name.tmp", "back\\slash.tmp",
+                     "café.tmp", "bell\u{7}.tmp", "backspace\u{8}.tmp", "vertical\u{b}.tmp", "form\u{c}.tmp", "carriage\r.tmp", "delete\u{7f}.tmp"]
+        for name in names { try file(name, at: root) }
+        try file(".gitignore", at: root, text: "*.tmp\n")
+        try file("README", at: root); try git.run(["add", "README"], in: root)
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { directory, _ in directory == root.path }
+        defer { GitReadProcess.resolveTrust = previous }
+        for source in ["/dev/stdin", "/dev/fd/0"] {
+            try git.run(["config", "include.path", source], in: root)
+            let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+            XCTAssertNil(listing.warning, source)
+            for name in names { XCTAssertEqual(listing.entries.first { $0.name == name }?.isDimmed, true, name) }
+            XCTAssertEqual(listing.entries.first { $0.name == "README" }?.isDimmed, false)
+        }
+    }
+
+    @MainActor func testTrustedFinderInventorySharesCancellationAndDeadline() async throws {
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { _, _ in true }
+        defer { GitReadProcess.resolveTrust = previous }
+        for cancel in [false, true] {
+            let root = try fixture(), git = try TestGit(fixture())
+            try file("README", at: root); try git.run(["init", "-q"], in: root); try git.run(["add", "README"], in: root)
+            _ = try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, environment: git.environment)
+            let fifo = root.appendingPathComponent(".git/slow-config")
+            XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+            try git.run(["config", "include.path", fifo.path], in: root)
+            let descriptor = open(fifo.path, O_RDWR | O_NONBLOCK)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { try? FileManager.default.removeItem(at: fifo); close(descriptor) }
+            let start = ProcessInfo.processInfo.systemUptime
+            let task = Task { try await FinderProcess.git(["ls-files", "-z"], in: root.path, limit: 4096, timeout: cancel ? 20 : 0.15, environment: git.environment) }
+            if cancel { try await Task.sleep(for: .milliseconds(100)); task.cancel() }
+            do { _ = try await task.value; XCTFail("Obsolete listing completed") }
+            catch { if cancel { XCTAssertTrue(error is CancellationError, "\(error)") } }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.7)
+        }
+    }
+
+    @MainActor func testTrustedListingsUseGlobalMonitorButNeverLocalMonitor() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try file("README", at: root)
+        try git.run(["init", "-q"], in: root); try git.run(["add", "README"], in: root)
+        for name in ["global", "local"] {
+            try file(".git/\(name)-monitor", at: root, text: "#!/bin/sh\n: > '\(root.path)/\(name)-ran'\nprintf 'token\\000'\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent(".git/\(name)-monitor").path)
+        }
+        let global = root.appendingPathComponent(".git/global-config")
+        try Data("[core]\nfsmonitor = \(root.path)/.git/global-monitor\n".utf8).write(to: global)
+        var env = Self.environment(root); env["GIT_CONFIG_GLOBAL"] = global.path
+        try git.run(["config", "core.fsmonitor", root.path + "/.git/local-monitor"], in: root)
+        let previous = GitReadProcess.resolveTrust
+        GitReadProcess.resolveTrust = { directory, _ in directory == root.path }
+        defer { GitReadProcess.resolveTrust = previous }
+        for operation in ["folder", "quick open"] {
+            if operation == "folder" {
+                let listing = try await FolderDirectory.read(root, relativeTo: root, environment: env)
+                XCTAssertTrue(listing.entries.contains { $0.name == "README" })
+            } else {
+                let listing = try await FileListing.list(root.path, limits: .init(), environment: env)
+                XCTAssertTrue(paths(listing).contains("README"))
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-ran").path), operation)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("local-ran").path), operation)
+            try? FileManager.default.removeItem(at: root.appendingPathComponent("global-ran"))
+        }
+        GitReadProcess.resolveTrust = { _, _ in false }
+        _ = try await FolderDirectory.read(root, relativeTo: root, environment: env)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("global-ran").path), "Revoked trust restores confinement")
+    }
+
+    func testListingsNeverRunRepositoryFSMonitor() async throws {
+        let root = try fixture(), env = Self.environment(root), git = try TestGit(fixture())
+        try file("README", at: root)
+        for arguments in [["init", "-q"], ["add", "README"]] {
+            try git.run(arguments, in: root)
+        }
+        let marker = root.appendingPathComponent("ran"), hook = root.appendingPathComponent("monitor")
+        try file("monitor", at: root, text: "#!/bin/sh\n: > '\(marker.path)'\nprintf 'token\\000'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try git.run(["config", "core.fsmonitor", hook.path], in: root)
+        for boundary in [root, root.deletingLastPathComponent()] {
+            let listing = try await FolderDirectory.read(root, relativeTo: boundary, environment: env)
+            XCTAssertTrue(listing.entries.contains { $0.name == "README" })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Folder listing, project boundary: \(String(describing: boundary))")
+            try? FileManager.default.removeItem(at: marker)
+        }
+        let listing = try await FileListing.list(root.path, limits: .init(), environment: env)
+        XCTAssertTrue((0..<listing.count).contains { String(decoding: listing.path($0), as: UTF8.self) == "README" })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Quick Open listing")
+    }
+
+    func testSparseIndexListingsNeverStartPromisorRemotePrograms() async throws {
+        let root = try fixture(), git = try TestGit(fixture())
+        try folder("kept", at: root); try folder("omitted", at: root)
+        try file("kept/README", at: root); try file("omitted/hidden", at: root)
+        try git.run(["init", "-q"], in: root); try git.run(["add", "."], in: root)
+        try git.run(["-c", "commit.gpgsign=false", "commit", "-qm", "Sparse fixture"], in: root)
+        let oid = String(decoding: try git.run(["rev-parse", "HEAD:omitted"], in: root), as: UTF8.self).trimmingCharacters(in: .newlines)
+        try git.run(["sparse-checkout", "init", "--cone", "--sparse-index"], in: root)
+        try git.run(["sparse-checkout", "set", "kept"], in: root)
+        let marker = root.appendingPathComponent("ran"), remote = root.appendingPathComponent(".git/remote")
+        try file(".git/remote", at: root, text: "#!/bin/sh\n: > '\(marker.path)'\nexit 1\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: remote.path)
+        for (key, value) in [("extensions.partialClone", "origin"), ("remote.origin.promisor", "true"),
+                             ("remote.origin.url", "ext::" + remote.path), ("protocol.ext.allow", "always")] {
+            try git.run(["config", key, value], in: root)
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".git/objects/" + oid.prefix(2) + "/" + oid.dropFirst(2)))
+        for operation in ["folder", "quick open"] {
+            if operation == "folder" {
+                let listing = try await FolderDirectory.read(root, relativeTo: root, environment: git.environment)
+                XCTAssertTrue(listing.entries.contains { $0.name == "kept" })
+            } else {
+                let listing = try await FileListing.list(root.path, limits: .init(), environment: git.environment)
+                XCTAssertTrue(paths(listing).contains("kept/README"))
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), operation)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
+
     func testBreadcrumbsRespectProjectBoundaryAndHome() {
         let home = URL(fileURLWithPath: "/fixture/home")
         let root = home.appendingPathComponent("Project")
@@ -143,8 +371,9 @@ final class FolderBrowserTests: ViewsTestCase {
         try file(".gitignore", at: root, text: "ignored/\n*.log\n")
         try file("tracked.log", at: root); try file("untracked.log", at: root); try file("ignored/a.txt", at: root)
         let env = Self.environment(root)
-        _ = try await FinderProcess.git(["init", "-q"], in: root.path, limit: 4096, environment: env)
-        _ = try await FinderProcess.git(["add", "-f", "tracked.log"], in: root.path, limit: 4096, environment: env)
+        let git = try TestGit(fixture())
+        try git.run(["init", "-q"], in: root)
+        try git.run(["add", "-f", "tracked.log"], in: root)
         let listing = try await FolderDirectory.read(root, relativeTo: root, environment: env)
         XCTAssertFalse(try XCTUnwrap(listing.entries.first { $0.name == "tracked.log" }).isDimmed)
         XCTAssertTrue(try XCTUnwrap(listing.entries.first { $0.name == "untracked.log" }).isDimmed)

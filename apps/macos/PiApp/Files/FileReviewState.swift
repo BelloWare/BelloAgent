@@ -1,6 +1,7 @@
 import AppKit
 import FileView
 import GitView
+import GitProcessSafety
 
 /// TabHost stores this beside the canonical file reference. Older tabs only
 /// have `project`; optional reading state deliberately contains no file text.

@@ -200,10 +200,8 @@ final class GitRepositoryStateTests: ViewsTestCase {
         let module = root.appendingPathComponent("module")
         try "generated\n".write(to: module.appendingPathComponent("loose.txt"), atomically: true, encoding: .utf8)
         var status = try await Self.summaryService.status(in: root.path)
-        XCTAssertEqual(status.entries.map(\.path), ["module"])
-        // Git's numstat reports 0/0 for dirty-only gitlinks even though its
-        // short patch has a -dirty suffix. Do not invent counts for that suffix.
-        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: ["module": GitDiffStat(added: 0, removed: 0, binary: false)])
+        XCTAssertTrue(status.entries.isEmpty, "Background reads do not inspect a child repository's worktree")
+        try await Self.assertSummaryMatchesOpenedRows(status, in: root, expected: [:])
         try Self.git(["config", "submodule.module.ignore", "all"], in: root)
         status = try await Self.summaryService.status(in: root.path)
         XCTAssertTrue(status.entries.isEmpty, "A configured worktree ignore remains effective")
@@ -417,8 +415,10 @@ final class GitRepositoryStateTests: ViewsTestCase {
     private func assertBoundedPairCounts(_ status: GitRepositoryStatus, in root: URL, expected: [String: GitDiffStat],
                                          maximum: Int, file: StaticString = #filePath, line: UInt = #line) async throws {
         let trace = root.appendingPathComponent(".git/count-trace.json")
+        // This generated repository is trusted so the measured commands can
+        // write their fixture trace; untrusted readers cannot write here.
         let service = GitService(environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1", "GIT_TRACE2_EVENT": trace.path])
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_TRACE2_EVENT": trace.path], trusted: true)
         let counts = try await service.changeStats(in: root.path, status: status)
         let events = try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").map {
             try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]

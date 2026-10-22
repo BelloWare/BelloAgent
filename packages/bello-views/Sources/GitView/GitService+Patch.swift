@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 /// One visible review owns bounded patch/index/blob snapshots, never a history
 /// cache. Closing or changing selection releases them.
@@ -15,9 +16,9 @@ public struct GitPatchReview: Sendable {
 }
 
 extension GitService {
-    func patchCommand(_ arguments: [String], in root: String, index: String? = nil) async throws -> Output {
+    func patchCommand(_ arguments: [String], in root: String, index: String? = nil, readOnly: Bool = true) async throws -> Output {
         let output = try await run(["-c", "core.fsmonitor=false"] + arguments, in: root,
-                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"].merging(index.map { ["GIT_INDEX_FILE": $0] } ?? [:]) { $1 })
+                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"].merging(index.map { ["GIT_INDEX_FILE": $0] } ?? [:]) { $1 }, readOnly: readOnly)
         guard output.status == 0 else {
             throw GitFailure(message: output.stderr.isEmpty ? "Git could not read or update this hunk." : output.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -30,7 +31,7 @@ extension GitService {
         guard URL(fileURLWithPath: top).resolvingSymlinksInPath() == URL(fileURLWithPath: root).resolvingSymlinksInPath() else { throw GitFailure(message: "The repository changed. Refresh and review it again.") }
         let location = try await patchIndexPath(in: root)
         let snapshot = try GitIndexSnapshot.read(at: location)
-        let head = try await patchCommand(["rev-parse", "--verify", "HEAD"], in: root).text.trimmingCharacters(in: .newlines)
+        let head = try await patchCommand(["rev-parse", "--verify", "HEAD"], in: root).path
         let privateIndex = try snapshot.copyForGit()
         defer { privateIndex.remove() }
         try await checkPatchAttributes(in: root, path: path)
@@ -55,7 +56,7 @@ extension GitService {
         let raw = try await makeRawPatch(before: old, after: new, path: path, mode: entry.mode)
         let patch = try GitPatch(raw: raw, path: path)
         guard patch.mode == entry.mode, try GitIndexSnapshot.read(at: location).bytes == snapshot.bytes,
-              try await patchCommand(["rev-parse", "HEAD"], in: root).text.trimmingCharacters(in: .newlines) == head else {
+              try await patchCommand(["rev-parse", "HEAD"], in: root).path == head else {
             throw GitFailure(message: "The index or HEAD changed while reading. Refresh and review it again.")
         }
         try Task.checkCancellation()
@@ -64,14 +65,14 @@ extension GitService {
     }
 
     private func patchIndexPath(in root: String) async throws -> String {
-        try await patchCommand(["rev-parse", "--path-format=absolute", "--git-path", "index"], in: root).text.trimmingCharacters(in: .newlines)
+        try await patchCommand(["rev-parse", "--path-format=absolute", "--git-path", "index"], in: root).path
     }
     private func patchEntry(_ data: Data, path: String, index: Bool) throws -> (mode: String, oid: String) {
         let entries = data.split(separator: 0)
         guard entries.count == 1, let tab = entries[0].firstIndex(of: 9), Data(entries[0][entries[0].index(after: tab)...]) == Data(path.utf8) else {
             throw GitFailure(message: "Use whole-file staging for added, deleted, renamed or conflicted files.")
         }
-        let fields = String(decoding: entries[0][..<tab], as: UTF8.self).split(separator: " ")
+        let fields = String(decoding: entries[0][..<tab], as: UTF8.self).gitSplit(separator: 32)
         guard fields.count == 3, ["100644", "100755"].contains(fields[0]), index ? fields[2] == "0" : fields[1] == "blob" else {
             throw GitFailure(message: "Use whole-file staging for symlinks, submodules and conflicts.")
         }
@@ -86,7 +87,7 @@ extension GitService {
             throw GitFailure(message: "Use whole-file staging for binary files or custom diff attributes.")
         }
         let autoCRLF = try await run(["config", "--get", "core.autocrlf"], in: root)
-        guard autoCRLF.status == 1 || (autoCRLF.status == 0 && ["false", "0", "no", "off"].contains(autoCRLF.text.trimmingCharacters(in: .newlines).lowercased())) else {
+        guard autoCRLF.status == 1 || (autoCRLF.status == 0 && ["false", "0", "no", "off"].contains(autoCRLF.path.lowercased())) else {
             throw GitFailure(message: "Use whole-file staging while automatic line-ending conversion is enabled.")
         }
     }
@@ -124,7 +125,7 @@ extension GitService {
         try transaction.validate()
         let privateIndex = try review.index.copyForGit()
         defer { privateIndex.remove() }
-        let head = try await patchCommand(["rev-parse", "HEAD"], in: review.root).text.trimmingCharacters(in: .newlines)
+        let head = try await patchCommand(["rev-parse", "HEAD"], in: review.root).path
         guard head == review.head else { throw GitFailure(message: "HEAD changed since this review. Refresh and review it again.") }
         try await checkPatchAttributes(in: review.root, path: review.path)
         if !review.staged {
@@ -138,10 +139,10 @@ extension GitService {
         let blobFile = URL(fileURLWithPath: privateIndex.path + ".blob")
         defer { try? FileManager.default.removeItem(at: blobFile) }
         try GitPrivateIndex.write(result, to: blobFile.path)
-        let oid = try await patchCommand(["hash-object", "-w", "--no-filters", "--", blobFile.path], in: review.root).text.trimmingCharacters(in: .newlines)
-        _ = try await patchCommand(["-c", "core.splitIndex=false", "update-index", "--cacheinfo", review.patch.mode, oid, review.path], in: review.root, index: privateIndex.path)
+        let oid = try await patchCommand(["hash-object", "-w", "--no-filters", "--", blobFile.path], in: review.root, readOnly: false).path
+        _ = try await patchCommand(["-c", "core.splitIndex=false", "update-index", "--cacheinfo", review.patch.mode, oid, review.path], in: review.root, index: privateIndex.path, readOnly: false)
         let next = try GitIndexSnapshot.read(at: privateIndex.path)
-        guard try await patchCommand(["rev-parse", "HEAD"], in: review.root).text.trimmingCharacters(in: .newlines) == head else {
+        guard try await patchCommand(["rev-parse", "HEAD"], in: review.root).path == head else {
             throw GitFailure(message: "HEAD changed during this action. Refresh and review it again.")
         }
         try Task.checkCancellation()

@@ -4,6 +4,102 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1bm: Git inventory reuse validates exact on-disk path spelling with bounded probes, including case-only and NFC/NFD renames without a watcher; per-repository override scopes remain case-sensitive. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bn: Initial Git discovery is shared and bounded; Changes, blame and Finder reads retain their own cancellation/deadline, failures cool down before retrying, and no timeout falls back to the Git shim. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bo: Git trust resolution confirms canonical path snapshots before use; a rename between concurrent root and query lookups cannot inherit an ancestor's trust. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+
+- [x] SECURITY-BOUNDARIES-1bj: Git write admission and history trust rechecks use in-memory workspace state, without resolving project paths on the main actor. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bk: Git inventory and ignore-file probes have bounded, cancellable waits; stalled paths select confinement, remain coalesced until their probe returns, and cannot consume a thread per retry or trust revision. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bl: Git subprocesses preserve UTF-8 argument and environment bytes with posix_spawn; literal NFC/NFD ignore rules, history paths and explicit file writes no longer target Foundation-normalized spellings. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bi: Successful Git reads accept CRLF warnings and trusted global-program progress; only Git's anchored filter-failure diagnostics reject optional-filter output, including truncated messages. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bg: Git inventory stamp validation runs outside memo/cache locks; stalled paths cannot hold other readers, watcher invalidation or trust clearing. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bh: Cold Git inventories preserve reuse through unrelated ignored-folder events; source events prevent caching and deliver a deferred configuration refresh. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1be: Unicode symbolic-ref inventory inputs that Foundation would normalize select confinement, keeping discovery, status and history readable; unrepresentable overrides remain fail-closed. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bf: Inventory probes reject embedded NUL before Foundation conversion, selecting confinement instead of an Objective-C exception. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bd: Git trust snapshots project state on the main actor and resolves paths on bounded background workers; slow roots use confinement, cancellation shares the read deadline, and stale workspace revisions cannot grant trust. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-2q: Stored-module discovery distinguishes metadata files from grouping directories such as `group/config`, preserving valid fetch/pull/push layouts. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2r: Stored-module traversal skips ordinary files, inventories directory symlinks and newly populated targets, and retains confinement for unreadable candidates. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1az: Git trust resolves canonical paths with byte-aware containment; the most specific project and any equally specific denial win. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ba: File ownership and reply links preserve nested untrusted boundaries beside combining marks and through symlink aliases. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bb: Folder roots, blame and file-to-history navigation keep canonical byte path boundaries and relative filenames. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bc: Untracked count snapshots retain the source repository's trust and scoped program inventory, preserving trusted global filters while confining untrusted reads. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1a: Folder trees, breadcrumb menus and Quick Open disable repository fsmonitor programs, including outside trusted projects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1b: Background Git reads neutralise local/worktree programs, including submodules; trusted reads retain global/system programs. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1c: Trusted Git reads preserve global/system filters selected by repository attributes; local/worktree filters are neutralised and outside/untrusted reads stay confined. Explicit trusted writes retain normal hooks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1d: Working, staged and untracked diffs disable textconv; commit statistics disable executable diff conversion. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1e: Read-only object/history queries cannot start remote programs or contact a promisor remote. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1f: Sparse-index folder and Quick Open listings cannot execute a promisor remote while expanding missing trees. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1g: Changes rechecks project trust before admitting a Git write; safe reading remains available. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1h: History and commit-detail reads disable repository-configured signature verifiers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1i: Trusted Git reads fall back to confinement for invalid UTF-8 configuration or repository metadata. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1j: Local Git program keys containing an override separator select confinement; global-only settings remain usable. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1k: Git program inventory preserves byte-distinct Unicode names and confines reads whose overrides macOS would rewrite. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2: Webhook redirects fail at the configured endpoint without forwarding payloads or custom headers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2b: Git repositories with any http.extraHeader key refuse all redirects, including URL-scoped overrides; header-free repositories keep configured redirect settings and Git’s initial default. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2c: Git refuses redirect-policy overrides that would change Unicode bytes before private headers can be sent. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2d: Private-header Git redirect protection covers mixed-case HTTP URL schemes without Bello parsing destinations. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2e: Private-header Git redirect protection also covers explicit transport-helper URLs. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-2f: Private-header Git pushes stay protected across push-only rewrites, push URLs and branch/default destinations without Bello resolving remotes. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2g: Git HTTP wildcard redirect scopes are overridden directly, without treating patterns as destination addresses. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2h: Equivalent Git HTTP URL scopes cannot override private-header redirect refusal through argument ordering. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2i: Legacy Git remote definitions receive the same private-header push redirect protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1l: Trusted submodule reads retain each repository’s own conditional global filters while suppressing local programs. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1m: Git inventory and cache work share the read’s cancellation and timeout, including folder/Quick Open queries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1n: Git safety inventories reuse config/submodule metadata with origin/index/HEAD stamps, watcher invalidation and trust-change eviction. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1o: A config edit during a cold inventory cannot become a cached permission for a repository program. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1p: Every Git read uses short, non-recursive submodule output, including history commit diffs; changed gitlink IDs remain visible. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1q: Repository creation and nested discovery changes invalidate cached Git policies through identity and ancestor discovery stamps. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1r: Git resolves include paths, including absent `~user` targets; unresolved includes disable inventory reuse. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1s: Relative config origins use Git's repository directory when queries start in deeper folders. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1t: Include stamps preserve symlink/`..` traversal and detect origin-directory retargeting even for hardlinked config files. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1u: Unreadable stamps disable Git inventory caching; a trust change during construction prevents cache publication. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1v: `onbranch` include invalidation follows the whole symbolic HEAD chain. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1w: Private hunk indexes no longer invalidate Git safety inventories or interrupt a concurrent read/fetch. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1x: Unrecognized nested Git candidates bypass inventory caching, including later activation through an external `commondir`. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1y: Changes to a gitdir/common directory's `objects` or `refs` identity revalidate repository discovery before reusing its policy. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1z: Repeated hunk reviews share scoped Git configuration across private indexes; actual Git commands retain their supplied index. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aa: Dynamic/non-regular Git includes force confined reads at every scope and depth, including inactive conditional branches; inventory never consumes live config streams. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ab: File blame passes its displayed snapshot through a private file, preventing stdin-backed config from consuming or executing viewed content. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ac: Folder ignore queries pass bounded paths after `--`, preserving unusual filenames without exposing them to stdin-backed config. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ad: Include inspection preserves Git-reported Unicode origins and falls back to confinement when an unseen path cannot be passed unchanged. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1ae: Git inventories stamp every symlink and final target in config and repository resolution chains, detecting retargets even when config files share an inode. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1af: Submodule inventories retain the original gitlink path so retargeting an aliased checkout cannot reuse its old configuration. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2j: Empty and newline-only extraHeader values still refuse Git redirects; protection depends on NUL-delimited, case-insensitive key presence. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2k: URL-less legacy default remotes receive repository-wide redirect refusal without remote enumeration. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ag: Control characters in generated Git conditions or subsection names select confinement; quote/backslash paths retain exact Git parsing. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ah: Unrepresentable restored Git values select confinement before a trusted read; separate subsection/value encoders are checked through Git's parser. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ai: Gitdir patterns escape glob punctuation even beside combining marks, preventing local programs from escaping their conditional overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aj: Generated Git subsection/value quoting preserves quotes and backslashes beside combining marks under Git's own parser. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2l: Git redirect inventory includes deinitialized and nested stored modules, with stamped discovery and refusal when reachable configuration cannot be checked. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2m: Header-free Git commands preserve existing parent/child redirect settings instead of weakening a child’s refusal through inherited initial overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2n: Stored-module metadata refuses Git directory values whose Unicode bytes Foundation would rewrite, preserving conditional-header protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2o: Stored-module aliases retain their own conditional headers; inventories deduplicate only identical Git-directory spellings. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ak: Git inventory removes exactly one LF byte from path output, preserving trusted repository names ending in CR. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1al: FileFinder preserves trailing whitespace in repository and global ignore-file paths returned by Git. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1am: Stash common-directory and hunk index paths preserve trailing whitespace from Git output. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1an: Git program keys use byte delimiters, including filter and driver names beginning with combining marks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ao: Git origin and relative-include paths preserve separators beside grapheme-extending scalars, including inactive include targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ap: Inventory resolution stamps every slash-delimited component in original paths and symlink targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aq: Combining marks after onbranch conditions cannot bypass symbolic-ref-chain invalidation. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ar: Generated override parsing uses guarded byte separators; restored values cannot trap the reader. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1as: Git watchers and ignored-path boundaries use byte separators for metadata and nested paths. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1at: Status, history, branch, stash, blame and statistics parsers preserve literal Unicode next to Git field delimiters. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1au: Diff prefixes and quoted paths preserve adjacent combining marks and their line kinds. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1av: Hunk file reads split paths on slash bytes, preserving symlink refusal for every component. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aw: Folder breadcrumbs, hidden names and ignore fallback retain byte-exact path boundaries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2p: Combining marks after HTTP config delimiters cannot hide private-header keys or URL-scoped redirect overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ax: Untracked count snapshots preserve slash boundaries and directory attributes beside combining marks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ay: Git read-isolation options take precedence over caller display options, preserving non-recursive submodule previews and counts. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] Image formats (owner, 2026-10-20): Attach Images…, paste and drag-and-drop accept any still image macOS reads (JPEG, PNG, GIF, WebP, HEIC/HEIF, TIFF, BMP, AVIF, JPEG 2000, ICO, camera raw, …) and decide by content. PNG/JPEG/GIF/WebP up to 8 MiB attach as they are; other formats, mislabeled files and originals over 8 MiB become PNGs of at most 2,000 pixels within the helper's unchanged 8 MiB gate, which the helper sends as PNG or JPEG as pi does (transparent ones stay PNG); their chips keep the original file name (saved with drafts, never sent); an unreadable file is refused by name. A message holds four images of 8 MiB, now 32 MiB in all (was 16 MiB) in the app and the bundled helper alike, so four converted photos fit. [Validation](docs/validation/a130-images-0.1.130.md#round-3--2026-10-21).
 - [x] Owner-requested deviation from pi 0.85.1: an animated GIF, WebP or PNG reaches the model as its first frame (PNG, with a hint) in attachments, read results and tool images.
 - [x] Owner-requested deviation from pi 0.85.1: the read tool returns HEIC/HEIF, AVIF, TIFF, JPEG 2000 and other ImageIO images as converted images instead of failing as binary, also when their first bytes pass as text (a TIFF's black rows); text, pi's own formats, TGA/PICT and undecodable bytes keep pi's result. [Parity](docs/Swift-Feature-Parity.md#owner-requested-deviations-from-pi-0851-image-formats-01130).

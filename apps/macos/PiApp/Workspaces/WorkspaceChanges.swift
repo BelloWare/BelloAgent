@@ -1,5 +1,6 @@
 import AppKit
 import GitView
+import GitProcessSafety
 
 // A project's changes and history, in a tab beside the chats (`ChangesTab`):
 // opened from ⇧⌘G, the composer, a project's header and the sidebar.
@@ -39,7 +40,7 @@ extension WorkspaceModel {
         changes.navigate { [weak tab] in
             await controller.revealHistory(target, in: repository) {
                 guard let tab else { return false }
-                return still() && tab.readable && tab.container != nil && FileTab.resolveProject(projectID).isTrusted
+                return still() && tab.readable && tab.container != nil && ChangesTab.isProjectTrusted(projectID)
             }
         }
     }
@@ -58,7 +59,7 @@ extension WorkspaceModel {
     /// nil once it is gone.
     func changesProject(_ id: String) -> (name: String, roots: [String])? {
         guard let project = workspaces.first(where: { $0.id == id }), !project.isScratch else { return nil }
-        return (URL(fileURLWithPath: project.path).lastPathComponent, project.roots)
+        return (URL(fileURLWithPath: project.path, isDirectory: false).lastPathComponent, project.roots)
     }
     /// ⌘F: the focused chat's search, unless the keys are in text a tab holds.
     func searchFocusedConversation(in window: NSWindow? = nil) {

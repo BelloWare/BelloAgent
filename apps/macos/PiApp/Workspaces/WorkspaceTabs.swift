@@ -1,5 +1,6 @@
 import AppKit
 import FileView
+import GitProcessSafety
 
 // What the workspace does with the tabs beside its chats (`TabHost`): opens
 // files in them, closes the one shown with ⌘W, and tells a file tab what it
@@ -30,8 +31,8 @@ extension WorkspaceModel {
         }
         file.containingFolderRoot = { [weak self, weak file] in
             guard let self, let file, let project = self.workspaces.first(where: { $0.id == file.projectID }), project.trusted else { return nil }
-            return project.roots.map { URL(fileURLWithPath: $0, isDirectory: false) }
-                .filter { root in CanonicalPath.isWithin(file.url.path, root.path) }
+            return project.roots.map { URL(fileURLWithPath: FileTab.key(for: URL(fileURLWithPath: $0)), isDirectory: false) }
+                .filter { root in CanonicalPath.isWithin(FileTab.key(for: file.url), root.path) }
                 .max { $0.path.utf8.count < $1.path.utf8.count }
         }
     }
@@ -53,12 +54,15 @@ extension WorkspaceModel {
     }
     /// The project a path is in: the one whose root holds it most closely.
     func projectID(holding path: String) -> String? {
-        var best: (id: String, length: Int)?
+        let path = FileTab.key(for: URL(fileURLWithPath: path))
+        var best: (id: String, length: Int, trusted: Bool)?
         for project in workspaces where !project.isScratch {
             for root in project.roots {
                 let root = FileTab.key(for: URL(fileURLWithPath: root))
                 guard CanonicalPath.isWithin(path, root) else { continue }
-                if root.utf8.count > best?.length ?? -1 { best = (project.id, root.utf8.count) }
+                if root.utf8.count > (best?.length ?? -1) || (root.utf8.count == best?.length && best?.trusted == true && !project.trusted) {
+                    best = (project.id, root.utf8.count, project.trusted)
+                }
             }
         }
         return best?.id

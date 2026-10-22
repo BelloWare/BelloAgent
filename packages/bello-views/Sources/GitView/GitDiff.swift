@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 /// A unified diff parsed for rendering: files, hunks and lines with old/new
 /// line numbers. Binary and mode-only changes keep a note instead of hunks.
@@ -62,33 +63,31 @@ public enum GitDiffParser {
             if !oldPath.isEmpty || !newPath.isEmpty { files.append(GitDiffFile(oldPath: oldPath, newPath: newPath, binary: binary, hunks: hunks, notes: notes)) }
             oldPath = ""; newPath = ""; binary = false; notes = []; hunks = []
         }
-        // Swift reads "\r\n" as one Character, so splitting on "\n" alone leaves
-        // every line of a file with Windows endings joined into one row.
-        var rawLines = text.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r\n" }
+        var rawLines = text.gitSplit(separator: 10, omittingEmptySubsequences: false)
         // A trailing newline is a terminator, not an empty context line.
         if rawLines.last?.isEmpty == true { rawLines.removeLast() }
         for raw in rawLines {
             total += 1
             if total > maximumLines { notes.append("Diff truncated after \(maximumLines) lines."); break }
-            let line = String(raw)
-            if line.hasPrefix("diff --git ") {
+            let line = raw.utf8.last == 13 ? raw.gitDropLast() : raw
+            if line.gitHasPrefix("diff --git ") {
                 closeFile()
-                let spec = line.dropFirst("diff --git ".count)
+                let spec = line.gitDropFirst("diff --git ".count)
                 if let (a, b) = splitPaths(String(spec)) { oldPath = a; newPath = b }
                 continue
             }
             if current == nil {
-                if line.hasPrefix("--- ") { oldPath = strip(String(line.dropFirst(4))); continue }
-                if line.hasPrefix("+++ ") { newPath = strip(String(line.dropFirst(4))); continue }
-                if line.hasPrefix("Binary files") || line.hasPrefix("GIT binary patch") { binary = true; notes.append("Binary file changed."); continue }
-                if line.hasPrefix("rename from ") { oldPath = GitQuoting.unquoted(String(line.dropFirst("rename from ".count))); continue }
-                if line.hasPrefix("rename to ") { newPath = GitQuoting.unquoted(String(line.dropFirst("rename to ".count))); continue }
-                if line.hasPrefix("new file mode") { notes.append("New file."); continue }
-                if line.hasPrefix("deleted file mode") { notes.append("File deleted."); continue }
-                if line.hasPrefix("old mode") || line.hasPrefix("new mode") { notes.append(line); continue }
-                if line.hasPrefix("similarity index") { notes.append(line.replacingOccurrences(of: "similarity index", with: "Similarity")); continue }
+                if line.gitHasPrefix("--- ") { oldPath = strip(String(line.gitDropFirst(4))); continue }
+                if line.gitHasPrefix("+++ ") { newPath = strip(String(line.gitDropFirst(4))); continue }
+                if line.gitHasPrefix("Binary files") || line.gitHasPrefix("GIT binary patch") { binary = true; notes.append("Binary file changed."); continue }
+                if line.gitHasPrefix("rename from ") { oldPath = GitQuoting.unquoted(String(line.gitDropFirst("rename from ".count))); continue }
+                if line.gitHasPrefix("rename to ") { newPath = GitQuoting.unquoted(String(line.gitDropFirst("rename to ".count))); continue }
+                if line.gitHasPrefix("new file mode") { notes.append("New file."); continue }
+                if line.gitHasPrefix("deleted file mode") { notes.append("File deleted."); continue }
+                if line.gitHasPrefix("old mode") || line.gitHasPrefix("new mode") { notes.append(line); continue }
+                if line.gitHasPrefix("similarity index") { notes.append("Similarity" + line.gitDropFirst(16)); continue }
             }
-            if line.hasPrefix("@@") {
+            if line.gitHasPrefix("@@") {
                 closeHunk()
                 let numbers = hunkNumbers(line)
                 current = (header: line, lines: [], old: numbers.old, new: numbers.new)
@@ -97,10 +96,10 @@ public enum GitDiffParser {
             guard var hunk = current else { continue }
             let kind: GitDiffLine.Kind
             var body = line
-            if line.hasPrefix("+") { kind = .added; body.removeFirst() }
-            else if line.hasPrefix("-") { kind = .removed; body.removeFirst() }
-            else if line.hasPrefix("\\") { kind = .note; body = String(line.dropFirst(2)) }
-            else { kind = .context; if !body.isEmpty { body.removeFirst() } }
+            if line.gitHasPrefix("+") { kind = .added; body = body.gitDropFirst() }
+            else if line.gitHasPrefix("-") { kind = .removed; body = body.gitDropFirst() }
+            else if line.gitHasPrefix("\\") { kind = .note; body = String(line.gitDropFirst(2)) }
+            else { kind = .context; if !body.isEmpty { body = body.gitDropFirst() } }
             switch kind {
             case .added: hunk.lines.append(GitDiffLine(id: lineID, kind: .added, oldNumber: nil, newNumber: hunk.new, text: body)); hunk.new += 1
             case .removed: hunk.lines.append(GitDiffLine(id: lineID, kind: .removed, oldNumber: hunk.old, newNumber: nil, text: body)); hunk.old += 1
@@ -117,27 +116,28 @@ public enum GitDiffParser {
     private static func strip(_ path: String) -> String {
         // A quoted name keeps its tabs; an unquoted one may be followed by a
         // tab and a timestamp.
-        let trimmed = path.first == "\"" ? (GitQuoting.leading(path[...])?.name ?? path) : (path.split(separator: "\t").first.map(String.init) ?? path)
+        let trimmed = path.utf8.first == 34 ? (GitQuoting.leading(path[...])?.name ?? path) : (path.gitSplit(separator: 9).first ?? path)
         if trimmed == "/dev/null" { return trimmed }
-        if trimmed.hasPrefix("a/") || trimmed.hasPrefix("b/") { return String(trimmed.dropFirst(2)) }
+        if trimmed.gitHasPrefix("a/") || trimmed.gitHasPrefix("b/") { return String(trimmed.gitDropFirst(2)) }
         return trimmed
     }
     /// "a/x b/y" with paths that may contain spaces: split at " b/" after "a/".
     private static func splitPaths(_ spec: String) -> (String, String)? {
         // Either name may be quoted: "a/x\ty" "b/x\ty".
-        if spec.first == "\"" || spec.contains(" \"b/") {
-            guard let (old, rest) = GitQuoting.leading(spec[...], upTo: spec.contains(" \"b/") ? " \"b/" : " b/"), rest.first == " " else { return nil }
-            guard let (new, _) = GitQuoting.leading(rest.dropFirst()) else { return nil }
-            guard old.hasPrefix("a/"), new.hasPrefix("b/") else { return nil }
-            return (String(old.dropFirst(2)), String(new.dropFirst(2)))
+        if spec.utf8.first == 34 || spec.gitContains(" \"b/") {
+            guard let (old, rest) = GitQuoting.leading(spec[...], upTo: spec.gitContains(" \"b/") ? " \"b/" : " b/"), rest.utf8.first == 32 else { return nil }
+            guard let (new, _) = GitQuoting.leading(rest.gitDropFirst()[...]) else { return nil }
+            guard old.gitHasPrefix("a/"), new.gitHasPrefix("b/") else { return nil }
+            return (old.gitDropFirst(2), new.gitDropFirst(2))
         }
-        guard spec.hasPrefix("a/"), let range = spec.range(of: " b/") else { return nil }
-        return (String(spec[spec.index(spec.startIndex, offsetBy: 2)..<range.lowerBound]), String(spec[range.upperBound...]))
+        let bytes = Data(spec.utf8)
+        guard spec.gitHasPrefix("a/"), let range = bytes.range(of: Data(" b/".utf8)) else { return nil }
+        return (String(decoding: bytes[2..<range.lowerBound], as: UTF8.self), String(decoding: bytes[range.upperBound...], as: UTF8.self))
     }
     private static func hunkNumbers(_ header: String) -> (old: Int, new: Int) {
         // @@ -12,7 +12,9 @@ optional context
-        let parts = header.split(separator: " ")
-        func start(_ token: Substring) -> Int { Int(token.dropFirst().split(separator: ",").first ?? "0") ?? 0 }
+        let parts = header.gitSplit(separator: 32)
+        func start(_ token: String) -> Int { Int(token.gitDropFirst().gitSplit(separator: 44).first ?? "0") ?? 0 }
         let old = parts.count > 1 ? start(parts[1]) : 0, new = parts.count > 2 ? start(parts[2]) : 0
         return (max(old, 1), max(new, 1))
     }

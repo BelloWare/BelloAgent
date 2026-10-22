@@ -324,6 +324,31 @@ final class WebhookTests: XCTestCase {
 
     // MARK: Sending
 
+    /// Payload and custom headers belong only to the configured endpoint.
+    @MainActor func testRedirectsNeverForwardWebhookPayloads() async throws {
+        let destination = try WebhookReceiver(); defer { destination.stop() }
+        let other = try await destination.start()
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-redirect-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        for code in [301, 302, 303, 307, 308] {
+            let source = try WebhookReceiver(); defer { source.stop() }
+            let address = try await source.start()
+            for location in [other + "/collect", address + "/same-origin"] {
+                source.answer([code], location: location); destination.answer([])
+                var settings = WebhookSettings(); settings.enabled = true; settings.url = address + "/hook"; settings.parameters = ""
+                settings.headers = #"{"X-Fixture-Secret":"synthetic-header"}"#
+                settings.body = #"{"token":"fixture-secret","request":"{{last_request}}"}"#
+                let request = try WebhookRequest.render(settings, values: ["last_request": "Private generated request"])
+                do { _ = try await model.deliverWebhook(request, retrying: true); XCTFail("HTTP \(code) must fail at the configured endpoint") }
+                catch { XCTAssertTrue(error.localizedDescription.contains("HTTP \(code)"), error.localizedDescription) }
+                XCTAssertEqual(source.requests.count, 1, "A redirect is neither followed nor retried")
+                XCTAssertEqual(destination.requests.count, 0, "HTTP \(code) leaked to \(location)")
+                XCTAssertTrue(try XCTUnwrap(source.requests.first).body.contains("fixture-secret"))
+            }
+        }
+    }
+
     /// A finished chat's webhook, which nobody is watching, is sent once more
     /// after a network failure, 429 or 5xx; a refusal is not asked again, and
     /// the preview's and Settings' sends answer at once.
@@ -505,8 +530,13 @@ final class WebhookReceiver: @unchecked Sendable {
     private var captured: [Request] = []
     private var connections: [NWConnection] = []
     private var statuses: [Int] = []
+    private var location: String?
+    private var responseBody = ""
+    private var contentType: String?
     var requests: [Request] { lock.withLock { captured } }
-    func answer(_ statuses: [Int]) { lock.withLock { self.statuses = statuses; captured = [] } }
+    func answer(_ statuses: [Int], location: String? = nil, responseBody: String = "", contentType: String? = nil) {
+        lock.withLock { self.statuses = statuses; self.location = location; self.responseBody = responseBody; self.contentType = contentType; captured = [] }
+    }
     init() throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
@@ -545,8 +575,11 @@ final class WebhookReceiver: @unchecked Sendable {
                         self.captured.append(Request(head: head, body: body))
                         return self.statuses.isEmpty ? 204 : self.statuses.removeFirst()
                     }
-                    let reply = Data((status == 204 ? "HTTP/1.1 204 No Content\r\n" : "HTTP/1.1 \(status) Fixture\r\nContent-Length: 0\r\n") .utf8)
-                        + Data("Connection: close\r\n\r\n".utf8)
+                    let (location, responseBody, contentType) = self.lock.withLock { (self.location, self.responseBody, self.contentType) }
+                    let reply = Data((status == 204 ? "HTTP/1.1 204 No Content\r\n" : "HTTP/1.1 \(status) Fixture\r\nContent-Length: \(responseBody.utf8.count)\r\n") .utf8)
+                        + Data((location.map { "Location: \($0)\r\n" } ?? "").utf8)
+                        + Data((contentType.map { "Content-Type: \($0)\r\n" } ?? "").utf8)
+                        + Data("Connection: close\r\n\r\n\(responseBody)".utf8)
                     connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
                     return
                 }

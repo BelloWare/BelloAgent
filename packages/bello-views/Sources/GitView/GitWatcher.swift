@@ -1,5 +1,6 @@
 import Foundation
 import CoreServices
+import GitProcessSafety
 
 /// Watches a repository for changes nobody in the panel made: a file saved in
 /// an editor, a commit or a checkout from a terminal.
@@ -79,20 +80,20 @@ import CoreServices
         let marker = root + "/.git"
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: marker, isDirectory: &isDirectory), !isDirectory.boolValue,
-              let text = try? String(contentsOfFile: marker, encoding: .utf8), text.hasPrefix("gitdir: ")
+              let text = try? String(contentsOfFile: marker, encoding: .utf8), text.gitHasPrefix("gitdir: ")
         else { return nil }
-        let named = Self.metadataPath(String(text.dropFirst("gitdir: ".count)))
+        let named = Self.metadataPath(text.gitDropFirst(8))
         guard !named.isEmpty else { return nil }
-        let absolute = named.hasPrefix("/") ? named : root + "/" + named
+        let absolute = named.gitHasPrefix("/") ? named : root + "/" + named
         let resolved = URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
-        return resolved == root || resolved.hasPrefix(root + "/") ? nil : resolved
+        return resolved == root || resolved.gitHasPrefix(root + "/") ? nil : resolved
     }
 
     nonisolated static func commonDirectory(of gitDirectory: String) -> String? {
         guard let text = try? String(contentsOfFile: gitDirectory + "/commondir", encoding: .utf8) else { return nil }
         let named = Self.metadataPath(text)
         guard !named.isEmpty else { return nil }
-        let absolute = named.hasPrefix("/") ? named : gitDirectory + "/" + named
+        let absolute = named.gitHasPrefix("/") ? named : gitDirectory + "/" + named
         return URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
@@ -112,9 +113,17 @@ import CoreServices
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
+            let configurationChanged = GitConfiguration.invalidate(paths: paths) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == generation, self.handle.isRunning else { return }
+                    self.pending.formUnion(.unknown)
+                    self.changed()
+                }
+            }
+            if moved { GitConfiguration.invalidate() }
             let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && (discoveringRepository || !ignored.covers($0)) }
-            guard moved || !relevant.isEmpty else { return }
-            let changes = discoveringRepository ? .unknown : GitWatchChanges(relevant, receivedAt: receivedAt)
+            guard moved || configurationChanged || !relevant.isEmpty else { return }
+            let changes = discoveringRepository || configurationChanged ? .unknown : GitWatchChanges(relevant, receivedAt: receivedAt)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else {
@@ -203,24 +212,24 @@ import CoreServices
         // A linked worktree keeps its git state outside the tree; the same few
         // names matter there as inside a `.git` directory. Its own directory
         // first: it sits inside the common one.
-        if let gitDirectory, path == gitDirectory || path.hasPrefix(gitDirectory + "/") {
-            return isGitState(path.dropFirst(gitDirectory.count).drop(while: { $0 == "/" }))
+        if let gitDirectory, path == gitDirectory || path.gitHasPrefix(gitDirectory + "/") {
+            return isGitState(path.gitDropFirst(gitDirectory.utf8.count))
         }
-        if let common = commonDirectory.map(GitIgnoredPaths.comparable), path == common || path.hasPrefix(common + "/") {
-            return isGitState(path.dropFirst(common.count).drop(while: { $0 == "/" }))
+        if let common = commonDirectory.map(GitIgnoredPaths.comparable), path == common || path.gitHasPrefix(common + "/") {
+            return isGitState(path.gitDropFirst(common.utf8.count))
         }
-        guard path.hasPrefix(root) else { return !stateOnly }
-        let relative = path.dropFirst(root.count).drop(while: { $0 == "/" })
-        var parts = relative.split(separator: "/", omittingEmptySubsequences: true)
+        guard path.gitHasPrefix(root) else { return !stateOnly }
+        let relative = path.gitDropFirst(root.utf8.count)
+        var parts = relative.gitSplit(separator: 47, omittingEmptySubsequences: true)
         guard let first = parts.first else { return false }
         guard first == ".git" else { return !stateOnly }
         parts.removeFirst()
         if discoveringRepository && parts.isEmpty { return true }
-        return isGitState(parts.joined(separator: "/")[...])
+        return isGitState(parts.joined(separator: "/"))
     }
     /// True for the few names that say where HEAD is and what is staged.
-    private nonisolated static func isGitState(_ relative: Substring) -> Bool {
-        guard let first = relative.split(separator: "/", omittingEmptySubsequences: true).first else { return false }
+    private nonisolated static func isGitState(_ relative: String) -> Bool {
+        guard let first = relative.gitSplit(separator: 47, omittingEmptySubsequences: true).first else { return false }
         return ["HEAD", "index", "refs", "packed-refs", "MERGE_HEAD", "ORIG_HEAD", "REBASE_HEAD", "shallow"].contains(String(first))
     }
 }

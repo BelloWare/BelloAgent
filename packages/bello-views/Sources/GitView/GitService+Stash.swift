@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 import CryptoKit
 
 public struct GitStashRecord: Equatable, Sendable, Identifiable {
@@ -23,10 +24,10 @@ public struct GitStashApplyResult: Sendable {
 extension GitService {
     private func stashDirectory(in root: String) async throws -> String {
         let storage = try await run(["config", "--get", "extensions.refStorage"], in: root)
-        guard storage.status == 1 || (storage.status == 0 && storage.text.trimmingCharacters(in: .newlines) == "files") else {
+        guard storage.status == 1 || (storage.status == 0 && storage.path == "files") else {
             throw GitFailure(message: "This stash ref store is unsupported. Manage stashes in the terminal.")
         }
-        return try await branchCommand(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: root).text.trimmingCharacters(in: .newlines)
+        return try await branchCommand(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: root).path
     }
     static func stashFingerprint(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
@@ -37,14 +38,14 @@ extension GitService {
         let output = try await branchCommand(["stash", "list", "-z", "--format=%gd%x00%H%x00%ct%x00%gs"], in: root)
         guard try GitStashStore.readLog(in: directory) == before else { throw GitFailure(message: "The stash list changed while reading. Refresh it again.") }
         let fingerprint = Self.stashFingerprint(before)
-        let fields = output.text.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        let fields = output.text.gitSplit(separator: 0, omittingEmptySubsequences: false)
         return stride(from: 0, to: max(0, fields.count - 3), by: 4).compactMap { index in
             let subject = fields[index + 3]
-            let prefix = subject.hasPrefix("On ") ? 3 : subject.hasPrefix("WIP on ") ? 7 : 0
-            let colon = subject.firstIndex(of: ":")
-            let branch = prefix > 0 && colon != nil ? String(subject[subject.index(subject.startIndex, offsetBy: prefix)..<colon!]) : "Unknown branch"
-            let message = prefix > 0 && colon != nil ? String(subject[subject.index(after: colon!)...]).trimmingCharacters(in: .whitespaces) : subject
-            guard fields[index].hasPrefix("stash@{") else { return nil }
+            let prefix = subject.gitHasPrefix("On ") ? 3 : subject.gitHasPrefix("WIP on ") ? 7 : 0
+            let parts = prefix > 0 ? subject.gitDropFirst(prefix).gitSplitOnce(separator: 58) : nil
+            let branch = parts?.before ?? "Unknown branch"
+            let message = parts?.after.trimmingCharacters(in: .whitespaces) ?? subject
+            guard fields[index].gitHasPrefix("stash@{") else { return nil }
             return GitStashRecord(selector: fields[index], oid: fields[index + 1], message: message, branch: branch,
                                   date: Date(timeIntervalSince1970: Double(fields[index + 2]) ?? 0), logFingerprint: fingerprint)
         }
@@ -56,7 +57,7 @@ extension GitService {
         if keepIndex { arguments.append("--keep-index") }
         let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !message.isEmpty { arguments += ["--message", message] }
-        return try await branchCommand(arguments, in: root).text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await branchCommand(arguments, in: root, readOnly: false).text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func stashFiles(_ stash: GitStashRecord, in root: String) async throws -> [GitStashFile] {
@@ -69,7 +70,7 @@ extension GitService {
                                   environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
         if third.status == 0 {
             let untracked = try await branchCommand(["ls-tree", "-r", "--name-only", "-z", stash.oid + "^3"], in: root)
-            files += untracked.text.split(separator: "\0").map { GitStashFile(path: String($0), status: "A", untracked: true, staged: false) }
+            files += untracked.text.gitSplit(separator: 0).map { GitStashFile(path: String($0), status: "A", untracked: true, staged: false) }
         }
         return files
     }
@@ -91,7 +92,7 @@ extension GitService {
         try validStashOID(stash)
         // Apply the immutable commit, never a moving stash@{n}. A failed apply
         // (conflicts included) does not even attempt removal.
-        let output = try await run(["stash", "apply", "--index", stash.oid], in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
+        let output = try await run(["stash", "apply", "--index", stash.oid], in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"], readOnly: false)
         let detail = [output.text, output.stderr].filter { !$0.isEmpty }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard output.status == 0 else { return GitStashApplyResult(applied: false, removed: false, message: "Git could not apply the stash cleanly. The stash was kept.\n" + detail) }
         guard pop else { return GitStashApplyResult(applied: true, removed: false, message: "Stash applied; the stash was kept.\n" + detail) }
@@ -111,9 +112,9 @@ extension GitService {
                            afterVerification: (@Sendable () async throws -> Void)? = nil,
                            afterPublication: (@Sendable () async throws -> Void)? = nil) async throws {
         try validStashOID(stash)
-        guard stash.selector.hasPrefix("stash@{"), stash.selector.hasSuffix("}"),
-              !stash.selector.dropFirst(7).dropLast().isEmpty,
-              stash.selector.dropFirst(7).dropLast().allSatisfy({ $0 >= "0" && $0 <= "9" }) else {
+        guard stash.selector.gitHasPrefix("stash@{"), stash.selector.gitHasSuffix("}"),
+              !stash.selector.gitDropFirst(7).gitDropLast().isEmpty,
+              stash.selector.gitDropFirst(7).gitDropLast().utf8.allSatisfy({ (48...57).contains($0) }) else {
             throw GitFailure(message: "Choose the stash again.")
         }
         let directory = try await stashDirectory(in: root), reviewedLog = try GitStashStore.readLog(in: directory)
@@ -125,12 +126,12 @@ extension GitService {
         try await beforeVerification?()
         let selected = try await run(["rev-parse", "--verify", "--end-of-options", stash.selector], in: root,
                                      environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
-        guard selected.status == 0, selected.text.trimmingCharacters(in: .newlines) == stash.oid else {
+        guard selected.status == 0, selected.path == stash.oid else {
             throw GitFailure(message: "The stash list changed. Refresh and choose the stash again.")
         }
         try Task.checkCancellation()
         try await afterVerification?()
-        let dropped = try await branchCommand(["stash", "drop", "--", stash.selector], in: root)
+        let dropped = try await branchCommand(["stash", "drop", "--", stash.selector], in: root, readOnly: false)
         try await afterPublication?()
         try await confirmDropped(stash, reviewedLog: reviewedLog, output: dropped, directory: directory, in: root)
     }
@@ -142,7 +143,7 @@ extension GitService {
     /// back (Git's own `stash store`) and the drop is refused. The reviewed
     /// stash is then still listed; nothing unreviewed is lost.
     private func confirmDropped(_ stash: GitStashRecord, reviewedLog: Data, output: Output, directory: String, in root: String) async throws {
-        let entries = Self.stashLogEntries(reviewedLog), position = Int(stash.selector.dropFirst(7).dropLast()) ?? -1
+        let entries = Self.stashLogEntries(reviewedLog), position = Int(stash.selector.gitDropFirst(7).gitDropLast()) ?? -1
         guard position >= 0, position < entries.count else { throw GitFailure(message: "The stash list changed while removing the stash. Refresh the list and check it.") }
         let reviewed = entries[entries.count - 1 - position]
         let remaining = Self.stashLogEntries((try? GitStashStore.readLog(in: directory)) ?? Data())
@@ -153,7 +154,7 @@ extension GitService {
             throw GitFailure(message: "The stash list changed while the stash was being removed, so Git's removal could not be matched to the stash you chose. Refresh the list and check it.")
         }
         let subject = try? await branchCommand(["show", "-s", "--format=%s", reported], in: root).text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let restored = try? await branchCommand(["stash", "store", "-m", subject?.isEmpty == false ? subject! : "Restored stash", "--", reported], in: root)
+        let restored = try? await branchCommand(["stash", "store", "-m", subject?.isEmpty == false ? subject! : "Restored stash", "--", reported], in: root, readOnly: false)
         guard restored != nil else {
             throw GitFailure(message: "Another stash was saved while this one was being removed, and Git removed that one (\(reported)) instead. It could not be stored again; recover it in the terminal with `git stash store \(reported)`. The stash you chose was kept.")
         }
@@ -169,9 +170,9 @@ extension GitService {
     }
     /// The commit in Git's "Dropped stash@{n} (<oid>)".
     static func droppedOID(_ text: String) -> String? {
-        guard let line = text.split(separator: "\n").last(where: { $0.hasPrefix("Dropped ") }),
-              line.hasSuffix(")"), let open = line.lastIndex(of: "(") else { return nil }
-        let oid = String(line[line.index(after: open)..<line.index(before: line.endIndex)])
+        guard let line = text.gitSplit(separator: 10).last(where: { $0.gitHasPrefix("Dropped ") }),
+              line.gitHasSuffix(")"), let parts = line.gitSplitOnce(separator: 40, last: true) else { return nil }
+        let oid = parts.after.gitDropLast()
         return [40, 64].contains(oid.count) && oid.allSatisfy(\.isHexDigit) ? oid : nil
     }
 }

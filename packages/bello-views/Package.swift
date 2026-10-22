@@ -26,9 +26,10 @@ let package = Package(
     targets: [
         .target(name: "FileView"),
         .testTarget(name: "FileViewTests", dependencies: ["FileView"]),
-        .target(name: "GitView"),
+        .target(name: "GitProcessSafety"),
+        .target(name: "GitView", dependencies: ["GitProcessSafety"]),
         .testTarget(name: "GitViewTests", dependencies: ["GitView"]),
-        .target(name: "FileFinder"),
+        .target(name: "FileFinder", dependencies: ["GitProcessSafety"]),
         .testTarget(name: "FileFinderTests", dependencies: ["FileFinder"]),
     ]
 )

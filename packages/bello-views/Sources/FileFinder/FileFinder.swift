@@ -41,7 +41,7 @@ public actor FileFinder {
 
     /// The folders of `roots` inside `root`, as paths below it ending "/".
     static func nested(in root: String, among roots: [String]) -> [[UInt8]] {
-        let base = Array((root.hasSuffix("/") ? root : root + "/").utf8)
+        let base = Array((root.utf8.last == 47 ? root : root + "/").utf8)
         return roots.compactMap { other in
             let bytes = Array(other.utf8)
             guard bytes.count > base.count, bytes.starts(with: base) else { return nil }

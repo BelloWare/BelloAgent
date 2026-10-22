@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import FileView
 import GitView
+import GitProcessSafety
 
 // Who last changed each line of a file in a tab (`FileTab`), as Git says:
 // shown beside the line numbers, and for the selected line in a bar under

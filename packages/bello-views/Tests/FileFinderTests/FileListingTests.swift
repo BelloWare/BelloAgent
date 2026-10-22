@@ -1,5 +1,6 @@
 import XCTest
 @testable import FileFinder
+import GitProcessSafety
 
 /// A project's files as a finder lists them: in a repository what git lists
 /// (tracked, ignored or not, and untracked it does not ignore), only files
@@ -19,8 +20,42 @@ final class FileListingTests: ViewsTestCase {
         git = try TestGit(root)
     }
 
+    private func requireGit() async throws {
+        do { _ = try await FinderProcess.git(["--version"], in: root.path, limit: 4096, environment: git.environment) }
+        catch GitToolLookupError.unavailable { throw XCTSkip("git is not installed") }
+    }
+
+    func testGraphemeBreadcrumbAndIgnorePathDelimiters() async throws {
+        for (index, extender) in ["\u{301}", "\u{200d}", "\u{fe0f}", "\u{1f1f8}\u{1f1ec}"].enumerated() {
+            // Outside Git, the folder browser applies the same .gitignore
+            // path syntax without invoking any configured program.
+            let base = root.appendingPathComponent("plain-\(index)"), name = extender + "folder"
+            let folder = base.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write(name + "/ignored\n", ".gitignore", in: base)
+            try write("fixture\n", "ignored", in: folder)
+            try write("fixture\n", "." + extender + "hidden", in: folder)
+            XCTAssertTrue(FileBreadcrumb.contains(folder, in: base))
+            let result = try await FolderDirectory.read(folder, relativeTo: base, environment: git.environment)
+            XCTAssertTrue(result.entries.first { $0.name == "ignored" }?.isDimmed == true)
+            XCTAssertTrue(result.entries.first { $0.name == "." + extender + "hidden" }?.isDimmed == true)
+        }
+    }
+
+    func testGitPathsKeepTrailingCarriageReturn() async throws {
+        let repo = root.appendingPathComponent("repo\r")
+        try git.initialize(repo)
+        let top = try await FileListing.repositoryTop(of: repo.path, environment: git.environment)
+        XCTAssertEqual(top, String(decoding: try git.run(["rev-parse", "--show-toplevel"], in: repo).dropLast(), as: UTF8.self))
+        let ignore = root.appendingPathComponent("ignore\r")
+        try Data("hidden\n".utf8).write(to: ignore)
+        try write("[core]\nexcludesFile = \"" + ignore.path + "\"\n", ".gitconfig", in: git.home)
+        let rules = try await FileListing.globalIgnoreFile(in: repo.path, environment: git.environment)
+        XCTAssertNotNil(rules)
+    }
+
     func testARepositoryListsWhatGitListsThatIsThere() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let repo = root.appendingPathComponent("repo")
         try git.initialize(repo)
         try write("*.log\nbuild/\n", ".gitignore", in: repo)
@@ -59,7 +94,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testRepositoriesInsideAreListedByTheirOwnGit() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let library = root.appendingPathComponent("library")
         try git.initialize(library)
         try write("lib", "Lib.swift", in: library)
@@ -148,7 +183,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testAFolderInsideARepositoryIsListedOnItsOwnAndItsFilesOnce() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let repo = root.appendingPathComponent("repo")
         try git.initialize(repo)
         try write("app", "App.swift", in: repo)
@@ -174,7 +209,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testRepositoriesNestedTooDeepAreSaid() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         var folder = root.appendingPathComponent("r0"), expected: [String] = [], prefix = ""
         for depth in 0...(FileListing.nestedDepth + 1) {
             try git.initialize(folder)

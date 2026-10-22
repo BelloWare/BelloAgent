@@ -239,7 +239,7 @@ extension WorkspaceModel {
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: RefuseWebhookRedirects(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let status: Int
         do {
@@ -253,6 +253,15 @@ extension WorkspaceModel {
             throw WebhookDeliveryFailure(message: "\(request.url.host ?? "The address") answered HTTP \(status).", transient: status == 429 || status >= 500)
         }
         return status
+    }
+}
+
+/// The rendered body and custom headers belong only to the configured address.
+/// Return the original 3xx to delivery so it is a permanent failure, not a retry.
+private final class RefuseWebhookRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 struct ReplyFileLocation: Hashable, Sendable {
     let path: String
@@ -31,9 +32,9 @@ actor ReplyFileResolver {
         var location: ReplyFileLocation?
         for candidate in candidates {
             let url = URL(fileURLWithPath: candidate).standardizedFileURL.resolvingSymlinksInPath()
-            let owner = projects.filter { CanonicalPath.isBelow(url.path, $0.path) }
-                .max { $0.path.utf8.count < $1.path.utf8.count }
-            guard owner?.trusted == true else { continue }
+            let owners = projects.filter { CanonicalPath.isWithin(url.path, $0.path) }
+            guard let longest = owners.map({ $0.path.utf8.count }).max(),
+                  owners.filter({ $0.path.utf8.count == longest }).allSatisfy(\.trusted) else { continue }
             fileChecks += 1
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             location = ReplyFileLocation(path: url.path, line: line)
