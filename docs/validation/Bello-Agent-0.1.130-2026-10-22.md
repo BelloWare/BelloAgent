@@ -1,6 +1,6 @@
 # Bello Agent 0.1.130 — whole-repository bug hunt, floating Agents/Diff/Files card, images in any format, sidebar search modes
 
-Status: **packaged; publication pending.** Marketing version 0.1.130, build 134. Previous public release: 0.1.129/build 133.
+Status: **released and verified 2026-10-22.** Marketing version 0.1.130, build 134. Previous public release: 0.1.129/build 133.
 
 ## Owner request
 
@@ -188,4 +188,8 @@ Run after the security merge, with all workstreams idle. Per-merge checks are un
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `300e9f9c` ("Release Bello Agent 0.1.130"), tag `v0.1.130`, pushed atomically to `main` and `dev/next`.
+- `BelloAgent-0.1.130.dmg`, sha256 `569401efc221ef24263ddfe17e47f31649b86d636cdd719817d4bd1584b6910d`, 16,705,336 bytes; Developer ID signed and notarized (app submission `2fd96fad-1588-4690-ab81-a60ecf1099f6`, DMG submission `f81b199f-33df-4376-9127-34b0a1fab895`, both Accepted), stapled.
+- `validate-release.py --previous-build 133`: passed (0.1.130 build 134, Ed25519 signature verified).
+- Website commit `92da118` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical.
