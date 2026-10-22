@@ -10,6 +10,7 @@ Owner, 2026-10-22: "once you release the current version, please check this and 
 - [ ] EDIT-1: editing an earlier message can take very long to start even when the message is on screen.
 - [ ] PERF-1 (0.1.130 soak): beside the floating Agents, Diff and Files card a newly shown reply's text is laid out at the 840 pt page width, then again at the narrower column; the card's own refresh and drawing add about 0.5 s per two minutes of chat switching. Lay a reply out once at its real width and cut the card's repeated work.
 - Deferred from 0.1.130: see Known in the 0.1.130 record.
+- Owner decisions 2026-10-22, all three as 0.1.130 shipped them: legacy (≤0.1.129) kept sides with a missing journal keep their review notice (no automatic recovery); `/side Q` while the pending side is busy or holds input refuses with a notice and keeps Q in the parent; Show/Hide Terminal stays disabled on Usage Report and Background Requests.
 
 ## 0.1.130
 

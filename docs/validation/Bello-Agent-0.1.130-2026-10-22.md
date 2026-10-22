@@ -167,7 +167,7 @@ Run after the security merge, with all workstreams idle. Per-merge checks are un
   - Transcript action-pill border seams (`TranscriptNativeParts.swift:505`).
   - The wave-B git-files and security-boundaries hunts never ran (release cut).
   - Main-thread file I/O that predates 0.1.130, when a file tab opens or a working-tree watcher starts (`WorkspaceTabs.openFile`, `projectID(holding:)`, `fileProjectState`, `FileTab` init, `WorkspaceChanges`, `FileBlame`, `GitWorkingTreeWatcher` setup); found by the security r16 sweep.
-- **Shipped with an owner decision pending** (asked after the release):
+- **Shipped with an owner decision pending** (asked after the release; on 2026-10-22 the owner kept all three as shipped):
   1. Legacy (≤0.1.129) side-keep records with no publication lease and a missing journal keep their review notice instead of being recovered automatically.
   2. `/side Q` while the chat has a pending side refuses with a notice and keeps Q in the parent.
   3. Show/Hide Terminal is disabled on Usage Report and Background Requests instead of switching to Chats.
