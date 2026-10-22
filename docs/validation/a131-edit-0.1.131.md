@@ -207,7 +207,7 @@ was, the typing went into the ordinary draft, so the read's result was
 dropped and Send had no edit to send. The eighth case is the kept fallback and
 passes on both.
 
-**With the fix** (`evidence/fixed-start-4.log`): 8 tests, 0 failures.
+**With the fix** (`evidence/fixed-start-5.log`, the final build): 8 tests, 0 failures; the tests leave no scratch folder behind.
 
 **Mutations** (`evidence/mutation-*.log`; each reverted, then the class
 passed again):

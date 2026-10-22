@@ -29,8 +29,11 @@ final class MessageEditStartTests: XCTestCase {
         let skill = SkillChip(id: "skill-review", name: "review", path: "/skills/review/SKILL.md", contentHash: "content", metadataHash: "metadata")
 
         init(_ test: XCTestCase, root given: URL? = nil, messages: [TranscriptMessage]? = nil) async throws {
-            root = given ?? scratchRoot("message-edit-start")
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let folder = given ?? scratchRoot("message-edit-start")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Registered first, so it runs last: after the models' own teardown.
+            if given == nil { test.addTeardownBlock { try? FileManager.default.removeItem(at: folder) } }
+            root = folder
             // A real image file, so the original's attachment is found as it was.
             let file = root.appendingPathComponent("diagram.png")
             if !FileManager.default.fileExists(atPath: file.path) { try Self.png.write(to: file) }
