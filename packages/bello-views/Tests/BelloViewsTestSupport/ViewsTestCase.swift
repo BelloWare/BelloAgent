@@ -1,8 +1,8 @@
 import XCTest
 
 /// The base of every test class in this package; each test target names it
-/// through its own `ViewsTestCase` alias, and FileViewTests'
-/// `IssueRecordingTests` checks all three targets derive from it.
+/// through its own `ViewsTestCase` alias, and checks its classes derive from
+/// it with its own guard, such as `FileViewIssueRecordingTests`.
 ///
 /// XCTest (Xcode 16.1) queues an issue raised off the main thread (any
 /// assertion after an `await` in a nonisolated test, or in a task, actor or
