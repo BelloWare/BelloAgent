@@ -6,7 +6,41 @@ private func evidenceCall(_ text: String) -> ModelReply {
     var reply=toolReply(["first"]); reply.message.content.insert(textBlock(text),at:0); reply.message.providerItems=nil; return reply
 }
 
-final class CompactionTaskRegressionTests: XCTestCase {
+private actor TimedCompactionClient: ModelClient {
+    var purposes: [String] = []
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        purposes.append(purpose)
+        try await Task.sleep(for:.milliseconds(purpose == "compaction" ? 150 : 50))
+        return answer(purpose == "compaction" ? "Earlier evidence retained." : "Done.")
+    }
+}
+
+final class CompactionTaskRegressionTests: HelperTestCase {
+    func testAutomaticCompactionCountsSummaryAndAnswerInTaskTimeAcrossReopen() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=10000; raw["maxOutputTokens"]=256
+        let profile=try Profile(raw), client=TimedCompactionClient(), directory=root.appendingPathComponent("state")
+        let seed=[ChatMessage(role:"user",content:[textBlock("Earlier objective")]),
+                  answer(String(repeating:"Historical evidence. ",count:900)).message]
+        var policy=CompactionPolicy(); policy.keepRecentTokens=1
+        let session=try AgentSession(id:"timed-compact",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,compactionPolicy:policy)
+        addTeardownBlock { await session.close() }
+        _=try await session.keep(whenFinished:false)
+        _=try await session.submit(Submission(commandID:"c",turnID:"task",text:"Continue"),steer:false)
+        try await eventually { !(await session.isRunning) }
+        let state=await session.snapshot(), purposes=await client.purposes
+        XCTAssertEqual(state["runStatus"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(purposes,["compaction","turn"])
+        let measured=try XCTUnwrap(state["turnMetrics"]["modelMs"].double)
+        XCTAssertGreaterThanOrEqual(measured,200)
+        XCTAssertEqual(state["taskPresentation"]["recent"].list.last?["modelMs"].double,measured)
+        let saved=await session.path; await session.close()
+        let reopened=try AgentSession(id:"timed-compact",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),resumePath:try XCTUnwrap(saved))
+        let restored=await reopened.snapshot()
+        XCTAssertEqual(restored["taskPresentation"]["recent"].list.last?["modelMs"].double,measured)
+        await reopened.close()
+    }
+
     func testManualCompactionUsesExplicitChoicesAndRejectsInvalidOverridesBeforeMutation() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // One task: a tool round, then the answer pi's one-token tail keeps.
@@ -21,6 +55,7 @@ final class CompactionTaskRegressionTests: XCTestCase {
         }
         let after=await session.context, calls=await client.count
         XCTAssertEqual(before.map(\.id),after.map(\.id)); XCTAssertEqual(calls,2)
+        let tasks=await session.snapshot()["taskPresentation"]["recent"]
         try await session.compact(commandID:"selected-compact",overrides:["model":"selected-model","thinkingLevel":"high","contextWindow":60000,"maxOutputTokens":2048,"modelOutputLimit":16000])
         try await eventually { !(await session.isRunning) }
         let profiles=await client.profiles, snapshot=await session.snapshot()
@@ -30,6 +65,8 @@ final class CompactionTaskRegressionTests: XCTestCase {
         XCTAssertEqual(profiles.last?.contextWindow,60000)
         XCTAssertEqual(profiles.last?.wireOutputLimit,15000,"At most a quarter of the selected 60,000-token window")
         XCTAssertEqual(profiles.last?.modelOutputLimit,16000)
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"],tasks,"Manual utility work does not create or charge a task")
+        XCTAssertTrue(snapshot["taskPresentation"]["active"].isNull)
         await session.close()
     }
 

@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentAccountingTests: XCTestCase {
+final class SubagentAccountingTests: HelperTestCase {
     func testFamilyCostAndTokensSurviveFailedStoppedResumedRequestsAndReload() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         func open(_ path: String? = nil) throws -> AgentSession {

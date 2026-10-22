@@ -20,6 +20,126 @@ import XCTest
 }
 
 final class WorkspaceRefreshLifecycleTests: XCTestCase {
+    @MainActor func testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries() async throws {
+        for operation in ["reveal", "home", "position"] {
+            let f = try await fixture()
+            f.view.historyState = .ready; f.view.draftReady = true; f.view.browsingHistory = true
+            f.view.snapshotEpoch = "old"; f.view.presentation.identity = ("old", "root")
+            f.view.olderPage.cursor = .init(incarnation: "old", lineage: "root", entry: "question")
+            XCTAssertTrue(f.view.adoptSnapshotEpoch("new"))
+            let read = Task {
+                switch operation {
+                case "reveal": _ = await f.model.revealInTranscript(sessionID: f.chat.id, messageID: "destination")
+                case "home": _ = await f.model.revealStartOfChat(sessionID: f.chat.id)
+                default:
+                    f.model.jumpToHistoryPosition(f.chat.id, position: 0, offset: 19)
+                    await f.view.jumpTask?.value
+                }
+            }
+            try await wait { f.commands.frames.contains { $0["method"]?.string == "session.history" } }
+            let command = try XCTUnwrap(f.commands.frames.first { $0["method"]?.string == "session.history" })
+            XCTAssertEqual(command["params"]?.object?["entry"], .string("question"))
+            XCTAssertEqual(command["params"]?.object?["lineage"], .string("root"))
+            try reply(command, on: f.host, result: ["version": .number(2), "incarnation": .string("new"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string("destination"), "role": .string("user"), "text": .string("Requested page")])]),
+                "older": .null, "newer": .null, "start": .number(0), "total": .number(1)])
+            await read.value
+            XCTAssertEqual(f.view.messages.map(\.id), ["destination"], operation)
+            XCTAssertEqual(f.view.presentation.identity?.incarnation, "new", operation)
+            XCTAssertNil(f.view.newerPage.error, operation)
+            try await f.host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testRuntimeReplacementRejectsAnUntrackedRevealRead() async throws {
+        let f = try await fixture(), gate = HistoryReadGate()
+        defer { Task { await gate.release() } }
+        f.view.historyState = .ready; f.view.draftReady = true; f.view.browsingHistory = true
+        f.view.snapshotEpoch = "old"
+        f.model.historyWindowLoader = { _, _, _, _ in
+            await gate.read()
+            return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("old"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string("retired"), "role": .string("user"), "text": .string("Retired page")])]), "older": .null, "newer": .null]))
+        }
+        let read = Task { await f.model.revealInTranscript(sessionID: f.chat.id, messageID: "retired") }
+        try await eventually("The reveal is reading the retired runtime") { await gate.reads == 1 }
+        XCTAssertTrue(f.view.adoptSnapshotEpoch("new"))
+        await gate.release()
+        let revealed = await read.value
+        XCTAssertFalse(revealed, "An uncancelled caller still needs the runtime read fence")
+        XCTAssertEqual(f.view.messages.map(\.id), ["question"])
+        XCTAssertNil(f.view.revealRead)
+        try await f.host.shutdownAndWait()
+    }
+
+    @MainActor func testRuntimeReplacementRestartsVisibleInitialAndReloadReads() async throws {
+        for reload in [false, true] {
+            let f = try await fixture(), gate = HistoryReadGate()
+            defer { Task { await gate.release() } }
+            f.view.draftReady = true; f.view.snapshotEpoch = "old"
+            f.view.scrollAnchor = .init(id: "held", offset: 17, followsBottom: false)
+            f.model.historyWindowLoader = { _, _, _, around in
+                let read = await gate.readFirstOnly()
+                let message = around ?? "held"
+                return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("new"), "lineage": .string("root"),
+                    "messages": .array([.object(["id": .string(message), "role": .string("user"), "text": .string(read == 1 ? "Retired page" : "Replacement page")])]), "older": .null, "newer": .null]))
+            }
+            if reload { f.model.reloadHistory(f.chat.id, around: "destination") }
+            else {
+                let held = f.view.beginHistoryPresentation(), generation = f.view.presentationGeneration
+                f.view.browsingHistory = true
+                f.view.presentation.navigation = Task {
+                    await f.model.loadSelectedChat(f.chat.id, item: f.chat, into: f.view, selection: f.model.selectionRevision,
+                        generation: generation, heldRows: held, focusesComposer: false)
+                }
+            }
+            try await eventually("The first read is held", until: { await gate.reads == 1 })
+            let navigation = f.model.transcriptNavigation(f.chat.id)
+            let oldRead = f.view.presentation.navigation
+            var next = snapshot(sequence: 1, revision: "new:1")
+            next["monitoring"] = .object(["epoch": .string("new")])
+            let count = f.commands.frames.count
+            f.model.refresh(f.chat.id)
+            try await wait { f.commands.frames.count > count }
+            try reply(f.commands.frames[count], on: f.host, result: next)
+            for _ in 0..<100 { if await gate.reads >= 2 { break }; try await Task.sleep(for: .milliseconds(10)) }
+            let reads = await gate.reads
+            XCTAssertGreaterThan(reads, 1, "A visible reader must restart when its runtime retires (reload=\(reload))")
+            XCTAssertNotEqual(f.view.historyState, .loading)
+            await gate.release(); await oldRead?.value
+            XCTAssertEqual(f.view.messages.first?.text, "Replacement page")
+            XCTAssertEqual(f.view.scrollAnchor?.id, reload ? "destination" : "held")
+            XCTAssertEqual(f.view.scrollAnchor?.offset, reload ? 0 : 17)
+            XCTAssertTrue(navigation.isCurrent(in: f.model), "Recovery must not create a new navigation intent")
+            try await f.host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testHistoryBoundaryRebindsAcrossSameIDRuntimeReplacement() async throws {
+        let f = try await fixture()
+        f.view.historyState = .ready; f.view.browsingHistory = true
+        f.view.presentation.identity = ("old", "root")
+        f.view.messages = [TranscriptMessage(id: "held", role: "user", text: "Held message")]
+        f.view.scrollAnchor = .init(id: "held", offset: 23, followsBottom: false)
+        f.view.olderPage.cursor = .init(incarnation: "old", lineage: "root", entry: "held")
+        f.view.newerPage.cursor = .init(incarnation: "old", lineage: "root", entry: "held")
+        let read = Task { await f.model.loadHistoryPage(f.chat.id, newer: false) }
+        try await wait { f.commands.frames.contains { $0["method"]?.string == "session.history" } }
+        let command = try XCTUnwrap(f.commands.frames.first { $0["method"]?.string == "session.history" })
+        XCTAssertEqual(command["params"]?.object?["rebind"], .bool(true))
+        try reply(command, on: f.host, result: ["version": .number(2), "incarnation": .string("new"), "lineage": .string("root"),
+            "messages": .array([.object(["id": .string("earlier"), "role": .string("user"), "text": .string("Earlier message")])]), "older": .null,
+            "newer": .object(["incarnation": .string("new"), "lineage": .string("root"), "entry": .string("earlier")])])
+        let loaded = await read.value
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(f.view.messages.map(\.id), ["earlier", "held"])
+        XCTAssertEqual(f.view.newerPage.cursor?.incarnation, "new")
+        XCTAssertEqual(f.view.presentation.identity?.incarnation, "new")
+        XCTAssertEqual(f.view.scrollAnchor?.id, "held"); XCTAssertEqual(f.view.scrollAnchor?.offset, 23)
+        XCTAssertNil(f.view.olderPage.error)
+        try await f.host.shutdownAndWait()
+    }
+
     @MainActor private func fixture() async throws -> RefreshFixture {
         let root=URL(fileURLWithPath:scratchBase())
             .appendingPathComponent("refresh-lifecycle-"+UUID().uuidString)
@@ -64,6 +184,30 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         return value
     }
 
+    @MainActor func testReplacementRuntimeAcceptsLowerSequenceAndRejectsRetiredSnapshots() async throws {
+        let f = try await fixture()
+        f.view.historyState = .ready
+        func value(_ epoch: String, _ sequence: Double, _ text: String) -> [String: WireValue] {
+            var value = streamed(sequence: sequence, answer: text)
+            value["monitoring"] = .object(["epoch": .string(epoch)])
+            value["historyIncarnation"] = .string(epoch)
+            value["displayRevision"] = .string("\(epoch):\(Int(sequence))")
+            value["state"] = .string("idle"); value["runStatus"] = .string("idle")
+            return value
+        }
+        try await exchange(f, value("first-child-turn", 500, "First reply"))
+        XCTAssertEqual(f.view.lastSequence, 500)
+        try await exchange(f, value("second-child-turn", 1, "Follow-up starts"))
+        XCTAssertEqual(f.view.lastSequence, 1)
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up starts")
+        try await exchange(f, value("second-child-turn", 3, "Follow-up complete"))
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up complete")
+        try await exchange(f, value("first-child-turn", 501, "Retired reply"))
+        XCTAssertEqual(f.view.lastSequence, 3)
+        XCTAssertEqual(f.view.messages.last?.text, "Follow-up complete")
+        try await f.host.shutdownAndWait()
+    }
+
     @MainActor private func showNoticeSnapshot(_ f: RefreshFixture, preflight: String?, state: String = "paused") async throws {
         let index = f.commands.frames.count
         f.model.refresh(f.chat.id)
@@ -73,6 +217,35 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         if let preflight { result["preflightError"] = .string(preflight) }
         try reply(f.commands.frames[index], on: f.host, result: result)
         try await wait { !f.view.snapshotInFlight }
+    }
+
+    @MainActor func testPreflightUncertaintyWaitsForTheReconciledInputInventory() async throws {
+        for retained in [false, true] {
+            let f = try await fixture(), store = try XCTUnwrap(f.model.store)
+            if retained {
+                try await store.recordSubmission(.init(id: "unanswered", sessionID: f.chat.id, turnID: "turn", text: "Retained input", state: "intent",
+                                                       submissionOwner: try f.model.inputPublicationOwner()), draft: nil)
+            }
+            let gate = DraftBaselineGate(expectation(description: "Snapshot input inventory held"))
+            let blocker = Task { await store.holdDraftBaseline(gate) }
+            await fulfillment(of: [gate.entered], timeout: 3)
+            defer { gate.resume.signal() }
+            f.model.refresh(f.chat.id)
+            try await wait { !f.commands.frames.isEmpty }
+            var result = snapshot(sequence: 1, revision: "paused:1", text: "Question")
+            result["state"] = .string("paused"); result["runStatus"] = .string("paused")
+            result["queuePaused"] = .bool(true); result["preflightError"] = .string("Run stopped.")
+            try reply(f.commands.frames[0], on: f.host, result: result)
+            try await wait { f.view.queuePaused }
+            XCTAssertFalse(f.view.uncertain, "A provisional notice cannot publish a resend gate before its input inventory is known")
+            XCTAssertTrue(f.view.recovered.isEmpty)
+            gate.resume.signal(); await blocker.value
+            try await wait { !f.view.snapshotInFlight }
+            XCTAssertEqual(f.view.uncertain, retained)
+            XCTAssertEqual(f.view.recovered.map(\.text), retained ? ["Retained input"] : [])
+            XCTAssertEqual(f.view.notice, "Run stopped.", "The explanation remains visible independently of recovery")
+            try await f.host.shutdownAndWait()
+        }
     }
 
     @MainActor func testClearingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
@@ -480,6 +653,11 @@ private actor HistoryReadGate {
     private(set) var reads = 0
     private var open = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
+    func readFirstOnly() async -> Int {
+        reads += 1; let read = reads
+        if read == 1, !open { await withCheckedContinuation { waiting.append($0) } }
+        return read
+    }
     func read() async {
         reads += 1
         if open { return }
@@ -1160,7 +1338,7 @@ extension WorkspaceRefreshLifecycleTests {
         f.view.historyState = .ready; f.view.presentation.identity = ("runtime", "root"); f.view.selectionMetadataLoaded = true
         let intent = CommandIntent(id: "command", sessionID: f.chat.id, turnID: "turn", text: "Returned", state: "intent")
         f.view.draft = "Returned\n\nNew typing"; f.view.recovered = [intent]; f.view.uncertain = true
-        try await store.recordSubmission(intent, draft: f.view.savedDraft)
+        try await store.recordSubmission(intent, draft: f.view.savedDraft, draftVersion: f.view.draftVersion)
         try RecoveredDraftTests.sql("CREATE TRIGGER refuse_review BEFORE UPDATE ON records WHEN OLD.kind='draft' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: f.model.root)
         var snapshot = streamed(sequence: 2, answer: "Answer")
         snapshot["commands"] = .array([.object(["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("completed")])])

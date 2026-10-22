@@ -156,7 +156,7 @@ private final class StateProbe: @unchecked Sendable {
     }
 }
 
-final class CostLimitTests: XCTestCase {
+final class CostLimitTests: HelperTestCase {
     /// A one-token recent tail, so any history is something to summarize.
     private static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
     private func session(_ root: URL, id: String = UUID().uuidString, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), limit: Double?, resume: String? = nil, policy: CompactionPolicy = CompactionPolicy(), probe: StateProbe? = nil) async throws -> AgentSession {
@@ -288,23 +288,62 @@ final class CostLimitTests: XCTestCase {
     /// relaunch (no invented outcome) and run on Resume before any request.
     func testHeldToolCallsSurviveARelaunchAndRunFirstOnResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06), .reply(answer("Done"), cost: 0.01)])
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06)])
         let tools = RequestCountingTools(client: client)
         let s = try await session(root, id: "held", client: client, tools: tools, limit: 0.05)
         try await send(s, "Work")
         let state = try await settled(s)
         XCTAssertEqual(state["costPaused"].flag, true)
         let path = await s.path; await s.close()
-        let reopened = try await session(root, id: "held", client: client, tools: tools, limit: 0.05, resume: path)
+        let resumedClient = AccountedAgentScript([answer("Done")])
+        let reopened = try await session(root, id: "held", client: resumedClient, tools: tools, limit: 0.05, resume: path)
         let pending = await reopened.history.filter { $0.role == "toolResult" }
         XCTAssertTrue(pending.isEmpty, "A held call gets no invented outcome")
         await reopened.setCostLimit(1)
+        let seed = await reopened.sideSeed(), sideClient = AccountedAgentScript([answer("Side answer")]), sideTools = RecordingTools()
+        let side = try AgentSession(id: "side", profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                    resources: Resources(cwd: root, home: root), client: sideClient, tools: sideTools, traces: TraceStore(), seed: seed.messages, parent: seed.info)
+        try await side.bindSideBudget(to: reopened)
+        try await send(side, "Side question")
+        let pausedSide = try await settled(side)
+        XCTAssertEqual(pausedSide["costPaused"].flag, true)
         _ = try await reopened.continueRun(commandID: "resume")
-        let done = try await settled(reopened)
-        let ran = await tools.calls, requests = await client.turnRequests
+        _ = try await settled(reopened)
+        _ = try await side.continueRun(commandID: "resume-side")
+        let sideDone = try await settled(side), sideCalls = await sideTools.calls, sideRequests = await sideClient.requests
+        XCTAssertEqual(sideDone["state"].text, "idle", sideDone["preflightError"].encoded())
+        XCTAssertEqual(sideDone["messages"].list.last?["text"].text, "Side answer")
+        XCTAssertEqual(sideRequests.count, 1)
+        XCTAssertFalse(sideRequests.flatMap { $0 }.contains { $0.content.contains { $0["type"].text == "toolCall" } })
+        XCTAssertTrue(sideCalls.isEmpty, "Only the parent executes its held tool")
+        let done = await reopened.snapshot(), ran = await tools.calls, requests = await client.turnRequests, resumedRequests = await resumedClient.requests
         XCTAssertEqual(ran.map(\.name), ["first"]); XCTAssertEqual(ran.first?.requests, 1, "Ran before any new request")
-        XCTAssertEqual(requests, 2); XCTAssertEqual(done["state"].text, "idle", done["preflightError"].encoded())
-        await reopened.close()
+        XCTAssertEqual(requests + resumedRequests.count, 2); XCTAssertEqual(done["state"].text, "idle", done["preflightError"].encoded())
+        XCTAssertEqual(resumedRequests.first?.filter { $0.role == "toolResult" }.count, 1)
+        await side.close(); await reopened.close()
+    }
+
+    func testReopenedHeldBatchKeepsCompletePrefixForSidesAndForks() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.01), .reply(answer("First answer"), cost: 0.01), .reply(toolReply(["first"]), cost: 0.04)])
+        let tools = RecordingTools(), s = try await session(root, id: "prefix", client: client, tools: tools, limit: 0.05)
+        try await send(s, "First task"); _ = try await settled(s)
+        try await send(s, "Next task"); _ = try await settled(s)
+        let before = await s.sideSeed(), saved = await s.path, path = try XCTUnwrap(saved)
+        await s.close()
+        let reopened = try await session(root, id: "prefix", client: client, tools: tools, limit: 1, resume: path)
+        let after = await reopened.sideSeed(), held = await reopened.heldToolCalls().0
+        XCTAssertEqual(after.messages.map(\.id), before.messages.map(\.id), "Reopen restores the live complete boundary")
+        XCTAssertEqual(after.messages.filter { $0.role == "toolResult" }.count, 1, "A reused call ID keeps its earlier complete batch")
+        XCTAssertEqual(after.info["cutoffEntryId"], before.info["cutoffEntryId"])
+        XCTAssertEqual(after.info["contextRevision"], before.info["contextRevision"])
+        XCTAssertEqual(held.map(\.id), ["call-0"], "The parent's held call is still resumable")
+        let fork = try await reopened.fork(to: "copy")
+        XCTAssertEqual(fork["origin"]["omittedIncompleteEntries"].int, 1)
+        let copy = try await session(root, id: "copy", client: ScriptClient([]), limit: nil, resume: try XCTUnwrap(fork["path"].text))
+        let copied = await copy.sideSeed()
+        XCTAssertEqual(copied.messages.map(\.id), before.messages.map(\.id), "Whole-chat forks use the same complete boundary")
+        await copy.close(); await reopened.close()
     }
 
     /// Round 9: a held call's card says it is held (`queued`), live and after

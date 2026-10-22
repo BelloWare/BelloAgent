@@ -6,7 +6,7 @@ import XCTest
 /// `ToolRunState`) and written as the protocol's strings: in snapshots, in the
 /// saved state record, and read back from it. The strings are literal here,
 /// so a renamed case shows.
-final class SessionStateStringTests: XCTestCase {
+final class SessionStateStringTests: HelperTestCase {
     func testTheStatesAreTheProtocolsStrings() {
         XCTAssertEqual([SessionState.idle, .running, .stopping, .paused, .error].map(\.rawValue), ["idle", "running", "stopping", "paused", "error"])
         XCTAssertEqual([RunStatus.idle, .running, .waitingTool, .retrying, .compacting, .failed, .cancelled].map(\.rawValue),

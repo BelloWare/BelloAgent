@@ -230,4 +230,40 @@ final class ChatFileLinkTests: XCTestCase {
         XCTAssertEqual(home.key, FileTab.key(for: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("chat-file-link-nowhere.txt")))
         XCTAssertNil(model.openFile(fromChat: "no-such-chat", path: "notes.txt", lines: nil), "a relative path needs its chat's project")
     }
+
+    /// A "/" followed by a combining mark, ZWJ or variation selector is one
+    /// Swift Character with it, but the filesystem still finds the folder. An
+    /// untrusted project, nested in the chat's or alone, holds such a file and
+    /// it is not read; "/" before one still begins an absolute path; and the
+    /// folder tree starts at the project folder holding it.
+    @MainActor func testANameThatBeginsWithACombiningMarkStaysInTheProjectHoldingIt() async throws {
+        let other = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("chat-file-link-other-" + UUID().uuidString)
+        let extra = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("chat-file-link-extra-" + UUID().uuidString)
+        for folder in [other, extra] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: other); try? FileManager.default.removeItem(at: extra) }
+        let (model, root) = try await model(untrusted: other)
+        let nested = root.appendingPathComponent("private")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        model.workspaces.append(WorkspaceRecord(id: "private", path: nested.path, trusted: false))
+        let own = try XCTUnwrap(model.workspaces.firstIndex { $0.id == "w" })
+        model.workspaces[own].paths = [extra.path]
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let label = "U+" + String(mark.unicodeScalars.first!.value, radix: 16), name = mark + "secret.swift"
+            for folder in [nested, other, root, extra] { try Data("generated \(label) fixture".utf8).write(to: folder.appendingPathComponent(name)) }
+            let inNested = try XCTUnwrap(model.openFile(fromChat: "main", path: "private/" + name, lines: nil))
+            XCTAssertEqual(inNested.projectID, "private", label)
+            XCTAssertFalse(inNested.readable, label); XCTAssertNil(inNested.document, label); XCTAssertNotNil(inNested.missingReason, label)
+            let inOther = try XCTUnwrap(model.openFile(fromChat: "main", path: other.appendingPathComponent(name).path, lines: nil))
+            XCTAssertEqual(inOther.projectID, "u", "an untrusted root, not outside every project: \(label)")
+            XCTAssertFalse(inOther.readable, label); XCTAssertNil(inOther.document, label)
+            let inRoot = try XCTUnwrap(model.openFile(fromChat: "main", path: name, lines: nil))
+            XCTAssertEqual(inRoot.projectID, "w", label); XCTAssertTrue(inRoot.readable, label)
+            XCTAssertEqual(inRoot.containingFolderRoot?()?.path, root.path, label)
+            let inExtra = try XCTUnwrap(model.openFile(fromChat: "main", path: extra.appendingPathComponent(name).path, lines: nil))
+            XCTAssertEqual(inExtra.projectID, "w", label); XCTAssertEqual(inExtra.containingFolderRoot?()?.path, extra.path, label)
+            let absolute = try XCTUnwrap(model.openFile(fromChat: "main", path: "/" + name, lines: nil))
+            XCTAssertEqual(Array(absolute.key.utf8), Array(FileTab.key(for: URL(fileURLWithPath: "/" + name)).utf8), "not the project's copy: \(label)")
+            for tab in [inNested, inOther, inRoot, inExtra, absolute] { model.tabs.close(tab) }
+        }
+    }
 }

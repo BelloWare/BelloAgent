@@ -1,7 +1,7 @@
 import XCTest
 @testable import GitView
 
-final class GitIndexTransactionTests: XCTestCase {
+final class GitIndexTransactionTests: ViewsTestCase {
     func testStageAndUnstageOneHunkPreserveOtherHunksAndWorktree() async throws {
         let repo = try HunkFixture(); defer { repo.remove() }
         let service = GitService()

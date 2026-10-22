@@ -31,7 +31,51 @@ private actor HeldDrainConsumer {
     func release() { released = true; waiter?.resume(); waiter = nil }
 }
 
-final class CaptureDrainTests: XCTestCase {
+final class CaptureDrainTests: HelperTestCase {
+    func testLargeMetadataPagesAreOrderedAndWaitForFinalRetention() async throws {
+        let packets = DrainPackets(), done = DrainFlag()
+        let delivery = CaptureDelivery(epoch: "fixture", emit: { packets.emit($0) })
+        await delivery.enable()
+        let packet: JSON = ["type": "finish", "metadata": ["usage": ["raw": JSON(String(repeating: "\u{01}🙂", count: 150_000))]]]
+        let sending = Task { let accepted = await delivery.send(packet); await done.finish(); return accepted }
+        var bytes = Data(), final = false, packetID: String?
+        while !final {
+            var frame: JSON?
+            try await eventually { frame = packets.next(); return frame != nil }
+            let value = try XCTUnwrap(frame), chunk = value["chunk"]
+            XCTAssertLessThanOrEqual(try value.data().count, HostProtocol.frameBytes)
+            XCTAssertEqual(chunk["offset"].int, bytes.count)
+            if let packetID { XCTAssertEqual(chunk["packetId"].text, packetID) } else { packetID = chunk["packetId"].text }
+            let page = try XCTUnwrap(Data(base64Encoded: chunk["bytes"].text ?? ""))
+            XCTAssertLessThanOrEqual(page.count, 32 * 1024)
+            bytes.append(page); final = chunk["final"].flag == true
+            let finished = await done.done
+            XCTAssertFalse(finished, "Returning before the last acknowledgement loses capture retention")
+            await delivery.acknowledge(try XCTUnwrap(value["transferId"].text), accepted: true)
+        }
+        let accepted = await sending.value
+        XCTAssertTrue(accepted); XCTAssertEqual(try JSON.parse(bytes), packet)
+        await delivery.close()
+    }
+
+    func testRejectedMetadataChunkReleasesTheNextPacketWithoutSendingItsTail() async throws {
+        let packets = DrainPackets(), delivery = CaptureDelivery(epoch: "fixture", emit: { packets.emit($0) })
+        await delivery.enable()
+        let first = Task { await delivery.send(["type": "finish", "metadata": JSON(String(repeating: "x", count: 1_100_000))]) }
+        var frame: JSON?
+        try await eventually { frame = packets.next(); return frame != nil }
+        let second = Task { await delivery.send(["type": "finish", "metadata": [:]]) }
+        await delivery.acknowledge(try XCTUnwrap(frame?["transferId"].text), accepted: false)
+        let accepted = await first.value
+        XCTAssertFalse(accepted)
+        try await eventually { frame = packets.next(); return frame != nil }
+        XCTAssertEqual(frame?["packet"]["type"].text, "finish")
+        await delivery.acknowledge(try XCTUnwrap(frame?["transferId"].text), accepted: true)
+        let nextAccepted = await second.value
+        XCTAssertTrue(nextAccepted)
+        await delivery.close()
+    }
+
     func testShutdownDrainsQueuedPagesWhileAcceptingAcknowledgments() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let gateway = try await PythonGateway.start(source: Self.gateway, root: root); defer { gateway.stop() }

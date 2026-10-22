@@ -3,7 +3,7 @@ import XCTest
 
 /// File names git would otherwise read as patterns or magic: each command
 /// touches the chosen file and nothing its name happens to match.
-final class GitLiteralPathTests: XCTestCase {
+final class GitLiteralPathTests: ViewsTestCase {
     /// Pattern-like names, each beside the plain files its pattern would match.
     static let tricky = ["[id].txt", "*.md", "?.txt", ":odd", ":(glob)g"]
     static let bystanders = ["i.txt", "d.txt", "a.md", "x.txt", "odd", "g"]

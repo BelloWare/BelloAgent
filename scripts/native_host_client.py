@@ -12,12 +12,26 @@ Load it by path (scripts/ is not on the import path of every runner):
 
     spec = importlib.util.spec_from_file_location('native_host_client', pathlib.Path(__file__).with_name('native_host_client.py'))
 """
+import base64
 import json
+import os
+import pathlib
 import queue
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+
+
+def isolated_environment(home, env=None):
+    """Keep all helper resource discovery inside a generated test home."""
+    home = pathlib.Path(home).resolve()
+    codex = home / '.codex'
+    codex.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ if env is None else env)
+    environment.update(HOME=str(home), CFFIXED_USER_HOME=str(home), CODEX_HOME=str(codex))
+    return environment
 
 
 class HostPeer:
@@ -30,14 +44,26 @@ class HostPeer:
     is busy now and then. Reader failures are kept in `errors`.
     """
 
-    def __init__(self, binary, cwd, *, env=None, stderr=subprocess.PIPE, ensure_ascii=False,
+    def __init__(self, binary, cwd, *, env=None, home=None, stderr=subprocess.PIPE, ensure_ascii=False,
                  capture=None, stall=0, stall_every=40, skip_bad_lines=False, drop_events=False):
-        self.process = subprocess.Popen([str(binary)], cwd=cwd, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=stderr, env=env)
+        # The live harness owns its home alongside its other retained artifacts.
+        # Every other peer gets a fresh home, including restarts and custom envs.
+        self._home = tempfile.TemporaryDirectory(prefix='pi-host-home-') if home is None else None
+        try:
+            environment = isolated_environment(self._home.name if self._home else home, env)
+            self.process = subprocess.Popen([str(binary)], cwd=cwd, stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, stderr=stderr, env=environment)
+        except BaseException:
+            if self._home:
+                self._home.cleanup()
+            raise
         self.frames = queue.Queue()
         self.write_lock = threading.Lock()
         self.errors = []
         self.epoch = None
+        self.maximum_frame_bytes = 0
+        self._capture_packet = None
+        self._capture_bytes = bytearray()
         self._ensure_ascii = ensure_ascii
         self._capture = capture or (lambda frame: True)
         self._stall, self._stall_every = stall, stall_every
@@ -50,6 +76,8 @@ class HostPeer:
             count = 0
             for line in self.process.stdout:
                 count += 1
+                self.maximum_frame_bytes = max(self.maximum_frame_bytes, len(line) - 1)
+                assert len(line) - 1 <= 1_048_576, "Helper frame exceeded 1 MiB"
                 if self._stall and count % self._stall_every == 0:
                     time.sleep(self._stall)
                 try:
@@ -59,7 +87,25 @@ class HostPeer:
                         continue
                     raise
                 if frame.get('kind') == 'capture':
-                    accepted = self._capture(frame)
+                    if 'chunk' in frame:
+                        chunk = frame['chunk']
+                        if self._capture_packet is None:
+                            assert chunk['offset'] == 0
+                            self._capture_packet = chunk['packetId']
+                        assert chunk['packetId'] == self._capture_packet
+                        assert chunk['offset'] == len(self._capture_bytes)
+                        data = base64.b64decode(chunk['bytes'], validate=True)
+                        assert 0 < len(data) <= 32 * 1024
+                        self._capture_bytes.extend(data)
+                        accepted = True
+                        if chunk['final']:
+                            frame['packet'] = json.loads(self._capture_bytes)
+                            self._capture_packet = None
+                            self._capture_bytes.clear()
+                            accepted = self._capture(frame)
+                    else:
+                        assert self._capture_packet is None
+                        accepted = self._capture(frame)
                     if accepted is not None:
                         self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'],
                                    'transferId': frame['transferId'], 'accepted': accepted})
@@ -108,3 +154,5 @@ class HostPeer:
         self.process.stdout.close()
         if close_stderr and self.process.stderr is not None:
             self.process.stderr.close()
+        if self._home:
+            self._home.cleanup()

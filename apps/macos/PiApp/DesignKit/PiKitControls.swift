@@ -210,7 +210,12 @@ extension PiKit {
         static var spacing: CGFloat { 2 }
         static var inset: CGFloat { 3 }
 
-        init(selection: Tag, items: [(Tag, String)], accessibilityName: String? = nil, onSelect: ((Tag) -> Void)? = nil) {
+        private let horizontalPadding: CGFloat
+        private let keyboardFocusable: Bool
+        init(selection: Tag, items: [(Tag, String)], horizontalPadding: CGFloat = 11, keyboardFocusable: Bool = false,
+             accessibilityName: String? = nil, onSelect: ((Tag) -> Void)? = nil) {
+            self.horizontalPadding = horizontalPadding
+            self.keyboardFocusable = keyboardFocusable
             self.selection = selection; self.items = items; self.accessibilityName = accessibilityName; self.onSelect = onSelect
             super.init(frame: .zero)
             wantsLayer = true
@@ -227,12 +232,24 @@ extension PiKit {
             var chosen = false { didSet { if oldValue != chosen { redrawContent() } } }
             override var title: String { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
             var line: Line { Line(title, font: .systemFont(ofSize: 12, weight: .medium), color: chosen ? .piInk : .piInkSecondary) }
-            init(_ title: String) { super.init(frame: .zero); self.title = title; pressScales = false }
+            private let horizontalPadding: CGFloat
+            private let keyboardFocusable: Bool
+            init(_ title: String, horizontalPadding: CGFloat, keyboardFocusable: Bool) {
+                self.horizontalPadding = horizontalPadding
+                self.keyboardFocusable = keyboardFocusable
+                super.init(frame: .zero); self.title = title; pressScales = false
+            }
             required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-            override var intrinsicContentSize: NSSize { let text = line.size(scale: piScale); return NSSize(width: text.width + 22, height: text.height + 10) }
+            override var intrinsicContentSize: NSSize { let text = line.size(scale: piScale); return NSSize(width: text.width + horizontalPadding * 2, height: text.height + 10) }
             override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
-            override func drawContent(in rect: CGRect) { line.draw(at: CGPoint(x: 11, y: 5), scale: piScale) }
+            override func drawContent(in rect: CGRect) { line.draw(at: CGPoint(x: horizontalPadding, y: 5), scale: piScale) }
             override func isAccessibilitySelected() -> Bool { chosen }
+            override var acceptsFirstResponder: Bool {
+                keyboardFocusable ? isEffectivelyEnabled : super.acceptsFirstResponder
+            }
+            override var canBecomeKeyView: Bool {
+                keyboardFocusable ? isEffectivelyEnabled && !isHiddenOrHasHiddenAncestor : super.canBecomeKeyView
+            }
         }
 
         /// Reconciles the tab buttons with `items` by tag: a tab that stays
@@ -247,7 +264,7 @@ extension PiKit {
                     kept[item.0] = tab
                     return tab
                 }
-                let tab = Tab(item.1)
+                let tab = Tab(item.1, horizontalPadding: horizontalPadding, keyboardFocusable: keyboardFocusable)
                 kept[item.0] = tab
                 tab.onPress = { [weak self] in
                     guard let self, self.selection != item.0 else { return }

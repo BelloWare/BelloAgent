@@ -6,7 +6,7 @@ import Foundation
 extension WorkspaceModel {
     func acquireUpdateBarrier() -> Bool {
         if installPreparing { return true }
-        guard !hasActiveWork else { return false }
+        guard !hasActiveWork, attachmentImports == 0 else { return false }
         installPreparing = true; return true
     }
     func prepareForInstall() async throws {
@@ -36,7 +36,7 @@ extension WorkspaceModel {
     /// and its final state before its helper exits; an app that answered
     /// AppKit first took that with it, and the chat came back as a crash.
     func stopHostsAndWait() async {
-        let stops = hosts.values.map { host in Task { try? await host.shutdownAndWait() } }
+        let stops = (Array(hosts.values) + Array(connectionProbeHosts.values)).map { host in Task { try? await host.shutdownAndWait() } }
         for stop in stops { await stop.value }
     }
     func shutdown() {
@@ -45,6 +45,7 @@ extension WorkspaceModel {
         stopRememberingSelection()
         stopConfigurationRetry()
         navigationTask?.cancel(); navigationTask = nil
+        for pending in resumeTasks.values { pending.task.cancel() }
         for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()
         cancelAutomaticContext()
@@ -55,6 +56,7 @@ extension WorkspaceModel {
         titleGenerationTasks.removeAll()
         journalSlimming?.cancel()
         pastedImageCleanup?.cancel()
+        toolOutputCleanup?.cancel()
         sidebarSearchStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
@@ -65,6 +67,7 @@ extension WorkspaceModel {
         for task in accountingTasks.values { task.cancel() }
         accountingTasks.removeAll(); dirtyAccounting.removeAll()
         for host in hosts.values { host.shutdown() }
+        for host in connectionProbeHosts.values { host.shutdown() }
         TerminalRegistry.shared.shutdown()
         tabs.tearDown()
     }

@@ -137,7 +137,7 @@ final class GitPanelTimingTests: GitPanelTestCase, SerialTestLane {
         let reads = Task {
             await withTaskGroup(of: Void.self) { group in
                 for _ in 0..<24 {
-                    group.addTask { _ = try? await service.run(["-c", "alias.wait=!sleep 1", "wait"], in: root.path, timeout: 30) }
+                    group.addTask { _ = try? await service.run(["-c", "alias.wait=!sleep 1", "wait"], in: root.path, timeout: 30, readOnly: false) }
                 }
                 await group.waitForAll()
             }

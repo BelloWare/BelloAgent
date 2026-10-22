@@ -36,6 +36,7 @@ targetTemplates:
       - packages/swift-host/Sources/PiAgentCore/JournalCheckpoint.swift
       - packages/swift-host/Sources/PiAgentCore/TaskPresentation.swift
       - packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift
+      - packages/swift-host/Sources/PiAgentCore/RetainedConversation.swift
       - packages/swift-host/Sources/PiAgentCore/SubagentTypes.swift
       - packages/swift-host/Sources/PiAgentCore/RequestScope.swift
       - packages/swift-host/Sources/PiAgentCore/ChildCostProjection.swift
@@ -83,7 +84,7 @@ targets:
   PiAppTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [apps/macos/PiAppTests, apps/macos/TestSupport/TestIsolationGuard.m]
+    sources: [apps/macos/PiAppTests, apps/macos/TestSupport/TestIsolationGuard.m, apps/macos/TestSupport/IssueRecordingGuard.m]
     dependencies:
       - target: PiAppTestHost
     settings:

@@ -33,7 +33,7 @@ private actor StreamingActivityClient: ModelClient {
     }
 }
 
-final class LiveActivityTests: XCTestCase {
+final class LiveActivityTests: HelperTestCase {
     func testHiddenStatusSeesModelAndSilentToolPhaseChangesThroughNotifications() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = ScriptClient([toolReply(["first"]), answer("Done")], holdFirst: true)

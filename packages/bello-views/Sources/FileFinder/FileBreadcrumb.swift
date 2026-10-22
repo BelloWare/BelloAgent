@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 /// A lexical path: building header buttons never stats a slow volume.
 public struct FileBreadcrumb: Equatable, Sendable {
@@ -11,7 +12,7 @@ public struct FileBreadcrumb: Equatable, Sendable {
 
     public static func contains(_ file: URL, in root: URL) -> Bool {
         let path = file.standardizedFileURL.path, base = root.standardizedFileURL.path
-        return path == base || path.hasPrefix(base == "/" ? "/" : base + "/")
+        return path == base || path.gitHasPrefix(base == "/" ? "/" : base + "/")
     }
 
     public static func path(to file: URL, project: (String, URL)? = nil,

@@ -75,8 +75,12 @@ import XCTest
                                                      ("cut", "a-very-long-model-alias-that-is-cut-in-the-middle", false, false, 110)] {
             // Symbols sit a fraction of a pixel apart (DesignKit's allowance),
             // which in a pill this small is a larger share; a label cut in the
-            // middle is cut by Core Text, not SwiftUI.
-            try await check("pill-\(name)", share: name == "cut" ? 0.05 : 0.04, RefPillLabel(icon: "cpu", text: text, active: active, loading: false, maxWidth: width, compact: compact).fixedSize()) {
+            // middle is cut by Core Text, not SwiftUI. The repaired capsule
+            // outline bends its ends on circular arcs where the reference's
+            // continuous capsule does not (see PiKitParityTests): some 50 px
+            // on a plain outline and 130 on an accent one, whatever the
+            // width, so a larger share of a compact pill.
+            try await check("pill-\(name)", share: name == "cut" || compact ? 0.05 : 0.04, RefPillLabel(icon: "cpu", text: text, active: active, loading: false, maxWidth: width, compact: compact).fixedSize()) {
                 ComposerPillButton(icon: "cpu", text: text, active: active, maxTextWidth: width, compact: compact)
             }
         }

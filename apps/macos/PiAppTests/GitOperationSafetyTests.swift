@@ -277,20 +277,25 @@ final class GitOperationSafetyTests: GitPanelTestCase {
     @MainActor func testEditingTheDraftCancelsAnInFlightPreflightRead() async throws {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "work\n")
-        let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        let service = GitService(), controller = GitController(roots: [fixture.root.path], service: service)
+        defer { controller.letGo() }
         controller.commitScope = .checkedFiles
         try await eventually("read") { controller.statusRead && !controller.loading }
         controller.commitMessage = "Before"; controller.checked = ["file.txt"]
-        try fixture.write(".gitattributes", "file.txt filter=hold\n")
-        let entered = fixture.root.appendingPathComponent(".git/entered"), release = fixture.root.appendingPathComponent(".git/release")
-        let script = "#!/bin/sh\ntouch .git/entered\nn=0\nwhile [ ! -f .git/release ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n+1)); done\ncat\n"
-        try Data(script.utf8).write(to: fixture.root.appendingPathComponent(".git/hooks/hold"))
-        try fixture.git(["config", "filter.hold.clean", "sh .git/hooks/hold"])
+        // Hold the process queue with explicit fixture commands. A read-only
+        // preflight must never execute a repository filter just to wait here.
+        let holds = (0..<GitService.concurrentProcesses).map { _ in
+            Task { _ = try? await service.run(["-c", "alias.wait=!sleep 10", "wait"], in: fixture.root.path, readOnly: false) }
+        }
+        defer { for hold in holds { hold.cancel() } }
+        try await PiAppTests.eventually("fill the fixture process queue", until: { await service.processesRunning == GitService.concurrentProcesses })
         let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
         let reading = Task { await controller.checkCommit(request) }
-        try await eventually("enter the fixture filter") { FileManager.default.fileExists(atPath: entered.path) }
+        try await eventually("begin the preflight read") { controller.preflightLoading }
         controller.commitMessage = "After"
-        try Data().write(to: release)
+        XCTAssertFalse(controller.preflightLoading)
+        for hold in holds { hold.cancel() }
+        for hold in holds { await hold.value }
         let result = await reading.value
         XCTAssertNil(result); XCTAssertNil(controller.preflight); XCTAssertFalse(controller.preflightLoading)
         XCTAssertEqual(controller.commitMessage, "After")

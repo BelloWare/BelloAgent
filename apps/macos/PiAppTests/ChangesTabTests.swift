@@ -13,6 +13,12 @@ import FileView
 /// project is removed, and reading again when it comes back; and ⌘↩, ⌘F and
 /// ⌘. in its commit message never acting on the chat behind it.
 final class ChangesTabTests: GitPanelTestCase {
+    @MainActor override func setUp() async throws { installStandaloneFileResolver(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkStandaloneFileResolverSetup(self) { try await self.setUp() }
+    }
+
     /// A project over a repository with two changed files, a chat in it, and
     /// the workspace window.
     @MainActor private func workspace() async throws -> (model: WorkspaceModel, window: NSWindow, project: WorkspaceRecord) {
@@ -142,7 +148,8 @@ final class ChangesTabTests: GitPanelTestCase {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("changes-tab-note-" + UUID().uuidString + ".txt")
         try Data("note".utf8).write(to: file)
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
-        first.open(kind: FileTab.kind, key: FileTab.key(for: file)) { FileTab(url: file, projectID: nil) }
+        let standalone = first.open(kind: FileTab.kind, key: FileTab.key(for: file)) { FileTab(url: file, projectID: nil) }
+        XCTAssertTrue((standalone as? FileTab)?.readable == true, "The standalone fixture is independent of a preceding workspace")
         first.flush()
         first.tearDown()
 

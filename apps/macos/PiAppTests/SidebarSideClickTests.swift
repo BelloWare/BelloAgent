@@ -242,4 +242,48 @@ final class SidebarSideClickTests: XCTestCase {
         try await draw(fixture)
         XCTAssertFalse(model.collapsedSidebarSides.contains("P"), "Opened from elsewhere, the side list unfolds")
     }
+
+    /// `/side Q` refused before its capture (here a connection being deleted)
+    /// leaves the keyboard in the chat's composer, with the command and the
+    /// cursor where they were: neither an empty side waiting beside the chat
+    /// nor a new one ever takes it, however briefly. A captured question then
+    /// moves the keyboard to that side.
+    @MainActor func testARefusedSideQuestionKeepsTheKeyboardWithTheCommand() async throws {
+        for existing in [true, false] {
+            let fixture = try await fixture(), model = fixture.model, window = fixture.window
+            model.prewarmsHelpers = false
+            await model.select("Q"); try await draw(fixture)
+            if existing { model.openSide(parentID: "Q"); try await draw(fixture) }
+            let waiting = model.sides["Q"]
+            XCTAssertEqual(waiting?.pending, existing ? true : nil)
+            let root = try XCTUnwrap(window.contentView), parent = try XCTUnwrap(model.displays["Q"])
+            let editor = try XCTUnwrap(views(ComposerTextView.self, in: root).first { $0.sessionID == "Q" })
+            let command = "/side Explain this failure", cursor = NSRange(location: 6, length: 0)
+            parent.draft = command; parent.directCommand = true; try await draw(fixture)
+            XCTAssertEqual(editor.string, command)
+            XCTAssertTrue(window.makeFirstResponder(editor)); model.focusPane("Q"); editor.setSelectedRange(cursor)
+            try await draw(fixture)
+            XCTAssertEqual(keyboard(fixture), "Q")
+            window.composers.removeAll()
+            model.deletingProfiles.insert("side-click-profile")
+            model.send(sessionID: "Q")
+            try await draw(fixture)
+            model.deletingProfiles.remove("side-click-profile")
+            XCTAssertEqual(model.error, "This chat's connection is unavailable. Restore it in Settings before continuing.")
+            XCTAssertEqual(keyboard(fixture), "Q", "The keyboard stays with the retained command (existing side: \(existing))")
+            XCTAssertEqual(window.composers.filter { $0 != "Q" }, [], "No side takes the keyboard, however briefly (existing side: \(existing))")
+            XCTAssertEqual(model.focusedSessionID, "Q")
+            XCTAssertEqual(editor.string, command); XCTAssertEqual(editor.selectedRange(), cursor); XCTAssertEqual(parent.draft, command)
+            XCTAssertEqual(model.sides["Q"]?.id, waiting?.id)
+            guard existing, let waiting else { continue }
+            // Captured, the question takes the keyboard to the side. Its keep
+            // intent fails to write, so nothing reaches a helper.
+            try RecoveredDraftTests.sql("CREATE TRIGGER fail_keep BEFORE INSERT ON records WHEN NEW.kind='side-keep' BEGIN SELECT RAISE(ABORT, 'generated keep failure'); END", root: model.root)
+            model.error = nil; model.send(sessionID: "Q")
+            XCTAssertEqual(parent.draft, "")
+            try await waitUntil("The captured question takes the keyboard to the side") { keyboard(fixture) == waiting.id }
+            try await waitUntil("The side's first send settled") { model.displays[waiting.id]?.loading == false }
+            try RecoveredDraftTests.sql("DROP TRIGGER fail_keep", root: model.root)
+        }
+    }
 }

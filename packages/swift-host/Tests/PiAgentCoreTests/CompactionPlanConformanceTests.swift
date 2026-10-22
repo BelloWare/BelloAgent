@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class CompactionPlanConformanceTests: XCTestCase {
+final class CompactionPlanConformanceTests: HelperTestCase {
     func testTriggerReservesWhicheverOperationNeedsMoreOutputRoom() throws {
         let policy=CompactionPolicy()
         for ordinaryReserve in [4096,64000] {

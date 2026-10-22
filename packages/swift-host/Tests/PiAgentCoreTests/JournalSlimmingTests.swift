@@ -4,7 +4,33 @@ import XCTest
 /// A journal written before 0.1.111 slimmed once (`JournalSlimming`): without
 /// the run-state records a later one supersedes, and opening to exactly the
 /// chat it was. Anything that goes wrong leaves the journal as it was.
-final class JournalSlimmingTests: XCTestCase {
+final class JournalSlimmingTests: HelperTestCase {
+    func testDeletionDuringDiscardMustNotRepublishSource() async throws {
+        let fixture = try chat(), path = try await journal(fixture, turns: 2)
+        try rewriteWhole(path)
+        let source = URL(fileURLWithPath: path)
+        let result = try JournalSlimming.slim(url: source, id: "slim", minimumSaving: 0, discard: { kept in
+            try FileManager.default.removeItem(at: source)
+            try FileManager.default.removeItem(at: kept)
+        })
+        XCTAssertFalse(result.slimmed, "Deleting the source must win over background slimming")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Slimming republished the deleted source")
+        XCTAssertTrue(try leftovers(fixture).isEmpty)
+    }
+
+    func testReplacementDuringDiscardMustNotBeOverwritten() async throws {
+        let fixture = try chat(), path = try await journal(fixture, turns: 2)
+        try rewriteWhole(path)
+        let source = URL(fileURLWithPath:path), replacement = Data("independent replacement\n".utf8)
+        let result = try JournalSlimming.slim(url:source,id:"slim",minimumSaving:0,discard:{ kept in
+            try replacement.write(to:source,options:.atomic)
+            try FileManager.default.removeItem(at:kept)
+        })
+        XCTAssertFalse(result.slimmed)
+        XCTAssertEqual(try Data(contentsOf:source),replacement)
+        XCTAssertTrue(try leftovers(fixture).isEmpty)
+    }
+
     private struct Chat { let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore }
 
     private func chat() throws -> Chat {

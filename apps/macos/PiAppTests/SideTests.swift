@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import PiApp
 
 final class SideTests: XCTestCase {
@@ -233,10 +234,59 @@ final class SideTests: XCTestCase {
         XCTAssertEqual(side.draft, "A question for the side", "What was typed is still there")
         let stored = try await f.model.store?.get(DraftRecord.self, kind: "draft", id: info.id)
         let intent = try await f.model.store?.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
-        XCTAssertNil(stored, "A draft side's text is not left in the store"); XCTAssertNil(intent, "Nor a recovery intent for a side that was never created")
+        XCTAssertNil(stored, "A draft side's text is not left in the store"); XCTAssertNotNil(intent, "Captured input keeps its parent link until recovery transfers")
         f.model.closeSide(info.id)
+        try await f.until("The side input did not transfer") { f.model.sides[f.parent.id] == nil }
         XCTAssertNil(f.model.sides[f.parent.id], "It closes")
         XCTAssertEqual(f.parentView.draft, "A question for the side", "Its text goes back to the parent, as for any draft side")
+    }
+
+    @MainActor func testFailedSideDraftRemovalKeepsItsCommittedBaseline() async throws {
+        let f = try await scriptedSide(), store = try XCTUnwrap(f.model.store)
+        f.model.openSide(parentID: f.parent.id)
+        let info = try XCTUnwrap(f.model.sides[f.parent.id]), side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = "First side draft"
+        let publication = Task { try await f.model.publishPendingSide(info, view: side) }
+        try await f.until("side.open was never sent") { f.frame("side.open") != nil }
+        let before = side.draftVersion.snapshot
+        XCTAssertNotNil(before.revision)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(f.model.root.appendingPathComponent("desktop.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_draft_removal BEFORE DELETE ON records WHEN OLD.kind='draft' BEGIN SELECT RAISE(ABORT, 'generated removal failure'); END", nil, nil, nil), SQLITE_OK)
+        try f.reply(try XCTUnwrap(f.frame("side.open")), result: ["code": .string("parent_busy"), "message": .string("The parent is busy")], ok: false)
+        do { try await publication.value; XCTFail("The helper rejected side publication") } catch { }
+        let durable = try await store.draftVersion(id: info.id).snapshot
+        XCTAssertEqual(durable.revision, before.revision, "The injected DELETE failure left the draft intact")
+        XCTAssertEqual(side.draftVersion.snapshot.revision, durable.revision, "A failed removal must not reset the loaded baseline")
+        XCTAssertEqual(side.draftVersion.snapshot.draft, durable.draft)
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_draft_removal", nil, nil, nil), SQLITE_OK)
+        side.draft = "Typing after storage recovers"
+        do { try await store.put(side.savedDraft, kind: "draft", id: side.id, draftVersion: side.draftVersion) }
+        catch { XCTFail("This instance's own retained row must not cause a conflict: \(error)") }
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: side.id)
+        let conflicts = try await store.draftConflicts(id: side.id)
+        XCTAssertEqual(saved?.text, side.draft)
+        XCTAssertTrue(conflicts.isEmpty, "Single-instance retry must not create a recovery banner")
+    }
+
+    @MainActor func testSuccessfulSideDraftRemovalResetsItsCommittedBaseline() async throws {
+        let f = try await scriptedSide(), store = try XCTUnwrap(f.model.store)
+        f.model.openSide(parentID: f.parent.id)
+        let info = try XCTUnwrap(f.model.sides[f.parent.id]), side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = "First side draft"
+        let publication = Task { try await f.model.publishPendingSide(info, view: side) }
+        try await f.until("side.open was never sent") { f.frame("side.open") != nil }
+        XCTAssertNotNil(side.draftVersion.snapshot.revision)
+        try f.reply(try XCTUnwrap(f.frame("side.open")), result: ["code": .string("parent_busy"), "message": .string("The parent is busy")], ok: false)
+        do { try await publication.value; XCTFail("The helper rejected side publication") } catch { }
+        let durable = try await store.draftVersion(id: info.id).snapshot
+        XCTAssertNil(durable.draft); XCTAssertNil(durable.revision)
+        XCTAssertNil(side.draftVersion.snapshot.draft); XCTAssertNil(side.draftVersion.snapshot.revision)
+        side.draft = "Retry after successful cleanup"
+        try await store.put(side.savedDraft, kind: "draft", id: side.id, draftVersion: side.draftVersion)
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: side.id)
+        XCTAssertEqual(saved?.text, side.draft)
     }
 
     // MARK: A draft side's whole draft goes to its parent
@@ -262,6 +312,7 @@ final class SideTests: XCTestCase {
         f.parentView.draft = "Parent text"; f.parentView.attachments = [Self.parentImage]; f.parentView.skills = [Self.skill]
         let info = try draftSide(f, text: "  Side text ", images: [Self.image], skills: [Self.skill, Self.other])
         f.model.closeSide(info.id)
+        try await f.until("The side input did not transfer") { f.model.sides[f.parent.id] == nil }
         XCTAssertNil(f.model.sides[f.parent.id], "It closes")
         XCTAssertEqual(f.parentView.draft, "Parent text\n\nSide text")
         XCTAssertEqual(f.parentView.attachments.map(\.id), ["parent-image", "side-image"])

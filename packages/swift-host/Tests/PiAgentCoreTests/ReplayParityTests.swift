@@ -7,7 +7,38 @@ import XCTest
 /// shown, and the same context a request sends. The one difference is the
 /// open's context also keeping rows no request sends (every request, count
 /// and compaction leaves them out), until a record resets the context.
-final class ReplayParityTests: XCTestCase {
+final class ReplayParityTests: HelperTestCase {
+    func testPortableHandoffRestoresEditedContextForEveryNativeMarker() async throws {
+        var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let source = try String(contentsOf: repo.appendingPathComponent("fixtures/native/historical-edit-after.jsonl"), encoding: .utf8)
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+        var expected: String?
+        for marker in [JournalRecordKind.marker, JournalRecordKind.childMarker, JournalRecordKind.steeringMarker] {
+            // Also exercise a supported marker beyond the first custom record.
+            for first in [true, false] {
+                var records = try source.split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
+                records[1]["customType"] = JSON(marker)
+                records[1]["data"]["version"] = JSON(marker == JournalRecordKind.marker ? 1 : marker == JournalRecordKind.childMarker ? 2 : 3)
+                if !first {
+                    records[1]["parentId"] = "preceding"
+                    records.insert(["type": "custom", "customType": "fixture.note", "id": "preceding", "parentId": .null], at: 1)
+                }
+                let path = root.appendingPathComponent("handoff.jsonl")
+                try Data((records.map { $0.encoded() }.joined(separator: "\n") + "\n").utf8).write(to: path)
+                let result = try await host.command("session.portable.preview", sessionID: nil, params: ["path": JSON(path.path)])
+                let text = try XCTUnwrap(result["text"].text)
+                if expected == nil { expected = text }
+                XCTAssertEqual(text, expected, "\(marker), first=\(first)")
+                XCTAssertTrue(text.contains("original u01"), "\(marker) dropped restored prefix")
+                XCTAssertTrue(text.contains("answer a04")); XCTAssertTrue(text.contains("new answer"))
+                XCTAssertFalse(text.contains("UNSAFE summary"))
+            }
+        }
+        await host.shutdown()
+    }
+
     private struct Replays { var open: JournalReplay; var pure: ConversationReplay }
 
     /// Both replays of the journal at `path`, read from a copy, so a chat

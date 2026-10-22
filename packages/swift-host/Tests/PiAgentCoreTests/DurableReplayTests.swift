@@ -18,7 +18,7 @@ private actor WaitingTools: ToolExecuting {
 /// A chat keeps the replay of its journal as written (`durableReplay`), apart
 /// from the live state a run keeps: exactly what replaying its journal gives,
 /// from the start, or from the metadata file its open resumed from.
-final class DurableReplayTests: XCTestCase {
+final class DurableReplayTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], tools: any ToolExecuting = RecordingTools(), resume: String? = nil, in directory: URL? = nil) throws -> AgentSession {

@@ -64,15 +64,22 @@ extension WorkspaceModel {
             }) { view.notice = PiQuestion.busyNotice }
             return
         }
-        let submission = acceptSubmission(item, view: view, store: store, steer: steer)
+        let owner: String
+        do { owner = try inputPublicationOwner() }
+        catch { self.error = "The message could not be saved locally. " + error.localizedDescription; return }
+        let outputUse = beginToolOutputUse(.submission)
+        let submission = acceptSubmission(item, view: view, store: store, steer: steer, owner: owner)
+        beginSubmission(submission.intent.id, in: view)
         sendSteps?("accepted")
         Task {
+            defer { finishSubmission(submission.intent.id, in: view) }
+            defer { finishToolOutputUse(outputUse) }
             // A send that failed before any snapshot leaves the helper's busy
             // mark to be worked out again here (a failed first message of a
             // draft side had marked it busy for good).
             defer { view.loading = false; updateHostActivity(workspaceID: item.workspaceID) }
             var progress = SendProgress()
-            do { try await deliverSubmission(submission, progress: &progress) }
+            do { try await prepareToolOutputUse(outputUse); try await deliverSubmission(submission, progress: &progress) }
             catch { await recoverFailedSubmission(submission, from: error, progress: progress) }
         }
         if submission.accepted {
@@ -100,7 +107,7 @@ extension WorkspaceModel {
     /// Takes the message out of the composer on Return, before anything
     /// suspends: what it says, whether its chat can still send it, and the
     /// row drawn for it at once.
-    private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool) -> Submission {
+    private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool, owner: String) -> Submission {
         view.queueEditNotice = ""
         let attachments = view.attachments, skills = view.skills, directCommand = view.directCommand
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
@@ -131,9 +138,12 @@ extension WorkspaceModel {
             }
         }
         let named = drawsRow ? nameAfterFirstMessage(item.id, text: text.isEmpty && skills.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, skills: skills) : nil
-        return Submission(item: item, view: view, store: store, steer: steer, text: text, attachments: attachments, skills: skills,
+        let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
+                                   epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true, submissionOwner: owner)
+        view.draftVersion.preservingSubmission(intent)
+        return Submission(item: item, view: view, store: store, intent: intent, steer: steer, text: text, attachments: attachments, skills: skills,
                           directCommand: directCommand, commandID: commandID, turnID: turnID, connection: connection,
-                          accepted: accepted, drawsRow: drawsRow, named: named)
+                          accepted: accepted, drawsRow: drawsRow, named: named, archiveRevision: archiveRevisions[item.id, default: 0])
     }
     /// Sends the accepted message: the chat's record and the command's durable
     /// record are written, the helper is given the command, and the chat's
@@ -147,32 +157,45 @@ extension WorkspaceModel {
         try await materializeChat(item.id)
         sendSteps?("materialized")
         guard accepted else {
-            // Preserve the user's draft even when the connection is already missing.
-            if !isEphemeral(item.id) { try await store.put(DraftRecord(id: item.id, text: text, attachments: attachments, skills: skills), kind: "draft", id: item.id) }
+            // A refusal leaves the composer intact. Save its current contents:
+            // typing may have changed since Return captured the rejected text.
+            if !isEphemeral(item.id) {
+                if view.draft == text, view.attachments == attachments, view.skills == skills {
+                    try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: view.savedDraft,
+                                                       draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                } else {
+                    try await store.put(view.savedDraft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: store.draftWriter.capture(view.id))
+                }
+            }
             _ = try connection.get()
             return
         }
         let lease = try connection.get()
         try requireConnection(lease)
+        let intent = submission.intent
+        var opening = item
         if let info = side(item.id), info.pending {
-            // The message is the draft of the side it creates until its record below replaces it.
-            try await publishPendingSide(info, view: view, draft: DraftRecord(id: item.id, text: text, attachments: attachments, skills: skills))
+            try await publishPendingSide(info, view: view, submission: intent)
+            // Published, the side is a registered chat: its runtime opens from
+            // that record, which names the journal to replay and the family it
+            // belongs to. The message and its choices stay as taken on Return.
+            opening = record(item.id) ?? item
+            sendSteps?("published")
         }
         if !isEphemeral(item.id) {
             // The record that lets a crash flag or recover this
             // message, in one commit with the draft that no longer
             // holds it. It is written while the helper is reached, and
             // the command goes out only once it is on disk.
-            let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                       epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
-            let draft = view.savedDraft
-            progress.recording = Task { try await store.recordSubmission(intent, draft: draft) }
+            let draft = view.savedDraft, write = store.draftWriter.capture(view.id)
+            progress.recording = Task { try await store.recordSubmission(intent, draft: draft, draftVersion: view.draftVersion, write: write) }
         }
-        let host = try await open(item)
+        let host = try await open(opening)
         sendSteps?("opened")
         if let recording = progress.recording { try await recording.value; pendingIntentsChanged(item.id) }
         sendSteps?("durable")
         try requireConnection(lease)
+        try requireUnarchived(item.id, revision: submission.archiveRevision)
         progress.dispatched = true
         // A message going out is activity: the chat moves up its sidebar group.
         noteChatActivity(item.id)
@@ -194,7 +217,7 @@ extension WorkspaceModel {
         view.acknowledgeContextSubmission(turnID)
         // The helper's own row for the message comes with its next snapshot.
         if drawsRow { refresh(item.id) }
-        if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
+        if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID, draftVersion: view.draftVersion); pendingIntentsChanged(item.id) }
         sendSteps?("acknowledged")
         try await titleAfterSending(submission)
         sendSteps?("titled")
@@ -269,15 +292,34 @@ extension WorkspaceModel {
         if accepted, rejection == nil, dispatched { view.submissionReviews.insert(commandID) }
         if accepted { restoreUnsent(view, text: text, attachments: attachments, skills: skills, directCommand: directCommand) }
         let draft = accepted && !isEphemeral(item.id) ? view.savedDraft : nil
+        let write = draft.map { _ in store.draftWriter.capture(view.id) }
+        defer { if let write { store.draftWriter.finish(write) } }
         if rejection != nil || !dispatched {
             // The helper never acted on it: its record goes, in the
             // same commit as the draft that holds the text again.
             _ = try? await recording?.value
-            try? await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft); pendingIntentsChanged(item.id)
+            if view.draftVersion.unsavedSubmissions.contains(where: { $0.id == commandID }) || (accepted && draft == nil) {
+                // Failed persistence and unsaved sides keep independent input;
+                // later typing in the restored composer cannot consume it.
+                offerSubmissionRecovery(submission.intent, in: view)
+            } else {
+                do {
+                    try await store.withdrawSubmission(sessionID: item.id, commandID: commandID, draft: draft, draftVersion: view.draftVersion, write: write)
+                    view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
+                }
+                catch {
+                    if accepted {
+                        view.draftVersion.preservingSubmission(submission.intent)
+                        offerSubmissionRecovery(submission.intent, in: view)
+                    }
+                }
+            }
+            pendingIntentsChanged(item.id)
         } else if let draft {
             // Its outcome is unknown: the record stays to say so, and
             // the text is back in the draft as well.
-            try? await store.put(draft, kind: "draft", id: item.id)
+            try? await store.put(draft, kind: "draft", id: item.id, draftVersion: view.draftVersion, write: write)
+            offerSubmissionRecovery(submission.intent, in: view)
         }
         if let rejection {
             // The helper refused it, so nothing new is running. The
@@ -321,25 +363,74 @@ extension WorkspaceModel {
         }
         draftChanged(view)
     }
+    /// Retry and the cost-limit Continue both send `turn.retry`; Compact sends
+    /// a compaction. One press is one request: while it opens or dispatches,
+    /// another for the same chat is ignored, with no second request and no
+    /// notice (the helper would refuse it as busy, stop the first compaction,
+    /// or retry a run that just failed again). It is available again once
+    /// that attempt has settled.
+    static func runActionKey(_ method: String, _ id: String) -> String? {
+        switch method {
+        case "turn.retry": return "retry:" + id
+        case "context.compact": return "compact:" + id
+        default: return nil
+        }
+    }
     func action(_ method: String, params: [String: WireValue] = [:], sessionID: String? = nil) {
         guard !installPreparing, let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id) else { return }
         guard !item.isSubagent || method == "turn.stop" else { return }
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
+        if method == "turn.stop" { cancelPendingResumes(for: item) }
+        let isResume = method == "queue.resume", preparation = resumePreparation(id)
+        if isResume {
+            guard resumeTasks[id] == nil, displays[id]?.resuming != true else { return }
+            displays[id]?.resuming = true
+        }
+        // One press admits one Retry or Compact; a repeat while it is on its
+        // way sends nothing (`runActionKey`).
+        let oneShot = Self.runActionKey(method, id)
+        if let oneShot { guard runActionsInFlight.insert(oneShot).inserted else { return } }
         // Compact uses the same selected model/effort/limits as Send. Freeze
         // the originating pane's choice before opening or awaiting its helper.
-        let requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
+        var requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
         let commandID = UUID().uuidString
-        Task { do {
+        let archiveRevision = archiveRevisions[id, default: 0]
+        let inputView = displays[id]
+        if method == "context.compact" { beginSubmission(commandID, in: inputView) }
+        let task = Task {
+            defer {
+                if let oneShot { runActionsInFlight.remove(oneShot) }
+                if method == "context.compact" {
+                    if let inputView { finishSubmission(commandID, in: inputView) }
+                    else { liveSubmissionCommands.remove(commandID) }
+                }
+            }
+            do {
+            defer { if isResume { resumeTasks[id] = nil; displays[id]?.resuming = false; updateHostActivity(workspaceID: item.workspaceID) } }
             let lease = try connectionLease(for: item)
-            let host = try await open(item)
+            let host: HostSupervisor
+            if method == "turn.stop", opened.contains(item.id), let loaded = hosts[item.workspaceID] { host = loaded }
+            else { host = try await open(item) }
+            if isResume {
+                try requireResume(preparation)
+                let status = try await host.request("session.status", sessionID: item.id)
+                requestParams["resumeToken"] = status.object?["resumeToken"]
+            }
             if method == "context.compact" && !isEphemeral(item.id) {
                 guard let store else { throw StoreError.unavailable }
-                try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch, submissionOwner: try inputPublicationOwner()), kind: "pending:\(item.id)", id: commandID)
                 pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
+            if method != "turn.stop" { try requireUnarchived(item.id, revision: archiveRevision) }
+            if isResume { try requireResume(preparation) }
             _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
+            if method == "context.compact" {
+                inputView?.acceptedCommands.insert(commandID)
+                try await store?.acknowledgeCommand(sessionID: item.id, commandID: commandID)
+                pendingIntentsChanged(item.id)
+            }
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
                 pendingIntentsChanged(item.id)
@@ -352,11 +443,14 @@ extension WorkspaceModel {
             refresh(item.id)
         }
             catch {
+                if isResume, error is CancellationError { return }
+                if isResume, case HostError.rejected("resume_superseded", _) = error { return }
                 // A rejected compaction never ran; a leftover intent would mark
                 // the chat "outcome uncertain" on its next visit.
                 if method == "context.compact", case HostError.rejected = error { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 self.error = error.localizedDescription
             } }
+        if isResume { resumeTasks[id] = (task, false) }
     }
     /// `userInitiated` is the Stop button, the live bar and ⌘. — a press that
     /// has to resolve what is on screen even when there is no helper left to
@@ -365,6 +459,7 @@ extension WorkspaceModel {
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id), let view = displays[id] else { return }
         if let link = item.delegation { stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID); return }
+        cancelPendingResumes(for: item)
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".
         guard view.hasWork else { return }
@@ -389,6 +484,7 @@ private struct Submission {
     let item: ChatRecord
     let view: SessionDisplay
     let store: MetadataStore
+    let intent: CommandIntent
     let steer: Bool
     let text: String
     let attachments: [AttachmentRecord]
@@ -404,6 +500,7 @@ private struct Submission {
     let drawsRow: Bool
     /// The title this message gave its chat on Return.
     let named: String?
+    let archiveRevision: Int
 }
 
 /// How far a send got, so that a failure undoes no more than it did.

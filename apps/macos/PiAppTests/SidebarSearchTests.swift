@@ -482,6 +482,12 @@ private actor ColdSidebarIndexGate {
 }
 
 final class SidebarSearchSidebarTests: XCTestCase {
+    @MainActor override func setUp() async throws { installSidebarRevealHook(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkSidebarRevealSetup(self) { try await self.setUp() }
+    }
+
     private func scratch() throws -> URL {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("search-sidebar-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -509,6 +515,7 @@ final class SidebarSearchSidebarTests: XCTestCase {
     }
     @MainActor private func sidebar(_ model: WorkspaceModel) -> WorkspaceSidebarView {
         let view = WorkspaceSidebarView(model: model)
+        model.sidebarSearch.setScope(.fullChats)
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
         view.layoutSubtreeIfNeeded()
         return view
@@ -665,7 +672,6 @@ final class SidebarSearchSidebarTests: XCTestCase {
         let view = sidebar(model)
         var revealed: [String] = []
         SidebarSearchReveal.override = { chat, message in revealed.append(chat + "/" + message) }
-        defer { SidebarSearchReveal.override = nil }
         // Already open, so opening it again changes nothing but the place.
         let display = SessionDisplay(id: "active"); display.historyState = .ready
         model.selectedID = "active"; model.displays["active"] = display; model.selected = display; model.focusedSessionID = "active"
@@ -706,7 +712,6 @@ final class SidebarSearchSidebarTests: XCTestCase {
         let model = try model(root); defer { model.shutdown() }
         var revealed: [String] = []
         SidebarSearchReveal.override = { chat, message in revealed.append(chat + "/" + message) }
-        defer { SidebarSearchReveal.override = nil }
         model.selectedID = "active"; model.focusedSessionID = "active"
         let hit = ChatSearchHit(chatID: "active", messageID: "active-u3", kind: .user, excerpt: "x", highlight: NSRange(), context: "x")
         let opening = model.beginSidebarOpen()

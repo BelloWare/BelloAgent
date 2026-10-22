@@ -5,7 +5,7 @@ import XCTest
 /// The fixture server every gateway test starts (`PythonGateway`) never
 /// outlives a start that failed: a server that never reports its port, or
 /// reports none, is stopped before the error reaches the test.
-final class PythonGatewayTests: XCTestCase {
+final class PythonGatewayTests: HelperTestCase {
     /// Writes its pid, then does what `after` says, then idles.
     private func server(_ after: String) -> String {
         """
@@ -26,6 +26,15 @@ final class PythonGatewayTests: XCTestCase {
         do { _ = try await PythonGateway.start(source: server("pass"), root: root, readyTimeout: .milliseconds(800)); XCTFail("It never reported a port") }
         catch let error as AgentError { XCTAssertEqual(error.code, "fixture_not_ready") }
         XCTAssertTrue(try stopped(root), "the server is gone")
+    }
+
+    func testAReportStillBeingWrittenIsAwaited() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        // The name exists before its JSON is complete, as an in-place write leaves it.
+        let partial = "(root / 'ready.json').write_text('{\"port\": '); time.sleep(0.3); (root / 'ready.json').write_text('{\"port\": 12345}')"
+        let gateway = try await PythonGateway.start(source: server(partial), root: root)
+        defer { gateway.stop() }
+        XCTAssertEqual(gateway.port, 12345)
     }
 
     func testAServerThatReportsNoPortIsStopped() async throws {

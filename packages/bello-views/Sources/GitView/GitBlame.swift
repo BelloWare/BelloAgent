@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 // Who last changed each line of a file (`git blame`), read for one version
 // of the file: per line, the commit and where the line was in that commit —
@@ -83,7 +84,7 @@ public enum GitBlameParser {
             if raw.isEmpty { continue }
             let text = String(decoding: raw, as: UTF8.self)
             if header == nil {
-                let parts = text.split(separator: " ", omittingEmptySubsequences: false)
+                let parts = text.gitSplit(separator: 32, omittingEmptySubsequences: false)
                 guard parts.count >= 3, parts[0].count == 40, parts[0].allSatisfy(\.isHexDigit),
                       let original = Int(parts[1]), let final = Int(parts[2]) else { throw Malformed() }
                 let hash = String(parts[0])
@@ -92,9 +93,8 @@ public enum GitBlameParser {
                 continue
             }
             guard let current = header else { throw Malformed() }
-            let space = text.firstIndex(of: " ")
-            let key = space.map { String(text[..<$0]) } ?? text
-            let value = space.map { String(text[text.index(after: $0)...]) } ?? ""
+            let field = text.gitSplitOnce(separator: 32)
+            let key = field?.before ?? text, value = field?.after ?? ""
             switch key {
             case "author": author = value
             case "author-mail": email = value.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
@@ -118,28 +118,32 @@ public enum GitBlameParser {
 /// backslash or a control character — whatever core.quotePath says.
 enum GitQuoting {
     static func unquoted(_ value: String) -> String {
-        guard value.count >= 2, value.first == "\"", value.last == "\"" else { return value }
+        guard value.utf8.count >= 2, value.utf8.first == 34, value.utf8.last == 34 else { return value }
         return decode(Array(value.utf8.dropFirst().dropLast()))
     }
     /// A name at the start of `text`, quoted or not, and what follows it: a
     /// quoted one ends at its closing quote; an unquoted one, at `end`.
     static func leading(_ text: Substring, upTo end: String? = nil) -> (name: String, rest: Substring)? {
-        if text.first == "\"" {
+        let bytes = Array(text.utf8)
+        if bytes.first == 34 {
             var escaped = false
-            var index = text.index(after: text.startIndex)
-            while index < text.endIndex {
-                let character = text[index]
+            var index = 1
+            while index < bytes.count {
+                let byte = bytes[index]
                 if escaped { escaped = false }
-                else if character == "\\" { escaped = true }
-                else if character == "\"" {
-                    let quoted = text[text.startIndex...index]
-                    return (unquoted(String(quoted)), text[text.index(after: index)...])
+                else if byte == 92 { escaped = true }
+                else if byte == 34 {
+                    return (unquoted(String(decoding: bytes[...index], as: UTF8.self)),
+                            String(decoding: bytes[(index + 1)...], as: UTF8.self)[...])
                 }
-                index = text.index(after: index)
+                index += 1
             }
             return nil
         }
-        if let end, let range = text.range(of: end) { return (String(text[..<range.lowerBound]), text[range.lowerBound...]) }
+        if let end, let range = Data(bytes).range(of: Data(end.utf8)) {
+            return (String(decoding: bytes[..<range.lowerBound], as: UTF8.self),
+                    String(decoding: bytes[range.lowerBound...], as: UTF8.self)[...])
+        }
         return (String(text), text[text.endIndex...])
     }
     private static func decode(_ escaped: [UInt8]) -> String {

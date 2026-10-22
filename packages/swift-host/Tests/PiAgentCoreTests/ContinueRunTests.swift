@@ -57,7 +57,84 @@ private actor EndlessTools: ToolExecuting {
 /// Resume (`run.continue`, pi's continue): a stopped, cut-off or failed run
 /// goes on from the chat's history with no new user message. A cut-off tool
 /// call is never run again; its recorded result goes to the model.
-final class ContinueRunTests: XCTestCase {
+final class ContinueRunTests: HelperTestCase {
+    func testQueuedResumeAlsoHonorsThePreparedStopGeneration() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = NativeHostService(emit:{ _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.appendingPathComponent("state").path)])
+        let before = try await host.command("session.open",sessionID:"chat",params:["profile":try fixtureProfile().raw,"apiKey":"fixture"])
+        _ = try await host.command("turn.stop",sessionID:"chat",params:[:])
+        let code = await errorCode { _ = try await host.command("queue.resume",sessionID:"chat",params:["resumeToken":before["resumeToken"]]) }
+        XCTAssertEqual(code,"resume_superseded")
+        let held = try await host.command("session.snapshot",sessionID:"chat",params:[:])
+        XCTAssertEqual(held["queuePaused"].flag,true)
+        _ = try await host.command("queue.resume",sessionID:"chat",params:["resumeToken":held["resumeToken"]])
+        let done = try await host.command("session.snapshot",sessionID:"chat",params:[:])
+        XCTAssertEqual(done["state"].text,"idle"); XCTAssertEqual(done["queuePaused"].flag,false)
+        await host.shutdown()
+    }
+
+    func testStopDuringHelperResumePreflightRejectsEvenWithoutAWireToken() async throws {
+        let chat = try chat(), client = ContinueClient([.reply(answer("Must stay held"))])
+        let session = try chat.session(client)
+        try await session.append(ChatMessage(role:"user",content:[textBlock("Held question")]))
+        let admittedAt = await session.stopCount
+        // The host's shared-budget check yields to the session's ancestors.
+        // Its admission stamp must still be checked after that await.
+        await session.stop()
+        let code = await errorCode { _ = try await session.continueRun(commandID:"preflight",admittedAt:admittedAt) }
+        XCTAssertEqual(code,"resume_superseded")
+        try await eventually { !(await session.isRunning) }
+        let snapshot = await session.snapshot(), requests = await client.requests.count
+        XCTAssertEqual(snapshot["state"].text,"paused"); XCTAssertEqual(requests,0)
+        await session.close()
+    }
+
+    func testResumeTokenFromAnUnloadedRuntimeCannotAuthorizeItsReplacement() async throws {
+        let chat = try chat(), first = try chat.session(ContinueClient([]))
+        try await first.append(ChatMessage(role:"user",content:[textBlock("Held question")]))
+        let before = await first.snapshot()
+        await first.close()
+        let client = ContinueClient([.reply(answer("A fresh click"))]), reopened = try chat.session(client,resume:chat.journal)
+        let code = await errorCode { _ = try await reopened.continueRun(commandID:"old-runtime",overrides:["resumeToken":before["resumeToken"]]) }
+        XCTAssertEqual(code,"resume_superseded")
+        let fresh = await reopened.snapshot()
+        XCTAssertNotEqual(fresh["resumeToken"],before["resumeToken"])
+        _ = try await reopened.continueRun(commandID:"new-runtime",overrides:["resumeToken":fresh["resumeToken"]])
+        try await eventually { !(await reopened.isRunning) }
+        let count = await client.requests.count; XCTAssertEqual(count,1)
+        await reopened.close()
+    }
+
+    func testResumePreparedBeforeAnotherStopCannotRunAfterItsAcknowledgment() async throws {
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .reply(answer("Fresh Resume"))])
+        let session = try chat.session(client)
+        _ = try await session.submit(Submission(commandID:"first",turnID:"turn",text:"Question"),steer:false)
+        try await eventually { await client.streamed == 1 }
+        try await stopped(session)
+        let prepared = await session.snapshot()
+        await session.stop()
+        let code = await errorCode {
+            _ = try await session.continueRun(commandID:"stale-resume",overrides:["resumeToken":prepared["resumeToken"].isNull ? "before-token-support" : prepared["resumeToken"]])
+        }
+        XCTAssertEqual(code,"resume_superseded")
+        try await eventually { !(await session.isRunning) }
+        let after = await session.snapshot(), requests = await client.requests.count
+        XCTAssertEqual(requests,1,"Acknowledged Stop must fence an earlier prepared Resume")
+        XCTAssertEqual(after["state"].text,"paused")
+        XCTAssertFalse(after["commands"].list.contains { $0["commandId"].text == "stale-resume" })
+        if code == "resume_superseded" {
+            let token = try XCTUnwrap(after["resumeToken"].text)
+            _ = try await session.continueRun(commandID:"fresh-resume",overrides:["resumeToken":JSON(token)])
+            try await eventually { !(await session.isRunning) }
+            await session.stop()
+            let duplicate = try await session.continueRun(commandID:"fresh-resume",overrides:["resumeToken":JSON(token)])
+            XCTAssertEqual(duplicate["duplicate"].flag,true,"A receipt retry does not start work and remains idempotent")
+            let count = await client.requests.count; XCTAssertEqual(count,2)
+        }
+        await session.close()
+    }
+
     private struct Chat {
         let root: URL, state: URL, profile: Profile
         func session(_ client: any ModelClient, tools: any ToolExecuting = RecordingTools(), resume: String? = nil) throws -> AgentSession {

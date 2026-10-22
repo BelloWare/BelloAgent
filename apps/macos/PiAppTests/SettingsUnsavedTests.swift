@@ -5,6 +5,12 @@ import XCTest
 /// everything, and closing, reloading or quitting with unsaved edits asks
 /// Save All, Discard Changes or Keep Editing instead of dropping them.
 @MainActor final class SettingsUnsavedTests: XCTestCase {
+    @MainActor override func setUp() async throws { installQuestionHooks(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkQuestionHooksSetup(self) { try await self.setUp() }
+    }
+
     private let secret = "sk-settings-secret-typed"
     private var asked: [NSAlert] = []
 
@@ -26,7 +32,6 @@ import XCTest
         return (model, storage, controller)
     }
     private func answer(_ response: NSApplication.ModalResponse, also: @escaping @MainActor () -> Void = {}) {
-        addTeardownBlock { @MainActor in PiQuestion.shared.answerAlert = nil }
         PiQuestion.shared.answerAlert = { [unowned self] alert in asked.append(alert); also(); return response }
     }
     private let save = NSApplication.ModalResponse.alertFirstButtonReturn

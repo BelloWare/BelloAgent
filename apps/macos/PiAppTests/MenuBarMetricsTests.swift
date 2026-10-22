@@ -534,6 +534,28 @@ final class MenuBarMetricsTests: XCTestCase {
         try await archive.close()
     }
 
+    func testModelPagesReachEveryRetainedRoute() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        let writer = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
+        try writer.execute("""
+        WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<100009)
+        INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,outcome,wall,updated,metadata,dispatch)
+        SELECT printf('%08d',i),'session','workspace','turn','turn','openai-responses',printf('route-%08d',i),'completed',999900,999900,x'7b7d',1000 FROM n
+        """)
+        let before = try await archive.menuBarMetrics(period: .retained, until: until, offset: 99_984)
+        XCTAssertEqual(before.modelGroups, 100_009); XCTAssertEqual(before.models.count, 24); XCTAssertTrue(before.hasNext)
+        do {
+            let last = try await archive.menuBarMetrics(period: .retained, until: until, offset: 100_008)
+            XCTAssertEqual(last.models.map(\.requestedAlias), ["route-00100009"]); XCTAssertFalse(last.hasNext)
+        } catch { XCTFail("The advertised final model page failed: \(error)") }
+        do {
+            let last = try await archive.sessionMetrics(sessionID: "session", workspaceID: "workspace", until: until, offset: 100_008)
+            XCTAssertEqual(last.models.map(\.requestedAlias), ["route-00100009"]); XCTAssertFalse(last.hasNext)
+        } catch { XCTFail("The final session model page failed: \(error)") }
+        try await archive.close()
+    }
+
     func testTokenProjectionBackfillsOldSchemaAndSurvivesBodyExpiryButNotMetricExpiry() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = MenuMetricsClock(), archive = PayloadArchive(root: root, now: { clock.now() })

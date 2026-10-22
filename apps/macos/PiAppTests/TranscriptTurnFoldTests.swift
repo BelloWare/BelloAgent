@@ -518,7 +518,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
         XCTAssertFalse(TranscriptRowDisclosure.of(.block(fold), in: store).foldedAway)
 
         var spanning = 0
-        store.spanningChange = { spanning += 1 }
+        store.spanningChange = { _ in spanning += 1 }
         store.toggle(.turnFold("u1"))
         XCTAssertEqual(spanning, 1, "Opening a turn republishes: every row of it reaches its height in one pass")
         XCTAssertFalse(TranscriptRowDisclosure.of(member, in: store).foldedAway)

@@ -37,6 +37,29 @@ Keep only the latest result bundle for each class, with full text logs for
 earlier runs. `TestHostIsolationTests` writes the test defaults domain and
 therefore runs alone in the serial lane.
 
+## Every failure is recorded (0.1.130)
+
+XCTest (Xcode 16.1) queues an assertion made off the main thread (after an
+`await` in a nonisolated test, or in a task, actor or callback) for the main
+thread, and drops one that the main thread reaches while it records another:
+the test still fails, but with fewer failures and messages than it had. Every
+helper test class therefore derives from `HelperTestCase`, every
+`packages/bello-views` test class from `ViewsTestCase` (its test-only
+`BelloViewsTestSupport` target, named in each test target by a typealias), and
+the app's test bundle links `apps/macos/TestSupport/IssueRecordingGuard.m`;
+each records such an assertion once the other is done. The helper's
+`IssueRecordingTests` and each views test target's own guard
+(`FileViewIssueRecordingTests`, `GitViewIssueRecordingTests`,
+`FileFinderIssueRecordingTests`, since Xcode runs each target as a bundle of
+its own) fail for a test class that derives from `XCTestCase` directly,
+`IssueRecordingGuardTests` checks the app guard is installed, and
+`scripts/tests/test_xctest_issue_recording.py` runs all three
+against XCTest. `@MainActor` alone does not avoid it: assertions in
+tasks and callbacks still run off the main thread. An assertion in a task the
+test does not await lands on whichever test is running when it fires, or is
+lost if the run ends first; await it. Evidence:
+[a130-asynctests](validation/a130-asynctests-0.1.130.md).
+
 ## Test lanes
 
 The native suite runs in two lanes, and `scripts/verify-release.sh` runs
@@ -58,9 +81,20 @@ come from the test sources, so a new test lands in one by what it uses. A
 class runs in the serial lane when its source (its body, its extensions, the
 test classes it inherits from, and the helper declarations in those files):
 
-- activates the app or reads activation or key-window state (`NSApp.activate`,
-  `NSApp.isActive`, `isKeyWindow`, `NSApp.keyWindow`, `NSApp.mainWindow`):
-  one window server gives focus to one process at a time;
+- activates/hides the app, shows or raises a window, depends on focus state,
+  or posts input (`makeKeyAndOrderFront`, `makeKey`, `orderFront*`,
+  `NSApp.activate`, `isKeyWindow`, `NSApp.keyWindow`, application event dispatch,
+  Core Graphics event posting/pointer movement): one window server gives focus
+  to one process at a time. Focus checks follow referenced declarations,
+  including shared/nested fixtures and inherited members. Declarations retain
+  their complete signatures and bodies across line breaks, attributes,
+  generic/where clauses and closure default arguments. Inspector and
+  popped-out-tab entry points count because they show windows inside app code;
+  a proven `showsWindows = false` host or factory is exempt from the pop-out
+  rule. Unknown or re-enabled hosts still count. A responder assignment/check,
+  direct event/key-equivalent delivery, or a sheet on a never-shown window is
+  local to that process and stays parallel. If the fixture also shows the
+  window, its visibility operation makes the class serial;
 - writes the standard user defaults (`UserDefaults.standard`,
   `WindowChrome.adjustStoredSidebarWidth`), which every test host shares;
 - uses the general or the drag pasteboard, which every test host shares;
@@ -75,18 +109,27 @@ test classes it inherits from, and the helper declarations in those files):
   struct), or when a count the test asserts depends on how fast the machine
   is.
 
-Every other class runs in the parallel lane, including the budget classes:
-`releaseBudget` is infinite in Debug, so those budgets cannot fail on time
-there. **A Release-configuration performance run keeps the budget classes
+Every other class runs in the parallel lane. `releaseBudget` alone does not
+require serialization in Debug because its bounds are infinite there; focus
+use still does. **A Release-configuration performance run keeps the budget classes
 serial:** `scripts/test-lanes.py --configuration Release serial|parallel` adds
 every class that calls `releaseBudget` to the serial lane, so a budget is only
 ever measured with the machine to itself. The parallel lane skips the serial
 classes rather than naming its own, so a class the script cannot read still
 runs.
 
-To keep the serial lane short, a class whose tests mostly run in parallel
-keeps those and moves the rest into a sibling serial class over a shared,
-test-free base: `GitPanelTestCase` (`GitPanelTimingTests`),
+Focus traversal starts at test/lifecycle methods and fixture properties.
+Uncalled base helpers, unrelated declarations in the same file, and other
+members of a qualified static helper do not count. Constructed fixture types
+are inspected as whole types. Comments and string contents are excluded;
+Swift interpolation expressions still count. The Python lane tests guard both
+configurations and cover contending and offscreen fixtures. Runtime-only focus
+behavior that cannot be seen in source needs an explicit `SerialTestLane`
+marker. The defaults/pasteboard/timing rules keep their existing source scope.
+
+Several classes separate behavior and timing tests over a shared, test-free
+base. Such a split still runs serially if the tests use a focus-dependent
+fixture from that base: `GitPanelTestCase` (`GitPanelTimingTests`),
 `TranscriptStressTestCase` (`TranscriptStreamingSerialTests`),
 `SmoothShellTestCase` (`SmoothShellTests`), `AppShellTestCase`
 (`AppShellTimingTests`), `HistoryEdgeTestCase` (`HistoryEdgeTimingTests`,
@@ -179,7 +222,8 @@ Inputs:
   With the scroller held at an edge, only the max applies. The reasons are
   in `docs/perf/long-chat-scrolling.md`. These budgets record the
   improvement, but still allow visible long frames.
-- `TranscriptRevealTests` and `TranscriptFindTests` (parallel lane) cover
+- `TranscriptRevealTests` and `TranscriptFindTests` (serial lane: the shared
+  fixture opens a key window) cover
   `revealInTranscript` and the ⌘F find bar on the same fixture:
   - a message read in and landed on;
   - an excerpt mark resolved to its own occurrence;

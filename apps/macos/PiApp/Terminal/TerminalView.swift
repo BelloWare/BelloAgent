@@ -30,7 +30,7 @@ import CoreText
         static func < (a: Position, b: Position) -> Bool { a.line != b.line ? a.line < b.line : a.column < b.column }
     }
     private struct Selection { var start: Position; var end: Position }
-    private struct LineKey: Hashable { var text: String; var foreground: TerminalColor; var bold: Bool; var italic: Bool; var dim: Bool; var dark: Bool }
+    private struct LineKey: Hashable { var text: String; var foreground: TerminalColor; var inverse: Bool; var bold: Bool; var italic: Bool; var dim: Bool; var dark: Bool }
 
     private var boldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
     private var italicFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -211,6 +211,7 @@ import CoreText
         refresh()
         let bottom = CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - scrolledBackPoints
         emulator.resize(columns: columns, rows: rows)
+        rebaseAlternateSelection()
         if isScrolledBack {
             setScrollDistance(CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - bottom)
         }
@@ -236,6 +237,13 @@ import CoreText
     /// Lines the emulator has ever pushed out of the screen, so new output can
     /// be told from lines the scrollback has dropped.
     private var producedLines = 0
+    private func rebaseAlternateSelection() {
+        guard emulator.alternateScreen else { return }
+        // Hidden normal history can move without moving the selected alternate rows.
+        let shift = emulator.trimmedLines + emulator.scrollback.count - producedLines
+        selection?.start.line += shift; selection?.end.line += shift
+        selectionAnchor?.line += shift
+    }
     /// Redraws what the emulator changed since the last refresh.
     func refresh() {
         let produced = emulator.trimmedLines + emulator.scrollback.count
@@ -262,6 +270,7 @@ import CoreText
             stopSelectionAutoscroll()
             needsDisplay = true
         }
+        rebaseAlternateSelection()
         if isScrolledBack {
             let previousFirst = producedLines - scrollOffset - partialRow
             let previousFraction = scrollFraction
@@ -415,7 +424,7 @@ import CoreText
         context.restoreGState()
     }
     private func line(for text: String, style: CellStyle) -> CachedLine {
-        let key = LineKey(text: text, foreground: style.inverse ? style.background : style.foreground, bold: style.bold, italic: style.italic, dim: style.dim, dark: isDark)
+        let key = LineKey(text: text, foreground: style.inverse ? style.background : style.foreground, inverse: style.inverse, bold: style.bold, italic: style.italic, dim: style.dim, dark: isDark)
         if let cached = lineCache[key] { return cached }
         let typeface = style.bold && style.italic ? boldItalicFont : style.bold ? boldFont : style.italic ? italicFont : font
         // No kerning and no ligatures: each character keeps its own cell.

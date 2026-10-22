@@ -109,7 +109,7 @@ extension AgentSession {
         var headers = profile.raw["headers"].map.compactMapValues(\.text)
         headers["Authorization"] = "Bearer " + apiKey
         let credentials = CaptureCredentials(headers:headers,configuredNames:Set(profile.raw["headers"].map.keys))
-        let safe = credentials.metadata(body)
+        let safe = credentials.requestMetadata(body,definitions:definitions)
         let metadata: JSON = ["mode":JSON(active ? "active-context" : "prepared-next-request"), "model":JSON(effective.model), "seq":JSON(startingSequence),
             "runtimeEpoch":JSON(displayEpoch),"replayRevision":JSON(Int(startingMutation)),
             "inputBinding":JSON(sha256(try JSON.object(["profile":effective.raw,"resources":JSON(snapshot.revision),"tools":.array(definitions.map { ["name":JSON($0.name),"description":JSON($0.description),"schema":$0.schema] })]).data())),
@@ -118,7 +118,7 @@ extension AgentSession {
             "instructionRevision":JSON(snapshot.revision), "contextWindow":JSON(effective.contextWindow), "outputReserve":JSON(effective.maxOutput),
             "estimatedTokens":count.tokens.map { JSON($0) } ?? .null, "count":count.json,
             "credentialsRedacted":JSON(safe != body), "dispatched":false]
-        let prepared = try ContextPreview(body:safe,metadata:metadata,sources:snapshot.sources.map(credentials.metadata))
+        let prepared = try ContextPreview(body:safe,metadata:metadata,sources:snapshot.sources.map(credentials.resourceMetadata))
         preparedContext = prepared
         // Let go of when it expires, read again or not. Expiry was checked
         // only on a read, so the automatic preview of every chat visited (up

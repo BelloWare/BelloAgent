@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentAdmissionTests: XCTestCase {
+final class SubagentAdmissionTests: HelperTestCase {
     func testLateCorrectionReachingTheLimitPausesDispatchedRequestsAtOnce() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let owner = try familyFixture(root: root), profile = try fixtureProfile()
@@ -132,7 +132,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   raw = json.dumps(body).encode(); self.send_response(503 if failed else 200)
   self.send_header('Content-Type','application/json'); self.send_header('Content-Length', str(len(raw))); self.send_header('x-litellm-response-cost','0.01'); self.end_headers(); self.wfile.write(raw)
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-(root/'ready.json').write_text(json.dumps({'port':server.server_port})); server.serve_forever()
+(root/'ready.tmp').write_text(json.dumps({'port':server.server_port})); (root/'ready.tmp').replace(root/'ready.json'); server.serve_forever()
 """#
 
 }

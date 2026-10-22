@@ -10,7 +10,7 @@ private actor UnretainedMCPTools: ToolExecuting {
     func resultsRetained(_ ids: [String], retained: Bool) { for id in ids { retention[id] = retained } }
 }
 
-final class ToolRecordingFailureTests: XCTestCase {
+final class ToolRecordingFailureTests: HelperTestCase {
     func testAnUnwritableToolOutputFolderSettlesTheLiveCard() async throws { try await check(bytes: 70 * 1024, unwritable: true) }
     func testAnOversizeToolResultSettlesTheLiveCard() async throws { try await check(bytes: 16 * 1024 * 1024 + 1, unwritable: false) }
 

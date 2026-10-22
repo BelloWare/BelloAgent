@@ -62,6 +62,8 @@ public actor NativeHostService {
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     private var subagentReaders: Set<String> = []
+    private var inspectorInvocations = 0
+    private var commandAdmissions = 0
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
@@ -76,6 +78,11 @@ public actor NativeHostService {
     var beforeSubmissionPreflight: (@Sendable () async -> Void)?
     /// Test seam for a slow disk mirror while unrelated commands arrive.
     var beforeChildCostMirror: (@Sendable () -> Void)?
+    /// Test seams for overlapping unload and slow journal disk work.
+    var afterSessionUnload: (@Sendable () async -> Void)?
+    var beforeJournalDiskWork: (@Sendable () -> Void)?
+    var beforeChildTerminalMirror: (@Sendable () -> Void)?
+    var beforeRecoveryPublication: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -181,7 +188,12 @@ public actor NativeHostService {
     }
     /// Refuses a command before it starts: nothing is cached, because the
     /// command identity was never accepted.
-    private func reply(_ id: String,_ result: Result<JSON,AgentError>) { emit(replyFrame(id,result)) }
+    private func reply(_ id: String,_ result: Result<JSON,AgentError>) {
+        // An invalid identity was never admitted. Do not echo or truncate it
+        // into a valid command's identity, even in a rejection frame.
+        let echo = id.utf8.count <= 128 ? id : ""
+        output(Self.boundedReply(epoch: epoch, echo, result, transfer: nil))
+    }
     /// Completes an accepted command: the frame is bounded and emitted. A
     /// command that changes something keeps its reply for an identical retry
     /// of the same identity, which must never run it twice. A read keeps
@@ -256,6 +268,9 @@ public actor NativeHostService {
                 }, openSteering: { [weak self] environment, plan in
                     guard let self else { throw AgentError("workspace_closed", "Helper closed") }
                     return try await self.openAgentChild(environment,plan)
+                }, retireSteering: { [weak self] parent, plan, turn in
+                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                    try await self.retireAgentChild(parent:parent,plan:plan,turn:turn)
                 })
             }
             if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
@@ -295,6 +310,23 @@ public actor NativeHostService {
             do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
             catch { await child.close(); throw error }
             return child
+        }
+    }
+    private func retireAgentChild(parent: AgentSession, plan: SubagentPlan, turn: AgentChildTurn) async throws {
+        try await withRuntimeGate {
+            guard sessions[parent.id] === parent else { throw AgentError("subagent_scope", "The parent runtime changed") }
+            if let child = sessions[turn.childID] {
+                guard await child.subagents.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
+                try await child.saveAgentTerminal(turn)
+            } else {
+                let directory = parent.directory, beforeMirror = beforeChildTerminalMirror
+                // Cold reconciliation scans the whole journal. Keep its writer
+                // gated while other chats' commands continue on this actor.
+                try await Task.detached(priority:.userInitiated) {
+                    beforeMirror?()
+                    try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:directory)
+                }.value
+            }
         }
     }
     private func releaseSubagent(_ child: AgentSession) async {
@@ -345,6 +377,11 @@ public actor NativeHostService {
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
         if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
         guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
+        // Cover preflight awaits until the session owns the work, including
+        // resource discovery, edit preparation and Resume's budget checks.
+        let admission = method == "mcp.invoke" ? 0 : 1
+        commandAdmissions += admission
+        defer { commandAdmissions -= admission }
         if let result=try await changeCommand(method,id:id,session:session,params:params,commandID:commandID,in:workspace) { return result }
         throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
     }
@@ -403,10 +440,16 @@ public actor NativeHostService {
         switch method {
         case "workspace.quiesce":
             quiesced=true
+            guard commandAdmissions == 0 else {
+                quiesced=false; throw AgentError("session_busy", "A command is being admitted; wait before updating")
+            }
             for s in sessions.values { await s.cancelHistoryFill() }
             // A chat whose work is held for Resume is restored paused after
             // the relaunch; nothing sends it while the workspace is quiesced.
             for s in sessions.values { let idle=await s.isIdle, held=await s.isHeldForResume, ephemeral=await s.isEphemeral; if !(idle || held) || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
+            guard inspectorInvocations == 0, !(await mcp.hasOutstandingInvocations) else {
+                quiesced=false; throw AgentError("mcp_busy", "An MCP invocation is executing or awaiting result retention")
+            }
             return ["quiesced":true]
         case "workspace.resume": quiesced=false; return ["resumed":true]
         case "resources.configure":
@@ -435,6 +478,8 @@ public actor NativeHostService {
             return ["acknowledged":true]
         case "connection.test":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            commandAdmissions += 1
+            defer { commandAdmissions -= 1 }
             let id = try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
             // Credentials are supplied by the native vault. No profile file,
             // workspace instruction, skill or MCP connection participates.
@@ -520,8 +565,12 @@ public actor NativeHostService {
                 guard sessions[id] == nil, slimming[id] == nil else { throw AgentError("session_busy", "Close this chat before moving it to another connection") }
                 return try await Task.detached(priority:.userInitiated) { try Self.rebind(url:url, id:id, directory:directory, to:target, from:previous, check:check) }.value
             }
-        case "session.portable.preview", "session.import.inspect": return try portable(params)
-        case "session.recover": return try recoverCopy(params)
+        case "session.portable.preview", "session.import.inspect":
+            let before = beforeJournalDiskWork
+            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.portable(params) }.value
+        case "session.recover":
+            let before = beforeJournalDiskWork, publication = beforeRecoveryPublication
+            return try await Task.detached(priority:.userInitiated) { before?(); return try Self.recoverCopy(params,directory:directory,beforePublication:publication) }.value
         case "journal.slim":
             // A chat's journal without the run-state records that repeated its
             // receipts (`JournalSlimming`), for a chat not open here.
@@ -529,7 +578,8 @@ public actor NativeHostService {
             let url=canonical(try required(params["path"],"journal path"))
             guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals are slimmed") }
             guard sessions[id] == nil, slimming[id] == nil else { return JournalSlimming.Outcome(reason:"session-open").json }
-            let task=Task.detached(priority:.utility) { try JournalSlimming.slim(url:url,id:id) }
+            let before = beforeJournalDiskWork
+            let task=Task.detached(priority:.utility) { before?(); return try JournalSlimming.slim(url:url,id:id) }
             slimming[id]=task
             defer { slimming[id]=nil }
             return try await task.value.json
@@ -558,6 +608,9 @@ public actor NativeHostService {
                 return ["accepted":true,"released":.array(released)]
             }
         case "session.forget":
+            // Deletion may remove the journal as soon as this acknowledges.
+            // Wait outside the runtime gate so unrelated chats stay available.
+            if let slim=slimming[id] { _=await slim.result }
             try await withRuntimeGate {
                 let family = try await loadedBudgetFamily(id,directory:directory)
                 // Preflight the whole family before detaching any writer.
@@ -787,15 +840,20 @@ public actor NativeHostService {
         case "queue.edit.status": return try await session.queueEditStatus(editID:required(params["editId"],"edit id"))
         case "queue.update": try await session.updateQueued(required(params["turnId"],"turn id"),text:params["text"].text ?? ""); return ["accepted":true]
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
-        case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
+        case "queue.resume": try await session.resumeQueue(resumeToken:params["resumeToken"]); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
         case "run.continue":
             // A paused family resumes only below its (root's) limit.
+            let admittedAt = await session.stopCount
             try await session.requireCostResumeRoom()
-            return try await session.continueRun(commandID: commandID, overrides: params)
+            return try await session.continueRun(commandID: commandID, overrides: params, admittedAt: admittedAt)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":
+            // Pin admission before the first cross-actor await; the manager
+            // owns the pin from execution through retention after this returns.
+            inspectorInvocations += 1
+            defer { inspectorInvocations -= 1 }
             var args=params; args["action"]="invoke"
             // Sending IPC is not retention. The app acknowledges this command
             // only after the complete result is saved and synced locally.
@@ -827,6 +885,7 @@ public actor NativeHostService {
                 // including tool/queue phases with no dispatched model request.
                 if await hasBudgetDependents(id) { throw AgentError("session_busy", "Wait for managed work and close loaded side sessions before unloading their budget owner") }
                 guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                await afterSessionUnload?()
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
                 return ["accepted":true]
             }
@@ -953,8 +1012,7 @@ public actor NativeHostService {
         if before != target.binding, var stored=journal.resumedFrom { stored.rebinds=journal.rebinds.map(\.check); try? stored.write(for:url) }
         return ["rebound":JSON(before != target.binding)]
     }
-    private func recoverCopy(_ params:JSON) throws -> JSON {
-        guard let directory else { throw AgentError("workspace_closed","Open the project before recovering a chat") }
+    private static func recoverCopy(_ params:JSON, directory:URL, beforePublication: (@Sendable () -> Void)? = nil) throws -> JSON {
         let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))
         guard within(source,sessions) else { throw AgentError("invalid_path","Only this project's own chats can be recovered") }
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
@@ -997,22 +1055,27 @@ public actor NativeHostService {
                 "data":["relationship":"recovered-copy","sourceSessionId":JSON(sourceID)]]
             var line = try provenance.data(); line.append(10); try file.write(contentsOf:line); count += 1
         }
-        try reader.checkUnchanged()
         try file.synchronize(); try file.close()
+        beforePublication?()
+        try reader.checkUnchanged(at:source)
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
+        // If deletion won between the check and link, withdraw the copy.
+        // Once published, surviving-journal scans can see its references.
+        do { try reader.checkUnchanged(at:source) }
+        catch { try? FileManager.default.removeItem(at:destination); throw error }
         // A reply the helper was streaming goes with the copy, which then
         // opens with it as the original would have.
         try? PartialReplyLog.carry(from:source,to:destination,shift:shift)
         return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(count),"omittedBytes":JSON(Double(reader.omittedBytes))]
     }
-    private func portable(_ params:JSON) throws -> JSON {
+    private static func portable(_ params:JSON) throws -> JSON {
         let file=canonical(try required(params["path"],"session path"))
         let reader=try JournalRecordReader(file,allowIncompleteTail:true,hash:true)
         guard let header=try reader.next(), header["type"].text=="session" else { throw AgentError("invalid_history","Expected session header") }
         var next=try reader.next()
         // Native journals are linear. Replay as a stream, discarding old
         // presentation/state snapshots instead of retaining the complete file.
-        if next?["customType"].text == JournalRecordKind.marker {
+        if JournalRecordKind.isMarker(next?["customType"].text) {
             var replay=try ConversationReplay(), branch=JournalChainCheck()
             while let item=next {
                 let id=try identity(item["id"])
@@ -1036,7 +1099,7 @@ public actor NativeHostService {
         var chain:[JSON]=[],cursor=leaf
         while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
         chain.reverse()
-        if chain.contains(where: { $0["customType"].text == JournalRecordKind.marker }) {
+        if chain.contains(where: { JournalRecordKind.isMarker($0["customType"].text) }) {
             let replay = try ConversationReplay(chain)
             let messages = replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
             let text = messages.suffix(40).joined(separator: "\n\n"), retained = preview(text, bytes: 65536)

@@ -10,7 +10,7 @@ import XCTest
 /// compactions, and an edit), or `PI_PERF_FORK_JOURNAL` reuses one this test
 /// kept earlier with `PI_PERF_KEEP_JOURNAL`. It prints its figures and asserts
 /// only that each fork is the chat it was forked from.
-final class ForkPerformanceTests: XCTestCase {
+final class ForkPerformanceTests: HelperTestCase {
     private actor BulkTools: ToolExecuting {
         private var calls = 0
         func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("first", "test", [:])] }

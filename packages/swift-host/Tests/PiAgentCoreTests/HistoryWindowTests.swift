@@ -1,7 +1,36 @@
 import XCTest
 @testable import PiAgentCore
 
-final class HistoryWindowTests: XCTestCase {
+final class HistoryWindowTests: HelperTestCase {
+    func testReaderRebindsTheSameBoundaryAcrossRuntimeReplacement() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var rows: [ChatMessage] = []
+        for index in 0..<30 {
+            var row = ChatMessage(role: index % 2 == 0 ? "user" : "assistant", content: [textBlock("Message \(index)")])
+            row.id = "m\(index)"; rows.append(row)
+        }
+        func runtime() throws -> AgentSession {
+            try AgentSession(id: "same-child", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent(UUID().uuidString), readOnly: true,
+                resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        }
+        let first = try runtime(), replacement = try runtime()
+        addTeardownBlock { await first.close(); await replacement.close() }
+        let held = try await first.historyWindow(["around": "m12"])
+        for (direction, cursor) in [("older", held["older"]), ("newer", held["newer"])] {
+            XCTAssertFalse(cursor.isNull)
+            let expected = try await first.historyWindow(["cursor": cursor, "direction": JSON(direction)])
+            let rebound = try await replacement.historyWindow(["cursor": cursor, "direction": JSON(direction), "rebind": true])
+            XCTAssertEqual(rebound["messages"], expected["messages"])
+            XCTAssertNotEqual(rebound["incarnation"], held["incarnation"])
+            var branch = cursor, missing = cursor
+            branch["lineage"] = "different-branch"; missing["entry"] = "missing-message"
+            for invalid in [branch, missing] {
+                do { _ = try await replacement.historyWindow(["cursor": invalid, "rebind": true]); XCTFail("Rebinding must validate lineage and message") }
+                catch let error as AgentError { XCTAssertEqual(error.code, "history_changed") }
+            }
+        }
+    }
+
     func testHelperTurnWindowsTraverseIdenticalTimelineAndPreserveModelContext() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var rows: [ChatMessage] = []

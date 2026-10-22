@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class AgentSteeringBoundaryTests: XCTestCase {
+final class AgentSteeringBoundaryTests: HelperTestCase {
     func testParentFailureDrainsBackgroundChildWithoutBecomingCancellation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(failParent:true)

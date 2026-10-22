@@ -7,6 +7,12 @@ import SwiftUI
 /// restarting or closing one touches only that one, after asking while its
 /// shell is running, and only if it is still the terminal asked about.
 @MainActor final class TerminalSessionsTests: XCTestCase {
+    @MainActor override func setUp() async throws { installQuestionHooks(self) }
+
+    @MainActor func testFixtureOwnsInheritedHooks() async throws {
+        try await checkQuestionHooksSetup(self) { try await self.setUp() }
+    }
+
     private let registry = TerminalRegistry.shared
     private var asked: [NSAlert] = []
     private var cleaning = false
@@ -15,7 +21,7 @@ import SwiftUI
     private func workspace(_ name: String) -> WorkspaceRecord {
         if !cleaning {
             cleaning = true; registry.shutdown()
-            addTeardownBlock { @MainActor in TerminalRegistry.shared.shutdown(); PiQuestion.shared.answerAlert = nil; PiQuestion.shared.enterText = nil }
+            addTeardownBlock { @MainActor in TerminalRegistry.shared.shutdown() }
         }
         let folder = scratchRoot("terminals-" + name)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -108,6 +114,34 @@ import SwiftUI
         XCTAssertEqual([a1, a3, b1].map(\.process.processID), pids); XCTAssertTrue([a1, a3, b1].allSatisfy(\.process.running))
         XCTAssertTrue(shows(a1, "KEEP-A1")); XCTAssertFalse(shows(fresh, "LOSE-A2"))
         try await eventually("the old shell ended", timeout: .seconds(10)) { !a2.process.running }
+    }
+
+    func testRestartUsesRelocatedProjectFolder() async throws {
+        var project = workspace("relocated")
+        let oldFolder = URL(fileURLWithPath: project.path)
+        let session = registry.session(for: project)
+        try await running([session])
+        registry.rename(session.id, in: project.id, to: "Build")
+        session.process.write(Data("exit\n".utf8))
+        try await eventually("old shell exited", timeout: .seconds(20)) { !session.process.running }
+        let newFolder = oldFolder.appendingPathExtension("moved")
+        try FileManager.default.moveItem(at: oldFolder, to: newFolder)
+        defer { try? FileManager.default.removeItem(at: newFolder) }
+        project.path = newFolder.path
+        let restarted = await registry.requestEnding(.restart, session.id, generation: session.generation, in: project, over: nil)
+        let fresh = try XCTUnwrap(restarted)
+        XCTAssertEqual(fresh.directory, newFolder.path)
+        XCTAssertEqual(fresh.id, session.id); XCTAssertEqual(fresh.number, session.number)
+        XCTAssertEqual(fresh.displayName, "Build"); XCTAssertEqual(fresh.generation, session.generation + 1)
+        XCTAssertTrue(fresh.process.running, "Restart must use the folder located for this project")
+        guard fresh.process.running, fresh.directory == newFolder.path else { return }
+        let cwdFile = newFolder.appendingPathComponent(".bello-fixture-cwd")
+        fresh.process.write(Data("printf '%s\\n' \"$PWD\" > .bello-fixture-cwd\n".utf8))
+        try await eventually("shell reports its relocated working directory", timeout: .seconds(20)) { (try? Data(contentsOf: cwdFile))?.last == 10 }
+        let actual = try String(contentsOf: cwdFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(URL(fileURLWithPath: actual).resolvingSymlinksInPath(), newFolder.resolvingSymlinksInPath())
+        let obsolete = await registry.requestEnding(.restart, session.id, generation: session.generation, in: project, over: nil)
+        XCTAssertNil(obsolete, "A relocation must not weaken the generation check")
     }
 
     func testCancelLeavesTheTerminalAlone() async throws {

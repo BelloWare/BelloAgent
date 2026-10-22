@@ -175,8 +175,16 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             call_tool = tool_name in contract["tool_names"]
             tool_arguments = {"task": "managed child opening fixture", "description": "Opening regression"}
             if tool_name == "subagent_start": tool_arguments["mode"] = "background" if "in background" in prompt.lower() else "wait"
+        if prompt.startswith("wire follow-up ") and not tool_result:
+            tool_name = "subagent_send"; call_tool = True
+            tool_arguments = {"child_id": prompt.split()[-1], "message": "managed child short followup"}
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
+            if os.environ.get("PI_APP_UI_FIXTURE_PROBE_BARRIER") == "1":
+                Path("probe-arrived").touch()
+                deadline = time.monotonic() + 20
+                while not Path("probe-release").exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
             text = "OK"
         if "EXPLICIT-FIXTURE-SELECTED" in json.dumps(body) and "skill fixture" in prompt.lower():
             text += "\n\nEXPLICIT-FIXTURE-SELECTED: the selected skill reached the request."
@@ -224,6 +232,12 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         delay = float(os.environ.get("PI_APP_UI_FIXTURE_SUMMARY_DELAY", "0.03")) if summary else (
             0.03 if webhook else 0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+        if prompt == "managed child opening fixture" and os.environ.get("PI_APP_UI_FIXTURE_CHILD_DELTAS") == "1":
+            chunks = list(text); delay = 0.002
+        if prompt == "managed child short followup":
+            chunks = ["Follow-up starts.", " Follow-up complete."]; text = "".join(chunks)
+        if prompt == "copy selection streaming fixture":
+            chunks = ["COPY-STREAM-1 ", "COPY-STREAM-2 ", "COPY-STREAM-3 "]; text = "".join(chunks)
         request_id = uuid.uuid4().hex
         # PI_APP_UI_FIXTURE_REAL_USAGE=1 reports the request's own size as its
         # input, as a gateway would, so a long chat's context reads as long.
@@ -298,10 +312,21 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
                         emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
+                        if prompt == "copy selection streaming fixture":
+                            step = chunks.index(chunk) + 1
+                            Path(f"copy-stream-{step}").touch()
+                            deadline = time.monotonic() + 30
+                            while not Path(f"release-copy-{step}").exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
                         if prompt.lower() == "managed child opening fixture" and chunk == chunks[0]:
                             Path("child-streaming").touch()
                             deadline = time.monotonic() + 30
                             while not Path("release-child").exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
+                        if prompt == "managed child short followup" and chunk == chunks[0]:
+                            Path("child-followup-streaming").touch()
+                            deadline = time.monotonic() + 30
+                            while not Path("release-followup").exists() and time.monotonic() < deadline:
                                 time.sleep(0.01)
                         time.sleep(delay)
                     output = [{"type": "message", "id": "msg_" + request_id, "role": "assistant", "content": [{"type": "output_text", "text": text, "annotations": []}], "status": "completed"}]

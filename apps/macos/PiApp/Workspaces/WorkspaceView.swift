@@ -23,6 +23,7 @@ import Combine
     private let region = WorkspaceRegionView()
     private let chats = WorkspaceChatsLayer()
     private(set) var conversation: ConversationPaneView?
+    private let sessionPanelState = SessionPanelState()
     private var welcome: WorkspaceWelcomeView?
     private var onboarding: OnboardingContentView?
     let splitHandle: PiKit.ResizeHandle
@@ -67,7 +68,7 @@ import Combine
         sidebarHandle = PiKit.ResizeHandle(orientation: .vertical, label: "Resize sidebar",
                                            hint: "Drag left or right, or press Control-Command-Left and Control-Command-Right")
         splitHandle = PiKit.ResizeHandle(orientation: .vertical, label: "Resize the side conversation",
-                                         hint: "Drag left or right; the split stays between 30 and 70 per cent")
+                                         hint: "Drag left or right to resize the panes")
         activityGuard = WindowActivityGuard.Coordinator(model)
         sheets = WorkspaceSheetPresenter(model: model)
         quickOpen = WorkspaceQuickOpenPresenter(model: model)
@@ -109,8 +110,8 @@ import Combine
         splitHandle.changed = { [weak self] translation in
             guard let self else { return }
             let total = max(1, self.region.bounds.width)
-            let base = self.splitDragStart ?? self.sideFraction
-            if self.splitDragStart == nil { self.splitDragStart = self.sideFraction }
+            let base = self.splitDragStart ?? self.visibleSplitFraction
+            if self.splitDragStart == nil { self.splitDragStart = base }
             self.draggingSideFraction = SplitPane.clampFraction(base + Double(translation / total))
             self.splitHandle.dragging = true
             self.chats.needsLayout = true; self.refresh()
@@ -118,7 +119,7 @@ import Combine
         splitHandle.ended = { [weak self] translation in
             guard let self else { return }
             let total = max(1, self.region.bounds.width)
-            let landed = SplitPane.clampFraction((self.splitDragStart ?? self.sideFraction) + Double(translation / total))
+            let landed = SplitPane.clampFraction((self.splitDragStart ?? self.visibleSplitFraction) + Double(translation / total))
             self.splitDragStart = nil; self.draggingSideFraction = nil; self.splitHandle.dragging = false
             UserDefaults.standard.set(landed, forKey: "sidePaneFraction")
             self.chats.needsLayout = true; self.refresh()
@@ -172,6 +173,16 @@ import Combine
     var sideFraction: Double {
         SplitPane.clampFraction(draggingSideFraction ?? (UserDefaults.standard.object(forKey: "sidePaneFraction") as? Double ?? SplitPane.defaultFraction))
     }
+    /// A control minimum can move the divider beyond the saved fraction.
+    /// A new drag starts where the reader sees it, without a dead zone.
+    private var visibleSplitFraction: Double {
+        let usable = max(1, region.bounds.width - SplitPane.dividerWidth)
+        if rightPane?.side != nil {
+            let proposal = SplitPane.mainWidth(total: region.bounds.width, fraction: sideFraction)
+            return chats.mainWidth == proposal ? sideFraction : Double(chats.mainWidth / usable)
+        }
+        return max(sideFraction, Double(chats.mainWidth / usable))
+    }
     private func applySidebarWidth() {
         let width = sidebarWidth
         if sidebar.width != width { sidebar.width = width; needsLayout = true }
@@ -209,7 +220,7 @@ import Combine
 
         // The chat, or what shows in its place.
         if let session = model.selected, let chat = model.chat {
-            let view = conversation ?? ConversationPaneView(model: model)
+            let view = conversation ?? ConversationPaneView(model: model, panelState: sessionPanelState)
             if conversation == nil { conversation = view }
             view.inheritedEnabled = enabled && onChats
             if shownChat?.session != ObjectIdentifier(session) || shownChat?.chat != chat {
@@ -409,11 +420,27 @@ import Combine
     }
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { covered ? nil : super.hitTest(point) }
+    private var proposedMainWidth: CGFloat { side == nil ? bounds.width : SplitPane.mainWidth(total: bounds.width, fraction: fraction) }
+    private var mainMinimum: CGFloat { ceil((main as? ConversationPaneView)?.minimumWidth ?? 0) }
     /// Rounded to whole points so the two panes and their divider add up to the region.
-    var mainWidth: CGFloat { side == nil ? bounds.width : SplitPane.mainWidth(total: bounds.width, fraction: fraction) }
-    var sideWidth: CGFloat { SplitPane.sideWidth(total: bounds.width, fraction: fraction) }
+    var mainWidth: CGFloat {
+        guard side != nil else { return bounds.width }
+        if let sideMinimum = (side as? RightPaneView)?.sideMinimumWidth {
+            let maximum = bounds.width - SplitPane.dividerWidth - ceil(sideMinimum)
+            // Preserve the released proportional split when both composers
+            // cannot fit; giving one its minimum would hide the other's actions.
+            guard mainMinimum <= maximum else { return proposedMainWidth }
+            return min(maximum, max(proposedMainWidth, mainMinimum))
+        }
+        return min(max(0, bounds.width - SplitPane.dividerWidth), max(proposedMainWidth, mainMinimum))
+    }
+    var sideWidth: CGFloat { max(0, bounds.width - SplitPane.dividerWidth - mainWidth) }
     override func layout() {
         super.layout()
+        // Choose both composers' forms against the original proposals, so
+        // reserving their minima cannot feed back into the next measurement.
+        (main as? ConversationPaneView)?.composerProposalWidth = proposedMainWidth
+        (side as? RightPaneView)?.composerProposalWidth = SplitPane.sideWidth(total: bounds.width, fraction: fraction)
         let main = mainWidth
         self.main?.frame = CGRect(x: 0, y: 0, width: main, height: bounds.height)
         if let side {
@@ -439,9 +466,9 @@ import Combine
 }
 
 /// Where the boundary between an open chat and its side conversation sits, as
-/// the chat's share of the content column. Bounded so neither pane can be
-/// squeezed to a sliver, and rounded to whole points so the two panes plus
-/// their divider always add up to the column exactly.
+/// the chat's preferred share of the content column. Bounded and rounded
+/// to whole points; the chat's control minimum can take precedence in a
+/// narrow window without changing this preference.
 enum SplitPane {
     static let defaultFraction = 0.5
     static let minimumFraction = 0.30

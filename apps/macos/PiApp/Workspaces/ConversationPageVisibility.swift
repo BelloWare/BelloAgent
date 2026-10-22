@@ -104,6 +104,7 @@ import AppKit
             }
             // Every tab's content, of whatever kind, under the report.
             if view is TabContentContainer { return report ? [view] : [] }
+            if view is TerminalPanelView { return report ? [view] : [] }
             return view.subviews.flatMap { find($0) }
         }
         return find(content)

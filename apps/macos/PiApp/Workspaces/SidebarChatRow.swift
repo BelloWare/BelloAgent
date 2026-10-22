@@ -160,7 +160,7 @@ extension WorkspaceModel {
         }
         let all = SidebarSessionPresentation.filtered(
             entries(archived: archived, collapsed: filtering ? [] : folded), by: filter,
-            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches, includingMainChats: showAllMatches)
+            contentMatches: filter.isEmpty ? [] : sidebarFilterMatches(query: filter), includingMainChats: showAllMatches)
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)

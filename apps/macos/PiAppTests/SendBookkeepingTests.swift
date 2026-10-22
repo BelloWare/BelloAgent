@@ -183,7 +183,7 @@ extension SendBookkeepingTests {
         registerWorkspaceFixtureTeardown(model, root: root)
         let view = SessionDisplay(id: "chat"); view.draft = "Returned"; view.selectionMetadataLoaded = true; model.displays[view.id] = view
         let intent = CommandIntent(id: "command", sessionID: view.id, turnID: "turn", text: "Returned", state: "intent")
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.acceptedCommands.insert(intent.id)
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.acceptedCommands.insert(intent.id)
         var release: CheckedContinuation<Void, Never>?
         let oldWrite = Task { await withCheckedContinuation { release = $0 } }
         model.draftWrites.tasks[view.id] = oldWrite
@@ -195,7 +195,7 @@ extension SendBookkeepingTests {
         var releaseTyping: CheckedContinuation<Void, Never>?
         let typing = Task {
             await withCheckedContinuation { releaseTyping = $0 }
-            try? await store.put(typed, kind: "draft", id: view.id, revision: revision)
+            try? await store.put(typed, kind: "draft", id: view.id, revision: revision, draftVersion: view.draftVersion)
         }
         model.draftWrites.tasks[view.id] = typing
         try await eventually("new typing reserved") { releaseTyping != nil }

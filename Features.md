@@ -170,6 +170,16 @@ or to include unsaved drafts and in-flight streamed output.
 
 ## 3. Interaction and safety
 
+The main conversation offers a floating Pi card with pinned **Agents | Diff |
+Files** tabs when its area is wide enough to keep transcript text unobstructed.
+Agents shows sides and delegated children, including an empty state with New
+Side. Diff and Files load on selection, use the existing Git/file readers, and
+open the existing Changes/File tabs. Scratch chats omit project tabs. The card
+stays above the composer and queue; narrow areas retain the family pill and
+popover. Tab choice and collapse are remembered for that window's app session.
+Side panes and child readers do not get a floating card. Permission and file
+trust boundaries are unchanged.
+
 Opening or revisiting a chat creates a fresh transcript presentation, initially
 showing the latest three delivered-input turns (up to 60 rows and a 256 KiB page
 envelope). Clicking the already-selected chat or returning from Reports keeps its
@@ -208,7 +218,13 @@ with a Move to Topic menu as an alternative. Moves stay within the project and
 include saved side descendants, preserving session IDs, drafts, context, tools,
 running work, pin/archive state and unread markers. Group membership and
 disclosure survive restarts. Missing topic metadata must never hide history.
-Filtering finds topic names and chat titles; choosing a chat reveals its topic.
+Sidebar search starts in **Titles & details**: displayed chat titles, sub-agent
+short titles and delegation tasks, project and topic names, connection names,
+and the chat's model name/alias. **Full chats** adds message-content matches,
+snippets and reveal-on-open through the existing content index. The accessible
+Pi scope pill appears while searching; clearing the field resets the scope,
+which is never persisted. Both modes apply in Topics, Flat and archived groups.
+Choosing a chat reveals its topic.
 Topics are organization metadata, not filesystem folders or permission scopes.
 
 Every sidebar group lists its sessions newest activity first (0.1.122; the

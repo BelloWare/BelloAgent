@@ -32,6 +32,14 @@ extension WorkspaceModel {
         guard let target = profiles.first(where: { $0.id == profileID }) else { error = "That connection is no longer saved. Reload Settings and choose again."; return }
         guard target.api == LiteLLMConfiguration.supportedAPI else { error = LiteLLMConfiguration.unsupportedAPIMessage; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
+        // The destination as chosen: still saved, and not deleted since. A
+        // deletion can begin during any await below; nothing is closed,
+        // rebound or published for a connection that is gone.
+        let deletion = profileDeletionGenerations[profileID, default: 0]
+        func destinationSaved() -> Bool {
+            !deletingProfiles.contains(profileID) && profileDeletionGenerations[profileID, default: 0] == deletion &&
+                profiles.contains { $0.id == profileID && $0.api == LiteLLMConfiguration.supportedAPI }
+        }
         // Let an in-flight model or effort write for either connection land first.
         await overrideWrites[item.profileID]?.task.value
         await overrideWrites[profileID]?.task.value
@@ -42,6 +50,9 @@ extension WorkspaceModel {
         // Every other rejection explains itself; a run that started while those
         // awaits drained used to make the pill do nothing at all.
         if let blocker = connectionSwitchBlocker(for: chatID) { error = blocker; return }
+        // A listing the deletion cancelled returns like a finished one, so the
+        // destination itself is checked: nothing has changed yet.
+        guard destinationSaved() else { error = Self.switchDestinationDeleted; return }
         guard var updated = record(chatID), updated.profileID != profileID else { return }
         do { try beginBudgetOwnerChange(chatID) } catch { self.error = error.localizedDescription; return }
         defer { budgetOwnerChanges.remove(chatID) }
@@ -99,6 +110,9 @@ extension WorkspaceModel {
                               profiles.contains(where: { $0.id == profileID }) else { error = "This chat or its connections changed while you were asked. Choose again."; return }
                     }
                 }
+                // Closing and checking waited: the journal moves only to a
+                // connection that is still saved.
+                guard destinationSaved() else { throw HostError.failure(Self.switchDestinationDeleted) }
                 var marked = updated
                 marked.journalRebind = true; marked.connectionRevision = nextConnectionRevision(after: updated)
                 if persisted { try await store.put(marked, kind: "chat", id: chatID) }
@@ -108,6 +122,8 @@ extension WorkspaceModel {
                     let host = try await host(for: workspace)
                     _ = try await host.request("session.rebind", sessionID: chatID, params: ["path": .string(path), "profile": target.wire])
                     try await connectionSwitchSteps?("rebound")
+                    // Deleted while the journal moved: it is bound back below.
+                    guard destinationSaved() else { throw HostError.failure(Self.switchDestinationDeleted) }
                 } catch {
                     // Even a refusal may come after the move was written. The
                     // chat stays on its connection: its journal is bound back
@@ -132,14 +148,21 @@ extension WorkspaceModel {
             let listed = updated.model.flatMap { alias in !known || catalog.descriptor(for: alias) != nil ? alias : nil }
             applyModelChoice(listed, to: &updated, profile: target)
             try await connectionSwitchSteps?("metadata")
+            // Not published for a deleted connection. A journal already moved
+            // stays marked, as when this write fails: the next open binds it
+            // back to the connection the record still names.
+            guard destinationSaved() else { throw HostError.failure(Self.switchDestinationDeleted) }
             if persisted { try await store.put(updated, kind: "chat", id: chatID) }
             adoptConnection(of: updated)
-            if selectedID == chatID { profileChoice = profileID }
             if let view = displays[chatID] {
                 // The footer's context and metrics described the old endpoint.
                 view.footer.preparedContext = nil; view.context = [:]; view.metrics = [:]
-                view.notice = "Next turn uses \(target.name)" + (item.model != nil && updated.model == nil ? " with its default model." : ".")
             }
+            // A deletion that began during that write did not count this chat
+            // as its own: it reads as any chat of a deleted connection does.
+            guard destinationSaved() else { displays[chatID]?.notice = Self.connectionDeletedNotice; return }
+            if selectedID == chatID { profileChoice = profileID }
+            displays[chatID]?.notice = "Next turn uses \(target.name)" + (item.model != nil && updated.model == nil ? " with its default model." : ".")
             if selectedID == chatID { scheduleAutomaticContext(chatID) }
         } catch { self.error = error.localizedDescription }
     }
@@ -169,6 +192,10 @@ extension WorkspaceModel {
         if !pendingChatIDs.contains(chatID) { try? await store?.put(settled, kind: "chat", id: chatID) }
         adoptConnection(of: settled)
     }
+    /// Why a switch whose destination was deleted while it waited did nothing.
+    static let switchDestinationDeleted = "That connection was deleted before this chat could switch to it. The chat stays on its current connection."
+    /// What a chat says once its connection is deleted.
+    static let connectionDeletedNotice = "This chat's connection was deleted. Choose another connection to continue."
     /// Asked before a chat moves to a connection that cannot be sent the
     /// provider-only reasoning some of its replies hold.
     static func reasoningLeftBehind(from: String, to: String) -> ChatQuestion {

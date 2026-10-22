@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SubagentPermissionTests: XCTestCase {
+final class SubagentPermissionTests: HelperTestCase {
     func testRestrictedExecutorRejectsForgedCallsAndCannotWidenReadOnlyPermissions() async throws {
         let base = PermissionTools()
         let tools = RestrictedTools(base: base, allowed: ["read", "write", "mcp", "subagent"], readOnly: true, capabilities: ["mcp:allowed"])

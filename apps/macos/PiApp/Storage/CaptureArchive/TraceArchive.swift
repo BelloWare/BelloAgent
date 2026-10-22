@@ -64,7 +64,7 @@ actor TraceArchive {
         }
         let retained = lengths.values.reduce(Int64(0)) { $0 + Int64($1) }
         guard retained >= 0 else { throw TraceError.invalid }
-        if destination == nil { try reconcile(reserving: retained + 65_536) }
+        if destination == nil { try reconcile(reserving: retained) }
         let base = destination ?? root
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let final = base.appendingPathComponent(id), staging = base.appendingPathComponent(".partial-" + UUID().uuidString)
@@ -111,7 +111,7 @@ actor TraceArchive {
             guard after[body + "Hash"] == metadata[body + "Hash"], after[body] == metadata[body] else { throw TraceError.changed }
         }
         let data = Data(WireValue.object(manifest).pretty.utf8)
-        guard data.count <= 65_536 else { throw TraceError.invalid }
+        if destination == nil { try reconcile(reserving: retained + Int64(data.count)) }
         try data.write(to: staging.appendingPathComponent("manifest.json"), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staging.appendingPathComponent("manifest.json").path)
         try FileManager.default.moveItem(at: staging, to: final); complete = true
@@ -134,12 +134,10 @@ actor TraceArchive {
     private func directories(includePartial: Bool = false) throws -> [URL] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey])
-        guard urls.count <= 10_000 else { throw TraceError.budget }
         return urls.filter { (UUID(uuidString: $0.lastPathComponent) != nil || includePartial && $0.lastPathComponent.hasPrefix(".partial-")) && (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true }
     }
     private func readManifest(_ directory: URL) throws -> [String: WireValue] {
         let url = directory.appendingPathComponent("manifest.json")
-        guard ((try url.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? Int.max) <= 65_536 else { throw TraceError.invalid }
         guard let value = try JSONDecoder().decode(WireValue.self, from: Data(contentsOf: url)).object else { throw TraceError.invalid }
         return value
     }

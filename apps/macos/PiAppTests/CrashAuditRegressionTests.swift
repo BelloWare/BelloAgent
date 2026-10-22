@@ -105,11 +105,11 @@ final class CrashAuditRegressionTests: XCTestCase {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()), service = GitService()
         for command in ["!/usr/bin/yes output", "!/usr/bin/yes diagnostics >&2"] {
             let start = ProcessInfo.processInfo.systemUptime
-            do { _ = try await service.run(["-c", "alias.flood=" + command, "flood"], in: root.path, timeout: 4); XCTFail("Unbounded output accepted") }
+            do { _ = try await service.run(["-c", "alias.flood=" + command, "flood"], in: root.path, timeout: 4, readOnly: false); XCTFail("Unbounded output accepted") }
             catch { XCTAssertTrue(error.localizedDescription.contains("exceeded"), error.localizedDescription) }
             XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 5)
         }
-        let cancelled = Task { try await service.run(["-c", "alias.wait=!sleep 8", "wait"], in: root.path, timeout: 10) }
+        let cancelled = Task { try await service.run(["-c", "alias.wait=!sleep 8", "wait"], in: root.path, timeout: 10, readOnly: false) }
         try await Task.sleep(for: .milliseconds(100)); cancelled.cancel()
         do { _ = try await cancelled.value; XCTFail("Cancelled git succeeded") } catch is CancellationError { }
         let running = await service.processesRunning; XCTAssertEqual(running, 0)

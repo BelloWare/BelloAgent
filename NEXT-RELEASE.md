@@ -2,10 +2,486 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] SECURITY-BOUNDARIES-1bm: Git inventory reuse validates exact on-disk path spelling with bounded probes, including case-only and NFC/NFD renames without a watcher; per-repository override scopes remain case-sensitive. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bn: Initial Git discovery is shared and bounded; Changes, blame and Finder reads retain their own cancellation/deadline, failures cool down before retrying, and no timeout falls back to the Git shim. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bo: Git trust resolution confirms canonical path snapshots before use; a rename between concurrent root and query lookups cannot inherit an ancestor's trust. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+
+- [x] SECURITY-BOUNDARIES-1bj: Git write admission and history trust rechecks use in-memory workspace state, without resolving project paths on the main actor. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bk: Git inventory and ignore-file probes have bounded, cancellable waits; stalled paths select confinement, remain coalesced until their probe returns, and cannot consume a thread per retry or trust revision. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bl: Git subprocesses preserve UTF-8 argument and environment bytes with posix_spawn; literal NFC/NFD ignore rules, history paths and explicit file writes no longer target Foundation-normalized spellings. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bi: Successful Git reads accept CRLF warnings and trusted global-program progress; only Git's anchored filter-failure diagnostics reject optional-filter output, including truncated messages. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bg: Git inventory stamp validation runs outside memo/cache locks; stalled paths cannot hold other readers, watcher invalidation or trust clearing. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bh: Cold Git inventories preserve reuse through unrelated ignored-folder events; source events prevent caching and deliver a deferred configuration refresh. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1be: Unicode symbolic-ref inventory inputs that Foundation would normalize select confinement, keeping discovery, status and history readable; unrepresentable overrides remain fail-closed. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bf: Inventory probes reject embedded NUL before Foundation conversion, selecting confinement instead of an Objective-C exception. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1bd: Git trust snapshots project state on the main actor and resolves paths on bounded background workers; slow roots use confinement, cancellation shares the read deadline, and stale workspace revisions cannot grant trust. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-2q: Stored-module discovery distinguishes metadata files from grouping directories such as `group/config`, preserving valid fetch/pull/push layouts. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2r: Stored-module traversal skips ordinary files, inventories directory symlinks and newly populated targets, and retains confinement for unreadable candidates. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1az: Git trust resolves canonical paths with byte-aware containment; the most specific project and any equally specific denial win. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ba: File ownership and reply links preserve nested untrusted boundaries beside combining marks and through symlink aliases. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bb: Folder roots, blame and file-to-history navigation keep canonical byte path boundaries and relative filenames. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bc: Untracked count snapshots retain the source repository's trust and scoped program inventory, preserving trusted global filters while confining untrusted reads. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1a: Folder trees, breadcrumb menus and Quick Open disable repository fsmonitor programs, including outside trusted projects. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1b: Background Git reads neutralise local/worktree programs, including submodules; trusted reads retain global/system programs. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1c: Trusted Git reads preserve global/system filters selected by repository attributes; local/worktree filters are neutralised and outside/untrusted reads stay confined. Explicit trusted writes retain normal hooks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1d: Working, staged and untracked diffs disable textconv; commit statistics disable executable diff conversion. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1e: Read-only object/history queries cannot start remote programs or contact a promisor remote. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1f: Sparse-index folder and Quick Open listings cannot execute a promisor remote while expanding missing trees. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1g: Changes rechecks project trust before admitting a Git write; safe reading remains available. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1h: History and commit-detail reads disable repository-configured signature verifiers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1i: Trusted Git reads fall back to confinement for invalid UTF-8 configuration or repository metadata. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1j: Local Git program keys containing an override separator select confinement; global-only settings remain usable. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1k: Git program inventory preserves byte-distinct Unicode names and confines reads whose overrides macOS would rewrite. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2: Webhook redirects fail at the configured endpoint without forwarding payloads or custom headers. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2b: Git repositories with any http.extraHeader key refuse all redirects, including URL-scoped overrides; header-free repositories keep configured redirect settings and Git’s initial default. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2c: Git refuses redirect-policy overrides that would change Unicode bytes before private headers can be sent. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2d: Private-header Git redirect protection covers mixed-case HTTP URL schemes without Bello parsing destinations. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2e: Private-header Git redirect protection also covers explicit transport-helper URLs. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-2f: Private-header Git pushes stay protected across push-only rewrites, push URLs and branch/default destinations without Bello resolving remotes. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2g: Git HTTP wildcard redirect scopes are overridden directly, without treating patterns as destination addresses. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2h: Equivalent Git HTTP URL scopes cannot override private-header redirect refusal through argument ordering. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2i: Legacy Git remote definitions receive the same private-header push redirect protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1l: Trusted submodule reads retain each repository’s own conditional global filters while suppressing local programs. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1m: Git inventory and cache work share the read’s cancellation and timeout, including folder/Quick Open queries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1n: Git safety inventories reuse config/submodule metadata with origin/index/HEAD stamps, watcher invalidation and trust-change eviction. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1o: A config edit during a cold inventory cannot become a cached permission for a repository program. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1p: Every Git read uses short, non-recursive submodule output, including history commit diffs; changed gitlink IDs remain visible. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1q: Repository creation and nested discovery changes invalidate cached Git policies through identity and ancestor discovery stamps. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1r: Git resolves include paths, including absent `~user` targets; unresolved includes disable inventory reuse. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1s: Relative config origins use Git's repository directory when queries start in deeper folders. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1t: Include stamps preserve symlink/`..` traversal and detect origin-directory retargeting even for hardlinked config files. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1u: Unreadable stamps disable Git inventory caching; a trust change during construction prevents cache publication. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1v: `onbranch` include invalidation follows the whole symbolic HEAD chain. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1w: Private hunk indexes no longer invalidate Git safety inventories or interrupt a concurrent read/fetch. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1x: Unrecognized nested Git candidates bypass inventory caching, including later activation through an external `commondir`. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1y: Changes to a gitdir/common directory's `objects` or `refs` identity revalidate repository discovery before reusing its policy. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1z: Repeated hunk reviews share scoped Git configuration across private indexes; actual Git commands retain their supplied index. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aa: Dynamic/non-regular Git includes force confined reads at every scope and depth, including inactive conditional branches; inventory never consumes live config streams. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ab: File blame passes its displayed snapshot through a private file, preventing stdin-backed config from consuming or executing viewed content. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ac: Folder ignore queries pass bounded paths after `--`, preserving unusual filenames without exposing them to stdin-backed config. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ad: Include inspection preserves Git-reported Unicode origins and falls back to confinement when an unseen path cannot be passed unchanged. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1ae: Git inventories stamp every symlink and final target in config and repository resolution chains, detecting retargets even when config files share an inode. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1af: Submodule inventories retain the original gitlink path so retargeting an aliased checkout cannot reuse its old configuration. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2j: Empty and newline-only extraHeader values still refuse Git redirects; protection depends on NUL-delimited, case-insensitive key presence. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2k: URL-less legacy default remotes receive repository-wide redirect refusal without remote enumeration. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ag: Control characters in generated Git conditions or subsection names select confinement; quote/backslash paths retain exact Git parsing. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ah: Unrepresentable restored Git values select confinement before a trusted read; separate subsection/value encoders are checked through Git's parser. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ai: Gitdir patterns escape glob punctuation even beside combining marks, preventing local programs from escaping their conditional overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aj: Generated Git subsection/value quoting preserves quotes and backslashes beside combining marks under Git's own parser. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2l: Git redirect inventory includes deinitialized and nested stored modules, with stamped discovery and refusal when reachable configuration cannot be checked. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2m: Header-free Git commands preserve existing parent/child redirect settings instead of weakening a child’s refusal through inherited initial overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2n: Stored-module metadata refuses Git directory values whose Unicode bytes Foundation would rewrite, preserving conditional-header protection. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2o: Stored-module aliases retain their own conditional headers; inventories deduplicate only identical Git-directory spellings. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ak: Git inventory removes exactly one LF byte from path output, preserving trusted repository names ending in CR. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1al: FileFinder preserves trailing whitespace in repository and global ignore-file paths returned by Git. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1am: Stash common-directory and hunk index paths preserve trailing whitespace from Git output. [Validation](docs/validation/a130-security-0.1.130.md).
+
+- [x] SECURITY-BOUNDARIES-1an: Git program keys use byte delimiters, including filter and driver names beginning with combining marks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ao: Git origin and relative-include paths preserve separators beside grapheme-extending scalars, including inactive include targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ap: Inventory resolution stamps every slash-delimited component in original paths and symlink targets. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aq: Combining marks after onbranch conditions cannot bypass symbolic-ref-chain invalidation. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ar: Generated override parsing uses guarded byte separators; restored values cannot trap the reader. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1as: Git watchers and ignored-path boundaries use byte separators for metadata and nested paths. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1at: Status, history, branch, stash, blame and statistics parsers preserve literal Unicode next to Git field delimiters. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1au: Diff prefixes and quoted paths preserve adjacent combining marks and their line kinds. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1av: Hunk file reads split paths on slash bytes, preserving symlink refusal for every component. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1aw: Folder breadcrumbs, hidden names and ignore fallback retain byte-exact path boundaries. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-2p: Combining marks after HTTP config delimiters cannot hide private-header keys or URL-scoped redirect overrides. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ax: Untracked count snapshots preserve slash boundaries and directory attributes beside combining marks. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1ay: Git read-isolation options take precedence over caller display options, preserving non-recursive submodule previews and counts. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] Image formats (owner, 2026-10-20): Attach Images…, paste and drag-and-drop accept any still image macOS reads (JPEG, PNG, GIF, WebP, HEIC/HEIF, TIFF, BMP, AVIF, JPEG 2000, ICO, camera raw, …) and decide by content. PNG/JPEG/GIF/WebP up to 8 MiB attach as they are; other formats, mislabeled files and originals over 8 MiB become PNGs of at most 2,000 pixels within the helper's unchanged 8 MiB gate, which the helper sends as PNG or JPEG as pi does (transparent ones stay PNG); their chips keep the original file name (saved with drafts, never sent); an unreadable file is refused by name. A message holds four images of 8 MiB, now 32 MiB in all (was 16 MiB) in the app and the bundled helper alike, so four converted photos fit. [Validation](docs/validation/a130-images-0.1.130.md#round-3--2026-10-21).
+- [x] Owner-requested deviation from pi 0.85.1: an animated GIF, WebP or PNG reaches the model as its first frame (PNG, with a hint) in attachments, read results and tool images.
+- [x] Owner-requested deviation from pi 0.85.1: the read tool returns HEIC/HEIF, AVIF, TIFF, JPEG 2000 and other ImageIO images as converted images instead of failing as binary, also when their first bytes pass as text (a TIFF's black rows); text, pi's own formats, TGA/PICT and undecodable bytes keep pi's result. [Parity](docs/Swift-Feature-Parity.md#owner-requested-deviations-from-pi-0851-image-formats-01130).
+- [x] Git ignore filtering indexes directories and walks byte-delimited path ancestors, keeping large queued batches off the quadratic scan path. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-20--indexed-git-ignore-rechecks).
+- [x] Queued Git events survive ignore scans that started before those events; uncertain batches keep their follow-up refresh. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
+- [x] Reconciled staged deletions no longer keep refreshing Changes for writes to ignored, untracked working copies. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-19--ignore-scan-age-and-staged-deletions).
+- [x] Floating-panel Git discovery survives ignore rechecks; summary-only refreshes preserve displayed paths and coalesce new ignored folders. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-18--integrate-floating-panel-git-watchers).
+- [x] Git watcher regressions verify that clean tracked-file replacements retain their queued refreshes through both the controller and throttle queues. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-17--clean-tracked-file-replacement-review).
+- [x] Git ignore filtering preserves events touching displayed status paths, including both rename names, until a refresh reconciles them. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-16--displayed-git-paths-survive-newer-ignores).
+- [x] Git refreshes recheck queued event paths against newly learned ignores, avoiding extra scans after an ignored directory appears. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-15--ignored-git-events-queued-during-refresh).
+- [x] GRAPHEME-1: Capture finds configured credentials as bytes, so a gateway echo ending inside a grapheme cluster (the key, then a combining mark, ZWJ or variation selector) no longer survives in routing evidence, the effective model, journals or capture packets; Authorization schemes and sensitive header names split at bytes. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-1--confirmed-and-fixed-credential-boundary).
+- [x] GRAPHEME-3: Untrusted projects keep names that begin with a combining mark, ZWJ or variation selector: reply links, the canonical opener (chat links, Quick Open, Files panel) and history, blame, recents and Show Change compare canonical paths as bytes. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-3--confirmed-and-fixed-trust-boundary).
+- [x] GRAPHEME-6: Helper grep/find name files below their root exactly, including such names and roots under /var or /tmp; a "/" before a combining mark starts an absolute path. [Validation](docs/validation/a130-grapheme-0.1.130.md#grapheme-6--confirmed-and-fixed-helper-search-paths).
+- [x] A key echoed in the response's model, router model or id is masked before the live request observation is published, so the Inspector's context reading and "returned …" never show it; provider error text read by pi's retry rules masks keys with asterisks, so a rejected key whose fingerprint spells a status code is no longer retried. [Validation](docs/validation/a130-grapheme-0.1.130.md#round-2--provider-echoed-metadata-2026-10-21).
+
+
+- [x] Standalone-file test classes install their own project resolver and restore the previous callback. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-14--native-fixture-hook-ownership).
+- [x] Native-sheet test fixtures isolate and restore the shared question hooks.
+- [x] Sidebar-reveal test fixtures clear inherited overrides and restore them after use.
+- [x] Skill-popover test fixtures own their hover timing and file actions without replacing the caller's hooks on teardown.
+- [x] Failed file-review fixture construction leaves the caller's project resolver intact.
+- [x] Pasted-image sweeps prioritize orphan images and skip sidecars blocked by unrecognized files, preventing later generations from starving without deleting unknown files. [Validation](docs/validation/a130-paste-0.1.130.md#round-6--sweep-selection-progress).
+- [x] Pasted-image sweeps hold at most 32 generation leases, skip wholly retained generations, and retire empty abandoned sidecars while preserving live owners. [Validation](docs/validation/a130-paste-0.1.130.md#round-5--bounded-sweep-leases-and-sidecar-retirement).
+- [x] A live app instance's unsent pasted images survive another instance's startup sweep; per-generation lifetime leases protect conversion and drafts while abandoned generations remain collectable. [Validation](docs/validation/a130-paste-0.1.130.md#cross-instance-pasted-image-ownership--2026-10-20).
+- [x] Main chats show a floating Agents / Diff / Files card when space permits, with lazy project readers, per-window tabs/collapse and the existing narrow pill fallback. [Validation and screenshots](docs/validation/a130-panel-0.1.130.md).
+- [x] Panel review fixes: stable tab accessibility identities, repository discovery retries after `git init`, and no stale deletion counts for unreadable untracked replacements. [Evidence](docs/validation/a130-panel-0.1.130.md#follow-up-review-2026-10-20).
+- [x] Panel Files opens resolve symlink destination ownership through the canonical opener, preserving untrusted-project boundaries. [Evidence](docs/validation/a130-panel-0.1.130.md#destination-trust-follow-up-2026-10-20).
+- [x] Changes and panel grouping follow raw `git status`; Git computes each reported row’s counts, including rename/copy pairs and bounded untracked files with Git’s attributes and binary thresholds. [Evidence](docs/validation/a130-panel-0.1.130.md#git-owned-grouping-and-counts-follow-up-2026-10-20).
+- [x] Panel counts ignore diff ordering files and report unavailable reads; repository removal/recreation revalidates discovery and restores Diff without switching chats. [Evidence](docs/validation/a130-panel-0.1.130.md#ordering-and-repository-lifecycle-follow-up-2026-10-20).
+- [x] Untracked count snapshots split case-colliding files and directories; ambiguous Unicode keys and attribute aliases report unavailable counts without overwriting another path. [Evidence](docs/validation/a130-panel-0.1.130.md#snapshot-name-collisions--round-8-2026-10-20).
+- [x] Panel count requests keep rename/copy pairs together across batch limits and deduplicate shared sources, avoiding unnecessary Git reads for large directory renames. [Evidence](docs/validation/a130-panel-0.1.130.md#paired-count-batching--round-9-2026-10-20).
+
+
+- [x] Clipboard images reach every editable composer through Edit → Paste; clear text skips promised image renderings, common formats and large screenshots normalize in the background, bounded HTML only adds image confidence, and refusals stay visible. [Validation](docs/validation/a130-paste-0.1.130.md).
+- [x] Saved copy/export pages verify each decoded row against the held selection's fingerprints, rejecting in-place rewrites without rehashing the range per page. [Validation](docs/validation/a130-wire-0.1.130.md#round-10).
+- [x] Saved copy handoffs and canceled searches register their indexes with the eight-entry LRU, closing and removing evicted index files. [Validation](docs/validation/a130-wire-0.1.130.md#round-9).
+- [x] Imported conversations copy and export using their captured journal identity, separately from the desktop record ID. [Validation](docs/validation/a130-wire-0.1.130.md#round-8).
+- [x] Saved-conversation fingerprint scans yield in bounded batches so other transcript reads can proceed.
+- [x] Search readers reuse fingerprints for a matching snapshot; Next Results sends a new manifest only when the reader needs it.
+- [x] Copy/export returns an already validated selected-range page without retrying for unrelated appends.
+- [x] Copy/export selections validate only their selected retained rows, surviving streaming deltas and saved-history handoff during a running response. [Validation](docs/validation/a130-wire-0.1.130.md#round-6-review).
+- [x] Retained-range copies recover when another reader supersedes their snapshot build, while preserving caller cancellation and closure checks.
+- [x] Copy/export pages rejected by a retired session validate and rebind to unchanged saved history, even before unload acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+- [x] Large live conversation exports reuse one decoded row across pages, avoiding repeated full-row reads and allocations.
+- [x] Live and saved conversation copies share one formatter; empty or incomplete timeline evidence keeps the canonical answer. [Validation](docs/validation/a130-wire-0.1.130.md#round-4-review).
+- [x] Kept sides normalize inherited compaction rows identically, preserving copy/export selections after helper retirement.
+- [x] Saved conversation copy and search reflect durably adopted compaction progress, matching the live helper's retained text.
+- [x] Retained conversation formatting and hashing run off the session actor and are cached per snapshot for search and copy pages.
+- [x] Live conversation source search includes the reasoning and tool arguments retained by saved-history search and Copy Conversation.
+- [x] Saved conversation copy/search applies the same recovery presentation as helper replay for unfinished request and compaction rows. [Validation](docs/validation/a130-wire-0.1.130.md#round-5-review).
+
+- [x] Live Copy Conversation includes retained reasoning, tool arguments and message boundaries, matching saved-history copies. [Validation](docs/validation/a130-wire-0.1.130.md#round-3-hunt).
+- [x] Copy/export selections survive idle helper retirement after validating the unchanged retained conversation.
+- [x] Project folder changes wait for Inspector MCP execution and result-retention acknowledgement, including after Resources closes.
+- [x] Portable handoffs replay all supported native journal markers, retaining context restored by historical edits.
+
+- [x] APP-WORKSPACE-7: `/side <question>` sends the question as the new side's first message, recorded before the parent opens, so a crash leaves it recoverable from the parent. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-7--confirmed-and-fixed)
+- [x] APP-WORKSPACE-8: Archiving any member of a cost-paused family retires its pending family Resume at the click; Restore cannot revive it, and members keep the archive authority captured with the click. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-8--confirmed-and-fixed)
+- [x] APP-WORKSPACE-9: A connection deleted while a chat switches to it is never rebound or published; the chat stays on its connection and says why, and a deletion during the final write shows the deleted-connection notice. [Validation](docs/validation/a130-workspace2-0.1.130.md#app-workspace-9--confirmed-and-fixed)
+- [x] `/side Q` leaves the chat's composer only once a side has captured Q as its first message; every refusal keeps it exactly as typed, with a notice. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-2--the-three-reported-issues)
+- [x] `/side Q` never replaces a pending side's unsent typing or races its first send: Q stays in the chat's composer with a notice (needs owner decision); an empty, idle pending side still takes it.
+- [x] The cost-limit notice's Continue keeps its click's archive authority: Archive, or Archive then Restore, while its helper opens continues nothing.
+- [x] One press of Continue, Retry or Compact Now sends one request: repeats while it is on its way are ignored without a notice (no busy error, restarted compaction or duplicate retry), and a `/compact` typed meanwhile stays in the composer. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-3--one-request-per-continue-retry-or-compact-press)
+- [x] A published side whose helper exits before its first message goes out reopens its own `side_<id>.jsonl`, keeping its inherited history and family budget; an open never replaces a registered chat's journal with another file. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-4--a-published-side-reopens-its-own-journal)
+- [x] A refused `/side Q` leaves the keyboard in the chat's composer with the command and cursor as they were; only a side that captured the question takes the keyboard. [Validation](docs/validation/a130-workspace2-0.1.130.md#round-5--the-keyboard-stays-with-a-refused-side-question)
+
+- [x] Recovering a failed, unregistered side submission commits the input to its saved parent's draft before consuming the independent record. [State model and validation](docs/validation/a130-workspace-0.1.130.md#round-17--captured-input-state-and-cross-instance-ownership).
+- [x] Every captured submission carries a launch lease; other instances cannot offer or consume live input, while crashed owners remain recoverable.
+- [x] Recovery actions hold ownership across storage waits and validate the exact current record before Insert or Discard.
+- [x] Recovery hydration rechecks foreign commits before publishing, so another instance's Insert or Discard cannot reappear.
+- [x] Recovery also rechecks released task/launch ownership after acceptance reads, even when the pending record is unchanged.
+- [x] Snapshot recovery caches invalidate on another database connection's commits.
+- [x] Live submission ownership survives display replacement within the same launch.
+- [x] Side-input transfers adopt their recovering launch and verify individual input owners before retiring the publication link.
+- [x] Dismissing a side-publication reminder cannot orphan independent input or retire a live publisher before its input write.
+- [x] An identical queued-Save retry preserves another live launch's ownership and outcome digest without dispatching or offering duplicate recovery.
+- [x] Compaction pending records remain hidden while live and are acknowledged after acceptance; Resume and title-task records share launch/task ownership.
+- [x] Snapshot stop notices no longer temporarily block paused-queue input while recovery storage is being reconciled.
+
+- [x] Queued-Save confirmation survives later recovery reads, navigation and snapshot acknowledgement pruning. [Validation](docs/validation/a130-workspace-0.1.130.md#round-16--recovery-reconciliation-ownership).
+- [x] Main-chat and saved-side hydration preserve submissions that fail while acceptance is being read, including after helper loss.
+- [x] A late recovery read cannot revive input already inserted into a draft or explicitly discarded.
+- [x] Recovery merges newly retained input, including pins committed during an outstanding acceptance or review read.
+- [x] Recovery rechecks live submission ownership before publishing, so an identical queued-Save retry never becomes actionable recovery.
+- [x] Snapshots stop settlement if their helper connection retires while returned-input review is being saved.
+- [x] A snapshot reloads a changed recovery inventory immediately instead of requiring another helper update.
+- [x] Receipt acknowledgement and retirement invalidate other pending-input reads, including confirmed input with no in-memory pin.
+
+- [x] A failed queued-Save retry preserves the earlier operation and digest, so Cancel or changed Save still checks its outcome. [Validation](docs/validation/a130-workspace-0.1.130.md#round-15--retry-and-reading-position-ownership).
+- [x] Local side registration Retry works under its own lifetime lease; live publication remains protected and unresolved notices stay actionable.
+- [x] Outstanding reading-position writes retain their display and loaded revision until they finish; obsolete task cleanup cannot release a replacement writer.
+- [x] A refused retry cannot settle an earlier unanswered queued operation; deferred Keep When Finished stays protected until publication settles or its helper ends.
+
+- [x] Confirming an earlier queued Save settles its captured input while preserving newer typing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-14--confirmed-input-settlement-and-publication-ownership).
+- [x] Confirmed queued input retires retry pins with its durable record; failed cleanup stays suppressed and retries safely.
+- [x] Side/fork publication records carry a lifetime lease, so another instance cannot recover live input; crashed publishers remain recoverable.
+- [x] Journal and snapshot acceptance retire captured-input pins only after committed acknowledgement or receipt cleanup.
+
+- [x] Failed side first sends retain their parent link and move captured input into parent recovery before Close/Quit or after relaunch. [Validation](docs/validation/a130-workspace-0.1.130.md#round-13--captured-input-ownership-and-reachable-side-recovery).
+- [x] Returning rejected input to a draft verifies its current durable contents before consuming the independent submission.
+- [x] Preserving captured input invalidates pending snapshots, including conflict-restoration retries, so recovery stays visible.
+- [x] Live Send, Steer, Resend, queued Save and side submissions never appear or act as recoverable; settled failures remain reachable.
+- [x] Closing or quitting a side waits for admitted recovery actions, so Dismiss cannot reappear as a parent recovery copy.
+
+- [x] Every captured Send, Steer, Resend, queued Save and side first send stays pinned and recoverable after any storage failure. [Validation](docs/validation/a130-workspace-0.1.130.md#round-12--retained-input-through-storage-failures).
+- [x] Retained-input recovery stays visible after rejection and edit cancellation, independently of execution uncertainty.
+- [x] A side with undurable captured input stays reachable until recovery or dismissal; quit/update cannot orphan its input.
+- [x] Rejected input leaves the recovery chooser and pending cache only after its returned draft commits.
+- [x] Failed connection preparation retains captured input when storage fails or newer typing replaces it.
+
+- [x] Tool-output collection retains pinned conflict and captured-input references after failed persistence. [Validation](docs/validation/a130-workspace-0.1.130.md#post-integration-storage-failure-review).
+- [x] Failed side-draft cleanup preserves its committed revision, avoiding false conflicts after storage recovers.
+- [x] Restore Draft protects pinned input while its recovery transaction moves references into durable storage.
+
+- [x] Integration: queued-message Save protects tool-output references before its captured-input persistence, keeping both submission durability and collection ordering. [Validation](docs/validation/a130-workspace-0.1.130.md#round-9-integration-with-devnext).
+
+- [x] Historical Resend persists its captured replacement independently; typing during storage cannot cancel the edit. [Round-9 validation](docs/validation/a130-workspace-0.1.130.md#round-9--independent-captured-submissions).
+- [x] Queued-message Saves persist independent captured input before dispatch; identical retries share a record, and recovery checks the saved text digest.
+- [x] Side first sends retain independent input while parent opening waits and after a failed opening restores only into an unsaved side.
+- [x] New-chat materialization lets newer typing replace its draft snapshot without cancelling the captured first send.
+- [x] Rejected historical edits retain captured input replaced by subsequent typing; removal requires an atomic save of a draft still holding that input.
+
+- [x] Draft snapshots, edit review markers and recovery writes share an ordered writer; delayed typing cannot overwrite a newer save. [Round-8 validation](docs/validation/a130-workspace-0.1.130.md#round-8--ordered-draft-writers).
+- [x] Superseded local drafts are rejected before conflict detection, preserving the latest losing copy and independent captured submissions.
+- [x] Delayed reading-position callbacks cannot overwrite newer direct saves or clears; scrolling and typing remain independently preserved.
+- [x] A connection-refused send saves the current composer, preserving typing entered after Return.
+
+- [x] Draft debounces wait for loaded revisions and reschedule typing admitted during cold, side and relaunch opens; single-instance typing no longer creates false conflicts.
+- [x] Pending draft clears and reading positions survive eviction, close and quit/update flushes before initial metadata finishes loading.
+- [x] Side-draft transfer preserves typing in an unread parent while retaining the durable transfer path for untouched parents.
+- [x] Original sub-agent readers load reading-position revisions; pending position changes are saved after hydration.
+- [x] Materialization, side registration, receipt review markers and interrupted-input recovery load draft baselines before writing; recovery rechecks acceptance and active edits afterward.
+- [x] Shared PiKit capsule outlines no longer draw vertical end seams; control geometry and noncapsule corners stay unchanged. [Round-7 validation](docs/validation/a130-workspace-0.1.130.md#round-7--loaded-baselines-and-capsule-outlines).
+
+- [x] Rejected submissions remain separate durable input records across conflict-episode edits and empty debounces. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Configuration tasks are shared only within their helper connection, chat lease and runtime generation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Retired configuration failures and late close replies cannot close or clear replacement runtimes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] Replacement openings no longer wait for an old opening's retired configuration work. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+- [x] The Draft recovery chooser no longer draws vertical border artifacts beside its pill. [Validation](docs/validation/a130-workspace-0.1.130.md#round-6--captured-submissions-and-runtime-configuration-ownership).
+
+- [x] Conflict restoration works with paused queues while protecting active sends and edits. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+- [x] Each conflict episode updates one durable copy; a fixed recovery row offers every retained copy and interrupted submission through its chooser. [Validation](docs/validation/a130-workspace-0.1.130.md#round-5--conflict-episodes-and-bounded-recovery).
+
+- [x] Conflicting drafts are saved durably before release, recoverable after reopening, and pinned across navigation, side transfer, quit/update and helper loss if saving fails. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Reading positions use loaded-revision checks for scrolling, side close and quit; stale instances cannot overwrite or resurrect newer positions. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+- [x] Rejected submissions keep their captured input as well as the remaining draft when another instance wins a draft conflict. [Validation](docs/validation/a130-workspace-0.1.130.md#round-4--durable-conflict-copies-and-reading-positions).
+
+- [x] Update pausing preserves admitted clipboard images by refusing until imports finish. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] WIRE-CONTRACT-4: Model picks, saved defaults and edit overrides follow the helper's 200 UTF-8 byte limit. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] PERSISTENCE-COMPAT-1: Unchanged drafts do not overwrite another instance's saves; conflicting edits keep both copies and refuse the flush. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] CONCURRENCY-LIFECYCLE-3: Late opening/fork/side completions cannot restore a dead helper's runtime cache. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Late opening cleanup cannot stop or close a replacement helper's chat. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+- [x] Onboarding connection tests count as active work; update pausing waits for them and barriers refuse new probes. [Validation](docs/validation/a130-workspace-0.1.130.md#round-3-review-and-cross-cutting-hunt).
+
+- [x] Sidebar metadata search follows main-chat row eligibility, keeping family rows out of topic/project/connection/model-only hits while preserving direct child matches, archive counts and keyboard order. [Validation](docs/validation/a130-search-0.1.130.md#metadata-row-eligibility-regression--2026-10-20).
+- [x] Live response parts reconcile through indexed lookups, preserving observed order and provider corrections without rescanning earlier segments. [Validation](docs/validation/a130-helper-0.1.130.md#live-reconciliation-follow-up).
+- [x] Automatic compaction includes summary attempts in task model time, including after reopening. [Validation](docs/validation/a130-helper-0.1.130.md#round-3-hunt).
+- [x] Crash recovery preserves saved retry time and adds only replies journaled after the saved task state.
+- [x] Legacy response timelines build in linear time, preserving the original segment metadata and order.
+
+- [x] Native lane detection preserves complete multiline declarations, including attributes, generics/where clauses and default closures. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-13-review--declarations-and-intermittent-native-tests).
+- [x] Preview tests use a scoped project resolver, so earlier workspace fixtures cannot disable their change notifications.
+- [x] Sheet lifetime checks precisely exempt the detached AppKit system cursor retained by framework observers, while still rejecting attached cursors, app subclasses and retained content.
+
+- [x] Native lanes follow actual shared-fixture dependencies and serialize visible-window/focus contention while keeping offscreen responder work parallel; Python guards cover both cases. [Validation](docs/validation/a130-gitfiles-0.1.130.md#focus-lane-cost-review).
+- [x] Launch benchmarks reset the effective fixture preferences domain before every trial, refuse non-fixture domains, and stop on reset failure. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-preferences-review--effective-per-trial-reset).
+- [x] Helper-home fixture tests resolve relative PI_NATIVE_HOST and PI_BUILD_ROOT paths before changing workspace directories. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-isolation-review--relative-paths-and-launch-benchmarks).
+- [x] Launch benchmarks isolate app/helper home and scratch roots, clear inherited state/diagnostic paths, and inspect/reset fixture preferences only; shipping helper environments are unchanged.
+- [x] Wire, concurrent, acceptance, subagent and bundle-smoke fixture helpers isolate HOME, CFFIXED_USER_HOME and CODEX_HOME, including custom launch environments. [Validation](docs/validation/a130-gitfiles-0.1.130.md#fixture-helper-homes--round-3-follow-up).
+- [x] The native test-host guard keeps parent and explicit child process homes inside the verified fixture home; shipping apps are unchanged.
+- [x] TOOLING-CONFIG-4: Compaction harness helpers use generated HOME and CFFIXED_USER_HOME directories, excluding inherited user skills from provider prompts. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-3-hunt).
+- [x] TOOLING-CONFIG-5: Live compaction polling rejects unpriced or unknown settled accounting before submitting its follow-up.
+- [x] Accepted capture metadata over 4 MiB remains readable, exportable and expirable after reopening. [Validation](docs/validation/a130-inspector-0.1.130.md#round-3-hunt).
+- [x] Session-memory exports keep complete large manifests; manifest readers accept the same sizes and local retention counts their actual bytes.
+- [x] Capture database readers no longer reject accepted results above 100,001 rows.
+- [x] Legacy trace artifacts remain listable and clearable beyond 10,000 directories.
+- [x] Export Metadata validates and freezes the selected request before opening the destination chooser.
+- [x] Redacted exports retain their original Raw part label when navigation changes during the chooser.
+
+- [x] Stop retires pending Resume preparation and locally queued continuations, including Resume Follow-ups; helper generation tokens reject delayed requests after Stop. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Recover Copy restores paused membership only for its own descendants, clears an empty inherited family pause and preserves its own held work. [Validation](docs/validation/pause-r12-0.1.130.md#round-3-hunt).
+- [x] Sidebar search defaults to Titles & details; a temporary Full chats pill adds indexed messages, snippets and reveal-on-open. Clearing resets the scope; Topics, Flat, archived chats and family rows share metadata matching. [Validation](docs/validation/a130-search-0.1.130.md).
+- [x] Inspector exports snapshot their source and manifest identity, refusing request, part or capture changes while cleanup and dialogs await. [Validation](docs/validation/a130-helper-0.1.130.md#round-8-review--export-identity-and-final-collection).
+- [x] Metadata export refuses an unloaded snapshot instead of writing an empty file.
+- [x] Redacted exports remain valid when only the other capture body expires.
+- [x] Deletion schedules collection after retiring keep and import ownership rows, reclaiming last-reference output without a later deletion or relaunch.
+- [x] Journal import preserves its original project/profile and refuses navigation changes during preparation.
+- [x] Recovery cancels stale preparation and registers completed copies without overriding later navigation.
+- [x] Portable handoff checks its original source and navigation through preview and confirmation.
+
+- [x] Tool-output collection fences in-flight draft transfers, saves, editable handoffs, keep/fork/recovery publication and exports. [Validation](docs/validation/a130-helper-0.1.130.md#round-6-review--transient-output-ownership-and-deletion).
+- [x] Independently retained copies preserve their referenced output despite another copy's chat-ID tombstone.
+- [x] Deletion transfers a different pending keep copy to durable retained ownership before clearing its intent.
+- [x] Importing an unlisted native side loads its budget ancestors before selection, including archived sides.
+- [x] Chat deletion waits for background slimming; slimming cannot recreate a deleted source or overwrite a replaced source after discard.
+
+- [x] Concurrent deletions serialize shared tool-output recycling, preserving both deletion receipts. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-review-follow-up).
+- [x] Opportunistic retained-output cleanup runs after the remembered chat is restored.
+- [x] Import selects an existing native chat instead of registering an alias; another project's journal is refused with a notice.
+- [x] Recovery refuses a source deleted or replaced before publication and withdraws a copy if deletion wins during publication.
+
+- [x] Deleting a chat preserves full tool output referenced by surviving forks, sides and saved drafts, then reclaims it after the last reference is removed. [Validation](docs/validation/a130-helper-0.1.130.md#persistence-compat-2--shared-retained-tool-output-ownership).
+
+- [x] Retry rejects unloaded sessions before starting provider or tool work. [Validation](docs/validation/a130-helper-0.1.130.md#round-2-hunt).
+- [x] Queue Resume rejects closed runtimes, leaving queued work for a reopened journal.
+- [x] Task reports retain failed, stopped and retried model-request time across reopening without counting successful replies twice.
+- [x] Reopened image-result tool cards retain their saved image descriptions.
+- [x] Malformed token usage cannot overflow context output-room calculations; rejected raw counts no longer override validated usage.
+- [x] Credential masking preserves routing enums and helper-owned preview/source/tool schemas while masking configured and provider data.
+- [x] Retained large bash logs support bounded text paging, including from read-only sides.
+- [x] Portable preview, import inspection and recovery scan journals off the host actor so unrelated chats remain responsive.
+- [x] Alternate-screen selections and active drag anchors follow hidden normal-history movement during resize, including history eviction. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-review--selection-coordinates-and-plain-syntax-ink).
+- [x] Syntax-coloured file lines draw intervening plain text in the host's text colour, including long-line pieces and theme changes.
+- [x] GIT-FILES-5: Resizing a fullscreen terminal program preserves the hidden shell's lines, scrollback and cursor. [Validation](docs/validation/a130-gitfiles-0.1.130.md#round-2-hunt).
+- [x] GIT-FILES-6: Normal and alternate terminal screens keep separate saved cursor positions and attributes.
+- [x] Terminal cursor-save sweep: Reset clears saved modes and character sets in both screens.
+- [x] Terminal cursor-save sweep: Returning from a fullscreen program restores pending line wrap while preserving the existing resize behavior.
+- [x] GIT-FILES-7: File syntax waits for complete lines before caching tokens, preserving first-line colours after a slow open.
+- [x] TOOLING-CONFIG-1: Failed compaction scenarios account for spending before disposal; unknown spending stops further live dispatch and stays unknown in reports.
+- [x] TOOLING-CONFIG-2: Transcript performance and soak runs return failure if any test invocation fails.
+- [x] TOOLING-CONFIG-3: Transcript performance runs make product/output paths absolute without trimming whitespace and reject directory setup failures.
+- [x] Quota eviction seeks completed captures with retained chunks, skipping bodyless history. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body retention seeks overdue captures by timestamp, skipping unexpired requests and writers. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Body-retention deadlines read the first eligible capture without materializing every reference. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Metric-retention deadlines use the completed-metrics index, skipping older running requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Capture cleanup selects and deletes orphan chunks through an index, skipping retained chunks. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+- [x] Quota bookkeeping updates cached totals after cleanup instead of recounting every stored chunk. [Validation](docs/validation/a130-inspector-0.1.130.md#round-6-maintenance-query-review).
+
+- [x] Metric retention seeks through an ordered index, avoiding repeated scans and sorts on large overdue archives. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Clearing captures pages large chats atomically, preserving every body if a later capture is busy. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Quota eviction pages oldest captures through an index and stops as soon as space is available, even beyond 100,000 requests. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Inspector export and Events recheck changed or pruned helper captures and retry confirmed archive handoffs. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+- [x] Raw Events describes body retention without the removed event-count caps. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt-review-follow-up).
+
+- [x] Retention sweeps page overdue captures, keeping Reports and durable capture recording available beyond 100,000 expired requests while respecting export leases. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed Session memory captures export their retained bytes and show helper-held Events; reads follow the acknowledged payload handoff to the archive. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Completed capture-Off requests show their remaining helper-held Events without inventing retained bodies. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Inspector exports keep the original request's physical session when selection changes in the destination chooser. [Validation](docs/validation/a130-inspector-0.1.130.md#round-2-hunt).
+- [x] Superseded history reloads cannot reclaim a newer reader destination during recovery. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Background child runtime replacement preserves native text selection, scroll anchors and open folds while fencing obsolete reads. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Home, reveals and history-position reads rebind validated boundaries across same-ID helper runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+
+- [x] Invalid command IDs cannot overflow helper rejection frames. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Runtime replacement restarts visible history loads and preserves their requested destination. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Retained-history paging rebinds stable message boundaries after same-ID runtime replacement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Helper quiescence refuses commands still in submission preflight. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Onboarding connection tests participate in update activity and confirmed helper shutdown. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] Update confirmation names Inspector-only tool calls accurately. [Validation](docs/validation/a130-wire-0.1.130.md).
+
+- [x] WIRE-CONTRACT-1: Oversized capture metadata uses acknowledged chunks and arrives complete without stopping other chats. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-2: Inspector MCP execution and result retention block app/helper update quiescence, including late IPC replies. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] CONCURRENCY-LIFECYCLE-2: Inspector MCP work pins the project helper through its durable-result acknowledgement. [Validation](docs/validation/a130-wire-0.1.130.md).
+- [x] WIRE-CONTRACT-3: Attached child readers accept lower sequence numbers from a new runtime and reject retired snapshots. [Validation](docs/validation/a130-wire-0.1.130.md).
+
+- [x] Credential masking preserves fixed routing/accounting schemas, keeping pinned replay and reported usage/cost intact when custom header values match schema text. [Validation](docs/validation/a130-helper-0.1.130.md#round-2--fixed-schema-preservation).
+- [x] Capture sanitizes credential echoes in SSE event names, header names, gateway provenance and raw usage metadata. [Validation](docs/validation/a130-helper-0.1.130.md#follow-up--capture-metadata-credentials).
+- [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Start-with-wait IDs work in status listings immediately and after reopening, including older saved starts. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Reopened cost-paused chats seed sides and whole-chat forks from the last complete tool boundary; the parent keeps its held calls for Resume. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Failed and stopped model requests retain their elapsed time in turn/session totals across reopening; retry backoff stays excluded. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] APP-WORKSPACE-1: Settings merges capture preferences individually, preserving newer chat opt-outs and timestamps. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] APP-WORKSPACE-5: Replacement keys reach opening/loaded chats, new sides and forks, and retried opens before later work uses their runtime. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-WORKSPACE-6: Switching sides cannot discard a first send or an unfinished image import; publication rechecks ownership after opening the parent. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] A late side-publication callback preserves the saved sibling's focus and boundary after navigation. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-2: Quit refuses while images import, updates defer, and shutdown blocks new imports; Quit's confirmation rechecks imports before flushing. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] APP-UI-3: Restart Terminal uses the relocated project folder while preserving terminal identity, name and generation checks. [Validation](docs/validation/a130-workspace-0.1.130.md#round-2-hunt).
+- [x] GIT-FILES-1: Git preserves project-path whitespace, so Discard cannot target a trimmed sibling repository. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
+- [x] GIT-FILES-2: Image/PDF previews finish active reads during sibling-folder activity, then recheck queued changes.
+- [x] GIT-FILES-3: Identical normal and inverse terminal glyphs keep distinct cached foreground colours.
+- [x] GIT-FILES-4: Preview identities include device and nanosecond change time, detecting same-size, timestamp-preserving overwrites.
+- [x] APP-UI-1: Show Terminal requires Chats; deferred focus respects page/visibility/enabled state, and covered terminals restore focus on return. Needs owner decision: keep the command disabled on Reports/Background rather than navigate to Chats.
+- [x] Git path sweep: hunk review accepts repository roots ending in a newline.
+- [x] Git path sweep: watchers preserve whitespace in external Git/common-directory paths, including embedded newlines.
+- [x] Git path sweep: reword detects active operation markers under newline-containing paths.
+- [x] Git path sweep: reword runs post-rewrite hooks in configured directories ending in a newline. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
+- [x] File-only panes yield to the main composer's minimum; side conversations clamp the original proportional split only as needed to fit both control minima, keeping the original split when both cannot fit and the original drag scale. [Validation](docs/validation/a130-gitfiles-0.1.130.md#proportional-split-review-correction).
+- [x] Inspector invalidates only the body that became unreadable, preserving Off-stream Links pages and readable partial responses with credential-omitted input. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Inspector detects lost helper-memory bodies even when archive metadata is unchanged, including bodies read before metadata arrives. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
+- [x] Completing Session memory requests preserves Inspector Raw state and partial Response documents, with Load latest using the readable memory source. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw search shrinks and part tabs become a menu when needed, keeping Copy and capture actions visible at the minimum Inspector width. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] The report notice describes configured metric retention instead of the obsolete 100,000-record limit. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
+- [x] Tiny reported costs and subnormal values produce finite chart domains and ticks without trapping. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Clearing captures and refreshing an open Inspector retires parsed/Raw bodies and pending copies, then reloads purged metadata. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report request paging reaches retained rows beyond 100,000 with the existing 128-row page size. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Refreshing a report on a request page beyond 100,000 keeps that page available. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report chat paging also removes the obsolete 100,000-offset ceiling, retaining 64-row pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Menu and Inspector usage model pages reach every retained route, keeping 24-row aligned pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw → Headers Copy includes both displayed, masked header sections. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Empty Raw Headers and Links no longer enable Copy just because request metadata exists. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Cost-limit pause round 12 (`dev/a130-pause-r12`): durable child Stops survive recovery and live parking; Stop during pending Resume halts child tools; side-pause fan-out survives a helper restart, including an idle root. [Validation](docs/validation/pause-r12-0.1.130.md).
+- [x] Round-12 follow-up: recovered side Resume membership transfers to the root and clears after completion; child Stop and Resume installation share the family gate. [Validation](docs/validation/pause-r12-0.1.130.md#follow-up-review-of-68491378).
+- [x] Round-12 second follow-up: child Stop cancels live work before waiting for delivery compaction; recovering idle intermediate sides preserves an accepted family Resume. [Validation](docs/validation/pause-r12-0.1.130.md#round-2-review-of-3a1dfbda).
+- [x] Round-12 third follow-up: a stopped parked child accepts later follow-ups without retaining its old pause or held tools; Stop acknowledges while sibling or parent delivery compaction waits. Full branch condition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-3-review-of-5fb1b5dc).
+- [x] Round-12 fourth follow-up: pause membership transfers require durable acknowledgment; failed retirements remain retryable; stopped child readers clear their pause and held tools during terminalization/recovery. Transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-4--transition-audit-before-implementation).
+- [x] Round-12 fifth follow-up: cold parked-child Stop mirrors its journal off the host actor, keeping other chats' snapshots and Stop responsive while the runtime gate protects the writer. [Validation](docs/validation/pause-r12-0.1.130.md#round-5--cold-terminal-mirror-responsiveness).
+- [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
+- [x] Round-12 seventh follow-up: generation-fenced pause messages and a two-phase Resume preserve the family through late publications, Stop, new pauses and failed acceptance writes. Stale-message matrix, transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-7--generation-fences-and-two-phase-resume).
+- [x] Round-12 eighth follow-up: side membership changes survive unload and restart through durable acknowledgments; automatic retirement includes applied but unpublished pauses, and recovered transfers stay root-owned. Lifecycle audit, warning comparison and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-8--durable-membership-intents-and-runtime-retirement).
+- [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and list-fence comments and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Heading Copy preserves CR, CRLF and mixed source line endings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches formatted exposed reasoning and opens matching folded timeline prose, including opaque/correction parts, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find follows View Raw in saved and unsaved replies and in completed timeline segments while later segments stream; arriving segments keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Refreshing Find after a source-view change preserves the reader's newest Next/Previous selection without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find shares the native Markdown text builder, preserving visible list numbers, headings, code, links and table previews in saved/live replies and agent prose. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Tool Find uses the native card model's formatted JSON and decoded command/edit/read content, preserving saved/live input presentation and searchable file/agent labels. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Pending Find navigation keeps its match identity when refreshed results change its index. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find exposes and lays out an expanded tool-card body before counting matches, including quoted edit text beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps the existing highlight when rendered counts clamp its occurrence, without a new navigation request. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved user/status Find searches displayed text, including image-only labels and display overrides, without export headings; source export stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens compaction summaries using the saved row's exact display prefix. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find renders and opens execution parts while preserving the visible caption, including executions with no timeline body. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches displayed branch, failure, version and request details without adding export headings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Managed-child Find preserves the first task's rendered presentation and later user messages' literal text. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Saved agent Find retains visible attribution and omits absent-note separators. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Agent cards with unavailable attribution search their displayed notice. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find distinguishes standalone Markdown tool-result rows from literal results paired with their call cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find consumes the transcript planner's normalized rows, including orphan request ledgers, legacy recovery prose/reasoning and unfinished-operation notices. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find suppresses superseded ledgers and duplicate checkpoints using the active history branch, including dependencies across decoding windows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find keeps paired tool inputs/results in their displayed card format without duplicate output, including distant receipts and unsupported-timeline recovery rows. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find preserves the captured completed-row presentation when a final reply is appended during a search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find resolves captured tool output ownership across history-page boundaries, preserving one occurrence per displayed payload and highlighting an already-loaded card without fetching its receipt. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reconciliation keeps call-input occurrences separate from receipt-owned output, including partially loaded tool cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves the first managed task's agent attribution after it leaves the loaded page. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Unloaded agent rows and distant tool receipts share the display's agent presentation, including child numbers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find uses cached full tool arguments in retained, unsaved and folded cards, keyed by reply and call. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Arriving full arguments refresh Find without creating navigation focus. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find refreshes preserve an already-pending reader navigation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find opens closed cards using their cached full arguments when locating a match. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find expands fetched edit content using the actual native card model, including matches beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find retains the displayed file header on linked I/O fallback cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Fetched sub-agent task bodies keep the original visible row heading in Find. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find dependency lookups index active-branch positions, bounding reused tool-call IDs without scanning and sorting every reuse. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields between bounded scan batches so history paging can finish while a search runs. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Cancelling Find preserves the warm paging index; failed old searches do not discard a newer cached snapshot. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Read/diff card expansion belongs to the tool occurrence and survives native-host eviction without stale row heights. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Reordered full-table cells show and copy the value from the clicked column's stable identity. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find charges primary, captured and dependency reads to one yielding 16 MiB budget and memoizes each issuer/receipt by source offset with bounded cache memory. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses issuer ownership for tool-start rows and indexed presence for recovery/operation dependencies, avoiding repeated large-peer decoding. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Wide agent tool rounds normalize each receipt’s own card without repeatedly parsing its siblings’ arguments or stalling history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find keeps the displayed first error line of failed edit/write cards searchable, with receipt ownership and hidden details preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find reuses bounded dependency summaries across continuation pages of the same query, journal revision and display state; replacement and cancellation release them. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide legacy tool rounds consume ordered card fragments without retaining or joining all receipt bodies; transient spill files are anonymous and close with the issuer. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Wide receipt joins plan only their own timeline segments, preserving the full issuer’s canonical display order. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find yields after receipt projection, including large standalone Markdown results, so source-byte budgets also leave time for history paging. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find batches unanswered-call ownership lookups and card projections even when there are no receipt decodes to trigger a yield. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find snippets have a UTF-8 byte bound as well as a character bound, keeping the match visible beside oversized combining-character sequences. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find preserves and focuses failed edit/write diff inputs when their error summaries belong to separate receipts. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Repeated read/diff cards share the occurrence’s stored expansion value through clicks, Find, refresh and remount, without adding fold animation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Find searches selection-copy text, normalizing Markdown list markers, block/table breaks and preview chrome, with exact rendered highlight mapping and literal raw/code whitespace preserved. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Copy and Find apply every marked block separator independently of color/style runs, keeping cached matches stable through syntax coloring. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
+- [x] Helper, views-package and app tests report every failing assertion. XCTest dropped a failure raised off the main thread while it recorded another one (as few as 30 of 40 after awaits), so `HelperTestCase`, `ViewsTestCase` and `IssueRecordingGuard.m` record it afterwards. Test verdicts were never affected, and the full helper and views suites show no hidden failures. Guards: both packages' `IssueRecordingTests`, `IssueRecordingGuardTests` and `scripts/tests/test_xctest_issue_recording.py`. [Validation](docs/validation/a130-asynctests-0.1.130.md).
+- [x] The views package's issue-recording guard holds under Xcode too, which builds each test target as a bundle of its own: FileViewTests' `IssueRecordingTests` failed falsely there and checked nothing in the other two targets. Each target now has its own guard (`FileViewIssueRecordingTests`, `GitViewIssueRecordingTests`, `FileFinderIssueRecordingTests`, sharing `LinkedTestClasses`), and `swift test`'s single bundle must still hold all three targets. Test-only. [Validation](docs/validation/a130-asynctests-0.1.130.md#round-3-one-guard-per-views-test-target).
+- [x] An open Find counts text that streams in after its search: it searches again once the conversation has been quiet for 0.5 s (while the chat runs, for four times its last search), never per token or over a search under way, keeping the reader's place, chosen match and keyboard; Next reaches the new matches. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-1--confirmed-and-fixed).
+- [x] Image-result tool cards read back from a journal show the description their live card showed, including text-and-image results, and Find reaches it; legacy receipts keep their text and Copy Conversation keeps the shared source text. [Validation](docs/validation/a130-transcript2-0.1.130.md#transcript-2--confirmed-and-fixed).
+- [x] Find's recounts keep a place another reader marked — a sidebar Full chats match, an Inspector, transcript or link reveal — and its landing under way; only Find's own navigation replaces it. [Validation](docs/validation/a130-transcript2-0.1.130.md#round-2--review-of-2f65aa99).
+- [x] Find searches nothing for a reader that is hidden, closed or covered: retiring a reader suspends its refreshes even at rest, and a transcript under the Reports page, a covering tab or a hidden window waits; shown again, one search counts what arrived. [Validation](docs/validation/a130-transcript2-0.1.130.md#round-2--review-of-2f65aa99).
+- [x] Release gate on `176c14c5`: every suite passed except four tests in the native serial lane, all failing in the tests themselves. `ShellParityTests` gives compact composer pills the cut pill's 5% allowance: the repaired capsule outline (`edab6936`) draws its ends on circular arcs where the SwiftUI reference's continuous capsule does not, some 50–130 px per pill whatever its width. `SettingsCloseNativeTests` takes the stop-and-quit question to be the newly attached sheet, not the first window wearing any sheet. `LayoutCycleTests` counts only the closed sheets it opened and names windows earlier tests left; its Settings-window test brings the reopened window in front, as activation would, because a test host that is not active and is covered by another app never makes it key, main or visible (it failed that way twice in reruns). Reruns: 35/0, 20/0 twice, then the retention class 6/0 twice.
+- [ ] `ConversationPaneRetentionTests.testTheWholeWindowKeepsAtMostOneChatBeyondItsCache` failed once in that gate: the four chats evicted last (`win-0`…`win-3`) were still alive at its check. It has passed 7 of 7 since (alone, after the same 30 classes in gate order, and in the reruns), and a probe saw every evicted chat released in time with the window covered and under full CPU and fsync load. Cause unconfirmed.
+
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
-- [ ] Cost-limit pause, known for 0.1.130 (Codex review round 12; owner: ship 0.1.129 after round 11): a child stopped by the reader is requeued by recovery after a crash; Stop racing an accepted Resume leaves child tools running; the side-pause fan-out is lost if the helper exits before its callbacks run. [Details](docs/validation/limit-pause-0.1.129.md#known-for-01130).
+- [x] Cost-limit pause findings deferred from 0.1.129 (Codex round 12): fixed for 0.1.130 on `dev/a130-pause-r12`. [Original findings](docs/validation/limit-pause-0.1.129.md#known-for-01130), [fixes and validation](docs/validation/pause-r12-0.1.130.md).
 - [x] Git review findings (2026-10-16): a stash pushed by another writer during Drop/Pop is never the one lost (Git's reported drop and the reflog are checked; a wrong entry is stored back and the drop refused); Discard works before the first commit, only on a genuinely unborn branch; Git keeps the app's `XDG_CONFIG_HOME` (no `GIT_DIR`-style inheritance); a staged deletion and its untracked recreation each show their own diff. [Validation](docs/validation/bugs-git-0.1.129.md).
 - [x] Intermittent tests: ten failures given causes and fixes:
   - a late reference definition moved the reading line (product);

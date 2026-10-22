@@ -5,59 +5,210 @@ struct ContentHit: Codable, Sendable, Identifiable {
     /// How many times the query occurs in the record's text (nil from a
     /// source that does not count; read as one).
     var count: Int? = nil
+    /// A receipt outside the captured page can already be drawn in a card.
+    struct Drawing: Codable, Sendable { var messageID: String; var toolCallID: String }
+    var drawing: Drawing? = nil
+    var omittedOutputs: Set<String>? = nil
 }
-struct ContentSearch: Codable, Sendable { var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String }
+struct ContentSearch: Codable, Sendable {
+    struct Source: Codable, Sendable, Equatable { var sessionID: String; var workspaceID: String; var path: String?; var hostEpoch: String? }
+    var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String
+    var digest: String? = nil, incarnation: String? = nil
+    var rowHashes: Data? = nil
+    /// Imports keep their journal header ID while the desktop record gets a new ID.
+    var journalID: String? = nil
+    var source: Source? = nil
+    func sameSnapshot(as other: ContentSearch) -> Bool {
+        revision == other.revision && incarnation == other.incarnation && journalID == other.journalID && source == other.source
+    }
+}
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }
 
 enum ConversationContent {
-    /// Find's display projection is separate from retained-source search and
-    /// Copy Conversation. Tool receipts keep their own record identity, even
-    /// when the transcript draws their prose in the issuing call's card.
-    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false) -> String {
-        let message = entry["message"]?.object ?? [:]
-        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
-        if message["nativeAgentDelivery"]?.object != nil {
-            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message))
+    /// The same normalized rows the transcript draws, indexed by retained
+    /// source. A receipt in its call's card owns that card's output, not a
+    /// second copy of it; hidden ledgers/checkpoints own no displayed text.
+    struct Presentation {
+        var rows: [String: [TranscriptItem]] = [:]
+        private var results: [String: ToolView] = [:]
+        private(set) var drawings: [String: ContentHit.Drawing] = [:]
+        private var outputCalls: Set<String> = []
+        private let fetchedInputs: [String: ToolInputDocument]
+        init(_ messages: [TranscriptMessage], fetchedInputs: [String: ToolInputDocument] = [:]) {
+            self.init(TaskTranscriptPlan.rows(messages, lifecycle: nil), messages: messages, fetchedInputs: fetchedInputs)
         }
-        if managedChild, message["role"]?.string == "user" {
-            return prose(TranscriptMessage.project(id: "", message: message).text)
+        // Keep the large row values out of the planner's call frame on a
+        // cooperative worker's small stack.
+        private init(_ planned: [TranscriptItem], messages: [TranscriptMessage], fetchedInputs: [String: ToolInputDocument]) {
+            self.fetchedInputs = fetchedInputs
+            for message in messages { rows[message.id] = [] }
+            var cards: [String: [ToolView]] = [:]
+            for row in planned {
+                switch row {
+                case .message(let message): rows[message.id, default: []].append(row)
+                case .block(let block):
+                    for message in block.replies {
+                        rows[message.id, default: []].append(row)
+                        if message.role == "assistant" { cards[message.id, default: []] += message.tools ?? [] }
+                    }
+                }
+            }
+            var issuers: [String: (String, ToolView)] = [:], receipts: [String: String] = [:]
+            for message in messages {
+                for tool in cards[message.id] ?? [] { issuers[tool.id] = (message.id, tool) }
+                guard message.role == "tool" || message.kind == "toolResult", rows[message.id]?.isEmpty == true,
+                      let call = message.toolCallID, let (source, tool) = issuers[call] else { continue }
+                let key = ToolOccurrence.key(source, call)
+                if let earlier = receipts[key] { results.removeValue(forKey: earlier); drawings.removeValue(forKey: earlier) }
+                receipts[key] = message.id; results[message.id] = tool; outputCalls.insert(key)
+                drawings[message.id] = .init(messageID: source, toolCallID: call)
+            }
         }
-        if let name = message["toolName"]?.string, SubagentToolView.isControl(name), let result = ToolResultRecord.of(message) {
-            let value = SubagentToolView(ToolView(id: result.call, name: name, state: result.record.cardState, input: "", output: result.record.output, durationMs: nil, truncated: false))
-            return [prose(value.result), value.error ?? ""].joined(separator: "\n")
+        func text(_ id: String, rawReply: Bool = false, toolInputs: [String: String] = [:]) -> String {
+            if let tool = results[id] { return payload(tool, receipt: id).output }
+            return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
         }
-        let blocks = message["content"]?.array ?? []
-        guard blocks.contains(where: { $0.object?["type"]?.string == "toolCall" && SubagentToolView.isControl($0.object?["name"]?.string ?? "") }) else {
-            return text(entry)
+        func parts(_ id: String, rawReply: Bool = false) -> [TextPart] {
+            textParts(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls)
         }
-        var plain = message
-        // Preserve ordinary text/tools, but replace agent argument envelopes
-        // with exactly the Task/Message prose drawn by the native card.
-        plain.removeValue(forKey: "nativeResponseTimeline")
-        plain["content"] = .array(blocks.map { block in
-            guard let fields = block.object, fields["type"]?.string == "toolCall", let name = fields["name"]?.string, SubagentToolView.isControl(name) else { return block }
-            let value = SubagentToolView(ToolView(id: fields["id"]?.string ?? "", name: name, state: "recorded", input: ToolInputDisplay.encoded(fields["arguments"] ?? .null), output: "", durationMs: nil, truncated: false))
-            return .object(["type": .string("text"), "text": .string("\n" + value.title + "\n" + prose(value.task) + "\n")])
-        })
-        var projected = entry; projected["message"] = .object(plain)
-        return text(projected)
+        private func payload(_ tool: ToolView, receipt: String) -> (input: String, output: String) {
+            let fetched = drawings[receipt].flatMap { fetchedInputs[ToolOccurrence.key($0.messageID, $0.toolCallID)] }
+            return toolPayload(tool, fetched: fetched)
+        }
+        func omittedOutputs(_ id: String) -> Set<String>? {
+            let calls = Set(drawings.compactMap { receipt, owner -> String? in
+                guard owner.messageID == id, let tool = results[receipt], !payload(tool, receipt: receipt).output.isEmpty else { return nil }
+                return owner.toolCallID
+            })
+            return calls.isEmpty ? nil : calls
+        }
     }
-    /// Current streaming text and rows that have not reached the journal yet.
+    /// Find is separate from retained-source search and Copy Conversation.
+    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false) -> String {
+        if entry["type"]?.string == "compaction" {
+            return transcriptText(TranscriptMessage(id: entry["id"]?.string ?? "", role: "system", text: TranscriptMessage.compactionText(entry), kind: "compaction"))
+        }
+        let message = TranscriptMessage.project(id: entry["id"]?.string ?? "", message: entry["message"]?.object ?? [:])
+        if managedChild, message.role == "user", message.nativeAgentDelivery == nil, message.kind != "agent_message" { return TranscriptMarkdown.renderedText(message.text) }
+        return transcriptText(message, rawReply: rawReply)
+    }
     /// Called by the history actor, never by a layout or paint pass.
-    static func transcriptText(_ message: TranscriptMessage) -> String {
-        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
-        if message.nativeAgentDelivery != nil {
-            return AgentMessagePresentation(message).events.map {
-                [$0.title, $0.label, prose($0.text), $0.note ?? ""].joined(separator: "\n")
-            }.joined(separator: "\n\n")
+    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false) -> String {
+        Presentation([message]).text(message.id, rawReply: rawReply)
+    }
+    /// Presentation belongs to the planner: a persisted system ledger may be
+    /// an assistant response, with separate prose, reasoning and card rows.
+    enum TextPart {
+        case text(String)
+        case tool(key: String, value: ToolView, inputOnly: Bool)
+        func text(toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
+            switch self {
+            case .text(let text): return text
+            case .tool(let key, let tool, let inputOnly):
+                return toolInputs[key] ?? toolText(tool, inputOnly: inputOnly, fetched: fetchedInputs[key])
+            }
         }
-        let tools = (message.tools ?? []).map { tool in
-            guard SubagentToolView.isControl(tool.name) else { return [tool.input, tool.output].joined(separator: "\n") }
-            let value = SubagentToolView(tool)
-            return [value.title, prose(value.task), prose(value.result), value.error ?? ""].joined(separator: "\n")
+    }
+    private static func transcriptText(_ rows: [TranscriptItem], rawReply: Bool = false, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
+        joined(textParts(rows, rawReply: rawReply, omittingOutputs: omittingOutputs).map { $0.text(toolInputs: toolInputs, fetchedInputs: fetchedInputs) })
+    }
+    /// Defer tool bodies so history search can consume the same planned text
+    /// without collecting every large receipt in a work row into one string.
+    private static func textParts(_ rows: [TranscriptItem], rawReply: Bool, omittingOutputs: Set<String>) -> [TextPart] {
+        func tool(_ tool: ToolView, source: String) -> TextPart {
+            let key = ToolOccurrence.key(source, tool.id)
+            return .tool(key: key, value: tool, inputOnly: omittingOutputs.contains(key))
         }
-        return ([message.text, message.thinking ?? ""] + tools).joined(separator: "\n")
+        return rows.flatMap { row -> [TextPart] in
+            switch row {
+            case .message(let message): return [.text(messageText(message, rawReply: rawReply))]
+            case .block(let block):
+                if let part = block.part, let message = block.message {
+                    if !["text", "refusal"].contains(part.part.kind), let call = part.part.callID,
+                       let value = message.tools?.first(where: { $0.id == call }) { return [tool(value, source: message.id)] }
+                    return [.text(partText(part, message: message, rawReply: rawReply))]
+                }
+                switch block.presentation {
+                case .body, .reply: return [.text(block.message.map { replyText($0, raw: rawReply) } ?? "")]
+                case .work:
+                    return block.activity.flatMap { message in
+                        [.text(TranscriptMarkdown.renderedText(message.thinking ?? "", style: .reasoning, streaming: message.isStreaming))]
+                            + (message.tools ?? []).map { tool($0, source: message.id) }
+                    }
+                default: return []
+                }
+            }
+        }
+    }
+    private static func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
+    private static func replyText(_ message: TranscriptMessage, raw: Bool) -> String {
+        ReplySource.shows(message, raw: raw) ? message.text : TranscriptMarkdown.renderedText(message.text, streaming: message.isStreaming)
+    }
+    private static func partText(_ part: ResponseTimeline.Segment, message: TranscriptMessage, rawReply: Bool, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
+        let row = TranscriptTimelinePart(part: part, message: message)
+        if ["text", "refusal"].contains(part.part.kind) { return replyText(row.source, raw: rawReply) }
+        if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) {
+            if let input = toolInputs[ToolOccurrence.key(message.id, call)] { return input }
+            let payload = toolPayload(tool, fetched: fetchedInputs[ToolOccurrence.key(message.id, call)])
+            return omittingOutputs.contains(ToolOccurrence.key(message.id, call)) ? payload.input : joined([payload.input, payload.output])
+        }
+        if ["toolArguments", "status"].contains(part.part.kind) { return part.text }
+        return TranscriptMarkdown.renderedText(part.text, style: row.reasoning ? .reasoning : .prose, streaming: row.source.isStreaming)
+    }
+    private static func messageText(_ message: TranscriptMessage, rawReply: Bool) -> String {
+        func prose(_ source: String) -> String { TranscriptMarkdown.renderedText(source) }
+        if message.nativeAgentDelivery != nil || message.kind == "agent_message" {
+            let events = AgentMessagePresentation(message).events
+            guard !events.isEmpty else { return AgentMessagePresentation.unavailable }
+            return events.map { joined([$0.title, $0.label, prose($0.text), $0.note ?? ""]) }.joined(separator: "\n\n")
+        }
+        if message.kind == "toolResult" || message.role == "tool" { return prose(message.text) }
+        if message.kind == "compaction" { return TranscriptMarkdown.renderedText(message.text, style: .summary) }
+        if message.kind == "branch" { return message.detail ?? message.text }
+        if message.kind == "failure" || message.kind == "versionBanner" { return joined([message.text, message.detail ?? ""]) }
+        if message.kind == "requestInfo" { return joined([message.detail ?? "", TranscriptActivity.earlyEnd(message.stopReason) ?? ""]) }
+        if message.kind == "execution" {
+            let parts = message.responseTimeline.map { timeline in
+                timeline.supported ? timeline.segments.map { partText($0, message: message, rawReply: rawReply) } : []
+            } ?? []
+            let unfinished = message.responseTimeline.map { $0.supported && $0.terminal == nil } ?? false
+            return joined([message.detail ?? message.text] + parts + [unfinished ? TranscriptTimelinePart.completionNotRecorded : ""])
+        }
+        return message.role == "assistant" ? replyText(message, raw: rawReply) : message.text
+    }
+    /// Search the native card's payload, keeping its file/agent label. The
+    /// argument envelope is not the command, diff or formatted JSON it draws.
+    static func toolText(_ tool: ToolView, inputOnly: Bool = false, fetched: ToolInputDocument? = nil) -> String {
+        let payload = toolPayload(tool, fetched: fetched)
+        return inputOnly ? payload.input : joined([payload.input, payload.output])
+    }
+    static func toolText(_ card: TranscriptToolRow.Card, heading: String? = nil, summary: String? = nil) -> String {
+        let payload = toolPayload(card, heading: heading, summary: summary)
+        return joined([payload.input, payload.output])
+    }
+    static func toolPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil) -> (input: String, output: String) {
+        let model = TranscriptToolRow.model(of: tool)
+        // Conversation panes always enable the file opener. The I/O fallback
+        // draws its path header only when that opener has a file to link.
+        // Fetched arguments replace the body; the work line keeps this model.
+        let heading = [model.title, model.summary].filter { !$0.isEmpty }.joined(separator: " · ")
+        return toolPayload(TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: model.file != nil), heading: heading, summary: tool.output.isEmpty ? nil : model.summary)
+    }
+    private static func toolPayload(_ card: TranscriptToolRow.Card, heading: String? = nil, summary: String? = nil) -> (input: String, output: String) {
+        switch card {
+        case .io(let path, let input, let output, _, _): return (joined([path ?? "", input]), output ?? "")
+        case .terminal(let command, let output, _): return (command, output)
+        case .read(let text, _, let path, _):
+            let window = TranscriptReadCardText.window(of: text)
+            return (path ?? "", joined([window.lines.joined(separator: "\n"), window.note ?? ""]))
+        case .diff(let request, let path, let outcome, _, _):
+            let text = request.tooLarge ? joined(request.mode == "edit" ? [request.before, request.after] : [request.after])
+                : request.rows.map(\.text).joined(separator: "\n")
+            return (joined([path ?? "", text]), outcome == .failed ? summary ?? "" : "")
+        case .subagent(let value):
+            return (joined([heading ?? value.title, TranscriptMarkdown.renderedText(value.task)]), joined([TranscriptMarkdown.renderedText(value.result), value.error ?? ""]))
+        }
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar
     /// and the content search count them.
@@ -109,31 +260,22 @@ enum ConversationContent {
             return true
         }
     }
-    static func text(_ entry: [String: WireValue]) -> String {
-        if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
-        let message = entry["message"]?.object ?? [:], content = message["content"]
-        let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        if let timeline, timeline.supported {
-            let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
-            let evidence = "## \(title)\n\n" + timeline.retainedText + "\n\n"
-            // If a source exceeds retained event bounds, preserve the original
-            // complete canonical content too, explicitly separate from arrival order.
-            if !timeline.segments.contains(where: \.truncated) && timeline.omittedEvents == 0 { return evidence }
-            var canonical = entry
-            var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
-            canonical["message"] = .object(plain)
-            return evidence + "## Full saved response\n\n" + text(canonical)
-        }
-        let body = content?.string ?? (content?.array ?? []).map { value -> String in
-            let block = value.object ?? [:]
-            switch block["type"]?.string {
-            case "text": return block["text"]?.string ?? ""
-            case "thinking": return "\n[Exposed reasoning]\n\(block["thinking"]?.string ?? "")\n"
-            case "toolCall": return "\n[Tool \(block["name"]?.string ?? "tool")]\n\(block["arguments"]?.pretty ?? "{}")\n"
-            case "image": return "\n[Image attachment omitted]\n"
-            default: return ""
-            }
-        }.joined()
-        return "## \(message["role"]?.string ?? "system")\n\n\(body)\n\n"
+    static func text(_ entry: [String: WireValue], adopted: Bool = false) -> String {
+        if entry["type"]?.string == "compaction" { return RetainedConversation.compaction(entry["summary"]?.string ?? "") }
+        if entry["type"]?.string == "branch" { return RetainedConversation.edit }
+        let message = entry["message"]?.object ?? [:]
+        var timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
+        var detail = message["nativeDetail"]?.string
+        if adopted { timeline?.finish("completed"); detail = "Compaction · Checkpoint durably adopted" }
+        else { RetainedConversation.endWithoutReceipt(kind: message["nativeKind"]?.string, timeline: &timeline, detail: &detail) }
+        return RetainedConversation.message(role: message["role"]?.string ?? "system", kind: message["nativeKind"]?.string,
+            detail: detail,
+            content: message["content"], timeline: timeline)
     }
+}
+
+extension WireValue: RetainedConversationValue {
+    var retainedString: String? { string }
+    var retainedArray: [WireValue] { array ?? [] }
+    var retainedObject: [String: WireValue] { object ?? [:] }
 }

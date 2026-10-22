@@ -5,6 +5,52 @@ import XCTest
 @testable import PiApp
 
 final class FileReviewStateTests: XCTestCase {
+    @MainActor func testMarkedPathComponentsKeepBlameAndHistoryInTheirRepository() async throws {
+        let fixture = try FileReviewProjectFixture()
+        defer { fixture.close() }
+        let model = fixture.model, name = "\u{301}file", nested = fixture.repo.appendingPathComponent("\u{301}nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("fixture line\n".utf8).write(to: nested.appendingPathComponent(name))
+        try fixture.git(["-C", nested.path, "init", "-q", "--template=", "-b", "main"])
+        try fixture.git(["-C", nested.path, "add", "--", name])
+        try fixture.git(["-C", nested.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Fixture"])
+        let commit = try fixture.git(["-C", nested.path, "rev-parse", "HEAD"])
+        let tab = model.openFile(nested.appendingPathComponent(name), project: "review")
+        fixture.mount()
+        try await eventually("marked file read") { tab.status == .ready }
+        tab.blame.show()
+        try await eventually("marked blame answered") { tab.blame.state != .reading }
+        XCTAssertNotNil(tab.blame.blame, String(describing: tab.blame.state))
+        XCTAssertEqual(tab.blame.path, name)
+        tab.blame.hide()
+        model.showFileHistory(from: tab); await tab.historyTask?.value
+        let changes = model.tabs.tab(kind: ChangesTab.kind, key: "review") as? ChangesTab
+        XCTAssertNotNil(changes, "The nested repository remains inside its configured project")
+        if let changes {
+            try await eventually("marked file history") { !changes.controller.loading && !changes.controller.commits.isEmpty }
+            XCTAssertEqual(changes.controller.logFilter.path, name)
+            changes.goBack(); fixture.mount()
+        }
+        model.error = nil
+        model.showHistoricalChange(from: tab, target: GitHistoryTarget(commit: commit, path: name, line: 1), repository: nested.path)
+        XCTAssertNil(model.error)
+        await (model.tabs.tab(kind: ChangesTab.kind, key: "review") as? ChangesTab)?.navigation?.value
+    }
+
+    @MainActor func testAFileFixtureThatFailsToOpenPreservesItsCallersResolver() throws {
+        let root = scratchRoot("file-review-init")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data("fixture".utf8).write(to: blocked)
+        let previous = FileTab.resolveProject
+        FileTab.resolveProject = { _ in .untrusted(name: "outer fixture") }
+        defer { FileTab.resolveProject = previous }
+        XCTAssertThrowsError(try FileReviewFixture(root: blocked.appendingPathComponent("child")))
+        XCTAssertEqual(FileTab.resolveProject(nil), .untrusted(name: "outer fixture"),
+                       "A failed fixture has no close() to restore its caller's resolver")
+    }
+
     @MainActor func testNestedFileHistoryKeepsSingleProjectRepositoryReachable() async throws {
         try await checkNestedHistoryRepositoryChoices(multipleRoots: false)
     }
@@ -274,6 +320,56 @@ final class FileReviewStateTests: XCTestCase {
         XCTAssertTrue(try fixture.url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true)
     }
 
+    /// A name that begins with a combining mark, ZWJ or variation selector
+    /// joins the "/" before it into one Character. History still reads the
+    /// project's repository and asks for the file by its exact name; a nested
+    /// repository whose folder begins with one is read at its own root.
+    @MainActor func testHistoryFindsNamesThatBeginWithACombiningMark() async throws {
+        let fixture = try FileReviewProjectFixture()
+        defer { fixture.close() }
+        let model = fixture.model
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let label = "U+" + String(mark.unicodeScalars.first!.value, radix: 16)
+            let file = fixture.repo.appendingPathComponent(mark + "Marked.swift"), nested = fixture.repo.appendingPathComponent(mark + "Nested")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try "generated marked fixture\n".write(to: file, atomically: true, encoding: .utf8)
+            try "generated nested fixture\n".write(to: nested.appendingPathComponent("Inner.swift"), atomically: true, encoding: .utf8)
+            for (url, top, path) in [(file, fixture.repo, mark + "Marked.swift"), (nested.appendingPathComponent("Inner.swift"), nested, "Inner.swift")] {
+                var repositoryReads = 0
+                model.fileReviewNavigation.repositoryRoot = { _ in repositoryReads += 1; return top.path }
+                let tab = model.openFile(url)
+                model.showFileHistory(from: tab); await tab.historyTask?.value
+                XCTAssertEqual(repositoryReads, 1, "\(label): \(path)")
+                let changes = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab, "\(label): \(path)")
+                XCTAssertEqual(Array((changes.controller.logFilter.path ?? "").utf8), Array(path.utf8), label)
+                XCTAssertEqual(changes.controller.root, top.path, "\(label): \(path)")
+                model.tabs.close(tab)
+            }
+        }
+    }
+
+    /// Recent files whose names begin with a combining mark, ZWJ or variation
+    /// selector are still in their project's folder, named from it exactly.
+    @MainActor func testRecentsKeepNamesThatBeginWithACombiningMark() async throws {
+        let fixture = try FileReviewFixture()
+        defer { fixture.close() }
+        let quick = QuickOpen()
+        var expected = Set<[UInt8]>()
+        for mark in ["\u{0301}", "\u{200D}", "\u{FE0F}"] {
+            let folder = fixture.root.appendingPathComponent(mark + "Folder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            for url in [fixture.root.appendingPathComponent(mark + "Recent.swift"), folder.appendingPathComponent("Inner.swift")] {
+                try "generated recent fixture\n".write(to: url, atomically: true, encoding: .utf8)
+                quick.noteOpened(url.resolvingSymlinksInPath(), projectID: "p")
+            }
+            expected.insert(Array((mark + "Recent.swift").utf8)); expected.insert(Array((mark + "Folder/Inner.swift").utf8))
+        }
+        quick.show(.init(id: "p", name: "Fixture", roots: [fixture.root.path], trusted: true), in: nil)
+        defer { quick.close(restoringFocus: false) }
+        try await eventually("validated") { quick.answered == "" }
+        XCTAssertEqual(Set(quick.rows.map { Array(($0.folder.isEmpty ? $0.name : $0.folder + "/" + $0.name).utf8) }), expected)
+    }
+
     @MainActor func testAnOlderRecentValidationCannotReplaceANewerFileQuery() async throws {
         let fixture = try FileReviewFixture()
         defer { fixture.close() }
@@ -506,13 +602,13 @@ final class FileReviewStateTests: XCTestCase {
     let tab: FileTab
     let window: NSWindow
     private let projectResolver: (String?) -> FileProjectState
-    init() throws {
-        projectResolver = FileTab.resolveProject
-        FileTab.resolveProject = { $0 == nil ? .none : .removed }
-        root = scratchRoot("file-review")
+    init(root: URL = scratchRoot("file-review")) throws {
+        self.root = root
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         url = root.appendingPathComponent("Reader.swift")
         try (0..<500).map { "// PRIVATE FIXTURE CONTENT row \($0)" }.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        projectResolver = FileTab.resolveProject
+        FileTab.resolveProject = { $0 == nil ? .none : .removed }
         tab = FileTab(url: url, projectID: nil)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

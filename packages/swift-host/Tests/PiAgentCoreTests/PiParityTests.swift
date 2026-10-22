@@ -46,7 +46,7 @@ private func profile(window: Int = 100_000, ceiling: Int? = nil, _ change: (inou
     return try Profile(raw)
 }
 
-final class PiParityTests: XCTestCase {
+final class PiParityTests: HelperTestCase {
     private func session(_ root: URL, _ client: PurposeClient, profile: Profile, seed: [ChatMessage]? = nil, auto: Bool = true, keep: Int? = nil) throws -> AgentSession {
         var policy=CompactionPolicy(); if let keep { policy.keepRecentTokens=keep }
         return try AgentSession(id:"pi-session",profile:profile,apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,

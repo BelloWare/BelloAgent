@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import FileView
 import GitView
+import GitProcessSafety
 
 // Who last changed each line of a file in a tab (`FileTab`), as Git says:
 // shown beside the line numbers, and for the selected line in a bar under
@@ -114,10 +115,9 @@ import GitView
             // yet that is committed is read again.
             self.watchRepository(top)
             let resolvedTop = URL(fileURLWithPath: top).resolvingSymlinksInPath().path
-            guard url.path.hasPrefix(resolvedTop + "/") else {
+            guard let relative = CanonicalPath.relative(url.path, in: resolvedTop), !relative.isEmpty else {
                 self.finish(token, .unavailable("This file is outside its repository's working tree.")); return
             }
-            let relative = String(url.path.dropFirst(resolvedTop.count + 1))
             guard let bytes = await document.snapshot(limit: GitService.blameByteLimit) else {
                 // Changed since it was read: the reload reads it again.
                 guard token == self.token else { return }

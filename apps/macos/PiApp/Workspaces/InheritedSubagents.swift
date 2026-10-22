@@ -82,11 +82,11 @@ extension WorkspaceModel {
         openInspector(session: target.ownerID, focus: .subagent(target.delegationID), originalForkID: forkID)
     }
     func loadOriginalSubagent(_ child: ChatRecord, view: SessionDisplay, navigation: HostedReaderToken) async {
-        let generation = view.presentationGeneration
+        let generation = view.presentation.readGeneration
         defer { view.finishHistoryPresentation(generation); resumeVisibleReaders() }
         func current() -> Bool {
             !Task.isCancelled && navigation.isCurrent && subagentTab(child.id) === navigation.reader &&
-                displays[child.id] === view && view.presentationGeneration == generation &&
+                displays[child.id] === view && view.presentation.readGeneration == generation &&
                 child.delegation.map { originalAvailability(SubagentTarget($0)).reason == nil } == true
         }
         do {
@@ -101,6 +101,8 @@ extension WorkspaceModel {
                 guard current() else { return }
                 observeCost(["cost":.object(cost)],sessionID:child.id)
             }
+            guard current() else { return }
+            try await loadDraftBaseline(view)
             guard current() else { return }
             var page = try await readInitialWindow(child, holding: view.scrollAnchor)
             guard current() else { return }

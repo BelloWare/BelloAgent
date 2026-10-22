@@ -26,9 +26,18 @@ let package = Package(
     targets: [
         .target(name: "FileView"),
         .testTarget(name: "FileViewTests", dependencies: ["FileView"]),
-        .target(name: "GitView"),
+        .target(name: "GitProcessSafety"),
+        .target(name: "GitView", dependencies: ["GitProcessSafety"]),
         .testTarget(name: "GitViewTests", dependencies: ["GitView"]),
-        .target(name: "FileFinder"),
+        .target(name: "FileFinder", dependencies: ["GitProcessSafety"]),
         .testTarget(name: "FileFinderTests", dependencies: ["FileFinder"]),
     ]
 )
+
+// Test-only: ViewsTestCase, the base every test target's classes derive from
+// (its file says why). Every test target depends on it, and no product
+// includes it, so the apps never build or ship it.
+package.targets.append(.target(name: "BelloViewsTestSupport", path: "Tests/BelloViewsTestSupport"))
+for target in package.targets where target.type == .test {
+    target.dependencies.append("BelloViewsTestSupport")
+}

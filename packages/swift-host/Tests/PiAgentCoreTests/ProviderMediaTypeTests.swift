@@ -5,7 +5,7 @@ import XCTest
 /// 8.3.1), so a complete JSON response under `Application/JSON` is JSON, not
 /// an SSE stream that never ends. A loopback gateway sends identical bytes
 /// under each spelling; the request's user text names the header to send.
-final class ProviderMediaTypeTests: XCTestCase {
+final class ProviderMediaTypeTests: HelperTestCase {
     static let gatewayScript = #"""
 import http.server, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])

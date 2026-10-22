@@ -89,7 +89,13 @@ extension WorkspaceModel {
         if let chat = record(owner), let main = sideFamilyOwner(chat), main == selectedID { return main }
         return id
     }
-    var canShowAgentFamily: Bool { familyPickerSession.map { !conversationFamily(familyPickerOwner($0)).isEmpty } ?? false }
+    var canShowAgentFamily: Bool {
+        guard let id = familyPickerSession else { return false }
+        if !conversationFamily(familyPickerOwner(id)).isEmpty { return true }
+        guard let pane = (conversationWindow()?.contentView as? WorkspaceRootView)?.conversation,
+              pane.chat?.id == id, pane.inheritedEnabled else { return false }
+        return !pane.sessionPanel.isHiddenOrHasHiddenAncestor || !pane.agentFamilyHeader.isHiddenOrHasHiddenAncestor
+    }
     func showAgentFamily() {
         if let id = familyPickerSession { agentFamilyRequests.send(conversationFamily(familyPickerOwner(id)).ownerID) }
     }

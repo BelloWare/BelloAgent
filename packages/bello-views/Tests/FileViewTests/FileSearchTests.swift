@@ -7,7 +7,7 @@ import AppKit
 /// to the next match or the one before meets them all in order and goes
 /// around the ends; neither waits for the other; a search whose file is read
 /// again, or changes, says so; lines held whole agree with a file on disk.
-final class FileSearchTests: XCTestCase {
+final class FileSearchTests: ViewsTestCase {
     private var folder: URL!
 
     override func setUp() async throws {

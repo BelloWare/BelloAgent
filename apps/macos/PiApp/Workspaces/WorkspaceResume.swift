@@ -18,6 +18,41 @@ extension WorkspaceModel {
     /// The pending-intent key of a Resume, matching the helper's receipt.
     nonisolated static let resumeIntentPrefix = "continue:"
 
+    struct ResumePreparation {
+        let id: String
+        let stopRevision: Int
+    }
+    func resumePreparation(_ id: String) -> ResumePreparation {
+        ResumePreparation(id: id, stopRevision: resumeStopRevisions[id, default: 0])
+    }
+    func requireResume(_ preparation: ResumePreparation) throws {
+        try Task.checkCancellation()
+        guard resumeStopRevisions[preparation.id, default: 0] == preparation.stopRevision else { throw CancellationError() }
+    }
+    /// Stop retires preparation synchronously, before its helper request.
+    /// Cancelling the owning task also cancels a request still queued in the
+    /// supervisor. A family operation belongs to its root, including while
+    /// it is opening a side which is not displayed yet.
+    func cancelPendingResumes(for item: ChatRecord) {
+        var ids: Set<String> = [item.id]
+        let root = budgetOwner(for: item).id
+        if resumeTasks[root]?.family == true { ids.insert(root) }
+        for id in ids {
+            resumeStopRevisions[id, default: 0] += 1
+            resumeTasks[id]?.task.cancel()
+        }
+    }
+    /// Archive retires a pending family Resume at the click, as Stop does,
+    /// when it would act on the archived chat: its root, or any side under
+    /// it. Restore does not revive it; only a new Resume continues the family.
+    /// A chat's own Resume keeps the archive revision it was accepted with.
+    func retireFamilyResume(for item: ChatRecord) {
+        let root = budgetOwner(for: item).id
+        guard resumeTasks[root]?.family == true else { return }
+        resumeStopRevisions[root, default: 0] += 1
+        resumeTasks[root]?.task.cancel()
+    }
+
     /// Resume in the focused chat (the Conversation menu), or `sessionID`'s
     /// (its paused row, its queue panel). One at a time per chat: a press
     /// while one is on its way does nothing, and the helper refuses a second
@@ -27,18 +62,21 @@ extension WorkspaceModel {
         guard !installPreparing, let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isSubagent, !item.isBackgroundTask,
               let view = displays[id] else { return }
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
-        guard !view.resuming, !view.busy, !view.loading else { return }
+        guard !view.resuming, !view.busy, !view.loading, resumeTasks[id] == nil else { return }
         // A family paused at its cost limit resumes as one: its root, then
         // every paused side it names, from whichever member's Resume.
         if view.costPaused { resumeCostPausedFamily(from: item); return }
         // The run goes on in the latest version, and the transcript returns to it, as for a send.
         latestVersion(sessionID: id)
         view.resuming = true
+        let archiveRevision = archiveRevisions[id, default: 0]
+        let preparation = resumePreparation(id)
         resumeSteps?("accepted")
-        Task {
-            defer { view.resuming = false; updateHostActivity(workspaceID: item.workspaceID) }
-            _ = await performResume(item, view: view)
+        let task = Task {
+            defer { resumeTasks[id] = nil; view.resuming = false; updateHostActivity(workspaceID: item.workspaceID) }
+            _ = await performResume(item, view: view, archiveRevision: archiveRevision, preparation: preparation)
         }
+        resumeTasks[id] = (task, false)
     }
 
     /// Resume after the family's cost limit was raised (owner, 2026-10-16:
@@ -53,26 +91,35 @@ extension WorkspaceModel {
             return
         }
         let root = budgetOwner(for: item)
+        guard resumeTasks[root.id] == nil else { return }
+        let preparation = resumePreparation(root.id)
         // The family resumes from its root: an archived main chat is not
         // restarted from one of its sides; it is restored first.
         guard !root.isArchived else { displays[item.id]?.notice = Self.archivedNotice; return }
+        // Archive authority as of this click, for the root and for members
+        // only its helper names later: an Archive since, even one Restore
+        // undid, refuses that chat's continue.
+        let archived = archiveRevisions
         latestVersion(sessionID: item.id)
         var views: [SessionDisplay] = []
         for view in [displays[root.id], displays[item.id]] { if let view, !views.contains(where: { $0 === view }) { views.append(view) } }
         for view in views { view.resuming = true }
         resumeSteps?("accepted")
-        Task {
-            defer { for view in views { view.resuming = false }; updateHostActivity(workspaceID: item.workspaceID) }
+        let task = Task {
+            defer { resumeTasks[root.id] = nil; for view in views { view.resuming = false }; updateHostActivity(workspaceID: item.workspaceID) }
             // Read the root's helper: whether it is paused, and which of its
             // sides still wait (also after an earlier root Resume whose reply
             // or side requests were lost: the root keeps naming them).
             let read = await rootCostPause(root)
+            guard (try? requireResume(preparation)) != nil else { return }
             var members = read.members
             if read.paused || isCostPaused(root.id) {
-                if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id) {
+                if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id,
+                                                   archiveRevision: archived[root.id, default: 0], preparation: preparation) {
                     members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? members
                 } else if read.members.isEmpty && root.id == item.id { return }
             }
+            guard (try? requireResume(preparation)) != nil else { return }
             var order = members.filter { $0 != root.id }
             if item.id != root.id, !order.contains(item.id) { order.append(item.id) }
             // A paused side need not be in the loaded window (`loadChats`
@@ -83,10 +130,12 @@ extension WorkspaceModel {
             try? await retainBudgetAncestors()
             order = Self.ancestorsFirst(order) { id in record(id).flatMap { sideBudgetParent($0) } }
             for id in order {
+                guard (try? requireResume(preparation)) != nil else { return }
                 guard let member = record(id), !member.isArchived, member.workspaceID == root.workspaceID else { continue }
-                _ = await performResume(member, view: displays[id], member: true)
+                _ = await performResume(member, view: displays[id], member: true, archiveRevision: archived[id, default: 0], preparation: preparation)
             }
         }
+        resumeTasks[root.id] = (task, true)
     }
 
     /// `ids` ordered by how many of their side ancestors are known (fewest
@@ -124,26 +173,43 @@ extension WorkspaceModel {
     /// chat. Returns the helper's reply; nil when it was refused or failed.
     /// `member`: part of a family Resume, where a chat with nothing of its
     /// own left (a side the root already resumed) is not an error.
-    func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false) async -> [String: WireValue]? {
-        let commandID = UUID().uuidString, params = turnOverrides(for: item)
+    func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false, archiveRevision: Int? = nil, preparation: ResumePreparation? = nil) async -> [String: WireValue]? {
+        let commandID = UUID().uuidString
+        beginSubmission(commandID, in: view)
+        defer { if let view { finishSubmission(commandID, in: view) } else { liveSubmissionCommands.remove(commandID) } }
+        var params = turnOverrides(for: item)
+        let preparation = preparation ?? resumePreparation(item.id)
+        let archiveRevision = archiveRevision ?? archiveRevisions[item.id, default: 0]
         let durable = !isEphemeral(item.id)
         var recorded = false
+        var dispatchAttempted = false
         defer { refresh(item.id) }
         do {
+            try requireResume(preparation)
             let lease = try connectionLease(for: item)
             // A helper stopped for an update, or restarting, is started
             // again here: the chat reopens from its journal, paused.
             let host = try await open(item)
+            try requireResume(preparation)
+            // Pin the helper's Stop generation before intent persistence.
+            // A queued/delayed command cannot overtake an acknowledged Stop.
+            let status = try await host.request("session.status", sessionID: item.id)
+            params["resumeToken"] = status.object?["resumeToken"]
             if durable {
                 guard let store else { throw StoreError.unavailable }
                 // As for a compaction: the command's record is on disk
                 // before it goes, and the helper's receipt settles it.
+                resumeSteps?("recording")
                 try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: Self.resumeIntentPrefix + commandID, text: "[Resume]",
-                                                  state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                                                  state: "intent", epoch: host.epoch, submissionOwner: try inputPublicationOwner()), kind: "pending:\(item.id)", id: commandID)
                 recorded = true; pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
+            try requireUnarchived(item.id, revision: archiveRevision)
             resumeSteps?("dispatched")
+            // No await between this generation check and request admission.
+            try requireResume(preparation)
+            dispatchAttempted = true
             let reply = try await host.request("run.continue", sessionID: item.id, params: params, commandID: commandID)
             view?.acceptedCommands.insert(commandID)
             if reply.object?["continued"]?.bool == true || reply.object?["resumedQueue"]?.bool == true { noteChatActivity(item.id) }
@@ -154,8 +220,10 @@ extension WorkspaceModel {
             return reply.object ?? [:]
         } catch {
             let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
+            let cancelled = error is CancellationError || rejection == "resume_superseded"
             // A refused Resume never ran: its record goes.
-            if recorded, rejection != nil { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
+            if recorded, !dispatchAttempted || rejection != nil || cancelled { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
+            if cancelled { resumeSteps?("cancelled"); return nil }
             switch rejection {
             case "session_busy":
                 // A run is already going (a Send, or another Resume, got
@@ -200,6 +268,7 @@ extension WorkspaceModel {
     /// when the chat is next used, and a paused chat shows Resume.
     func pauseRunsForUpdate(settleTimeout: TimeInterval = 15) async throws {
         guard !isShutDown else { throw CancellationError() }
+        guard attachmentImports == 0 else { throw HostError.failure("An image is still being added. Try the update again once it finishes.") }
         // No new send, Resume or command starts meanwhile; one already under
         // way (a send, a Retry or a compaction awaiting credentials, its
         // helper or its session) gets there first, so its run is paused with
@@ -213,6 +282,7 @@ extension WorkspaceModel {
         // model answers, and ends with its helper like any run.
         let readers = { [unowned self] (id: String) -> Bool in record(id).map { !$0.isUtilityChat } ?? true }
         func underWay() -> Bool {
+            if connectionProbeAdmissions > connectionProbeHosts.count { return true }
             if !hostStarts.isEmpty { return true }
             if displays.values.contains(where: { ($0.loading || $0.resuming) && readers($0.id) }) { return true }
             // Any session being opened, a background request's too: once

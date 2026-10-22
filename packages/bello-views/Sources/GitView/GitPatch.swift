@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 /// An immutable, complete, single-file Git patch. These bytes come directly
 /// from Git, never from GitDiffParser (which is a lossy display parser).
@@ -25,19 +26,19 @@ public struct GitPatch: Sendable {
         // a hunk that the reader only saw part of.
         guard lines.count <= GitDiffParser.maximumLines, lines.count >= 6 else { throw refuse() }
         func text(_ n: Int) -> String { String(decoding: raw[lines[n]].dropLast(), as: UTF8.self) }
-        guard text(0).hasPrefix("diff --git "), text(1).hasPrefix("index "),
-              text(2).hasPrefix("--- "), text(3).hasPrefix("+++ ") else { throw refuse() }
-        let index = text(1).split(separator: " ")
+        guard text(0).gitHasPrefix("diff --git "), text(1).gitHasPrefix("index "),
+              text(2).gitHasPrefix("--- "), text(3).gitHasPrefix("+++ ") else { throw refuse() }
+        let index = text(1).gitSplit(separator: 32)
         guard index.count == 3, ["100644", "100755"].contains(String(index[2])) else { throw refuse() }
         func decodedPath(_ line: String, prefix: String) -> Data? {
-            let value = String(line.dropFirst(4))
+            let value = String(line.gitDropFirst(4))
             let decoded: String
-            if value.first == "\"" {
+            if value.utf8.first == 34 {
                 guard let parsed = GitQuoting.leading(value[...]), (parsed.rest.isEmpty || parsed.rest == "\t") else { return nil }
                 decoded = parsed.name
-            } else { decoded = value.hasSuffix("\t") ? String(value.dropLast()) : value }
-            guard decoded.hasPrefix(prefix) else { return nil }
-            return Data(decoded.dropFirst(2).utf8)
+            } else { decoded = value.gitHasSuffix("\t") ? String(value.gitDropLast()) : value }
+            guard decoded.gitHasPrefix(prefix) else { return nil }
+            return Data(decoded.gitDropFirst(2).utf8)
         }
         guard decodedPath(text(2), prefix: "a/") == Data(path.utf8),
               decodedPath(text(3), prefix: "b/") == Data(path.utf8) else { throw refuse() }
@@ -62,8 +63,9 @@ public struct GitPatch: Sendable {
             n += 1
             var before = Data(), after = Data(), old = 0, new = 0, changed = false
             var previous: UInt8?, oldEnded = false, newEnded = false
-            while n < lines.count, !text(n).hasPrefix("@@ ") {
-                let bytes = raw[lines[n]], kind = bytes.first!
+            while n < lines.count, !text(n).gitHasPrefix("@@ ") {
+                let bytes = raw[lines[n]]
+                guard let kind = bytes.first else { throw refuse() }
                 if kind == 92 {
                     guard text(n) == "\\ No newline at end of file", let prior = previous else { throw refuse() }
                     if prior != 43 { guard before.last == 10 else { throw refuse() }; before.removeLast(); oldEnded = true }

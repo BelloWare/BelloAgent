@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import GitProcessSafety
 
 /// One line of `git status --porcelain=v2`: a tracked change, rename or
 /// untracked file. Index and worktree states are git's single-letter codes.
@@ -51,6 +52,39 @@ public struct GitRepositoryStatus: Equatable, Sendable {
     public var head: String?
     public var entries: [GitStatusEntry] = []
     public var stagedCount: Int { entries.filter(\.staged).count }
+    var changeOptions = GitChangeOptions()
+}
+
+/// Status owns grouping. Diff requests preserve each reported row, without
+/// interpreting Git's configuration precedence in the app.
+struct GitChangeOptions: Equatable, Sendable {
+    var renameSimilarity: Int?
+    var statusArguments: [String] {
+        ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"]
+            + (renameSimilarity.map { ["--find-renames=\($0)%"] } ?? [])
+    }
+    func diffArguments(staged: Bool, entry: GitStatusEntry? = nil) -> [String] {
+        var arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff",
+            "--no-textconv", "--submodule=short", "--ita-invisible-in-index"]
+        if let entry {
+            let state = staged ? entry.indexState : entry.worktreeState
+            if entry.originalPath != nil, state == "R" || state == "C" {
+                // Git already matched this pair. A config change or a configured
+                // rename limit must not turn its preview into a whole addition.
+                arguments += state == "C" ? ["--find-copies=1%", "--find-copies-harder"] : ["--find-renames=1%"]
+            } else { arguments += ["--no-renames"] }
+        }
+        // Status has already decided whether to show this gitlink. Read its
+        // short patch, including dirty content, without hiding a reported row.
+        arguments += [staged ? "--ignore-submodules=dirty" : "--ignore-submodules=none"]
+        if staged { arguments += ["--cached"] }
+        return arguments
+    }
+    func paths(for entry: GitStatusEntry, staged: Bool) -> [String] {
+        let state = staged ? entry.indexState : entry.worktreeState
+        if let original = entry.originalPath, state == "R" || state == "C" { return [original, entry.path] }
+        return [entry.path]
+    }
 }
 
 public struct GitCommit: Identifiable, Equatable, Sendable {
@@ -127,42 +161,17 @@ public actor GitService {
 
     struct Output: Sendable { let stdout: Data; let stderr: String; let status: Int32
         var text: String { String(decoding: stdout, as: UTF8.self) }
+        var path: String { GitService.removingOutputNewline(text) }
+    }
+    /// Git terminates a path with LF; any other whitespace belongs to it.
+    static func removingOutputNewline(_ text: String) -> String {
+        guard text.utf8.last == 10 else { return text }
+        return String(decoding: text.utf8.dropLast(), as: UTF8.self)
     }
 
     static let ordinaryOutputLimit = 4 * 1024 * 1024
     static let patchOutputLimit = 16 * 1024 * 1024
     static let diagnosticOutputLimit = 65_536
-
-    /// The running process, so a read whose result is no longer wanted is
-    /// actually stopped. Clicking through history must not leave a queue of
-    /// `git show` processes computing patches nobody will read.
-    private final class RunningProcess: @unchecked Sendable {
-        private let lock = NSLock()
-        private var process: Process?
-        private var stopped = false
-        private var signalled = false
-        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-        /// False when the read was already cancelled, so nothing is launched.
-        func adopt(_ value: Process) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            guard !stopped else { return false }
-            process = value; return true
-        }
-        func stop() {
-            lock.lock(); stopped = true
-            guard !signalled, let running = process, running.isRunning else { lock.unlock(); return }
-            signalled = true; lock.unlock()
-            if running.isRunning {
-                let pid = running.processIdentifier
-                if getpgid(pid) == pid { kill(-pid, SIGTERM) } else { running.terminate() }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                    if running.isRunning {
-                        if getpgid(pid) == pid { kill(-pid, SIGKILL) } else { kill(pid, SIGKILL) }
-                    }
-                }
-            }
-        }
-    }
 
     /// Git's environment, given the app's. Only what git needs, never the
     /// app's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or the like.
@@ -176,24 +185,39 @@ public actor GitService {
     }
     /// The environment every git this service runs starts from.
     private let environment: [String: String]
-    public init() { environment = Self.gitEnvironment(from: ProcessInfo.processInfo.environment) }
-    init(environment: [String: String]) { self.environment = environment }
+    private let trusted: Bool?
+    public nonisolated static func invalidateConfiguration() { GitConfiguration.invalidate() }
+    @MainActor public static var resolveTrust: GitReadProcess.TrustResolver {
+        get { GitReadProcess.resolveTrust }
+        set { GitReadProcess.resolveTrust = newValue }
+    }
+    public init() { environment = Self.gitEnvironment(from: ProcessInfo.processInfo.environment); trusted = nil }
+    init(environment: [String: String], trusted: Bool? = nil) { self.environment = environment; self.trusted = trusted }
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
-                                            timeout: TimeInterval, handle: RunningProcess,
-                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true) throws -> Output {
+                                            timeout: TimeInterval, handle: GitInvocation,
+                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true, readOnly: Bool = true, trusted: Bool = false,
+                                            sourceRepository: String? = nil) throws -> Output {
+        try handle.check()
         let process = Process()
         process.executableURL = executable
         // Every parsed patch, including show and no-index, uses the parser's
         // a/ and b/ names regardless of the reader's display preferences.
+        let directory = URL(fileURLWithPath: root, isDirectory: true)
+        let transport = gitOptions && !readOnly && ["fetch", "pull", "push"].contains(arguments.first ?? "")
+        let redirects = transport ? try GitConfiguration(in: directory, environment: environment, invocation: handle)
+            .redirectOptions(invocation: handle) : (options: [], protected: false)
         let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
-                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + arguments
+                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + redirects.options + arguments
         // Foundation raises an uncaught Objective-C exception past its own
         // 4096-argument limit, which no `catch` can stop: refuse first.
         guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
         process.arguments = all
-        process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        process.currentDirectoryURL = directory
         process.environment = environment
+        let confinement = readOnly ? try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config",
+                                                        repository: sourceRepository.map { URL(fileURLWithPath: $0, isDirectory: true) }, invocation: handle) : nil
+        defer { confinement?.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
         // A hook that reads its input (post-rewrite) is handed it on stdin;
@@ -202,8 +226,11 @@ public actor GitService {
         if input != nil { stdin = Pipe(); process.standardInput = stdin } else { process.standardInput = FileHandle.nullDevice }
         let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
         defer { try? out.close(); try? err.close() }
-        guard handle.adopt(process) else { throw CancellationError() }
-        do { try process.run() } catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
+        let child = GitChildProcess(process)
+        guard handle.adopt(child) else { throw CancellationError() }
+        do { try child.run() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
         if let stdin, let input {
             // Written on a thread of its own while this one drains the
             // output: a long input written first would block on a full pipe
@@ -217,14 +244,13 @@ public actor GitService {
         for fd in fds { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
         var streams = [Data(), Data()], eof = [false, false]
         var failure: String?, exitedAt: TimeInterval?
-        let started = ProcessInfo.processInfo.systemUptime
-        let deadline = started + (timeout.isFinite ? min(600, max(0.01, timeout)) : 20)
+        let deadline = handle.deadline
         var scratch = [UInt8](repeating: 0, count: 65_536)
         while true {
             let now = ProcessInfo.processInfo.systemUptime
             if now >= deadline, failure == nil { failure = "Git timed out; no partial output was applied."; handle.stop() }
-            if handle.isStopped, process.isRunning { handle.stop() }
-            if !process.isRunning {
+            if handle.isStopped, child.isRunning { handle.stop() }
+            if !child.isRunning {
                 if exitedAt == nil { exitedAt = now }
                 if eof.allSatisfy({ $0 }) { break }
                 if now - (exitedAt ?? now) >= 0.25 {
@@ -251,10 +277,68 @@ public actor GitService {
             var polls = fds.enumerated().map { pollfd(fd: eof[$0.offset] ? -1 : $0.element, events: Int16(POLLIN), revents: 0) }
             _ = poll(&polls, nfds_t(polls.count), 20)
         }
-        process.waitUntilExit()
+        child.waitUntilExit()
         if let failure { throw GitFailure(message: failure) }
         if handle.isStopped { throw CancellationError() }
-        return Output(stdout: streams[0], stderr: String(decoding: streams[1], as: UTF8.self), status: process.terminationStatus)
+        let diagnostics = String(decoding: streams[1], as: UTF8.self)
+        if redirects.protected, child.terminationStatus != 0,
+           diagnostics.range(of: "redirect|error: 30[12378]", options: .regularExpression) != nil {
+            throw GitFailure(message: "Git refused an HTTP redirect because this repository has http.extraHeader configured. Use the final remote URL.")
+        }
+        // Git may report success after an optional clean/process filter failed.
+        // Do not present unconverted bytes as a successful repository comparison.
+        if readOnly, Self.hasFilterFailure(streams[1]) {
+            throw GitFailure(message: "Git's content filter could turn this file into other lines. Read-only queries cannot run repository programs.")
+        }
+        return Output(stdout: streams[0], stderr: diagnostics, status: child.terminationStatus)
+    }
+
+    static func hasFilterFailure(_ diagnostics: Data) -> Bool {
+        // gitEnvironment sets LANG=en_US.UTF-8, so convert.c/sub-process.c
+        // diagnostics are English. Match Git's error/fatal lines, not warnings
+        // or a permitted program's progress. Names can contain literal LFs.
+        let text = String(decoding: diagnostics, as: UTF8.self)
+        let whole = NSRange(location: 0, length: text.utf16.count)
+        let lineStart = "(?:\\A|\\n)(?:error|fatal): "
+        // Find each family's first prefix, then its suffix. Names can span
+        // lines, so retrying the whole pattern at every line is quadratic.
+        func contains(_ prefix: String, _ suffix: String, in range: NSRange) throws -> Bool {
+            guard let start = try NSRegularExpression(pattern: prefix).firstMatch(in: text, range: range) else { return false }
+            let rest = NSRange(location: NSMaxRange(start.range), length: NSMaxRange(range) - NSMaxRange(start.range))
+            return try NSRegularExpression(pattern: suffix + "(?:\\n|\\z)").firstMatch(in: text, range: rest) != nil
+        }
+        do {
+            guard let first = try NSRegularExpression(pattern: lineStart).firstMatch(in: text, range: whole) else { return false }
+            if try NSRegularExpression(pattern: lineStart + "path name too long for external filter(?:\\n|\\z)").firstMatch(in: text, range: whole) != nil { return true }
+            let messages = [
+                ("cannot fork to run external filter '", "'"),
+                ("cannot feed the input to external filter '", "'"),
+                ("external filter '", "' failed(?: -?[0-9]+)?"),
+                ("read from external filter '", "' failed"),
+                ("external filter '", "' is not available anymore although not all paths have been filtered"),
+                ("cannot fork to run subprocess '", "'"),
+                ("initialization for subprocess '", "' failed"),
+            ]
+            for (prefix, suffix) in messages {
+                if try contains(lineStart + NSRegularExpression.escapedPattern(for: prefix), suffix, in: whole) { return true }
+            }
+            let rest = NSRange(location: NSMaxRange(first.range), length: text.utf16.count - NSMaxRange(first.range))
+            for (prefix, suffix) in [(": clean filter '", "' failed"), (": smudge filter ", " failed")] {
+                if try contains(NSRegularExpression.escapedPattern(for: prefix), suffix, in: rest) { return true }
+            }
+        } catch { return true }
+        // usage.c's vreportf caps a diagnostic at 4096 bytes including its LF.
+        // A long command can truncate the failure suffix, even within UTF-8.
+        let starts = ["cannot fork to run external filter '", "cannot feed the input to external filter '",
+                      "external filter '", "read from external filter '",
+                      "cannot fork to run subprocess '", "initialization for subprocess '"]
+        let prefixes = ["error: ", "fatal: "].flatMap { prefix in starts.map { Array((prefix + $0).utf8) } }
+        let bytes = Array(diagnostics)
+        for start in bytes.indices where start == 0 || bytes[start - 1] == 10 {
+            if bytes.count - start >= 4096, bytes[start + 4095] == 10,
+               prefixes.contains(where: { bytes[start...].starts(with: $0) }) { return true }
+        }
+        return false
     }
 
     /// Git's own threads. Waiting for a process is a blocking call, and a
@@ -289,15 +373,19 @@ public actor GitService {
     /// background thread, so a large patch is parsed before it crosses back and
     /// never as text on the main thread.
     private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
-                                       environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil,
+                                       environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil, readOnly: Bool = true,
+                                       sourceRepository: String? = nil,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
-        let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess(), base = self.environment
-        await acquireProcess()
-        defer { releaseProcess() }
+        let executable = override ?? executable, gitOptions = override == nil, handle = GitInvocation(timeout: timeout), base = self.environment
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
+            try Task.checkCancellation(); try handle.check()
+            await acquireProcess()
+            defer { releaseProcess() }
+            try handle.check()
+            let trusted = if let trusted { trusted } else { try await GitReadProcess.isTrusted(sourceRepository ?? root, invocation: handle) }
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
-                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions))) }
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions, readOnly: readOnly, trusted: trusted, sourceRepository: sourceRepository))) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -322,6 +410,28 @@ public actor GitService {
         if !current.isEmpty { batches.append(current) }
         return batches
     }
+    /// A reported rename/copy needs both paths in the same request. Shared
+    /// copy sources cost one argument per batch; an oversized pair stays whole.
+    static func pairedBatches(of groups: [[String]], prefix: [String]) -> [[String]] {
+        let countLimit = 512, byteLimit = 128 * 1024
+        let base = prefix.reduce(0) { $0 + $1.utf8.count + 1 }
+        var batches: [[String]] = [], current: [String] = [], seen: Set<String> = [], bytes = base
+        for group in groups {
+            var unique: Set<String> = []
+            let paths = group.filter { unique.insert($0).inserted }
+            var additions = paths.filter { !seen.contains($0) }
+            let size = additions.reduce(0) { $0 + $1.utf8.count + 1 }
+            if !current.isEmpty, current.count + additions.count > countLimit || bytes + size > byteLimit {
+                batches.append(current); current = []; seen = []; bytes = base
+                additions = paths
+            }
+            current += additions
+            seen.formUnion(additions)
+            bytes += additions.reduce(0) { $0 + $1.utf8.count + 1 }
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
     /// Git reads every path after `--` as a pattern: "[id].txt" also names
     /// "i.txt", "*.md" every Markdown file, and a leading ":" is magic. Each
     /// path is marked literal on its own, at the command line: the global
@@ -338,12 +448,13 @@ public actor GitService {
     /// Runs one git command per batch of paths, stopping at the first failure.
     private func runBatched(_ prefix: [String], paths: [String], in root: String, _ what: String) async throws {
         for batch in Self.batches(of: Self.literal(paths), prefix: prefix) {
-            _ = try require(await run(prefix + batch, in: root), what)
+            _ = try require(await run(prefix + batch, in: root, readOnly: false), what)
         }
     }
 
-    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil) async throws -> Output {
-        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input) { $0 }
+    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil, readOnly: Bool = true,
+             sourceRepository: String? = nil) async throws -> Output {
+        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input, readOnly: readOnly, sourceRepository: sourceRepository) { $0 }
     }
 
     private func require(_ output: Output, _ what: String) throws -> Output {
@@ -357,13 +468,16 @@ public actor GitService {
     /// The repository's top level, or nil when the folder is not inside one.
     public func repositoryRoot(of folder: String) async -> String? {
         guard let output = try? await run(["rev-parse", "--show-toplevel"], in: folder), output.status == 0 else { return nil }
-        let top = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let top = output.path
         return top.isEmpty ? nil : top
     }
 
-    func status(in root: String) async throws -> GitRepositoryStatus {
-        let output = try require(await run(["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"], in: root), "Reading status")
-        return Self.parseStatus(output.stdout)
+    func status(in root: String, renameSimilarity: Int? = nil) async throws -> GitRepositoryStatus {
+        let options = GitChangeOptions(renameSimilarity: renameSimilarity)
+        let output = try require(await run(options.statusArguments, in: root), "Reading status")
+        var status = Self.parseStatus(output.stdout)
+        status.changeOptions = options
+        return status
     }
 
     static func parseStatus(_ data: Data) -> GitRepositoryStatus {
@@ -373,36 +487,36 @@ public actor GitService {
         func next() -> String? { guard index < fields.count else { return nil }; defer { index += 1 }; return fields[index] }
         while let line = next() {
             if line.isEmpty { continue }
-            if line.hasPrefix("# ") {
-                let parts = line.dropFirst(2).split(separator: " ", maxSplits: 1).map(String.init)
+            if line.gitHasPrefix("# ") {
+                let parts = line.gitDropFirst(2).gitSplit(separator: 32, maxSplits: 1)
                 guard parts.count == 2 else { continue }
                 switch parts[0] {
                 case "branch.head": status.branch = parts[1]
                 case "branch.oid": status.head = parts[1] == "(initial)" ? nil : parts[1]
                 case "branch.upstream": status.upstream = parts[1]
                 case "branch.ab":
-                    let counts = parts[1].split(separator: " ")
-                    status.ahead = Int(counts.first?.dropFirst() ?? "") ?? 0
-                    status.behind = Int(counts.last?.dropFirst() ?? "") ?? 0
+                    let counts = parts[1].gitSplit(separator: 32)
+                    status.ahead = Int(counts.first?.gitDropFirst() ?? "") ?? 0
+                    status.behind = Int(counts.last?.gitDropFirst() ?? "") ?? 0
                 default: break
                 }
                 continue
             }
-            let columns = line.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+            let columns = line.gitSplit(separator: 32, omittingEmptySubsequences: false)
             switch columns.first {
             case "1" where columns.count >= 9:
-                let xy = Array(columns[1]); let path = columns[8...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }; guard xy.count == 2 else { continue }; let path = columns[8...].joined(separator: " ")
                 status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "2" where columns.count >= 10:
-                let xy = Array(columns[1]); let path = columns[9...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }; guard xy.count == 2 else { continue }; let path = columns[9...].joined(separator: " ")
                 let original = next() ?? ""
                 status.entries.append(GitStatusEntry(path: path, originalPath: original, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "u" where columns.count >= 11:
-                let xy = Array(columns[1]), path = columns[10...].joined(separator: " ")
+                let xy = columns[1].utf8.map { Character(UnicodeScalar($0)) }, path = columns[10...].joined(separator: " ")
                 guard xy.count == 2 else { continue }
                 status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "?":
-                status.entries.append(GitStatusEntry(path: String(line.dropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
+                status.entries.append(GitStatusEntry(path: String(line.gitDropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
             default: break
             }
         }
@@ -421,7 +535,7 @@ public actor GitService {
         let path = path ?? filter.path
         if path != nil { arguments.append("--follow") }
         if let reference {
-            guard reference.hasPrefix("refs/heads/") || reference.hasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
+            guard reference.gitHasPrefix("refs/heads/") || reference.gitHasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
             arguments += ["--end-of-options", reference]
         }
         if let path { arguments += ["--"] + Self.literal([path]) }
@@ -433,7 +547,7 @@ public actor GitService {
         }
         var commits = Self.parseLog(output.text)
         // A hex filter is also tried as a hash prefix, on the first page only.
-        if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.hasPrefix(text.lowercased()) }) {
+        if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.gitHasPrefix(text.lowercased()) }) {
             let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
             if byHash.status == 0, let match = Self.parseLog(byHash.text).first {
                 var show = filter.allBranches && reference == nil
@@ -446,20 +560,20 @@ public actor GitService {
 
     static func parseLog(_ text: String) -> [GitCommit] {
         let formatter = ISO8601DateFormatter()
-        return text.split(separator: "\u{1e}", omittingEmptySubsequences: true).compactMap { record in
-            let fields = record.trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        return text.gitSplit(separator: 30, omittingEmptySubsequences: true).compactMap { record in
+            let fields = record.trimmingCharacters(in: .newlines).gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard fields.count >= 6, !fields[0].isEmpty else { return nil }
-            let refs = fields.count >= 7 ? fields[6].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } : []
+            let refs = fields.count >= 7 ? fields[6].gitSplit(separator: 44).map { $0.gitTrimmingWhitespace() }.filter { !$0.isEmpty } : []
             return GitCommit(hash: fields[0], shortHash: fields[1], author: fields[2], date: formatter.date(from: fields[3]) ?? Date(timeIntervalSince1970: 0),
-                             subject: fields[4], parents: fields[5].split(separator: " ").map(String.init), refs: refs)
+                             subject: fields[4], parents: fields[5].gitSplit(separator: 32), refs: refs)
         }
     }
 
     /// The message, the changed paths and their line counts. Both reads are
     /// cheap and run together: neither asks git to produce any patch text.
     func commitDetail(in root: String, commit: GitCommit) async throws -> GitCommitDetail {
-        async let named = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
-        async let counted = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let named = run(["-c", "log.showRoot=true", "show", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let counted = run(["-c", "log.showRoot=true", "show", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
         let names = try require(await named, "Reading the commit")
         let numbers = try? require(await counted, "Reading the commit stats")
         let (message, files) = Self.parseMessageAndNameStatus(names.stdout)
@@ -480,25 +594,211 @@ public actor GitService {
     /// counts field ends after its tabs with the old and new paths following.
     static func parseNumstat(_ data: Data) -> [String: GitDiffStat] {
         var stats: [String: GitDiffStat] = [:]
+        for record in numstatRecords(data) { stats[record.path] = record.counts }
+        return stats
+    }
+
+    private static func numstatRecords(_ data: Data) -> [(path: String, original: String?, counts: GitDiffStat)] {
+        var records: [(path: String, original: String?, counts: GitDiffStat)] = []
         let fields = data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
         var index = 0
         while index < fields.count {
             var record = fields[index]; index += 1
-            while record.first == "\n" || record.first == "\r" { record.removeFirst() }
+            while record.utf8.first == 10 || record.utf8.first == 13 { record = record.gitDropFirst() }
             guard !record.isEmpty else { continue }
-            let parts = record.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            let parts = record.gitSplit(separator: 9, omittingEmptySubsequences: false)
             guard parts.count >= 2 else { continue }
             let binary = parts[0] == "-" || parts[1] == "-"
             var path = parts.count >= 3 ? parts[2...].joined(separator: "\t") : ""
+            var original: String?
             if path.isEmpty {
                 guard index + 1 < fields.count else { break }
-                index += 1                      // the old path of a rename or copy
+                original = fields[index]; index += 1
                 path = fields[index]; index += 1
             }
             guard !path.isEmpty else { continue }
-            stats[path] = GitDiffStat(added: Int(parts[0]) ?? 0, removed: Int(parts[1]) ?? 0, binary: binary)
+            records.append((path, original, GitDiffStat(added: Int(parts[0]) ?? 0, removed: Int(parts[1]) ?? 0, binary: binary)))
         }
+        return records
+    }
+
+    /// Counts for the side each compact row opens. Ordinary paths share two
+    /// numstat reads; reported pairs are checked before accepting batch counts.
+    func changeStats(in root: String, status: GitRepositoryStatus) async throws -> [String: GitDiffStat] {
+        let entries = status.entries
+        guard !entries.isEmpty else { return [:] }
+        let options = status.changeOptions, format = ["-O/dev/null", "--numstat", "-z"]
+        let untracked = entries.filter(\.untracked).map(\.path)
+        async let additions = untrackedStats(in: root, paths: untracked)
+        async let worktree = run(options.diffArguments(staged: false) + ["--no-renames"] + format, in: root)
+        async let index = run(options.diffArguments(staged: true) + ["--no-renames"] + format, in: root)
+        let working = Self.parseNumstat(try require(await worktree, "Reading change counts").stdout)
+        let staged = Self.parseNumstat(try require(await index, "Reading staged counts").stdout)
+        var stats: [String: GitDiffStat] = [:]
+        var pairs: [GitStatusEntry] = []
+        for entry in entries where !entry.untracked {
+            let cached = !entry.unstaged && entry.staged
+            if options.paths(for: entry, staged: cached).count == 2 { pairs.append(entry) }
+            else { stats[entry.path] = cached ? staged[entry.path] : working[entry.path] }
+        }
+        // Batch reported pairs too, but accept a count only when Git matched
+        // the exact same source and destination. Ambiguous matches fall back
+        // to the isolated two-path request used by the opened preview.
+        for cached in [false, true] {
+            let side = pairs.filter { (!$0.unstaged && $0.staged) == cached }
+            guard !side.isEmpty else { continue }
+            let prefix = options.diffArguments(staged: cached) + ["--find-copies=1%", "--find-copies-harder"] + format + ["--"]
+            let groups = side.map { Self.literal(options.paths(for: $0, staged: cached)) }
+            for batch in Self.pairedBatches(of: groups, prefix: prefix) {
+                let output = try require(await run(prefix + batch, in: root), "Reading paired counts")
+                for record in Self.numstatRecords(output.stdout) {
+                    if side.contains(where: { $0.path == record.path && $0.originalPath == record.original }) {
+                        stats[record.path] = record.counts
+                    }
+                }
+            }
+        }
+        try await withThrowingTaskGroup(of: (String, GitDiffStat?).self) { group in
+            for entry in pairs where stats[entry.path] == nil {
+                group.addTask {
+                    let cached = !entry.unstaged && entry.staged
+                    let arguments = options.diffArguments(staged: cached, entry: entry) + format + ["--"]
+                        + Self.literal(options.paths(for: entry, staged: cached))
+                    let output = try await self.run(arguments, in: root)
+                    let counts = Self.parseNumstat(try await self.require(output, "Reading paired counts").stdout)
+                    return (entry.path, counts[entry.path])
+                }
+            }
+            for try await (path, count) in group { stats[path] = count }
+        }
+        // The working-tree replacement owns this row even if it cannot be read.
+        for path in untracked { stats.removeValue(forKey: path) }
+        stats.merge(try await additions) { _, new in new }
         return stats
+    }
+
+    private func untrackedStats(in root: String, paths: [String]) async throws -> [String: GitDiffStat] {
+        guard !paths.isEmpty else { return [:] }
+        async let directory = run(["rev-parse", "--absolute-git-dir"], in: root)
+        async let configured = run(["config", "--path", "--get", "core.attributesFile"], in: root)
+        let gitDirectory = try require(await directory, "Finding the repository").path
+        let attributes = try await configured
+        if attributes.status != 1 { _ = try require(attributes, "Reading the attributes path") }
+        var configuration: [String] = []
+        if attributes.status == 0, !attributes.path.isEmpty, !attributes.path.gitHasPrefix("/") {
+            // Git resolves this path from the original cwd. Keep that location
+            // when reading private copies; Git still owns its effective value.
+            let path = URL(fileURLWithPath: attributes.path, relativeTo: URL(fileURLWithPath: root, isDirectory: true)).path
+            configuration = ["-c", "core.attributesFile=" + path]
+        }
+        // String keys equate Unicode normalization variants. Neither spelling
+        // may inherit the other's count when the source can store both.
+        var spellings: [String: Data] = [:], ambiguous: Set<String> = []
+        for path in paths {
+            let spelling = Data(path.utf8)
+            if let previous = spellings[path], previous != spelling { ambiguous.insert(path) }
+            spellings[path] = spelling
+        }
+        var remaining = paths.filter { !ambiguous.contains($0) }[...], counts: [String: GitDiffStat] = [:]
+        while !remaining.isEmpty {
+            try Task.checkCancellation()
+            let batch = try await untrackedStats(in: root, gitDirectory: gitDirectory, configuration: configuration, paths: remaining)
+            counts.merge(batch.counts) { _, new in new }
+            remaining = remaining.dropFirst(batch.consumed)
+        }
+        return counts
+    }
+
+    private func untrackedStats(in root: String, gitDirectory: String, configuration: [String], paths: ArraySlice<String>) async throws
+        -> (counts: [String: GitDiffStat], consumed: Int) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bello-counts-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let tree = folder.appendingPathComponent("tree"), empty = folder.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: false)
+        let read = Task.detached(priority: .utility) {
+            var accepted: [String] = [], attributes: Set<String> = []
+            var directories: Set<Data> = []
+            var consumed = 0, bytes = 0
+            let limit = 32 << 20
+            for path in paths {
+                try Task.checkCancellation()
+                // Git sees only these bounded bytes, never a subsequently
+                // replaced file or parent symlink in the live working tree.
+                guard let file = try? GitPatchFile.read(in: root, path: path) else { consumed += 1; continue }
+                if bytes + file.bytes.count > limit { break }
+                let destination = tree.appendingPathComponent(path)
+                let components = path.gitSplit(separator: 47)
+                let parents = (1..<components.count).map { components.prefix($0).joined(separator: "/") }
+                // The private volume may fold names the source distinguishes.
+                // Reuse only byte-identical directories; retry aliases in a
+                // fresh batch before consuming or writing the colliding path.
+                if FileManager.default.fileExists(atPath: destination.path) || parents.contains(where: {
+                    FileManager.default.fileExists(atPath: tree.appendingPathComponent($0).path)
+                        && !directories.contains(Data($0.utf8))
+                }) { break }
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try file.bytes.write(to: destination)
+                directories.formUnion(parents.map { Data($0.utf8) })
+                consumed += 1; bytes += file.bytes.count
+                accepted.append(path)
+                var parts = Array(path.gitSplit(separator: 47).dropLast())
+                while true {
+                    attributes.insert((parts + [".gitattributes"]).joined(separator: "/"))
+                    if parts.isEmpty { break }
+                    parts.removeLast()
+                }
+            }
+            // Keep Git's path-based attributes as well as its real config and
+            // info/attributes. Nothing in the source index or worktree is written.
+            let selected = Set(accepted)
+            var unavailable: Set<String> = [], attributeBytes = 0
+            for path in attributes.sorted() where !selected.contains(path) {
+                try Task.checkCancellation()
+                guard let file = try? GitPatchFile.read(in: root, path: path), attributeBytes + file.bytes.count <= limit else {
+                    if FileManager.default.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent(path).path) {
+                        unavailable.insert(String(path.gitDropLast(".gitattributes".utf8.count)))
+                    }
+                    continue
+                }
+                let destination = tree.appendingPathComponent(path)
+                guard !FileManager.default.fileExists(atPath: destination.path) else {
+                    unavailable.insert(String(path.gitDropLast(".gitattributes".utf8.count)))
+                    continue
+                }
+                attributeBytes += file.bytes.count
+                try file.bytes.write(to: destination)
+            }
+            return (accepted.filter { path in !unavailable.contains(where: { path.gitHasPrefix($0) }) }, consumed)
+        }
+        let (accepted, consumed) = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+        let selected = Set(accepted)
+        // A directory no-index diff emits a /dev/null pair for each added
+        // file. Keep relative paths intact so anchored attributes still match.
+        let operands = Set(accepted.compactMap { $0.gitSplit(separator: 47).first })
+        let counts = try await withThrowingTaskGroup(of: [String: GitDiffStat].self) { group in
+            for operand in operands {
+                group.addTask {
+                    let directory = accepted.contains { $0.gitHasPrefix(operand + "/") }
+                    // Ordering cannot affect counts, and a relative orderFile
+                    // belongs to the real tree, not these private copies.
+                    let arguments = configuration + ["--git-dir=" + gitDirectory, "--work-tree=" + tree.path]
+                        + GitChangeOptions().diffArguments(staged: false)
+                        + ["--no-index", "--no-renames", "-O/dev/null", "--numstat", "-z", "--", directory ? empty.path : "/dev/null", operand]
+                    // Trust and program policy belong to the source. Bind
+                    // inventory to the same gitdir as the snapshot command,
+                    // even if the source's .git entry changed during copying.
+                    let output = try await self.run(arguments, in: tree.path, environment: ["GIT_DIR": gitDirectory], sourceRepository: root)
+                    if output.status > 1 { _ = try await self.require(output, "Reading untracked counts") }
+                    return Self.parseNumstat(output.stdout).filter { selected.contains($0.key) }
+                }
+            }
+            var result: [String: GitDiffStat] = [:]
+            for try await counts in group { result.merge(counts) { _, new in new } }
+            return result
+        }
+        return (counts, consumed)
     }
 
     /// The patch of one commit, or of one path inside it, already parsed.
@@ -522,12 +822,12 @@ public actor GitService {
     /// The working-tree or staged patch of one path, already parsed. A renamed
     /// file is asked for under both its names: given only the new one, git has
     /// nothing to match against and reports the whole file as added.
-    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
-        var arguments: [String]
-        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false,
+                   options: GitChangeOptions? = nil, entry: GitStatusEntry? = nil) async throws -> [GitDiffFile] {
+        let resolved = options ?? GitChangeOptions()
+        var arguments = resolved.diffArguments(staged: staged, entry: entry) + ["-U3"]
+        if untracked, let path = paths.last { arguments += ["--no-index", "--", "/dev/null", path] }
         else {
-            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "-U3", "--find-renames"]
-            if staged { arguments.append("--cached") }
             if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }
         let allowed: Int32 = untracked ? 1 : 0
@@ -547,7 +847,8 @@ public actor GitService {
         while index < fields.count {
             // `git show` writes a newline between its header and the records.
             let code = fields[index].trimmingCharacters(in: .newlines); index += 1
-            guard let state = code.first, index < fields.count else { break }
+            guard let byte = code.utf8.first, index < fields.count else { break }
+            let state = Character(UnicodeScalar(byte))
             if state == "R" || state == "C" {
                 let original = fields[index]; index += 1
                 guard index < fields.count else { break }
@@ -565,24 +866,24 @@ public actor GitService {
     /// even a large `node_modules` costs one line.
     func ignoredPaths(in root: String) async throws -> [String] {
         let output = try require(await run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], in: root), "Listing ignored paths")
-        return output.text.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+        return output.text.gitSplit(separator: 0).filter { !$0.isEmpty }
     }
     func branches(in root: String) async throws -> [String] {
         let output = try require(await run(["branch", "--list", "--format=%(refname:short)"], in: root), "Listing branches")
-        return output.text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return output.text.gitSplit(separator: 10).filter { !$0.isEmpty }
     }
     func checkout(_ branch: String, in root: String) async throws {
-        _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root), "Switching branch")
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root, readOnly: false), "Switching branch")
     }
     func createBranch(_ name: String, in root: String) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains(" ") else { throw GitFailure(message: "Enter a branch name without spaces.") }
-        _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root), "Creating the branch")
+        guard !trimmed.isEmpty, !trimmed.utf8.contains(32) else { throw GitFailure(message: "Enter a branch name without spaces.") }
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root, readOnly: false), "Creating the branch")
     }
     func stashes(in root: String) async throws -> [GitStashEntry] {
         let output = try require(await run(["stash", "list", "--format=%gd%x00%s"], in: root), "Listing stashes")
-        return output.text.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        return output.text.gitSplit(separator: 10).compactMap { line in
+            let parts = line.gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard parts.count == 2 else { return nil }
             return GitStashEntry(name: parts[0], subject: parts[1])
         }
@@ -591,14 +892,14 @@ public actor GitService {
         var arguments = ["stash", "push", "--include-untracked"]
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { arguments += ["-m", trimmed] }
-        _ = try require(await run(arguments, in: root), "Stashing")
+        _ = try require(await run(arguments, in: root, readOnly: false), "Stashing")
     }
     func stashPop(_ name: String? = nil, in root: String) async throws {
-        _ = try require(await run(["stash", "pop"] + (name.map { [$0] } ?? []), in: root), "Applying the stash")
+        _ = try require(await run(["stash", "pop"] + (name.map { [$0] } ?? []), in: root, readOnly: false), "Applying the stash")
     }
-    func fetch(in root: String) async throws { _ = try require(await run(["fetch", "--prune"], in: root, timeout: 120), "Fetching") }
-    func pull(in root: String) async throws { _ = try require(await run(["pull", "--ff-only"], in: root, timeout: 180), "Pulling") }
-    func push(in root: String) async throws { _ = try require(await run(["push"], in: root, timeout: 180), "Pushing") }
+    func fetch(in root: String) async throws { _ = try require(await run(["fetch", "--prune"], in: root, timeout: 120, readOnly: false), "Fetching") }
+    func pull(in root: String) async throws { _ = try require(await run(["pull", "--ff-only"], in: root, timeout: 180, readOnly: false), "Pulling") }
+    func push(in root: String) async throws { _ = try require(await run(["push"], in: root, timeout: 180, readOnly: false), "Pushing") }
     func headMessage(in root: String) async throws -> String {
         try require(await run(["log", "-1", "--format=%B"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -671,8 +972,8 @@ public actor GitService {
             return
         }
         for batch in Self.batches(of: Self.literal(paths), prefix: ["restore", "--staged", "--"]) {
-            let output = try await run(["restore", "--staged", "--"] + batch, in: root)
-            if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root), "Unstaging") }
+            let output = try await run(["restore", "--staged", "--"] + batch, in: root, readOnly: false)
+            if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root, readOnly: false), "Unstaging") }
         }
     }
     /// Commits exactly one scope, optionally amending HEAD:
@@ -726,7 +1027,7 @@ public actor GitService {
         // Git's hook/index behaviour. Recheck after preparation, immediately
         // before dispatch; external Git can still race after this check.
         if let target { try await validateCommitTarget(target, in: root) }
-        let committed = try await run(arguments, in: root)
+        let committed = try await run(arguments, in: root, readOnly: false)
         // Git refuses a commit that would change nothing with its status on
         // stdout and nothing on stderr, which read as "git exit 1".
         if committed.status != 0, ["nothing to commit", "nothing added to commit", "no changes added to commit"].contains(where: committed.text.contains) {
@@ -743,8 +1044,8 @@ public actor GitService {
     /// leave to remove what the first commit would have had.
     func isUnbornBranch(in root: String) async throws -> Bool {
         let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
-        let branch = symbolic.text.trimmingCharacters(in: .newlines)
-        guard symbolic.status == 0, branch.hasPrefix("refs/heads/"),
+        let branch = symbolic.path
+        guard symbolic.status == 0, branch.gitHasPrefix("refs/heads/"),
               try await run(["rev-parse", "--verify", "--quiet", "HEAD"], in: root).status == 1 else { return false }
         // `show-ref --verify` answers the same for a missing and a damaged
         // ref; `for-each-ref` lists nothing for a missing one, warns about a
@@ -752,15 +1053,15 @@ public actor GitService {
         // Its pattern also matches refs below it (`topic/work` for `topic`),
         // so only the exact name counts as the branch existing.
         let listed = try await run(["for-each-ref", "--format=%(refname)", branch], in: root)
-        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.split(separator: "\n").contains { $0 == branch }
+        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.gitSplit(separator: 10).contains { $0 == branch }
     }
     /// Which of these paths the index holds as submodules (gitlinks).
     private func gitlinks(_ paths: [String], in root: String) async throws -> Set<String> {
         var found: Set<String> = []
         for batch in Self.batches(of: Self.literal(paths), prefix: ["ls-files", "-s", "-z", "--"]) {
             let output = try require(await run(["ls-files", "-s", "-z", "--"] + batch, in: root), "Reading the index")
-            for record in output.text.split(separator: "\0") where record.hasPrefix("160000 ") {
-                if let tab = record.firstIndex(of: "\t") { found.insert(String(record[record.index(after: tab)...])) }
+            for record in output.text.gitSplit(separator: 0) where record.gitHasPrefix("160000 ") {
+                if let parts = record.gitSplitOnce(separator: 9) { found.insert(parts.after) }
             }
         }
         return found
@@ -780,9 +1081,9 @@ public actor GitService {
     static func cleanedMessage(_ message: String) -> String {
         var lines: [String] = []
         var blank = false
-        for raw in message.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+        for raw in message.gitComponents(separatedBy: "\r\n").joined(separator: "\n").gitSplit(separator: 10, omittingEmptySubsequences: false) {
             var line = String(raw)
-            while let last = line.last, last == " " || last == "\t" { line.removeLast() }
+            while let last = line.utf8.last, last == 32 || last == 9 { line = line.gitDropLast() }
             if line.isEmpty { blank = !lines.isEmpty; continue }
             if blank { lines.append("") ; blank = false }
             lines.append(line)
@@ -817,17 +1118,17 @@ public actor GitService {
         // where a shallow clone stops (rev-list would report none there and
         // the reword would become a new root).
         let header = try require(await run(["cat-file", "commit", head], in: root), "Reading the last commit").text
-            .components(separatedBy: "\n\n").first ?? ""
-        let fields = header.split(separator: "\n").map(String.init)
-        guard let tree = fields.first(where: { $0.hasPrefix("tree ") }).map({ String($0.dropFirst(5)) }) else { throw GitFailure(message: "The last commit could not be read.") }
-        let parents = fields.filter { $0.hasPrefix("parent ") }.map { String($0.dropFirst(7)) }
+            .gitComponents(separatedBy: "\n\n").first ?? ""
+        let fields = header.gitSplit(separator: 10)
+        guard let tree = fields.first(where: { $0.gitHasPrefix("tree ") }).map({ $0.gitDropFirst(5) }) else { throw GitFailure(message: "The last commit could not be read.") }
+        let parents = fields.filter { $0.gitHasPrefix("parent ") }.map { $0.gitDropFirst(7) }
         // A commit cannot be written over a parent git does not have (a
         // shallow clone's edge): refused, never rewritten as a new root.
         for parent in parents where try await run(["cat-file", "-e", parent + "^{commit}"], in: root).status != 0 {
             throw GitFailure(message: "The last commit's parent is not in this clone (it is shallow). Reword it in a full clone.")
         }
         let author = try require(await run(["log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", head], in: root), "Reading the last commit").text
-            .trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            .trimmingCharacters(in: .newlines).gitSplit(separator: 0, omittingEmptySubsequences: false)
         guard author.count == 3 else { throw GitFailure(message: "The last commit's author could not be read.") }
         let branch = try await symbolicHead(in: root)
 
@@ -839,27 +1140,27 @@ public actor GitService {
         // one lands there, never in the reader's index.
         let index = scratch.appendingPathComponent("index").path
         let hookEnvironment = ["GIT_INDEX_FILE": index, "GIT_EDITOR": ":"]
-        _ = try require(await run(["read-tree", tree], in: root, environment: hookEnvironment), "Preparing the reword")
+        _ = try require(await run(["read-tree", tree], in: root, environment: hookEnvironment, readOnly: false), "Preparing the reword")
         let worktree = try await worktreeSnapshot(in: root)
 
-        _ = try require(await run(["hook", "run", "--ignore-missing", "pre-commit"], in: root, timeout: 120, environment: hookEnvironment), "The pre-commit hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "pre-commit"], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The pre-commit hook")
         let messageFile = scratch.appendingPathComponent("COMMIT_EDITMSG")
         try Data(Self.cleanedMessage(message).utf8).write(to: messageFile)
         if signOff {
             let identity = try require(await run(["var", "GIT_COMMITTER_IDENT"], in: root), "Reading sign-off identity").text
-            guard let end = identity.lastIndex(of: ">") else { throw GitFailure(message: "The sign-off identity could not be read.") }
+            guard let parts = identity.gitSplitOnce(separator: 62, last: true) else { throw GitFailure(message: "The sign-off identity could not be read.") }
             _ = try require(await run(["interpret-trailers", "--in-place", "--if-exists=addIfDifferent", "--trailer",
-                                       "Signed-off-by: " + identity[...end], messageFile.path], in: root), "Adding sign-off")
+                                       "Signed-off-by: " + parts.before + ">", messageFile.path], in: root, readOnly: false), "Adding sign-off")
         }
         // As git commit --amend -m calls it: a message given, amending HEAD.
-        _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment), "The prepare-commit-msg hook")
-        _ = try require(await run(["hook", "run", "--ignore-missing", "commit-msg", "--", messageFile.path], in: root, timeout: 120, environment: hookEnvironment), "The commit-msg hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The prepare-commit-msg hook")
+        _ = try require(await run(["hook", "run", "--ignore-missing", "commit-msg", "--", messageFile.path], in: root, timeout: 120, environment: hookEnvironment, readOnly: false), "The commit-msg hook")
         // The working tree first: a hook that wrote files and staged them
         // has done both, and the reader is told about the files on disk.
         guard try await worktreeSnapshot(in: root) == worktree else {
             throw GitFailure(message: "A hook changed files in the working tree, so the last commit was not reworded. Check what it changed.")
         }
-        let after = try require(await run(["write-tree"], in: root, environment: hookEnvironment), "Preparing the reword").text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let after = try require(await run(["write-tree"], in: root, environment: hookEnvironment, readOnly: false), "Preparing the reword").text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard after == tree else { throw GitFailure(message: "A hook changed the commit's files, so the last commit was not reworded.") }
         let finalMessage = Self.cleanedMessage(String(decoding: try Data(contentsOf: messageFile), as: UTF8.self))
         guard !finalMessage.isEmpty else { throw GitFailure(message: "The commit message is empty after the commit hooks.") }
@@ -878,24 +1179,24 @@ public actor GitService {
         }
         commitTree += ["-F", messageFile.path]
         let authorEnvironment = ["GIT_AUTHOR_NAME": author[0], "GIT_AUTHOR_EMAIL": author[1], "GIT_AUTHOR_DATE": author[2]]
-        let created = try require(await run(commitTree, in: root, timeout: 120, environment: authorEnvironment), "Rewording").text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let created = try require(await run(commitTree, in: root, timeout: 120, environment: authorEnvironment, readOnly: false), "Rewording").text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Hooks can take their time: HEAD must still be on the same branch,
         // with no operation begun, before anything moves.
         if let expectedTarget { try await validateCommitTarget(expectedTarget, in: root) }
         guard try await symbolicHead(in: root) == branch else { throw GitFailure(message: "HEAD moved to another branch while rewording, so the last commit was not reworded.") }
         try await refuseDuringOperation(in: root)
-        let subject = finalMessage.split(separator: "\n").first.map(String.init) ?? ""
+        let subject = finalMessage.gitSplit(separator: 10).first ?? ""
         let reflog = "commit (amend): " + subject
         // Compare-and-swap through HEAD itself: git locks HEAD and the branch
         // it names together, and moves that branch (or a detached HEAD) only
         // from the commit read above. Whatever HEAD names at that instant is
         // what moves; a branch HEAD has left is never rewritten behind it.
-        let moved = try await run(["update-ref", "-m", reflog, "HEAD", created, head], in: root)
+        let moved = try await run(["update-ref", "-m", reflog, "HEAD", created, head], in: root, readOnly: false)
         guard moved.status == 0 else { throw GitFailure(message: "The last commit changed while rewording, so it was not reworded.") }
 
         // As after git commit --amend; their failures do not undo the commit.
-        _ = try? await run(["hook", "run", "--ignore-missing", "post-commit"], in: root, timeout: 120, environment: ["GIT_EDITOR": ":"])
+        _ = try? await run(["hook", "run", "--ignore-missing", "post-commit"], in: root, timeout: 120, environment: ["GIT_EDITOR": ":"], readOnly: false)
         try? await runPostRewrite(in: root, old: head, new: created)
         return String(created.prefix(7))
     }
@@ -924,8 +1225,16 @@ public actor GitService {
         // blame takes one file, not a pathspec: after "--" its name is read
         // as written, patterns and magic included. --root: a first commit is
         // a commit like any other, not a boundary.
-        let arguments = ["blame", "--porcelain", "--root", "--no-textconv", "--contents", "-", "--", path]
-        var blame = try await detached(arguments, in: root, timeout: 60, input: contents) { output in
+        try Task.checkCancellation()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bello-git-blame-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let snapshot = folder.appendingPathComponent("contents")
+        try contents.write(to: snapshot)
+        // A repository include may name stdin. Keep the reviewed bytes in a
+        // private file so config cannot consume or interpret them as settings.
+        let arguments = ["blame", "--porcelain", "--root", "--no-textconv", "--contents", snapshot.path, "--", path]
+        var blame = try await detached(arguments, in: root, timeout: 60) { output in
             guard output.status == 0 else {
                 let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 if detail.contains("no such path") || detail.contains("not in HEAD") || detail.contains("does not have a commit") {
@@ -947,7 +1256,7 @@ public actor GitService {
         let shallowFile = try? require(await run(["rev-parse", "--path-format=absolute", "--git-path", "shallow"], in: root), "Reading the repository").text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let shallowFile, let edge = try? String(contentsOfFile: shallowFile, encoding: .utf8) {
-            blame = blame.marking(historyMissing: Set(edge.split(whereSeparator: \.isNewline).map(String.init)))
+            blame = blame.marking(historyMissing: Set(edge.gitSplit(separator: 10)))
         }
         return blame
     }
@@ -963,7 +1272,7 @@ public actor GitService {
     /// The branch HEAD is on (its full ref name), or nil when detached.
     private func symbolicHead(in root: String) async throws -> String? {
         let symbolic = try await run(["symbolic-ref", "-q", "HEAD"], in: root)
-        return symbolic.status == 0 ? symbolic.text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        return symbolic.status == 0 ? symbolic.path : nil
     }
 
     /// The files on disk, as something to compare: every tracked file and
@@ -992,10 +1301,10 @@ public actor GitService {
     private func refuseDuringOperation(in root: String) async throws {
         let states = [("MERGE_HEAD", "a merge"), ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"),
                       ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"), ("sequencer", "a cherry-pick or revert sequence")]
-        let paths = try require(await run(["rev-parse", "--path-format=absolute"] + states.flatMap { ["--git-path", $0.0] }, in: root), "Reading the repository").text
-            .split(separator: "\n").map(String.init)
-        for (path, state) in zip(paths, states) where FileManager.default.fileExists(atPath: path) {
-            throw GitFailure(message: "Finish or abort \(state.1) before rewording the last commit.")
+        // One path per output: a directory name can itself contain LF.
+        for (name, state) in states {
+            let path = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", name], in: root), "Reading the repository").path
+            if FileManager.default.fileExists(atPath: path) { throw GitFailure(message: "Finish or abort \(state) before rewording the last commit.") }
         }
         let unmerged = try require(await run(["ls-files", "-u"], in: root), "Reading the index").text
         guard unmerged.isEmpty else { throw GitFailure(message: "Resolve the conflicts before rewording the last commit.") }
@@ -1007,13 +1316,13 @@ public actor GitService {
     private func runPostRewrite(in root: String, old: String, new: String) async throws {
         let configured = try await run(["config", "--path", "--get", "core.hooksPath"], in: root)
         var folder: String
-        if configured.status == 0, case let value = configured.text.trimmingCharacters(in: .newlines), !value.isEmpty {
-            folder = value.hasPrefix("/") ? value : (root as NSString).appendingPathComponent(value)
+        if configured.status == 0, case let value = configured.path, !value.isEmpty {
+            folder = value.gitHasPrefix("/") ? value : (root as NSString).appendingPathComponent(value)
         } else {
-            folder = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], in: root), "Reading the repository").text.trimmingCharacters(in: .newlines)
+            folder = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], in: root), "Reading the repository").path
         }
         let hook = (folder as NSString).appendingPathComponent("post-rewrite")
         guard FileManager.default.isExecutableFile(atPath: hook) else { return }
-        _ = try await detached(["amend"], in: root, timeout: 120, input: Data("\(old) \(new)\n".utf8), executable: URL(fileURLWithPath: hook)) { $0 }
+        _ = try await detached(["amend"], in: root, timeout: 120, input: Data("\(old) \(new)\n".utf8), executable: URL(fileURLWithPath: hook), readOnly: false) { $0 }
     }
 }

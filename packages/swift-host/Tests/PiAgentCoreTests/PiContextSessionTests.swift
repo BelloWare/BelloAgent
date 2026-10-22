@@ -3,7 +3,26 @@ import XCTest
 
 /// Pi 0.85.1's context rules in a running session. The fixture's window is
 /// 100,000 tokens, so pi's compaction threshold is 100,000 - 16,384 = 83,616.
-final class PiContextSessionTests: XCTestCase {
+final class PiContextSessionTests: HelperTestCase {
+    func testMalformedUsageSnapshotAndReopenRemainSafe() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var raw = try fixtureProfile().raw; raw["contextWindow"] = 2048; raw["maxOutputTokens"] = 128
+        let profile = try Profile(raw), directory = root.appendingPathComponent("state")
+        var reply = answer("Completed text")
+        reply.usage = UsageObservation.normalized(["input_tokens":1,"output_tokens":1,"total_tokens":9_223_372_036_854_774_784],api:profile.api)
+        let s = try AgentSession(id:"malformed",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([reply]),tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+        _ = try await s.submit(Submission(commandID:"c",turnID:"t",text:"question"),steer:false)
+        try await eventually { !(await s.isRunning) }
+        let snapshot = await s.snapshot()
+        XCTAssertEqual(snapshot["state"].text,"idle")
+        XCTAssertEqual(snapshot["context"]["usageTokens"].int,2)
+        let path = await s.path; await s.close()
+        let reopened = try AgentSession(id:"malformed",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),resumePath:path,autoCompaction:false)
+        let restored = await reopened.snapshot()
+        XCTAssertEqual(restored["context"]["usageTokens"].int,2)
+        await reopened.close()
+    }
+
     func testTheMeterIsTheLastReplysTokensAndTheUsageSurvivesReload() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let s = try session(root, ScriptClient([reply("first answer", total: 12_000)]))

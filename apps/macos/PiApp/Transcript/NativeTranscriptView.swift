@@ -53,6 +53,8 @@ final class TranscriptSurfaceMarker: NSView {
     var findIsOpen: Bool { findBar != nil && window != nil }
     private var handledFind = 0, handledReveal = 0, stoppedFocusFor = 0
     private var findSessionID: String?
+    private var findRawReplies: Set<String> = []
+    private var findToolInputs: [String: ToolInputDocument] = [:]
     /// Whether this pane's chat is the one the conversation menu acts on,
     /// and the menu acts on a chat at all (the chats page, no sheet).
     var isFocusedConversation: () -> Bool = { false }
@@ -76,7 +78,7 @@ final class TranscriptSurfaceMarker: NSView {
     private var liveKey: LiveKey?
 
     private var subscriptions: [AnyCancellable] = []
-    private var sessionSubscription: AnyCancellable?
+    private var sessionSubscription: AnyCancellable?, contentSubscription: AnyCancellable?
     private var refreshPending = false
     private var boundSession: ObjectIdentifier?
     private var boundGeneration: UUID?
@@ -153,6 +155,12 @@ final class TranscriptSurfaceMarker: NSView {
         if self.session !== session {
             self.session = session
             sessionSubscription = session.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }
+            // What the conversation presents changed — a token, a row, its
+            // tasks: an open find counts its query again once that settles.
+            contentSubscription = session.presentationChanges.dropFirst().sink { [weak self] _ in
+                guard let self, self.findBar != nil else { return }
+                self.find.contentChanged()
+            }
         }
         self.state = state; self.actions = actions; self.environment = environment; self.reduceMotion = reduceMotion
         refresh()
@@ -517,6 +525,13 @@ final class TranscriptSurfaceMarker: NSView {
             findSessionID = session.id
             handledFind = session.findCommand?.serial ?? 0
             handledReveal = session.reveal?.serial ?? 0
+        }
+        let rawReplies = session.disclosure.rawReplies
+        let toolInputs = session.toolInputs.snapshot()
+        if findRawReplies != rawReplies || findToolInputs != toolInputs {
+            findRawReplies = rawReplies
+            findToolInputs = toolInputs
+            if findBar != nil, !find.query.isEmpty { find.setQuery(find.query, restarting: true) }
         }
         if let command = session.findCommand, command.serial != handledFind {
             handledFind = command.serial

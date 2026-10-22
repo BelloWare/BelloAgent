@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class CompactionRequestShapeTests: XCTestCase {
+final class CompactionRequestShapeTests: HelperTestCase {
     func testPrefixEqualityWithReasoningImagesToolsAndSideAffinity() throws {
         var raw=try fixtureProfile().raw
         raw["reasoning"]=true; raw["thinkingLevel"]="high"; raw["input"]=["text","image"]

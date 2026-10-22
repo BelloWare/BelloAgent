@@ -266,4 +266,133 @@ final class CaptureMacIntegrationTests: XCTestCase {
         // assertion aborts earlier, preserve synthetic scratch for inspection.
         try FileManager.default.removeItem(at: folder)
     }
+
+    /// Echoes the request's key as the response's model, router model and id
+    /// (`sse`), or names it in an HTTP 401 error (`http`), plainly or followed
+    /// by the extender the path names: `/<kind>-<hex or none>/v1/responses`.
+    private static let echoGateway = #"""
+import http.server, json, sys
+class Gateway(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        key = self.headers['Authorization'].removeprefix('Bearer ')
+        kind, mark = self.path.split('/')[1].split('-')
+        echo = key + ('' if mark == 'none' else chr(int(mark, 16)))
+        def encoded(value): return json.dumps(value, ensure_ascii=False).encode()
+        message = {'type':'message','id':'m1','role':'assistant','status':'completed','content':[{'type':'output_text','text':'Done.'}]}
+        response = {'id':echo,'object':'response','model':echo,'router_model_name':echo,'status':'completed','output':[message],'usage':{'input_tokens':10,'output_tokens':2}}
+        if kind == 'http':
+            status, media, body = 401, 'application/json', encoded({'error':{'message':'Incorrect API key provided: ' + echo,'type':'invalid_request_error','code':'invalid_api_key'}})
+        else:
+            events = [{'type':'response.created','response':{'id':echo,'model':echo,'router_model_name':echo,'status':'in_progress','output':[]}},
+                      {'type':'response.output_item.added','output_index':0,'item':{'type':'message','id':'m1','role':'assistant','content':[]}},
+                      {'type':'response.output_text.delta','output_index':0,'item_id':'m1','content_index':0,'delta':'Done.'},
+                      {'type':'response.output_item.done','output_index':0,'item':message},
+                      {'type':'response.completed','response':response}]
+            status, media, body = 200, 'text/event-stream', b''.join(b'data: ' + encoded(event) + b'\n\n' for event in events)
+        self.send_response(status); self.send_header('Content-Type', media); self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body); self.wfile.flush()
+server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Gateway)
+print(json.dumps({'port': server.server_address[1]}), flush=True)
+server.serve_forever()
+"""#
+    private static func files(in folder: URL) -> [URL] {
+        (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey])?.compactMap { $0 as? URL } ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+    }
+
+    /// Through the packaged helper, a key the gateway echoed (plainly, or with
+    /// a combining mark, ZWJ or variation selector after it) reaches none of:
+    /// the published snapshot, the Inspector's context reading and its
+    /// "returned …" model, the request log, Export Metadata's text, an
+    /// exported trace, or any other file the app keeps.
+    @MainActor func testPackagedHelperKeepsEchoedCredentialsOutOfInspectorStateCaptureAndExports() async throws {
+        let folder = URL(fileURLWithPath: testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let state = folder.appendingPathComponent("app-state"), exports = folder.appendingPathComponent("exports")
+        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+        let script = folder.appendingPathComponent("echo-gateway.py")
+        try Data(Self.echoGateway.utf8).write(to: script)
+        let gateway = Process(), pipe = Pipe()
+        gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); gateway.arguments = ["-u", script.path]
+        gateway.currentDirectoryURL = folder; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
+        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path]
+        try gateway.run()
+        defer { if gateway.isRunning { gateway.terminate(); gateway.waitUntilExit() } }
+        let handle = pipe.fileHandleForReading
+        let greeting = await Task.detached { handle.availableData }.value
+        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"]), base = "http://127.0.0.1:\(port)"
+        let key = "sk-generated-echo-secret="
+        func holds(_ data: Data) -> Bool { data.range(of: Data(key.utf8)) != nil }
+        func holds(_ value: [String: WireValue]) -> Bool { holds(Data(WireValue.object(value).pretty.utf8)) }
+        let workspace = WorkspaceRecord(id: "echo-fixture", path: folder.path, trusted: true)
+        let variants = ["sse", "http"].flatMap { kind in ["none", "0301", "200D", "FE0F"].map { (kind: kind, mark: $0) } }
+        let connections = variants.map { variant -> VaultProfile in
+            var profile = ProfileRecord(); profile.api = "openai-responses"; profile.baseUrl = base + "/\(variant.kind)-\(variant.mark)/v1"; profile.modelId = "echo-model"
+            return VaultProfile(profile: profile, apiKey: key)
+        }
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        _ = try await vault.update(expectedRevision: 0) {
+            $0.workspaces = [workspace]; $0.profiles = connections
+            $0.resources[workspace.id] = .object(["codexHome": .string(folder.appendingPathComponent("codex").path)])
+        }
+        let model = WorkspaceModel(stateRoot: state, vault: vault)
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        var sessions: [(id: String, label: String)] = []
+        for (variant, connection) in zip(variants, connections) {
+            let id = UUID().uuidString, label = "\(variant.kind), \(variant.mark)"
+            let chat = ChatRecord(id: id, workspaceID: workspace.id, title: "Echo fixture", path: nil, profileID: connection.profile.id)
+            let display = SessionDisplay(id: id)
+            model.chats.append(chat); model.displays[id] = display
+            let host = try await model.open(chat)
+            _ = try await host.request("turn.submit", sessionID: id, params: ["clientTurnId": .string(UUID().uuidString), "text": .string("fixture")])
+            var snapshot: [String: WireValue] = [:]
+            try await eventually("the \(label) turn ends", timeout: .seconds(60), until: {
+                snapshot = try await host.request("session.snapshot", sessionID: id).object ?? [:]
+                XCTAssertFalse(holds(snapshot), "snapshot: \(label)")
+                return ["idle", "paused", "error"].contains(snapshot["state"]?.string ?? "")
+            })
+            XCTAssertEqual(snapshot["state"]?.string == "idle", variant.kind == "sse", "\(label): \(snapshot["state"]?.string ?? "")")
+            // What the Inspector reads for its context and "returned …".
+            display.observeContext(snapshot)
+            let footer = display.footer
+            for (name, value) in [("context state", footer.contextState), ("request", footer.requestObservation), ("last request", footer.lastRequestObservation)] {
+                XCTAssertFalse(holds(value), "\(name): \(label)")
+                let reading = RequestContextObservation(value)
+                XCTAssertFalse(holds(Data(reading.details.utf8)), "\(name) details: \(label)")
+                XCTAssertFalse(holds(reading.context ?? [:]), "\(name) reading: \(label)")
+            }
+            if variant.kind == "sse" {
+                let returned = [footer.requestObservation, footer.lastRequestObservation, footer.contextState["lastRequest"]?.object ?? [:]].compactMap { $0["effectiveModel"]?.string }
+                XCTAssertFalse(returned.isEmpty, label)
+                XCTAssertTrue(returned.allSatisfy { $0.hasPrefix("[sha256:") }, "\(label): \(returned)")
+            }
+            sessions.append((id, label))
+        }
+        for session in sessions {
+            var attempts: [[String: WireValue]] = []
+            try await eventually("\(session.label) captures are saved", timeout: .seconds(60), until: {
+                attempts = try await model.traces.list(sessionID: session.id)
+                return !attempts.isEmpty && attempts.allSatisfy { !["running", "streaming"].contains($0["outcome"]?.string ?? "running") }
+            })
+            for metadata in attempts {
+                // Export Metadata writes exactly this text.
+                XCTAssertFalse(holds(Data(WireValue.object(metadata).pretty.utf8)), "metadata: \(session.label)")
+                let attempt = try XCTUnwrap(metadata["attemptId"]?.string)
+                let exported = try await model.traces.exportRetained(sessionID: session.id, attemptID: attempt, destination: exports)
+                let files = Self.files(in: exported)
+                XCTAssertFalse(files.isEmpty, session.label)
+                for file in files { XCTAssertFalse(holds(try Data(contentsOf: file)), "export \(file.lastPathComponent): \(session.label)") }
+            }
+        }
+        for host in model.hosts.values { try await host.shutdownAndWait() }
+        try await model.traces.close()
+        await model.store?.close()
+        // Journals, the request log and its index, and the app's own records.
+        let kept = Self.files(in: state)
+        XCTAssertFalse(kept.isEmpty)
+        for file in kept { XCTAssertFalse(holds(try Data(contentsOf: file)), "kept: \(file.path.dropFirst(state.path.count))") }
+        try FileManager.default.removeItem(at: folder)
+    }
 }

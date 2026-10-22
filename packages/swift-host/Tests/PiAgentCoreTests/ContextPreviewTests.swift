@@ -1,7 +1,54 @@
 import XCTest
 @testable import PiAgentCore
 
-final class ContextPreviewTests: XCTestCase {
+final class ContextPreviewTests: HelperTestCase {
+    func testPreviewProtocolAndSourceLabelsSurviveMatchingCredentials() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        try Data("Fixture instructions".utf8).write(to:root.appendingPathComponent("AGENTS.md"))
+        let labels = ["developer", "user", "assistant", "message", "completed", "input_text", "output_text", "function", "reasoning.encrypted_content", "project", "included", "Selected by Codex precedence", "role", "type", "status", "scope", "state"]
+        for key in labels {
+            var raw = try fixtureProfile().raw; raw["headers"] = ["X-Region":JSON(key)]
+            let session = try AgentSession(id:"preview",profile:Profile(raw),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[ChatMessage(role:"user",content:[textBlock("question")]),ChatMessage(role:"assistant",content:[textBlock("answer")])],autoCompaction:false)
+            let preview = try await session.prepareContext(["text":JSON(key)])
+            let page = try await session.readPreparedContext(["revision":preview["revision"],"section":"request"])
+            let body = try JSON.parse(Data(page["text"].text!.utf8)), inputs = body["input"].list
+            XCTAssertEqual(inputs.first?["role"].text,"developer",key)
+            XCTAssertEqual(inputs[1]["role"].text,"user",key); XCTAssertEqual(inputs[1]["content"].list.first?["type"].text,"input_text",key)
+            XCTAssertEqual(inputs[2]["role"].text,"assistant",key); XCTAssertEqual(inputs[2]["type"].text,"message",key)
+            XCTAssertEqual(inputs[2]["status"].text,"completed",key); XCTAssertEqual(inputs[2]["content"].list.first?["type"].text,"output_text",key)
+            XCTAssertEqual(body["tools"].list.first?["type"].text,"function",key)
+            XCTAssertEqual(body["include"],["reasoning.encrypted_content"],key)
+            XCTAssertEqual(inputs.last?["content"].list.first?["text"].text,CaptureCredentials.fingerprint(key),"Free text remains credential-masked")
+            let sourcePage = try await session.readPreparedContext(["revision":preview["revision"],"section":"sources"])
+            let source = try JSON.parse(Data(sourcePage["text"].text!.utf8)).list.first
+            XCTAssertEqual(source?["scope"].text,"project",key); XCTAssertEqual(source?["state"].text,"included",key)
+            XCTAssertEqual(source?["reason"].text,"Selected by Codex precedence",key)
+            await session.close()
+        }
+    }
+
+    func testHelperToolSchemasKeepTheirNamesLabelsAndDescriptions() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))
+        let definitions = await tools.definitions(readOnly:false)
+        func literals(_ value: JSON) -> Set<String> {
+            if let text = value.text { return [text] }
+            return Set(value.map.keys).union(value.map.values.reduce(into:Set<String>()) { $0.formUnion(literals($1)) }).union(value.list.reduce(into:Set<String>()) { $0.formUnion(literals($1)) })
+        }
+        let fixed = try ProviderClient.requestBody(profile:fixtureProfile(),messages:[],instructions:"",tools:definitions,sessionID:"schema")["tools"]
+        let labels = literals(fixed).sorted()
+        for key in labels {
+            var raw = try fixtureProfile().raw; raw["headers"] = ["X-Region":JSON(key)]
+            let profile = try Profile(raw)
+            let session = try AgentSession(id:"schema",profile:profile,apiKey:"fixture",cwd:root,directory:root,readOnly:false,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:tools,traces:TraceStore(),seed:[],autoCompaction:false)
+            let prepared = try await session.prepareContext(["text":"draft"])
+            let page = try await session.readPreparedContext(["revision":prepared["revision"],"section":"tools"])
+            let expected = try ProviderClient.requestBody(profile:profile,messages:[],instructions:"",tools:definitions,sessionID:"schema")["tools"]
+            XCTAssertEqual(try JSON.parse(Data(page["text"].text!.utf8)),expected,key)
+            await session.close()
+        }
+    }
+
     func testDelegationPreviewUsesPickerSelectionWithoutChangingGrantedModels() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let session = try AgentSession(id: "preview", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,

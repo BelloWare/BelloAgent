@@ -15,7 +15,7 @@ private actor RetryRecoveryClient: ModelClient {
     }
 }
 
-final class RetryRecoveryTests: XCTestCase {
+final class RetryRecoveryTests: HelperTestCase {
     func testRetryFinishesTheFailedRequestBeforeDeliveringPausedSteering() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = RetryRecoveryClient()

@@ -27,6 +27,11 @@ struct SideActions {
     private var sideActions: SideActions?
 
     let agentFamilyHeader = AgentFamilyHeaderView()
+    let sessionPanel: SessionFloatingPanel
+    let panelState: SessionPanelState
+    private let allowsFloatingPanel: Bool
+    private var panelEligible = false
+    private var panelFits = false
     var showsAgentFamily = true { didSet { refresh() } }
     private let subagentHeader = SubagentHeaderView()
     private let sideHeader: SideHeaderView
@@ -73,6 +78,7 @@ struct SideActions {
         var progress: String?
         var showsRecovered: Bool
         var recovered: [String]
+        var conflicts: [SavedDraftConflict]
         var showsQueue: Bool
         var terminalWorkspace: WorkspaceRecord?
         var missingFolder: String?
@@ -92,8 +98,12 @@ struct SideActions {
         var enabled: Bool
     }
 
-    init(model: WorkspaceModel) {
+    init(model: WorkspaceModel, panelState: SessionPanelState? = nil) {
         self.model = model
+        allowsFloatingPanel = panelState != nil
+        let panelState = panelState ?? SessionPanelState()
+        self.panelState = panelState
+        sessionPanel = SessionFloatingPanel(state: panelState)
         composer = ComposerInputView(model: model)
         sideHeader = SideHeaderView(model: model)
         super.init(frame: .zero)
@@ -101,12 +111,30 @@ struct SideActions {
         // What stands out past the pane (a composer wider than a narrow
         // pane) is cut at its edges, as the SwiftUI pane cut it.
         clipsToBounds = true
-        for view in [recovered, transcript, starter, cover, missingFolder, footer, agentFamilyHeader] as [NSView] { addSubview(view) }
+        for view in [recovered, transcript, starter, cover, missingFolder, footer, agentFamilyHeader, sessionPanel] as [NSView] { addSubview(view) }
         // The composer last: its slash-command list floats over everything above it.
         addSubview(composer)
         layer?.addSublayer(sideLine)
         composer.heightChanged = { [weak self] in self?.needsLayout = true }
         recovered.changed = { [weak self] in self?.needsLayout = true }
+        sessionPanel.sizeChanged = { [weak self] in self?.needsLayout = true }
+        sessionPanel.onCollapse = { [weak self] in
+            guard let self else { return }
+            self.panelState.collapsed = true; self.needsLayout = true
+            self.layoutSubtreeIfNeeded()
+            self.window?.makeFirstResponder(self.agentFamilyHeader.button)
+        }
+        agentFamilyHeader.openFloating = { [weak self] focusAgents in
+            guard let self else { return false }
+            self.layoutSubtreeIfNeeded()
+            guard self.panelEligible, self.panelFits,
+                  !focusAgents || !self.sessionPanel.isHidden else { return false }
+            self.panelState.collapsed = false; self.needsLayout = true
+            self.layoutSubtreeIfNeeded()
+            if focusAgents { self.sessionPanel.focusAgents() }
+            else if let control = PiKit.controls(in: self.sessionPanel.tabs).first { self.window?.makeFirstResponder(control) }
+            return true
+        }
         cover.isHidden = true
         starter.removeFromSuperview()
     }
@@ -199,8 +227,8 @@ struct SideActions {
     var minimumWidth: CGFloat {
         max(composer.isHidden ? 0 : composer.minimumWidth, sideHeader.superview === self ? sideHeader.minimumWidth : 0)
     }
-    /// A side's enclosing pane proposal can be narrower than its overflowing
-    /// body. The composer's trial forms still use that enclosing proposal.
+    /// The enclosing split's proposal can be narrower than the control minimum.
+    /// The composer's trial forms still use that enclosing proposal.
     var composerProposalWidth: CGFloat? {
         didSet {
             guard oldValue != composerProposalWidth else { return }
@@ -235,8 +263,8 @@ struct SideActions {
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
                      covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
-                     showsRecovered: !current.isSubagent && session.uncertain && !session.busy && !session.recovered.isEmpty,
-                     recovered: session.recovered.map(\.id),
+                     showsRecovered: !current.isSubagent && (!session.recoverableSubmissions.isEmpty || !session.draftConflicts.isEmpty),
+                     recovered: session.recoverableSubmissions.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
                      terminalWorkspace: terminalWorkspace, missingFolder: model.missingProjectFolders[current.workspaceID],
                      footer: kind, transcriptState: session.state, canFork: model.canForkFromReply(session.id),
@@ -251,6 +279,9 @@ struct SideActions {
     /// Reads the chat and the workspace again and changes only what differs.
     func refresh() {
         guard let session, let chat else { return }
+        let eligible = allowsFloatingPanel && side == nil && showsAgentFamily && !chat.isSubagent && model.sideFamilyOwner(chat) == nil
+        if eligible != panelEligible { panelEligible = eligible; needsLayout = true }
+        sessionPanel.update(model: model, chat: chat, enabled: inheritedEnabled)
         agentFamilyHeader.update(model: model, sessionID: chat.id, enabled: inheritedEnabled,
                                  allowsDisplay: side == nil && showsAgentFamily)
         let now = read(session, chat)
@@ -285,7 +316,7 @@ struct SideActions {
             })
         } else { subagentHeader.removeFromSuperview() }
         recovered.isHidden = !state.showsRecovered
-        if state.showsRecovered { recovered.update(session.recovered, model: model) }
+        if state.showsRecovered { recovered.update(session.recoverableSubmissions, conflicts: session.draftConflicts, model: model) }
         // Over it: the starter card and the loading cover.
         if before?.showsStarter != state.showsStarter {
             if state.showsStarter {
@@ -483,9 +514,7 @@ struct SideActions {
             let height = subagentHeader.height(forWidth: width)
             frames.append((subagentHeader, CGRect(x: 0, y: top, width: width, height: height))); top += height
         }
-        if !agentFamilyHeader.isHidden {
-            frames.append((agentFamilyHeader, CGRect(x: 0, y: top, width: width, height: 34))); top += 34
-        }
+        let headerTop = top
         if !recovered.isHidden {
             let height = recovered.height(forWidth: width)
             frames.append((recovered, CGRect(x: 0, y: top, width: width, height: height)))
@@ -534,7 +563,22 @@ struct SideActions {
             frames.append((queue, CGRect(x: 0, y: bottom - queueHeight, width: width, height: queueHeight)))
             bottom -= queueHeight
         }
-        let transcriptFrame = CGRect(x: 0, y: top, width: width, height: max(0, bottom - top))
+        panelFits = SessionPanelLayout.fits(width: width, height: max(0, bottom - top))
+        let floating = panelEligible && panelFits && !panelState.collapsed
+        sessionPanel.setPresented(floating)
+        agentFamilyHeader.setFloating(shown: floating, offersEmpty: panelEligible && panelState.collapsed)
+        if !agentFamilyHeader.isHidden {
+            frames.append((agentFamilyHeader, CGRect(x: 0, y: headerTop, width: width, height: 34)))
+            if let index = frames.firstIndex(where: { $0.0 === recovered }) { frames[index].1.origin.y += 34 }
+            top += 34
+        }
+        let area = CGRect(x: 0, y: top, width: width, height: max(0, bottom - top))
+        let transcriptFrame = floating ? SessionPanelLayout.transcript(in: area) : area
+        if floating {
+            frames.append((sessionPanel, CGRect(x: width - SessionPanelLayout.width - SessionPanelLayout.inset,
+                y: top + SessionPanelLayout.inset, width: SessionPanelLayout.width,
+                height: min(sessionPanel.preferredHeight, max(0, area.height - SessionPanelLayout.inset * 2)))))
+        }
         frames.append((transcript, transcriptFrame))
         let animate = animatesNextLayout && window != nil && !PiKit.Motion.reduced
         animatesNextLayout = false

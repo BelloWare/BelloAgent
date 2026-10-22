@@ -41,6 +41,9 @@ class ApplicationLifecycle: NSObject, NSApplicationDelegate {
             }
             return .terminateLater
         }
+        guard model.attachmentImports == 0 else {
+            model.error = "An image is still being added. Quit again once it finishes."; return .terminateCancel
+        }
         guard model.hasActiveWork else { beginShutdown(sender, model: model); return .terminateLater }
         // A modal run loop inside AppKit's own terminate decision re-enters
         // window and application callbacks from within this one. Ask in a sheet
@@ -74,6 +77,10 @@ class ApplicationLifecycle: NSObject, NSApplicationDelegate {
             answer(sender, false)
             DispatchQueue.main.async { [weak self] in self?.retryTermination() }
             return
+        }
+        // An import may have begun while the stop-and-quit question was up.
+        guard model.attachmentImports == 0 else {
+            model.error = "An image is still being added. Quit again once it finishes."; answer(sender, false); return
         }
         terminating = true
         let wasPreparing = model.installPreparing

@@ -6,7 +6,7 @@ import XCTest
 /// opens to must be what a full replay of the journal opens to, over those
 /// rows, and a file that does not match its journal is ignored and written
 /// again from the journal.
-final class JournalCheckpointTests: XCTestCase {
+final class JournalCheckpointTests: HelperTestCase {
     fileprivate struct Chat { let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore, path: String }
 
     private func session(_ chat: Chat, _ client: ScriptClient = ScriptClient([])) throws -> AgentSession {

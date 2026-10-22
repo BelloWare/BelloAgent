@@ -2,7 +2,7 @@ import XCTest
 @testable import GitView
 
 /// Included in the stream-1 handoff patch; compiled against its controller API.
-final class GitHistoryWiringTests: XCTestCase {
+final class GitHistoryWiringTests: ViewsTestCase {
     @MainActor func testOpeningTheSameHashRetiresAnOlderBlameReveal() async throws {
         let repo = try HistoryWiringFixture(); defer { repo.close() }
         let older = try repo.git(["rev-parse", "HEAD"])

@@ -10,7 +10,7 @@ import AppKit
 /// them, whatever its line endings, encoding and size, and wherever its
 /// chunks fall; its text read only as asked for, never on the main thread;
 /// and a file that changes under it said to have changed.
-final class FileDocumentTests: XCTestCase {
+final class FileDocumentTests: ViewsTestCase {
     private var folder: URL!
 
     override func setUp() async throws {

@@ -19,7 +19,7 @@ private actor HeldQueueDeliveryTools: ToolExecuting {
 
 /// Pending follow-ups can be reordered, rewritten and promoted to steering
 /// while a run is active; each change is durable and visible in the snapshot.
-final class QueueEditingTests: XCTestCase {
+final class QueueEditingTests: HelperTestCase {
     func testRemovingFollowUpDuringAllDeliveryDoesNotCrashOrDispatchRemovedText() async throws { try await checkRemovalDuringDelivery(steer: false) }
     func testRemovingSteeringDuringAllDeliveryDoesNotCrashOrDispatchRemovedText() async throws { try await checkRemovalDuringDelivery(steer: true) }
     func testNewFollowUpCannotReplaceRemovedItemInAnInFlightAllBatch() async throws { try await checkRemovalDuringDelivery(steer: false, addNew: true) }
@@ -218,7 +218,7 @@ final class QueueEditingTests: XCTestCase {
 /// A queued message the app can edit must be readable in full: the snapshot
 /// row carries a 1 KiB preview, and an editor that wrote that preview back
 /// would discard everything the user typed past it.
-final class QueuedTextReadTests: XCTestCase {
+final class QueuedTextReadTests: HelperTestCase {
     func testLongQueuedMessageIsFlaggedAndReadableWhole() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         // The first request is held so the follow-up is still pending while it

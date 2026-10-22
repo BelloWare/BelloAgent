@@ -34,10 +34,10 @@ enum ThinkingLevel: String, CaseIterable, Sendable {
 /// affect the requests of that turn; the profile itself is never rewritten.
 enum TurnOverrides {
     static let maximumModelLength = 200
-    /// A trimmed model alias within the 1…200 character wire limit, or nil.
+    /// A trimmed model alias within the 1…200 UTF-8 byte wire limit, or nil.
     static func normalizedModel(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
-              trimmed.count <= maximumModelLength, !trimmed.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { return nil }
+              trimmed.utf8.count <= maximumModelLength, !trimmed.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { return nil }
         return trimmed
     }
     /// A wire level, including explicit `default`, or nil for the profile setting.
@@ -69,13 +69,13 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     var outputBudgetVersion: Int?
 
     init(chat: ChatRecord) {
-        model = chat.model; thinkingLevel = chat.thinkingLevel
+        model = TurnOverrides.normalizedModel(chat.model); thinkingLevel = chat.thinkingLevel
         contextWindow = chat.contextWindow; maxOutputTokens = chat.maxOutputTokens
         modelOutputLimit = chat.modelOutputLimit; outputBudgetVersion = chat.outputBudgetVersion
     }
 
     func apply(to chat: inout ChatRecord, profile: ProfileRecord? = nil) {
-        chat.model = model; chat.thinkingLevel = thinkingLevel
+        chat.model = TurnOverrides.normalizedModel(model); chat.thinkingLevel = thinkingLevel
         chat.contextWindow = contextWindow; chat.maxOutputTokens = maxOutputTokens
         chat.modelOutputLimit = modelOutputLimit; chat.outputBudgetVersion = outputBudgetVersion
         if let profile { chat.migrateOutputBudget(profile: profile) }
@@ -287,7 +287,7 @@ extension WorkspaceModel {
     /// Persists a per-chat override and remembers it for new chats using this connection.
     func setModel(_ value: String?, for chatID: String) async {
         let normalized = TurnOverrides.normalizedModel(value)
-        if value != nil && normalized == nil { error = "Enter a model alias of 1 to 200 printable characters."; return }
+        if value != nil && normalized == nil { error = "Enter a printable model alias of 1 to 200 UTF-8 bytes."; return }
         guard let chat = record(chatID) else { return }
         let profile = profiles.first { $0.id == chat.profileID }
         await updateOverrides(chatID) { [self] selected in applyModelChoice(normalized, to: &selected, profile: profile) }

@@ -22,7 +22,84 @@ private final class HostReplies: @unchecked Sendable {
 
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
-final class HostServiceTests: XCTestCase {
+final class HostServiceTests: HelperTestCase {
+    func testQuiescenceRejectsSubmissionPreflightAdmission() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let gate = SubmissionPreflightGate(), host = NativeHostService(emit: { _ in })
+            _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+            _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+            await host.holdSubmissionPreflight(at: gate)
+            let sending = Task { try await host.command(method, sessionID: "s", params: ["clientTurnId": "t", "text": "Held before admission", "messageId": "old"]) }
+            try await eventually { await gate.entered }
+            do { _ = try await host.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("Quiescence crossed \(method) preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "session_busy") }
+            _ = try await host.command("turn.stop", sessionID: "s", params: [:])
+            await gate.release()
+            do { _ = try await sending.value; XCTFail("Stop must retire the preflight") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "submission_stopped") }
+            let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
+            XCTAssertEqual(quiet["quiesced"].flag, true)
+            await host.shutdown()
+        }
+    }
+
+    func testQuiescenceRejectsInspectorExecutionAndUnretainedResults() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+        _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+        _ = try await host.command("mcp.configure", sessionID: nil, params: ["config": ["servers": ["fixture": ["command": "/usr/bin/python3", "args": [JSON(repository.appendingPathComponent("fixtures/native/mcp-server.py").path), JSON(root.path)]]]]])
+        let invocation = Task { try await host.command("mcp.invoke", sessionID: "s", params: ["server": "fixture", "tool": "echo", "arguments": ["text": "retained"]], commandID: "invocation") }
+        defer { invocation.cancel(); try? Data().write(to: root.appendingPathComponent("mcp-release")) }
+        try await eventually { FileManager.default.fileExists(atPath: root.appendingPathComponent("mcp-arrived").path) }
+        func refuses() async throws {
+            do { _ = try await host.command("workspace.quiesce", sessionID: nil, params: [:]); XCTFail("MCP execution/retention must prevent quiescence") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "mcp_busy") }
+            _ = try await host.command("workspace.resume", sessionID: nil, params: [:])
+        }
+        try await refuses()
+        try Data().write(to: root.appendingPathComponent("mcp-release"))
+        let result = try await invocation.value
+        XCTAssertEqual(result["content"].list.first?["text"].text, "retained")
+        try await refuses()
+        _ = try await host.command("mcp.resultRetained", sessionID: nil, params: ["commandId": "invocation", "retained": true])
+        let quiet = try await host.command("workspace.quiesce", sessionID: nil, params: [:])
+        XCTAssertEqual(quiet["quiesced"].flag, true)
+    }
+
+    func testForgetWaitsForSlimmingWithoutBlockingAnotherChat() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path,cwd:root,profile:profile)
+        let host = NativeHostService(emit:{ _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        _ = try await host.command("session.open",sessionID:"quick",params:["profile":profile.raw,"apiKey":"fixture"])
+        let entered = expectation(description:"slimming disk entered"), gate = JournalDiskGate()
+        defer { gate.open() }
+        await host.holdJournalDiskWork { entered.fulfill(); gate.wait() }
+        let slimming = Task { try await host.command("journal.slim",sessionID:nil,params:["sessionId":"long","path":JSON(path.path)]) }
+        await fulfillment(of:[entered],timeout:3)
+        let forgotten = SubmissionPreflightGate()
+        let deletion = Task {
+            _ = try await host.command("session.forget",sessionID:"long",params:["descendantsDeleted":true,"ancestorsRepaired":true])
+            await forgotten.wait()
+        }
+        let snapshot = try await host.command("session.snapshot",sessionID:"quick",params:[:])
+        XCTAssertEqual(snapshot["state"].text,"idle")
+        try await Task.sleep(for:.milliseconds(200))
+        let premature = await forgotten.entered
+        XCTAssertFalse(premature,"Deletion cannot proceed while slimming can still publish")
+        gate.open(); _ = try await slimming.value
+        try await eventually { await forgotten.entered }
+        try FileManager.default.removeItem(at:path)
+        await forgotten.release(); try await deletion.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
+        await host.shutdown()
+    }
+
     func testStopDuringSubmissionPreflightRejectsTheOvertakenSend() async throws {
         for method in ["turn.submit", "turn.steer", "turn.edit"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
@@ -141,6 +218,30 @@ final class HostServiceTests: XCTestCase {
         try journal.append(["type": "custom", "customType": "pi-app.native.state.v1", "data": ["active": false, "queue": [], "steering": [], "commands": [], "queuePaused": false]], flush: true)
     }
 
+    func testPortablePreviewAndRecoveryDoNotBlockAnotherChatsSnapshot() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile(), path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path,cwd:root,profile:profile)
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        _ = try await host.command("session.open",sessionID:"quick",params:["profile":profile.raw,"apiKey":"fixture"])
+        for method in ["session.portable.preview", "session.import.inspect", "session.recover"] {
+            let entered = expectation(description:method + " disk entered"), answered = expectation(description:method + " sibling snapshot")
+            let gate = JournalDiskGate(); defer { gate.open() }
+            await host.holdJournalDiskWork { entered.fulfill(); gate.wait() }
+            let work = Task { try await host.command(method,sessionID:nil,params:["path":JSON(path.path),"newSessionId":"recovered"]) }
+            await fulfillment(of:[entered],timeout:2)
+            let snapshot = Task { let value = try await host.command("session.snapshot",sessionID:"quick",params:["includeMessages":false]); answered.fulfill(); return value }
+            await fulfillment(of:[answered],timeout:1)
+            gate.open()
+            let result = try await work.value, other = try await snapshot.value
+            XCTAssertEqual(other["state"].text,"idle")
+            if method == "session.recover" { XCTAssertGreaterThan(result["records"].int ?? 0,12_000) }
+            else { XCTAssertTrue(result["text"].text?.contains("Message 11999") == true) }
+        }
+        await host.shutdown()
+    }
+
     func testOpeningALongChatDoesNotHoldUpTheOthers() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), profile = try fixtureProfile()
@@ -217,7 +318,32 @@ private final class ReadyFrames: @unchecked Sendable {
 /// A journal whose last record was cut off could not be reopened, and the
 /// recovery the app offered was rejected outright. `session.recover` copies
 /// every complete record to a new chat and leaves the original as it was.
-final class SessionRecoverTests: XCTestCase {
+final class SessionRecoverTests: HelperTestCase {
+    func testRecoveryRefusesSourceRemovedOrReplacedBeforePublication() async throws {
+        for replace in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let (host,sessions) = try await open(root)
+            let source = sessions.appendingPathComponent("original.jsonl")
+            let records: [JSON] = [["type":"session","version":3,"id":"original"],
+                ["type":"custom","customType":"pi-app.native.v1","id":"n1","parentId":.null,"data":["version":1]]]
+            let bytes = try journal(records,tail:"{"); try bytes.write(to:source)
+            let gate = JournalDiskGate(), ready = expectation(description:"Complete copy awaits publication")
+            await host.holdRecoveryPublication { ready.fulfill(); gate.wait() }
+            let recovery = Task { try await host.command("session.recover",sessionID:nil,params:["path":JSON(source.path),"newSessionId":"recovered"]) }
+            await fulfillment(of:[ready],timeout:5)
+            // Moving to fixture Trash reproduces normal deletion while the
+            // open descriptor still reads the original inode successfully.
+            try FileManager.default.moveItem(at:source,to:root.appendingPathComponent("trashed.jsonl"))
+            if replace { try bytes.write(to:source) }
+            gate.open()
+            do { _ = try await recovery.value; XCTFail("Recovery published after its source was \(replace ? "replaced" : "deleted")") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"session_damaged") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath:sessions.appendingPathComponent("recovered.jsonl").path))
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:sessions.path).allSatisfy { !$0.hasPrefix(".recover-") })
+            await host.shutdown()
+        }
+    }
+
     private func journal(_ lines: [JSON], tail: String) throws -> Data {
         var data = Data(); for line in lines { data.append(try line.data()); data.append(10) }
         data.append(Data(tail.utf8)); return data
@@ -277,4 +403,14 @@ private actor SubmissionPreflightGate {
 
 private extension NativeHostService {
     func holdSubmissionPreflight(at gate: SubmissionPreflightGate) { beforeSubmissionPreflight = { await gate.wait() } }
+}
+
+private final class JournalDiskGate: @unchecked Sendable {
+    private let release = DispatchSemaphore(value:0)
+    func wait() { _ = release.wait(timeout:.now() + 10) }
+    func open() { release.signal() }
+}
+private extension NativeHostService {
+    func holdJournalDiskWork(_ action: @escaping @Sendable () -> Void) { beforeJournalDiskWork = action }
+    func holdRecoveryPublication(_ action: @escaping @Sendable () -> Void) { beforeRecoveryPublication = action }
 }

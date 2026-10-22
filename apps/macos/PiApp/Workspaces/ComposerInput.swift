@@ -207,6 +207,7 @@ import AppKit
                               focused: { [id = session.id] in model.focusPane(id); model.prewarm(id) },
                               accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer",
                               inputRejected: { [weak session] in session?.notice = $0 },
+                              imageRejected: { [weak session] in session?.notice = $0; model.error = $0 },
                               attachFiles: { [id = session.id] in model.attachImageFiles($0, sessionID: id) },
                               pastedImages: model.pastedImages,
                               beginImageImport: { [id = session.id] in model.beginImageImport(sessionID: id) },
@@ -338,7 +339,7 @@ import AppKit
             chipIDs = state.attachments.map(\.id)
             chips.subviews.forEach { $0.removeFromSuperview() }
             for attachment in state.attachments {
-                let chip = PiKit.Chip(text: URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
+                let chip = PiKit.Chip(text: attachment.name ?? URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
                                       action: { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) },
                                       remove: { [weak self] in
                                           guard let self, let session = self.session, !session.recoveringDraft else { return }

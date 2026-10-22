@@ -27,7 +27,7 @@ private func editReply(_ modes: [String]) -> ModelReply {
 
 /// What a tool card says happened, live and from the journal: a tool that
 /// ran and failed, a tool whose effects are unknown, and one that never ran.
-final class ToolOutcomeTests: XCTestCase {
+final class ToolOutcomeTests: HelperTestCase {
     private func cards(_ snapshot: JSON) -> [String] {
         snapshot["messages"].list.filter { $0["role"].text == "assistant" }.flatMap { $0["tools"].list }.compactMap { $0["state"].text }
     }
@@ -91,7 +91,14 @@ final class ToolOutcomeTests: XCTestCase {
         let output = try XCTUnwrap(body["input"].list.first { $0["type"].text == "function_call_output" }?["output"])
         XCTAssertEqual(output, "(tool image omitted: model does not support images)")
         XCTAssertFalse(body.encoded().contains(String(image.prefix(64))))
-        await session.close()
+        let live = await session.snapshot()
+        let liveOutput = live["messages"].list.flatMap { $0["tools"].list }.first?["output"].text
+        XCTAssertEqual(liveOutput, "[image/png result, 3000 bytes]")
+        let path = await session.path; await session.close()
+        let reopened = try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:ImageTools(data:image),traces:TraceStore(),resumePath:path,autoCompaction:false)
+        let restored = await reopened.snapshot()
+        XCTAssertEqual(restored["messages"].list.flatMap { $0["tools"].list }.first?["output"].text, liveOutput)
+        await reopened.close()
     }
 }
 

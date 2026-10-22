@@ -31,7 +31,7 @@ private final class HoldStateWriteFailure: @unchecked Sendable {
 
 /// Editing a queued message holds every pending message in its chat until
 /// the edit is saved, cancelled or the message removed (handoff D2).
-final class QueueEditHoldTests: XCTestCase {
+final class QueueEditHoldTests: HelperTestCase {
     private func open(_ root: URL, client: ScriptClient, tools: any ToolExecuting = RecordingTools(), directory: String = "state", resume: String? = nil,
                       failure: HoldStateWriteFailure? = nil) throws -> AgentSession {
         try AgentSession(id: "queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent(directory), readOnly: true,

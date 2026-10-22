@@ -8,6 +8,8 @@ import AppKit
     private var copySource: CapturedBodyCopySource?
     private var notice = "" { didSet { refreshNotice() } }
     private var pageText = "", pageTotal = 0, pageOffset = 0, pageLoading = false
+    private var headersText = ""
+    private var lastCaptureRevisions: [String: Int] = [:]
     private var lastPart: InspectorRequestModel.RawPart?
     private var lastRow: String?
     private var lastFocus = 0
@@ -19,8 +21,15 @@ import AppKit
     private var textKey: String?
     private var footer: NSView?
     private var toolbar: ShellStack?
+    private var partsCollapsed = false
     private var status: PiKit.Note?
     private lazy var parts = PiKit.Tabs(selection: request.raw, items: [(InspectorRequestModel.RawPart.request, "Request"), (.response, "Response"), (.headers, "Headers"), (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")]) { [weak request] in request?.raw = $0 }
+    private lazy var partsMenu = PiKit.MenuButton(title: "Request", identifier: "inspector-raw-parts-menu", help: "Raw capture part") { [weak self] in
+        guard let self else { return [] }
+        return self.parts.items.map { part, title in
+            .button(title, checked: self.request.raw == part) { [weak request = self.request] in request?.raw = part }
+        }
+    }
     private lazy var search = InspectorSearchField(text: request.query) { [weak request] in request?.query = $0 }
     private lazy var copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .ghost) { [weak self] in self?.copyView() }
     private lazy var captureMenu: PiKit.MenuControl = {
@@ -33,6 +42,14 @@ import AppKit
     private struct PageKey: Equatable { let attempt: String; let part: InspectorRequestModel.RawPart; let offset: Int }
     private var row: InspectorRequestRow? { request.row }
     private var showsBody: Bool { request.raw == .request || request.raw == .response }
+    private var copyText: String {
+        switch request.raw {
+        case .metadata: request.metadataText
+        case .headers: headersText
+        case .events: lastCaptureRevisions["response", default: 0] == request.captureRevisions["response", default: 0] ? pageText : ""
+        default: pageText
+        }
+    }
 
     init(inspector: SessionInspectorModel, request: InspectorRequestModel, compact: Bool) {
         self.inspector = inspector; self.request = request; self.compact = compact
@@ -47,7 +64,14 @@ import AppKit
         else { refresh() }
     }
     func refresh() {
-        if lastRow != row?.id || lastPart != request.raw {
+        let eventsLost = request.raw == .events && lastCaptureRevisions["response", default: 0] != request.captureRevisions["response", default: 0]
+        if let kind = body?.kind, lastCaptureRevisions[kind, default: 0] != request.captureRevisions[kind, default: 0] {
+            body?.stop(); body?.removeFromSuperview()
+            if displayed === body { displayed = nil }
+            body = nil; bodyKey = nil; bodyRoute = nil; copySource = nil
+        }
+        lastCaptureRevisions = request.captureRevisions
+        if lastRow != row?.id || lastPart != request.raw || eventsLost {
             copySource = nil; pageOffset = 0; pageText = ""; pageTotal = 0
             pageTask?.cancel(); pageTask = nil; currentPage = nil
             if lastRow != row?.id { notice = "" }
@@ -65,7 +89,8 @@ import AppKit
     private func rebuildToolbar() {
         parts.selection = request.raw
         parts.setAccessibilityIdentifier("inspector-raw-parts")
-        var items: [ShellItem] = [.view(parts), .spacer(4)]
+        partsMenu.label = parts.items.first { $0.0 == request.raw }?.1 ?? "Request"
+        var items: [ShellItem] = [.view(partsCollapsed ? partsMenu : parts), .spacer(4)]
         if showsBody { items.append(.view(search, .fixed(compact ? 180 : 250))) }
         items += [.view(copy), .view(captureMenu, .fixed(28))]
         if let toolbar { toolbar.items = items }
@@ -83,15 +108,23 @@ import AppKit
             let route = InspectorBodyRoute.resolve(row: row, kind: kind, metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if bodyKey != key {
                 bodyKey = key; bodyRoute = route
-                body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
-            } else if bodyRoute != route {
+                let revision = request.captureRevisions[kind, default: 0]
+                body = CapturedBodyView(source: request.observingAvailability(route.source(inspector: inspector, request: request, row: row, kind: kind), attemptID: row.id, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] source in
+                    guard let self, self.bodyKey == key, self.request.captureRevisions[kind, default: 0] == revision else { return }
+                    self.copySource = source; self.refreshCopy()
+                })
+            } else if bodyRoute != route, request.metadataLoaded {
                 bodyRoute = route
-                body?.update(source: route.source(inspector: inspector, request: request, row: row, kind: kind), retained: route == .archive)
+                body?.update(source: request.observingAvailability(route.source(inspector: inspector, request: request, row: row, kind: kind), attemptID: row.id, kind: kind), retained: route == .archive)
             }
             body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil)
             if let body { show(body) }
         case .headers:
-            let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:]), InspectorSectionTitle("Response headers"), CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])], spacing: 14)
+            let sent = CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:])
+            let received = CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])
+            headersText = [("Request headers", sent.text), ("Response headers", received.text)]
+                .filter { !$0.1.isEmpty }.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
+            let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), sent, InspectorSectionTitle("Response headers"), received], spacing: 14)
             let scroll = PageScrollView(column: column); scroll.setAccessibilityIdentifier("inspector-raw-headers"); show(scroll)
         case .metadata:
             showText(request.metadataText, empty: request.metadataLoaded ? "No metadata record." : "Reading the metadata record…", label: "Request metadata", key: row.id + ":metadata")
@@ -119,7 +152,7 @@ import AppKit
         if text.isEmpty { host.cover(InspectorPlaceholder(symbol: "", title: empty)) }
         show(host)
     }
-    private func refreshCopy() { copy.isEnabled = showsBody ? copySource != nil : !request.metadataText.isEmpty || !pageText.isEmpty }
+    private func refreshCopy() { copy.isEnabled = showsBody ? copySource != nil : !copyText.isEmpty }
     private func refreshNotice() {
         status?.removeFromSuperview(); status = nil
         if !notice.isEmpty { status = PiKit.Note(notice, tone: .warning); addSubview(status!) }
@@ -134,12 +167,16 @@ import AppKit
             let value: [String: WireValue]
             if key.part == .links {
                 value = try await inspector.archive.messageLinks(attemptID: row.id, offset: key.offset)
-            } else if row.source != .live || request.metadata["response"]?.object?["savedToLog"]?.bool == true,
+            } else if try await capturesSavedToLog(row),
                       let retained = try? await inspector.archive.eventIndices(attemptID: row.id, offset: key.offset) {
-                // A request the log saved is read there, also while the index still shows the helper's row.
                 value = retained
             } else if let workspace = inspector.workspace {
-                value = try await workspace.debugRequest("debug.raw-events", sessionID: request.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
+                do {
+                    value = try await workspace.debugRequest("debug.raw-events", sessionID: row.sessionID ?? inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
+                } catch {
+                    guard try await archiveOwnsCapture(after: error, row: row) else { throw error }
+                    value = try await inspector.archive.eventIndices(attemptID: row.id, offset: key.offset)
+                }
             } else { throw HostError.failure("No event index was retained for this request.") }
             try Task.checkCancellation()
             let text = await Task.detached(priority: .userInitiated) { () -> String in
@@ -157,15 +194,56 @@ import AppKit
 
     // MARK: Copy, capture settings and exports
 
+    private func capturesSavedToLog(_ row: InspectorRequestRow, requireConfirmation: Bool = false) async throws -> Bool {
+        // A completed log row can still have its bodies and event index only
+        // in helper memory. The helper releases those only after this handoff.
+        try Task.checkCancellation()
+        let sessionID = row.sessionID ?? inspector.scope.sessionID
+        let fallback = !requireConfirmation && (row.source != .live || (request.row?.id == row.id && request.metadata["response"]?.object?["savedToLog"]?.bool == true))
+        if let workspace = inspector.workspace {
+            do {
+                let live = try await workspace.debugRequest("debug.attempt", sessionID: sessionID, params: ["attemptId": .string(row.id)])
+                try Task.checkCancellation()
+                return live["response"]?.object?["savedToLog"]?.bool == true
+            } catch {
+                try Task.checkCancellation()
+                let stored = try? await inspector.archive.metadata(attempt: row.id)
+                try Task.checkCancellation()
+                if ["request", "response"].contains(where: { MessageBodyReader.canReadRetained(stored?[$0]?.object?["state"]?.string ?? "") }) { return true }
+                if case HostError.rejected(let code, _) = error, code == "capture_unavailable" { return fallback }
+                if let item = workspace.record(sessionID), workspace.hosts[item.workspaceID]?.isReady == true { throw error }
+            }
+        }
+        return fallback
+    }
+
+    private func archiveOwnsCapture(after error: Error, row: InspectorRequestRow) async throws -> Bool {
+        try Task.checkCancellation()
+        switch error {
+        case HostError.rejected("capture_saved", _): return true
+        case TraceError.changed, HostError.rejected("capture_unavailable", _):
+            // Verification can race the final acknowledgement or the helper's
+            // pruning. A log row alone cannot prove that memory bytes survived.
+            return try await capturesSavedToLog(row, requireConfirmation: true)
+        default: return false
+        }
+    }
+
     private func copyView() {
         if showsBody {
-            guard let copySource else { return }
+            let kind = request.raw.rawValue, revision = request.captureRevisions[request.raw.rawValue, default: 0]
+            guard let copySource, lastCaptureRevisions[kind, default: 0] == revision else { return }
             Task {
-                do { let text = try await copySource.render(); NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); notice = "" }
+                do {
+                    let text = try await copySource.render()
+                    guard request.captureRevisions[kind, default: 0] == revision else { return }
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); notice = ""
+                }
                 catch { if !(error is CancellationError) { notice = error.localizedDescription } }
             }
         } else {
-            let text = request.raw == .metadata ? request.metadataText : pageText
+            let text = copyText
+            guard !text.isEmpty else { return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
         }
     }
@@ -199,65 +277,132 @@ import AppKit
     private func clear() async {
         guard let workspace = inspector.workspace else { return }
         guard await PiQuestion.shared.confirm("Clear this chat's capture bodies?", "Remove current memory bodies and this chat's retained payload references. Request metrics, message links, conversation history and exported copies stay.", action: "Clear", destructive: true) else { return }
-        do { try await workspace.clearCaptures(sessionID: request.sessionID); inspector.refresh() } catch { notice = error.localizedDescription }
+        do { try await workspace.clearCaptures(sessionID: request.sessionID); request.capturesCleared(); inspector.refresh() } catch { notice = error.localizedDescription }
+    }
+
+    private struct ExportIdentity {
+        let attemptID: String, sessionID: String
+        let part: InspectorRequestModel.RawPart
+        let revisions: [String: Int]
+    }
+    /// Exports follow one rule. Until the reader has confirmed and chosen a
+    /// destination, a changed selection, part, format or capture refuses the
+    /// export (its questions would describe the wrong request). Once they
+    /// have, the export completes for the request they chose, by its frozen
+    /// identity and bytes, whatever the Inspector shows by then.
+    private func exportIdentity(_ row: InspectorRequestRow) -> ExportIdentity {
+        ExportIdentity(attemptID: row.id, sessionID: row.sessionID ?? request.sessionID, part: request.raw, revisions: request.captureRevisions)
+    }
+    private func isCurrent(_ identity: ExportIdentity, source: CapturedBodyCopySource? = nil) -> Bool {
+        !Task.isCancelled && request.active && row?.id == identity.attemptID && request.sessionID == identity.sessionID
+            && request.raw == identity.part
+            && (source == nil ? request.captureRevisions == identity.revisions
+                : request.captureRevisions[identity.part.rawValue, default: 0] == identity.revisions[identity.part.rawValue, default: 0])
+            && (source == nil || (copySource?.id == source?.id && copySource?.format == source?.format))
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
-        guard let url = await PiQuestion.shared.save(panel) else { return }
-        do { try Data(request.metadataText.utf8).write(to: url, options: .atomic); notice = "" } catch { notice = error.localizedDescription }
+        let identity = exportIdentity(row)
+        guard isCurrent(identity) else { return }
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
+        guard isCurrent(identity) else { return }
+        do {
+            // Freeze this request's bytes before the chooser: the Inspector
+            // can be reused for another request while the sheet is open.
+            guard request.metadataLoaded, request.metadata["attemptId"]?.string == row.id,
+                  request.metadata["sessionId"]?.string == (row.sessionID ?? inspector.scope.sessionID) else {
+                throw HostError.failure("This request's record is unavailable.")
+            }
+            let data = Data(request.metadataText.utf8)
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-request-metadata.json"
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            try data.write(to: url, options: .atomic); notice = ""
+        } catch { notice = error.localizedDescription }
     }
 
     private func exportBodies(_ row: InspectorRequestRow) async {
-        guard await PiQuestion.shared.confirm("Export sensitive retained body bytes?", "This exports request.bin, response.bin and a manifest of their completeness and hashes, including every retained byte and any secret in them. Prefixes and expired captures are labeled. Nothing is sent again.") else { return }
+        let identity = exportIdentity(row), archive = inspector.archive
+        guard isCurrent(identity) else { return }
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
+        guard isCurrent(identity) else { return }
+        guard await PiQuestion.shared.confirm("Export sensitive retained body bytes?", "This exports request.bin, response.bin and a manifest of their completeness and hashes, including every retained byte and any secret in them. Prefixes and expired captures are labeled. Nothing is sent again."), isCurrent(identity) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.message = "Choose where to put a new trace folder."
+        // The reader confirmed this request and chose where it goes: finish
+        // it by its frozen identity even if the Inspector moved on meanwhile.
         guard let destination = await PiQuestion.shared.open(panel).first else { return }
         do {
             let saved: URL
-            if row.source != .live {
-                saved = try await inspector.archive.exportRetained(sessionID: request.sessionID, attemptID: row.id, destination: destination)
-            } else if let workspace = inspector.workspace {
-                saved = try await workspace.persistAttempt(sessionID: request.sessionID, attemptID: row.id, destination: destination)
+            if try await capturesSavedToLog(row) {
+                saved = try await archive.exportRetained(sessionID: identity.sessionID, attemptID: identity.attemptID, destination: destination)
+            } else if let workspace {
+                do {
+                    saved = try await workspace.persistAttempt(sessionID: identity.sessionID, attemptID: identity.attemptID, destination: destination)
+                } catch {
+                    guard try await archiveOwnsCapture(after: error, row: row) else { throw error }
+                    saved = try await archive.exportRetained(sessionID: identity.sessionID, attemptID: identity.attemptID, destination: destination)
+                }
             } else { throw HostError.failure("This request's bytes are not available.") }
+            guard isCurrent(identity) else { return }
             notice = "Exported " + saved.path
-        } catch { notice = error.localizedDescription }
+        } catch { if isCurrent(identity) { notice = error.localizedDescription } }
     }
 
     /// Replaces a literal the reader names with [REDACTED] in the view on
     /// screen, shows the result, then saves it with a manifest that says so.
     private func exportRedacted(_ row: InspectorRequestRow) async {
-        guard let copySource else { return }
+        let identity = exportIdentity(row)
+        guard let copySource, isCurrent(identity, source: copySource) else { return }
+        let sourceView = identity.part.rawValue
+        let workspace = inspector.workspace, outputUse = workspace?.beginToolOutputUse(.export)
+        defer { if let outputUse { workspace?.finishToolOutputUse(outputUse) } }
+        do { if let outputUse { try await workspace?.prepareToolOutputUse(outputUse) } }
+        catch { return }
+        guard isCurrent(identity, source: copySource) else { return }
         let ask = NSAlert(); ask.messageText = "Which literal should be redacted?"
         ask.informativeText = "Every occurrence is replaced with [REDACTED] in a copy of the view on screen. This is not a secret detector."
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); ask.accessoryView = field
         ask.addButton(withTitle: "Preview"); ask.addButton(withTitle: "Cancel")
-        guard await PiQuestion.shared.ask(ask) == .alertFirstButtonReturn, !field.stringValue.isEmpty else { return }
+        guard await PiQuestion.shared.ask(ask) == .alertFirstButtonReturn, !field.stringValue.isEmpty, isCurrent(identity, source: copySource) else { return }
         let literal = field.stringValue
         do {
             let text = try await copySource.render()
+            guard isCurrent(identity, source: copySource) else { return }
             let transformed = await Task.detached(priority: .userInitiated) { text.replacingOccurrences(of: literal, with: "[REDACTED]") }.value
+            guard isCurrent(identity, source: copySource) else { return }
             let preview = NSAlert(); preview.messageText = "Redacted view"
             preview.informativeText = "Only the literal you named is replaced. Check the preview before exporting."
             let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 300)); let view = NSTextView(frame: scroll.bounds)
             view.isEditable = false; view.string = String(transformed.prefix(200_000)); scroll.documentView = view; scroll.hasVerticalScroller = true
             preview.accessoryView = scroll
             preview.addButton(withTitle: "Export…"); preview.addButton(withTitle: "Cancel")
-            guard await PiQuestion.shared.ask(preview) == .alertFirstButtonReturn else { return }
+            guard await PiQuestion.shared.ask(preview) == .alertFirstButtonReturn, isCurrent(identity, source: copySource) else { return }
             let panel = NSSavePanel(); panel.nameFieldStringValue = "BelloAgent-redacted-view.json"
             guard let url = await PiQuestion.shared.save(panel) else { return }
-            let manifest: WireValue = .object(["attemptId": .string(row.id), "sourceView": .string(request.raw.rawValue), "byteExact": .bool(false),
+            let manifest: WireValue = .object(["attemptId": .string(identity.attemptID), "sourceView": .string(sourceView), "byteExact": .bool(false),
                                                "transformations": .array([.string("The displayed view with a reader-named literal replaced by [REDACTED]. Other sensitive data may remain.")]),
                                                "view": .string(transformed)])
             try Data(manifest.pretty.utf8).write(to: url, options: .atomic)
-        } catch { if !(error is CancellationError) { notice = error.localizedDescription } }
+        } catch { if !(error is CancellationError), isCurrent(identity, source: copySource) { notice = error.localizedDescription } }
     }
     override func layout() {
         super.layout()
         let inset = compact ? PiSpacing.lg : PiSpacing.xl
         let width = max(0, bounds.width - 2 * inset)
         if let toolbar {
-            if let index = toolbar.items.firstIndex(where: { $0.view === search }) { toolbar.items[index].size = .fixed(compact ? 180 : 250) }
+            let actions = copy.intrinsicContentSize.width + 28 + 4 + PiSpacing.sm * (showsBody ? 4 : 3)
+            let collapsed = parts.intrinsicContentSize.width + actions + (showsBody ? 120 : 0) > width
+            if partsCollapsed != collapsed { partsCollapsed = collapsed; rebuildToolbar() }
+            if let index = toolbar.items.firstIndex(where: { $0.view === search }) {
+                let selector = partsCollapsed ? partsMenu.intrinsicContentSize.width : parts.intrinsicContentSize.width
+                toolbar.items[index].size = .fixed(min(compact ? 180 : 250, max(120, width - selector - actions)))
+            }
             let height = toolbar.height(forWidth: width); toolbar.frame = CGRect(x: inset, y: 12, width: width, height: height)
         }
         let top = (toolbar?.frame.maxY ?? 12) + 10

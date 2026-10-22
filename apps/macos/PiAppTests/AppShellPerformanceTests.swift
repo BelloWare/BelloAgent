@@ -535,6 +535,11 @@ final class AppShellPerformanceTests: AppShellTestCase {
         for index in 0..<12 {
             let page = SessionDisplay(id: "chat-\(index)")
             model.displays[page.id] = page
+            try await model.loadDraftBaseline(page)
+        }
+        // All chats are hydrated before admitting this batch of typing.
+        for index in 0..<12 {
+            let page = try XCTUnwrap(model.displays["chat-\(index)"])
             page.draft = "Something typed in chat \(index)"
             model.draftChanged(page)
         }

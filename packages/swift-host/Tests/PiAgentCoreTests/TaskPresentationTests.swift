@@ -22,7 +22,7 @@ private actor NoOutputRetryClient: ModelClient {
     }
 }
 
-final class TaskPresentationTests: XCTestCase {
+final class TaskPresentationTests: HelperTestCase {
     private func make(_ root: URL, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), resume: String? = nil) throws -> AgentSession {
         try AgentSession(id:"phases",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
             resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),resumePath:resume,autoCompaction:false)

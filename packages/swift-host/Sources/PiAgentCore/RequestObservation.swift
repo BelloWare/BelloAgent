@@ -20,7 +20,10 @@ public struct RequestObservation: Sendable, Equatable {
     }
     /// Supported Responses lifecycle objects are cumulative snapshots. Nil
     /// fields never become zero; a missing final field stays explicitly interim.
-    mutating func consume(_ value: JSON, streaming: Bool, at: Double) -> Bool {
+    /// The response's id and model are the provider's text, and a gateway can
+    /// echo the request's credential in them: they are masked as capture
+    /// metadata is (`credentials`), before the bound can cut one apart.
+    mutating func consume(_ value: JSON, streaming: Bool, at: Double, credentials: CaptureCredentials) -> Bool {
         let event=streaming ? value["type"].text ?? "" : "response.json"
         guard !streaming || ["response.created","response.in_progress","response.completed","response.incomplete","response.failed"].contains(event) else { return false }
         let response=streaming ? value["response"] : value
@@ -32,8 +35,8 @@ public struct RequestObservation: Sendable, Equatable {
         if phase == "final" || phase == "interrupted" { return false }
         let before=self
         sourceEvent=event; receivedAt=at
-        if let id=response["id"].text { responseID=String(id.prefix(512)) }
-        if let model=response["router_model_name"].text ?? response["model"].text { effectiveModel=String(model.prefix(512)) }
+        if let id=response["id"].text { responseID=String(credentials.metadataText(id).prefix(512)) }
+        if let model=response["router_model_name"].text ?? response["model"].text { effectiveModel=String(credentials.metadataText(model).prefix(512)) }
         phase=terminal ? (event == "response.failed" || event == "response.incomplete" || response["status"].text == "incomplete" || response["status"].text == "failed" ? "interrupted" : "final") : "interim"
         let usage=UsageObservation.normalized(response["usage"],api:"openai-responses")
         for key in ["input","output","cacheRead","cacheWrite","reasoning","total"] {

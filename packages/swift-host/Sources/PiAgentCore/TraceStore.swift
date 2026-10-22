@@ -115,11 +115,11 @@ public actor TraceStore {
         t.identity?.body(value,streaming:streaming,excluding: credentials.contains)
         t.gateway?.body(value,streaming:streaming,excluding: credentials.contains)
     }
-    public func identity(_ id:String) -> JSON { guard let t = traces[id] else { return .null }; return t.credentials.metadata(t.identity?.json ?? .null) }
+    public func identity(_ id:String) -> JSON { guard let t = traces[id] else { return .null }; return t.identity?.captured(t.credentials) ?? .null }
     /// Only checked numerical/identity metadata crosses the popup boundary.
     func monitoring(_ id: String) -> JSON {
         guard let t = traces[id] else { return [:] }
-        let identity = t.credentials.metadata(t.identity?.json ?? .null), gateway = t.gateway?.json ?? .null
+        let identity = t.identity?.captured(t.credentials) ?? .null, gateway = t.gateway?.json ?? .null
         // `outcome` leaves "running" once the attempt has ended: its cost is
         // final then, and the session adds it to the chat's spend.
         return ["identity":["status":identity["status"], "effectiveModel":identity["effectiveModel"]],
@@ -160,7 +160,7 @@ public actor TraceStore {
     }
     public func event(_ id:String, _ event:SSEEvent) async {
         guard let t=traces[id] else { return }
-        t.rawEvents.append(["type":JSON(preview(event.event, bytes:128)),"start":JSON(event.start),"end":JSON(event.end),"observedAt":JSON(nowMS())])
+        t.rawEvents.append(["type":JSON(preview(t.credentials.metadataText(event.event), bytes:128)),"start":JSON(event.start),"end":JSON(event.end),"observedAt":JSON(nowMS())])
         t.rawEventCount += 1
         if t.mode == "persist", t.rawEvents.count - t.sentEventIndices >= 128 { flushEvents(id) }
     }
@@ -215,7 +215,11 @@ public actor TraceStore {
         t.firstBodyByte=observation["firstBodyByte"].double; t.eof=observation["httpEnd"].double
         t.transportOutcome=observation["transportOutcome"].text ?? "unobserved"
     }
-    public func usage(_ id:String, _ usage:JSON) { traces[id]?.usage=usage }
+    public func usage(_ id:String, _ usage:JSON) {
+        guard let t=traces[id] else { return }
+        t.usage=usage
+        if let raw=usage.map["raw"] { t.usage["raw"]=t.credentials.metadata(raw, includingKeys:true) }
+    }
     public func operation(_ id:String, _ value:JSON) async {
         guard let trace=traces[id] else { return }
         trace.operation=value
@@ -426,9 +430,11 @@ public actor TraceStore {
     /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
     /// poll) never reads them, while at 1,000 messages they were ~39 KB.
     private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
+        var gateway=t.gateway?.json ?? .null
+        if let source=gateway["cache"]["source"].text { gateway["cache"]["source"]=JSON(t.credentials.metadataText(source)) }
         var value:JSON = ["requestScope":t.scope.flatMap { try? subagentJSON($0) } ?? .null,"attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
-         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
-         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
+         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":gateway,"operation":t.operation,
+         "identity":t.identity?.captured(t.credentials) ?? .null,"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEventCount),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,

@@ -62,6 +62,40 @@ final class ModelSwitchTests: XCTestCase {
         XCTAssertEqual(ThinkingLevel.allCases.map(\.rawValue), ["profile-default", "default", "off", "minimal", "low", "medium", "high", "xhigh", "max"])
     }
 
+    func testLegacyModelDefaultsCannotRepublishAnOversizedAlias() throws {
+        let invalid = String(repeating: "界", count: 70)
+        let chat = ChatRecord(id: "old", workspaceID: "w", title: "Old", profileID: "p", model: invalid)
+        XCTAssertNil(ChatModelDefaults(chat: chat).model)
+        let data = try JSONSerialization.data(withJSONObject: ["model": invalid])
+        let defaults = try JSONDecoder().decode(ChatModelDefaults.self, from: data)
+        var fresh = ChatRecord(id: "new", workspaceID: "w", title: "New", profileID: "p")
+        defaults.apply(to: &fresh)
+        XCTAssertNil(fresh.model)
+    }
+
+    @MainActor func testManualModelAliasesRespectTheUTF8WireLimit() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        model.prewarmsHelpers = false
+        let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Chat", profileID: "p")
+        try await model.store?.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
+        let below = String(repeating: "界", count: 66) + "a", boundary = below + "b", above = boundary + "c"
+        XCTAssertEqual(below.utf8.count, 199); XCTAssertEqual(boundary.utf8.count, 200); XCTAssertEqual(above.utf8.count, 201)
+        for accepted in [below, boundary] {
+            await model.setModel(accepted, for: chat.id)
+            XCTAssertNil(model.error); XCTAssertEqual(model.record(chat.id)?.model, accepted)
+        }
+        for rejected in [above, String(repeating: "界", count: 70)] {
+            model.error = nil
+            await model.setModel(rejected, for: chat.id)
+            XCTAssertNotNil(model.error); XCTAssertEqual(model.record(chat.id)?.model, boundary)
+            XCTAssertNil(TurnOverrides.normalizedModel(rejected))
+            let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: chat.id)
+            let defaults = try await model.store?.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: "p")
+            XCTAssertEqual(saved?.model, boundary); XCTAssertEqual(defaults?.model, boundary)
+        }
+    }
+
     @MainActor func testSettingOverridesPersistsTheChatAndSidesInheritThem() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

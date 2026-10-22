@@ -6,7 +6,7 @@ import XCTest
 /// is the query first of all, a start of a word or a run of characters over
 /// scattered ones; where each character matched; ":N" a line; the best kept
 /// the same across the chunks a large index is searched in.
-final class FileFinderSearchTests: XCTestCase {
+final class FileFinderSearchTests: ViewsTestCase {
     private func found(_ query: String, in paths: [String], limit: Int = 50) -> [String] {
         FileFinderSearch.search(FileFinderQuery(query), in: index(paths), limit: limit).map(\.path)
     }

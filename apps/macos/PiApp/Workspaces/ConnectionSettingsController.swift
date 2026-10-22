@@ -134,7 +134,10 @@ import Combine
         let take: (inout VaultConfiguration, VaultConfiguration) -> Void
     }
     private static let preferenceFields: [PreferenceField] = [
-        .init(section: .usage, differs: { $0.capture != $1.capture }, take: { $0.capture = $1.capture }),
+        .init(section: .usage, differs: { $0.capture.defaultMode != $1.capture.defaultMode }, take: { $0.capture.defaultMode = $1.capture.defaultMode }),
+        .init(section: .usage, differs: { $0.capture.retentionDays != $1.capture.retentionDays }, take: { $0.capture.retentionDays = $1.capture.retentionDays }),
+        .init(section: .usage, differs: { $0.capture.quotaBytes != $1.capture.quotaBytes }, take: { $0.capture.quotaBytes = $1.capture.quotaBytes }),
+        .init(section: .usage, differs: { $0.capture.quotaUnlimited != $1.capture.quotaUnlimited }, take: { $0.capture.quotaUnlimited = $1.capture.quotaUnlimited }),
         .init(section: .usage, differs: { $0.dashboard != $1.dashboard }, take: { $0.dashboard = $1.dashboard }),
         .init(section: .usage, differs: { $0.chatCostLimit != $1.chatCostLimit }, take: { $0.chatCostLimit = $1.chatCostLimit }),
         .init(section: .chats, differs: { $0.transcriptView != $1.transcriptView }, take: { $0.transcriptView = $1.transcriptView }),

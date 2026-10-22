@@ -565,7 +565,11 @@ enum TranscriptActivity {
         let oldRaw = decoded.values["oldText"] as? String
         let newRaw = (decoded.values["newText"] ?? decoded.values["content"]) as? String
         guard oldRaw != nil || newRaw != nil else { return nil }
-        let oldCut = oldRaw.map(withoutMarker), newCut = newRaw.map(withoutMarker)
+        // Marker-shaped text is ordinary content unless the host says it cut the input.
+        func content(_ text: String) -> (text: String, marker: String?) {
+            tool.inputTruncated == true ? withoutMarker(text) : (text, nil)
+        }
+        let oldCut = oldRaw.map(content), newCut = newRaw.map(content)
         let old = oldCut?.text, new = newCut?.text
         let marker = newCut?.marker ?? oldCut?.marker
         let mode = tool.name == "write" ? "write" : "edit"

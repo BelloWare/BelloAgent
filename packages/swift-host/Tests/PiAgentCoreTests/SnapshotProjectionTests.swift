@@ -36,7 +36,7 @@ private actor ProjectionLinkGate {
     func release(accepted: Bool = true) { released=true; pending?.resume(returning:accepted); pending=nil }
 }
 
-final class SnapshotProjectionTests: XCTestCase {
+final class SnapshotProjectionTests: HelperTestCase {
     private func history(count: Int = 80, bytes: Int = 4096) -> [ChatMessage] {
         (0..<count).map { index in
             var message=ChatMessage(role:index.isMultiple(of: 2) ? "user" : "assistant",content:[textBlock("Row \(index): " + String(repeating: "x",count:bytes))])

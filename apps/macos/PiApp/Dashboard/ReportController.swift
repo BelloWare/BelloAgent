@@ -333,7 +333,7 @@ enum ReportGrouping: Sendable { case requests, sessions, models }
                 if let selection, !selection.fits(applied) { clearBrush() }
                 refreshExpandedSessions()
                 failure = nil
-                notice = "At most 128 requests per page and 60 time buckets; 100,000 retained request records. Captures marked off, partial, expired, purged or corrupt remain explicit in Inspector."
+                notice = "At most 128 requests per page and 60 time buckets. Request metrics follow the configured retention period. Captures marked off, partial, expired, purged or corrupt remain explicit in Inspector."
                 // The report's reads may have expired metrics the chats still
                 // count. Their totals refresh afterwards, never inside the report.
                 if await model.traces.metricExpirations != expirations { refreshChatTotals(model) }

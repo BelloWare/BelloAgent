@@ -11,7 +11,7 @@ final class RecoveredDraftTests: XCTestCase {
         let view = SessionDisplay(id: "chat"); view.selectionMetadataLoaded = true; view.draft = "Current draft"
         model.displays[view.id] = view
         let intent = CommandIntent(id: "command", sessionID: view.id, turnID: "turn", text: "Interrupted message", state: "intent")
-        try await store.recordSubmission(intent, draft: view.savedDraft)
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion)
         view.recovered = [intent]; view.uncertain = true
         return (model, view, store, intent)
     }
@@ -22,7 +22,7 @@ final class RecoveredDraftTests: XCTestCase {
         let (model, view, store, original) = try await fixture()
         view.attachments = (0..<4).map(image); view.skills = (0..<8).map(skill)
         var intent = original; intent.attachments = [image(4)]; intent.skills = [skill(8)]
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
         model.recoverDraft(intent, insert: true)
         try await eventually("recovery answered") { !view.notice.isEmpty || view.recovered.isEmpty }
         XCTAssertEqual(view.draft, "Current draft"); XCTAssertEqual(view.attachments, (0..<4).map(image)); XCTAssertEqual(view.skills, (0..<8).map(skill))
@@ -50,7 +50,7 @@ final class RecoveredDraftTests: XCTestCase {
         model.selectedID = parent.id; model.selected = parent; model.focusedSessionID = view.id
         view.attachments = [image(0)]; view.skills = [skill(0)]
         var intent = original; intent.attachments = [image(1)]; intent.skills = [skill(1)]
-        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
         let db = try XCTUnwrap(database)
@@ -139,7 +139,7 @@ final class RecoveredDraftTests: XCTestCase {
         let (model, view, store, original) = try await fixture()
         view.attachments = (0..<3).map(image)
         var intent = original; intent.attachments = [image(3)]; view.recovered = [intent]
-        try await store.recordSubmission(intent, draft: view.savedDraft)
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion)
         // Hold only this fixture database while the store waits to begin its
         // transaction, so a completed paste can arrive at that exact point.
         var database: OpaquePointer?
@@ -164,15 +164,30 @@ final class RecoveredDraftTests: XCTestCase {
     @MainActor func testByteAndArgumentLimitsKeepTheIntent() async throws {
         let (model, view, store, original) = try await fixture()
         var intent = original
-        var large = image(10); large = AttachmentRecord(id: large.id, path: large.path, sha256: large.sha256, bytes: 8 * 1024 * 1024, mimeType: large.mimeType)
-        view.attachments = [large, image(11)]
-        intent.attachments = [AttachmentRecord(id: "other", path: "/fixture/other", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png")]
+        view.attachments = (10..<13).map { AttachmentRecord(id: "i\($0)", path: "/fixture/i\($0).png", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png") }
+        // Four images, one byte over the 32 MiB a message holds.
+        intent.attachments = [AttachmentRecord(id: "other", path: "/fixture/other", sha256: "h", bytes: 8 * 1024 * 1024 + 1, mimeType: "image/png")]
         var chip = skill(1); chip.arguments = String(repeating: "x", count: 16_385); intent.skills = [chip]
         intent.text = String(repeating: "x", count: SubmissionLimits.messageBytes)
         try await store.put(intent, kind: "pending:chat", id: intent.id); view.recovered = [intent]
         model.recoverDraft(intent, insert: true)
         XCTAssertEqual(view.recovered, [intent]); XCTAssertEqual(view.draft, "Current draft")
-        XCTAssertTrue(view.notice.contains("256 KiB")); XCTAssertTrue(view.notice.contains("16 MiB")); XCTAssertTrue(view.notice.contains("arguments over 16 KiB"))
+        XCTAssertTrue(view.notice.contains("256 KiB")); XCTAssertTrue(view.notice.contains("more than 32 MiB of images")); XCTAssertTrue(view.notice.contains("arguments over 16 KiB"))
+    }
+
+    /// Four images of 8 MiB, 32 MiB in all, are what a message holds: the
+    /// recovered submission joins a draft that has three of them.
+    @MainActor func testFourImagesOfEightMiBStillInsert() async throws {
+        let (model, view, store, original) = try await fixture()
+        let images = (10..<14).map { AttachmentRecord(id: "i\($0)", path: "/fixture/i\($0).png", sha256: "h", bytes: 8 * 1024 * 1024, mimeType: "image/png") }
+        view.attachments = Array(images.prefix(3))
+        var intent = original; intent.attachments = [images[3]]
+        // Versioned like the fixture's own record: an unversioned draft write
+        // is another instance's and would rightly stop the recovery.
+        try await store.recordSubmission(intent, draft: view.savedDraft, draftVersion: view.draftVersion); view.recovered = [intent]
+        model.recoverDraft(intent, insert: true)
+        try await eventually("recovery finished") { view.recovered.isEmpty }
+        XCTAssertEqual(view.attachments, images, view.notice)
     }
 
     @MainActor func testAStaleBannerCannotInsertAKnownAcceptedCommand() async throws {

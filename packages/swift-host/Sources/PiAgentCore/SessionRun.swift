@@ -60,7 +60,11 @@ extension AgentSession {
         // the request ends: a reply, a failure, or a Stop that cancels the
         // retried request itself (thrown as a CancellationError, not an
         // AgentError, so no catch below would see it).
-        defer { retryInfo = .null }
+        defer {
+            turnModelMs += modelRequestsMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelRequestsMs)
+            activeTaskPresentation?.modelMs += modelRequestsMs
+            retryInfo = .null
+        }
         while true {
             attempt += 1
             // Every attempt, the first and each retry, is a model request:
@@ -172,6 +176,7 @@ extension AgentSession {
                 if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
+                if costResumePending, !continuing { try await installCostResume() }
                 var startedFollowUp=false
                 if steering.isEmpty, !retrying, !continuing {
                     // A follow-up that cannot be answered stays queued, paused.
@@ -187,26 +192,9 @@ extension AgentSession {
                 let continued=continuing
                 continuing=false
                 if continued { try startAgentEpoch() }
-                // Resume after a cost-limit pause: parked sub-agent turns go on
-                // under this run's execution, before anything is asked again.
-                if resumingCostPause, !isSubagent {
-                    resumingCostPause=false
-                    do { try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount) }
-                    catch {
-                        // Stopped (or closed) while the pause's children were
-                        // still settling: the family stays paused for the next
-                        // Resume, and their runs are halted, not waited for.
-                        costPaused = true; costResumePending = false; costPauseCount &+= 1; try? persistState(active:true,durable:true)
-                        if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
-                        throw error
-                    }
-                }
-                // The paused work is taken: the pause is over on disk too.
-                if costResumePending {
-                    costResumePending = false; try persistState(active:true,durable:true)
-                    // Taken and saved: the root no longer needs to name this side.
-                    if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
-                }
+                // Install under the hold; the actor commits only after the
+                // final install await and cancellation/generation check.
+                try await installCostResume()
                 // Tool calls the pause held before they started run first,
                 // from the reply that issued them: it is never asked again.
                 if continued, !costPendingCalls.isEmpty {
@@ -293,7 +281,6 @@ extension AgentSession {
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }
-                    var modelMs=0.0
                     let operationID=UUID().uuidString
                     var recovered=false, completed: ModelReply?
                     while completed == nil {
@@ -316,9 +303,7 @@ extension AgentSession {
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
                             })
-                            modelMs += modelRequestsMs
                         } catch let error as AgentError {
-                            modelMs += modelRequestsMs
                             // Case 1 of pi's _checkCompaction: compact and retry once.
                             guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, canCompact(recovering:true), !Task.isCancelled else { throw error }
                             overflowRecoveryAttempted=true
@@ -347,7 +332,6 @@ extension AgentSession {
                     if reply.truncated, let reason=reply.terminal?.incompleteReason, reason != "max_output_tokens" {
                         throw PiErrorText.incompleteFailure(JSON(reason))
                     }
-                    turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
                     if partialTimeline.segments.isEmpty, let timeline=reply.message.responseTimeline { partialTimeline=timeline }
                     partialTimeline.finish(reply.truncated ? "incomplete":"completed")
@@ -420,7 +404,7 @@ extension AgentSession {
                 // The Resume's run ended before it took the paused work: the
                 // family is still paused, for the next Resume, and its parked
                 // turns stay parked (never cancelled as a stopped run's are).
-                costResumePending = false; resumingCostPause = false; costPaused = true; costPauseCount &+= 1
+                abortCostResume()
             }
             // At the limit every chat pauses (`pauseAtCostLimit`); a family's
             // sub-agent turns are parked, not cancelled or waited for.
@@ -471,8 +455,7 @@ extension AgentSession {
             // The reply that crossed the limit was the run's last word:
             // nothing waits for Resume. The chat is simply at its limit, and
             // a new message is refused there as before.
-            clearCostPauseWithoutWork()
-            if state != .error { state = .idle; runStatus = .idle }
+            if clearCostPauseWithoutWork(), !costPaused, state != .error { state = .idle; runStatus = .idle }
         }
         if costPaused, state != .error {
             queuePaused=true; state = .paused; runStatus = .cancelled

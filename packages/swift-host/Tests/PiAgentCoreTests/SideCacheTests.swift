@@ -36,7 +36,7 @@ private let note = AgentSession.sideNote.text
 
 /// Ours, not pi's: a side chat's requests extend its parent's, so they join
 /// the parent's prompt cache (SessionSide.swift).
-final class SideCacheTests: XCTestCase {
+final class SideCacheTests: HelperTestCase {
     private func tools(_ root: URL) -> NativeTools {
         NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root))
     }

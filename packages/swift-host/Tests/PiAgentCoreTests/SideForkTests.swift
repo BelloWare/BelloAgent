@@ -1,7 +1,7 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideForkTests: XCTestCase {
+final class SideForkTests: HelperTestCase {
     func testForkPreservesToolReasoningBranchAndCompactionRecordsAndExactContextWithoutDispatch() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), sourcePath = directory.appendingPathComponent("parent.jsonl")

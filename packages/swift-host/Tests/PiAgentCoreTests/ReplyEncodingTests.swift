@@ -5,7 +5,21 @@ import XCTest
 /// A command's reply is encoded once (`NativeHostService.boundedReply`): the
 /// bytes checked against the frame limit are the bytes written, and a retry
 /// writes them again. They are the bytes the helper always wrote.
-final class ReplyEncodingTests: XCTestCase {
+final class ReplyEncodingTests: HelperTestCase {
+    func testRejectedCommandIdentitiesCannotOverflowTheWriter() async throws {
+        let written = WrittenReplies(), host = NativeHostService(output: { written.add($0) })
+        await host.receive(["v": 1, "kind": "hello", "major": 1])
+        let epoch = await host.epoch
+        for id in [String(repeating: "x", count: 1_100_000), String(repeating: "\u{0001}", count: 200_000), "valid-rejected-id"] {
+            await host.receive(["v": 1, "kind": "command", "hostEpoch": JSON(epoch), "commandId": JSON(id), "method": "runtime.info", "params": []])
+            let bytes = try await written.next(), frame = try JSON.parse(bytes)
+            XCTAssertLessThanOrEqual(bytes.count, HostProtocol.frameBytes)
+            XCTAssertEqual(frame["error"]["code"].text, "invalid_command")
+            XCTAssertTrue(frame["commandId"].text == (id.utf8.count <= 128 ? id : ""), "Only an admissible identity may be echoed")
+        }
+        await host.shutdown()
+    }
+
     private func encoded(_ output: HostOutput, file: StaticString = #filePath, line: UInt = #line) -> Data {
         guard case .encoded(let bytes) = output else { XCTFail("The reply was left for the writer to encode", file: file, line: line); return Data() }
         return bytes
@@ -92,7 +106,13 @@ private final class WrittenReplies: @unchecked Sendable {
     private let lock = NSLock()
     private var replies: [Data] = []
     func add(_ output: HostOutput) {
-        guard case .encoded(let bytes) = output else { return }
+        let bytes: Data
+        switch output {
+        case .encoded(let value): bytes = value
+        case .frame(let value):
+            guard value["kind"].text == "reply", let value = try? value.data() else { return }
+            bytes = value
+        }
         lock.lock(); replies.append(bytes); lock.unlock()
     }
     func next(timeout: Double = 10) async throws -> Data {

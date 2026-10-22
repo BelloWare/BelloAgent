@@ -1,11 +1,16 @@
 import Foundation
 import Combine
 import AppKit
+import GitView
+import GitProcessSafety
 
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability() } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet {
+        if oldValue != workspaces { GitService.invalidateConfiguration() }
+        sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability()
+    } }
     /// The tabs beside the chats and in windows of their own: the window's,
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.
@@ -13,6 +18,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
     let quickOpen = QuickOpen(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     let replyFileResolver = ReplyFileResolver()
+    private var gitTrustPaths = WorkspaceGitTrustPaths()
+    /// Test seam: a path on a disconnected volume must not occupy the main actor.
+    var gitTrustPath: @Sendable (String) -> String = { FileTab.key(for: URL(fileURLWithPath: $0)) } {
+        didSet { gitTrustPaths = WorkspaceGitTrustPaths() }
+    }
     let fileReviewNavigation = FileReviewNavigation()
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
@@ -47,6 +57,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
+    var toolOutputRecycling: (id: UUID, task: Task<Void, Error>)?
+    var toolOutputCleanup: Task<Void, Never>?
+    var toolOutputProducers: [UUID: ToolOutputProducer] = [:]
+    var toolOutputProducerRevision: UInt64 = 0
+    var toolOutputCollectionDeferred = false
+    var toolOutputProducerStep: ((ToolOutputProducer) async throws -> Void)?
+    var toolOutputReferenceScanStep: (() async -> Void)?
     var familyDeletionStep: ((String) throws -> Void)?
     var deletionTombstoneRead: ((String) async throws -> String?)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
@@ -70,7 +87,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var visibleReplyGraceOverride: Duration?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
+    @Published var profiles: [ProfileRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
@@ -107,6 +124,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let organizationScheduler = SessionOrganizationScheduler()
     var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
     var archiveStopRevisions: [String: Int] = [:]
+    var archiveRevisions: [String: Int] = [:]
+    var resumeStopRevisions: [String: Int] = [:]
+    var resumeTasks: [String: (task: Task<Void, Never>, family: Bool)] = [:]
+    /// Owned by `WorkspaceRun.swift` (`runActionKey`): one-shot Retry,
+    /// Continue and Compact presses on their way to a chat's helper.
+    var runActionsInFlight: Set<String> = []
+    var archivingSessions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
@@ -245,6 +269,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var projectSidebarWrites: [String: Task<Void, Never>] = [:]
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
+    @Published var resourceInvocations: [String: Int] = [:]
+    var connectionProbeAdmissions = 0
+    var connectionProbeHosts: [String: HostSupervisor] = [:]
     var budgetOwnerChanges: Set<String> = []
     @Published var installPreparing = false
     @Published var showConversationContent = false
@@ -324,6 +351,16 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var chatStatsRevision = 0
     var chatStatsVersions: [String: Int] = [:]
     let root: URL
+    /// Held for this model's lifetime, including shutdown task unwinding.
+    /// Its file stays: another instance must lock the same inode to recover.
+    var sidePublicationOwnership: (id: UUID, lock: WorkspaceLock)?
+    /// Task ownership survives display replacement; the lifetime lease makes
+    /// that ownership visible to every other launch sharing this state root.
+    var liveSubmissionCommands: Set<String> = []
+    var submissionRecoveryLeases: [String: (owner: String, lock: WorkspaceLock)] = [:]
+    /// Local publication tasks, distinct from the lifetime lease that also
+    /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
+    var sidePublications: Set<String> = []
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
     @Published var configurationLoaded = false
@@ -446,6 +483,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// close or connection switch, before session opening itself begins.
     var budgetOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// The profile revision acknowledged by each runtime, including a queued
+    /// change for its next turn. Credential updates share one writer per chat.
+    var sessionProfileRevisions: [String: (connection: UUID?, revision: String)] = [:]
+    var sessionConfigurations: [String: (token: UUID, lease: SessionConfigurationLease, task: Task<Void, Error>)] = [:]
+    var sessionConfigurationGenerations: [String: UInt64] = [:]
     /// Runtimes opened solely to supply a saved side's budget, and explicit
     /// display releases that the helper may have refused while a side pinned it.
     var budgetDependencySessions: Set<String> = []
@@ -458,6 +500,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceSides.swift`: a side's draft on its way to its
     /// parent's saved draft, which every other move of it waits for.
     var sideDraftTransfers: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    var sideDraftTransferStep: (() async -> Void)?
     /// Test seam: each step of a connection change as it happens, awaited
     /// ("closed", "marked", "rebound", "metadata"), so a fixture can hold the change there.
     var connectionSwitchSteps: ((String) async throws -> Void)?
@@ -495,6 +538,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var journalSlimming: Task<Void, Never>?
     var pastedImageCleanup: Task<Void, Never>?
     var attachmentImports = 0
+    var attachmentInspect: @Sendable (URL) throws -> AttachmentRecord = AttachmentRecord.inspect
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []
@@ -524,7 +568,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var hasActiveWork: Bool { !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 
@@ -553,9 +597,22 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         tabs.paneVisibilityChanged = { [weak self] in self?.readerPaneVisibilityChanged() }
         tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
+        GitService.resolveTrust = { [weak self] directory, invocation in
+            guard let self, !self.isShutDown else { return false }
+            let revision = self.workspacesRevision
+            let projects = self.workspaces.flatMap { project in project.roots.map { (path: $0, trusted: project.trusted) } }
+            guard let paths = try await self.gitTrustPaths.resolve([directory] + projects.map(\.path), revision: revision,
+                                                                  invocation: invocation, canonicalize: self.gitTrustPath),
+                  revision == self.workspacesRevision, !self.isShutDown,
+                  let path = paths.first else { return false }
+            let matches = zip(paths.dropFirst(), projects).filter { path.gitIsWithin($0.0) }
+            guard let longest = matches.map({ $0.0.utf8.count }).max() else { return false }
+            return matches.filter { $0.0.utf8.count == longest }.allSatisfy { $0.1.trusted }
+        }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
+        ChangesTab.isProjectTrusted = { [weak self] id in self?.workspace(for: id)?.trusted == true }
         ChangesTab.openLocation = { [weak self] url, line in self?.openChangesFile(url, at: line) }
         FileBlame.openChange = { [weak self] tab, target, repository, still in self?.showHistoricalChange(from: tab, target: target, repository: repository, while: still) }
         ChangesTab.activate = { [weak self] tab in self?.tabs.activate(tab) }

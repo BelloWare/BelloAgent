@@ -6,7 +6,7 @@ import XCTest
 /// the metadata file written with it, are exactly what the fork's own first
 /// open would have made from the file: for a fork of the whole chat and one
 /// from a reply, through tool calls, a compaction, an edit and its versions.
-final class ForkReplayHandoffTests: XCTestCase {
+final class ForkReplayHandoffTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil, prepared: JournalReplayConsumer? = nil) throws -> AgentSession {

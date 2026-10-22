@@ -1,7 +1,71 @@
 import XCTest
 @testable import PiAgentCore
 
-final class SideBudgetTests: XCTestCase {
+final class SideBudgetTests: HelperTestCase {
+    func testRecoveredCopyDropsOriginalPausedSidesButKeepsItsOwnHeldWork() async throws {
+        for ownWork in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let main = try await session("main",root:root), side = try await session("side",root:root,parent:main)
+            _ = try await side.keep(whenFinished:false)
+            let request = try await start(side,attempt:"paid"); try await finish(request,attempt:"paid",cost:0.4)
+            try await main.append(ChatMessage(role:"user",content:[textBlock("Finished task")]))
+            try await main.append(ChatMessage(role:"assistant",content:[textBlock("Done")]))
+            if ownWork { try await main.append(ChatMessage(role:"user",content:[textBlock("Held question")])) }
+            let source = root.appendingPathComponent("main.jsonl"), sidePath = await side.path
+            await side.close(); await main.close()
+            // The last complete record before a torn tail names an existing
+            // side of the original family, never a descendant of the copy.
+            var saved: JSON = ["active":false,"queue":[],"steering":[],"commands":[],"runStatus":"cancelled"]
+            saved["costPaused"] = true; saved["queuePaused"] = true; saved["costPausedMembers"] = ["side"]
+            do {
+                let journal = try SessionJournal(url:source,id:"main",cwd:root,binding:fixtureProfile().binding,create:false)
+                try journal.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":saved],flush:true)
+            }
+            let writer = try FileHandle(forWritingTo:source)
+            try writer.seekToEnd(); try writer.write(contentsOf:Data("{\"type\":\"message\"".utf8)); try writer.close()
+            let original = try Data(contentsOf:source), sideBytes = try Data(contentsOf:URL(fileURLWithPath:XCTUnwrap(sidePath)))
+            let service = try await host(root)
+            let recovered = try await service.command("session.recover",sessionID:nil,params:["path":JSON(source.path),"newSessionId":"copy"])
+            let path = try XCTUnwrap(recovered["sessionFile"].text)
+            let copy = try await open(service,"copy",path:path,limit:0.3)
+            let snapshot = await copy.snapshot()
+            XCTAssertEqual(snapshot["cost"]["spentUSD"].double ?? -1,0.4,accuracy:1e-9)
+            XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty,"Existing original-family files confer no membership on a recovered copy")
+            XCTAssertEqual(snapshot["costPaused"].flag == true,ownWork,"Only the copy's own held work keeps its pause")
+            XCTAssertEqual(snapshot["continuable"].flag,ownWork)
+            _ = try await service.command("session.configure",sessionID:"copy",params:["costLimit":["usd":1]])
+            if !ownWork {
+                do {
+                    let reply = try await service.command("run.continue",sessionID:"copy",params:[:])
+                    XCTAssertTrue(reply["pausedMembers"].list.isEmpty)
+                } catch { XCTAssertEqual((error as? AgentError)?.code,AgentErrorCode.nothingToContinue) }
+                let after = await copy.snapshot()
+                XCTAssertEqual(after["state"].text,"idle",after["preflightError"].encoded()); XCTAssertNotEqual(after["costPaused"].flag,true)
+            }
+            await service.shutdown()
+            if ownWork {
+                let client = AccountedAgentScript([answer("Answered the copy's held question")])
+                let resumed = try AgentSession(id:"copy",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+                    readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:path)
+                let tail = await resumed.continuationTail
+                XCTAssertEqual(tail?.text,"Held question")
+                await resumed.setCostLimit(1)
+                let reply = try await resumed.continueRun(commandID:"own-resume")
+                XCTAssertEqual(reply["continued"].flag,true,reply.encoded())
+                XCTAssertTrue(reply["pausedMembers"].list.isEmpty)
+                try await eventually { !(await resumed.isRunning) }
+                let after = await resumed.snapshot(), calls = await client.requests.count
+                XCTAssertEqual(after["state"].text,"idle",after["preflightError"].encoded()); XCTAssertNotEqual(after["costPaused"].flag,true)
+                XCTAssertEqual(calls,1,"Ancestry repair must preserve the copy's own continuation")
+                await resumed.close()
+            }
+            let savedCopy = try SideBudgetRecovery.pauseState(URL(fileURLWithPath:path),id:"copy").state
+            XCTAssertTrue(savedCopy["costPausedMembers"].list.isEmpty,"The ancestry repair must be durable")
+            XCTAssertEqual(try Data(contentsOf:source),original)
+            XCTAssertEqual(try Data(contentsOf:URL(fileURLWithPath:XCTUnwrap(sidePath))),sideBytes)
+        }
+    }
+
     func testForgetDamagedUnrelatedHistoryDoesNotInventBudgetAncestry() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let host = try await host(root)

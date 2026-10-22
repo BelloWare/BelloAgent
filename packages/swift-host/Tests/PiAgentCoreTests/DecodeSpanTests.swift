@@ -4,7 +4,7 @@ import XCTest
 /// Output speed uses all reported tokens over dispatch → last output. The
 /// raw decode span still covers hidden reasoning and excludes a held terminal;
 /// TTFT is added before applying the minimum duration and dividing.
-final class DecodeSpanTests: XCTestCase {
+final class DecodeSpanTests: HelperTestCase {
     /// "reasoner": hidden reasoning for 0.8 s (the reasoning item opens at
     /// once), then a visible reply, and the terminal event 0.06 s later: 860
     /// output tokens, 800 of them reasoning. "burst" sends that in one write.

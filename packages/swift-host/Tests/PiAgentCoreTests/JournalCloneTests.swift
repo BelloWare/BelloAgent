@@ -6,7 +6,7 @@ import Darwin
 /// the same bytes, but for a session header of the same length naming the
 /// fork, sharing the chat's blocks until either is written. When no clone can
 /// be made, nothing is left behind and the caller copies instead.
-final class JournalCloneTests: XCTestCase {
+final class JournalCloneTests: HelperTestCase {
     private var root: URL!
     private var profile: Profile!
     override func setUpWithError() throws { root = try temporaryDirectory(); profile = try fixtureProfile() }

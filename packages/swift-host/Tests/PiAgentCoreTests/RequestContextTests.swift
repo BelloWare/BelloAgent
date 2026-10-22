@@ -7,7 +7,24 @@ import CoreGraphics
 
 /// Pi 0.85.1's context estimate on the helper's messages. The expectations
 /// port coding-agent/test/compaction.test.ts and agent-session-stats.test.ts.
-final class RequestContextTests: XCTestCase {
+final class RequestContextTests: HelperTestCase {
+    func testOutputRoomClampsBeforeSubtractingAnEnormousUsage() {
+        XCTAssertEqual(PiContext.outputRoom(contextWindow:2048,requestTokens:9_223_372_036_854_774_784),1)
+        XCTAssertEqual(PiContext.outputRoom(contextWindow:2048,requestTokens:Int.max),1)
+        XCTAssertEqual(PiContext.outputRoom(contextWindow:0,requestTokens:Int.max),Int.max)
+    }
+
+    func testInvalidRawCountsCannotOverrideNormalizedUsage() {
+        for raw: JSON in [
+            ["input_tokens":1,"output_tokens":1,"total_tokens":9_223_372_036_854_774_784],
+            ["input_tokens":1,"output_tokens":1,"input_tokens_details":["cached_tokens":100]],
+            ["input_tokens":1,"output_tokens":1,"input_tokens_details":["cache_write_tokens":100]]
+        ] {
+            let normalized = UsageObservation.normalized(raw,api:"openai-responses")
+            XCTAssertEqual(PiContext.usage(normalized,api:"openai-responses").map(PiContext.contextTokens),2)
+        }
+    }
+
     // MARK: pi's usage for one reply
 
     func testResponsesUsageEqualsPisCountWithoutCountingTheCacheTwice() throws {
@@ -19,9 +36,9 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(PiContext.contextTokens(usage), 70_000, "the reported total, the cache counted once")
         var untotalled = raw; untotalled["total_tokens"] = .null
         XCTAssertEqual(PiContext.usage(UsageObservation.normalized(untotalled, api: "openai-responses"), api: "openai-responses").map(PiContext.contextTokens), 70_000)
-        // Pi prefers a reported total even where the helper's own check rejects it.
+        // An inconsistent raw total is retained evidence, not a valid context baseline.
         var odd = raw; odd["total_tokens"] = 70_500
-        XCTAssertEqual(PiContext.usage(UsageObservation.normalized(odd, api: "openai-responses"), api: "openai-responses").map(PiContext.contextTokens), 70_500)
+        XCTAssertEqual(PiContext.usage(UsageObservation.normalized(odd, api: "openai-responses"), api: "openai-responses").map(PiContext.contextTokens), 70_000)
         // Normalized fields alone map the same way; a zero total falls back to the parts.
         let normalized: JSON = ["input": 10_000, "inputIncludingCache": 10_000, "cacheRead": 8_000, "cacheWrite": 500, "output": 60_000, "total": 0]
         XCTAssertEqual(PiContext.usage(normalized, api: "openai-responses").map(PiContext.contextTokens), 70_000)

@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 // The files of a project's folders, for finding one by name: what git lists
 // in a folder that is in a repository (tracked files, ignored or not, and
@@ -60,26 +61,6 @@ enum FileListing {
     /// How deep repositories inside repositories are followed.
     static let nestedDepth = 4
 
-    /// Whether git can run without asking to install the command line
-    /// tools: `/usr/bin/git` is a shim that asks for them when they are not
-    /// there. Without them every folder is walked.
-    static let gitAvailable: Bool = {
-        let files = FileManager.default
-        if files.isExecutableFile(atPath: "/Library/Developer/CommandLineTools/usr/bin/git") { return true }
-        // The developer folder in use (Xcode's, say), as xcode-select says.
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        let pipe = Pipe()
-        process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; process.standardInput = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return false }
-        let developer = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return !developer.isEmpty && files.isExecutableFile(atPath: developer + "/usr/bin/git")
-    }()
-
     /// The most of an ignore file read: a larger one is left out, and said so.
     static let ignoreFileLimit = 1_048_576
 
@@ -99,7 +80,7 @@ enum FileListing {
             listing.warn("“\(shown(folder))” could not be read, so no file in it is listed.")
             return listing
         }
-        if gitAvailable, let top = try await repositoryTop(of: folder, environment: environment) {
+        if let top = try await repositoryTop(of: folder, environment: environment) {
             try await listRepository(folder, prefix: [], depth: 0, top: top, limits: limits, environment: environment, into: &listing)
         } else {
             var warnings: [String] = []
@@ -117,9 +98,11 @@ enum FileListing {
 
     /// The top of the repository `folder` is in, or nil when it is in none.
     static func repositoryTop(of folder: String, environment: [String: String]) async throws -> String? {
-        let output = try await FinderProcess.git(["rev-parse", "--show-toplevel"], in: folder, limit: 65_536, timeout: 20, environment: environment)
+        let output: FinderProcess.Output
+        do { output = try await FinderProcess.git(["rev-parse", "--show-toplevel"], in: folder, limit: 65_536, timeout: 20, environment: environment) }
+        catch GitToolLookupError.unavailable { return nil } // No developer tools: walk the folder without invoking the shim.
         guard output.status == 0 else { return nil }
-        let top = String(decoding: output.stdout, as: UTF8.self).trimmingCharacters(in: .newlines)
+        let top = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
         return top.isEmpty ? nil : top
     }
 
@@ -186,9 +169,14 @@ enum FileListing {
     /// else `$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`.
     static func globalIgnoreFile(in folder: String, environment: [String: String], warn: (String) -> Void = { _ in }) async throws -> IgnoreFile? {
         var path: String?
-        if gitAvailable, let output = try? await FinderProcess.git(["config", "--path", "--get", "core.excludesFile"], in: folder,
-                                                                   limit: 65_536, timeout: 20, environment: environment), output.status == 0 {
-            let value = String(decoding: output.stdout, as: UTF8.self).trimmingCharacters(in: .newlines)
+        let output: FinderProcess.Output?
+        do { output = try await FinderProcess.git(["config", "--path", "--get", "core.excludesFile"], in: folder,
+                                                  limit: 65_536, timeout: 20, environment: environment) }
+        catch is CancellationError { throw CancellationError() }
+        catch GitToolLookupError.timedOut { throw GitToolLookupError.timedOut }
+        catch { output = nil }
+        if let output, output.status == 0 {
+            let value = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
             if !value.isEmpty { path = value }
         }
         if path == nil {
@@ -200,16 +188,25 @@ enum FileListing {
         switch contents(of: path, limit: ignoreFileLimit) {
         case .data(let data): return IgnoreFile(base: [], contents: data)
         case .tooLarge: warn("The global ignore file “\(shown(path))” is over 1 MB, so it is not applied.")
+        case .unavailable: warn("The global ignore file could not be checked promptly, so it is not applied.")
         case .missing: break
         }
         return nil
     }
 
-    enum Contents: Equatable { case data(Data), tooLarge, missing }
+    enum Contents: Equatable { case data(Data), tooLarge, missing, unavailable }
 
     /// The regular file at `path`, when it is at most `limit` bytes; a link
     /// to one when `following`.
     static func contents(of path: String, limit: Int, following: Bool = true) -> Contents {
+        // A regular file on a disconnected mount can block even with
+        // O_NONBLOCK. Ignore scans use the same bounded, coalesced probes.
+        do { return try GitFileProbe.run(paths: [path], invocation: GitInvocation()) {
+            readContents(of: path, limit: limit, following: following)
+        } } catch { return .unavailable }
+    }
+
+    private static func readContents(of path: String, limit: Int, following: Bool) -> Contents {
         let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | (following ? 0 : O_NOFOLLOW))
         guard descriptor >= 0 else { return .missing }
         defer { close(descriptor) }
@@ -242,6 +239,7 @@ enum FileListing {
             switch contents(of: absolute + "/.gitignore", limit: ignoreFileLimit, following: false) {
             case .data(let data): rules.stack.append(IgnoreFile(base: base, contents: data))
             case .tooLarge: listing.warn("“\(String(decoding: base, as: UTF8.self)).gitignore” is over 1 MB, so it is not applied.")
+            case .unavailable: listing.warn("An ignore file could not be checked promptly, so it is not applied.")
             case .missing: break
             }
             guard let directory = opendir(absolute) else {

@@ -48,13 +48,11 @@ actor PayloadArchive {
     }
     private var writers: [String: Writer] = [:]
     private var leases: Set<String> = []
-    /// Running totals for the two tables whose size is checked on every write.
-    /// Recomputing them per chunk and per event page made each write cost a
+    /// Running chunk totals, checked when reserving room for a new chunk.
+    /// Recomputing them for each publication made each write cost a
     /// full scan of the whole archive, so capture slowed down as it filled.
-    /// Seeded on demand and dropped whenever rows are removed.
+    /// Seeded on demand and adjusted as chunks are published or collected.
     private var chunkTotals: (count: Int64, bytes: Int64)?
-    /// Attempts on record, for the 100,000 bound each new request checks.
-    /// Rows are never deleted, so the count only grows once seeded.
     /// Chunk folders known to exist and to be durable in their parent.
     private var chunkFolders: Set<String> = []
     /// Requests whose metrics a sweep has expired so far. Retained totals
@@ -107,6 +105,9 @@ actor PayloadArchive {
         savedSideBudgets = try CaptureLineage.savedSideBudgets(db)
         try CaptureSubagents.prepare(db)
         try db.execute("CREATE INDEX IF NOT EXISTS attempts_filter ON attempts(wall,workspace,session,purpose,api,outcome)")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_session ON attempts(session,id)")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_completed ON attempts(wall,id) WHERE outcome!='running'")
+        try db.execute("CREATE INDEX IF NOT EXISTS attempts_expiring_metrics ON attempts(metrics_retained,wall,id) WHERE metrics_retained=1 AND outcome!='running'")
         try db.execute("CREATE TABLE IF NOT EXISTS bodies(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, observed INTEGER NOT NULL DEFAULT 0, length INTEGER NOT NULL DEFAULT 0, digest BLOB, PRIMARY KEY(attempt,kind))")
         try db.execute("CREATE TABLE IF NOT EXISTS chunks(scope TEXT NOT NULL, id TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(scope,id))")
         try db.execute("CREATE TABLE IF NOT EXISTS refs(attempt TEXT NOT NULL, kind TEXT NOT NULL, ordinal INTEGER NOT NULL, scope TEXT NOT NULL, chunk TEXT NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(attempt,kind,ordinal), FOREIGN KEY(attempt,kind) REFERENCES bodies(attempt,kind) ON DELETE CASCADE, FOREIGN KEY(scope,chunk) REFERENCES chunks(scope,id))")
@@ -120,6 +121,7 @@ actor PayloadArchive {
             try db.execute("PRAGMA user_version=6")
         }
         try db.execute("CREATE INDEX IF NOT EXISTS refs_chunk ON refs(scope,chunk)")
+        try Self.prepareMaintenanceSchema(db)
         try db.execute("CREATE TABLE IF NOT EXISTS message_links(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, message TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(attempt,message,role))")
         try db.execute("CREATE INDEX IF NOT EXISTS message_lookup ON message_links(message,attempt)")
         try db.execute("CREATE INDEX IF NOT EXISTS accounting_outputs ON message_links(message,attempt) WHERE role='output'")
@@ -130,6 +132,33 @@ actor PayloadArchive {
         try db.execute("UPDATE attempts SET outcome='interrupted' WHERE outcome='running'")
         self.database = db; self.ownership = ownership
         try collectGarbage(scanOrphans: true)
+    }
+    // Reference eligibility belongs to the same transaction as the references.
+    // Partial indexes can then skip tombstones, writers and retained chunks,
+    // instead of testing a correlated subquery for every historical row.
+    static func prepareMaintenanceSchema(_ db: CaptureDatabase) throws {
+        try db.transaction {
+            for table in ["attempts", "chunks"] {
+                if !(try db.rows("PRAGMA table_info(\(table))")).contains(where: { $0["name"]?.string == "has_refs" }) {
+                    try db.execute("ALTER TABLE \(table) ADD COLUMN has_refs INTEGER NOT NULL DEFAULT 0 CHECK(has_refs IN (0,1))")
+                    let membership = table == "attempts" ? "id IN (SELECT attempt FROM refs)" : "(scope,id) IN (SELECT scope,chunk FROM refs)"
+                    try db.execute("UPDATE \(table) SET has_refs=1 WHERE \(membership)")
+                }
+            }
+            try db.execute("CREATE INDEX IF NOT EXISTS attempts_retaining_bodies ON attempts(wall,id) WHERE has_refs=1 AND outcome!='running'")
+            try db.execute("CREATE INDEX IF NOT EXISTS chunks_unreferenced ON chunks(scope,id) WHERE has_refs=0")
+            let added = """
+            UPDATE attempts SET has_refs=1 WHERE id=NEW.attempt AND has_refs=0;
+            UPDATE chunks SET has_refs=1 WHERE scope=NEW.scope AND id=NEW.chunk AND has_refs=0;
+            """
+            let removed = """
+            UPDATE attempts SET has_refs=0 WHERE id=OLD.attempt AND NOT EXISTS (SELECT 1 FROM refs WHERE attempt=OLD.attempt);
+            UPDATE chunks SET has_refs=0 WHERE scope=OLD.scope AND id=OLD.chunk AND NOT EXISTS (SELECT 1 FROM refs WHERE scope=OLD.scope AND chunk=OLD.chunk);
+            """
+            try db.execute("CREATE TRIGGER IF NOT EXISTS refs_added AFTER INSERT ON refs BEGIN \(added) END")
+            try db.execute("CREATE TRIGGER IF NOT EXISTS refs_removed AFTER DELETE ON refs BEGIN \(removed) END")
+            try db.execute("CREATE TRIGGER IF NOT EXISTS refs_moved AFTER UPDATE OF attempt,scope,chunk ON refs BEGIN \(removed) \(added) END")
+        }
     }
     private func ready() throws -> CaptureDatabase {
         guard let database else { throw CaptureFailure.unavailable }; return database
@@ -148,7 +177,7 @@ actor PayloadArchive {
     private func writerKey(_ id: String, _ kind: String) -> String { id + ":" + kind }
     private func record(_ id: String) throws -> [String: CaptureSQLValue] {
         let db = try ready()
-        guard UUID(uuidString: id) != nil, let row = try db.rows("SELECT * FROM attempts WHERE id=?", [.text(id)]).first else { throw CaptureFailure.unavailable }
+        guard UUID(uuidString: id) != nil, let row = try db.rows(Self.attemptMetadataSQL, [.text(id)]).first else { throw CaptureFailure.unavailable }
         return row
     }
     /// Resolve the owner plus output links on at most two 500-row visible
@@ -397,7 +426,7 @@ actor PayloadArchive {
     }
     func metadata(attempt id: String) throws -> [String: WireValue] {
         let db = try ready(), row = try record(id)
-        return try metadata(row: row, bodies: try db.rows("SELECT * FROM bodies WHERE attempt=?", [.text(id)]))
+        return try metadata(row: row, bodies: try db.rows(Self.bodyMetadataSQL, [.text(id)]))
     }
     /// Projects one already-fetched attempt row and its already-fetched body
     /// descriptors. Listing a page used to re-query both per row.
@@ -508,7 +537,7 @@ actor PayloadArchive {
                     return value
                 }),
                 "total": .number(Double(try db.rows("SELECT COUNT(*) AS n FROM event_indices WHERE attempt=?", [.text(attemptID)]).first?["n"]?.number ?? 0)),
-                "boundary": .string("SSE byte offsets into the original response. Indices are bounded to 4096 per request / 100000 globally and expire with bodies; omitted counts are in request metadata.")]
+                "boundary": .string("SSE byte offsets into the original response. Indices expire with bodies; omitted counts are in request metadata.")]
     }
     /// Message ids linked to an attempt: produced messages first, then the
     /// context messages it consumed. Empty when links were never recorded.
@@ -639,9 +668,20 @@ actor PayloadArchive {
     }
     func clear(sessionID: String) throws {
         let db = try ready()
-        let ids = try db.rows("SELECT id FROM attempts WHERE session=?", [.text(sessionID)]).compactMap { $0["id"]?.string }
-        guard ids.allSatisfy({ !leases.contains($0) && !writers.keys.contains(writerKey($0, "request")) && !writers.keys.contains(writerKey($0, "response")) }) else { throw CaptureFailure.busy }
-        for id in ids { try evict(id, state: "purged") }; try collectGarbage()
+        // A lease or writer in a later page must leave earlier pages intact.
+        // Files are collected only after the whole clear commits.
+        try db.transaction {
+            var after = ""
+            while true {
+                let batch = try db.rows(Self.clearBatchSQL,
+                                        [.text(sessionID), .text(after), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last else { break }
+                after = try archiveText(last, "id")
+                for row in batch { try evict(archiveText(row, "id"), state: "purged") }
+            }
+        }
+        try collectGarbage()
     }
     func purge(attemptID: String) throws { _ = try record(attemptID); try evict(attemptID, state: "purged"); try collectGarbage() }
     private func evict(_ id: String, state: String) throws {
@@ -664,10 +704,18 @@ actor PayloadArchive {
         guard let quota else { return }
         let db = try ready()
         if try chunkTotalsNow().bytes + bytes <= quota { return }
-        for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs) ORDER BY wall") {
-            let id = try archiveText(row, "id"); if leases.contains(id) { continue }
-            try evict(id, state: "expired"); try collectGarbage()
-            if try chunkTotalsNow().bytes + bytes <= quota { return }
+        var after: (wall: Double, id: String) = (-.infinity, "")
+        while true {
+            let batch = try db.rows(Self.quotaBatchSQL,
+                                    [.real(after.wall), .text(after.id), .integer(Int64(Self.maintenanceBatch))])
+            largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+            guard let last = batch.last, let wall = last["wall"]?.double else { break }
+            after = (wall, try archiveText(last, "id"))
+            for row in batch {
+                let id = try archiveText(row, "id"); if leases.contains(id) { continue }
+                try evict(id, state: "expired"); try collectGarbage()
+                if try chunkTotalsNow().bytes + bytes <= quota { return }
+            }
         }
         throw CaptureFailure.quota
     }
@@ -677,36 +725,52 @@ actor PayloadArchive {
         // One commit for the whole sweep. Each eviction and each expiry used to
         // be its own transaction, which under synchronous=FULL is one fsync per
         // row: an overdue sweep of a large archive froze the app for minutes.
-        // Ids first, bodies per row, so the expiring set is never materialised
-        // with its metadata blobs at once.
+        // Page through indexed cursors, advancing past export leases as well
+        // as expired rows. Neither query materialises the overdue set.
         try db.transaction {
-        for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND wall<? AND id IN (SELECT attempt FROM refs)", [.real(time - bodyRetention)]) {
-            let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
-        }
-        for expiring in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND metrics_retained=1 AND wall<?", [.real(time - metricRetention)]) {
-            let id = try archiveText(expiring, "id")
-            guard !leases.contains(id) else { continue }
-            let row = try record(id)
-            // Keep the relationship after metrics expire. Old chat messages
-            // resolve to an explicit tombstone, never an invented HTTP body.
-            var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(try archiveText(row, "session")), "turnId": .string(try archiveText(row, "turn")), "purpose": .string(try archiveText(row, "purpose")), "api": .string(try archiveText(row, "api")), "requestedModel": .string(try archiveText(row, "alias")), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
-            // These describe the retained body, not request telemetry. Keep
-            // credential transformations visible for the body's own lifetime.
-            if let data = row["metadata"]?.data {
-                let previous = try JSONDecoder().decode([String: WireValue].self, from: data)
-                tombstone["requestScope"] = previous["requestScope"]
-                for kind in ["request", "response"] {
-                    let annotations = (previous[kind]?.object ?? [:]).filter { ["captureBytes", "credentialRedactions", "byteExact", "transformations"].contains($0.key) }
-                    if !annotations.isEmpty { tombstone[kind] = .object(annotations) }
+            var after: (wall: Double, id: String) = (-.infinity, "")
+            while true {
+                let batch = try db.rows(Self.bodyRetentionBatchSQL,
+                                        [.real(after.wall), .text(after.id), .real(time - bodyRetention), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last, let wall = last["wall"]?.double else { break }
+                after = (wall, try archiveText(last, "id"))
+                for row in batch {
+                    let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
                 }
             }
-            try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
-            metricExpirations += 1
-        }
+            var metricAfter: (wall: Double, id: String) = (-.infinity, "")
+            while true {
+                let batch = try db.rows(Self.metricRetentionBatchSQL,
+                                        [.real(metricAfter.wall), .text(metricAfter.id), .real(time - metricRetention), .integer(Int64(Self.maintenanceBatch))])
+                largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+                guard let last = batch.last, let wall = last["wall"]?.double else { break }
+                metricAfter = (wall, try archiveText(last, "id"))
+                for expiring in batch {
+                    let id = try archiveText(expiring, "id")
+                    guard !leases.contains(id) else { continue }
+                    let row = try record(id)
+                    // Keep the relationship after metrics expire. Old chat messages
+                    // resolve to an explicit tombstone, never an invented HTTP body.
+                    var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(try archiveText(row, "session")), "turnId": .string(try archiveText(row, "turn")), "purpose": .string(try archiveText(row, "purpose")), "api": .string(try archiveText(row, "api")), "requestedModel": .string(try archiveText(row, "alias")), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
+                    // These describe the retained body, not request telemetry. Keep
+                    // credential transformations visible for the body's own lifetime.
+                    if let data = row["metadata"]?.data {
+                        let previous = try JSONDecoder().decode([String: WireValue].self, from: data)
+                        tombstone["requestScope"] = previous["requestScope"]
+                        for kind in ["request", "response"] {
+                            let annotations = (previous[kind]?.object ?? [:]).filter { ["captureBytes", "credentialRedactions", "byteExact", "transformations"].contains($0.key) }
+                            if !annotations.isEmpty { tombstone[kind] = .object(annotations) }
+                        }
+                    }
+                    try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
+                    metricExpirations += 1
+                }
+            }
         }
         try collectGarbage()
-        let nextBody = try db.rows("SELECT MIN(wall) AS wall FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs)").first?["wall"]?.double.map { $0 + bodyRetention }
-        let nextMetrics = try db.rows("SELECT MIN(wall) AS wall FROM attempts WHERE outcome!='running' AND metrics_retained=1").first?["wall"]?.double.map { $0 + metricRetention }
+        let nextBody = try db.rows(Self.bodyDeadlineSQL).first?["wall"]?.double.map { $0 + bodyRetention }
+        let nextMetrics = try db.rows(Self.metricDeadlineSQL).first?["wall"]?.double.map { $0 + metricRetention }
         // An export lease may temporarily defer an overdue request; retry at
         // most once a second, and immediately after releasing the lease.
         let deadline = [nextBody, nextMetrics].compactMap { $0 }.min() ?? .infinity
@@ -715,6 +779,19 @@ actor PayloadArchive {
     }
     /// Rows one maintenance query reads at most, and the most one has read.
     static let maintenanceBatch = 512
+    // Shared with query-plan tests so they measure the statements actually executed.
+    static let orphanChunksBatchSQL = "SELECT scope,id,bytes FROM chunks WHERE has_refs=0 AND (scope,id)>(?,?) AND NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id) ORDER BY scope,id LIMIT ?"
+    static let orphanChunksDeleteSQL = "DELETE FROM chunks WHERE has_refs=0 AND (scope,id)>(?,?) AND (scope,id)<=(?,?) AND NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)"
+    static let clearBatchSQL = "SELECT id FROM attempts WHERE session=? AND id>? ORDER BY id LIMIT ?"
+    static let quotaBatchSQL = "SELECT wall,id FROM attempts WHERE has_refs=1 AND outcome!='running' AND (wall,id)>(?,?) ORDER BY wall,id LIMIT ?"
+    static let bodyRetentionBatchSQL = "SELECT wall,id FROM attempts WHERE has_refs=1 AND outcome!='running' AND (wall,id)>(?,?) AND wall<? ORDER BY wall,id LIMIT ?"
+    static let metricRetentionBatchSQL = "SELECT wall,id FROM attempts WHERE (wall,id)>(?,?) AND outcome!='running' AND metrics_retained=1 AND wall<? ORDER BY wall,id LIMIT ?"
+    static let bodyDeadlineSQL = "SELECT MIN(wall) AS wall FROM attempts WHERE has_refs=1 AND outcome!='running'"
+    // The covering dashboard index also contains running requests, so its
+    // MIN optimization can walk an arbitrarily long ineligible prefix.
+    static let metricDeadlineSQL = "SELECT MIN(wall) AS wall FROM attempts INDEXED BY attempts_expiring_metrics WHERE outcome!='running' AND metrics_retained=1"
+    static let attemptMetadataSQL = "SELECT * FROM attempts WHERE id=?"
+    static let bodyMetadataSQL = "SELECT * FROM bodies WHERE attempt=?"
     private(set) var largestMaintenanceBatch = 0
     /// Unreferenced chunks go a batch at a time in key order: a batch's files
     /// first, then its rows, so a pass that fails part-way leaves rows whose
@@ -722,22 +799,32 @@ actor PayloadArchive {
     /// than a batch, however large the archive.
     private func collectGarbage(scanOrphans: Bool = false) throws {
         let db = try ready()
-        defer { chunkTotals = nil }
-        let orphan = "NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)"
         var after: (scope: String, id: String) = ("", "")
         while true {
-            let batch = try db.rows("SELECT scope,id FROM chunks WHERE (scope,id)>(?,?) AND \(orphan) ORDER BY scope,id LIMIT ?",
+            // Check indexed candidates against actual refs before deleting
+            // files; a stale projection must not override a live reference.
+            let batch = try db.rows(Self.orphanChunksBatchSQL,
                                     [.text(after.scope), .text(after.id), .integer(Int64(Self.maintenanceBatch))])
             largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
             guard let last = batch.last else { break }
+            var remaining = chunkTotals
+            if var totals = remaining {
+                guard totals.count >= Int64(batch.count) else { throw CaptureFailure.corrupt }
+                for row in batch {
+                    guard let bytes = row["bytes"]?.number, bytes >= 0, bytes <= totals.bytes else { throw CaptureFailure.corrupt }
+                    totals.bytes -= bytes
+                }
+                totals.count -= Int64(batch.count); remaining = totals
+            }
             for row in batch {
                 guard let scope = row["scope"]?.string, let id = row["id"]?.string, Self.isChunkName(scope), Self.isChunkName(id) else { throw CaptureFailure.corrupt }
                 let file = root.appendingPathComponent("chunks/" + scope + "/" + id)
                 if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
             }
             let end = (scope: try archiveText(last, "scope"), id: try archiveText(last, "id"))
-            try db.execute("DELETE FROM chunks WHERE (scope,id)>(?,?) AND (scope,id)<=(?,?) AND \(orphan)",
+            try db.execute(Self.orphanChunksDeleteSQL,
                            [.text(after.scope), .text(after.id), .text(end.scope), .text(end.id)])
+            chunkTotals = remaining
             after = end
             if batch.count < Self.maintenanceBatch { break }
         }

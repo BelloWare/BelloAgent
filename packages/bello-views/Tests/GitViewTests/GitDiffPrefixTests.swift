@@ -2,7 +2,7 @@ import XCTest
 @testable import GitView
 
 /// The parser's paths must not depend on the reader's git display preferences.
-final class GitDiffPrefixTests: XCTestCase {
+final class GitDiffPrefixTests: ViewsTestCase {
     private var root: URL!
     override func setUpWithError() throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("git-prefix-" + UUID().uuidString)

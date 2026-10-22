@@ -124,9 +124,12 @@ final class HistoryExtentTests: XCTestCase {
             return page
         }
         view.historyPositions.forget()
+        view.snapshotEpoch = "old-runtime"
+        let presentation = view.presentationGeneration
         model.reacquireHistoryPositions(item.id)
         try await eventually("The previous recovery started") { reads.started == 1 }
-        view.presentationGeneration = UUID()
+        XCTAssertTrue(view.adoptSnapshotEpoch("new-runtime"))
+        XCTAssertEqual(view.presentationGeneration, presentation)
         model.reacquireHistoryPositions(item.id)
         try await eventually("The previous generation suppressed the new generation's recovery") { reads.started == 2 }
         try await eventually("The current generation did not recover its extent") { view.historyPositions.total == page.total }

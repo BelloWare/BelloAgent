@@ -722,6 +722,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pinnedHistoryIDs: Set<String> = [] { didSet { if pinnedHistoryIDs != oldValue { heldChanges.send() } } }
     let heldChanges = PassthroughSubject<Void, Never>()
     var scrollAnchor: TranscriptAnchor?
+    var anchorVersion = AnchorVersion()
+    var anchorWrite: Task<Void, Never>?
+    var anchorWriteToken: UUID?
     @Published var viewportRequest = 0
     /// Whether the newest `viewportRequest` opens the chat — its first page
     /// read in, or its rows shown again on a revisit — rather than taking
@@ -802,6 +805,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var captureMode = "persist"
     @Published var captureAvailable = false
     @Published var recovered: [CommandIntent] = []
+    /// Captured submissions belong to their task until it settles. Their
+    /// durable/pinned records are crash recovery, never live recovery actions.
+    @Published var submittingCommands: Set<String> = []
+    var settlingSubmissions: [String: CommandIntent] = [:]
+    var sideInputPendingTransfer = false
+    var recoverableSubmissions: [CommandIntent] { recovered.filter { !submittingCommands.contains($0.id) } }
     /// Edit-and-resend: the user message whose text is loaded in the composer, and the draft it replaced.
     @Published var editingMessageID: String?
     var draftBeforeEdit: DraftRecord?
@@ -863,7 +872,23 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pageRows: PageRows { PageRows(count: messages.count, first: messages.first?.id, last: messages.last?.id) }
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
+    var hasUnsavedDraft: Bool {
+        draftWritePending || draftVersion.hasUnsavedConflict || !savedDraft.hasSameContents(as: draftVersion.snapshot.draft ?? DraftRecord(id: id, text: ""))
+    }
+    var draftVersion = DraftVersion() {
+        didSet {
+            pendingIntents = nil
+            // Hydration and side transfer replace the composer baseline, not
+            // independent input still awaiting its own durable record.
+            for intent in oldValue.unsavedSubmissions { draftVersion.preservingSubmission(intent) }
+        }
+    }
+    @Published var draftConflicts: [SavedDraftConflict] = []
     var selectionMetadataLoaded = false
+    /// Edits admitted while the baseline is unread, including a cleared field
+    /// or reading position. Hydration reschedules them against that baseline.
+    var draftWritePending = false
+    var anchorWritePending = false
     /// This window is detached from the helper's live tail (a newer gap,
     /// source load or explicit retained-message inspection). Earlier rows
     /// alone do not detach it or suppress live transcript updates.
@@ -876,6 +901,28 @@ struct TranscriptVersionView: Equatable, Sendable {
     var accountingReadFor: UUID?
     var messageAccounting: [String: GatewayTotals] = [:]
     var lastSequence: Double = -1
+    var snapshotEpoch: String?
+    private var retiredSnapshotEpochs: Set<String> = []
+    /// Follow-ups can replace a child's runtime under the same session ID.
+    /// Sequence numbers and projection revisions belong to that runtime only.
+    func adoptSnapshotEpoch(_ epoch: String?) -> Bool {
+        guard let epoch else { return true }
+        guard !retiredSnapshotEpochs.contains(epoch) else { return false }
+        if let previous = snapshotEpoch, previous != epoch {
+            retiredSnapshotEpochs.insert(previous)
+            lastSequence = -1; projectionRevision = nil; projectedRows = []
+            receipts = []; commandsRevision = nil
+            taskPresentation = nil; taskPresentationDecoder = TaskPresentationDecoder()
+            monitoringEpoch = nil; monitoringCursor = nil
+            footer.contextStateRevision = nil; footer.contextObservationRevision = nil; footerUpdatedAt = 0
+            queueEditHoldRevision = -1; queuePresentedEditRevision = -1
+            presentation.cancel(); finishHistoryPresentation(presentation.readGeneration)
+            presentation.readGeneration = UUID()
+            olderPage.loading = false; newerPage.loading = false; loadingEarlier = false
+        }
+        snapshotEpoch = epoch
+        return true
+    }
     /// The finished tasks of the last task presentation, decoded once.
     var taskPresentationDecoder = TaskPresentationDecoder()
     /// The command receipts of the last snapshot that carried them, and the
@@ -892,6 +939,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Bumped by every write of this chat's pending submissions
     /// (`WorkspaceModel.pendingIntentsChanged`).
     var pendingIntentRevision = 0
+    var pendingSubmissionRevision = -1
+    var pendingExternalRevision: MetadataStore.ExternalRevision?
     /// What the snapshot loop last read of them, and at which revision.
     var pendingIntents: (revision: Int, intents: [CommandIntent])?
     /// A successful helper reply is enough to suppress draft recovery even

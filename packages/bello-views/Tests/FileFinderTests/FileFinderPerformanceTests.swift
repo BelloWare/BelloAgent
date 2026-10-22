@@ -5,7 +5,7 @@ import XCTest
 /// and one of 100,000 named in many scripts: making the index, and each
 /// keystroke of a few queries typed a character at a time. Opt-in (`FINDER_PERF=1`), and for numbers that mean anything,
 /// a release build (`swift test -c release -Xswiftc -enable-testing`).
-final class FileFinderPerformanceTests: XCTestCase {
+final class FileFinderPerformanceTests: ViewsTestCase {
     private func corpus(_ count: Int, scripts: Bool = false) -> [String] {
         var generator = SplitMix(seed: 11)
         let folders = ["Sources", "Tests", "apps", "packages", "node_modules", "vendor", "docs", "build", "lib", "src", "internal", "Views",

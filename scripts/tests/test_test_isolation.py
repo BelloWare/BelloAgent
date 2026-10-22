@@ -65,6 +65,55 @@ class TestIsolationGuardTests(unittest.TestCase):
         return subprocess.run([str(self.probe), identifier, str(effective), str(real), str(fixed)],
                               text=True, capture_output=True)
 
+    def test_child_environments_keep_fixed_home_and_codex_root(self):
+        root = Path(self.temp.name)
+        home = root / "child-home"
+        home.mkdir()
+        source = root / "child-home.m"
+        source.write_text('#define PI_TEST_ISOLATION_PROBE 1\n#define main policyMain\n#import "' +
+                          str(ROOT / "apps/macos/TestSupport/TestIsolationGuard.m") + '"\n#undef main\n' + r'''
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        if (argc == 2) {
+            for (NSString *key in @[@"HOME", @"CFFIXED_USER_HOME", @"CODEX_HOME", @"PI_FIXTURE_FLAG"]) {
+                puts([NSProcessInfo.processInfo.environment[key] ?: @"-" UTF8String]);
+            }
+            puts(NSHomeDirectory().UTF8String);
+            return 0;
+        }
+        (void)NSProcessInfo.processInfo.environment;
+        installTestHomes(@(argv[1]));
+        installTestHomes(@(argv[1])); // host and test bundle install the same policy
+        NSTask *child = [NSTask new];
+        child.executableURL = [NSURL fileURLWithPath:@(argv[0])]; child.arguments = @[@"child"];
+        NSString *mode = @(argv[2]);
+        if ([mode isEqualToString:@"explicit"]) child.environment = @{@"HOME": @"/synthetic/inherited", @"CFFIXED_USER_HOME": @"/synthetic/inherited", @"CODEX_HOME": @"/synthetic/codex", @"PI_FIXTURE_FLAG": @"retained"};
+        if ([mode isEqualToString:@"empty"]) child.environment = @{};
+        if ([mode isEqualToString:@"nil"]) child.environment = nil;
+        NSPipe *output = [NSPipe pipe]; child.standardOutput = output;
+        if (![child launchAndReturnError:nil]) return 1;
+        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        [child waitUntilExit]; fwrite(data.bytes, 1, data.length, stdout);
+        return child.terminationStatus;
+    }
+}
+''')
+        probe = root / "child-home-probe"
+        subprocess.run(["xcrun", "clang", "-fobjc-arc", "-Werror", "-framework", "Foundation",
+                        str(source), "-o", str(probe)], check=True)
+        for mode, flag in [("explicit", "retained"), ("empty", "-"), ("nil", "parent"), ("inherited", "parent")]:
+            with self.subTest(mode=mode):
+                result = subprocess.run([str(probe), str(home), mode], text=True, capture_output=True,
+                                        env=dict(os.environ, HOME="/synthetic/parent", CFFIXED_USER_HOME="/synthetic/parent",
+                                                 CODEX_HOME="/synthetic/parent-codex", PI_FIXTURE_FLAG="parent"))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                fixed = str(home.resolve())
+                values = result.stdout.splitlines()
+                self.assertEqual(len(values), 5)
+                for index in (0, 1, 2, 4):
+                    values[index] = str(Path(values[index]).resolve())
+                self.assertEqual(values, [fixed, fixed, fixed + "/.codex", flag, fixed])
+
     def test_real_domain_is_rejected_without_opening_it(self):
         # These are synthetic path arguments, not the user's home or plist.
         for home in ["/fixture/owner", "/fixture/scratch"]:

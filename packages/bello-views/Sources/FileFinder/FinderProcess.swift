@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 // The git commands a listing runs (`FileListing`): on a queue of their own,
 // where a blocking wait costs no Swift thread; both pipes drained so neither
@@ -33,12 +34,13 @@ enum FinderProcess {
     /// output, at most `limit` bytes (more is a failure, never a cut list).
     static func git(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval = 60,
                     environment: [String: String] = FinderProcess.environment, input: Data? = nil) async throws -> Output {
-        let handle = Running()
+        let handle = GitInvocation(timeout: timeout)
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
+            let trusted = try await GitReadProcess.isTrusted(directory, invocation: handle)
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
                 queue.async {
                     do { continuation.resume(returning: try execute(arguments, in: directory, limit: limit, timeout: timeout,
-                                                                    environment: environment, input: input, handle: handle)) }
+                                                                    environment: environment, input: input, handle: handle, trusted: trusted)) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -47,36 +49,17 @@ enum FinderProcess {
 
     private static let queue = DispatchQueue(label: "BelloViews.finder.git", qos: .userInitiated, attributes: .concurrent)
 
-    /// The process a listing runs, so a listing no longer wanted stops it.
-    private final class Running: @unchecked Sendable {
-        private let lock = NSLock()
-        private var process: Process?
-        private var stopped = false
-        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-        /// False when the listing was already given up: nothing is started.
-        func adopt(_ value: Process) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            guard !stopped else { return false }
-            process = value; return true
-        }
-        func stop() {
-            lock.lock(); stopped = true
-            let running = process; lock.unlock()
-            guard let running, running.isRunning else { return }
-            running.terminate()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                if running.isRunning { kill(running.processIdentifier, SIGKILL) }
-            }
-        }
-    }
-
     private static func execute(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval,
-                                environment: [String: String], input: Data?, handle: Running) throws -> Output {
+                                environment: [String: String], input: Data?, handle: GitInvocation, trusted: Bool) throws -> Output {
+        try handle.check()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-c", "core.quotepath=off"] + arguments
+        let all = ["-c", "core.quotepath=off"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
-        process.environment = environment
+        // A sparse index can load a missing tree and invoke a promisor remote,
+        // even for ls-files/check-ignore. The shared read policy covers that too.
+        let confinement = try GitReadProcess(process, arguments: all, environment: environment, trusted: trusted && arguments.first != "config", invocation: handle)
+        defer { confinement.remove() }
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
         let stdin = input == nil ? nil : Pipe()
@@ -90,25 +73,28 @@ enum FinderProcess {
         defer { if !inputClosed { try? writer?.close() } }
         let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
         defer { try? out.close(); try? err.close() }
-        guard handle.adopt(process) else { throw CancellationError() }
-        do { try process.run() } catch { throw Failure(description: "git could not start: \(error.localizedDescription)") }
+        let child = GitChildProcess(process)
+        guard handle.adopt(child) else { throw CancellationError() }
+        do { try child.run() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw Failure(description: "git could not start: \(error.localizedDescription)") }
         let descriptors = [out.fileDescriptor, err.fileDescriptor]
         for descriptor in descriptors { _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) }
         var kept = Data(), ended = [false, false]
         var failure: String?, exitedAt: TimeInterval?
-        let deadline = ProcessInfo.processInfo.systemUptime + max(0.01, timeout)
+        let deadline = handle.deadline
         var scratch = [UInt8](repeating: 0, count: 65_536)
         while true {
             let now = ProcessInfo.processInfo.systemUptime
             if now >= deadline, failure == nil { failure = "git took too long"; handle.stop() }
-            if handle.isStopped, process.isRunning { handle.stop() }
-            if !process.isRunning {
+            if handle.isStopped, child.isRunning { handle.stop() }
+            if !child.isRunning {
                 if exitedAt == nil { exitedAt = now }
                 if ended.allSatisfy({ $0 }) { break }
                 if now - (exitedAt ?? now) >= 0.25 { failure = failure ?? "git's output did not end"; break }
             }
             if let writer, let input, !inputClosed {
-                if inputOffset < input.count, failure == nil, process.isRunning {
+                if inputOffset < input.count, failure == nil, child.isRunning {
                     let count = input.withUnsafeBytes { bytes in
                         write(writer.fileDescriptor, bytes.baseAddress!.advanced(by: inputOffset), min(16_384, input.count - inputOffset))
                     }
@@ -117,7 +103,7 @@ enum FinderProcess {
                         failure = failure ?? "git's input could not be written"; handle.stop()
                     }
                 }
-                if inputOffset == input.count || failure != nil || !process.isRunning {
+                if inputOffset == input.count || failure != nil || !child.isRunning {
                     try? writer.close(); inputClosed = true
                 }
             }
@@ -138,9 +124,9 @@ enum FinderProcess {
             if let writer, !inputClosed { polls.append(pollfd(fd: writer.fileDescriptor, events: Int16(POLLOUT), revents: 0)) }
             _ = poll(&polls, nfds_t(polls.count), 20)
         }
-        process.waitUntilExit()
+        child.waitUntilExit()
         if handle.isStopped, failure == nil { throw CancellationError() }
         if let failure { throw Failure(description: failure) }
-        return Output(stdout: kept, status: process.terminationStatus)
+        return Output(stdout: kept, status: child.terminationStatus)
     }
 }

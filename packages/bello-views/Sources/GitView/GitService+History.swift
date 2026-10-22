@@ -1,4 +1,5 @@
 import Foundation
+import GitProcessSafety
 
 extension GitService {
     // NUL fields and records; subject punctuation (including record-separator
@@ -9,8 +10,8 @@ extension GitService {
     public func historyReferences(in root: String) async throws -> [GitHistoryRef] {
         let output = try await historyRun(["for-each-ref", "--sort=refname", "--count=\(Self.historyRefLimit + 1)",
                                           "--format=%(refname)%00%(objectname)", "refs/heads", "refs/remotes", "refs/tags"], in: root)
-        let refs = output.text.split(separator: "\n").compactMap { line -> GitHistoryRef? in
-            let fields = line.split(separator: "\0", omittingEmptySubsequences: false)
+        let refs = output.text.gitSplit(separator: 10).compactMap { line -> GitHistoryRef? in
+            let fields = line.gitSplit(separator: 0, omittingEmptySubsequences: false)
             guard fields.count == 2 else { return nil }
             return GitHistoryRef(name: String(fields[0]), object: String(fields[1]))
         }
@@ -36,9 +37,9 @@ extension GitService {
         case .all:
             let head = try await run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], in: root)
             let output = try await historyRun(["rev-list", "--no-walk", "--all"] + (head.status == 0 ? [head.text.trimmingCharacters(in: .whitespacesAndNewlines)] : []), in: root)
-            tips = output.text.split(separator: "\n").map(String.init)
+            tips = output.text.gitSplit(separator: 10)
         case .reference(let name):
-            guard name.hasPrefix("refs/"), !name.contains("\0"), !name.contains("\n") else { throw GitFailure(message: "Choose a branch or tag from the ref list.") }
+            guard name.gitHasPrefix("refs/"), !name.utf8.contains(0), !name.utf8.contains(10) else { throw GitFailure(message: "Choose a branch or tag from the ref list.") }
             let output = try await historyRun(["rev-parse", "--verify", "--end-of-options", name + "^{commit}"], in: root)
             tips = [output.text.trimmingCharacters(in: .whitespacesAndNewlines)]
         }
@@ -80,7 +81,7 @@ extension GitService {
             ids = try await historyFilteredFileIDs(args, suffix: suffix, in: snapshot.root, dates: dates, filters: filters, skip: skip, limit: limit)
         } else {
             let output = try await historyRun(args + ["-n", String((query.path == nil ? 0 : skip) + limit + 1)] + suffix, in: snapshot.root)
-            ids = output.text.split(separator: "\0").dropFirst(query.path == nil ? 0 : skip).map(String.init)
+            ids = Array(output.text.gitSplit(separator: 0).dropFirst(query.path == nil ? 0 : skip))
         }
         // A refresh can preserve thousands of loaded rows. Each subprocess
         // still reads at most one ordinary page's metadata, in ID order.
@@ -110,9 +111,9 @@ extension GitService {
         while true {
             try Task.checkCancellation()
             let output = try await historyRun(args + ["-n", String(count)] + suffix, in: root)
-            let records = output.text.split(separator: "\0")
+            let records = output.text.gitSplit(separator: 0)
             let candidates = try records.compactMap { record -> String? in
-                let fields = record.split(separator: " ", maxSplits: 1)
+                let fields = record.gitSplit(separator: 32, maxSplits: 1)
                 guard fields.count == 2, let seconds = Int(fields[1]) else {
                     throw GitFailure(message: "Git returned an invalid commit date.")
                 }
@@ -131,7 +132,7 @@ extension GitService {
                     try Task.checkCancellation()
                     let batch = Array(unseen[start..<min(start + 1_000, unseen.count)])
                     let matched = try await historyRun(["log", "--no-walk=unsorted", "-z", "--format=%H", "--no-show-signature", "--no-color", "--fixed-strings", "-i"] + filters + batch + ["--"], in: root)
-                    let ids = Set(matched.text.split(separator: "\0").map(String.init))
+                    let ids = Set(matched.text.gitSplit(separator: 0))
                     for id in batch { accepted[id] = ids.contains(id) }
                 }
                 matches = candidates.filter { accepted[$0] == true }
@@ -154,7 +155,7 @@ extension GitService {
         // rev-parse --verify also accepts refs named with hexadecimal text.
         // Disambiguation consults the object database only, never those refs.
         let resolved = try await historyRun(["rev-parse", "--disambiguate=" + hash.lowercased()], in: root)
-        let objects = resolved.text.split(separator: "\n").map(String.init)
+        let objects = resolved.text.gitSplit(separator: 10)
         guard objects.count == 1, let oid = objects.first else { throw GitFailure(message: "No unique object matches that hash. Enter more of the commit hash.") }
         let kind = try await historyRun(["cat-file", "-t", oid], in: root)
         guard kind.text.trimmingCharacters(in: .whitespacesAndNewlines) == "commit" else { throw GitFailure(message: "That hash names a Git object, not a commit.") }
@@ -180,8 +181,8 @@ extension GitService {
             let part = fields[index..<index + 7].map { String(decoding: $0, as: UTF8.self) }
             guard let seconds = TimeInterval(part[3]) else { throw GitFailure(message: "Git returned an invalid commit date.") }
             return GitCommit(hash: part[0], shortHash: part[1], author: part[2], date: Date(timeIntervalSince1970: seconds), subject: part[4],
-                             parents: part[5].split(separator: " ").map(String.init),
-                             refs: part[6].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+                             parents: part[5].gitSplit(separator: 32),
+                             refs: part[6].gitSplit(separator: 44).map { $0.gitTrimmingWhitespace() })
         }
     }
 }

@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import FileView
 
-final class FileCopyTests: XCTestCase {
+final class FileCopyTests: ViewsTestCase {
     @MainActor private func viewer() -> (FileTextView, HeldSource, MemoryPasteboard) {
         let view = FileTextView(frame: .zero), source = HeldSource()
         view.show(source, name: "fixture.txt")

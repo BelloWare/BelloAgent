@@ -21,7 +21,7 @@ final class DraftSizeTests: XCTestCase {
             let listed = try await reopened.list(DraftRecord.self, kind: "draft")
             XCTAssertTrue(saved == expected); XCTAssertTrue(listed == [expected])
             let intent = CommandIntent(id: "command", sessionID: view.id, turnID: "turn", text: text, state: "intent")
-            try await store.recordSubmission(intent, draft: expected)
+            try await store.recordSubmission(intent, draft: expected, draftVersion: view.draftVersion)
             let pending = try await reopened.list(CommandIntent.self, kind: "pending:chat")
             XCTAssertTrue(pending == [intent], "Submission intent must preserve every input byte")
             await reopened.close()

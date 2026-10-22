@@ -4,27 +4,91 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// The app owns clipboard bytes, unlike files the reader chose. A launch's
-/// prefix protects pastes still being converted or waiting in an unsaved side
-/// while old, unreferenced files are swept after restoration.
+/// lease protects pastes still being converted or waiting in an unsaved draft,
+/// including from another app instance's sweep after restoration.
 struct PastedImageStorage: Sendable {
     let root: URL
-    let generation = UUID().uuidString
+    private let lifetime = GenerationLease()
+    var generation: String { lifetime.generation }
     var directory: URL { root.appendingPathComponent("PastedImages", isDirectory: true) }
     var prefix: String { "pasted-" + generation + "-" }
+    init(root: URL) { self.root = root }
     func write(_ bytes: Data) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try lifetime.acquire(in: directory)
         let file = directory.appendingPathComponent(prefix + UUID().uuidString + ".png")
         try bytes.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return file
     }
-    func oldFiles() throws -> [URL] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
+    /// Copies held by background conversions share ownership with the model.
+    /// Acquire before publishing the first image; the kernel releases on crash.
+    private final class GenerationLease: @unchecked Sendable {
+        let generation = UUID().uuidString
+        private let mutex = NSLock()
+        private var ownership: WorkspaceLock?
+        func acquire(in directory: URL) throws {
+            mutex.lock(); defer { mutex.unlock() }
+            let url = directory.appendingPathComponent("pasted-" + generation + ".lock")
+            let lease = try ownership ?? WorkspaceLock(url: url)
+            guard lease.matchesFile(at: url) else { throw StoreError.unavailable }
+            ownership = lease
+        }
+    }
+    struct OldFiles: Sendable { let files: [URL]; let leases: [String: WorkspaceLock] }
+    static let sweepGenerationLimit = 32
+    /// Include empty sidecars left by interrupted writes or earlier sweeps.
+    /// Listing acquires no descriptors that survive this call.
+    func oldGenerations() throws -> [String: [URL]] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
+        var generations: [String: [URL]] = [:], occupied: Set<String> = []
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) {
             let name = file.lastPathComponent
-            guard !name.hasPrefix(prefix), Self.names(in: Data(name.utf8)).contains(name) else { return false }
+            guard !name.hasPrefix(prefix), name != "pasted-" + generation + ".lock" else { continue }
+            // Unknown files, directories and symlinks prevent sidecar retirement.
+            if name.hasPrefix("pasted-"), name.dropFirst(43).first == "-" { occupied.insert(String(name.prefix(43))) }
+            let image = Self.names(in: Data(name.utf8)).contains(name)
+            let sidecar = name.hasPrefix("pasted-") && name.hasSuffix(".lock") && name.count == 48 &&
+                UUID(uuidString: String(name.dropFirst(7).dropLast(5))) != nil
+            guard image || sidecar else { continue }
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            return values.isRegularFile == true && values.isSymbolicLink != true
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let generation = String(name.prefix(43))
+            if image { generations[generation, default: []].append(file) }
+            else if generations[generation] == nil { generations[generation] = [] }
+        }
+        return generations.filter { !$0.value.isEmpty || !occupied.contains($0.key) }
+    }
+    /// A pre-pass can only exclude work. Every claimed generation still needs
+    /// a fresh inventory before deletion, with its lease held throughout.
+    func claimOldFiles(_ generations: [String: [URL]], excluding names: Set<String>) -> OldFiles {
+        var abandoned: [URL] = [], leases: [String: WorkspaceLock] = [:]
+        // Spend spare capacity on empty sidecars only after collectable images.
+        let ordered = generations.sorted {
+            if $0.value.isEmpty != $1.value.isEmpty { return !$0.value.isEmpty }
+            return $0.key < $1.key
+        }
+        for (generation, files) in ordered {
+            guard leases.count < Self.sweepGenerationLimit else { break }
+            guard files.isEmpty || files.contains(where: { !names.contains($0.lastPathComponent) }) else { continue }
+            let url = directory.appendingPathComponent(generation + ".lock")
+            guard let lease = try? WorkspaceLock(url: url), lease.matchesFile(at: url) else { continue }
+            leases[generation] = lease; abandoned.append(contentsOf: files)
+        }
+        return OldFiles(files: abandoned, leases: leases)
+    }
+    func remove(_ candidates: OldFiles, keeping names: Set<String>) throws {
+        for file in candidates.files where !names.contains(file.lastPathComponent) {
+            let generation = String(file.lastPathComponent.prefix(43)), lock = directory.appendingPathComponent(generation + ".lock")
+            guard candidates.leases[generation]?.matchesFile(at: lock) == true else { continue }
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        }
+        // The generation cannot publish again. Keep the lease through unlink,
+        // and check fresh directory contents, including unrecognized files.
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        for (generation, lease) in candidates.leases where !remaining.contains(where: { $0.hasPrefix(generation + "-") }) {
+            let lock = directory.appendingPathComponent(generation + ".lock")
+            if lease.matchesFile(at: lock) { try FileManager.default.removeItem(at: lock) }
         }
     }
     private static let pattern = try! NSRegularExpression(pattern: "pasted-[A-Fa-f0-9-]{36}-[A-Fa-f0-9-]{36}\\.png")
@@ -54,12 +118,40 @@ struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; l
     var finish: () -> Void = {}
 }
 
+/// A file ready to attach. A private PNG converted from a file carries that
+/// file's name for the composer's chip; one from clipboard bytes has none.
+struct PreparedImageFile: Sendable, Equatable {
+    let url: URL; var name: String? = nil
+}
+
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     let id: String; let path: String; let sha256: String; let bytes: Int; let mimeType: String
+    /// What the chip shows for a private copy converted from a file: that
+    /// file's name. Presentation only: saved with drafts, never sent to the
+    /// helper (`wire`), and no part of the record's identity (`==`).
+    var name: String? = nil
     var wire: WireValue { .object(["id": .string(id), "path": .string(path), "sha256": .string(sha256), "bytes": .number(Double(bytes)), "mimeType": .string(mimeType)]) }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.path == rhs.path && lhs.sha256 == rhs.sha256 && lhs.bytes == rhs.bytes && lhs.mimeType == rhs.mimeType
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id); hasher.combine(path); hasher.combine(sha256); hasher.combine(bytes); hasher.combine(mimeType)
+    }
+    /// The helper's own test (`loadImages`): the four formats OpenAI takes,
+    /// by their first 12 bytes.
+    static func mimeType(signature header: Data) -> String? {
+        let header = Data(header.prefix(12))
+        if header.starts(with: [137,80,78,71,13,10,26,10]) { return "image/png" }
+        if header.starts(with: [255,216,255]) { return "image/jpeg" }
+        if ["GIF87a", "GIF89a"].contains(String(decoding: header.prefix(6), as: UTF8.self)) { return "image/gif" }
+        if String(decoding: header.prefix(4), as: UTF8.self) == "RIFF", String(decoding: header.suffix(4), as: UTF8.self) == "WEBP" { return "image/webp" }
+        return nil
+    }
+    /// Every caller prepares the file first (`ComposerTextView.prepareImageFiles`),
+    /// so a refusal here means the file changed after it was prepared.
     static func inspect(_ url: URL) throws -> Self {
         let canonical = url.resolvingSymlinksInPath(), values = try canonical.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .contentModificationDateKey])
-        guard values.isRegularFile == true, let expected = values.fileSize, expected > 0, expected <= 8 * 1024 * 1024 else { throw HostError.failure("Select a regular image file up to 8 MiB") }
+        guard values.isRegularFile == true, let expected = values.fileSize, expected > 0, expected <= 8 * 1024 * 1024 else { throw HostError.failure(changed) }
         let handle = try FileHandle(forReadingFrom: canonical); defer { try? handle.close() }
         var hasher = SHA256(), count = 0, header = Data()
         while let data = try handle.read(upToCount: 65_536), !data.isEmpty {
@@ -68,21 +160,17 @@ struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
         }
         let after = try canonical.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         guard count == expected, after.fileSize == values.fileSize, after.contentModificationDate == values.contentModificationDate else { throw HostError.failure("Image changed; select it again") }
-        let mime: String
-        if header.starts(with: [137,80,78,71,13,10,26,10]) { mime = "image/png" }
-        else if header.starts(with: [255,216,255]) { mime = "image/jpeg" }
-        else if String(decoding: header.prefix(6), as: UTF8.self).hasPrefix("GIF8") { mime = "image/gif" }
-        else if String(decoding: header.prefix(4), as: UTF8.self) == "RIFF" && String(decoding: header.suffix(4), as: UTF8.self) == "WEBP" { mime = "image/webp" }
-        else { throw HostError.failure("Supported image formats are PNG, JPEG, GIF and WebP") }
+        guard let mime = mimeType(signature: header) else { throw HostError.failure(changed) }
         return .init(id: UUID().uuidString, path: canonical.path, sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes: count, mimeType: mime)
     }
+    static let changed = "The image changed while it was being attached. Attach it again."
 }
 extension WorkspaceModel {
     /// Count from paste initiation, before conversion, through inspection and
     /// recovery. An edit switch invalidates the destination; queue rewrites
     /// keep the original draft parked and continue to receive its images.
     func beginImageImport(sessionID: String) -> ComposerImageImport {
-        guard let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
+        guard !installPreparing, !isShutDown, let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
         let target = view.editingMessageID, generation = view.editGeneration
         view.imageImports += 1; attachmentImports += 1
         var finished = false
@@ -130,8 +218,20 @@ extension WorkspaceModel {
         // that is streaming into it.
         if !questions.chooseImageFiles(about: id, { [weak self] urls in
             guard let self, !urls.isEmpty else { return }
-            self.attachImageFiles(urls, sessionID: id)
+            self.importImageFiles(urls, sessionID: id)
         }) { displays[id]?.notice = PiQuestion.busyNotice }
+    }
+    /// Chosen files take the conversion pasted and dropped ones take
+    /// (`ComposerTextView.prepareImageFiles`), off the main thread, counted
+    /// as an import from the choice until the images are inspected.
+    func importImageFiles(_ urls: [URL], sessionID id: String) {
+        guard let view = displays[id], !urls.isEmpty else { return }
+        let importing = beginImageImport(sessionID: id), storage = pastedImages
+        Task { defer { importing.finish() }; do {
+            let prepared = try await Task.detached(priority: .userInitiated) { try ComposerTextView.prepareImageFiles(urls, storage: storage) }.value
+            guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
+            attachImageFiles(prepared, sessionID: id)
+        } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
     }
     /// Images inspected for `view`'s draft. A queued message's rewrite takes
     /// no images: ones that arrive while it is in the composer join the draft
@@ -150,11 +250,11 @@ extension WorkspaceModel {
         // validation and append. The visible queue rewrite has no images of
         // its own; its parked draft still has the same submission limits.
         let existing = view.queueEditingID != nil ? (view.draftBeforeQueueEdit?.attachments ?? []) : view.attachments
-        var room = 16 * 1024 * 1024
-        guard existing.count + items.count <= 4, (existing + items).allSatisfy({ image in
+        var room = SubmissionLimits.imageTotalBytes
+        guard existing.count + items.count <= SubmissionLimits.images, (existing + items).allSatisfy({ image in
             guard image.bytes >= 0, image.bytes <= room else { return false }; room -= image.bytes; return true
         }) else {
-            view.notice = "The images could not be attached: a submission supports four images and 16 MiB in total."
+            view.notice = "The images could not be attached: a submission supports four images and \(SubmissionLimits.imageTotalBytes / 1_048_576) MiB in total."
             // Streaming snapshots replace composer notices; the error strip stays until dismissed.
             error = view.notice
             return false
@@ -165,15 +265,23 @@ extension WorkspaceModel {
         draftChanged(view)
         return true
     }
-    /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
-        guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
+        attachImageFiles(urls.map { PreparedImageFile(url: $0) }, sessionID: sessionID)
+    }
+    /// Shared by the file panel, paste and drag-and-drop, once each has
+    /// prepared its files.
+    func attachImageFiles(_ files: [PreparedImageFile], sessionID: String? = nil) {
+        guard let id = sessionID ?? selectedID, let view = displays[id], !files.isEmpty else { return }
         guard supportsImages(id) else {
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
         let importing = beginImageImport(sessionID: id)
+        guard importing.isCurrent() else { importing.finish(); return }
+        let inspect = attachmentInspect
         Task { defer { importing.finish() }; do {
-            let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
+            let items = try await Task.detached {
+                try files.map { file in var record = try inspect(file.url); record.name = file.name; return record }
+            }.value
             guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
             receiveAttachments(items, into: view)
         } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
@@ -188,10 +296,31 @@ extension WorkspaceModel {
     }
     func cleanupPastedImages() async throws {
         guard let store, pastedImageCleanupIsSafe else { return }
-        let storage = pastedImages, read = pastedImageRead
-        let files = try await Task.detached(priority: .utility) { try storage.oldFiles() }.value
-        guard !files.isEmpty else { return }
+        let storage = pastedImages
+        let generations = try await Task.detached(priority: .utility) { try storage.oldGenerations() }.value
+        guard !generations.isEmpty else { return }
+        let preliminary = try await store.pastedImageReferences(root: root)
+        let retained = try await scanPastedImageReferences(preliminary, files: generations.values.flatMap { $0 })
+        guard pastedImageCleanupIsSafe else { return }
+        let candidates = await Task.detached(priority: .utility) { storage.claimOldFiles(generations, excluding: retained) }.value
+        defer { withExtendedLifetime(candidates) {} }
+        guard !candidates.leases.isEmpty else { return }
         let inventory = try await store.pastedImageReferences(root: root)
+        var names = try await scanPastedImageReferences(inventory, files: candidates.files)
+        guard try await store.pastedImageReferencesUnchanged(inventory.token), pastedImageCleanupIsSafe else { return }
+        // From this check through unlink, no MainActor suspension: typing,
+        // imports and sends cannot acquire a new local reference in between.
+        for view in displays.values {
+            names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(view.savedDraft)))
+            names.formUnion(view.attachments.map { URL(fileURLWithPath: $0.path).lastPathComponent })
+            for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
+                names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
+            }
+        }
+        try storage.remove(candidates, keeping: names)
+    }
+    private func scanPastedImageReferences(_ inventory: PastedImageReferences, files: [URL]) async throws -> Set<String> {
+        let read = pastedImageRead
         let scan = Task.detached(priority: .utility) {
             var names = inventory.names
             let candidates = Set(files.map(\.lastPathComponent))
@@ -202,23 +331,11 @@ extension WorkspaceModel {
             }
             return names
         }
-        var names = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
-        guard try await store.pastedImageReferencesUnchanged(inventory.token), pastedImageCleanupIsSafe else { return }
-        // From this check through unlink, no MainActor suspension: typing,
-        // imports and sends cannot acquire a new reference in between. SQLite
-        // has one app writer; in-flight producers defer this sweep instead.
-        for view in displays.values {
-            names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(view.savedDraft)))
-            names.formUnion(view.attachments.map { URL(fileURLWithPath: $0.path).lastPathComponent })
-            for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
-                names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
-            }
-        }
-        for file in files where !names.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+        return try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
     }
     private var pastedImageCleanupIsSafe: Bool {
         !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&
             draftWrites.tasks.isEmpty && draftWrites.recoveries.isEmpty && sideDraftTransfers.isEmpty && hostStarts.isEmpty && sessionOpenings.isEmpty &&
-            !sides.values.contains(where: \.keeping)
+            !sides.values.contains(where: \.keeping) && !displays.values.contains(where: { $0.draftVersion.hasUnsavedConflict })
     }
 }

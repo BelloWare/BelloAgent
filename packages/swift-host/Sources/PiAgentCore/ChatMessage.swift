@@ -220,10 +220,22 @@ public struct ChatMessage: Codable, Equatable, Sendable {
 // Presentation records have no model-facing content. Their retained display
 // source is read explicitly; ordinary assistant full-text reads stay complete.
 extension ChatMessage {
+    /// Copy Conversation matches the disk reader, including message boundaries
+    /// and retained non-text blocks. Message-text reads use retainedDisplayText.
+    var retainedConversationText: String {
+        RetainedConversation.message(role: role, kind: kind, detail: detail, content: JSON.array(content), timeline: responseTimeline)
+    }
+
     var retainedDisplayText: String {
         if ["execution", "requestLedger"].contains(kind ?? ""), let responseTimeline {
             return (detail ?? "Operation") + "\n\n" + responseTimeline.retainedText
         }
         return displayText ?? text
     }
+}
+
+extension JSON: RetainedConversationValue {
+    var retainedString: String? { text }
+    var retainedArray: [JSON] { list }
+    var retainedObject: [String: JSON] { map }
 }
