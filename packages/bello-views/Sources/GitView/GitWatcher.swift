@@ -113,7 +113,13 @@ import GitProcessSafety
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            let configurationChanged = GitConfiguration.invalidate(paths: paths)
+            let configurationChanged = GitConfiguration.invalidate(paths: paths) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == generation, self.handle.isRunning else { return }
+                    self.pending.formUnion(.unknown)
+                    self.changed()
+                }
+            }
             if moved { GitConfiguration.invalidate() }
             let relevant = paths.filter { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly, discoveringRepository: discoveringRepository) && (discoveringRepository || !ignored.covers($0)) }
             guard moved || configurationChanged || !relevant.isEmpty else { return }

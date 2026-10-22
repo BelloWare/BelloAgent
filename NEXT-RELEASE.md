@@ -4,6 +4,9 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1bg: Git inventory stamp validation runs outside memo/cache locks; stalled paths cannot hold other readers, watcher invalidation or trust clearing. [Validation](docs/validation/a130-security-0.1.130.md).
+- [x] SECURITY-BOUNDARIES-1bh: Cold Git inventories preserve reuse through unrelated ignored-folder events; source events prevent caching and deliver a deferred configuration refresh. [Validation](docs/validation/a130-security-0.1.130.md).
+
 - [x] SECURITY-BOUNDARIES-1be: Unicode symbolic-ref inventory inputs that Foundation would normalize select confinement, keeping discovery, status and history readable; unrepresentable overrides remain fail-closed. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1bf: Inventory probes reject embedded NUL before Foundation conversion, selecting confinement instead of an Objective-C exception. [Validation](docs/validation/a130-security-0.1.130.md).
 

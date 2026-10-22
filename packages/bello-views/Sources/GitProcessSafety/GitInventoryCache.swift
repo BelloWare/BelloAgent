@@ -4,6 +4,14 @@ import Darwin
 /// Device/inode and nanosecond ctime also catch same-size edits with restored
 /// mtimes. Keep the symlink and its target: either can change independently.
 struct GitFileStamp: Hashable {
+#if DEBUG
+    private static let validationLock = NSLock()
+    nonisolated(unsafe) private static var validationHook: (@Sendable (String) -> Void)?
+    static var beforeValidation: (@Sendable (String) -> Void)? {
+        get { validationLock.withLock { validationHook } }
+        set { validationLock.withLock { validationHook = newValue } }
+    }
+#endif
     let path: String
     let watchedPath: String
     private let identity: [Int64]
@@ -40,6 +48,9 @@ struct GitFileStamp: Hashable {
         } else { identity = []; cacheable = errno == ENOENT || errno == ENOTDIR }
     }
     var unchanged: Bool {
+#if DEBUG
+        Self.beforeValidation?(path)
+#endif
         let current = GitFileStamp(path, watchedPath: watchedPath, directoryIdentity: directoryIdentity)
         return cacheable && current.cacheable && identity == current.identity
     }
@@ -102,26 +113,33 @@ struct GitFileStamp: Hashable {
 final class GitInventoryMemo<Value>: @unchecked Sendable {
     private let condition = NSCondition()
     private var value: Value?
+    private var revision = 0
     private var building = false
-    var cached: Value? { condition.lock(); defer { condition.unlock() }; return value }
     func get(invocation: GitInvocation, valid: (Value) throws -> Bool = { _ in true }, retain: (Value) -> Bool = { _ in true }, build: () throws -> Value) throws -> Value {
         while true {
             try invocation.check()
             condition.lock()
-            if let value {
-                let matches: Bool
-                do { matches = try valid(value) } catch { condition.unlock(); throw error }
-                if matches { condition.unlock(); try invocation.check(); return value }
+            let snapshot = value, ticket = revision
+            if let snapshot {
+                condition.unlock()
+                let matches = try valid(snapshot)
+                try invocation.check()
+                condition.lock()
+                guard revision == ticket else { condition.unlock(); continue }
+                if matches { condition.unlock(); return snapshot }
             }
             if building {
                 _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02)); condition.unlock(); continue
             }
-            value = nil; building = true; condition.unlock()
+            value = nil; revision &+= 1; building = true; condition.unlock()
+            // Releasing an override can remove its scratch config directory.
+            withExtendedLifetime(snapshot) {}
             do {
                 try invocation.check()
                 let result = try build()
                 try invocation.check()
-                condition.lock(); value = retain(result) ? result : nil; building = false; condition.broadcast(); condition.unlock()
+                let kept = retain(result)
+                condition.lock(); value = kept ? result : nil; revision &+= 1; building = false; condition.broadcast(); condition.unlock()
                 return result
             } catch {
                 condition.lock(); building = false; condition.broadcast(); condition.unlock(); throw error
@@ -132,59 +150,130 @@ final class GitInventoryMemo<Value>: @unchecked Sendable {
 
 final class GitInventoryCache: @unchecked Sendable {
     static let shared = GitInventoryCache()
+    private final class Cached {
+        let memo: GitInventoryMemo<GitConfiguration>
+        let configuration: GitConfiguration
+        init(_ memo: GitInventoryMemo<GitConfiguration>, _ configuration: GitConfiguration) {
+            self.memo = memo; self.configuration = configuration
+        }
+    }
+    private struct Event {
+        let paths: [String]
+        let onChange: (@Sendable () -> Void)?
+    }
+    private final class Pending {
+        let memo: GitInventoryMemo<GitConfiguration>
+        var events: [Event] = [] // Guarded by the cache lock, never the memo lock.
+        init(_ memo: GitInventoryMemo<GitConfiguration>) { self.memo = memo }
+    }
     private let lock = NSLock()
-    private var values: [Data: GitInventoryMemo<GitConfiguration>] = [:]
+    private var values: [Data: Cached] = [:]
     private var lookups: [Data: Data] = [:]
-    private var building: [Data: GitInventoryMemo<GitConfiguration>] = [:]
+    private var building: [Data: Pending] = [:]
     private var generation = 0
     func configuration(in directory: URL, environment: [String: String], invocation: GitInvocation,
                        build: () throws -> GitConfiguration) throws -> GitConfiguration {
+        try invocation.check()
         let lookup = Data(([directory.path] + environment.sorted(by: { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }).flatMap { [$0.key, $0.value] }).joined(separator: "\0").utf8)
         let (memo, ticket) = lock.withLock {
-            if let key = lookups[lookup], let value = values[key] { return (value, generation) }
-            if let value = building[lookup] { return (value, generation) }
-            let value = GitInventoryMemo<GitConfiguration>(); building[lookup] = value; return (value, generation)
+            if let key = lookups[lookup], let value = values[key] { return (value.memo, generation) }
+            if let value = building[lookup] { return (value.memo, generation) }
+            let value = Pending(GitInventoryMemo<GitConfiguration>()); building[lookup] = value; return (value.memo, generation)
         }
+        var pending: Pending?, retained = false
         do {
-            let result = try memo.get(invocation: invocation, valid: { configuration in
+            return try memo.get(invocation: invocation, valid: { configuration in
                 guard configuration.cacheable else { return false }
                 return try configuration.stamps.allSatisfy { stamp in try invocation.check(); return stamp.unchanged }
-            }, retain: { $0.cacheable }, build: build)
-            lock.withLock {
-                // A trust change or watcher invalidation during a cold build
-                // must not let that build repopulate the new cache generation.
-                guard ticket == generation else { return }
-                building.removeValue(forKey: lookup)
-                if let old = lookups.removeValue(forKey: lookup) { values.removeValue(forKey: old) }
-                guard result.cacheable else { return }
-                let key = lookup + Data([0]) + result.identity
-                if values.count >= 128, let old = values.keys.first {
-                    values.removeValue(forKey: old); lookups = lookups.filter { $0.value != old }
+            }, retain: { _ in retained }, build: {
+                // Register actual rebuilds too; a warm entry can fail its stamps.
+                let current = lock.withLock {
+                    if let value = building[lookup], value.memo === memo { return value }
+                    let value = Pending(memo)
+                    if ticket == generation, let key = lookups[lookup], values[key]?.memo === memo { building[lookup] = value }
+                    return value
                 }
-                values[key] = memo; lookups[lookup] = key
-            }
-            return result
+                pending = current
+                let result = try build()
+                try invocation.check()
+                retained = publish(result, pending: current, lookup: lookup, ticket: ticket)
+                return result
+            })
         } catch {
-            lock.withLock { if building[lookup] === memo { building.removeValue(forKey: lookup) } }
+            // A cancelled waiter must not discard another invocation's build.
+            if let pending { lock.withLock { if building[lookup] === pending { building.removeValue(forKey: lookup) } } }
             throw error
         }
     }
-    func clear() { lock.withLock { generation &+= 1; values.removeAll(); lookups.removeAll(); building.removeAll() } }
-    func invalidate(paths: [String]) -> Bool {
-        let paths = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path }
-        return lock.withLock {
-            let keys = values.compactMap { key, memo -> Data? in
-                guard let configuration = memo.cached else { return key }
-                return configuration.stamps.contains { stamp in
-                    let file = stamp.watchedPath
-                    return paths.contains { file == $0 || file.gitHasPrefix($0 + "/") }
-                } ? key : nil
+    private func publish(_ result: GitConfiguration, pending: Pending, lookup: Data, ticket: Int) -> Bool {
+        let key = lookup + Data([0]) + result.identity, candidate = Cached(pending.memo, result)
+        var retired: [Cached] = []
+        let events = lock.withLock {
+            let events = pending.events
+            guard ticket == generation, building[lookup] === pending else { return events }
+            building.removeValue(forKey: lookup)
+            if let old = lookups.removeValue(forKey: lookup), let value = values.removeValue(forKey: old) { retired.append(value) }
+            if values.count >= 128, let old = values.keys.first {
+                if let value = values.removeValue(forKey: old) { retired.append(value) }
+                lookups = lookups.filter { $0.value != old }
             }
-            guard !keys.isEmpty || !building.isEmpty else { return false }
-            generation &+= 1; building.removeAll()
-            for key in keys { values.removeValue(forKey: key) }
-            lookups = lookups.filter { values[$0.value] != nil }
+            // Expose only completed source metadata to new watcher events.
+            // The memo still has no value and its readers wait until the
+            // earlier events below have decided whether to retain the result.
+            values[key] = candidate; lookups[lookup] = key
+            return events
+        }
+        withExtendedLifetime(retired) {}
+        let changed = events.filter { Self.touches($0.paths, stamps: result.stamps) }
+        let retained = lock.withLock {
+            guard values[key] === candidate else { return false }
+            guard result.cacheable, changed.isEmpty else {
+                values.removeValue(forKey: key); lookups.removeValue(forKey: lookup)
+                return false
+            }
             return true
+        }
+        // Sources discovered by a cold build may have been ignored by the
+        // watcher. Deliver their configuration signal after publication.
+        for event in changed { event.onChange?() }
+        return retained
+    }
+    func clear() {
+        let retired = lock.withLock {
+            let old = (values, building)
+            generation &+= 1; values.removeAll(); lookups.removeAll(); building.removeAll()
+            return old
+        }
+        withExtendedLifetime(retired) {}
+    }
+    func invalidate(paths: [String], onDeferredChange: (@Sendable () -> Void)? = nil) -> Bool {
+        let snapshot = lock.withLock {
+            for pending in building.values { pending.events.append(Event(paths: paths, onChange: onDeferredChange)) }
+            return values
+        }
+        let affected = snapshot.filter { Self.touches(paths, stamps: $0.value.configuration.stamps) }
+        lock.withLock {
+            for (key, value) in affected where values[key] === value { values.removeValue(forKey: key) }
+            lookups = lookups.filter { values[$0.value] != nil }
+        }
+        // Keep the removed inventories alive until both locks are released.
+        withExtendedLifetime(snapshot) {}
+        return !affected.isEmpty
+    }
+    private static func touches(_ paths: [String], stamps: [GitFileStamp]) -> Bool {
+        // Resolve aliases using the inventory's recorded resolution, without
+        // filesystem calls on the watcher or while holding either cache lock.
+        var candidates = paths
+        for stamp in stamps where stamp.path != stamp.watchedPath {
+            for path in paths {
+                if path == stamp.path { candidates.append(stamp.watchedPath) }
+                else if path.gitHasPrefix(stamp.path + "/") { candidates.append(stamp.watchedPath + path.gitDropFirst(stamp.path.utf8.count)) }
+            }
+        }
+        return stamps.contains { stamp in
+            candidates.contains { path in
+                stamp.path == path || stamp.path.gitHasPrefix(path + "/") || stamp.watchedPath == path || stamp.watchedPath.gitHasPrefix(path + "/")
+            }
         }
     }
 }

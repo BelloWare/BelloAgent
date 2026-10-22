@@ -2761,3 +2761,222 @@ remain. No clone folders remained. Cleanup left 21,332,209,664 bytes free.
 No installed app, real preferences, chats, Keychain or paid provider calls were
 used. The final source remains the tested merged commit; only release and validation
 documentation changed after validation.
+
+## Round 14 — memo lock isolation and cold-build watcher events (2026-10-21)
+
+Scope is the two accepted cache findings against `8bbbe8bd`. The implementation
+changes only the inventory memo/cache, its invalidation API and the watcher's
+configuration-change callback. Six new package tests derive from `ViewsTestCase`.
+`xcodegen generate --quiet` completed without a generated-project diff. A fresh
+`git fetch origin` found `origin/dev/next` still at
+`a515d752bc25305301c0346ae2879d4078f7950c`, already an ancestor; no merge was needed.
+
+### Decisions and implementation
+
+- Memo reads snapshot a value and revision under `condition`, release it before
+  validating stamps, check the invocation between stamps, then re-lock and use
+  the snapshot only if its revision is still current. A changed revision loops.
+  Cold-build waiters retain the existing 20 ms timed wait and shared deadline.
+  The single caller already inside a stalled kernel stat can remain blocked;
+  its memo does not hold other readers or invalidation behind that stat.
+- The cache keeps immutable completed source metadata separately from the memo.
+  Watcher invalidation never takes a memo lock and does no path-resolution I/O:
+  it matches event paths against the spelled and canonical paths/aliases already
+  recorded by the inventory. Removed inventories are kept alive until after
+  unlocking, including scratch-override cleanup from object destruction.
+- Each pending build records watcher event paths and a deferred callback. Its
+  completed source metadata becomes visible to new events before its memo
+  releases waiters. Earlier events are intersected once outside the lock;
+  unrelated events preserve reuse, while source events prevent retention.
+  New events use the completed metadata immediately, so sustained output events
+  cannot restart the publication check indefinitely. The final retention step
+  verifies the same candidate is still present after invalidation or clearing.
+- The immediate configuration-change result is true only for a known source.
+  If a cold build discovers that an earlier event touched a config/include,
+  it delivers a deferred `.unknown` through the watcher's existing throttle.
+  This preserves the refresh even when working-tree ignore filtering had
+  discarded the original path. The callback checks the watcher's generation
+  and running state; a stopped/restarted watcher cannot consume an old signal.
+  Ordinary queued-event timestamps and ignore-scan filtering are unchanged.
+- Trust clearing advances the cache generation; an older builder cannot
+  repopulate it. A cancelled waiter does not remove another invocation's build.
+  No trust, program-origin, redirect, or Git execution policy changes are made.
+
+### Failing-first and mutation evidence
+
+`$B` is `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security`.
+Generated temporary repositories use isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`
+and `GIT_CONFIG_GLOBAL=/dev/null`. No network volume or real configuration is
+needed: a DEBUG-only stamp seam blocks one validation until the fixture releases
+it. The other readers must cancel/expire within a 300 ms assertion window, and
+both watcher invalidation and trust clearing must return while that validation
+is still blocked. A second memo fixture replaces a snapshot during validation.
+
+Cold-build fixtures inject 100 ignored `build/output-*` events and separately
+`.git/config` / included-file events before releasing a completed inventory.
+They check actual watcher callbacks, cache reuse by Git query counts, a newer
+ignore scan, cancellation of a coalesced waiter, trust clearing, and stopped
+watcher generations. No marker program is needed for these synchronization
+findings; these fixtures create only generated files and local Git metadata.
+
+| Run | Cases passed / failed | Assertion failures | Evidence |
+| --- | ---: | ---: | --- |
+| Accepted implementation with new tests | 1 / 5 | 13 | `round14-failing-first-complete.log` |
+| Validation moved back under `condition` | 0 / 2 | 4 | `round14-mutation-locked-validation.log` |
+| Snapshot revision guard removed | 0 / 1 | 1 | `round14-mutation-snapshot-revision.log` |
+| Any pending build invalidates/signals on any event | 0 / 1 | 3 | `round14-mutation-unrelated-events.log` |
+| Pending source-event intersection disabled | 0 / 1 | 6 | `round14-mutation-source-events.log` |
+| Restored final implementation | 6 / 0 | 0 | `round14-restored.log` |
+
+The accepted implementation fails all four blocked-reader/invalidation/clear
+assertions. It also signals immediately for unrelated ignored-folder events and
+issues nine new config queries instead of retaining the cold inventory. With
+source-event intersection disabled, config and include events both lose their
+deferred refresh and incorrectly retain the inventory. All mutation runs built
+successfully and failed XCTest assertions; no compile failure counts as evidence.
+Text logs and exact command/result JSON are under `$B/logs/round14-*`.
+
+Exact regression command, run with the original implementation, mutations and
+restored implementation (mutations narrow `--filter` as recorded in their JSON):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security \
+CFFIXED_USER_HOME=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-home \
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+swift test --package-path packages/bello-views \
+  --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests \
+  --filter GitInventoryConcurrencyTests
+```
+
+### Adversarial self-review
+
+| Interleaving checked | Result |
+| --- | --- |
+| Cached stamp stalls; another reader cancels/expires; watcher invalidates; trust clears | Neither lock covers filesystem validation or another memo; the fixture releases the original stat only after all four prompt-return checks. |
+| Another reader replaces a snapshot during validation | Memo revision mismatch discards it and loops; the replacement test plus revision mutation verifies this. |
+| Source event before completed metadata publication | Event is recorded on that pending build, prevents memo retention and requests a deferred refresh. |
+| Event after completed metadata publication, before memo release | Invalidation sees immutable source metadata immediately, removes only the matching candidate, and the final identity check prevents retention. |
+| Trust clear during build or publication | Generation rejects old publication; candidate identity rejects retention after clear. Removed objects are released outside locks. |
+| Unrelated event stream during a cold build | No global generation bump, no `.unknown`, no restarting event-intersection loop; the inventory remains reusable. |
+| Cancelled coalesced waiter or failed build | Only the invocation that actually built can remove its pending entry; failed builds publish no reusable value. |
+| Deferred signal after watcher stop/restart or a newer ignore scan | Generation drops obsolete callbacks; a current source signal remains unconditional and cannot disappear into working-tree ignores. |
+
+The self-review tightened publication so the completed source metadata classifies
+new events while earlier events are checked once. The preliminary full-package
+run was deliberately stopped for that change; it is not counted as final
+validation. Mutation checks were rerun on the final source. No other production
+fix or refactor was added. Fresh final suite results and source hashes follow.
+
+### Final validation (round 14)
+
+All required runs below are fresh on the final Round 14 source. `round14-tested-source.json` records SHA-256 hashes for all four changed Swift files; those hashes were rechecked after validation. Only release/validation documentation changed during the runs.
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| bello-views | 466 | 4 | 0 |
+| Native focused classes (26) | 348 | 1 | 0 |
+| Helper (isolated cost class plus remaining suite) | 1181 | 8 | 0 |
+| Release-helper wire | 40 | 0 | 0 |
+| Release-helper concurrent | 4 | 0 | 0 |
+| Release-helper acceptance | 3 | 0 | 0 |
+
+The views skips are opt-in Finder/inventory benchmarks; the inventory benchmark is run separately below. Helper skips are opt-in fixture-writing/performance tests. The native skip is the opt-in commit-browsing benchmark. No UI rendering changed, so a gallery regeneration was not required for this round.
+
+Exact final commands, with common isolated environment:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+export CFFIXED_USER_HOME=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-views-home
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1
+swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --build-tests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-tests --skip-build --skip StreamingCostTests
+python3 scripts/test-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-concurrent-native-host.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+python3 scripts/test-native-acceptance.py /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/swift-host/arm64-apple-macosx/release/pi-native-host
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-baseline/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+BELLO_GIT_INVENTORY_BENCHMARK=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/round14-large-fixture BELLO_GIT_BENCHMARK_SAMPLES=25 swift test --package-path /Users/admin/Library/Caches/BelloSwiftWork/wt-a130-security/packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests --filter GitInventoryPerformanceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WebhookExchangeTests -only-testing:PiAppTests/WorkspaceTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositoryPermissionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/WebhookTests
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 -only-testing:PiAppTests/GitChangelistReadTests -only-testing:PiAppTests/GitCommitBrowsingTests -only-testing:PiAppTests/GitHistoryFilterTests -only-testing:PiAppTests/GitPathBoundaryTests -only-testing:PiAppTests/GitToolTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileBlameTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileReviewStateTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitBranchesInteractionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitHunkReviewTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitIntegratedHistoryTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChangesTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitOperationSafetyTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFolderTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/FileFindTabTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/QuickOpenTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitWorkingTreeWatcherTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitPanelTimingTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/CrashAuditRegressionTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/GitRepositorySwitchTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ReplyFileLinkTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/ChatFileLinkTests
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/SessionPanelTests
+```
+
+The shared full-lane lock covered all benchmarks and native/focus work and was released after the run. Serial native classes ran alone. One dedicated package scratch directory was rebuilt between benchmark variants; no second DerivedData copy was created. Exact exit statuses, durations and text logs are in `$B/logs/round14-final-*`.
+
+| Native class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabTests | 9 | 0 | 0 |
+| ChatFileLinkTests | 8 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 12 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FileReviewStateTests | 24 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRepositoryPermissionTests | 10 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 43 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| ReplyFileLinkTests | 5 | 0 | 0 |
+| SessionPanelTests | 30 | 0 | 0 |
+| WebhookExchangeTests | 5 | 0 | 0 |
+| WebhookTests | 18 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+
+### Cache latency after the lock/event fixes
+
+Generated fixture: **50,001 regular tracked files and 20 submodules**. Baseline is pinned `origin/dev/next` at `a515d752bc25305301c0346ae2879d4078f7950c`. Each clean package rebuild uses the same benchmark source, verifies compiled source paths/hashes, warms up, then measures 25 samples per operation. Raw samples and source provenance are retained in `round14-final-perf-*.log` and `round14-final-build-*.json`.
+
+| Variant | Status median / p95 (ms) | Changes median / p95 (ms) | Median change vs baseline (status / Changes) |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 259.118 / 269.719 | 2189.561 / 2208.997 | — |
+| branch | 173.835 / 183.553 | 2071.682 / 2097.524 | -32.91% / -5.38% |
+| branch-repeat | 174.949 / 181.170 | 2074.308 / 2104.811 | -32.48% / -5.26% |
+
+Both branch runs meet the approximately 5% steady-state budget. The six new synchronization fixtures and the 43 native watcher cases pass, including queued events surviving ignore scans that started before those events. No required suite remains failing and no product decision is outstanding.
+
+### Final audit and cleanup
+
+The shared lock was held from 19:12:40 through 19:32:42 +0800 on October 21
+and released in the validation driver’s `finally` block. The final October 22
+audit rechecked all tested source hashes and `git diff --check`; a fresh fetch
+still found `origin/dev/next` at `a515d752`, already merged. Audit evidence is
+`$B/logs/round14-adversarial-review.json`.
+
+The generated large repository and exported baseline were removed. The last
+automatic Xcode result was extracted to JSON and deleted; no clone folders
+remained. Text logs, exact commands and source provenance are retained in the
+assigned build root. Cleanup left 20,491,841,536 bytes free. No installed app,
+real preferences/chats, Keychain, paid provider, live capture, release or tag
+was used. There are no unresolved findings in this round.

@@ -23,6 +23,9 @@ public struct GitConfiguration {
 
     public static func invalidate() { GitInventoryCache.shared.clear() }
     @discardableResult public static func invalidate(paths: [String]) -> Bool { GitInventoryCache.shared.invalidate(paths: paths) }
+    @discardableResult public static func invalidate(paths: [String], onDeferredChange: @escaping @Sendable () -> Void) -> Bool {
+        GitInventoryCache.shared.invalidate(paths: paths, onDeferredChange: onDeferredChange)
+    }
 
     public init(in directory: URL, environment: [String: String], invocation: GitInvocation = GitInvocation()) throws {
         // Keep the queried spelling so discovery also stamps its symlinks.
