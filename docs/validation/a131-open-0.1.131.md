@@ -1,0 +1,223 @@
+# OPEN-1: a chat that just finished opens at once — 0.1.131
+
+Workstream `dev/a131-open` (Claude subagent), based on `2ea73777` (`dev/next`).
+Worktree `/Users/admin/Library/Caches/BelloSwiftWork/wt-a131-open`; build root
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a131-open`, whose `evidence/`
+folder holds the text logs named below. All data is generated: chats are
+written by the tests against the loopback fixture gateway
+(`fixtures/native/ui-gateway.py`) and the packaged helper; workspaces use
+isolated state and `MemoryVaultStorage`. No installed app, real chat,
+preference, Keychain item, capture or provider call is used; no release, tag or
+`main`/`dev/next` write. Every Release timing run and every focus (serial-lane)
+run held the shared full-lane lock for that run only (owner line
+"a131-open perf" for timing runs), waited for a 1-minute load under 4, and
+records the load at its start and end and the highest 1-minute load sampled
+during it. Builds started only while no perf or soak run held the lock.
+
+Owner, 2026-10-22: "when I have multiple sessions running, and then one of them
+is complete, when I click on it, it actually could take a lot of time for, you
+know, for it to be loaded, which is really bad, because it doesn't make sense
+to me, because I mean it just finished."
+
+## Cause
+
+A chat in the background is asked for its status, not its rows
+(`WorkspaceModel.refresh`: `session.status`, no messages), so a chat the reader
+left while its reply was arriving keeps that reply as it was: a streaming row,
+its turn still live. Since 0.1.114 (`6a79272e`, found by the soak) opening such
+a chat after its run has finished drops those rows (`heldRowsOutlived`), so that
+they cannot change under the reader, and the chat opens as a chat opened for the
+first time:
+
+1. the page is blank from the click, and the loading cover comes up at 150 ms;
+2. everything is read before its first row, in order: which of another chat's
+   agents it refers to (`readInheritedSubagents`: a scan of the whole journal,
+   since the run changed it), the draft and pending input, the page from the
+   helper, and the page's figures (up to 150 ms);
+3. every row is then built and placed from scratch under the cover. A chat that
+   was running when the reader left it keeps no rows in the pane
+   (`TranscriptKeptRows` keeps settled chats only), and the shared geometry
+   cache does not take rows with tool calls.
+
+An idle chat the reader comes back to instead shows the rows the pane kept at
+once and reads its page behind them. So a chat that had just finished took the
+slowest opening there is, which is the owner's "it doesn't make sense". The
+other running chats were not the cause: in the probe below the helper's page
+read took 8–23 ms and the figures 2–13 ms with three chats streaming, and the
+same opening long after every run had ended took as long (154 ms both).
+
+What grows with a real chat is step 2's journal scan and step 3. The scan
+(`HistoryReader.subagentRecords`, 64 KiB reads, four `Data.range(of:)` searches
+per line) measured 5.6 ms per MiB with `-O` (`evidence/scan-bench.swift`:
+57 ms for 10 MiB, 280 ms for 50 MiB), and it ran on every opening after a run
+because its cache is keyed by the journal's revision.
+
+## Fix
+
+- **The finished page is read as the run ends** (`catchUpFinishedRows`,
+  `WorkspaceSelection.swift`). When the snapshot loop applies a status to a
+  chat out of sight whose run has finished with rows it has outlived, the chat's
+  page is read as opening it reads it (`readInitialWindow`, `withAccounting`:
+  figures and all) and put on its display without presenting it
+  (`adoptPage(presenting: false)`, the row half of `adoptInitialHistory`, now
+  shared by both). Opened afterwards, its rows are no longer outlived, so it
+  opens as a revisit does: its finished rows on the page at once, uncovered, the
+  page read behind them, which brings the same rows and changes nothing.
+- **What the opening scans is read then too.** After the page, the same read
+  scans the journal for the opening (`subagentPlans` with inherited plans, and
+  `agentCoordination` for a chat with agents of its own), so the opening finds
+  both cached instead of scanning the whole file again.
+- **It gives way.** The read lands only while the chat is still out of sight,
+  on the same display and presentation, with the same journal, and still idle
+  with outlived rows: a chat opened, running again, moved to another journal or
+  let go of, or a model shutting down, keeps what it has. One read at a time
+  per chat; a failed read leaves the chat to be read as it opens. Chats on
+  screen (the selection, its side, a sub-agent tab) already get their rows;
+  sub-agents and background requests are not read this way.
+- **Opened before the read lands** (a page and its figures, read a moment
+  after the run's end), the chat opens as before 0.1.131: rows dropped, read
+  behind the cover. Every opening the probe made 0.5 s after a run's end found
+  the finished rows already held.
+- Test seams: `openSteps` (each step of an opening, with its time, as
+  `sendSteps` does for a send) and `catchesUpFinishedRows` (off: read as it
+  opens, as before, so one build can compare both).
+
+Files: `WorkspaceSelection.swift` (the read, the steps), `WorkspaceRefresh.swift`
+(one call after a snapshot of a chat out of sight), `WorkspaceHistory.swift`
+(`adoptPage` split out of `adoptInitialHistory`, behaviour unchanged),
+`SessionDisplay.swift` (the read in flight), `WorkspaceModel.swift` (seams), and
+the generated project for the two new test files. None of the files the other
+0.1.131 workstreams own is touched.
+
+## Reproduction and timings
+
+`FinishedChatOpeningTests.testWhereOpeningAChatThatJustFinishedSpendsItsTime`
+(opt-in, `PI_OPEN_PROBE=1`): the real window (1280 × 820, so the floating
+Agents/Diff/Files card is shown), the packaged helper and the fixture gateway.
+Five chats, each grown while shown by six rounds of a read tool call over a
+30 KB file and a 24 KiB Markdown reply (60 rows held, 949 KiB journal each).
+Each round starts a long streamed reply (“A large answer”, about 10 s) in four
+chats, each while it is shown, then goes to an idle chat. The first of them is
+opened 0.5 s after its run ends while the other three still stream (“just
+finished”); another is opened 3 s after every run has ended (“finished long
+ago”). Openings go through `openFromSidebar` and are timed from the call,
+sampling the page every 2 ms: the chat's first rows on screen, ready, settled
+(ready, and no row moving for 0.5 s), whether it opened covered, and any row
+that moved once drawn; `openSteps` gives each step's time. Rounds alternate the
+read as the run ends off (`catchesUpFinishedRows = false`: as before) and on,
+in one Release build (`evidence/release-final-session.log`; 1-minute load 3.09
+at its highest).
+
+| Opening (Release, median of 3, range) | First rows | Settled | Covered | Rows moved |
+| --- | --- | --- | --- | --- |
+| Just finished, 3 others running — before | 154 ms (151–184) | 176 ms | 3 of 3 | 0 |
+| Just finished, 3 others running — now | **97 ms** (94–109) | 136 ms | **0 of 3** | 0 |
+| Finished long ago, nothing running — before | 154 ms (147–177) | 177 ms | 3 of 3 | 0 |
+| Finished long ago, nothing running — now | **96 ms** (95–96) | 140 ms | **0 of 3** | 0 |
+| Revisit of an idle chat whose rows were kept | 37–58 ms | 75–171 ms | no | 0 |
+| A chat still running (rows held, not kept) | 91 ms | — | no | (streaming) |
+
+Where the time went, round 1 (before): the page blank from the click; the
+inherited agents read at 39 ms, draft 40, page 51, figures 64, adopted 65 ms;
+the whole page then built and placed under the cover until 186 ms. Round 2
+(now): the finished rows are built at once (first rows at 94 ms; the main
+thread is building them), and the reads follow behind them and change nothing
+(inherited agents at 94 ms, a cache hit; page 131; adopted 134 ms).
+
+An earlier pair of builds, the call that starts the read removed and present,
+gave the same picture with one sample each: 186 ms covered against 136 ms
+uncovered (`release-before-session.log`, `release-after-session.log`; the
+latter's load ended at 4.09, so it was redone as the comparison above).
+
+The probe's chats are small. In a long chat the opening without the fix also
+scans the whole journal before its first row (5.6 ms per MiB above) and builds
+a longer page under the cover; with the fix both happen out of sight or behind
+rows already shown.
+
+First rows still take about 95 ms, against 37–58 ms for a revisit, because the
+chat was running when the reader left it: the pane kept none of its rows, so
+they are built at the opening (a chat still running costs the same, 91 ms).
+Part of that is PERF-1 (a131-layout): beside the floating card each reply's
+text is laid out twice.
+
+## Tests
+
+- `ChatOpenPlacementTests.testAChatThatJustFinishedOpensOnItsFinishedRowsAtOnce`
+  (new, serial lane; real window, helper and gateway). A long reply is left
+  arriving, a second chat is still running, and the first finishes while a third
+  is shown. Its finished rows reach it while it is out of sight; from the moment
+  it is the selection the finished reply is on the page and nothing covers it;
+  the rows it opened on are exactly the page its opening reads (ids, texts and
+  states: its saved history); its reply is unread until the page reports it,
+  then read; and no row moves once drawn (4 ms samples for 2.5 s).
+  **Failing first:** on a Release build with the call that starts the read
+  removed (the base behaviour for this flow), 4 failures
+  (`release-before-session.log`): the finished reply never reached the chat
+  out of sight, it was not on the page at once, the page was covered, and the
+  rows held (the reply as left, streaming) were not the page. That build is
+  also the mutation check for the call.
+- `FinishedRowsCatchUpTests` (new, parallel lane, 6 tests; history reads
+  through `historyWindowLoader`, no helper): a finished chat out of sight holds
+  its finished page without presenting it and opens on it uncovered (one read
+  as the run ends, one as it opens); without that read the same opening is
+  covered (the fallback, as before); an opening while the read is in flight
+  shows its own page and the late read changes nothing; a chat running again
+  keeps its rows; only a finished chat out of sight with outlived rows is read
+  (not one running, on screen, or with the seam off); and after the read the
+  opening scans none of the journal again (`subagentScannedBytes`).
+  **Mutations** (Debug, each with the other five passing): without the
+  journal read the opening rescans 207,206 bytes
+  (`testTheOpeningFindsItsJournalScannedAlready` fails,
+  `debug-mutation-warmup.log`); without the “still outlived” check a running
+  chat gets the finished page (`testAChatRunningAgainKeepsItsRows` fails,
+  `debug-mutation-running.log`).
+- `FinishedChatOpeningTests` (new, serial lane): the probe above; it skips
+  unless `PI_OPEN_PROBE=1`.
+
+## Validation
+
+`B=/Users/admin/Library/Caches/BelloSwiftWork/build-a131-open`. Release:
+`xcodebuild build-for-testing -project PiApp.xcodeproj -scheme PiApp
+-configuration Release -destination 'platform=macOS,arch=arm64'
+-derivedDataPath $B/native-release ENABLE_TESTABILITY=YES
+CODE_SIGNING_ALLOWED=NO`, then `xcodebuild test-without-building -xctestrun
+<its .xctestrun> -parallel-testing-enabled NO -only-testing:PiAppTests/<Class>`
+under the lock (`TEST_RUNNER_PI_OPEN_PROBE=1` for the probe). Debug: the same
+with `-derivedDataPath $B/native-tests CODE_SIGN_IDENTITY=-
+CODE_SIGNING_REQUIRED=NO`, serial classes under the lock.
+
+| Run | Classes | Result |
+| --- | --- | --- |
+| Release, final | FinishedChatOpeningTests (probe), ChatOpenPlacementTests, FinishedRowsCatchUpTests | 1, 6, 6 passed |
+| Release, call removed | ChatOpenPlacementTests (new test); FinishedRowsCatchUpTests | 4 failures (expected); 6 passed |
+| Debug, serial lane | ChatLoadStabilityTests 1, ChatOpenPlacementTests 6, FreshPresentationTests 21, HistoryEdgeTests 16, HistoryExtentTests 25, InheritedSubagentReaderTests 8, SessionReadStateTests 16, WorkspaceRefreshLifecycleTests 38, FinishedChatOpeningTests 1 skipped | 132 executed, 0 failures |
+| Debug, parallel lane | FinishedRowsCatchUpTests 6, WorkspaceLoadingTests 15, SubagentDiscoveryTests 13 | 34 passed |
+| Debug, final code | FinishedRowsCatchUpTests; ChatOpenPlacementTests and FinishedChatOpeningTests (under the lock) | 6 passed; 6 passed, 1 skipped (`debug-final-unit.log`, `debug-final-placement.log`) |
+
+The Debug serial and parallel runs above were on the change before its last
+edits (the measurement seam, and the visibility check named
+`receivesRows`); the final code was run in Release (first row) and in Debug
+(last row). No helper, wire or storage format changed, so the helper, wire,
+concurrent and acceptance suites were not run.
+
+## Not changed, for the lead
+
+- **Rows still built at the opening.** A chat that was running when the reader
+  left it has no rows kept in the pane, so they are built as it opens (about
+  95 ms here). Keeping them would mean keeping live rows out of sight, which
+  `TranscriptKeptRows` refuses by design. PERF-1 (a131-layout) removes part of
+  the cost beside the floating card.
+- **Displays beyond eight.** `releaseUnreadDisplays` lets go of the least
+  recently opened displays without work, and a chat that ran a long time in
+  the background is usually that: once its run has ended, opening any other
+  chat while more than eight are held lets go of it, rows and all, and its next
+  opening is a first opening (covered). Options: leave it; count a run's end as
+  use; keep a display while it holds an unread reply.
+- **Runs that end in an error, or stopped or paused**, keep the rows the
+  reader left: `heldRowsOutlived` covers idle runs, as since 0.1.114, and such a
+  chat shows them and then the page in their place. Unchanged.
+- **Opened before the read lands**, a moment after the run's end, the chat
+  opens as before. Waiting for that read instead of starting another would
+  close the gap.
+- **First openings** (nothing held) still scan the journal before reading the
+  page; the scan could follow the page instead.

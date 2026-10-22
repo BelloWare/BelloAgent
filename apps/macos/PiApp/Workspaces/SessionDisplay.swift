@@ -117,6 +117,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         !busy && !loading && runState == .idle && sendingRows.isEmpty
             && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
     }
+    /// The read that brings such rows up to date while the chat is still out
+    /// of sight (`WorkspaceModel.catchUpFinishedRows`).
+    var finishedRowsRead: Task<Void, Never>?
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     /// Where the window stands in the whole chat, for the room the transcript

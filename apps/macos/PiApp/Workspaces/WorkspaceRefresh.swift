@@ -158,6 +158,10 @@ extension WorkspaceModel {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
                     applyToolNotice(result, to: view, id: id, item: item)
+                    // A run that ended out of sight left the rows it was
+                    // writing as the reader saw them: they are read again
+                    // now, before the reader opens the chat.
+                    if !visible { catchUpFinishedRows(id) }
                 }
                 // Looked up by id; finding the index is only needed to write.
                 if let path = result["path"]?.string, let known = chatRecord(id), known.path != path, let index = chats.firstIndex(where: { $0.id == id }) {

@@ -10,6 +10,7 @@ extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
                 focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        openSteps?(id, "select")
         releasedHelperSessions.remove(id)
         if item.isSubagent { await openSubagentTab(id); return }
         let focusesComposer = focusesComposer && !item.isSubagent
@@ -25,6 +26,7 @@ extension WorkspaceModel {
         }
         let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch,
                                                            focusesComposer: focusesComposer)
+        openSteps?(id, heldRows.cached ? "prepared on held rows" : "prepared without rows")
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
         releaseUnreadDisplays(keeping: id)
         let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
@@ -139,7 +141,9 @@ extension WorkspaceModel {
         // Rows from a run that finished while the chat was in the background
         // are not kept on the page: they are the run as the reader left it,
         // and they would change under the reader when the finished page came.
-        // The chat opens as a chat opened for the first time does.
+        // They are read again as the run ends (`catchUpFinishedRows`); opened
+        // before that read has landed, the chat opens as a chat opened for
+        // the first time does.
         if view.hasPresentedRows, view.heldRowsOutlived { view.messages = []; view.presentation.identity = nil }
         let held = view.beginHistoryPresentation()
         view.contextSelectionReady = false; view.browsingHistory = true
@@ -205,6 +209,55 @@ extension WorkspaceModel {
             releaseHelperSession(other.id)
         }
     }
+    /// A chat the reader left while its reply was arriving holds that reply
+    /// as it was: a chat in the background is asked for its status, not its
+    /// rows (`heldRowsOutlived`). Once its run has finished, its page is read
+    /// here as opening it reads it, figures and all, and held in place of
+    /// those rows while the chat is still out of sight. Opened then, the chat
+    /// shows its finished rows at once, as a revisit shows the rows it kept,
+    /// and reads its page behind them. Before, it opened on a blank page and
+    /// read its history behind the loading cover (OPEN-1). The read gives way
+    /// to the chat being opened, or running again, before it lands.
+    func catchUpFinishedRows(_ id: String) {
+        guard catchesUpFinishedRows, let view = displays[id], view.finishedRowsRead == nil, view.hasPresentedRows, view.heldRowsOutlived, !view.browsingHistory,
+              !receivesRows(id), let item = record(id), !item.isSubagent, !item.isBackgroundTask else { return }
+        let generation = view.presentation.readGeneration
+        view.finishedRowsRead = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            defer { view.finishedRowsRead = nil }
+            @MainActor func current() -> Bool {
+                !Task.isCancelled && !self.isShutDown && self.displays[id] === view && view.presentation.readGeneration == generation
+                    && view.heldRowsOutlived && !self.receivesRows(id) && self.record(id)?.path == item.path
+            }
+            do {
+                var page = try await self.readInitialWindow(item, holding: view.scrollAnchor)
+                guard current() else { return }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
+                guard current() else { return }
+                view.beginTranscriptBatch()
+                self.adoptPage(page, into: view, presenting: false)
+                view.endTranscriptBatch()
+                // What the opening reads of the journal before its page —
+                // which of another chat's agents it refers to, and what its
+                // own agents sent — is a scan of the whole file once it has
+                // changed, about 0.3 s for a 50 MiB chat: read now, while
+                // nothing waits on it, the opening finds it read.
+                if let path = item.path, !item.imported {
+                    let journal = URL(fileURLWithPath: path)
+                    _ = try? await self.history.subagentPlans(path: journal, ownerID: item.id, includeInherited: true)
+                    if self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == item.id }) {
+                        _ = try? await self.history.agentCoordination(path: journal, ownerID: item.id)
+                    }
+                }
+            } catch {
+                // Not read now, the chat's page is read as it opens.
+            }
+        }
+    }
+    /// Whether the snapshot loop brings this chat its rows (`refresh`): the
+    /// chat selected, its side beside it, a sub-agent's tab on screen. Any
+    /// other chat is asked for its status alone.
+    private func receivesRows(_ id: String) -> Bool { id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id) }
     /// Reads the opened chat's saved draft and place, then its page, and shows
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
@@ -220,10 +273,12 @@ extension WorkspaceModel {
         }
         do {
             await readInheritedSubagents(item, current: current)
+            openSteps?(id, "inherited agents read")
             guard current() else { return }
             try await attachManagedSubagent(item, current: current)
             guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
+            openSteps?(id, "draft read")
             let owner = item.delegation.flatMap { record($0.budgetOwnerSessionID) } ?? item
             view.childSummaries = subagentSummaries.filter { $0.value.link.budgetOwnerSessionID == item.id }
             if item.isSubagent || !view.childSummaries.isEmpty, let path = owner.path,
@@ -258,6 +313,7 @@ extension WorkspaceModel {
                view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
                await self.history.unchanged(revision) {
                 guard current() else { return }
+                openSteps?(id, "held rows unchanged")
                 self.presentHeldHistory(view, identity: heldRows.identity, partialTurnInput: heldRows.partialTurnInput)
                 if self.opened.contains(id) { self.refresh(id) }
                 return
@@ -267,10 +323,12 @@ extension WorkspaceModel {
             // page was dropped with nothing reading the chat any more, and
             // it stayed on "Preparing…" until it was opened again.
             var source = item, page = try await self.readInitialWindow(source, holding: held)
+            openSteps?(id, "page read")
             for reads in 1...4 {
                 guard current(), let now = self.record(id) else { return }
                 if now.path == source.path {
                     page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                    openSteps?(id, "figures read")
                     guard current() else { return }
                     if self.record(id)?.path == source.path { break }
                 }
@@ -278,6 +336,7 @@ extension WorkspaceModel {
                 source = renamed; page = try await self.readInitialWindow(source, holding: held)
             }
             self.adoptInitialHistory(page, into: view)
+            openSteps?(id, "adopted")
             if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                 view.notice = LiteLLMConfiguration.unsupportedAPIMessage
             }
