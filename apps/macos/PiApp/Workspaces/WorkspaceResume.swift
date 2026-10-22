@@ -112,6 +112,11 @@ extension WorkspaceModel {
             // or side requests were lost: the root keeps naming them).
             let read = await rootCostPause(root)
             guard (try? requireResume(preparation)) != nil else { return }
+            // The card offers Resume by the limit the chat shows. A helper
+            // still under another one (a send that never reached it) would
+            // refuse the whole family at it: it hears the chat's limit first,
+            // in a send a Stop meanwhile does not cut short (LIMIT-1).
+            if let limit = read.limit, limit != costLimit(for: root.id) { await Task { [weak self] in await self?.sendCostLimit(root.id) }.value }
             var members = read.members
             if read.paused || isCostPaused(root.id) {
                 if let reply = await performResume(root, view: displays[root.id], member: root.id != item.id,
@@ -160,13 +165,15 @@ extension WorkspaceModel {
 
     /// A side's root after a relaunch need not have a display or a budget
     /// reading yet: ask its helper (as a budget dependency) before deciding
-    /// whether the whole family resumes from the root.
-    func rootCostPause(_ root: ChatRecord) async -> (paused: Bool, members: [String]) {
+    /// whether the whole family resumes from the root. `limit`: the one the
+    /// root's helper runs under, when it says (`limitUSD`, null for none).
+    func rootCostPause(_ root: ChatRecord) async -> (paused: Bool, members: [String], limit: CostLimit?) {
         guard let host = try? await open(root, budgetDependency: true),
-              let status = try? await host.request("session.status", sessionID: root.id, params: ["budgetOnly": .bool(true)]).object else { return (false, []) }
+              let status = try? await host.request("session.status", sessionID: root.id, params: ["budgetOnly": .bool(true)]).object else { return (false, [], nil) }
         observeCost(status, sessionID: root.id)
         let cost = status["cost"]?.object
-        return (cost?["paused"]?.bool == true, cost?["pausedMembers"]?.array?.compactMap(\.string) ?? [])
+        return (cost?["paused"]?.bool == true, cost?["pausedMembers"]?.array?.compactMap(\.string) ?? [],
+                cost?["limitUSD"].map { $0.number.map(CostLimit.usd) ?? .unlimited })
     }
 
     /// One `run.continue`, recorded as a pending intent first for a durable
