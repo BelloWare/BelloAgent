@@ -4,6 +4,10 @@
 
 ## 0.1.130
 
+- [x] SECURITY-BOUNDARIES-1bm: Git inventory reuse validates exact on-disk path spelling with bounded probes, including case-only and NFC/NFD renames without a watcher; per-repository override scopes remain case-sensitive. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bn: Initial Git discovery is shared and bounded; Changes, blame and Finder reads retain their own cancellation/deadline, failures cool down before retrying, and no timeout falls back to the Git shim. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+- [x] SECURITY-BOUNDARIES-1bo: Git trust resolution confirms canonical path snapshots before use; a rename between concurrent root and query lookups cannot inherit an ancestor's trust. [Validation](docs/validation/a130-security-0.1.130.md#round-17--path-spelling-and-tool-discovery).
+
 - [x] SECURITY-BOUNDARIES-1bj: Git write admission and history trust rechecks use in-memory workspace state, without resolving project paths on the main actor. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1bk: Git inventory and ignore-file probes have bounded, cancellable waits; stalled paths select confinement, remain coalesced until their probe returns, and cannot consume a thread per retry or trust revision. [Validation](docs/validation/a130-security-0.1.130.md).
 - [x] SECURITY-BOUNDARIES-1bl: Git subprocesses preserve UTF-8 argument and environment bytes with posix_spawn; literal NFC/NFD ignore rules, history paths and explicit file writes no longer target Foundation-normalized spellings. [Validation](docs/validation/a130-security-0.1.130.md).

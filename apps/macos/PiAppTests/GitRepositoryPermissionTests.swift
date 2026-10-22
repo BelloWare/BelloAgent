@@ -4,6 +4,34 @@ import XCTest
 import GitProcessSafety
 
 final class GitRepositoryPermissionTests: XCTestCase {
+    @MainActor func testTrustSnapshotsRefuseRenamesDuringPathResolution() async throws {
+        let root = scratchRoot("git-trust-spelling").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (index, names) in [("Denied", "denied"), ("cafe\u{301}", "caf\u{e9}")].enumerated() {
+            let parent = root.appendingPathComponent("fixture-\(index)")
+            let denied = parent.appendingPathComponent(names.0), renamed = parent.appendingPathComponent(names.1)
+            let queried = denied.appendingPathComponent("child")
+            try FileManager.default.createDirectory(at: queried, withIntermediateDirectories: true)
+            let model = makeWorkspaceModel(stateRoot: parent.appendingPathComponent("state"))
+            defer { model.shutdown() }
+            model.tabs.showsWindows = false
+            model.workspaces = [WorkspaceRecord(id: "parent", path: parent.path, trusted: true),
+                                WorkspaceRecord(id: "denied", path: denied.path, trusted: false)]
+            let gate = TrustPathGate(path: queried.path)
+            model.gitTrustPath = { gate.resolve($0) }
+            defer { gate.release() }
+            let read = Task { try await GitReadProcess.isTrusted(queried.path) }
+            try await eventually("Query path is held while project roots resolve") { gate.isWaiting }
+            try await Task.sleep(for: .milliseconds(20))
+            XCTAssertEqual(rename(denied.path, renamed.path), 0)
+            gate.release()
+            let trusted = try await read.value
+            XCTAssertFalse(trusted, "A renamed untrusted boundary must not inherit its ancestor's trust")
+            let next = try await GitReadProcess.isTrusted(queried.path)
+            XCTAssertFalse(next, "The next read resolves the current spelling too")
+        }
+    }
+
     @MainActor func testWriteAdmissionDoesNotResolveProjectPaths() async throws {
         let root = scratchRoot("git-write-admission")
         defer { try? FileManager.default.removeItem(at: root) }

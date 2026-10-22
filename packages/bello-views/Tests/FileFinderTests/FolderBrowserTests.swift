@@ -1,9 +1,44 @@
 import XCTest
 @testable import FileFinder
-import GitProcessSafety
+@testable import GitProcessSafety
 import Darwin
 
 final class FolderBrowserTests: ViewsTestCase {
+    @MainActor func testFinderToolLookupSharesCancellationAndDeadline() async throws {
+        let previous = GitToolLookup.current, root = try fixture()
+        let binary = try previous.get(invocation: GitInvocation())
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        GitToolLookup.current = GitToolLookup { _ in entered.signal(); _ = release.wait(timeout: .now() + 2); return binary }
+        defer { release.signal(); GitToolLookup.current = previous }
+        for cancel in [false, true] {
+            let start = ProcessInfo.processInfo.systemUptime
+            let read = Task { try await FinderProcess.git(["--version"], in: root.path, limit: 4096, timeout: cancel ? 1 : 0.06, environment: Self.environment(root)) }
+            if cancel { try await Task.sleep(for: .milliseconds(20)); read.cancel() }
+            do { _ = try await read.value; XCTFail("Stopped lookup must not launch Git") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError, "\(error)") }
+                else { XCTAssertTrue(error.localizedDescription.contains("timed out"), "\(error)") }
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.3)
+        }
+        XCTAssertEqual(entered.wait(timeout: .now()), .success)
+        XCTAssertEqual(entered.wait(timeout: .now()), .timedOut, "Both reads share one lookup")
+        release.signal()
+        let output = try await FinderProcess.git(["--version"], in: root.path, limit: 4096, environment: Self.environment(root))
+        XCTAssertEqual(output.status, 0)
+    }
+
+    func testMissingGitStillListsPlainFolders() async throws {
+        let previous = GitToolLookup.current, root = try fixture()
+        GitToolLookup.current = GitToolLookup { _ in throw GitToolLookupError.unavailable }
+        defer { GitToolLookup.current = previous }
+        try file("fixture.txt", at: root)
+        let listing = try await FileListing.list(root.path, limits: FileListingLimits(), environment: Self.environment(root))
+        XCTAssertEqual(listing.count, 1)
+        let directory = try await FolderDirectory.read(root, relativeTo: root, environment: Self.environment(root))
+        XCTAssertEqual(directory.entries.map(\.name), ["fixture.txt"])
+    }
+
     func testStalledIgnoreFileProbeDoesNotBlockFolderReads() async throws {
         let root = try fixture(), path = root.path + "/.gitignore"
         try file(".gitignore", at: root, text: "*.tmp\n"); try file("fixture.tmp", at: root)

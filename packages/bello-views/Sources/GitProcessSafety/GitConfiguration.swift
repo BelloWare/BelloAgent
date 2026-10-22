@@ -342,7 +342,12 @@ public struct GitConfiguration: Sendable {
         }
         stamps += children.flatMap(\.stamps)
         self.stamps = Array(Set(stamps))
-        permitsUnconfinedRead = try canReadUnconfined && configurationFiles.allSatisfy { try Self.staticConfiguration($0, allowNull: true, invocation: invocation) }
+        // A rename during inventory must not publish a condition based on an
+        // earlier spelling. Keep exact, case-sensitive scopes for each repo.
+        let gitSpelling = gitDirectory.isEmpty ? nil : try stamp(gitDirectory).spelling
+        permitsUnconfinedRead = try canReadUnconfined && self.stamps.allSatisfy(\.spellingKnown)
+            && (gitDirectory.isEmpty || gitSpelling == Data(gitDirectory.utf8))
+            && configurationFiles.allSatisfy { try Self.staticConfiguration($0, allowNull: true, invocation: invocation) }
         cacheable = permitsUnconfinedRead && canCache && self.stamps.allSatisfy(\.cacheable) && children.allSatisfy(\.cacheable)
         // Recheck the data after capturing origins, including missing include
         // files. Filesystem timestamps need not share Date's clock precision.

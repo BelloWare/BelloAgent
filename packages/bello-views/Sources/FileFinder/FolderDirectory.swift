@@ -57,7 +57,7 @@ public struct FolderDirectory: Sendable {
         func warn(_ message: String) { if !warnings.contains(message) { warnings.append(message) } }
         if unrepresentable { warn("Some filenames are not valid UTF-8 and could not be shown safely.") }
         var ignored = Set<String>()
-        if FileListing.gitAvailable, try await FileListing.repositoryTop(of: folder.path, environment: environment) != nil {
+        if try await FileListing.repositoryTop(of: folder.path, environment: environment) != nil {
             // check-ignore keeps tracked files, just as Quick Open's ls-files
             // does. Pass bounded batches after "--": config includes must
             // never consume repository-controlled filenames from stdin.

@@ -19,6 +19,8 @@ struct GitFileStamp: Hashable, Sendable {
 #endif
     let path: String
     let watchedPath: String
+    let spelling: Data?
+    let spellingKnown: Bool
     private let identity: [Int64]
     let cacheable: Bool
     private let directoryIdentity: Bool
@@ -32,6 +34,15 @@ struct GitFileStamp: Hashable, Sendable {
         self.path = path
         self.watchedPath = watchedPath
         self.directoryIdentity = directoryIdentity
+        // Inodes survive case-only and normalization-only renames on APFS.
+        // Git's conditional config matches path bytes, so record the kernel's
+        // current spelling too. Callers run this probe under GitFileProbe.
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let found = path.withCString { realpath($0, &resolved) != nil }
+        let missing = !found && (errno == ENOENT || errno == ENOTDIR)
+        let bytes = resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        spelling = found ? Data(bytes) : nil
+        spellingKnown = missing || (found && String(bytes: bytes, encoding: .utf8) != nil)
         func fields(_ value: stat) -> [Int64] {
             if directoryIdentity, value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) {
                 return [Int64(value.st_dev), Int64(bitPattern: UInt64(value.st_ino)), Int64(value.st_mode)]
@@ -52,15 +63,15 @@ struct GitFileStamp: Hashable, Sendable {
             identity = fields(link) + (followed ? fields(target) : [])
             let kind = (followed ? target.st_mode : link.st_mode) & mode_t(S_IFMT)
             let readableTarget = !symlink || followed || errno == ENOENT || errno == ENOTDIR
-            cacheable = readableTarget && ([mode_t(S_IFREG), mode_t(S_IFDIR), mode_t(S_IFLNK)].contains(kind) || (kind == mode_t(S_IFCHR) && watchedPath == "/dev/null"))
-        } else { identity = []; cacheable = errno == ENOENT || errno == ENOTDIR }
+            cacheable = spellingKnown && readableTarget && ([mode_t(S_IFREG), mode_t(S_IFDIR), mode_t(S_IFLNK)].contains(kind) || (kind == mode_t(S_IFCHR) && watchedPath == "/dev/null"))
+        } else { identity = []; cacheable = spellingKnown && (errno == ENOENT || errno == ENOTDIR) }
     }
     var unchanged: Bool {
 #if DEBUG
         Self.beforeValidation?(path)
 #endif
         let current = GitFileStamp(path, watchedPath: watchedPath, directoryIdentity: directoryIdentity)
-        return cacheable && current.cacheable && identity == current.identity
+        return cacheable && current.cacheable && identity == current.identity && spelling == current.spelling
     }
     var exists: Bool { !identity.isEmpty }
     static func validate(_ stamps: [GitFileStamp], invocation: GitInvocation, skipUncacheable: Bool = false) throws -> Bool {

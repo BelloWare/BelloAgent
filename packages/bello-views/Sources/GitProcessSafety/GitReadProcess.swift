@@ -30,7 +30,7 @@ public struct GitReadProcess {
     }
     init(_ process: Process, arguments: [String], environment: [String: String], trusted: Bool = false,
          regularFilesOnly: Bool, repository: URL? = nil, invocation: GitInvocation = GitInvocation()) throws {
-        let git = try Self.git.get()
+        let git = try GitToolLookup.current.get(invocation: invocation)
         let arguments = Self.nonrecursive(arguments)
         var environment = environment
         var checked: GitConfiguration?
@@ -128,24 +128,4 @@ public struct GitReadProcess {
                                  (vnode-type DIRECTORY) (literal "/dev/null"))))
     """
 
-    /// xcrun uses the selected developer tools, never PATH or repository config.
-    /// Resolve before sandboxing: /usr/bin/git is only Apple's toolchain shim.
-    private static let git: Result<URL, Error> = Result {
-        let process = Process(), output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["--find", "git"]; process.currentDirectoryURL = URL(fileURLWithPath: "/")
-        process.environment = ["PATH": "/usr/bin:/bin"]
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = FileHandle.nullDevice
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-        let bytes = data.last == 10 ? data.dropLast() : data
-        let path = String(decoding: bytes, as: UTF8.self)
-        guard process.terminationStatus == 0, path.gitHasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
-            throw Failure()
-        }
-        return URL(fileURLWithPath: path).resolvingSymlinksInPath()
-    }
-    private struct Failure: LocalizedError {
-        var errorDescription: String? { "The system Git could not be located for a read-only query." }
-    }
 }

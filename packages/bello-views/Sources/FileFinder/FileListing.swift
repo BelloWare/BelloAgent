@@ -61,26 +61,6 @@ enum FileListing {
     /// How deep repositories inside repositories are followed.
     static let nestedDepth = 4
 
-    /// Whether git can run without asking to install the command line
-    /// tools: `/usr/bin/git` is a shim that asks for them when they are not
-    /// there. Without them every folder is walked.
-    static let gitAvailable: Bool = {
-        let files = FileManager.default
-        if files.isExecutableFile(atPath: "/Library/Developer/CommandLineTools/usr/bin/git") { return true }
-        // The developer folder in use (Xcode's, say), as xcode-select says.
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        let pipe = Pipe()
-        process.standardOutput = pipe; process.standardError = FileHandle.nullDevice; process.standardInput = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return false }
-        let developer = String(decoding: data.last == 10 ? data.dropLast() : data, as: UTF8.self)
-        return !developer.isEmpty && files.isExecutableFile(atPath: developer + "/usr/bin/git")
-    }()
-
     /// The most of an ignore file read: a larger one is left out, and said so.
     static let ignoreFileLimit = 1_048_576
 
@@ -100,7 +80,7 @@ enum FileListing {
             listing.warn("“\(shown(folder))” could not be read, so no file in it is listed.")
             return listing
         }
-        if gitAvailable, let top = try await repositoryTop(of: folder, environment: environment) {
+        if let top = try await repositoryTop(of: folder, environment: environment) {
             try await listRepository(folder, prefix: [], depth: 0, top: top, limits: limits, environment: environment, into: &listing)
         } else {
             var warnings: [String] = []
@@ -118,7 +98,9 @@ enum FileListing {
 
     /// The top of the repository `folder` is in, or nil when it is in none.
     static func repositoryTop(of folder: String, environment: [String: String]) async throws -> String? {
-        let output = try await FinderProcess.git(["rev-parse", "--show-toplevel"], in: folder, limit: 65_536, timeout: 20, environment: environment)
+        let output: FinderProcess.Output
+        do { output = try await FinderProcess.git(["rev-parse", "--show-toplevel"], in: folder, limit: 65_536, timeout: 20, environment: environment) }
+        catch GitToolLookupError.unavailable { return nil } // No developer tools: walk the folder without invoking the shim.
         guard output.status == 0 else { return nil }
         let top = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
         return top.isEmpty ? nil : top
@@ -187,8 +169,13 @@ enum FileListing {
     /// else `$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`.
     static func globalIgnoreFile(in folder: String, environment: [String: String], warn: (String) -> Void = { _ in }) async throws -> IgnoreFile? {
         var path: String?
-        if gitAvailable, let output = try? await FinderProcess.git(["config", "--path", "--get", "core.excludesFile"], in: folder,
-                                                                   limit: 65_536, timeout: 20, environment: environment), output.status == 0 {
+        let output: FinderProcess.Output?
+        do { output = try await FinderProcess.git(["config", "--path", "--get", "core.excludesFile"], in: folder,
+                                                  limit: 65_536, timeout: 20, environment: environment) }
+        catch is CancellationError { throw CancellationError() }
+        catch GitToolLookupError.timedOut { throw GitToolLookupError.timedOut }
+        catch { output = nil }
+        if let output, output.status == 0 {
             let value = String(decoding: output.stdout.last == 10 ? output.stdout.dropLast() : output.stdout, as: UTF8.self)
             if !value.isEmpty { path = value }
         }

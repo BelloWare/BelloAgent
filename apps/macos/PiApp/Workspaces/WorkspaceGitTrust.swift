@@ -19,6 +19,16 @@ final class WorkspaceGitTrustPaths: @unchecked Sendable {
 
     func resolve(_ paths: [String], revision: Int, invocation: GitInvocation,
                  canonicalize: @escaping @Sendable (String) -> String) async throws -> [String]? {
+        guard let first = try await snapshot(paths, revision: revision, invocation: invocation, canonicalize: canonicalize),
+              let confirmed = try await snapshot(paths, revision: revision, invocation: invocation, canonicalize: canonicalize),
+              zip(first, confirmed).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else { return nil }
+        return confirmed
+    }
+
+    // Roots and the queried directory resolve concurrently. A rename between
+    // those lookups must not turn a stale denial into its trusted ancestor.
+    private func snapshot(_ paths: [String], revision: Int, invocation: GitInvocation,
+                          canonicalize: @escaping @Sendable (String) -> String) async throws -> [String]? {
         try Task.checkCancellation(); try invocation.check()
         let id = UUID(), (events, completion) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         var jobs: [Pending] = []

@@ -3457,3 +3457,240 @@ hashes, counts and gallery images remain there. No installed app, real
 preferences/chats, Keychain, live capture or paid provider was used. There are
 no failing final validation checks; the separate file-opening/watcher liveness
 follow-ups are listed above.
+
+
+## Round 17 — path spelling and tool discovery
+
+Round 16 (`0bda5583`) is the starting point. Both review findings were
+confirmed with generated fixtures. The requested path-spelling sweep also
+confirmed a mixed-snapshot trust issue, fixed within this round's scope.
+`origin/dev/next` remains `391f3c61`, already an ancestor; no integration merge
+is needed. All fixture configs are isolated; programs only create a marker
+file and pass fixture content through.
+
+### Decisions and implementation
+
+`GitFileStamp` now records `realpath(3)`'s exact UTF-8 bytes as well as inode,
+mode and file timestamps. This applies to repository identity, queried paths,
+configuration origins, include targets, symlink resolution chains, and their
+ancestors. Warm validation recomputes spelling outside every cache/memo lock,
+under the round-16 bounded probe. A case-only rename that preserves all inodes
+therefore invalidates the cached override. A non-UTF-8 or otherwise unprovable
+spelling selects confinement; a proven missing path remains stamped as missing.
+Cold construction also checks the gitdir spelling against Git's reported bytes
+before allowing an unconfined read. `gitdir:` conditions remain exact and
+case-sensitive: no `gitdir/i:` broadening can apply a parent's restored global
+value to a child with different conditional global settings. A retained old
+path spelling may require rebuilding the inventory; it never authorizes stale
+conditional overrides.
+
+`GitToolLookup` replaces the blocking static initializer. One in-flight worker
+runs `xcrun --find git` with its own 20-second invocation budget, through the exact-byte
+child launcher and an adopted invocation; output is nonblocking and capped at
+64 KiB. Each waiter checks its own cancellation/deadline every 10 ms. Cancelling
+one waiter leaves the shared lookup available to other readers; a stalled
+worker stays registered, rather than being restarted per read. An uninterruptible
+kernel call may outlive the worker budget, but cannot hold a waiter or start a
+replacement worker. Successful
+results are cached; failures have a one-second retry cooldown. Tool-path
+filesystem validation uses the bounded probe too. A timeout has an explicit
+Git-tool-discovery message, and `/usr/bin/git` is never substituted as a
+fallback. Finder's separate, synchronous availability initializer is removed;
+its real query uses this shared lookup. Missing developer tools still permit
+plain-folder walking; lookup timeouts and cancellation propagate.
+
+The app's concurrent trust path batch now requires a second matching canonical
+snapshot, compared as bytes, within the same invocation. A rename between the
+query lookup and a nested untrusted-root lookup must not turn the denial into
+the trusted parent's grant. Both passes use the existing per-path in-flight
+registry, worker cap and bounded waits, away from the main actor. No completed
+root is cached, and the workspace revision is still revalidated after the
+await. A mismatch confines that read.
+
+### Path-spelling sweep
+
+Both case-only and NFC/NFD-only renames were considered at each entry below.
+The APFS fixtures verify that old and new spellings still resolve to the same
+inode, so a missing-path failure cannot masquerade as protection.
+
+| Cache, condition or snapshot | Case and normalization result |
+| --- | --- |
+| `GitInventoryCache` lookup (`directory.path` and environment bytes), identity, memo publication | Every reuse requires fresh bounded spelling + identity stamps. A different lookup spelling can cause a cache miss, never bypass validation. Cold publication also validates stamps. |
+| `GitConfiguration` gitdir, common dir, worktree, discovery ancestors, include origins/targets, symbolic-ref paths, stored modules | These paths and resolution-chain components all carry spelling stamps. A changed ancestor or resolved origin invalidates the inventory even if target files are hardlinks. Unprovable paths confine. |
+| `GitReadOverrides` exact `gitdir:` pattern, scratch include/config paths | The gitdir is checked against its kernel spelling before policy construction and on reuse; scopes remain case-sensitive and per repository. Scratch files are private, generated, and live with the held inventory. No parent global value is broadcast to a child. |
+| `GitReadProcess.trust` dictionary | Values only trigger invalidation when a freshly resolved trust value changes; they are never used to grant trust. Canonically equivalent dictionary keys cannot supply an old grant. |
+| `WorkspaceGitTrustPaths`, `WorkspaceModel` revision/project snapshot and canonical roots | Found and fixed a case-rename race between concurrent lookups. Two equal byte snapshots plus the revision check are now required. NFC/NFD paths also pass this check or confine; no completed path cache survives a rename. |
+| `FileTab.key`, `CanonicalPath`, `WorkspaceTabs`, `WorkspaceChanges`, blame/history ownership, file opener and reply-link roots | Ownership boundaries resolve canonical paths afresh. Stored tab/review roots identify UI state, not permission for a Git subprocess; every actual read re-enters the asynchronous trust resolver and inventory. Case aliases resolve to current on-disk spelling; Foundation's Unicode normalization is consistent for these canonical containment operands. |
+| `FileFinder.distinct`, `FileFinderIndex`, folder-tree/listing keys and Quick Open project roots | Cached results contain names/rows, not execution permissions. New Git listings go through `FinderProcess` and fresh trust/inventory; file selection goes through canonical ownership resolution. Old casing may be retained in a displayed row without granting unconfined execution. |
+| `GitWorkingTreeWatcher`, `GitWatchStream`, controller repository identities and commit caches | Root spellings determine refresh delivery, UI identity and cache presentation only. Every actual read validates inventory spelling even with no watcher (explicitly tested). Watcher signals remain an optimization; a missed case/normalization event cannot authorize stale overrides. |
+| Git tool URL and confinement scratch path | The tool comes from fixed `xcrun` discovery, never repository configuration; the approved tool result is cached as requested. A changed/missing tool fails launch or sandbox matching, not local-program isolation. Generated scratch paths carry no repository trust. |
+
+The sweep used source searches for caches, keys, canonical roots, `gitdir:`,
+`realpath` and `resolvingSymlinksInPath` across GitProcessSafety, GitView,
+FileFinder, app Git/Files, WorkspaceGitTrust/WorkspaceModel/WorkspaceTabs and
+WorkspaceChanges. Existing synchronous file-opening/watcher liveness follow-ups
+from round 16 are unchanged; they do not store execution grants. No additional
+path-spelling boundary issue was found.
+
+### Failing-first and mutation evidence
+
+Logs are under `/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/logs`.
+The rename fixtures themselves are under that build root on case-insensitive
+APFS. The two layouts rename the repository and an ancestor separately, retain
+the old caller spelling, and run trusted status, diff and history without a
+watcher. Local fsmonitor/filter programs must leave no marker.
+
+- `round17-red-spelling.log`: two tests, four failing assertions (status/diff
+  invoked the marker program after each case rename). NFC/NFD already took
+  confinement and passed; it remains covered by the same table of layouts.
+- `round17-red-tool-lookup.log`: the old synchronous behavior, mechanically
+  extracted behind the lookup seam before fixing it, failed all three prompt
+  completion assertions: first expired read, second expired read, cancelled
+  read. The fixture eventually releases the one lookup so no worker is left.
+- `round17-red-trust-spelling.log`: the original single snapshot failed the
+  nested-untrusted case-rename assertion. The next fresh read and NFC/NFD case
+  stayed untrusted. The fixed native permission class passed all 12 tests.
+
+The mutation runs then restored each fix independently:
+
+| Mutation | Result |
+| --- | --- |
+| Remove the spelling comparison from `GitFileStamp.unchanged` | `round17-mutation-spelling.log`: one test, four marker assertions fail again. |
+| Put synchronous lookup/validation back under the shared lock | `round17-mutation-lookup.log`: two tests, five assertions fail (GitService deadlines/cancellation and Finder deadline). |
+| Remove the second canonical trust snapshot | `round17-mutation-trust.log`: one test, one untrusted-boundary assertion fails again. |
+
+Focused commands (each mutation was restored before the next run):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security \
+  swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-a130-security/views-tests \
+  --filter 'GitInventoryTests/test(Case|Unicode)Renames'
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests" \
+  --filter 'GitToolLookupTests/testSharedToolLookupHonorsEachReadDeadlineAndCancellation'
+PI_BUILD_ROOT="$PI_BUILD_ROOT" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/GitRepositoryPermissionTests/testTrustSnapshotsRefuseRenamesDuringPathResolution
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests" \
+  --filter 'GitInventoryTests/testCaseRenamesRevalidateRepositoryAndAncestorSpellings'
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests" \
+  --filter 'GitToolLookupTests/testSharedToolLookupHonorsEachReadDeadlineAndCancellation|FolderBrowserTests/testFinderToolLookupSharesCancellationAndDeadline'
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests" \
+  --filter 'GitInventoryTests|GitToolLookupTests|GitInventoryConcurrencyTests|FileListingTests|FolderBrowserTests'
+```
+
+The additional tests cover a completed lookup shared after timed-out/cancelled
+waiters, failure cooldown and later recovery, Finder deadline/cancellation,
+and plain-folder browsing when developer tools cannot be located.
+
+### Adversarial self-review
+
+Rechecked the full round-17 diff against the previous accepted boundary:
+case folding is never used to widen override scopes; raw `Data` comparisons do
+not equate NFC and NFD; all new realpath calls run inside the existing bounded
+probe (including cache reuse), with no filesystem work under a shared lock or
+on the main actor. Missing/invalid spelling cannot publish an unconfined policy.
+The trust confirmation uses the same invocation and revision, and the test
+holds just one path while other roots resolve, rather than blocking the whole
+batch. The lookup worker has an independent lifetime from any single waiter,
+but its process is stopped at its invocation deadline and reaped; per-reader deadlines
+still govern waiting. Only successful discovery is cached indefinitely, failure
+retries are throttled, and restored test lookups cannot overwrite the production
+lookup object. The old Finder availability probe was a second unbounded path
+and has been removed. Existing parent/child conditional-global, Unicode argv,
+stalled-probe, trust-revocation and optional-filter regressions remain in the
+full validation set. No additional unresolved issue was found in this diff.
+
+### Final validation commands
+
+The final run uses fresh logs and no retained results from round 16. The
+following environment applies to these final commands. Focused fixture builders
+also supply their own isolated Git environments:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-security
+export CFFIXED_USER_HOME="$PI_BUILD_ROOT/round17-home"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TEST_RUNNER_GIT_CONFIG_GLOBAL=/dev/null TEST_RUNNER_GIT_CONFIG_NOSYSTEM=1
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests"
+python3 scripts/build-bundle.py
+swift build --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --build-tests
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --skip-build --filter StreamingCostTests
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --skip-build --skip StreamingCostTests
+python3 scripts/test-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+scripts/test-macos.sh -parallel-testing-enabled YES -parallel-testing-worker-count 4 \
+  -only-testing:PiAppTests/GitChangelistReadTests \
+  -only-testing:PiAppTests/GitCommitBrowsingTests \
+  -only-testing:PiAppTests/GitHistoryFilterTests \
+  -only-testing:PiAppTests/GitPathBoundaryTests \
+  -only-testing:PiAppTests/GitToolTests
+for class in WorkspaceTests GitRepositoryPermissionTests FileBlameTests FileReviewStateTests \
+  GitBranchesInteractionTests GitHunkReviewTests GitIntegratedHistoryTests ChangesTabTests \
+  GitOperationSafetyTests FileFolderTests FileFindTabTests QuickOpenTests GitWorkingTreeWatcherTests \
+  GitPanelTimingTests CrashAuditRegressionTests GitRepositorySwitchTests ReplyFileLinkTests \
+  ChatFileLinkTests SessionPanelTests FileTabTests FilePreviewRefreshTests
+do
+  scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/"$class"
+done
+```
+
+Helper and protocol suites are included because the trust-snapshot sweep changed
+`WorkspaceGitTrust.swift`. The native run holds the shared full-lane/focus lock;
+serial-lane classes run individually. No UI appearance changed. The test driver
+records exact argv, environment additions, exit statuses and durations in
+`logs/round17-final-validation.json`, and hashes all 12 changed/new Swift files
+in `logs/round17-tested-source.json`. Logs are `logs/round17-final-<suite>.log`.
+
+The restored focused package run (`round17-green-focused.log`) passed 134 tests,
+with no skips or failures. Final package/helper/protocol results:
+
+| Suite | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| bello-views (489 total) | 485 | 4 opt-in performance tests | 0 |
+| Helper: StreamingCostTests | 5 | 0 | 0 |
+| Helper: all other tests (1,184 total) | 1,176 | 8 | 0 |
+| Wire | 40 | 0 | 0 |
+| Concurrent native host | 4 | 0 | 0 |
+| Native acceptance | 3 | 0 | 0 |
+
+| Native class | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| ChangesTabTests | 9 | 0 | 0 |
+| ChatFileLinkTests | 8 | 0 | 0 |
+| CrashAuditRegressionTests | 12 | 0 | 0 |
+| FileBlameTests | 12 | 0 | 0 |
+| FileFindTabTests | 16 | 0 | 0 |
+| FileFolderTests | 21 | 0 | 0 |
+| FilePreviewRefreshTests | 3 | 0 | 0 |
+| FileReviewStateTests | 24 | 0 | 0 |
+| FileTabTests | 17 | 0 | 0 |
+| GitBranchesInteractionTests | 20 | 0 | 0 |
+| GitChangelistReadTests | 2 | 0 | 0 |
+| GitCommitBrowsingTests | 3 | 1 opt-in benchmark | 0 |
+| GitHistoryFilterTests | 14 | 0 | 0 |
+| GitHunkReviewTests | 9 | 0 | 0 |
+| GitIntegratedHistoryTests | 10 | 0 | 0 |
+| GitOperationSafetyTests | 12 | 0 | 0 |
+| GitPanelTimingTests | 4 | 0 | 0 |
+| GitPathBoundaryTests | 5 | 0 | 0 |
+| GitRepositoryPermissionTests | 12 | 0 | 0 |
+| GitRepositorySwitchTests | 17 | 0 | 0 |
+| GitToolTests | 5 | 0 | 0 |
+| GitWorkingTreeWatcherTests | 43 | 0 | 0 |
+| QuickOpenTests | 17 | 0 | 0 |
+| ReplyFileLinkTests | 5 | 0 | 0 |
+| SessionPanelTests | 30 | 0 | 0 |
+| WorkspaceTests | 17 | 0 | 0 |
+| **Total (26 classes)** | **347** | **1** | **0** |
+
+The final native run held the shared lock from 13:22:04 through 13:31:55 +0800
+on 2026-10-22 and released it in the driver's `finally` block. All 30 final
+validation commands exited 0. `xcodegen generate --quiet`, `git diff --check`
+and the hash check for all 12 changed/new Swift files passed. A final fetch
+still found `origin/dev/next` at `391f3c61`, already an ancestor of this branch.
+Automatic Xcode results were extracted to JSON and removed; no generated native
+clone folders remain under this workstream's build root. Text logs,
+counts and source hashes remain there. No installed app, real preferences,
+real chats, Keychain, live capture or paid provider was used. There are no
+unresolved round-17 findings or failing final validation checks.

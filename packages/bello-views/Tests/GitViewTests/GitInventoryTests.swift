@@ -28,6 +28,54 @@ final class GitInventoryTests: ViewsTestCase {
     }
     private func write(_ path: String, _ text: String) throws { try Data(text.utf8).write(to: root.appendingPathComponent(path)) }
 
+    func testCaseRenamesRevalidateRepositoryAndAncestorSpellings() async throws {
+        try await renamedReadPaths([("Repository", "repository"), ("Ancestor", "ancestor")])
+    }
+
+    func testUnicodeRenamesRevalidateRepositoryAndAncestorSpellings() async throws {
+        try await renamedReadPaths([("cafe\u{301}", "caf\u{e9}"), ("cafe\u{301}", "caf\u{e9}")])
+    }
+
+    private func renamedReadPaths(_ names: [(String, String)]) async throws {
+        let original = root!, originalEnvironment = environment!
+        let build = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? FileManager.default.temporaryDirectory.path
+        let base = URL(fileURLWithPath: build, isDirectory: true).appendingPathComponent("round17-spelling-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { root = original; environment = originalEnvironment; try? FileManager.default.removeItem(at: base); GitConfiguration.invalidate() }
+        environment = ["PATH": "/usr/bin:/bin", "HOME": base.path, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
+        let marker = base.appendingPathComponent("marker"), program = base.appendingPathComponent("marker-program")
+        try Data("#!/bin/sh\n: > '\(marker.path)'\ncat\n".utf8).write(to: program)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        for (index, names) in names.enumerated() {
+            let parent = base.appendingPathComponent("fixture-\(index)")
+            let source = parent.appendingPathComponent(names.0), destination = parent.appendingPathComponent(names.1)
+            root = index == 0 ? source : source.appendingPathComponent("repo")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try git(["init", "-q", "--template=", "-b", "main"])
+            try git(["config", "core.precomposeUnicode", "false"])
+            try write("file", "base\n"); try write(".gitattributes", "file filter=fixture\n")
+            try git(["add", "."]); try git(["commit", "-qm", "Fixture"])
+            try git(["config", "core.fsmonitor", program.path])
+            try git(["config", "filter.fixture.clean", program.path])
+            try write("file", "edit\n")
+            let service = GitService(environment: environment, trusted: true)
+            _ = try await service.status(in: root.path)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            var before = stat(), after = stat()
+            XCTAssertEqual(lstat(source.path, &before), 0)
+            XCTAssertEqual(rename(source.path, destination.path), 0)
+            XCTAssertEqual(lstat(source.path, &after), 0, "The old spelling still resolves on the fixture volume")
+            XCTAssertEqual(before.st_ino, after.st_ino)
+            // No watcher: use the old spelling a retained tab still holds.
+            for arguments in [["status", "--porcelain=v2"], ["diff", "--no-ext-diff", "--no-textconv"], ["show", "--stat", "HEAD"]] {
+                try? FileManager.default.removeItem(at: marker)
+                let output = try await service.run(arguments, in: root.path)
+                XCTAssertEqual(output.status, 0)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "\(arguments[0]) after \(names.0.debugDescription) -> \(names.1.debugDescription)")
+            }
+        }
+    }
+
     @MainActor func testTrustCallbackSharesReadCancellationAndDeadline() async throws {
         let previous = GitService.resolveTrust
         defer { GitService.resolveTrust = previous }

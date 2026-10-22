@@ -1,5 +1,6 @@
 import XCTest
 @testable import FileFinder
+import GitProcessSafety
 
 /// A project's files as a finder lists them: in a repository what git lists
 /// (tracked, ignored or not, and untracked it does not ignore), only files
@@ -17,6 +18,11 @@ final class FileListingTests: ViewsTestCase {
         let root = root!
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         git = try TestGit(root)
+    }
+
+    private func requireGit() async throws {
+        do { _ = try await FinderProcess.git(["--version"], in: root.path, limit: 4096, environment: git.environment) }
+        catch GitToolLookupError.unavailable { throw XCTSkip("git is not installed") }
     }
 
     func testGraphemeBreadcrumbAndIgnorePathDelimiters() async throws {
@@ -49,7 +55,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testARepositoryListsWhatGitListsThatIsThere() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let repo = root.appendingPathComponent("repo")
         try git.initialize(repo)
         try write("*.log\nbuild/\n", ".gitignore", in: repo)
@@ -88,7 +94,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testRepositoriesInsideAreListedByTheirOwnGit() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let library = root.appendingPathComponent("library")
         try git.initialize(library)
         try write("lib", "Lib.swift", in: library)
@@ -177,7 +183,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testAFolderInsideARepositoryIsListedOnItsOwnAndItsFilesOnce() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         let repo = root.appendingPathComponent("repo")
         try git.initialize(repo)
         try write("app", "App.swift", in: repo)
@@ -203,7 +209,7 @@ final class FileListingTests: ViewsTestCase {
     }
 
     func testRepositoriesNestedTooDeepAreSaid() async throws {
-        try XCTSkipUnless(FileListing.gitAvailable, "git is not installed")
+        try await requireGit()
         var folder = root.appendingPathComponent("r0"), expected: [String] = [], prefix = ""
         for depth in 0...(FileListing.nestedDepth + 1) {
             try git.initialize(folder)
