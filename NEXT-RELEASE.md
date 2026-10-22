@@ -8,7 +8,7 @@ Owner, 2026-10-22: "once you release the current version, please check this and 
 
 - [ ] SCROLL-1: opening a long chat shows a turn's tool calls grouped ("42 calls") when the whole turn is loaded but as detailed rows when the loaded window starts inside it, and scrolling through a long chat loads too little at a time. Grouping must not depend on how much is loaded; the owner suggests loading far more rows at once (about 1,000).
 - [ ] EDIT-1: editing an earlier message can take very long to start even when the message is on screen.
-- [ ] PERF-1 (0.1.130 soak): beside the floating Agents, Diff and Files card a newly shown reply's text is laid out at the 840 pt page width, then again at the narrower column; the card's own refresh and drawing add about 0.5 s per two minutes of chat switching. Lay a reply out once at its real width and cut the card's repeated work.
+- [x] PERF-1 (0.1.130 soak): beside the floating Agents, Diff and Files card a newly shown reply's text was laid out at the 840 pt page width as it joined the page, then again at the narrower column; the card rebuilt its Agents list and redrew its hidden folder menu on every chat switch. A reply's text is now laid out once, at its row's width (a text view joining the page lays nothing out; a reply's container starts at the width its row knows), and the card keeps its list, the rows that read the same and its unchanged pills. Same-seed 900 s soaks: TextKit layout 2,079 → 1,081 samples per two minutes, the card 569 → 106, opening a chat 68/88 → 60/71 ms (median/p90 of answers over 50 ms), answers over 100 ms 55 → 7. [Validation](docs/validation/a131-layout-0.1.131.md).
 - Deferred from 0.1.130: see Known in the 0.1.130 record.
 
 ## 0.1.130
