@@ -55,15 +55,28 @@ final class FullDisplayTests: HelperTestCase {
         var reply=ChatMessage(role:"assistant",content:[textBlock(large)]); reply.id="a"
         let session=try AgentSession(id:"full",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[first,reply],autoCompaction:false)
         addTeardownBlock { await session.close() }
+        // A page holds whole turns: the question and its long answer, whole.
         let page=try await session.historyWindow([:])
-        XCTAssertEqual(page["messages"].list.count,1)
-        XCTAssertEqual(page["messages"].list.first?["text"].text,large)
-        let prior=try await session.historyWindow(["cursor":page["older"]])
-        XCTAssertEqual(prior["messages"].list.map { $0["id"].text },["u"])
-        let again=try await session.historyWindow(["cursor":prior["newer"],"direction":"newer"])
-        XCTAssertEqual(again["messages"].list.first?["text"].text,large)
+        XCTAssertEqual(page["messages"].list.map { $0["id"].text },["u","a"])
+        XCTAssertEqual(page["messages"].list.last?["text"].text,large)
+        XCTAssertTrue(page["older"].isNull)
         let snapshot=await session.snapshot(["includeMetrics":false])
         XCTAssertEqual(snapshot["messages"].list.last?["text"].text,large)
+        // An answer longer than a page's bytes is its turn's page on its own,
+        // complete, and the pages either side of it still reach it.
+        let huge=String(repeating:"Complete saved response 🙂\n",count:170_000)+"TAIL"
+        var answer=ChatMessage(role:"assistant",content:[textBlock(huge)]); answer.id="a"
+        var next=ChatMessage(role:"user",content:[textBlock("And then?")]); next.id="u2"
+        var short=ChatMessage(role:"assistant",content:[textBlock("Then this.")]); short.id="a2"
+        let longer=try AgentSession(id:"longer",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("longer"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[first,answer,next,short],autoCompaction:false)
+        addTeardownBlock { await longer.close() }
+        let newest=try await longer.historyWindow([:])
+        XCTAssertEqual(newest["messages"].list.map { $0["id"].text },["u2","a2"])
+        let prior=try await longer.historyWindow(["cursor":newest["older"]])
+        XCTAssertEqual(prior["messages"].list.map { $0["id"].text },["u","a"])
+        XCTAssertEqual(prior["messages"].list.last?["text"].text,huge)
+        let again=try await longer.historyWindow(["cursor":prior["newer"],"direction":"newer"])
+        XCTAssertEqual(again["messages"].list.map { $0["id"].text },["u2","a2"])
     }
 
     /// A reply longer than the page leaves no room for itself once a row

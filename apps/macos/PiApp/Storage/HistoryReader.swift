@@ -43,6 +43,9 @@ struct HistoryPage: Sendable {
     /// The notice is only that the last record was cut off mid-write: every
     /// record before it is complete and on this page.
     var incompleteTail = false
+    /// The page's last row ends its display turn: the row after it, if any,
+    /// opens the next (`HistoryWindowPolicy.page`).
+    var endsTurn = false
 }
 
 /// What a journal's last state record says was unfinished when its helper
@@ -187,10 +190,15 @@ actor HistoryReader {
             struct Block: Decodable { var type: String?; var id: String? }
             var role: String?; var toolCallId: String?; var calls: [String]; var contentIndexed: Bool; var nativeReplayEligible: Bool?
             var nativeKind: String?; var nativeOperationID: String?; var nativeCompaction: Checkpoint?
-            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID }
+            /// An agent's delivery: a user row that is work of a turn, not its start.
+            var agentDelivery = false
+            /// The row opens a display turn (`HistoryWindowPolicy.startsTurn`).
+            var startsTurn: Bool { HistoryWindowPolicy.startsTurn(role: role, kind: nativeKind, agentDelivery: agentDelivery) }
+            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID, nativeAgentDelivery }
             init(from decoder: Decoder) throws {
                 let value = try decoder.container(keyedBy: CodingKeys.self)
                 role = try value.decodeIfPresent(String.self, forKey: .role)
+                agentDelivery = value.contains(.nativeAgentDelivery) && !((try? value.decodeNil(forKey: .nativeAgentDelivery)) ?? true)
                 toolCallId = try value.decodeIfPresent(String.self, forKey: .toolCallId)
                 nativeReplayEligible = try value.decodeIfPresent(Bool.self, forKey: .nativeReplayEligible)
                 nativeKind = try value.decodeIfPresent(String.self, forKey: .nativeKind)
@@ -1185,6 +1193,22 @@ actor HistoryReader {
         if let position, !whole, position < journal.olderRows {
             journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
                                        targetTurns: targetTurns, progress: progress, whole: true)
+            whole = true
+        }
+        func pageRange(_ journal: JournalFacts) throws -> (range: Range<Int>, forward: Bool, target: Int?) {
+            let at = position.map { min(max(0, $0 - journal.olderRows), max(0, journal.branch.count - 1)) }
+            return try Self.pageRange(in: journal.branch, before: before, around: around, after: after, start: atStart, at: at,
+                                      targetTurns: targetTurns, firstIsStart: journal.olderRows == 0)
+        }
+        var (range, forward, target) = try pageRange(journal)
+        // A transcript page whose first turn began before the rows an index
+        // built from the metadata file holds needs the whole journal indexed,
+        // as a row before them does: the page holds whole turns.
+        if targetTurns != nil, !whole, journal.olderRows > 0, range.lowerBound < journal.branch.count,
+           try journal.branch.at(range.lowerBound).turnStart != true, try journal.branch.latestTurnStart(before: range.lowerBound) == nil {
+            journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: true)
+            (range, forward, target) = try pageRange(journal)
         }
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage, failureCode = journal.failureCode
@@ -1216,10 +1240,13 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let at = position.map { min(max(0, $0 - olderRows), max(0, branch.count - 1)) }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, at: at, targetTurns: targetTurns)
-        let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
+        let (messages, start, end) = try decodePage(range, forward: forward, wholeTurns: targetTurns != nil, target: target, from: file, path: path, identity: identity,
                                                     branch: branch, versions: versions, retainedRun: retainedRun)
+        // A page that starts inside a turn names the input that opened it;
+        // one that ends where its last turn does says so.
+        let startsTurn = start < branch.count ? try branch.at(start).turnStart == true : true
+        let partialTurnInput = startsTurn ? nil : try branch.latestTurnStart(before: start)
+        let endsTurn = end < branch.count ? try branch.at(end).turnStart == true : true
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, start: olderRows + start, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil, failureCode: notice == nil ? failureCode : nil,
@@ -1227,8 +1254,8 @@ actor HistoryReader {
                            incarnation: incarnation, lineage: lineage,
                            older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
-                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+                           partialTurnInput: partialTurnInput, taskRecords:taskRecords,
+                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail, endsTurn: endsTurn)
     }
     /// The journal's offset index and what it says about the chat: the one
     /// kept from an earlier read while the file is unchanged, else one built
@@ -1338,7 +1365,8 @@ actor HistoryReader {
                         if value.id == nil || parent != leaf { linear = false }
                         if let parent, try branch.ref(parent) == nil { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
-                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
+                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) },
+                                       turnStart: value.type == "message" && value.message?.startsTurn == true ? true : nil))
                         if let target = value.presentationTarget {
                             guard var original = try branch.ref(target), original.presentation else { throw StoreError.unreadableRecord }
                             original.offset = offset; original.length = pending.count
@@ -1476,11 +1504,17 @@ actor HistoryReader {
     /// changed meanwhile. Each call's result shows in its call's card, and a
     /// call the stopped run never answered reads "unknown". Returns the rows
     /// and where they start and end in the branch.
-    private func decodePage(_ range: Range<Int>, forward: Bool, from file: FileHandle, path: String, identity: Stamp,
+    /// `wholeTurns`: a transcript page, filled within its own budget to
+    /// whole display turns (`HistoryWindowPolicy.PageFill`), as the helper
+    /// fills one; otherwise the rows fill one envelope. `target`: the row a
+    /// page read around it must hold. Read from the start of its turn, a
+    /// page whose rows before it are past the budget starts at it instead.
+    private func decodePage(_ range: Range<Int>, forward: Bool, wholeTurns: Bool, target: Int? = nil, from file: FileHandle, path: String, identity: Stamp,
                             branch: HistoryOffsetIndex, versions: MessageVersionLedger,
                             retainedRun: RetainedRun?) throws -> (messages: [TranscriptMessage], start: Int, end: Int) {
+        // In the order they are read; a page read back is turned round below.
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
-        var start = forward ? range.lowerBound : range.upperBound, end = start
+        var fill = HistoryWindowPolicy.PageFill(forward: forward, limits: TranscriptPaging.pageLimits)
         // What each call's result recorded, so the reply that made the call
         // can show it in that call's own card, exactly as a live snapshot
         // does. Collected while the window is decoded, keyed by the result's
@@ -1502,11 +1536,26 @@ actor HistoryReader {
             let count = try JSONEncoder().encode(message).count
             // A page may hold one large complete row. Never shorten a source
             // just to fit the preferred window size; native layout is virtual.
-            guard messages.isEmpty || bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
-            bytes += count + 1
-            if forward { messages.append(message); end = index + 1 }
-            else { messages.insert(message, at: 0); start = index }
+            if wholeTurns {
+                guard fill.admit(count, startsTurn: ref.turnStart == true) else {
+                    if forward, let target, target > range.lowerBound, index <= target, target < range.upperBound {
+                        return try decodePage(target..<range.upperBound, forward: true, wholeTurns: true, from: file, path: path, identity: identity,
+                                              branch: branch, versions: versions, retainedRun: retainedRun)
+                    }
+                    break
+                }
+            }
+            else {
+                guard messages.isEmpty || bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
+                bytes += count + 1
+            }
+            messages.append(message)
         }
+        // A transcript page that ran out of room keeps the whole turns it read.
+        if wholeTurns { messages.removeLast(messages.count - fill.kept) }
+        if !forward { messages.reverse() }
+        let start = forward ? range.lowerBound : range.upperBound - messages.count
+        let end = forward ? range.lowerBound + messages.count : range.upperBound
         guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         guard range.isEmpty || !messages.isEmpty else { throw HostError.failure("This history record exceeds the display envelope. Its retained source is unchanged.") }
         messages = TranscriptMessage.resolvingToolResults(messages, results: toolResults)
@@ -1530,10 +1579,12 @@ actor HistoryReader {
         return (messages, start, end)
     }
     /// The rows a page holds, and whether it reads forward from its first:
-    /// the turns around, after or before a row, or sixty rows when no count
-    /// of turns is asked for. A boundary no longer in the branch throws.
+    /// whole display turns around, after or before a row (one turn when
+    /// `targetTurns` is 1), or sixty rows when no count of turns is asked
+    /// for. A boundary no longer in the branch throws. `firstIsStart`: the
+    /// branch's first row is the chat's (`HistoryWindowPolicy.page`).
     private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?, start: Bool = false,
-                                  at position: Int? = nil, targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
+                                  at position: Int? = nil, targetTurns: Int?, firstIsStart: Bool = true) throws -> (range: Range<Int>, forward: Bool, target: Int?) {
         let found = try around.flatMap { try branch.index(of: $0) }
         let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : position.flatMap { branch.count > 0 ? $0 : nil } ?? found
         let beforeIndex = try before.flatMap { try branch.index(of: $0) }
@@ -1545,12 +1596,16 @@ actor HistoryReader {
         let range: Range<Int>
         if let targetTurns {
             let pivot = anchorIndex ?? afterIndex ?? beforeIndex ?? branch.count
-            let users = try branch.userPositions(in: max(0, pivot - HistoryWindowPolicy.rows)..<min(branch.count, pivot + HistoryWindowPolicy.rows + 1))
-            range = HistoryWindowPolicy.range(count: branch.count, before: beforeIndex, after: afterIndex,
-                                              around: anchorIndex, target: targetTurns, isUser: { users.contains($0) })
+            var limits = TranscriptPaging.pageLimits
+            if targetTurns <= 1 { limits.rows = 1 }
+            // A page reaches at most a turn's longest back or forward from its pivot.
+            let reach = limits.turnRows + 1
+            let starts = try branch.turnStarts(in: max(0, pivot - reach)..<min(branch.count, pivot + reach + 1))
+            range = HistoryWindowPolicy.page(count: branch.count, before: beforeIndex, after: afterIndex, around: anchorIndex,
+                                             limits: limits, firstIsStart: firstIsStart, startsTurn: { starts.contains($0) })
         } else if let start = anchorIndex ?? afterIndex.map({ $0 + 1 }) { range = start..<min(branch.count, start + 60) }
         else { let end = beforeIndex ?? branch.count; range = max(0, end - 60)..<end }
-        return (range, forward)
+        return (range, forward, anchorIndex)
     }
 }
 
@@ -1581,7 +1636,7 @@ extension HistoryReader {
             switch row.kind {
             case .message, .update:
                 guard (row.kind == .message ? value.type == "message" && value.id == row.id : value.presentationTarget == row.id), let message = value.message else { return nil }
-                ref.type = "message"; ref.role = message.role
+                ref.type = "message"; ref.role = message.role; ref.turnStart = message.startsTurn ? true : nil
                 ref.presentation = ["execution", "requestLedger"].contains(message.nativeKind ?? "")
                 ref.calls = message.calls.isEmpty ? nil : message.calls; ref.resultCall = message.role == "toolResult" ? message.toolCallId : nil
                 ref.operationID = message.nativeKind == "execution" ? (message.nativeOperationID ?? message.nativeCompaction?.operationId) : nil

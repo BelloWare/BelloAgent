@@ -6,7 +6,10 @@ import AppKit
 /// loaded or not — a place in it marked and shown, the newest of quick
 /// requests winning, and a finished turn that folded the message opening.
 final class TranscriptRevealTests: XCTestCase {
-    @MainActor override func setUp() async throws { installSidebarRevealHook(self) }
+    /// Reveals read the page around a message outside the window: these
+    /// chats page three five-row turns at a time, as the 0.1.71 plan did
+    /// (`usePlanPages`), so most of a chat is outside it.
+    @MainActor override func setUp() async throws { installSidebarRevealHook(self); usePlanPages(rows: 15) }
 
     @MainActor func testFixtureOwnsInheritedHooks() async throws {
         try await checkSidebarRevealSetup(self) { try await self.setUp() }

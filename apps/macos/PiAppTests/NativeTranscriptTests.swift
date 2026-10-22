@@ -13,10 +13,11 @@ final class NativeTranscriptTests: XCTestCase {
     /// lost the reply arriving at the live end. The request log is asked about
     /// the newest rows one read may name, where new requests land.
     func testThePageDrawsTheDisplaysRowsAndTheLogIsAskedAboutTheNewest() {
-        let many = (0..<620).map { message("m\($0)", "user", "row \($0)") }
+        let resident = HistoryWindowPolicy.residentRows
+        let many = (0..<(resident + 120)).map { message("m\($0)", "user", "row \($0)") }
         XCTAssertEqual(TranscriptPage.displayPage(many), many)
         let asked = TranscriptPage.accountingPage(many)
-        XCTAssertEqual(asked.count, 500); XCTAssertEqual(asked.first?.id, "m120"); XCTAssertEqual(asked.last?.id, "m619")
+        XCTAssertEqual(asked.count, resident); XCTAssertEqual(asked.first?.id, "m120"); XCTAssertEqual(asked.last?.id, "m\(resident + 119)")
         let heavy = (0..<40).map { message("h\($0)", "assistant", String(repeating: "x", count: 200_000)) }
         XCTAssertEqual(TranscriptPage.displayPage(heavy), heavy, "How many bytes the page holds is the display's choice")
         XCTAssertEqual(TranscriptPage.accountingPage(heavy), heavy, "A read names rows, not bytes")
@@ -114,31 +115,39 @@ final class NativeTranscriptTests: XCTestCase {
 }
 
 extension NativeTranscriptTests {
-    /// A very long saved turn opens a bounded page, with its input explicitly
-    /// marked partial, and keeps the earlier question reachable on demand.
+    /// A long saved turn opens whole, at its question: a page holds whole
+    /// turns (before 0.1.131 a page cut this one, longer than one envelope,
+    /// and showed it call by call). A turn longer than the resident window,
+    /// which no page holds whole, opens a bounded page with its input marked
+    /// partial, and loading earlier reaches the question.
     @MainActor func testOpeningASavedChatStartsItsPageAtTheLastQuestion() async throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("page-start-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let path = root.appendingPathComponent("session.jsonl")
-        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
-        let question: [String: Any] = ["type": "message", "id": "q", "parentId": NSNull(), "message": ["role": "user", "content": "Please read every file and summarize."]]
-        bytes.append(try JSONSerialization.data(withJSONObject: question)); bytes.append(10)
-        for index in 0..<30 {
-            let value: [String: Any] = ["type": "message", "id": "a\(index)", "parentId": index == 0 ? "q" : "a\(index - 1)", "message": ["role": "assistant", "content": String(repeating: "y", count: 16_000)]]
-            bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
+        for (replies, size) in [(30, 16_000), (HistoryWindowPolicy.residentRows + 30, 200)] {
+            let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("page-start-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+            let path = root.appendingPathComponent("session.jsonl")
+            var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
+            let question: [String: Any] = ["type": "message", "id": "q", "parentId": NSNull(), "message": ["role": "user", "content": "Please read every file and summarize."]]
+            bytes.append(try JSONSerialization.data(withJSONObject: question)); bytes.append(10)
+            for index in 0..<replies {
+                let value: [String: Any] = ["type": "message", "id": "a\(index)", "parentId": index == 0 ? "q" : "a\(index - 1)", "message": ["role": "assistant", "content": String(repeating: "y", count: size)]]
+                bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
+            }
+            try bytes.write(to: path)
+            let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
+            await model.select("fixture")
+            let view = try XCTUnwrap(model.selected)
+            let whole = replies < HistoryWindowPolicy.residentRows
+            XCTAssertEqual(view.presentation.partialTurnInput, whole ? nil : "q")
+            XCTAssertEqual(view.olderPage.cursor == nil, whole, "\(replies) replies")
+            model.historyViewportReady(view.id,generation:view.presentationGeneration)
+            while view.olderPage.cursor != nil { if !(await model.loadEarlierPage(sessionID:view.id)) { break } }
+            XCTAssertEqual(view.messages.first?.role, "user", "Loading earlier reaches the question without an eager whole-turn read")
+            XCTAssertEqual(view.messages.first?.id, "q")
+            if whole { XCTAssertEqual(view.messages.last?.id, "a\(replies - 1)") }
+            else { XCTAssertLessThanOrEqual(view.messages.count, HistoryWindowPolicy.residentRows) }
+            XCTAssertTrue(model.hosts.isEmpty, "no helper starts for a saved chat")
+            model.shutdown(); await model.store?.close()
         }
-        try bytes.write(to: path)
-        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
-        await model.select("fixture")
-        let view = try XCTUnwrap(model.selected)
-        XCTAssertNotNil(view.presentation.partialTurnInput)
-        XCTAssertNotNil(view.olderPage.cursor)
-        model.historyViewportReady(view.id,generation:view.presentationGeneration)
-        while view.olderPage.cursor != nil { if !(await model.loadEarlierPage(sessionID:view.id)) { break } }
-        XCTAssertEqual(view.messages.first?.role, "user", "Loading earlier reaches the question without an eager whole-turn read")
-        XCTAssertEqual(view.messages.first?.id, "q"); XCTAssertEqual(view.messages.last?.id, "a29")
-        XCTAssertTrue(model.hosts.isEmpty, "no helper starts for a saved chat")
-        model.shutdown(); await model.store?.close()
     }
 }

@@ -55,26 +55,39 @@ extension AgentSession {
                 : position.map { shown.count > 0 ? min(max(0, $0 - shown.base), shown.count - 1) : nil } ?? target.flatMap(shown.position)
             if !fromStart && target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
             let forward = params["direction"].text == "newer" || around != nil
-            let range = HistoryWindowPolicy.range(count: shown.count, before: forward ? nil : boundary,
-                                                  after: forward ? boundary : nil, around: around, isUser: shown.isUser)
+            // Whole display turns, as the desktop's journal reader pages them.
+            let limits = historyPageLimits
+            let range = HistoryWindowPolicy.page(count: shown.count, before: forward ? nil : boundary,
+                                                 after: forward ? boundary : nil, around: around, limits: limits, startsTurn: shown.startsTurn)
             try shown.prefetch(range)
             let candidates = try range.map { try shown.row($0) }
             let keys = Set(candidates.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
             let sourceIDs = Set(candidates.map(\.id))
             let tasks = try JSON.parse(JSONEncoder().encode(recentTaskPresentations.filter { keys.contains($0.key) || $0.anchorSourceID.map(sourceIDs.contains) == true }))
-            var rows: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance + (try tasks.data().count)
-            var start = forward ? range.lowerBound : range.upperBound, end = start
-            let positions = forward ? Array(range) : Array(range.reversed())
-            for index in positions {
-                historyPageStep?("history")
-                try cancellation.checkCancellation()
-                let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
-                let size = try row.data().count
-                guard rows.isEmpty || bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
-                bytes += size + 1
-                if forward { rows.append(row); end = index + 1 }
-                else { rows.insert(row, at: 0); start = index }
+            let metadata = HistoryWindowPolicy.metadataAllowance + (try tasks.data().count)
+            // Fills the page from `first` on (back from the range's end when
+            // reading back). A page read around a row from the start of its
+            // turn, whose rows before that row are past the budget, starts at
+            // the row instead: the page must hold it.
+            func filled(from first: Int) throws -> (rows: [JSON], start: Int)? {
+                var read: [JSON] = [], fill = HistoryWindowPolicy.PageFill(forward: forward, bytes: metadata, limits: limits)
+                for index in forward ? Array(first..<range.upperBound) : Array(range.reversed()) {
+                    historyPageStep?("history")
+                    try cancellation.checkCancellation()
+                    let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
+                    guard fill.admit(try row.data().count, startsTurn: shown.startsTurn(index)) else {
+                        if forward, let around, around > first, index <= around { return nil }
+                        break
+                    }
+                    read.append(row)
+                }
+                // A page that ran out of room keeps the whole turns it read.
+                read.removeLast(read.count - fill.kept)
+                return (forward ? read : read.reversed(), forward ? first : range.upperBound - read.count)
             }
+            let page = try filled(from: range.lowerBound) ?? filled(from: around ?? range.lowerBound)!
+            let rows = page.rows, start = page.start
+            let end = forward ? start + rows.count : range.upperBound
             func boundaryValue(_ entry: String) throws -> JSON {
                 try JSON.parse(JSONEncoder().encode(ConversationCursor(incarnation: displayEpoch, lineage: lineage, entry: entry)))
             }
@@ -83,9 +96,13 @@ extension AgentSession {
                 "incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"start":JSON(base + start),"end":JSON(base + end),
                 "older": (start > 0 || base > 0) && !rows.isEmpty ? try boundaryValue(shown.id(start)) : .null,
                 "newer": end < shown.count && !rows.isEmpty ? try boundaryValue(shown.id(end - 1)) : .null]
-            if start < shown.count && !shown.isUser(start), let input = (0..<start).last(where: shown.isUser) {
+            if start < shown.count && !shown.startsTurn(start), let input = (0..<start).last(where: shown.startsTurn) {
                 result["partialTurnInput"] = JSON(shown.id(input))
             }
+            // The page's last row ends its turn: the next row, if any, opens
+            // one. The last turn of a page that stops short of the newest row
+            // then reads as the finished turn it is.
+            result["endsTurn"] = JSON(end >= shown.count || shown.startsTurn(end))
             result["taskRecords"] = tasks
             try cancellation.checkCancellation()
             return result

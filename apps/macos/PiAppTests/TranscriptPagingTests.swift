@@ -43,6 +43,82 @@ final class TranscriptPagingTests: XCTestCase {
         XCTAssertTrue(TranscriptPaging.prefix(earlier: ["c", "d"].map(row), shown: shown).isEmpty)
     }
 
+    /// Turns of a question and `work` rows each: q0, w0_0, w0_1, …, q1, …
+    private func turns(_ count: Int, work: Int) -> [TranscriptMessage] {
+        (0..<count).flatMap { turn in
+            [TranscriptMessage(id: "q\(turn)", role: "user", text: "Question \(turn)")] + (0..<work).map { row("w\(turn)_\($0)") }
+        }
+    }
+    @MainActor private func withCaps(rows: Int, _ body: () -> Void) {
+        let caps = TranscriptPaging.residentCaps
+        defer { TranscriptPaging.residentCaps = caps }
+        TranscriptPaging.residentCaps = (rows: rows, bytes: caps.bytes)
+        body()
+    }
+
+    /// The resident window lets go of whole turns (0.1.131): a turn it holds
+    /// reads as it does whole, its work folded behind one line. Cut row by
+    /// row, a window kept the end of a turn without its question, and that
+    /// turn showed every call until the question was read in again.
+    @MainActor func testTheResidentWindowLetsGoOfWholeTurns() {
+        let page = turns(6, work: 4) // 30 rows, turns of 5
+        withCaps(rows: 13) {
+            // The newest rows: two whole turns, not the last three rows of a third.
+            XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(10).map(\.id))
+            XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).first?.id, "q4")
+            // The earliest rows: two whole turns, ending before the next question.
+            XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: true).map(\.id), page.prefix(10).map(\.id))
+            XCTAssertTrue(TranscriptPaging.endsTurn(Array(page.prefix(10)), in: page))
+            XCTAssertFalse(TranscriptPaging.endsTurn(Array(page.prefix(9)), in: page))
+            XCTAssertFalse(TranscriptPaging.endsTurn(page, in: page), "the last row of everything held says nothing about what follows")
+        }
+        // A turn longer than the caps on its own is cut where they fall: no
+        // window holds it whole, and letting all of it go would leave nothing.
+        let giant = turns(1, work: 3) + turns(1, work: 30).map { message -> TranscriptMessage in
+            var copy = message; copy.id = "g" + message.id; return copy
+        }
+        withCaps(rows: 13) {
+            XCTAssertEqual(TranscriptPaging.window(giant, keepingEarlier: true).count, 13)
+            XCTAssertEqual(TranscriptPaging.window(giant, keepingEarlier: false).count, 13)
+        }
+        // A window that starts inside a turn (the end of a turn longer than a
+        // page) lets go of that partial turn first.
+        withCaps(rows: 26) {
+            XCTAssertEqual(TranscriptPaging.window(Array(page.dropFirst(2)), keepingEarlier: false).first?.id, "q1")
+        }
+    }
+
+    /// An agent's delivery is a user row inside a turn, never where one
+    /// starts: the window does not stop at it, as the fold does not.
+    @MainActor func testAnAgentDeliveryIsNotWhereAWindowStarts() {
+        var page = turns(4, work: 4)
+        var delivery = TranscriptMessage(id: "delivery", role: "user", text: "Report", kind: "agent_message")
+        delivery.nativeAgentDelivery = .object(["author": .string("subagent")])
+        page[12] = delivery // inside the third turn (q2 at 10)
+        XCTAssertFalse(TranscriptPaging.startsTurn(delivery))
+        XCTAssertTrue(TranscriptPaging.startsTurn(page[10]))
+        withCaps(rows: 9) {
+            XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).first?.id, "q3", "not the delivery at 12")
+        }
+    }
+
+    /// Kept rows on the reader's screen keep their whole turns, and the window
+    /// grows by whole turns toward the side asked for.
+    @MainActor func testKeepingTheRowsOnScreenKeepsTheirWholeTurns() {
+        let page = turns(6, work: 4)
+        withCaps(rows: 12) {
+            // On screen: the middle of the fourth turn. Earlier rows are asked for.
+            let kept = TranscriptPaging.window(page, keeping: ["w3_1", "w3_2"], keepingEarlier: true)
+            XCTAssertEqual(kept?.first?.id, "q2"); XCTAssertEqual(kept?.last?.id, "w3_3")
+            let newer = TranscriptPaging.window(page, keeping: ["w1_1"], keepingEarlier: false)
+            XCTAssertEqual(newer?.first?.id, "q1"); XCTAssertEqual(newer?.last?.id, "w2_3")
+        }
+        // Rows on screen past the caps on their own: still nil.
+        withCaps(rows: 3) {
+            XCTAssertNil(TranscriptPaging.window(page, keeping: ["q0", "w0_3"], keepingEarlier: true))
+        }
+    }
+
     func testHistoryProjectionKeepsClockTurnAndModelTime() {
         let projected = TranscriptMessage.project(id: "a1", message: ["role": .string("assistant"), "content": .string("Reply"), "timestamp": .number(1_700_000_000_000), "nativeTurn": .string("turn-9"), "nativeModelMs": .number(840)])
         XCTAssertEqual(projected.at, 1_700_000_000_000); XCTAssertEqual(projected.turn, "turn-9"); XCTAssertEqual(projected.modelMs, 840)

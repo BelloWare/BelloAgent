@@ -98,7 +98,7 @@ extension WorkspaceModel {
         view.presentation.identity = (page.incarnation, page.lineage)
         view.historyProgress = nil
         view.presentation.partialTurnInput = page.partialTurnInput
-        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
+        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer, endsTurn: page.endsTurn)
         view.historyPositions.reset(page)
         view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
         if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
@@ -304,6 +304,10 @@ extension WorkspaceModel {
                     return true
                 }
                 var joined = newer ? view.messages + added : added + view.messages
+                // Whether the window, once cut from `joined`, ends where a turn
+                // does: its last turn then reads as finished.
+                let unbounded = joined
+                func endsTurn(_ window: [TranscriptMessage]) -> Bool { TranscriptPaging.endsTurn(window, in: unbounded) }
                 // Keep the requested side, evict only the far opposite edge.
                 var bounded = TranscriptPaging.window(joined, keepingEarlier: !newer)
                 var evicted = bounded.count != joined.count
@@ -349,14 +353,18 @@ extension WorkspaceModel {
                 for index in joined.indices { joined[index].accounting = view.messageAccounting[joined[index].id] }
                 view.historyPositions.record(page); view.historyPositions.prune(keeping: joined)
                 if newer {
-                    view.newerPage = .init(cursor: page.newer)
-                    if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
-                    if evicted, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
+                    view.newerPage = .init(cursor: page.newer, endsTurn: page.endsTurn)
+                    if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
+                    if evicted, let first = joined.first {
+                        var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge)
+                        // The window now starts where a turn does: no turn's question is above it.
+                        if TranscriptPaging.startsTurn(first) { view.presentation.partialTurnInput = nil }
+                    }
                 } else {
                     view.olderPage = .init(cursor: page.older)
                     if trimmedFar, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
                     view.presentation.partialTurnInput = trimmedFar ? nil : page.partialTurnInput
-                    if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
+                    if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
                 }
                 view.before = view.olderPage.cursor?.entry
                 // Reading earlier rows (including automatic viewport fills)

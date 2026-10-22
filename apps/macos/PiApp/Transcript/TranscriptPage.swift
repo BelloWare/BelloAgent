@@ -453,8 +453,12 @@ struct ContentGeometry: Equatable {
         // A page short of the conversation's newest row — cut by the resident
         // window, or a history window with newer rows after it — may end in
         // the middle of a turn; that turn folds only on its task's receipt.
+        // Windows are cut where turns end (`HistoryWindowPolicy.page`), and
+        // one that ends where its last turn does says so: that turn is
+        // finished, and reads as it will once the next turn is read in.
+        let newer = session.newerPage
         let items = patch?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
-                                                              complete: page.count == messages.count && !session.newerPage.available)
+                                                              complete: page.count == messages.count && (!newer.available || newer.endsTurn && newer.error == nil))
         // A token keeps every row's identity and place (see `patch`), all of
         // them already proved unique and already seen by the page presented.
         // Hashing every id of a long chat again, twice for uniqueness and

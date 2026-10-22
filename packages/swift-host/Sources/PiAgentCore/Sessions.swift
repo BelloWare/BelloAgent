@@ -377,6 +377,9 @@ public actor AgentSession {
     // Test seam: a page has reached a row; nil in production.
     var historyPageStep: (@Sendable (String) -> Void)?
     func noteHistoryPageSteps(_ step: (@Sendable (String) -> Void)?) { historyPageStep = step }
+    // Test seam: what a history page may hold; the standard limits in production.
+    var historyPageLimits = HistoryWindowPolicy.PageLimits.standard
+    func limitHistoryPages(_ limits: HistoryWindowPolicy.PageLimits) { historyPageLimits = limits }
     var historyReads: (@Sendable (UInt64) -> Void)?
     func noteHistoryReads(_ reads: (@Sendable (UInt64) -> Void)?) { historyReads = reads }
     var historyLoadJoins = 0

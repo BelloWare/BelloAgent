@@ -3,6 +3,14 @@ import SwiftUI
 @testable import PiApp
 
 final class FreshPresentationTests: XCTestCase {
+    /// The plan's own acceptance tests page as the plan did: three turns of
+    /// a question and a reply (`usePlanPages`). The paging they hold —
+    /// cursors, retries, overlap, eviction, hand-off — is the same at the
+    /// page size of 0.1.131, and small pages keep their fixtures small.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        usePlanPages(rows: 6)
+    }
     private actor Gate {
         var entered: [String] = []
         var waiting: [CheckedContinuation<ConversationHistoryPage, Error>] = []
