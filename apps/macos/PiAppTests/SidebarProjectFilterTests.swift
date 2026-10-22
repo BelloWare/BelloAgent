@@ -197,6 +197,11 @@ final class SidebarProjectFilterTests: XCTestCase {
         XCTAssertTrue(row.body.projectTag.isAccessibilityElement())
         XCTAssertEqual(row.body.projectTag.accessibilityLabel(), "belloware-site")
         XCTAssertEqual(row.body.projectTag.accessibilityHelp(), "Show only this project's chats")
+        func hit(_ view: SidebarChatRowView) -> NSView? {
+            let tag = view.body.projectTag
+            return view.row.hitTest(tag.convert(CGPoint(x: tag.bounds.midX, y: tag.bounds.midY), to: view.row.superview))
+        }
+        XCTAssertTrue(hit(row) === row.body.projectTag, "The row leaves a pressable tag its own click")
         row.body.projectTag.performClick(nil); sidebar.settle()
         XCTAssertEqual(model.sidebarProjectFilter, "site")
         XCTAssertNil(model.selectedID, "Pressing the tag does not open the chat")
@@ -205,8 +210,7 @@ final class SidebarProjectFilterTests: XCTestCase {
         let narrowed = try XCTUnwrap(sidebar.list.views["chat|site-old"] as? SidebarChatRowView)
         XCTAssertFalse(narrowed.body.projectTag.pressable, "The narrowed list's tags are labels again")
         XCTAssertFalse(narrowed.body.projectTag.isAccessibilityElement())
-        let point = narrowed.body.projectTag.convert(CGPoint(x: 4, y: 4), to: narrowed.body.projectTag.superview)
-        XCTAssertNil(narrowed.body.projectTag.hitTest(point), "A label tag leaves its clicks to the row")
+        XCTAssertTrue(hit(narrowed) === narrowed.row, "A label tag leaves its click to the row, which opens the chat")
     }
 
     @MainActor func testAChosenProjectIsShownFromTheTopOfItsList() throws {
@@ -220,6 +224,11 @@ final class SidebarProjectFilterTests: XCTestCase {
         XCTAssertEqual(listed(sidebar).count, 32)
         XCTAssertGreaterThan(sidebar.list.frame.height, clip.bounds.height, "The narrowed list still scrolls")
         XCTAssertEqual(clip.bounds.minY, 0, "A narrowed list starts at its top, newest first")
+        // Back to every project, from its top too: the narrowed list's first
+        // chat is second there, under another project's pinned chat.
+        sidebar.projectFilter.all.performClick(nil); sidebar.settle()
+        XCTAssertEqual(Array(listed(sidebar).prefix(2)), ["box-pinned", "many-29"])
+        XCTAssertEqual(clip.bounds.minY, 0, "Every project's list starts at its top as well")
     }
 
     @MainActor func testSearchLooksAcrossEveryProjectWhileTheChipsGiveWayToItsScope() throws {

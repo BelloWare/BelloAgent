@@ -268,9 +268,11 @@ import Combine
     /// lists every project again (nil), from its top; rows glide.
     private func chooseProject(_ id: String?) {
         guard model.sidebarProjectFilter != id else { return }
+        glide { $0.model.setSidebarProjectFilter(id) }
+        // After the update, which keeps the first row read in its place when
+        // the new list has it too: another list is read from its top.
         let clip = scroll.contentView
         if clip.bounds.minY != 0 { clip.scroll(to: CGPoint(x: clip.bounds.minX, y: 0)); scroll.reflectScrolledClipView(clip) }
-        glide { $0.model.setSidebarProjectFilter(id) }
     }
 
     /// A button's look changed only when it changes: setting it redraws it.
