@@ -184,8 +184,11 @@ extension WorkspaceModel {
         guard let tab = subagentTab(id), let container = tab.container else { return false }
         return container.shownTab(sideAvailable: container.isPane && paneSideAvailable) === tab && (!container.isPane || page == .chats)
     }
-    @discardableResult func openSubagentTab(_ id: String, opening: HostedReaderToken? = nil) async -> SubagentTab? {
+    /// `listsProject` false: the reader opened it from its sidebar row, which
+    /// keeps the project chosen in Flat (a search lists every project's rows).
+    @discardableResult func openSubagentTab(_ id: String, opening: HostedReaderToken? = nil, listsProject: Bool = true) async -> SubagentTab? {
         guard let child = record(id), child.isSubagent else { return nil }
+        if listsProject { listSidebarProject(of: child) }
         let request = opening ?? beginSubagentOpening(id)
         let reader = request.reader
         defer { if opening == nil { finishSubagentOpening(request) } }

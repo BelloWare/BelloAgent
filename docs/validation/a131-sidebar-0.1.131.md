@@ -240,3 +240,47 @@ The red run is the fixes taken out, which is also their mutation check: each
 fix is the only difference between `r2-red.log` and the green runs. The
 galleries were not rerun: in both, every chip row is wider than the bar, where
 the fit is unchanged.
+
+## Round 3: chats opened from outside the sidebar (Codex Astra on `6044f43a`)
+
+**[P2] Report navigation left the opened chat out of the list.** With a chat
+of project A open, the reader narrows Flat to B, opens the Usage Report and
+uses Open or Go to Message for A: `revealMessage` takes its unchanged-selection
+branch without `revealProjectChat`, so A stays out of the list; report links to
+sides and sub-agents skipped that hook as well. `revealMessage` now lists its
+chat's project at its start, the chat already open included, and the other
+paths that open a chat from outside the sidebar without that hook do the same
+(`listSidebarProject(of:)`): `openSubagentTab`, `openSubagentParent` and the
+Agents list's `openFamilySide`. The sidebar's own rows keep the choice: a
+sub-agent row opens its tab with `listsProject: false`, so sidebar search
+behaves as before.
+
+Every way a chat is opened from outside the sidebar, and what lists it:
+
+| Entry point | Opens with | Flat lists the chat's project |
+| --- | --- | --- |
+| Usage Report session rows: Open, Go to Message | `revealMessage` | yes, at its start (round 3), the chat already open included; tested |
+| Usage Report active sessions; menu bar panel rows | `select` / `selectSide` → `revealProjectChat`, also for a chat chosen again and for an unsaved side (`record` gives its synthetic chat) | yes (round 1); tested |
+| Session Inspector: Go to message, fork and sub-agent links, agent coordination | `revealMessage` | yes (round 3); tested through `revealMessage` |
+| Transcript: agent message sources, sub-agent cards, inherited sub-agents | `revealMessage` / `openSubagentTab` | yes (round 3); tested through `openSubagentTab` |
+| Sub-agent tab: link to its chat | `openSubagentParent` (a fork's link: `revealMessage`) | yes (round 3); tested |
+| Agents list (floating card, composer): a side | `openFamilySide` | yes (round 3); tested |
+| Agents list: a sub-agent | `openSubagentTab` | yes (round 3); tested |
+| Agents list and side composer: New Side | `openSide` | not needed: a new side opens beside the chat on screen and is no row until kept; unchanged, as a new side unfolds nothing (owner, 2026-10-12) |
+| Background Requests (webhook deliveries are background requests): Open source chat | `select` | yes (round 1) |
+| Conversation: Open source chat; versions; connection tests; New Chat and the empty chat it reuses; a new chat's project change | `select`, and the reuse branch | yes (rounds 1 and 2); New Chat tested |
+| Notifications | none: the app posts no notification that opens a chat (Dock badge and completion sound only) | — |
+| Launch | `select(…, revealInSidebar: false)` | — the choice starts at All |
+| Sidebar rows, search results (sub-agent rows included), ⌘⌥↓/↑ | `openFromSidebar` | keep the choice; tested |
+| A pane on screen focused (the chat, its side) | `focusPane` | keeps the choice |
+
+| Log | Result |
+| --- | --- |
+| `r3-red.log`, before the fix (SidebarProjectFilterTests 21) | **2 tests fail, 7 assertions**: report Open and Go to Message on the chat already open, a saved side and a sub-agent through `revealMessage`; the Agents list's side and sub-agent; the sub-agent tab's link to its chat. The menu bar test and the sidebar rows test pass before and after (`selectSide` already listed an unsaved side through its synthetic record). |
+| `r3-green-parallel.log`, one process: SidebarProjectFilterTests 21, ConversationFamilyTests 22, SubagentOrganizationTests 13, SidebarSearchSidebarTests 10, SessionOrganizationTests 9, ReportNavigationTests 3 | **78** passed, 0 failed |
+| `r3-serial.log`, under the lock: SubagentReaderTests 60, SubagentOpeningTests 15, InheritedSubagentReaderTests 8, SubagentNavigationTests 7 | **90** passed, 0 failed |
+
+As in round 2, the red run is the fix taken out, which is also its mutation
+check. Without a chosen project every change here does nothing, so the
+classes above check that navigation is otherwise unchanged.
+

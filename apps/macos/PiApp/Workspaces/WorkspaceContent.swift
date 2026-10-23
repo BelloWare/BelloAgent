@@ -187,6 +187,9 @@ extension WorkspaceModel {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the report and inspector."
             return false
         }
+        // Report, Inspector and agent links come from outside the sidebar,
+        // the chat already open included: Flat lists its project.
+        listSidebarProject(of: item)
         if item.isSubagent {
             let opening = beginSubagentOpening(sessionID)
             defer { finishSubagentOpening(opening) }

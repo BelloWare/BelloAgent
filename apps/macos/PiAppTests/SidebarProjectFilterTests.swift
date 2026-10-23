@@ -355,6 +355,92 @@ final class SidebarProjectFilterTests: XCTestCase {
         XCTAssertEqual(ids(model).count, 7)
     }
 
+    // MARK: Opening from outside the list
+
+    /// A family in pane-project (its chat, a sub-agent, a saved side), and
+    /// another project to narrow Flat to while the family's chat is open.
+    @MainActor private func familyFixture() async throws -> WorkspaceModel {
+        let root = scratchRoot("project-filter-family")
+        let model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces.append(WorkspaceRecord(id: "elsewhere", path: root.appendingPathComponent("elsewhere").path, trusted: true))
+        model.chats.append(ChatRecord(id: "chat-elsewhere", workspaceID: "elsewhere", title: "Elsewhere", path: nil, profileID: model.profileChoice))
+        model.historyWindowLoader = { _, _, _, _ in
+            try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]), "incarnation": .string("fixture"),
+                                                 "lineage": .string("root"), "older": .null, "newer": .null]))
+        }
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        model.setSidebarFlat(true)
+        await model.openFromSidebar("chat-parent")
+        XCTAssertEqual(model.selectedID, "chat-parent")
+        return model
+    }
+    /// The reader narrows Flat to another project while the family's chat stays open.
+    @MainActor private func narrow(_ model: WorkspaceModel) {
+        model.setSidebarProjectFilter("elsewhere")
+        XCTAssertEqual(model.sidebarFlatProject, "elsewhere")
+    }
+
+    /// Usage Report and Session Inspector links (`revealMessage`): the chat
+    /// that is already open, a saved side through its chat, a sub-agent.
+    @MainActor func testReportAndInspectorLinksListTheChatTheyOpen() async throws {
+        let model = try await familyFixture()
+        narrow(model)
+        _ = await model.revealMessage(sessionID: "chat-parent", messageID: nil)
+        XCTAssertNil(model.sidebarProjectFilter, "Report Open on the chat already open lists its project")
+        narrow(model)
+        _ = await model.revealMessage(sessionID: "chat-parent", messageID: "reply")
+        XCTAssertNil(model.sidebarProjectFilter, "Go to Message on the chat already open")
+        narrow(model)
+        _ = await model.revealMessage(sessionID: "chat-side", messageID: nil)
+        XCTAssertNil(model.sidebarProjectFilter, "A saved side, opened beside its chat")
+        narrow(model)
+        _ = await model.revealMessage(sessionID: "chat-child", messageID: nil)
+        XCTAssertNil(model.sidebarProjectFilter, "A sub-agent, opened in its tab")
+    }
+
+    /// Menu bar and report rows open a chat with `select` and a side with
+    /// `selectSide`, an unsaved one included, while its chat is already open.
+    @MainActor func testMenuBarRowsListTheChatOrUnsavedSideTheyOpen() async throws {
+        let model = try await familyFixture()
+        narrow(model)
+        await model.select("chat-parent")
+        XCTAssertNil(model.sidebarProjectFilter, "The chat already open, chosen again")
+        model.sides["chat-parent"] = SideRecord(id: "unsaved", parentID: "chat-parent", workspaceID: "pane-project",
+                                                profileID: model.profileChoice, title: "Side", kept: false)
+        model.displays["unsaved"] = SessionDisplay(id: "unsaved")
+        narrow(model)
+        await model.selectSide("unsaved")
+        XCTAssertEqual(model.focusedSessionID, "unsaved")
+        XCTAssertNil(model.sidebarProjectFilter, "An unsaved side, its chat already open")
+    }
+
+    /// The Agents list (floating card, composer) and the sub-agent tab's
+    /// link back to its chat.
+    @MainActor func testAgentsListAndSubagentLinksListTheirChats() async throws {
+        let model = try await familyFixture()
+        narrow(model)
+        await model.openFamilySide("chat-side")
+        XCTAssertEqual(model.focusedSessionID, "chat-side")
+        XCTAssertNil(model.sidebarProjectFilter, "A side from the Agents list")
+        narrow(model)
+        _ = await model.openSubagentTab("chat-child")
+        XCTAssertNil(model.sidebarProjectFilter, "A sub-agent from the Agents list")
+        narrow(model)
+        _ = await model.openSubagentParent(SubagentTranscriptTests.link)
+        XCTAssertNil(model.sidebarProjectFilter, "The sub-agent tab's link to its chat")
+    }
+
+    /// The sidebar's own rows keep the choice, search results included.
+    @MainActor func testSidebarRowsKeepTheChoiceSubagentRowsIncluded() async throws {
+        let model = try await familyFixture()
+        narrow(model)
+        for id in ["chat-parent", "chat-side", "chat-child"] {
+            await model.openFromSidebar(id)
+            XCTAssertEqual(model.sidebarProjectFilter, "elsewhere", "\(id), opened from its row")
+        }
+    }
+
     @MainActor func testNewChatInFlatStartsInTheChosenProject() async throws {
         let model = try fixture(); prepareNewChat(model)
         model.selectedID = "scroll"; model.selectedWorkspaceID = "app"

@@ -348,7 +348,7 @@ extension WorkspaceModel {
         if record(id)?.isSubagent == true {
             let reader = beginSubagentOpening(id)
             defer { finishSubagentOpening(reader) }
-            guard await openSubagentTab(id, opening: reader) != nil, reader.isCurrent else { return }
+            guard await openSubagentTab(id, opening: reader, listsProject: false) != nil, reader.isCurrent else { return }
             await revealSidebarSearchHit(id, hit: hit, opening: opening, reader: reader)
             return
         }
