@@ -8,8 +8,10 @@ Build/evidence root: `/Users/admin/Library/Caches/BelloSwiftWork/build-a131-edit
 Generated fixtures and loopback services only: the synthetic gateway
 (`fixtures/native/ui-gateway.py`), the workstream's packaged helper, scratch
 stores and `MemoryVaultStorage`. No installed app, real preferences, real
-chats, Keychain, live capture or paid provider. No wire schema, helper source,
-permission, capture, tool, vault or data boundary changed.
+chats, Keychain, live capture or paid provider. No permission, capture, tool,
+vault or data boundary changed. Round 1 changed the app only; round 2 (the
+owner's "Re-check at Send") adds one optional field to `session.edit.prepare`
+and one optional parameter to `turn.edit`.
 
 ## The report
 
@@ -258,22 +260,94 @@ nothing broader):
 - Not run, as rules.md asks: the full native lanes, the helper suite and the
   wire, concurrent and acceptance suites (no helper or wire change).
 
-## Known, and needs owner decision
+## Round 2: the owner's decision and the review's findings
 
-- **Needs owner decision: an edit opened during a run.** Its original is read
-  while the run goes on, so Send's timeline check (`sourceTimeline`, the digest
-  of every row on the timeline) is the run's timeline at that moment. Once the
-  run has added its rows, Send is refused: "The selected branch changed. Select
-  the message again." The question and the typing stay in the composer, and
-  choosing Edit again reads the original over the typing. This was so before
-  the fix too (the read was the same, only in front of the composer); a probe
-  through the packaged helper confirmed it (`evidence/probe-edit-during-run.log`).
-  Kept as it is (the conservative choice). Options:
-  1. Keep it: the reader chooses Edit again after the run.
-  2. Read the original's checks again when the run ends while the edit is
-     open, so Send takes the timeline the reader now sees.
-  3. At Send, when only rows after the edited message changed, read the
-     checks again and send, with the banner saying the newer replies are left.
+**Owner decision, 2026-10-23: "Re-check at Send".** Round 1 found that an edit
+opened while a run goes on was refused at Send once the run had added rows
+("The selected branch changed. Select the message again."; a probe through the
+packaged helper, `evidence/probe-edit-during-run.log`): the read's timeline
+check (`sourceTimeline`) digests every row of the timeline. Now the checks are
+made again at Send against the conversation **through the edited message**:
+
+- The helper's edit plan also digests the timeline through the target
+  (`HistoricalEditPlan.sourcePrefix`, in the shared `EditReplayPlan.swift`);
+  `session.edit.prepare` returns it beside `sourceTimeline`, and the app's own
+  read of a journal (`HistoryReader.editTarget`) gives the same digest.
+- The app keeps it with the edit (`editSourcePrefix`, saved in
+  `MessageEditDraft.sourcePrefix`) and sends it with `turn.edit`
+  (`editSourcePrefix`). The helper then checks it, at Send, in place of the
+  whole timeline: rows added after the edited message do not refuse the edit;
+  a changed message (its text digest, or the occurrence replaced) or a changed
+  conversation before it still does.
+- Additive on the wire: an optional response field and an optional parameter.
+  A reader that does not send it, and a draft saved before it, get the whole-
+  timeline check as before. The journal's `branch` record is unchanged
+  (`sourceTimelineDigest` is still the whole timeline at the edit).
+
+**Review findings (Astra, on 5a2f2167), both fixed:**
+
+- *Edit again after a failed read reset the composer.* The banner asks for
+  Edit again, which put the row's text back over what was typed and dropped the
+  images and skills added. Edit on the message whose original is still unread
+  now reads it again behind the composer (`resumeEditPreparation`), keeping
+  what is in it.
+- *The original's skill chip overwrote one chosen meanwhile.* While the
+  original loads, a skill can be chosen again with arguments of its own; the
+  merge replaced it with the historical chip of the same id. The composer's
+  chip now wins on an id collision (images likewise), in the original's order.
+
+**Failing first.**
+
+- `evidence/failing-first-recheck.log`: the new app tests on the round-1 code
+  (production sources at 5a2f2167, the packaged helper rebuilt from them):
+  `testAnEditOpenedDuringARunIsSentOnceTheRunHasAddedRows` failed —
+  `XCTAssertNil failed: "q0" - Send takes the edit: The selected branch
+  changed. Select the message again.`, and the timeline still held the run's
+  rows. `testAnEditIsStillRefusedWhenItsMessageOrWhatItBranchesFromChanged`
+  held its refusals there too (it guards what must not change; a first version
+  waited for the display to follow another writer's branch and was rewritten
+  not to need that).
+- `evidence/recheck-fixed-review-failing-first.log`: with the prefix change and
+  before the review fixes, 12 tests, 5 failures, all in the two review tests:
+  `testEditAgainAfterAFailedReadKeepsWhatWasTypedAndAdded` (the text reset to
+  the row, `[]` for `["skill-notes"]`) and
+  `testASkillChosenWhileTheOriginalLoadsKeepsItsArguments` (the original's chip
+  replaced the chosen one). The re-check tests passed there.
+- Helper: `HistoricalEditTests.testEditCheckedThroughItsMessageSurvivesRowsAddedAfterIt`
+  (rows a run added after the message: the old whole-timeline check refuses,
+  another prefix refuses, the prefix sends; the replaced occurrence then
+  refuses) needs the new parameter, so it is held by its mutation below.
+
+**With the fixes:** `MessageEditStartTests` 12 tests, 0 failures
+(`evidence/round2-start.log`).
+
+**Mutations** (`evidence/mutation-r*.log`; each reverted):
+
+| Mutation | Caught by |
+| --- | --- |
+| r1: the app does not send `editSourcePrefix` | `testAnEditOpenedDuringARunIsSentOnceTheRunHasAddedRows` |
+| r2: the helper checks the prefix against the whole timeline | `testEditCheckedThroughItsMessageSurvivesRowsAddedAfterIt` |
+| r3: Edit again resets the composer | `testEditAgainAfterAFailedReadKeepsWhatWasTypedAndAdded` |
+| r4: the original's skill chip wins | `testASkillChosenWhileTheOriginalLoadsKeepsItsArguments` |
+
+**Classes covering round 2:**
+
+- App, parallel lane (`evidence/round2-parallel.log`, the 22 classes listed
+  above): **378 tests, 377 passed, 0 failed, 1 skipped** (the opt-in measurement).
+- App, serial lane under the lock (`evidence/round2-serial.log.1`):
+  `HistoricalEditingTests` (5; its journal read gives the new digest),
+  `HistoricalEditFocusTests` (1), `HistoryEdgeTests` (16),
+  `MessageDetailTests` (10), `MessageVersionTranscriptTests` (8): **40 tests,
+  0 failures**.
+- Helper (`swift test --skip-build --filter` the 21 classes that prepare or make
+  edits, `evidence/helper-edit-classes.log`): **258 tests, 256 passed, 2
+  skipped** (opt-in fixture writer and fork measurement), 0 failures.
+- Wire suites against the Release helper (`python3 scripts/test-native-host.py`,
+  `test-concurrent-native-host.py`, `test-native-acceptance.py`): 40, 4 and 3
+  tests, all OK (`evidence/wire-*.log`).
+
+## Known
+
 - **Send still waits for the whole journal once.** The first read of a chat the
   helper opened from its metadata file still replays its journal (3.9 s at
   103 MB, 10.7 s at 259 MB); it is behind the composer now, and Send waits for
@@ -288,5 +362,5 @@ nothing broader):
   reads wait behind it, as before.
 - A tool-output recycling sweep under way still holds the read
   (`prepareToolOutputUse`), as before, now behind the composer.
-- Not changed: queued-message edits (in-memory, never slow), Send
-  (`sendEdit`), the wire contract and the helper.
+- Not changed: queued-message edits (in-memory, never slow), and Send's
+  capture and recovery (`sendEdit` only adds `editSourcePrefix`).

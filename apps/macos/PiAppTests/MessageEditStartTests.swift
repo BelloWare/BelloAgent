@@ -161,6 +161,51 @@ final class MessageEditStartTests: XCTestCase {
         XCTAssertFalse(view.editInputPending); XCTAssertNil(model.editBlocker(view))
     }
 
+    /// Edit again on a message whose original could not be read (what the
+    /// banner asks for) reads it again behind the composer: what was typed
+    /// and the skill added since stay (review, 2026-10-23).
+    @MainActor func testEditAgainAfterAFailedReadKeepsWhatWasTypedAndAdded() async throws {
+        let bench = try await Bench(self)
+        let model = bench.model, view = bench.view
+        model.editMessage("u2", sessionID: view.id)
+        view.draft += " More."
+        let added = SkillChip(id: "skill-notes", name: "notes", path: "/skills/notes/SKILL.md", contentHash: "notes", metadataHash: "notes-meta")
+        view.skills = [added]
+        try await eventually("The original is asked for") { bench.asked.count == 1 }
+        bench.answer(.failure(HostError.failure("The journal could not be read.")))
+        try await eventually("The read ends") { !view.editPreparing }
+        XCTAssertTrue(view.editInputPending)
+        model.editMessage("u2", sessionID: view.id)
+        XCTAssertEqual(view.draft, Self.question + " More.", "Edit again keeps what was typed")
+        XCTAssertEqual(view.skills.map(\.id), [added.id], "Edit again keeps the skill added")
+        XCTAssertTrue(view.editPreparing)
+        try await eventually("The original is asked for again") { bench.asked.count == 2 }
+        bench.answer(.success(try bench.original()))
+        try await eventually("The original is read") { !view.editPreparing }
+        XCTAssertEqual(view.draft, Self.question + " More.")
+        XCTAssertEqual(view.skills.map(\.id), [bench.skill.id, added.id]); XCTAssertEqual(view.attachments, [bench.image])
+        XCTAssertFalse(view.editInputPending); XCTAssertNil(model.editBlocker(view))
+        model.cancelEdit(sessionID: view.id)
+        XCTAssertEqual(view.draft, "An unsent draft")
+    }
+
+    /// A skill chosen while the original loads, with arguments of its own,
+    /// is kept when the original arrives with the same skill: the composer's
+    /// chip, not the historical one, is what Send sends (review, 2026-10-23).
+    @MainActor func testASkillChosenWhileTheOriginalLoadsKeepsItsArguments() async throws {
+        let bench = try await Bench(self)
+        let model = bench.model, view = bench.view
+        model.editMessage("u2", sessionID: view.id)
+        var chosen = bench.skill
+        chosen.arguments = "--strict"; chosen.contentHash = "content-now"
+        view.skills = [chosen]
+        try await eventually("The original is asked for") { bench.asked.count == 1 }
+        bench.answer(.success(try bench.original()))
+        try await eventually("The original is read") { !view.editPreparing }
+        XCTAssertEqual(view.skills, [chosen], "The chip chosen while the original loaded is kept")
+        XCTAssertEqual(view.attachments, [bench.image])
+    }
+
     /// A read the helper refused because rows were written while it loaded
     /// the whole history (a run going on) is made again.
     @MainActor func testAReadThatMetRowsWrittenMeanwhileIsMadeAgain() async throws {
@@ -264,21 +309,24 @@ final class MessageEditStartTests: XCTestCase {
         XCTAssertEqual(again.draft, "An unsent draft")
     }
 
-    /// Through the packaged helper and the synthetic gateway: a chat with a
-    /// compaction, opened again from its metadata file, so its original needs
-    /// the whole history. Edit puts the question in the composer at once, the
-    /// typing goes in while the helper reads the history, and Send then
-    /// resends the edit, which the helper takes against the timeline and
-    /// text the read gave.
-    @MainActor func testEditingAQuestionOnScreenThroughThePackagedHelper() async throws {
-        let bench = try await gatewayWorkspace("message-edit-helper", projectID: "edit-start", gatewayEnvironment: ["PI_APP_UI_FIXTURE_SUMMARY_DELAY": "0"])
-        let model = makeWorkspaceModel(stateRoot: bench.state, vault: bench.vault)
-        try await model.reloadConfiguration()
-        let chat = ChatRecord(id: "edit-helper-chat", workspaceID: bench.workspace.id, title: "Edit", path: nil, profileID: bench.profile.id)
-        try await model.store?.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
-        let view = SessionDisplay(id: chat.id)
-        model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view; model.focusedSessionID = chat.id
-        var host = try await model.open(chat)
+    /// A chat on the packaged helper and the synthetic gateway, its questions
+    /// asked through the helper and its rows read into its display as a
+    /// selected chat has them (its saved draft read too).
+    @MainActor private final class LiveChat {
+        let model: WorkspaceModel, chat: ChatRecord, view: SessionDisplay
+        private(set) var host: HostSupervisor
+        init(_ test: XCTestCase, _ name: String, slowWords: Int? = nil) async throws {
+            var environment = ["PI_APP_UI_FIXTURE_SUMMARY_DELAY": "0"]
+            if let slowWords { environment["PI_APP_UI_FIXTURE_SLOW_WORDS"] = String(slowWords) }
+            let bench = try await test.gatewayWorkspace(name, projectID: "edit-start", gatewayEnvironment: environment)
+            model = test.makeWorkspaceModel(stateRoot: bench.state, vault: bench.vault)
+            try await model.reloadConfiguration()
+            chat = ChatRecord(id: name + "-chat", workspaceID: bench.workspace.id, title: "Edit", path: nil, profileID: bench.profile.id)
+            try await model.store?.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
+            view = SessionDisplay(id: chat.id)
+            model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view; model.focusedSessionID = chat.id
+            host = try await model.open(chat)
+        }
         func settle() async throws {
             for _ in 0..<5_000 {
                 let status = try await host.request("session.status", sessionID: chat.id).object ?? [:]
@@ -287,37 +335,137 @@ final class MessageEditStartTests: XCTestCase {
             }
             XCTFail("The turn did not settle")
         }
+        func ask(_ id: String, _ text: String) async throws {
+            _ = try await host.request("turn.submit", sessionID: chat.id, params: ["clientTurnId": .string(id), "text": .string(text)])
+            try await settle()
+        }
+        /// The message `id` rewritten through the helper directly, as another
+        /// window's edit would: the occurrence it replaces leaves the timeline.
+        func editElsewhere(_ id: String, as turnID: String, _ text: String) async throws {
+            _ = try await host.request(WorkspaceModel.editTurnMethod, sessionID: chat.id,
+                                       params: WorkspaceModel.editTurnParams(messageID: id, text: text, turnID: turnID, attachments: [], skills: []),
+                                       commandID: UUID().uuidString)
+            try await settle()
+        }
+        /// Opened again, from the metadata file a compaction wrote.
+        func reopen() async throws {
+            let item = try XCTUnwrap(model.record(chat.id))
+            _ = try await host.request("session.close", sessionID: chat.id); model.helperSessionDidUnload(chat.id)
+            host = try await model.open(item)
+        }
+        /// The display reads the helper's rows, settled, as a selected chat does.
+        func read(through id: String) async throws {
+            model.refresh(chat.id)
+            try await eventually("The chat's rows are read", timeout: .seconds(30)) {
+                !self.view.hasWork && self.view.messages.contains { $0.id == id } && self.view.messages.last?.role == "assistant"
+            }
+            if !view.selectionMetadataLoaded { try await model.loadDraftBaseline(view) }
+        }
+        func userTexts() async throws -> [String] {
+            let snapshot = try await host.request("session.snapshot", sessionID: chat.id, params: ["includeMessages": .bool(true)]).object ?? [:]
+            return try TranscriptMessage.page(snapshot["messages"] ?? .array([])).filter { $0.role == "user" }.map(\.text)
+        }
+    }
+
+    /// Through the packaged helper and the synthetic gateway: a chat with a
+    /// compaction, opened again from its metadata file, so its original needs
+    /// the whole history. Edit puts the question in the composer at once, the
+    /// typing goes in while the helper reads the history, and Send then
+    /// resends the edit, which the helper takes against the timeline and
+    /// text the read gave.
+    @MainActor func testEditingAQuestionOnScreenThroughThePackagedHelper() async throws {
+        let live = try await LiveChat(self, "message-edit-helper")
+        let model = live.model, view = live.view
         // Long enough replies for a compaction to keep only the latest turns.
         for (turn, text) in ["The first question, bulk 60 please", "The second question, bulk 60 please", "The question to edit", "The last question"].enumerated() {
-            _ = try await host.request("turn.submit", sessionID: chat.id, params: ["clientTurnId": .string("q\(turn)"), "text": .string(text)])
-            try await settle()
-            if turn == 1 { _ = try await host.request("context.compact", sessionID: chat.id); try await settle() }
+            try await live.ask("q\(turn)", text)
+            if turn == 1 { _ = try await live.host.request("context.compact", sessionID: live.chat.id); try await live.settle() }
         }
-        // Opened again, from the metadata file the compaction wrote.
-        let item = try XCTUnwrap(model.record(chat.id)), path = try XCTUnwrap(item.path)
+        let path = try XCTUnwrap(model.record(live.chat.id)?.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path + ".meta"), "The compaction wrote the metadata file")
-        _ = try await host.request("session.close", sessionID: chat.id); model.helperSessionDidUnload(chat.id)
-        host = try await model.open(item)
-        model.refresh(chat.id)
-        try await eventually("The chat's rows are read", timeout: .seconds(30)) {
-            !view.hasWork && view.messages.contains { $0.id == "q2" } && view.messages.last?.role == "assistant"
-        }
-        try await model.loadDraftBaseline(view)
-        XCTAssertNotNil(view.messages.first { $0.id == "q2" }, "The question is on screen")
+        try await live.reopen()
+        try await live.read(through: "q2")
 
-        model.editMessage("q2", sessionID: chat.id)
+        model.editMessage("q2", sessionID: live.chat.id)
         XCTAssertEqual(view.editingMessageID, "q2"); XCTAssertEqual(view.draft, "The question to edit")
         view.draft = "The question, edited"
         try await eventually("The helper reads the original", timeout: .seconds(30)) { !view.editPreparing }
         XCTAssertFalse(view.editInputPending, view.notice); XCTAssertNotNil(view.editSourceTimeline); XCTAssertNotNil(view.editSourceTextDigest)
         XCTAssertNil(model.editBlocker(view))
         XCTAssertEqual(view.draft, "The question, edited")
-        model.sendEdit(sessionID: chat.id)
+        model.sendEdit(sessionID: live.chat.id)
         try await eventually("The edit is accepted", timeout: .seconds(30)) { !view.editSubmitting && view.editingMessageID == nil }
-        try await settle()
-        let after = try await host.request("session.snapshot", sessionID: chat.id, params: ["includeMessages": .bool(true)]).object ?? [:]
-        let rows = try TranscriptMessage.page(after["messages"] ?? .array([]))
-        XCTAssertEqual(rows.last { $0.role == "user" }?.text, "The question, edited", view.notice)
-        XCTAssertFalse(rows.contains { $0.id == "q3" }, "The question after the edited one is off the timeline")
+        try await live.settle()
+        let texts = try await live.userTexts()
+        XCTAssertEqual(texts.last, "The question, edited", view.notice)
+        XCTAssertFalse(texts.contains("The last question"), "The question after the edited one is off the timeline")
+    }
+
+    /// Owner decision, 2026-10-23 ("Re-check at Send"): an edit opened while a
+    /// run goes on is checked again at Send against the conversation through
+    /// the edited message. The rows the run added after it do not refuse it.
+    @MainActor func testAnEditOpenedDuringARunIsSentOnceTheRunHasAddedRows() async throws {
+        let live = try await LiveChat(self, "message-edit-run", slowWords: 12)
+        let model = live.model, view = live.view
+        try await live.ask("q0", "The question to edit")
+        try await live.ask("q1", "The second question")
+        try await live.read(through: "q1")
+        view.draft = "A slow answer, please"; model.send(sessionID: live.chat.id)
+        try await eventually("The slow run streams", timeout: .seconds(30)) { view.busy && view.messages.last?.isStreaming == true }
+        model.editMessage("q0", sessionID: live.chat.id)
+        XCTAssertEqual(view.editingMessageID, "q0")
+        try await eventually("The original is read while the run goes on", timeout: .seconds(30)) { !view.editPreparing }
+        XCTAssertTrue(view.busy, "The checks were read during the run")
+        view.draft = "The question, edited during the run"
+        try await eventually("The run ends", timeout: .seconds(60)) { !view.hasWork && !view.loading && view.messages.last?.isStreaming == false }
+        let during = try await live.userTexts()
+        XCTAssertEqual(during.last, "A slow answer, please", "The run added its rows after the edited message")
+        model.sendEdit(sessionID: live.chat.id)
+        try await eventually("Send settles", timeout: .seconds(30)) { !view.editSubmitting }
+        XCTAssertNil(view.editingMessageID, "Send takes the edit: \(view.notice)")
+        try await live.settle()
+        let after = try await live.userTexts()
+        XCTAssertEqual(after, ["The question, edited during the run"])
+    }
+
+    /// Re-checked at Send, an edit is still refused when the message itself
+    /// or the conversation it branches from changed since it was read: here
+    /// another window's edits, first of the message before it, then of the
+    /// message itself. The composer keeps the edit and its typing.
+    @MainActor func testAnEditIsStillRefusedWhenItsMessageOrWhatItBranchesFromChanged() async throws {
+        let live = try await LiveChat(self, "message-edit-refused")
+        let model = live.model, view = live.view
+        for (turn, text) in ["The first question", "The second question", "The third question"].enumerated() { try await live.ask("q\(turn)", text) }
+        try await live.read(through: "q2")
+        // What it branches from changes: the message before it is rewritten.
+        model.editMessage("q2", sessionID: live.chat.id)
+        try await eventually("The original is read", timeout: .seconds(30)) { !view.editPreparing }
+        view.draft = "The third question, edited"
+        try await live.editElsewhere("q1", as: "q1b", "The second question, rewritten elsewhere")
+        try await eventually("The rewrite reaches the chat", timeout: .seconds(30)) { !view.hasWork && !view.loading }
+        model.sendEdit(sessionID: live.chat.id)
+        try await eventually("Send settles", timeout: .seconds(30)) { !view.editSubmitting }
+        XCTAssertEqual(view.editingMessageID, "q2", "The edit stays in the composer")
+        XCTAssertEqual(view.draft, "The third question, edited"); XCTAssertFalse(view.notice.isEmpty)
+        try await live.settle()
+        let first = try await live.userTexts()
+        XCTAssertEqual(first, ["The first question", "The second question, rewritten elsewhere"])
+        model.cancelEdit(sessionID: live.chat.id)
+        // The message itself changes: it is rewritten elsewhere after it was
+        // read. The display need not show another writer's branch yet, so this
+        // edit may read its original before the composer takes it.
+        model.editMessage("q1b", sessionID: live.chat.id)
+        try await eventually("The original is read", timeout: .seconds(30)) { !view.editPreparing }
+        XCTAssertEqual(view.editingMessageID, "q1b", view.notice)
+        view.draft = "The second question, edited here"
+        try await live.editElsewhere("q1b", as: "q1c", "The second question, rewritten again elsewhere")
+        try await eventually("The rewrite reaches the chat", timeout: .seconds(30)) { !view.hasWork && !view.loading }
+        model.sendEdit(sessionID: live.chat.id)
+        try await eventually("Send settles", timeout: .seconds(30)) { !view.editSubmitting }
+        XCTAssertEqual(view.editingMessageID, "q1b", "The edit stays in the composer")
+        XCTAssertEqual(view.draft, "The second question, edited here"); XCTAssertFalse(view.notice.isEmpty)
+        try await live.settle()
+        let second = try await live.userTexts()
+        XCTAssertEqual(second, ["The first question", "The second question, rewritten again elsewhere"])
     }
 }

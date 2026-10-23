@@ -826,7 +826,7 @@ public actor NativeHostService {
                 input.subagentModels = try JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())
                 try await session.configureSubagentModels(input.subagentModels ?? [])
             }
-            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text,admittedAt:admittedAt) }
+            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text,expectedPrefix:params["editSourcePrefix"].text,admittedAt:admittedAt) }
             return try await session.submit(input,steer:method == "turn.steer",admittedAt:admittedAt)
         case "queue.remove": try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.reorder":

@@ -67,6 +67,14 @@ extension WorkspaceModel {
         let shown = view.messages.first(where: { $0.id == messageID })
         if let shown, shown.role != "user" || shown.kind != nil || shown.isStreaming { return }
         if let reason = editEntryBlocker(view) { view.notice = reason; view.editNotice = reason; return }
+        // Edit again on the message whose original is still unread (its read
+        // failed, or is still going): it is read again behind the composer,
+        // which keeps what was typed and added since.
+        if view.editingMessageID == messageID, view.editInputPending {
+            if (focusedSessionID ?? selectedID) == sessionID { focusedSessionID = sessionID; view.composerFocusRequest += 1 }
+            resumeEditPreparation(view, shown: shown.flatMap(Self.editOpening))
+            return
+        }
         let generation = UUID(), draft = view.savedDraft
         let focusOrigin = focusedSessionID ?? selectedID
         let focus = QueueEditFocus(self, view)
@@ -108,10 +116,12 @@ extension WorkspaceModel {
             }
         }
     }
-    /// An edit a restart brought back while its original was still loading
-    /// (`MessageEditDraft.inputPending`): its text is the reader's, and its
-    /// images, skills and checks are read again before Send takes it.
-    func resumeEditPreparation(_ view: SessionDisplay) {
+    /// An edit whose original is unread — one a restart brought back while
+    /// it was still loading (`MessageEditDraft.inputPending`), or one whose
+    /// read failed and Edit was chosen again: its text is the reader's, and
+    /// its images, skills and checks are read again before Send takes it.
+    /// `shown`: the question's row as it reads now, when it is on screen.
+    func resumeEditPreparation(_ view: SessionDisplay, shown: String? = nil) {
         guard view.editInputPending, let messageID = view.editingMessageID, let item = record(view.id), !item.isSubagent else { return }
         let generation = UUID()
         view.editGeneration = generation; view.editPreparing = true
@@ -123,7 +133,7 @@ extension WorkspaceModel {
             do {
                 try await prepareToolOutputUse(outputUse)
                 guard let original = try await readEditOriginal(item, messageID: messageID, current: current), current() else { return }
-                adoptEditOriginal(original, shown: nil, into: view)
+                adoptEditOriginal(original, shown: shown, into: view)
             } catch {
                 guard current() else { return }
                 view.notice = "The complete message could not be loaded for editing: " + error.localizedDescription
@@ -144,7 +154,7 @@ extension WorkspaceModel {
     /// own state stays.
     private func beginEdit(_ messageID: String, in view: SessionDisplay, settingAside draft: DraftRecord) {
         if view.editingMessageID == nil { view.draftBeforeEdit = draft; view.submissionReviews = [] }
-        view.editingMessageID = messageID; view.editSourceTimeline = nil; view.editSourceTextDigest = nil
+        view.editingMessageID = messageID; view.editSourceTimeline = nil; view.editSourceTextDigest = nil; view.editSourcePrefix = nil
         view.editMissingAttachments = []; view.editInputReviewRequired = false; view.editInputPending = false
         view.directCommand = false; view.completionVisible = false
     }
@@ -152,12 +162,15 @@ extension WorkspaceModel {
     /// at once (`shown`; nil for an edit a restart brought back). What was
     /// typed since stays, and so does an image or a skill added since, after
     /// the original's own. Untouched, the composer takes the original's text.
+    /// A chip the composer holds wins over the original's of the same id: a
+    /// skill chosen again meanwhile keeps the arguments it was given.
     private func adoptEditOriginal(_ original: EditOriginal, shown: String?, into view: SessionDisplay) {
         let typed = view.draft != (shown ?? original.text)
         if !typed { view.draft = original.text }
-        let attachments = Set(original.attachments.map(\.id)), skills = Set(original.skills.map(\.id))
-        view.attachments = original.attachments + view.attachments.filter { !attachments.contains($0.id) }
-        view.skills = original.skills + view.skills.filter { !skills.contains($0.id) }
+        let attachments = view.attachments, skills = view.skills
+        let originalAttachments = Set(original.attachments.map(\.id)), originalSkills = Set(original.skills.map(\.id))
+        view.attachments = original.attachments.map { item in attachments.first { $0.id == item.id } ?? item } + attachments.filter { !originalAttachments.contains($0.id) }
+        view.skills = original.skills.map { chip in skills.first { $0.id == chip.id } ?? chip } + skills.filter { !originalSkills.contains($0.id) }
         adoptEditChecks(original, into: view)
         if typed, let shown, shown != original.text { view.editNotice = "The original message differs from its row as shown. Review the text before sending." }
         draftChanged(view)
@@ -165,6 +178,7 @@ extension WorkspaceModel {
     /// What Send checks an edit against, and what it needs reviewed first.
     private func adoptEditChecks(_ original: EditOriginal, into view: SessionDisplay) {
         view.editSourceTimeline = original.sourceTimeline; view.editSourceTextDigest = original.sourceTextDigest
+        view.editSourcePrefix = original.sourcePrefix
         view.editMissingAttachments = original.missing; view.editInputReviewRequired = original.legacyInputs
         view.editInputPending = false
         view.editNotice = "Context inspection shows the current unedited branch until Send."
@@ -204,7 +218,8 @@ extension WorkspaceModel {
         }.value
         messageEditStep?("inspected")
         return EditOriginal(text: text, attachments: attachments, skills: skills, missing: missing, sourceTimeline: result["sourceTimeline"]?.string,
-                            sourceTextDigest: result["sourceTextDigest"]?.string, legacyInputs: result["legacyInputs"]?.bool ?? false)
+                            sourceTextDigest: result["sourceTextDigest"]?.string, sourcePrefix: result["sourcePrefix"]?.string,
+                            legacyInputs: result["legacyInputs"]?.bool ?? false)
     }
     /// One read of the original: page by page from the helper, or from the
     /// journal. Nil when `current` stops holding between pages.
@@ -282,6 +297,11 @@ extension WorkspaceModel {
         var params = turnOverrides(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
+        // Checked at Send: the conversation through the edited message, so the
+        // rows a run added after it since the original was read do not refuse
+        // the edit; the message itself and what it branches from still must be
+        // as they were. A helper without it checks the whole timeline instead.
+        if let prefix = view.editSourcePrefix { params["editSourcePrefix"] = .string(prefix) }
         let generation = view.editGeneration
         let archiveRevision = archiveRevisions[id, default: 0]
         latestVersion(sessionID: id)
@@ -343,7 +363,7 @@ extension WorkspaceModel {
                         // newer edits attached to the accepted replacement so
                         // their next Send can amend it after the run finishes.
                         view.editingMessageID = turnID
-                        view.editSourceTimeline = nil; view.editSourceTextDigest = nil
+                        view.editSourceTimeline = nil; view.editSourceTextDigest = nil; view.editSourcePrefix = nil
                         view.editNotice = "Edit accepted. Your newer changes now edit the replacement. Cancel restores the original unsent draft."
                         draftChanged(view)
                     }
@@ -406,6 +426,8 @@ struct EditOriginal {
     var missing: Set<String>
     var sourceTimeline: String?
     var sourceTextDigest: String?
+    /// The timeline through the message (`HistoricalEditPlan.sourcePrefix`).
+    var sourcePrefix: String?
     /// Its images or skills were not recorded, so Send needs them reviewed.
     var legacyInputs: Bool
 }

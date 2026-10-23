@@ -1755,6 +1755,10 @@ struct MessageEditDraft: Codable, Sendable, Equatable {
     /// (`WorkspaceModel.resumeEditPreparation`). Nil once read, and in older
     /// drafts.
     var inputPending: Bool? = nil
+    /// What Send checks the edit against (`turn.edit`'s `editSourcePrefix`):
+    /// the conversation through the edited message. Nil in older drafts,
+    /// whose Send checks the whole timeline (`sourceTimeline`).
+    var sourcePrefix: String? = nil
 }
 struct CommandIntent: Codable, Sendable, Equatable {
     var id: String; var sessionID: String; var turnID: String; var text: String; var state: String; var epoch: String?; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?

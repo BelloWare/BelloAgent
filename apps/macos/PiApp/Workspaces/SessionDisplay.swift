@@ -827,6 +827,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var editInputPending = false
     var editSourceTimeline: String?
     var editSourceTextDigest: String?
+    /// What Send checks the edit against: the conversation through the edited
+    /// message, from the read of its original (`turn.edit`'s `editSourcePrefix`).
+    var editSourcePrefix: String?
     /// The branch this reader's edit is making (`sendEdit`), until the
     /// snapshot that first carries it is adopted (`adoptOwnBranch`).
     var pendingBranch: PendingBranch?
@@ -849,14 +852,14 @@ struct TranscriptVersionView: Equatable, Sendable {
             var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews); saved.queuedEdit = unreconciledQueuedEdit
             return saved
         }
-        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews, inputPending: editInputPending ? true : nil) }
+        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews, inputPending: editInputPending ? true : nil, sourcePrefix: editSourcePrefix) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews)
     }
     func restoreDraft(_ saved: DraftRecord) {
         draft = saved.text; attachments = saved.attachments ?? []; skills = saved.skills ?? []; directCommand = false
         submissionReviews = saved.submissionReviews ?? []
         editingMessageID = saved.edit?.messageID
-        editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest
+        editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest; editSourcePrefix = saved.edit?.sourcePrefix
         editInputReviewRequired = saved.edit?.inputReviewRequired ?? false; editInputPending = saved.edit?.inputPending == true
         editGeneration = UUID(); editPreparing = false; editSubmitting = false; editNotice = ""; editMissingAttachments = []
         draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills, submissionReviews: $0.originalSubmissionReviews) }
