@@ -303,6 +303,37 @@ final class InlineSkillPillTests: InlineSkillPillTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "/release-checklist", "Copying a token copies its /name")
     }
 
+    /// Undo of a token removed from the front or the middle puts it back
+    /// where it was, not after the others: the skills reach the model in
+    /// this order (review, 2026-10-23).
+    @MainActor func testUndoPutsARemovedTokenBackWhereItWas() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let editor = ComposerTextView(frame: window.contentView!.bounds)
+        editor.isRichText = false; editor.allowsUndo = true; editor.sessionID = "a"
+        window.contentView?.addSubview(editor); window.makeFirstResponder(editor)
+        let view = SessionDisplay(id: "a"), a = Self.chip("release-checklist"), b = Self.chip("review"), c = Self.chip("lint")
+        editor.skillStrip.display = view
+        view.skills = [a, b, c]; editor.skillTokens = view.skills
+        view.draft = "hello"; editor.string = "hello"
+        Self.freshUndo(editor)
+        editor.removeSkillToken(a.id)
+        XCTAssertEqual(view.skills, [b, c])
+        editor.undoManager?.undo()
+        XCTAssertEqual(view.skills, [a, b, c], "Undo puts the first token back first")
+        XCTAssertEqual(editor.skillTokenViews.map(\.chip.id), [a.id, b.id, c.id])
+        editor.undoManager?.redo()
+        XCTAssertEqual(view.skills, [b, c])
+        editor.undoManager?.undo()
+        XCTAssertEqual(view.skills, [a, b, c])
+        Self.freshUndo(editor)
+        editor.removeSkillToken(b.id)
+        XCTAssertEqual(view.skills, [a, c])
+        editor.undoManager?.undo()
+        XCTAssertEqual(view.skills, [a, b, c], "and a middle one between its neighbours")
+    }
+
     /// The draft is saved and restored with its tokens, and what is sent is
     /// exactly what was sent before the tokens were drawn inline.
     @MainActor func testDraftRoundTripAndSendPayloadAreUnchanged() throws {

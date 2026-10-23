@@ -222,12 +222,23 @@ extension ComposerTextView {
         undoManager?.setActionName(actionName)
     }
     /// `current` with the step from `from` to `to` made in it: what the step
-    /// removed goes, what it set takes its place or is added after, and every
-    /// other skill stays where it is.
-    static func skills(_ current: [SkillChip], steppedFrom from: [SkillChip], to: [SkillChip]) -> [SkillChip] {
+    /// removed goes, what it set comes back where it stands in `to` among the
+    /// skills there (a token removed from the front comes back at the front),
+    /// and every other skill stays where it is.
+    nonisolated static func skills(_ current: [SkillChip], steppedFrom from: [SkillChip], to: [SkillChip]) -> [SkillChip] {
         let removed = Set(from.map(\.id)).subtracting(to.map(\.id))
         var result = current.filter { !removed.contains($0.id) }.map { chip in to.first { $0.id == chip.id } ?? chip }
-        result += to.filter { chip in !result.contains { $0.id == chip.id } }
+        for (index, chip) in to.enumerated() where !result.contains(where: { $0.id == chip.id }) {
+            // After the nearest skill before it in `to` that is here, else
+            // before the nearest one after it, else at the end.
+            if let before = to[..<index].reversed().lazy.compactMap({ previous in result.firstIndex { $0.id == previous.id } }).first {
+                result.insert(chip, at: before + 1)
+            } else if let after = to[(index + 1)...].lazy.compactMap({ next in result.firstIndex { $0.id == next.id } }).first {
+                result.insert(chip, at: after)
+            } else {
+                result.append(chip)
+            }
+        }
         return result
     }
     /// Backspace with the caret at the very start of the text.

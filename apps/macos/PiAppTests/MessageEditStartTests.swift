@@ -247,6 +247,24 @@ final class MessageEditStartTests: XCTestCase {
         undo.redo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id])
     }
 
+    /// A skill step undone or redone over skills that came in since: what it
+    /// removed comes back where it stood among the step's own skills, and a
+    /// skill loaded since (an edited message's original) stays where it is
+    /// (review, 2026-10-23).
+    @MainActor func testASkillStepIsUndoneInPlaceBesideASkillLoadedSince() {
+        func chip(_ name: String) -> SkillChip { SkillChip(id: "skill-" + name, name: name, path: "/skills/\(name)/SKILL.md", contentHash: name, metadataHash: name + "-meta") }
+        let a = chip("a"), b = chip("b"), c = chip("c"), loaded = chip("loaded")
+        func step(_ current: [SkillChip], from: [SkillChip], to: [SkillChip]) -> [String] {
+            ComposerTextView.skills(current, steppedFrom: from, to: to).map(\.name)
+        }
+        XCTAssertEqual(step([b, c], from: [b, c], to: [a, b, c]), ["a", "b", "c"], "A removed first token comes back first")
+        XCTAssertEqual(step([a, c], from: [a, c], to: [a, b, c]), ["a", "b", "c"], "a middle one between its neighbours")
+        XCTAssertEqual(step([loaded, b, c], from: [b, c], to: [a, b, c]), ["loaded", "a", "b", "c"], "beside a skill loaded since, which stays")
+        XCTAssertEqual(step([loaded, a], from: [a], to: [a, b]), ["loaded", "a", "b"])
+        XCTAssertEqual(step([loaded], from: [], to: [a]), ["loaded", "a"])
+        XCTAssertEqual(step([loaded, a, b], from: [a, b], to: [a]), ["loaded", "a"])
+    }
+
     /// An image import under way when Edit is chosen again on the same edit
     /// (its original unread) still lands in the composer: the edit and its
     /// draft are the same, only the read starts over (review, 2026-10-23).

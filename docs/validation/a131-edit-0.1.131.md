@@ -406,6 +406,36 @@ refresh sets back to the tool notice (`applyToolNotice`,
   0 failures.
 - No helper or wire change in this round.
 
+## Round 4: the re-review's finding (Astra, on 2622643f)
+
+*Undo put a removed token back at the end.* Round 3 made a skill step's Undo
+work over the skills the composer holds now, but it added what came back
+after the others: `[A, B, C]`, remove `A`, Undo gave `[B, C, A]`. This hit
+ordinary composer editing too, and the helper expands skills in their order
+(`AgentSession.userMessageText`), so the prompt changed. A skill a step brings
+back now goes where it stands in the step's own list: after the nearest skill
+before it there that the composer holds, else before the nearest one after it,
+else at the end (`ComposerTextView.skills(_:steppedFrom:to:)`). A skill loaded
+since (an edited message's original) still stays where it is.
+
+**Failing first** (`evidence/round4-failing-first.log.1`, the 2622643f
+sources): `InlineSkillPillTests.testUndoPutsARemovedTokenBackWhereItWas`
+(`["id-review", "id-lint", "id-release-checklist"]` for the first token's
+Undo; 5 failures) and
+`MessageEditStartTests.testASkillStepIsUndoneInPlaceBesideASkillLoadedSince`
+(`["b", "c", "a"]`, `["a", "c", "b"]`, `["loaded", "b", "c", "a"]`; 3 failures).
+
+**Mutations** (`evidence/mutation-r8*`, `mutation-r9*`; each reverted): r8,
+the round-3 placement (appended), and r9, without "before the nearest one
+after it", each failed both new tests and nothing else of the 17 run with them.
+
+**Classes covering round 4** (Debug): `MessageEditStartTests` 15 tests, 0
+failures (`evidence/round4-start.log`, the round-3 undo case included);
+`InlineSkillTests` (8), `InlineSkillPillTests` (17) and
+`InlineSkillPillTimingTests` (2) under the lock
+(`evidence/round4-serial.log.1`): **27 tests, 26 passed, 1 skipped** (the
+opt-in capture), 0 failures.
+
 ## Known
 
 - **Send still waits for the whole journal once.** The first read of a chat the
