@@ -15,6 +15,8 @@ Owner, 2026-10-22: "once you release the current version, please check this and 
 - [ ] FIND-2: an Ask mode in sidebar search, after FIND-1: a question in plain words; the mini model ranks chats by their briefs, the full-text index confirms the top few, and each match shows one line on why.
 - [ ] PERF-1 (0.1.130 soak): beside the floating Agents, Diff and Files card a newly shown reply's text is laid out at the 840 pt page width, then again at the narrower column; the card's own refresh and drawing add about 0.5 s per two minutes of chat switching. Lay a reply out once at its real width and cut the card's repeated work.
 - Deferred from 0.1.130: see Known in the 0.1.130 record.
+- Owner decisions 2026-10-23: SCROLL-1 ships 250-row pages in a 750-row window; then STREAM-1 makes a streamed update cost only what changed, and pages go to 1,000 rows. EDIT-1: an edit opened during a run re-checks at Send and sends when only later messages changed. OPEN-1: a run's end counts as use, so a chat that just finished stays among the 8 kept displays. SIDEBAR-1: search covers all projects, the chosen chip is kept until the app quits, chips only in Flat.
+- [ ] STREAM-1 (after SCROLL-1 merges): a streamed update costs only what changed instead of every row the window holds (`TranscriptNativeDocument.update`, `SessionDisplay.presentedMessages`, `TranscriptActivity.patch`); then 1,000-row pages.
 - Owner decisions 2026-10-22, all three as 0.1.130 shipped them: legacy (≤0.1.129) kept sides with a missing journal keep their review notice (no automatic recovery); `/side Q` while the pending side is busy or holds input refuses with a notice and keeps Q in the parent; Show/Hide Terminal stays disabled on Usage Report and Background Requests.
 
 ## 0.1.130
