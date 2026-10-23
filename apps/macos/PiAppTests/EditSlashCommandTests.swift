@@ -6,6 +6,7 @@ import AppKit
 final class EditSlashCommandTests: XCTestCase {
     @MainActor private func fixture(queued: Bool, width: CGFloat = 920) async throws -> ConversationPaneTests.Pane {
         let pane = try ConversationPaneTests.Pane(messages: [TranscriptMessage(id: "u1", role: "user", text: "Original question")], width: width, height: 600)
+        pane.model.prewarmsHelpers = false
         try await pane.model.reloadConfiguration()
         pane.session.selectionMetadataLoaded = true
         pane.session.draft = "Parked draft"
@@ -224,9 +225,24 @@ final class EditSlashCommandTests: XCTestCase {
         try await eventually("ended edit keeps rewrite separately") { pane.session.queueEditingID == nil && !pane.session.draftConflicts.isEmpty }
         XCTAssertEqual(pane.session.skills, [parked])
         XCTAssertEqual(pane.session.draftConflicts.first?.draft.skills, [rewrite])
-        try await pane.model.flushDrafts()
-        let copies = try await pane.model.store?.draftConflicts(id: pane.session.id)
-        XCTAssertEqual(copies?.first?.draft.skills, [rewrite])
+        // Exercise the normal debounce: Quit's flush already preserves the
+        // separate copy first and would hide a false competing-instance error.
+        await pane.settle()
+        while let write = pane.model.draftWrites.tasks[pane.session.id] { await write.value }
+        XCTAssertNil(pane.model.error)
+        XCTAssertFalse(pane.model.draftWrites.failed)
+        XCTAssertFalse(pane.session.draftVersion.hasConflictEpisode)
+        let reader = MetadataStore(url: pane.model.root.appendingPathComponent("desktop.sqlite"))
+        let saved = try await reader.get(DraftRecord.self, kind: "draft", id: pane.session.id)
+        let copies = try await reader.draftConflicts(id: pane.session.id)
+        await reader.close()
+        XCTAssertEqual(saved?.text, "Parked draft")
+        XCTAssertEqual(saved?.skills, [parked])
+        XCTAssertNil(saved?.queuedEdit)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(copies.first?.draft.text, "Use ")
+        XCTAssertEqual(copies.first?.draft.skills, [rewrite])
+        XCTAssertFalse(pane.session.draftVersion.hasUnsavedConflict)
     }
 
     @MainActor func testNewerArgumentsAfterSaveKeepBothDraftsAndExplainWhereTheRewriteIs() async throws {

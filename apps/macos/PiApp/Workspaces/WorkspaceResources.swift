@@ -301,6 +301,11 @@ extension WorkspaceModel {
     }
     func canSelectSkill(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
         guard !view.recoveringDraft, !view.queueEditResolving, !view.editSubmitting else { return false }
+        return skillIsAvailable(skill, view: view)
+    }
+    // Recovery checks the catalog while Send still holds the input lock.
+    // That lock prevents a new selection; it does not revoke existing chips.
+    func skillIsAvailable(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
         guard let workspaceID = record(view.id)?.workspaceID, skillEnabledInBelloAgent(skill.id), skill.canSelect,
               view.skillCatalog.authorizes, view.skillCatalog.scope == skillScope(sessionID: view.id, workspaceID: workspaceID) else { return false }
         return view.skillCatalog.entries.contains { $0.skill.id == skill.id && $0.skill.canSelect && $0.skill.contentHash == skill.contentHash && $0.skill.metadataHash == skill.metadataHash }

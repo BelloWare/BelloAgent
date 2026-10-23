@@ -245,6 +245,9 @@ extension WorkspaceModel {
                 try Task.checkCancellation()
                 try await prepareToolOutputUse(outputUse)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
+                // A recovered rewrite can be pinned as a separate draft.
+                // Preserve it before the normal write checks for instance conflicts.
+                try await store.preserveDraftConflicts(view.draftVersion)
                 try await store.put(draft, kind: "draft", id: draft.id, draftVersion: view.draftVersion, write: write); draftWrites.failed = false
             }
             catch is CancellationError { }
