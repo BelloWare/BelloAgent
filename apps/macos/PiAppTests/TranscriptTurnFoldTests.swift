@@ -814,4 +814,40 @@ final class TranscriptTurnFoldTests: XCTestCase {
                            "a window with newer rows after it does not fold its last turn on words alone")
         }
     }
+
+    /// A window that ends where its last turn does folds that turn as the
+    /// finished turn it is (0.1.131), receipt or not, and the fold commands
+    /// plan the page as the transcript draws it: they planned it as though
+    /// the turn were still open, so Unfold Every Turn and Unfold This Turn
+    /// left it folded, though its line opened with a click (0.1.131 review).
+    @MainActor func testTheFoldCommandsReachTheLastTurnOfAWindowThatEndsWhereATurnDoes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rows = [TranscriptMessage(id: "u1", role: "user", text: "Fix it.", at: 1_000, turn: "u1"),
+                    reply(id: "a1", turn: "u1", at: 2_000, text: "", thinking: "Where?", call: (id: "c1", name: "read")),
+                    reply(id: "a2", turn: "u1", at: 3_000, text: "Fixed."),
+                    TranscriptMessage(id: "u2", role: "user", text: "And the tests?", at: 4_000, turn: "u2"),
+                    reply(id: "b1", turn: "u2", at: 5_000, text: "", thinking: "Which ones?", call: (id: "c2", name: "bash")),
+                    reply(id: "b2", turn: "u2", at: 6_000, text: "They pass.")]
+        let session = SessionDisplay(id: "window")
+        session.newerPage = ConversationPageBoundary(cursor: ConversationCursor(incarnation: "file:1:1", lineage: "root", entry: "b2"), endsTurn: true)
+        session.messages = rows
+        model.displays = [session.id: session]
+        model.focusedSessionID = session.id
+        try withDisplay(.compact) {
+            let page = TranscriptPage(); page.state = "idle"; page.bind(session)
+            let drawn = controls(try XCTUnwrap(page.snapshot?.items)).compactMap(\.foldControl)
+            XCTAssertEqual(drawn, ["u1", "u2"], "the window ends where its last turn does: that turn folds")
+            XCTAssertEqual(WorkspaceModel.turnFolds(in: WorkspaceModel.commandItems(session)), drawn, "the commands plan the folds the page draws")
+            model.setEveryTurnFolded(false)
+            XCTAssertTrue(session.disclosure.isOpen(.turnFold("u1")))
+            XCTAssertTrue(session.disclosure.isOpen(.turnFold("u2")), "Unfold Every Turn opens the window's last turn too")
+            model.setEveryTurnFolded(true)
+            XCTAssertFalse(session.disclosure.isOpen(.turnFold("u2")))
+            // Nobody has scrolled: the newest turn is the one the reader is on.
+            model.setFocusedTurnFolded(false)
+            XCTAssertTrue(session.disclosure.isOpen(.turnFold("u2")), "Unfold This Turn opens it")
+        }
+    }
 }

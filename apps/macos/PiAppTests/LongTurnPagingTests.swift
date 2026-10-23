@@ -292,6 +292,41 @@ final class LongTurnPagingTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(up.lost, 0, "The row the reader was on was let go of")
         XCTAssertEqual(up.errors, [])
     }
+
+    /// A chat reopened where the reader left it, inside a finished turn's
+    /// work: the page read around that row holds the whole turn from its
+    /// question (0.1.131), so the turn's fold closed over the row, and a
+    /// restored place, unlike a reveal, opened nothing. The row the reader
+    /// left was drawn as nothing (0.1.131 review). Restoring the place opens
+    /// that turn, and that turn only.
+    @MainActor func testAPlaceSavedInsideAFinishedTurnReopensWithThatTurnOpen() async throws {
+        let previous = TranscriptDisplay.mode
+        defer { TranscriptDisplay.use(previous) }
+        TranscriptDisplay.use(.compact)
+        let root = scratchRoot("turn-place")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("tools.jsonl")
+        try ToolHeavyJournal.make(turns: 30).data.write(to: file)
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        try await model.reloadConfiguration()
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats = [ChatRecord(id: "tools", workspaceID: "project", title: "Tools", path: file.path, profileID: "profile")]
+        // Where the reader left the chat: a call in turn 5's work, far from its newest page.
+        let saved = TranscriptAnchor(id: "a5_10", offset: 40, followsBottom: false)
+        try await XCTUnwrap(model.store).putAnchor(saved, id: "tools", version: AnchorVersion())
+        await model.select("tools")
+        let view = try XCTUnwrap(model.selected)
+        XCTAssertEqual(view.scrollAnchor, saved)
+        XCTAssertEqual(view.messages.first?.id, "u5", "The page is read around the saved row, from its turn's question")
+        let page = TranscriptPage()
+        page.bind(view)
+        let items = try XCTUnwrap(page.snapshot?.items)
+        let holding = try XCTUnwrap(items.first { $0.messageIDs.contains("a5_10") })
+        XCTAssertFalse(TranscriptRowDisclosure.of(holding, in: view.disclosure).foldedAway, "The row the reader left is drawn")
+        let folds = WorkspaceModel.turnFolds(in: items)
+        XCTAssertTrue(folds.contains("u5"), "Turn 5 is finished: it has a fold")
+        XCTAssertEqual(folds.filter { view.disclosure.isOpen(.turnFold($0)) }, ["u5"], "Its fold alone opens")
+    }
 }
 
 extension XCTestCase {

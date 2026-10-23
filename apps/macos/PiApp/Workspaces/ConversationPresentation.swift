@@ -14,6 +14,11 @@ struct ConversationPageBoundary: Equatable {
     /// then finished, as it reads once that row is read in.
     var endsTurn = false
     var available: Bool { cursor != nil || error != nil }
+    /// Whether the window's last turn reads as finished, as far as this
+    /// newer edge says: no newer row follows, or the window ends where a
+    /// turn does. The transcript and its fold commands plan the page alike
+    /// from this, so a fold the reader sees is one the commands can reach.
+    var lastTurnFinished: Bool { !available || endsTurn && error == nil }
 }
 
 struct ConversationHistoryPage: Sendable {
