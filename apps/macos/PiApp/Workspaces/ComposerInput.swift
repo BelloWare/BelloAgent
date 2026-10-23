@@ -341,7 +341,7 @@ import AppKit
             chipIDs = state.attachments.map(\.id)
             chips.subviews.forEach { $0.removeFromSuperview() }
             for attachment in state.attachments {
-                let chip = PiKit.Chip(text: attachment.name ?? URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
+                let chip = ComposerImageAttachmentChip(attachment: attachment,
                                       action: { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) },
                                       remove: { [weak self] in
                                           guard let self, let session = self.session, !session.recoveringDraft else { return }

@@ -4,6 +4,8 @@
 
 ## 0.1.131
 
+- [x] PASTE-2: Owner, 2026-10-23: "when I paste an image, I see a flash, but not image thumbnail or anything". Send could overtake a lazy clipboard read and send text without its image (also on 0.1.130); unavailable URL metadata could discard bitmap data, some refusals were silent, and chips had no thumbnails. Paste now reserves the draft before data reads, keeps usable image data, explains refusals and draws thumbnails. Real menu/key regressions and the 120-paste matrix pass; seven mutations caught. [Validation](docs/validation/a131-paste2-0.1.131.md).
+
 Owner, 2026-10-22: "once you release the current version, please check this and try to replicate this and actually fix this."
 
 - [x] DRAW-1: PERF-1 deferred layout when a reply joined the page, but a cached height could put it on screen before its glyphs were laid out; the existing glyph lookup ran after AppKit had drawn nothing. Prepare visible glyphs before drawing, keeping one layout at the row's width. Pixel regression and mutation confirmed; all 423 release-gate PNGs compared and all gallery captures inspected, with no remaining blank prose. [Validation](docs/validation/a131-blanktext-0.1.131.md).
@@ -32,7 +34,6 @@ Owner, 2026-10-22: "once you release the current version, please check this and 
 - Deferred from 0.1.130: see Known in the 0.1.130 record.
 - Owner decisions 2026-10-23 on FIND-1 (briefs): on by default for run-end updates, no automatic catching up of older chats; no spending cap; brief usage shown next to the setting (and in Usage and Background requests); a Write Brief action and a "Write briefs for N chats without one" action for chats without a brief; main chats and saved sides; updated at every run's end, never two requests at once per chat.
 - Owner decisions 2026-10-23: SCROLL-1 ships 250-row pages in a 750-row window; then STREAM-1 makes a streamed update cost only what changed, and pages go to 1,000 rows. EDIT-1: an edit opened during a run re-checks at Send and sends when only later messages changed. OPEN-1: a run's end counts as use, so a chat that just finished stays among the 8 kept displays. SIDEBAR-1: search covers all projects, the chosen chip is kept until the app quits, chips only in Flat.
-- [ ] PASTE-2 (bug in 0.1.130, owner 2026-10-23): "when I paste an image, I see a flash, but not image thumbnail or anything"; several sources, in a main chat's composer, and the image was gone when sent, with no notice.
 - [ ] IMG-1 (owner 2026-10-23, chose "Thumbnails in the message"): a sent message shows its images as small thumbnails under its text, like the composer's chips; clicking one opens the image. Today a message with text and images shows only the text, so a sent image looks lost.
 - [ ] EDIT-3 (owner 2026-10-23): "edit message should be able to use slash command": slash commands (skills and the built-in commands that make sense) work while editing a queued message and an earlier message.
 - [ ] STREAM-1 (after SCROLL-1 merges): a streamed update costs only what changed instead of every row the window holds (`TranscriptNativeDocument.update`, `SessionDisplay.presentedMessages`, `TranscriptActivity.patch`); then 1,000-row pages.
