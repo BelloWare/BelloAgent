@@ -133,6 +133,8 @@ import AppKit
                 addSubview(markdown); self.markdown = markdown
                 return markdown
             }()
+            let width = bounds.width > 0 ? bounds.width : model.width
+            if width > 0 { markdown.prepare(width: max(1, width - 4 - TranscriptRowChrome.indent)) }
             markdown.read(source: part.text, style: row.reasoning ? .reasoning : .prose, capsWidth: false, streaming: running, headings: [],
                           environment: model.environment, identity: "")
             let waiting = part.text.isEmpty && running
