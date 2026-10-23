@@ -107,7 +107,13 @@ final class HistoricalEditingTests: XCTestCase {
     }
     func testNativeReaderReplaysSharedGoldenBranchAndReadsFullOffWindowInput() async throws {
         let history = HistoryReader(), before = fixture("before").path, after = fixture("after").path
-        let page = try await history.read(path: before, targetTurns: 3)
+        // Pages hold whole turns up to 250 rows (SCROLL-1), which would take
+        // in u05; pages of six rows keep it off the window this test reads.
+        let limits = TranscriptPaging.pageLimits
+        TranscriptPaging.pageLimits = .init(rows: 6, bytes: HistoryWindowPolicy.pageBytes / HistoryWindowPolicy.pageRows * 6,
+                                            turnRows: HistoryWindowPolicy.residentRows, turnBytes: HistoryWindowPolicy.residentBytes)
+        let page: HistoryPage
+        do { defer { TranscriptPaging.pageLimits = limits }; page = try await history.read(path: before, targetTurns: 3) }
         XCTAssertFalse(page.messages.contains { $0.id == "u05" })
         let target = try await history.editTarget(path: before, id: "u05")
         XCTAssertEqual(target["text"]?.string, String(repeating: "Original 🌍 user text ", count: 2000))
