@@ -37,7 +37,7 @@ enum ChatBriefOutcome: Equatable, Sendable {
     case written
     /// Nothing was said since the brief was written: nothing was sent.
     case nothingNew
-    /// The chat's connection has no mini model: nothing was sent.
+    /// The chat's connection has no mini model, or is gone: nothing was sent.
     case noMiniModel
     /// The chat's history could not be read: nothing was sent, and the chat
     /// is set aside until it changes.
@@ -100,6 +100,16 @@ enum ChatBriefOutcome: Equatable, Sendable {
     /// Test seams: requests asked for, and how each chat's last one ended.
     private(set) var attempts = 0
     private(set) var outcomes: [String: ChatBriefOutcome] = [:]
+    /// Each chat's brief as search compares it, folded once per brief.
+    private var searchKeys: [String: (at: Date, key: [UInt8])] = [:]
+
+    /// A chat's brief as sidebar search compares it (`ChatBrief.searchKey`).
+    func searchKey(_ chatID: String, _ brief: ChatBrief) -> [UInt8] {
+        if let held = searchKeys[chatID], held.at == brief.at { return held.key }
+        let key = brief.searchKey
+        searchKeys[chatID] = (brief.at, key)
+        return key
+    }
 
     init(model: WorkspaceModel) {
         self.model = model

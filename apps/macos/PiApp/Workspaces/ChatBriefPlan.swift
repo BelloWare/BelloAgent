@@ -33,9 +33,24 @@ struct ChatBrief: Codable, Sendable, Hashable {
         activity = try c.decodeIfPresent(Int64.self, forKey: .activity)
     }
 
-    /// Whether sidebar search finds the chat by it, compared as titles are.
-    func matches(_ query: String) -> Bool {
-        text.localizedCaseInsensitiveContains(query) || keywords.contains { $0.localizedCaseInsensitiveContains(query) }
+    /// Whether sidebar search finds the chat by it: case-insensitively, for
+    /// the reader's locale, as titles are compared.
+    func matches(_ query: String) -> Bool { Self.key(searchKey, holds: Self.folded(query)) }
+    /// The brief and its keywords as search compares them, a NUL between
+    /// each so no match spans two. Each keystroke compares every brief, and
+    /// comparing folded bytes costs well under a tenth of a localized
+    /// comparison (`docs/validation/a131-briefs-0.1.131.md`): search folds
+    /// each brief once (`ChatBriefs.searchKey`), the query once per keystroke.
+    var searchKey: [UInt8] { Self.folded(([text] + keywords).joined(separator: "\u{0}")) }
+    /// Case-folded for the reader's locale and in composed form, as UTF-8.
+    static func folded(_ text: String) -> [UInt8] {
+        Array(text.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: .current).precomposedStringWithCanonicalMapping.utf8)
+    }
+    /// Whether a folded key holds a folded query.
+    static func key(_ key: [UInt8], holds query: [UInt8]) -> Bool {
+        guard !query.isEmpty else { return true }
+        guard query.count <= key.count, !query.contains(0) else { return false }
+        return key.withUnsafeBytes { k in query.withUnsafeBytes { q in memmem(k.baseAddress, k.count, q.baseAddress, q.count) != nil } }
     }
     /// What the Background requests page keeps as the request's result:
     /// the brief, then its keywords.
@@ -57,7 +72,7 @@ struct ChatBriefPlan: Sendable {
     static let messageLimit = 1_200
     /// The most the newest messages add to the prompt altogether.
     static let inputLimit = 8_000
-    /// The fixture gateway recognises a brief's request by this line.
+    /// The request's first line, which tests recognise it by.
     static let opening = "Write the brief of an AI chat for its row in the chat list: what it is about and where it stands."
 
     let model: String

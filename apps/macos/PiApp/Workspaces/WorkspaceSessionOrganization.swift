@@ -215,7 +215,7 @@ extension WorkspaceModel {
             let models = Dictionary(profiles.map { ($0.id, $0.modelId) }, uniquingKeysWith: { first, _ in first })
             var matches = sidebarContentMatches
             // A chat's brief and keywords, while briefs are on (`WorkspaceChatBriefs.swift`).
-            let briefs = briefSettings.enabled
+            let briefs = briefSettings.enabled, folded = briefs ? ChatBrief.folded(query) : []
             // Metadata follows the normal main-chat list. Family rows still
             // appear for their own title, task or full-chat content matches.
             for chat in chats where !chat.isBackgroundTask && !chat.isSubagent && sideFamilyOwner(chat) == nil {
@@ -223,7 +223,7 @@ extension WorkspaceModel {
                     || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true)
                     || connections.contains(chat.profileID)
                     || (chat.model ?? models[chat.profileID])?.localizedCaseInsensitiveContains(query) == true
-                    || (briefs && sidebarBrief(chat)?.matches(query) == true) {
+                    || (briefs && sidebarBrief(chat).map { ChatBrief.key(chatBriefs.searchKey(chat.id, $0), holds: folded) } == true) {
                     matches.insert(chat.id)
                 }
             }

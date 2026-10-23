@@ -197,6 +197,7 @@ extension MetadataDurabilityTests {
         chat.backgroundTaskOutcome = "completed"; chat.backgroundTaskResult = "r"; chat.organizationRevision = 3; chat.topicID = "t"
         chat.parentSessionID = "pp"; chat.costLimit = .usd(5); chat.webhookOff = true; chat.connectionRevision = 4; chat.journalRebind = true
         chat.costLimitRevision = 5
+        chat.brief = ChatBrief(text: "A brief", keywords: ["keyword"], through: "m", at: date, activity: 13)
         chat.delegation = SubagentLink(delegationID: "d", childSessionID: chat.id, budgetOwnerSessionID: "pp",
                                       call: .init(parentSessionID: "pp", assistantMessageID: "reply", toolCallID: "call"),
                                       parentTurnID: "turn", parentExecutionID: "execution")

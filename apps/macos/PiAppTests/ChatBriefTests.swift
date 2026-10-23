@@ -113,6 +113,24 @@ final class ChatBriefPlanTests: XCTestCase {
         XCTAssertTrue(BackgroundRequestFilter.briefs.includes(.brief)); XCTAssertFalse(BackgroundRequestFilter.titles.includes(.brief))
     }
 
+    /// Search finds a brief as it finds a title (`localizedCaseInsensitiveContains`),
+    /// though it compares folded bytes: case, composed or decomposed accents
+    /// and full case folding alike, an accent never dropped, and no match
+    /// across the brief and a keyword.
+    func testABriefIsFoundAsATitleWouldBe() {
+        let brief = ChatBrief(text: "Straße café: the Parser’s ÉTÉ build", keywords: ["PR 812", "naïve", "日本語"], through: nil, at: Date(), activity: nil)
+        let cases: [(String, Bool)] = [("parser’s", true), ("PARSER", true), ("cafe\u{301}", true), ("CAFÉ", true), ("cafe", false),
+                                       ("STRASSE", true), ("straße", true), ("été", true), ("ete", false), ("pr 8", true),
+                                       ("NAÏVE", true), ("naive", false), ("本語", true), ("build\nPR", false), ("812 naïve", false)]
+        for (query, expected) in cases {
+            XCTAssertEqual(brief.matches(query), expected, query)
+            let asTitle = brief.text.localizedCaseInsensitiveContains(query) || brief.keywords.contains { $0.localizedCaseInsensitiveContains(query) }
+            XCTAssertEqual(brief.matches(query), asTitle, "as a title would be: \(query)")
+        }
+        XCTAssertEqual(ChatBrief.key(brief.searchKey, holds: ChatBrief.folded("Café")), true)
+        XCTAssertFalse(ChatBrief.key(ChatBrief.folded("ab"), holds: ChatBrief.folded("abc")))
+    }
+
     /// The cap counts what the gateway reported, and a request it reported
     /// nothing for (or not yet) at the estimate.
     func testTheCapCountsReportedSpendAndUnreportedRequestsAtTheEstimate() {

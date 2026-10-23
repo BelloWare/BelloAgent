@@ -251,6 +251,18 @@ final class SidebarAppearanceTests: XCTestCase {
         // The pencil is a layer-drawn symbol, which this capture does not draw either.
         model.draftChatIDs.insert("long"); _ = try frame()
         XCTAssertEqual(rowView("long", in: hosted)?.body.draftMark.isHidden, false, "a chat's kept draft shows its pencil")
+        // 0.1.131: a chat's brief is in no row's pixels, only in its hover
+        // card and its VoiceOver help, so its row is asked: a brief that
+        // arrives, and briefs going off, reach it.
+        let briefed = try XCTUnwrap(model.chats.firstIndex { $0.id == "long" })
+        model.chats[briefed].path = root.appendingPathComponent("long.jsonl").path
+        model.chats[briefed].brief = ChatBrief(text: "A brief that arrived while the sidebar is up", keywords: ["arrival"], through: nil, at: Date(), activity: nil)
+        model.configuration.briefSettings.enabled = true; _ = try frame()
+        XCTAssertEqual(rowView("long", in: hosted)?.body.content?.brief?.text, "A brief that arrived while the sidebar is up", "a chat's brief reaches its row")
+        XCTAssertNil(rowView("long", in: hosted)?.body.toolTip, "its card says what the tooltip did")
+        model.configuration.briefSettings.enabled = false; _ = try frame()
+        XCTAssertNil(rowView("long", in: hosted)?.body.content?.brief, "briefs going off leave the row")
+        XCTAssertNotNil(rowView("long", in: hosted)?.body.toolTip)
         // The group headers are compared on their own values too, so every
         // one of these has to reach them.
         try changes("a topic was renamed") { model.topics[0].title = "Renamed while the sidebar is up" }
