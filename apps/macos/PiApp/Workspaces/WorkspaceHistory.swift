@@ -14,13 +14,16 @@ extension WorkspaceModel {
     /// read in place of `around` (a scroller dragged into rows not read yet).
     /// `validating`: for a position read, a boundary of the window it lands
     /// in, which a journal read checks the file against.
+    /// `followsNavigation`: a read for the reader ends when they navigate
+    /// anywhere; one a chat makes for itself out of sight
+    /// (`catchUpFinishedRows`) answers to that chat alone.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
-                                validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
-        let navigation = transcriptNavigation(item.id)
+                                validating: ConversationCursor? = nil, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
+        let navigation = followsNavigation ? transcriptNavigation(item.id) : nil
         func checkNavigation() throws {
             try Task.checkCancellation()
-            guard navigation.isCurrent(in: self) else { throw CancellationError() }
+            if let navigation, !navigation.isCurrent(in: self) { throw CancellationError() }
         }
         try checkNavigation()
         if let historyWindowLoader {
@@ -77,7 +80,7 @@ extension WorkspaceModel {
                                                                      position: around == nil && !start ? position : nil,
                                                                      validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
-                    guard navigation.isCurrent(in: self), let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
+                    guard navigation?.isCurrent(in: self) ?? true, let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
                 }
             })

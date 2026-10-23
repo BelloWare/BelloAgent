@@ -64,9 +64,11 @@ because its cache is keyed by the journal's revision.
   opens as a revisit does: its finished rows on the page at once, uncovered, the
   page read behind them, which brings the same rows and changes nothing.
 - **What the opening scans is read then too.** After the page, the same read
-  scans the journal for the opening (`subagentPlans` with inherited plans, and
-  `agentCoordination` for a chat with agents of its own), so the opening finds
-  both cached instead of scanning the whole file again.
+  scans the journal for the opening (the inherited plans, and the coordination
+  of a chat with agents of its own), so the opening finds both cached instead
+  of scanning the whole file again. Since round 2 the scan runs off the shared
+  `HistoryReader` (`scanPlans`, `scanCoordination`) and only its result is kept
+  there, for the journal revision it read.
 - **It gives way.** The read lands only while the chat is still out of sight,
   on the same display and presentation, with the same journal, and still idle
   with outlived rows: a chat opened, running again, moved to another journal or
@@ -91,11 +93,14 @@ because its cache is keyed by the journal's revision.
   opens, as before, so one build can compare both).
 
 Files: `WorkspaceSelection.swift` (the read, the steps), `WorkspaceRefresh.swift`
-(one call after a snapshot of a chat out of sight), `WorkspaceHistory.swift`
-(`adoptPage` split out of `adoptInitialHistory`, behaviour unchanged),
-`SessionDisplay.swift` (the read in flight), `WorkspaceModel.swift` (seams), and
-the generated project for the two new test files. None of the files the other
-0.1.131 workstreams own is touched.
+(one call after a snapshot of a chat out of sight; round 2: a run's end counts
+as use), `WorkspaceHistory.swift` (`adoptPage` split out of
+`adoptInitialHistory`, behaviour unchanged; round 2: `followsNavigation`),
+`SessionDisplay.swift` (the read in flight), `WorkspaceModel.swift` (seams),
+`SubagentDiscovery.swift` and `AgentCoordination.swift` (round 2: the scans as
+`nonisolated static` functions, behaviour unchanged), and the generated project
+for the two new test files. None of the files the other 0.1.131 workstreams own
+is touched.
 
 ## Reproduction and timings
 
@@ -199,7 +204,7 @@ CODE_SIGNING_REQUIRED=NO`, serial classes under the lock.
 | Release, final | FinishedChatOpeningTests (probe), ChatOpenPlacementTests, FinishedRowsCatchUpTests | 1, 6, 6 passed |
 | Release, call removed | ChatOpenPlacementTests (new test); FinishedRowsCatchUpTests | 4 failures (expected); 6 passed |
 | Debug, serial lane | ChatLoadStabilityTests 1, ChatOpenPlacementTests 6, FreshPresentationTests 21, HistoryEdgeTests 16, HistoryExtentTests 25, InheritedSubagentReaderTests 8, SessionReadStateTests 16, WorkspaceRefreshLifecycleTests 38, FinishedChatOpeningTests 1 skipped | 132 executed, 0 failures |
-| Debug, parallel lane | FinishedRowsCatchUpTests 6, WorkspaceLoadingTests 15, SubagentDiscoveryTests 13 | 34 passed |
+| Debug, parallel lane | FinishedRowsCatchUpTests 6, SubagentDiscoveryTests 15, WorkspaceLoadingTests 13 | 34 passed |
 | Debug, final code | FinishedRowsCatchUpTests; ChatOpenPlacementTests and FinishedChatOpeningTests (under the lock) | 6 passed; 6 passed, 1 skipped (`debug-final-unit.log`, `debug-final-placement.log`) |
 
 The Debug serial and parallel runs above were on the change before its last
@@ -224,7 +229,7 @@ concurrent and acceptance suites were not run.
 - **First openings** (nothing held) still scan the journal before reading the
   page; the scan could follow the page instead.
 
-## Round 2 — 2026-10-23: a run's end counts as use
+## Round 2 — 2026-10-23: a run's end counts as use, and two review findings
 
 Owner decision on the open question of round 1: "Run's end counts as use". A
 chat whose run ends while it is out of sight moves to the front of the display
@@ -251,3 +256,52 @@ it. Memory stays bounded at eight.
   (`debug-use-on.log`): 9 executed, 0 failures. These are the classes the
   change reaches: nothing else reads `used`, and the release order is only
   changed by a run's end observed out of sight.
+
+Codex review of `afa230a4`, two P2 findings, both confirmed and fixed:
+
+- **The journal scan held up other chats' reads.** The scan read as a run ends
+  (`subagentPlans`, `agentCoordination`) ran synchronously on the one
+  `HistoryReader` every chat's reads go through, so a chat opened meanwhile
+  waited for the whole scan, though its own reads were cached. The scans now
+  run off it: `HistoryReader.scanPlans` and `scanCoordination` are the scans
+  as they were, `nonisolated static`; the reader's own methods call them as
+  before, and `catchUpFinishedRows` runs them in a detached utility task and
+  hands the reader only the result (`keepPlans`, `keepCoordination`), kept for
+  the revision or file the scan read and only while the journal is still it.
+  Nothing waits on the scan, so nothing has to cancel it.
+- **A switch between other chats dropped the read.** The read answered to the
+  workspace's navigation (`readConversationWindow` checks
+  `messageNavigationRevision`, which every change of selection moves), so the
+  reader going from one chat to another while it was under way ended it, and
+  the chat kept the rows its run had outlived. `readConversationWindow` and
+  `readInitialWindow` take `followsNavigation`; the catch-up passes `false`
+  and answers to its own chat alone (`current()`: the same display and
+  presentation, still idle with outlived rows, still out of sight, the same
+  journal). Every other read is unchanged.
+
+Tests, `FinishedRowsCatchUpTests` (both fail first on `afa230a4`'s code,
+`debug-review-before.log`: 2 tests, 4 failures):
+
+- `testAChatOpenedWhileTheFinishedJournalIsScannedDoesNotWaitForIt`: a 16 MB
+  finished journal; another chat, its reads cached, is opened while the scan
+  runs, and its first read happens while the scan is still under way; the
+  scan is then kept, and an opening scans nothing again. Before: its first
+  read came only after the whole scan.
+- `testTheFinishedPageLandsThoughTheReaderMovesOn`: the finished chat's read
+  is held while the reader opens another chat; released, the page lands, and
+  the chat opens uncovered. Before: the read was dropped, the rows stayed as
+  the run left them, and the chat opened covered.
+- The two restored fixes are the mutation checks: reverting either one fails
+  its test as above.
+
+Validation of the round (Debug; `debug-review-parallel.log`,
+`debug-review-serial.log`, the serial classes under the lock):
+
+| Classes | Result |
+| --- | --- |
+| FinishedRowsCatchUpTests 8, SubagentDeletionTests 19, SubagentDiscoveryTests 15, SubagentDisplayTests 8, SubagentEffortTests 5, SubagentSteeringInspectorTests 6, SubagentSteeringWorkspaceTests 4, WorkspaceDisplayMemoryTests 2, WorkspaceLoadingTests 13 | 80 passed |
+| ChatOpenPlacementTests 7, FreshPresentationTests 21, InheritedSubagentReaderTests 8, SubagentReaderTests 60; FinishedChatOpeningTests 1 skipped (opt-in probe) | 96 passed, 1 skipped |
+
+These are the classes that use the scans split above (sub-agent plans,
+discovery, deletion, coordination, display, effort, steering) and the opening
+and history-reading paths the catch-up goes through. No helper or wire change.

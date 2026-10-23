@@ -231,7 +231,9 @@ extension WorkspaceModel {
                     && view.heldRowsOutlived && !self.receivesRows(id) && self.record(id)?.path == item.path
             }
             do {
-                var page = try await self.readInitialWindow(item, holding: view.scrollAnchor)
+                // The chat's own read: the reader moving between other chats
+                // meanwhile is no reason to drop it, as it is for theirs.
+                var page = try await self.readInitialWindow(item, holding: view.scrollAnchor, followsNavigation: false)
                 guard current() else { return }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 guard current() else { return }
@@ -241,13 +243,23 @@ extension WorkspaceModel {
                 // What the opening reads of the journal before its page —
                 // which of another chat's agents it refers to, and what its
                 // own agents sent — is a scan of the whole file once it has
-                // changed, about 0.3 s for a 50 MiB chat: read now, while
-                // nothing waits on it, the opening finds it read.
-                if let path = item.path, !item.imported {
-                    let journal = URL(fileURLWithPath: path)
-                    _ = try? await self.history.subagentPlans(path: journal, ownerID: item.id, includeInherited: true)
-                    if self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == item.id }) {
-                        _ = try? await self.history.agentCoordination(path: journal, ownerID: item.id)
+                // changed, about 0.3 s for a 50 MiB chat. It is scanned now,
+                // off the reader every chat's reads go through (a chat opened
+                // meanwhile does not wait on it), and kept there for the
+                // revision scanned, so the opening finds it read.
+                if let path = item.path, !item.imported, let revision = HistoryReader.currentRevision(path: path) {
+                    let journal = URL(fileURLWithPath: path), owner = item.id
+                    let fingerprint = self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == owner })
+                        ? try? HistoryReader.coordinationFingerprint(journal) : nil
+                    let scan = await Task.detached(priority: .utility) { () -> (plans: [DiscoveredSubagent]?, coordination: AgentCoordination?, scanned: Int) in
+                        var scanned = 0
+                        let plans = try? HistoryReader.scanPlans(path: journal, ownerID: owner, childID: nil, includeInherited: true, scanned: &scanned)
+                        let coordination = fingerprint == nil ? nil : try? HistoryReader.scanCoordination(path: journal, ownerID: owner, scanned: &scanned)
+                        return (plans, coordination, scanned)
+                    }.value
+                    if let plans = scan.plans { await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned) }
+                    if let coordination = scan.coordination, let fingerprint {
+                        await self.history.keepCoordination(coordination, path: journal, ownerID: owner, fingerprint: fingerprint)
                     }
                 }
             } catch {
@@ -358,11 +370,12 @@ extension WorkspaceModel {
     /// alone dropped that position on every switch back and relaunch. A row
     /// no longer in the conversation (an edit, another branch) opens on the
     /// newest page, as before.
-    func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?) async throws -> ConversationHistoryPage {
-        let latest = try await readConversationWindow(source, cursor: nil)
+    /// `followsNavigation`: see `readConversationWindow`.
+    func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
+        let latest = try await readConversationWindow(source, cursor: nil, followsNavigation: followsNavigation)
         guard let anchor, !anchor.followsBottom, !anchor.id.isEmpty, !latest.messages.contains(where: { $0.id == anchor.id }) else { return latest }
         do {
-            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id)
+            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id, followsNavigation: followsNavigation)
             return around.messages.contains(where: { $0.id == anchor.id }) ? around : latest
         } catch is CancellationError { throw CancellationError() }
         catch { try Task.checkCancellation(); return latest }
