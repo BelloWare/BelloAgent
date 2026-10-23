@@ -8,7 +8,7 @@ struct MiniModelRequest: Sendable {
     var modelOutputLimit: Int?
     var thinkingLevel: String
     var prompt: String
-    /// The request chat's `backgroundTask`: "title-suggestions" or "webhook".
+    /// The request chat's `backgroundTask` (`BackgroundRequestKind.raw`).
     var task: String
     var title: String
     var timeout: TimeInterval
@@ -154,13 +154,18 @@ extension WorkspaceModel {
     /// another connection (`connectionChanged`): what was read from it goes
     /// only to the connection it was read on.
     /// `onRecord` is told the request's own ID once its record is made.
+    /// `validateSource` checks every source of a multi-chat request, both
+    /// before preparation and immediately before submit.
     func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String, sourceLease: ConnectionLease? = nil,
                       onRecord: (@MainActor (String) -> Void)? = nil,
+                      validateSource: (@MainActor () throws -> Void)? = nil,
                       result: ([TranscriptMessage]) throws -> String) async throws -> [TranscriptMessage] {
         // Once a quit or an update has begun (`installPreparing`), no helper
         // is started and nothing is sent: the known helpers are stopping.
         func closing() -> Bool { installPreparing || isShutDown }
         guard !closing() else { throw CancellationError() }
+        try Task.checkCancellation()
+        try validateSource?()
         guard let store else { throw StoreError.unavailable }
         let taskID = UUID().uuidString
         var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: request.title, path: nil, profileID: profile.id, toolMode: ChatRecord.readOnlyTools, connectionTest: true,
@@ -198,6 +203,8 @@ extension WorkspaceModel {
             let turn = UUID().uuidString
             try requireConnection(lease)
             if let sourceLease { try requireConnection(sourceLease) }
+            try Task.checkCancellation()
+            try validateSource?()
             guard !closing() else { throw CancellationError() }
             _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(request.prompt), "clientTurnId": .string(turn)]))
             let deadline = ProcessInfo.processInfo.systemUptime + request.timeout

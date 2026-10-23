@@ -305,7 +305,7 @@ public actor AgentSession {
     /// A utility request with no tools and no project context: a chat title,
     /// titles to choose from, the notification a webhook sends, or a chat's
     /// brief. `utilityPurpose` names it in the request log ("title",
-    /// "title-suggestions", "webhook" or "chat-brief").
+    /// "title-suggestions", "webhook", "chat-brief" or "chat-ask").
     let titleTask: Bool
     let utilityPurpose: String
     /// Whether tool cards report the recorded outcome (`unknown` for a call

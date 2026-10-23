@@ -20,7 +20,7 @@ import Combine
     let filterField = PiKit.TextField(placeholder: "Search titles and details", icon: "magnifyingglass")
     let searchScope = PiKit.Tabs(selection: SidebarSearch.Scope.titlesAndDetails,
                                items: SidebarSearch.Scope.allCases.map { ($0, $0.title) },
-                               horizontalPadding: 6, keyboardFocusable: true, accessibilityName: "Search scope")
+                               horizontalPadding: 1, keyboardFocusable: true, accessibilityName: "Search scope")
     let clearFilter = PiKit.IconButton(symbol: "xmark", label: "Clear search", size: 20)
     /// Flat's project chips, in the search scope's place while no search is on.
     let projectFilter = SidebarProjectFilterBar()
@@ -84,7 +84,7 @@ import Combine
         filterField.field.delegate = filterKeys
         filterKeys.changed = { [weak self] in self?.filterChanged($0) }
         filterKeys.escape = { [weak self] in self?.escapeFromFilter() }
-        filterKeys.submit = { [weak self] in self?.model.openFirstSidebarResult() }
+        filterKeys.submit = { [weak self] in self?.model.sidebarSearch.submit() }
         filterKeys.focusChanged = { [weak self] focused in
             // End-editing precedes the next responder; let Tab land on the pill.
             if focused { self?.refreshSearchChrome() }

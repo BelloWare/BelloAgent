@@ -387,7 +387,7 @@ public actor NativeHostService {
     }
     /// The background tasks a chat can be opened for, each a utility request
     /// (`AgentSession.titleTask`), and the purpose each is logged under.
-    static let utilityPurposes = ["session-title": "title", "title-suggestions": "title-suggestions", "webhook": "webhook", "chat-brief": "chat-brief"]
+    static let utilityPurposes = ["session-title": "title", "title-suggestions": "title-suggestions", "webhook": "webhook", "chat-brief": "chat-brief", "chat-ask": "chat-ask"]
     /// The open workspace, as the commands that need one see it.
     private struct OpenWorkspace { let cwd: URL, directory: URL, resources: Resources, mcp: MCPManager, nativeTools: NativeTools }
     /// Commands a host that is not closing answers without a workspace.

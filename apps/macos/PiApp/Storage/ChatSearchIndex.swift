@@ -618,12 +618,12 @@ final class ChatSearchQuery: @unchecked Sendable {
 
     /// Each listed chat's newest match for `query`, or throws
     /// `CancellationError` when a newer query (or `cancel()`) stopped it.
-    func search(_ query: String) async throws -> [String: ChatSearchHit] {
+    func search(_ query: String, in chatIDs: Set<String>? = nil) async throws -> [String: ChatSearchHit] {
         let mine = lock.withLock { generation }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in
-                    continuation.resume(with: Result { try self.run(query, generation: mine) })
+                    continuation.resume(with: Result { try self.run(query, chatIDs: chatIDs, generation: mine) })
                 }
             }
         } onCancel: { [weak self] in self?.cancel() }
@@ -642,7 +642,7 @@ final class ChatSearchQuery: @unchecked Sendable {
         return handle
     }
 
-    private func run(_ query: String, generation mine: Int) throws -> [String: ChatSearchHit] {
+    private func run(_ query: String, chatIDs: Set<String>?, generation mine: Int) throws -> [String: ChatSearchHit] {
         lock.lock(); running = mine; let current = generation == mine; lock.unlock()
         guard current else { throw CancellationError() }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
@@ -657,16 +657,20 @@ final class ChatSearchQuery: @unchecked Sendable {
         // text before its tool inputs, as they were written. Ranked by id
         // alone, and only the winners' text read: a common word in long
         // histories matches thousands of large pieces.
+        let ids = chatIDs.map { Array($0.sorted().prefix(SidebarAskPlan.candidateLimit)) }
+        if ids?.isEmpty == true { return [:] }
+        let scope = ids.map { " AND m.chat IN (" + Array(repeating: "?", count: $0.count).joined(separator: ",") + ")" } ?? ""
         var statement: OpaquePointer?
         let sql = """
             SELECT c.chat, c.msg, c.call, c.kind, c.pos, c.text FROM content c JOIN (
                 SELECT id FROM (SELECT m.id AS id, ROW_NUMBER() OVER (PARTITION BY m.chat ORDER BY m.pos DESC, m.id ASC) AS n
-                                FROM docs JOIN content m ON m.id = docs.rowid WHERE docs MATCH ?) WHERE n = 1
+                                FROM docs JOIN content m ON m.id = docs.rowid WHERE docs MATCH ?\(scope)) WHERE n = 1
             ) winner ON c.id = winner.id
             """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
         ChatSearchDatabase.bind(statement, 1, ChatSearchDatabase.phrase(needle))
+        for (offset, id) in (ids ?? []).enumerated() { ChatSearchDatabase.bind(statement, Int32(offset + 2), id) }
         var hits: [String: ChatSearchHit] = [:]
         while true {
             let status = sqlite3_step(statement)

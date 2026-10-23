@@ -1,6 +1,6 @@
 # Background requests
 
-The app asks a connection's mini model for four things on its own:
+The app asks a connection's mini model for five things on its own:
 
 - **Chat titles.** A new chat's title is written from its first message.
 - **Title suggestions.** The Rename sheet asks for three titles.
@@ -12,6 +12,11 @@ The app asks a connection's mini model for four things on its own:
   on the chat, or Write Briefs in Settings for every chat without one, one
   at a time). Settings shows what brief requests came to today and over the
   last 30 days (`apps/macos/PiApp/Workspaces/WorkspaceChatBriefs.swift`).
+- **Ask chats** (0.1.131). Return in sidebar search's Ask mode ranks a bounded
+  list of titles, briefs and details. Each connection sees only its own
+  candidates; each partition is a separate `chat-ask` request, counted in
+  Usage. Transcript snippets are found locally, after the ranking. Cancel,
+  editing the question or changing search mode stops the request.
 
 Each runs in a chat of its own outside every project, with its own journal,
 captured requests and billing. The Background requests page lists them all.
@@ -40,7 +45,7 @@ on the page if it was open.
 ## The list
 
 Requests are listed newest first. The filter shows All, Chat titles, Title
-suggestions, Webhooks or Chat briefs. The header counts the requests shown, how many are
+suggestions, Webhooks, Chat briefs or Ask chats. The header counts the requests shown, how many are
 running and how many failed, with their reported tokens and cost.
 
 Each row shows two lines:

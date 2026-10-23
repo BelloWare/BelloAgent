@@ -9,14 +9,19 @@ import Combine
 
 @MainActor final class SidebarSearch {
     enum Scope: CaseIterable {
-        case titlesAndDetails, fullChats
-        var title: String { self == .titlesAndDetails ? "Titles & details" : "Full chats" }
-        var placeholder: String { self == .titlesAndDetails ? "Search titles and details" : "Search chats and messages" }
+        case titlesAndDetails, fullChats, ask
+        var title: String {
+            switch self { case .titlesAndDetails: "Titles & details"; case .fullChats: "Full chats"; case .ask: "Ask" }
+        }
+        var placeholder: String {
+            switch self { case .titlesAndDetails: "Search titles and details"; case .fullChats: "Search chats and messages"; case .ask: "Ask about a chat · Return to ask" }
+        }
     }
     private(set) var scope: Scope = .titlesAndDetails
     private weak var model: WorkspaceModel?
     let index: ChatSearchIndex
     let reader: ChatSearchQuery
+    let askChats: SidebarAsk
     /// What the field holds, whitespace collapsed: titles are filtered by it
     /// at once, content once the index answers.
     private(set) var query = ""
@@ -65,6 +70,11 @@ import Combine
         let url = model.root.appendingPathComponent(ChatSearchDatabase.fileName)
         index = ChatSearchIndex(url: url)
         reader = ChatSearchQuery(url: url)
+        askChats = SidebarAsk(model: model)
+        askChats.changed = { [weak self] in
+            self?.model?.sidebarIndex.invalidate()
+            self?.changed?()
+        }
     }
 
     /// The sidebar is up: keep the index current from now on.
@@ -73,6 +83,12 @@ import Combine
         known = Set(model.chats.map(\.id))
         watches.append(model.$chats.dropFirst().sink { [weak self] chats in MainActor.assumeIsolated { self?.chatsChanged(chats) } })
         watches.append(model.activityChanged.sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleReconcile() } })
+        watches.append(model.$configuration.map(\.briefSettings).removeDuplicates().dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.scope == .ask else { return }
+                self.askChats.reset(); self.changed?()
+            }
+        })
         if Self.startsAutomatically, !indexing {
             settleTask = Task { [weak self] in
                 try? await Task.sleep(for: Self.launchDelay)
@@ -100,6 +116,7 @@ import Combine
 
     func shutdown() {
         stopped = true
+        askChats.reset()
         watches.removeAll()
         worker?.cancel()
         revealing?.cancel(); revealing = nil
@@ -133,6 +150,7 @@ import Combine
 
     private func updateContentQuery(from old: String) {
         let new = query
+        askChats.reset()
         model?.sidebarIndex.invalidate()
         heldHits = nil   // the reader's own query: what an older one found is not waited for
         answerTyped = true
@@ -198,7 +216,14 @@ import Combine
     }
 
     /// The match a listed chat shows and opens at, while the field asks for one.
-    func hit(for chatID: String) -> ChatSearchHit? { scope == .fullChats ? hits[chatID] : nil }
+    func hit(for chatID: String) -> ChatSearchHit? {
+        switch scope { case .titlesAndDetails: nil; case .fullChats: hits[chatID]; case .ask: askChats.hits[chatID] }
+    }
+    /// Return in Ask sends the question. Typing never calls this.
+    func submit() {
+        if scope == .ask { askChats.start(query) }
+        else { model?.openFirstSidebarResult() }
+    }
 
     /// Waits for the current query's answer (tests).
     func settleQuery() async { await queryTask?.value }
@@ -384,19 +409,26 @@ struct SidebarSearchSnippetState: Equatable {
     var highlight: NSRange
     /// Where the row's title starts, so the snippet lines up under it.
     var indent: CGFloat
+    var isReason = false
 
+    init(chat: ChatRecord, reason: String, indent: CGFloat) {
+        chatID = chat.id; title = chat.displayTitle; kind = .assistant; excerpt = reason
+        highlight = NSRange(location: 0, length: 0); self.indent = indent; isReason = true
+    }
     init(chat: ChatRecord, hit: ChatSearchHit, indent: CGFloat) {
         chatID = chat.id; title = chat.displayTitle; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
     }
     var symbol: String {
-        switch kind {
+        if isReason { return "sparkle" }
+        return switch kind {
         case .user: "person"
         case .assistant: "sparkle"
         case .toolInput, .toolOutput: "wrench.and.screwdriver"
         }
     }
     var role: String {
-        switch kind {
+        if isReason { return "Why this chat" }
+        return switch kind {
         case .user: "Your message"
         case .assistant: "Reply"
         case .toolInput: "Tool input"
@@ -439,6 +471,7 @@ struct SidebarSearchSnippetState: Equatable {
     /// with hundreds of matches re-measures every snippet on each key.
     private static let captionLine = PiKit.Line("Ag", font: PiKit.Font.caption, color: .black).lineHeight
     static func height(of state: SidebarSearchSnippetState, width: CGFloat) -> CGFloat {
+        if state.isReason { return captionLine + SnippetPress.vertical * 2 }
         let textWidth = max(0, width - state.indent - SnippetPress.leading - SnippetPress.trailing)
         let line = captionLine
         // No caption glyph is narrower than this: past twice the width's worth, it wraps.
@@ -485,11 +518,12 @@ struct SidebarSearchSnippetState: Equatable {
                 runs.append(.init(text: source.substring(with: match), color: .piAccent, weight: .semibold))
                 if NSMaxRange(match) < source.length { runs.append(.init(text: source.substring(from: NSMaxRange(match)), color: .piInkSecondary)) }
             } else { runs = [.init(text: state.excerpt, color: .piInkSecondary)] }
+            text.maximumLines = state.isReason ? 1 : 2
             text.runs = runs
             shownText = state.excerpt
             setAccessibilityLabel(state.spoken)
-            setAccessibilityHelp("Opens the chat at this message")
-            setAccessibilityIdentifier("sidebarSearchSnippet-" + state.chatID)
+            setAccessibilityHelp(state.isReason ? "Opens this chat" : "Opens the chat at this message")
+            setAccessibilityIdentifier((state.isReason ? "sidebarAskReason-" : "sidebarSearchSnippet-") + state.chatID)
             needsLayout = true
         }
         private func textWidth(_ width: CGFloat) -> CGFloat { max(0, width - Self.leading - Self.trailing) }

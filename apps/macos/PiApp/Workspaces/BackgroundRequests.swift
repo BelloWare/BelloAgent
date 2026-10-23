@@ -10,10 +10,10 @@ import Foundation
 
 /// What a background request was for, from its chat's `backgroundTask`.
 enum BackgroundRequestKind: Hashable, Sendable {
-    case title, suggestions, webhook, brief
+    case title, suggestions, webhook, brief, ask
     /// A kind this build does not know, written by a newer one: still listed.
     case other(String)
-    init(_ raw: String) { self = [Self.title, .suggestions, .webhook, .brief].first { $0.raw == raw } ?? .other(raw) }
+    init(_ raw: String) { self = [Self.title, .suggestions, .webhook, .brief, .ask].first { $0.raw == raw } ?? .other(raw) }
     /// The kind as a chat record's `backgroundTask` says it, and as the
     /// helper names the utility request it opens (`WorkspaceHosts.open`).
     var raw: String {
@@ -22,6 +22,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .suggestions: return "title-suggestions"
         case .webhook: return "webhook"
         case .brief: return "chat-brief"
+        case .ask: return "chat-ask"
         case .other(let raw): return raw
         }
     }
@@ -31,6 +32,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .suggestions: return "Title suggestions"
         case .webhook: return "Webhook"
         case .brief: return "Chat brief"
+        case .ask: return "Ask chats"
         case .other(let raw): return raw
         }
     }
@@ -40,6 +42,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .suggestions: return "text.badge.plus"
         case .webhook: return "bell"
         case .brief: return "text.magnifyingglass"
+        case .ask: return "magnifyingglass"
         case .other: return "sparkles"
         }
     }
@@ -47,7 +50,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
 
 /// The page's filter: every request, or one kind.
 enum BackgroundRequestFilter: String, CaseIterable, Hashable, Sendable {
-    case all, titles, suggestions, webhooks, briefs
+    case all, titles, suggestions, webhooks, briefs, asks
     var title: String {
         switch self {
         case .all: return "All"
@@ -55,6 +58,7 @@ enum BackgroundRequestFilter: String, CaseIterable, Hashable, Sendable {
         case .suggestions: return "Title suggestions"
         case .webhooks: return "Webhooks"
         case .briefs: return "Chat briefs"
+        case .asks: return "Ask chats"
         }
     }
     func includes(_ kind: BackgroundRequestKind) -> Bool {
@@ -64,6 +68,7 @@ enum BackgroundRequestFilter: String, CaseIterable, Hashable, Sendable {
         case .suggestions: return kind == .suggestions
         case .webhooks: return kind == .webhook
         case .briefs: return kind == .brief
+        case .asks: return kind == .ask
         }
     }
 }
@@ -129,6 +134,8 @@ enum BackgroundRequests {
             let titles = TitleGenerationPlan.titles(from: messages, limit: 3)
             return titles.isEmpty ? nil : titles.joined(separator: "\n")
         case .brief: return ChatBriefPlan.result(from: messages)
+        case .ask:
+            return messages.last { $0.role == "assistant" && $0.kind == nil }?.text
         case .webhook, .other:
             guard let reply = messages.last(where: { $0.role == "assistant" && $0.kind == nil })?.text else { return nil }
             return webhookResult(reply: reply, names: nil)
