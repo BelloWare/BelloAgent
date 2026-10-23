@@ -282,6 +282,8 @@ actor HistoryReader {
         var versions = MessageVersionLedger(), olderRows = 0
     }
     private var indexes: [String: Index] = [:]
+    /// Test seam: the journals this reader holds an index for.
+    var indexedPaths: Set<String> { Set(indexes.keys) }
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
     // Offsets and parent links only; no history bodies.

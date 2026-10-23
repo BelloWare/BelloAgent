@@ -131,6 +131,13 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { retry ?? RetryPreferences() }
         set { retry = newValue }
     }
+    /// Chat briefs (`WorkspaceChatBriefs.swift`); absent until the reader
+    /// changes them, which leaves them on.
+    var chatBriefs: ChatBriefSettings?
+    var briefSettings: ChatBriefSettings {
+        get { chatBriefs ?? ChatBriefSettings() }
+        set { chatBriefs = newValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.

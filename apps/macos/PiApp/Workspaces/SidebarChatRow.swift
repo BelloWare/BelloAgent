@@ -38,6 +38,12 @@ struct SidebarChatRowState: Equatable {
     var recency: Int?
     /// The chat's saved draft holds something unsent (`WorkspaceDraftMarks.swift`).
     var hasDraft = false
+    /// The chat's brief, which its hover card shows; nil while briefs are
+    /// off (`WorkspaceChatBriefs.swift`).
+    var brief: ChatBrief?
+    /// The chat can have a brief and briefs are on: its hover card shows
+    /// the brief, or offers Write Brief, in place of the tooltip.
+    var offersBrief = false
     /// Tags are present only in the combined Flat list.
     var projectTag: String?
     /// Full group identity for help and VoiceOver when the caption is shorter.
@@ -203,6 +209,8 @@ extension WorkspaceModel {
                 heldRun: chat.isSubagent || chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
                 hasDraft: showsDraftMark(chat.id),
+                brief: sidebarBrief(chat),
+                offersBrief: offersBrief(chat),
                 projectTag: projectTags[chat.workspaceID]?.title,
                 projectTagFullName: projectTags[chat.workspaceID]?.fullName,
                 choosesProject: choosesProject && projectTags[chat.workspaceID] != nil,

@@ -387,7 +387,7 @@ public actor NativeHostService {
     }
     /// The background tasks a chat can be opened for, each a utility request
     /// (`AgentSession.titleTask`), and the purpose each is logged under.
-    static let utilityPurposes = ["session-title": "title", "title-suggestions": "title-suggestions", "webhook": "webhook"]
+    static let utilityPurposes = ["session-title": "title", "title-suggestions": "title-suggestions", "webhook": "webhook", "chat-brief": "chat-brief"]
     /// The open workspace, as the commands that need one see it.
     private struct OpenWorkspace { let cwd: URL, directory: URL, resources: Resources, mcp: MCPManager, nativeTools: NativeTools }
     /// Commands a host that is not closing answers without a workspace.
@@ -513,8 +513,9 @@ public actor NativeHostService {
                 }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
-                // Utility requests: a chat's title, titles to choose from, or a
-                // webhook's notification, by the purpose the request log names.
+                // Utility requests: a chat's title, titles to choose from, a
+                // webhook's notification or a chat's brief, by the purpose the
+                // request log names.
                 let background = params["backgroundTask"].text.flatMap { Self.utilityPurposes[$0] }
                 let utility = background ?? "title", titleTask = background != nil
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }

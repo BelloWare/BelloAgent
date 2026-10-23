@@ -1450,6 +1450,16 @@ actor MetadataStore {
         try put(source, kind: "chat", id: source.id)
         return source
     }
+    /// A chat's new brief (`WorkspaceChatBriefs.swift`), written onto the
+    /// record the store holds now and nothing else of it. One older than the
+    /// brief already held is not written; a chat that is gone gets none.
+    func applyChatBrief(_ brief: ChatBrief, chatID: String) throws -> ChatRecord? {
+        guard var chat = try get(ChatRecord.self, kind: "chat", id: chatID), !chat.isBackgroundTask,
+              brief.at >= (chat.brief?.at ?? .distantPast) else { return nil }
+        chat.brief = brief
+        try put(chat, kind: "chat", id: chatID)
+        return chat
+    }
 }
 
 struct WorkspaceRecord: Codable, Sendable, Identifiable, Hashable {
@@ -1500,6 +1510,10 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var titleWasEdited: Bool?
     var titleWasGenerated: Bool?
     var titleTaskSessionID: String?
+    /// The mini model's brief of the chat and its keywords (`ChatBriefPlan.swift`):
+    /// app metadata for sidebar search and the row's hover card, never part
+    /// of the conversation. Only `MetadataStore.applyChatBrief` writes it.
+    var brief: ChatBrief?
     /// A retained utility job has its own journal, capture and billing scope.
     var backgroundTask: String?
     var sourceSessionID: String?
@@ -1618,6 +1632,8 @@ extension ChatRecord {
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt); archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
         titleWasEdited = try c.decodeIfPresent(Bool.self, forKey: .titleWasEdited); titleWasGenerated = try c.decodeIfPresent(Bool.self, forKey: .titleWasGenerated)
         titleTaskSessionID = try c.decodeIfPresent(String.self, forKey: .titleTaskSessionID)
+        // A brief this build cannot read is no brief, never an unreadable chat.
+        brief = (try? c.decodeIfPresent(ChatBrief.self, forKey: .brief)) ?? nil
         backgroundTask = try c.decodeIfPresent(String.self, forKey: .backgroundTask); sourceSessionID = try c.decodeIfPresent(String.self, forKey: .sourceSessionID)
         backgroundTaskNotice = try c.decodeIfPresent(String.self, forKey: .backgroundTaskNotice)
         backgroundTaskStartedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskStartedAt); backgroundTaskEndedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskEndedAt)
