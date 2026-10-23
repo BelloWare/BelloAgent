@@ -123,6 +123,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The read that brings such rows up to date while the chat is still out
     /// of sight (`WorkspaceModel.catchUpFinishedRows`).
     var finishedRowsRead: Task<Void, Never>?
+    /// A status asked for that read while one was under way: the chat is
+    /// looked at again once it is done.
+    var finishedRowsAgain = false
     /// The helper's revision of this chat's rows, as its last snapshot gave
     /// it: also for a chat out of sight, which is sent its status, not its rows.
     var helperDisplayRevision: String?

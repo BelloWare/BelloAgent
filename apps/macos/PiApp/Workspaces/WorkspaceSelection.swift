@@ -221,12 +221,19 @@ extension WorkspaceModel {
     /// to the chat being opened, or running again, before it lands; a run
     /// that has come and gone meanwhile sends it back for the newer page.
     func catchUpFinishedRows(_ id: String) {
-        guard catchesUpFinishedRows, let view = displays[id], view.finishedRowsRead == nil, view.hasPresentedRows, view.heldRowsOutlived, !view.browsingHistory,
+        guard catchesUpFinishedRows, let view = displays[id] else { return }
+        // Asked while a read, or the scan after it, is under way (another run
+        // ended meanwhile, say): the chat is looked at again once it is done.
+        guard view.finishedRowsRead == nil else { view.finishedRowsAgain = true; return }
+        guard view.hasPresentedRows, view.heldRowsOutlived, !view.browsingHistory,
               !receivesRows(id), let item = record(id), !item.isSubagent, !item.isBackgroundTask else { return }
         let generation = view.presentation.readGeneration
         view.finishedRowsRead = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            defer { view.finishedRowsRead = nil }
+            defer {
+                view.finishedRowsRead = nil
+                if view.finishedRowsAgain { view.finishedRowsAgain = false; self.catchUpFinishedRows(id) }
+            }
             @MainActor func current() -> Bool {
                 !Task.isCancelled && !self.isShutDown && self.displays[id] === view && view.presentation.readGeneration == generation
                     && view.heldRowsOutlived && !self.receivesRows(id) && self.record(id)?.path == item.path
@@ -282,7 +289,7 @@ extension WorkspaceModel {
     /// Whether the snapshot loop brings this chat its rows (`refresh`): the
     /// chat selected, its side beside it, a sub-agent's tab on screen. Any
     /// other chat is asked for its status alone.
-    private func receivesRows(_ id: String) -> Bool { id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id) }
+    func receivesRows(_ id: String) -> Bool { id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id) }
     /// Reads the opened chat's saved draft and place, then its page, and shows
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.

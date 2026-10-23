@@ -289,11 +289,17 @@ final class FinishedRowsCatchUpTests: XCTestCase {
     @MainActor private func status(_ state: String, seq: Int, revision: String, of view: SessionDisplay, in model: WorkspaceModel,
                                    host: (host: HostSupervisor, commands: Commands)) async throws {
         model.refresh(view.id)
+        try await answer(state, seq: seq, revision: revision, of: view, host: host)
+    }
+    /// Answers whatever the snapshot loop has asked for the chat, its status
+    /// or its snapshot, with `state` and `revision`, until it asks no more.
+    @MainActor private func answer(_ state: String, seq: Int, revision: String, of view: SessionDisplay,
+                                   host: (host: HostSupervisor, commands: Commands)) async throws {
         var quiet = 0
         while quiet < 10 {
             if host.commands.answered < host.commands.frames.count {
                 let frame = host.commands.frames[host.commands.answered]; host.commands.answered += 1
-                let result: WireValue = frame["method"]?.string == "session.status"
+                let result: WireValue = ["session.status", "session.snapshot"].contains(frame["method"]?.string ?? "")
                     ? .object(["sessionId": .string(view.id), "seq": .number(Double(seq)), "state": .string(state), "runStatus": .string(state),
                                "displayRevision": .string(revision), "queue": .array([]), "queueCount": .number(0)])
                     : .object([:])
@@ -302,6 +308,14 @@ final class FinishedRowsCatchUpTests: XCTestCase {
                                   connectionID: try XCTUnwrap(host.host.connectionID))
                 quiet = 0
             } else if view.snapshotInFlight { quiet = 0 } else { quiet += 1 }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+    }
+    /// Waits for what a seam reports, failing after ten seconds.
+    @MainActor private func until(_ what: String, _ condition: () -> Bool) async throws {
+        let start = ProcessInfo.processInfo.systemUptime
+        while !condition() {
+            guard ProcessInfo.processInfo.systemUptime - start < 10 else { return XCTFail(what) }
             try await Task.sleep(for: .milliseconds(2))
         }
     }
@@ -342,6 +356,64 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         XCTAssertEqual(view.presentedMessages.map(\.id), ["q", "r", "q2", "r2"], "opened, it is on that page at once")
         XCTAssertFalse(ConversationPaneView.coversTranscript(view))
         await opening.value
+    }
+
+    /// Another run that ends while the journal scan after a read is under
+    /// way asks for the chat to be read again, and it is, once the scan is
+    /// done. Before, that ask came while the read still held its place and
+    /// was dropped: with no later event, the chat kept the older page, and
+    /// opened covered (review, round 4).
+    @MainActor func testARunThatEndsDuringTheScanReadsTheChatAgainOnceItIsDone() async throws {
+        let afterBoth = Self.finishedPage + [(id: "q2", role: "user", text: "And a short one"), (id: "r2", role: "assistant", text: "A short answer.")]
+        let journal = try self.journal("finished", turns: 20, replyBytes: 200)
+        let reads = Reads(), model = try await model(reads, laterReads: afterBoth, journal: journal)
+        let gate = ScanGate(journal)
+        HistoryReader.planScanStarting = { gate.enter($0) }
+        addTeardownBlock { HistoryReader.planScanStarting = nil; gate.release() }
+        let view = leftWhileArriving(model)
+        view.state = "running"
+        model.opened.insert(view.id)
+        let host = try await answeringHost(model)
+        // The run ends out of sight: its page is read and held, and the
+        // journal scan after it is held open.
+        try await status("idle", seq: 5, revision: "epoch:5", of: view, in: model, host: host)
+        let first = try XCTUnwrap(view.finishedRowsRead)
+        try await until("the journal scan began") { gate.hasEntered }
+        XCTAssertEqual(view.messages.map(\.id), ["q", "r"])
+        // Another run comes and goes while the scan is under way.
+        try await status("running", seq: 6, revision: "epoch:6", of: view, in: model, host: host)
+        try await status("idle", seq: 9, revision: "epoch:9", of: view, in: model, host: host)
+        gate.release()
+        await first.value
+        if let again = view.finishedRowsRead { await again.value }
+        XCTAssertEqual(view.messages.map(\.id), ["q", "r", "q2", "r2"], "the chat is read again once the scan is done")
+        XCTAssertFalse(view.heldRowsOutlived)
+        let count = await reads.count("finished")
+        XCTAssertEqual(count, 2)
+    }
+
+    /// The snapshot that says a run has ended can be asked for while its chat
+    /// is shown and arrive after the reader has left it. That end comes out of
+    /// sight, and counts as a use of the chat. Before, whether the chat was
+    /// shown was taken when the snapshot was asked for: the end was not
+    /// counted, no later status could count it, and the chats the reader
+    /// opened next could let go of it, finished rows and all (review, round 4).
+    @MainActor func testARunEndThatArrivesAfterTheReaderLeftCountsAsAUse() async throws {
+        let reads = Reads(), model = try await model(reads)
+        await model.select("finished")
+        let view = try XCTUnwrap(model.displays["finished"])
+        view.state = "running"
+        model.opened.insert(view.id)
+        let host = try await answeringHost(model)
+        // Asked for while the chat is shown...
+        model.refresh(view.id)
+        try await until("the snapshot was asked for") { host.commands.frames.count > host.commands.answered }
+        XCTAssertEqual(host.commands.frames.last?["method"]?.string, "session.snapshot")
+        // ...and answered, with the run's end, once the reader has left it.
+        await model.select("shown")
+        try await answer("idle", seq: 5, revision: "epoch:5", of: view, host: host)
+        XCTAssertFalse(view.busy)
+        XCTAssertTrue(model.displays.values.max { $0.used < $1.used } === view, "the run's end counts as a use: the chat is the one used last")
     }
 
     /// The chat on screen gets its rows from the snapshot loop, and a chat

@@ -365,3 +365,46 @@ The classes are the ones the round reaches: the catch-up and its seams, the
 plan scan, the snapshot loop (the revision is read from every snapshot, and a
 snapshot's rows clear the held revision), and the opening, whose fallback now
 also covers rows read out of sight that the helper's rows have moved past.
+
+## Round 4 — 2026-10-23: review of `6509c02a`
+
+Two P2 timing races, both confirmed and fixed; the tests hold each race open
+with seams, not sleeps.
+
+- **A run that ended during the journal scan was not read.** The read keeps
+  its place (`finishedRowsRead`) until the scan after it is done, so a status
+  saying that another run had ended, arriving meanwhile, was dropped by the
+  read's own guard, and the read ended without looking at the chat again.
+  With no later event the chat kept the older page, which an opening then
+  discards (round 3's rule) and opens covered. Now an ask that comes while a
+  read is under way is noted (`finishedRowsAgain`), and as the read ends the
+  chat is looked at again, by the same rules as any status: read again if its
+  rows are outlived, else left as it is. Only an ask that came meanwhile does
+  this, so a read that fails is retried at most once per status.
+- **A run's end taken as seen when the reader had already left.** The snapshot
+  loop decided whether a chat was on screen when it asked for the snapshot,
+  so a run's end asked for while the chat was shown, and arriving after the
+  reader had left it, was not counted as a use (round 2), and no later status
+  could count it (the chat was no longer running). Whether the chat is on
+  screen is now taken when the answer is applied (`receivesRows`, no longer
+  private), for the use and for the read as the run ends.
+
+Tests, `FinishedRowsCatchUpTests` (11 now), on the real snapshot loop with a
+helper whose commands the test answers:
+
+- `testARunThatEndsDuringTheScanReadsTheChatAgainOnceItIsDone`: the run ends
+  (revision 5), its page is held, and the journal scan after it is held open
+  (`planScanStarting`); another run comes (6) and goes (9); released, the
+  chat is read again and holds the page after both runs.
+- `testARunEndThatArrivesAfterTheReaderLeftCountsAsAUse`: the snapshot is
+  asked for while the chat is shown, the reader opens another chat, and the
+  answer says the run has ended: the chat is the one used last.
+- **Failing first** on `6509c02a`'s code (`debug-r4-before.log`, 2 tests, 4
+  failures): the chat kept the older page `[q, r]` (read once, still
+  outlived), and the other chat stayed the one used last. Each test fails
+  only through its own fix, so that run is also each fix's mutation check.
+
+Validation of the round (Debug, final code): FinishedRowsCatchUpTests 11 and
+WorkspaceDisplayMemoryTests 2 passed (`debug-r4-parallel.log`);
+ChatOpenPlacementTests 7 and WorkspaceRefreshLifecycleTests 38 passed under the
+lock (`debug-r4-serial.log`).
