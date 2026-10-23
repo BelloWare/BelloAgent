@@ -30,10 +30,13 @@ enum TranscriptPaging {
     static func joins(_ shown: [TranscriptMessage], follows: String?) -> Bool {
         follows != nil && shown.last?.id == follows
     }
+    /// What a row weighs in the resident window (`HistoryWindowPolicy.residentWeight`,
+    /// the measure the helper fills its pages within too).
     static func size(_ message: TranscriptMessage) -> Int {
         let tools = (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count }
-        let timeline = message.responseTimeline?.segments.reduce(0) { $0 + $1.text.utf8.count + 512 } ?? 0
-        return message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + tools + timeline + 512
+        let segments = message.responseTimeline?.segments ?? []
+        return HistoryWindowPolicy.residentWeight(text: message.text.utf8.count, thinking: message.thinking?.utf8.count ?? 0, toolBytes: tools,
+                                                  segmentBytes: segments.reduce(0) { $0 + $1.text.utf8.count }, segments: segments.count)
     }
     /// Whether a row opens a display turn (`HistoryWindowPolicy.startsTurn`),
     /// exactly as the transcript's fold counts turns: where the window may
@@ -97,15 +100,23 @@ enum TranscriptPaging {
     /// ones on the other side and of the farthest ones of the requested
     /// side. Turns too long for the caps keep just the kept rows, and a turn
     /// too long for them toward the requested side gives the rows of it
-    /// nearest the kept ones that there is still room for. Nil when the kept
-    /// rows alone pass a cap.
-    static func window(_ messages: [TranscriptMessage], keeping: Set<String>, keepingEarlier: Bool) -> [TranscriptMessage]? {
+    /// nearest the kept ones that there is still room for. `firstContinues`,
+    /// `lastContinues`: `messages` begin or end inside a turn that goes on
+    /// past them. Nil when the kept rows alone pass a cap.
+    static func window(_ messages: [TranscriptMessage], keeping: Set<String>, keepingEarlier: Bool,
+                       firstContinues: Bool = false, lastContinues: Bool = false) -> [TranscriptMessage]? {
         let indices = messages.indices.filter { keeping.contains(messages[$0].id) }
         guard let low = indices.first, let high = indices.last else { return window(messages, keepingEarlier: keepingEarlier) }
         let caps = residentCaps
         func measure(_ range: Range<Int>) -> (rows: Int, bytes: Int) { (range.count, range.reduce(0) { $0 + size(messages[$1]) }) }
-        // Whether the window could hold `turn` whole on its own.
+        // Whether the window could hold `turn` whole on its own. A piece of a
+        // turn that goes on past these rows — a page or the window held a
+        // capped piece of it (`firstContinues`, `lastContinues`) — is not the
+        // whole turn, however few its rows: that turn is too long for the
+        // window, or the page would have held it whole.
         func fitsAlone(_ turn: Range<Int>) -> Bool {
+            if turn.lowerBound == 0, firstContinues, let first = messages.first, !startsTurn(first) { return false }
+            if turn.upperBound == messages.count, lastContinues { return false }
             let whole = measure(turn); return whole.rows <= caps.rows && (whole.bytes <= caps.bytes || whole.rows == 1)
         }
         var start = turnStart(low, in: messages), end = turnEnd(high, in: messages)

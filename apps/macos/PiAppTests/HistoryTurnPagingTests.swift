@@ -245,4 +245,48 @@ final class HistoryTurnPagingTests: XCTestCase {
         XCTAssertEqual(view.newerPage.cursor?.entry, ids[2 * reach - 11]); XCTAssertEqual(view.presentation.partialTurnInput, "q0")
         model.shutdown(); await model.store?.close()
     }
+
+    /// A short turn on screen beside a turn too long for the window: the
+    /// page read toward the long one holds a capped piece of it, no longer
+    /// than the window, which the window took for a whole turn that would fit
+    /// on its own. It waited for room it would never have, the read added
+    /// nothing and was refused, in either direction (0.1.131 review). The
+    /// window takes the rows of the piece there is room for.
+    @MainActor func testAReadOfACappedPieceBesideTheTurnOnScreenAddsRows() async throws {
+        let reach = HistoryWindowPolicy.residentRows
+        func question(_ id: String) -> (String, [String: WireValue]) { (id, ["role": .string("user"), "content": .string("Question \(id)")]) }
+        func step(_ id: String) -> (String, [String: WireValue]) { (id, ["role": .string("assistant"), "content": .string("Step \(id).")]) }
+        let long = [question("q0")] + (1..<(2 * reach)).map { step("a\($0)") }, short = [question("q1")] + (1..<50).map { step("b\($0)") }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("capped-piece-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = makeWorkspaceModel(stateRoot: root)
+        // Earlier: the long turn, then the short one, open at its newest page.
+        let before = try write(long + short, name: "long-then-short")
+        model.chats = [ChatRecord(id: "earlier", workspaceID: "workspace", title: "Earlier", path: before.path, profileID: "profile")]
+        await model.select("earlier")
+        let view = try XCTUnwrap(model.selected)
+        XCTAssertEqual(view.messages.map(\.id), short.map(\.0))
+        model.historyViewportReady(view.id, generation: view.presentationGeneration)
+        let shown = Set(view.messages.map(\.id))
+        view.visibleMessageIDs = { shown }
+        let earlier = await model.loadHistoryPage(view.id, newer: false, automatic: true)
+        XCTAssertTrue(earlier, "The earlier read adds rows")
+        XCTAssertEqual(view.messages.map(\.id), long.suffix(reach - short.count).map(\.0) + short.map(\.0))
+        XCTAssertEqual(view.presentation.partialTurnInput, "q0"); XCTAssertEqual(view.olderPage.cursor?.entry, view.messages.first?.id)
+        // Newer: the short turn, then the long one, open at the short one.
+        let after = try write(short + long, name: "short-then-long")
+        model.chats.append(ChatRecord(id: "newer", workspaceID: "workspace", title: "Newer", path: after.path, profileID: "profile"))
+        await model.select("newer")
+        let reader = try XCTUnwrap(model.selected)
+        model.reloadHistory(reader.id, around: "q1"); await reader.presentation.navigation?.value
+        XCTAssertEqual(reader.messages.map(\.id), short.map(\.0))
+        model.historyViewportReady(reader.id, generation: reader.presentationGeneration)
+        let top = Set(reader.messages.map(\.id))
+        reader.visibleMessageIDs = { top }
+        let newer = await model.loadHistoryPage(reader.id, newer: true, automatic: true)
+        XCTAssertTrue(newer, "The newer read adds rows")
+        XCTAssertEqual(reader.messages.map(\.id), short.map(\.0) + long.prefix(reach - short.count).map(\.0))
+        XCTAssertEqual(reader.newerPage.cursor?.entry, reader.messages.last?.id); XCTAssertNil(reader.presentation.partialTurnInput)
+        model.shutdown(); await model.store?.close()
+    }
 }

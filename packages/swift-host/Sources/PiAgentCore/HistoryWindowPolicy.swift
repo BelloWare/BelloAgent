@@ -38,6 +38,17 @@ public enum HistoryWindowPolicy {
     public static let residentBytes = 6_000_000
     public static let automaticFills = 2
 
+    /// What one display row weighs in the app's resident window
+    /// (`TranscriptPaging.size`): its text and reasoning, its tools' inputs
+    /// and outputs, each timeline segment's text and 512, and 512 more. Both
+    /// readers fill a page within the larger of this and its rows' encoded
+    /// bytes, so a page fits the window it is shown in: a page that fitted as
+    /// encoded passed the window, which then let go of its first turn's
+    /// question and unfolded it.
+    public static func residentWeight(text: Int, thinking: Int, toolBytes: Int, segmentBytes: Int, segments: Int) -> Int {
+        text + thinking + toolBytes + segmentBytes + 512 * segments + 512
+    }
+
     /// What a history page may hold: whole turns, as many as fit in `rows`
     /// rows and `bytes` bytes, and its first turn alone up to `turnRows` and
     /// `turnBytes`, past which a turn is cut.

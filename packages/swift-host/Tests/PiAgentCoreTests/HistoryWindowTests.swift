@@ -325,6 +325,37 @@ final class HistoryWindowTests: HelperTestCase {
         XCTAssertLessThan(try snapshot.data().count, HistoryWindowPolicy.envelopeBytes)
     }
 
+    /// A page fits the app's window as the app weighs a row
+    /// (`TranscriptPaging.size`: its text, reasoning, tool inputs and outputs,
+    /// each timeline segment's text and 512, and 512 more), not only as its
+    /// wire encoding does. A question and three hundred replies of 9,700
+    /// characters encode in 5.97 MB but weigh 6.13 MB in the window, past its
+    /// 6 MB: the page held the whole turn, and the app's window let go of its
+    /// question and unfolded it (0.1.131 review). Too heavy for the window,
+    /// the turn reads as the cut turn it is.
+    func testAPageFitsTheAppsWindowAsTheAppWeighsItsRows() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var question = ChatMessage(role: "user", content: [textBlock("Write it all out.")]); question.id = "q"
+        var rows = [question]
+        for index in 0..<300 {
+            var reply = ChatMessage(role: "assistant", content: [textBlock(String(repeating: "a", count: 9_700))]); reply.id = "r\(index)"
+            rows.append(reply)
+        }
+        let session = try AgentSession(id: "weights", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let page = try await session.historyWindow([:])
+        // As `TranscriptPaging.size` weighs a row.
+        func resident(_ row: JSON) -> Int {
+            let tools = row["tools"].list.reduce(0) { $0 + ($1["input"].text?.utf8.count ?? 0) + ($1["output"].text?.utf8.count ?? 0) }
+            let segments = row["responseTimeline"]["segments"].list.reduce(0) { $0 + ($1["text"].text?.utf8.count ?? 0) + 512 }
+            return (row["text"].text?.utf8.count ?? 0) + (row["thinking"].text?.utf8.count ?? 0) + tools + segments + 512
+        }
+        let bytes = page["messages"].list.reduce(0) { $0 + resident($1) }
+        XCTAssertLessThanOrEqual(bytes, HistoryWindowPolicy.residentBytes, "The page weighs \(bytes) bytes in the app's window")
+        XCTAssertEqual(page["partialTurnInput"].text, "q", "The turn is too heavy for the window: the page holds its newest rows")
+    }
+
     /// A chat reopened from its metadata file loads the rows after its last
     /// compaction, which can begin inside a turn: one the compaction split,
     /// its question among the rows not loaded. The newest page starts at the

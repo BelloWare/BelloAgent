@@ -815,6 +815,32 @@ final class TranscriptTurnFoldTests: XCTestCase {
         }
     }
 
+    /// A place restored at a finished turn's answer, whose prose its fold
+    /// leaves on screen, opens nothing; only a place the fold hides opens its
+    /// turn. The answer's first row is its response's line, which the fold
+    /// folds, so a place at the answer opened all of the turn's work, and a
+    /// chat switched back to had a fold the reader closed opened again
+    /// (0.1.131 review).
+    @MainActor func testRestoringAPlaceAtAFinishedTurnsAnswerLeavesItsFoldClosed() throws {
+        try withDisplay(.compact) {
+            let answered = SessionDisplay(id: "answer-place")
+            answered.messages = turn()
+            answered.scrollAnchor = TranscriptAnchor(id: "a3", offset: 12, followsBottom: false)
+            let page = TranscriptPage(); page.state = "idle"; page.bind(answered)
+            let items = try XCTUnwrap(page.snapshot?.items)
+            XCTAssertEqual(controls(items).compactMap(\.foldControl), ["u1"], "the turn folds")
+            XCTAssertFalse(answered.disclosure.isOpen(.turnFold("u1")), "a place at the answer leaves the fold closed")
+            XCTAssertTrue(items.contains { $0.messageIDs.contains("a3") && !TranscriptRowDisclosure.of($0, in: answered.disclosure).foldedAway },
+                          "the answer's prose is drawn with the fold closed")
+            // A place inside the work the fold hides still opens it.
+            let worked = SessionDisplay(id: "work-place")
+            worked.messages = turn()
+            worked.scrollAnchor = TranscriptAnchor(id: "a2", offset: 12, followsBottom: false)
+            let other = TranscriptPage(); other.state = "idle"; other.bind(worked)
+            XCTAssertTrue(worked.disclosure.isOpen(.turnFold("u1")), "a place in the hidden work opens its turn")
+        }
+    }
+
     /// A window that ends where its last turn does folds that turn as the
     /// finished turn it is (0.1.131), receipt or not, and the fold commands
     /// plan the page as the transcript draws it: they planned it as though

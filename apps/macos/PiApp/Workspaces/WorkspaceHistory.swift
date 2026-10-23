@@ -320,7 +320,14 @@ extension WorkspaceModel {
                 var trimmedFar = false
                 let onScreen = automatic ? (view.visibleMessageIDs?() ?? []).intersection(known) : []
                 if !onScreen.isSubset(of: Set(bounded.map(\.id))) {
-                    guard let kept = TranscriptPaging.window(joined, keeping: onScreen, keepingEarlier: !newer),
+                    // Whether `joined` begins or ends inside a turn that goes on
+                    // past it: a capped piece of a turn too long for the window,
+                    // which the page read or the window holds. Taken for a whole
+                    // turn that fits, it waited for room it would never have.
+                    let firstContinues = newer ? view.presentation.partialTurnInput != nil : page.partialTurnInput != nil
+                    let lastContinues = newer ? page.newer != nil && !page.endsTurn : view.newerPage.available && !view.newerPage.endsTurn
+                    guard let kept = TranscriptPaging.window(joined, keeping: onScreen, keepingEarlier: !newer,
+                                                             firstContinues: firstContinues, lastContinues: lastContinues),
                           added.contains(where: { row in kept.contains { $0.id == row.id } }) else { return false }
                     trimmedFar = newer ? kept.last?.id != joined.last?.id : kept.first?.id != joined.first?.id
                     evicted = newer ? kept.first?.id != joined.first?.id : kept.last?.id != joined.last?.id

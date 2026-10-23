@@ -16,6 +16,14 @@ extension AgentSession {
             try await historyWindow(params, cancellation: cancellation)
         } onCancel: { cancellation.cancel() }
     }
+    /// What a display row weighs in the app's window, from the fields the app
+    /// reads (`HistoryWindowPolicy.residentWeight`).
+    static func residentWeight(of row: JSON) -> Int {
+        let tools = row["tools"].list.reduce(0) { $0 + ($1["input"].text?.utf8.count ?? 0) + ($1["output"].text?.utf8.count ?? 0) }
+        let segments = row["responseTimeline"]["segments"].list
+        return HistoryWindowPolicy.residentWeight(text: row["text"].text?.utf8.count ?? 0, thinking: row["thinking"].text?.utf8.count ?? 0, toolBytes: tools,
+                                                  segmentBytes: segments.reduce(0) { $0 + ($1["text"].text?.utf8.count ?? 0) }, segments: segments.count)
+    }
     /// A page whose first turn began before the rows a chat opened from its
     /// metadata file loaded: the read loads where the older rows are and
     /// reads again (`historyWindow(_:cancellation:olderLoaded:)`).
@@ -89,7 +97,11 @@ extension AgentSession {
                     historyPageStep?("history")
                     try cancellation.checkCancellation()
                     let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
-                    guard fill.admit(try row.data().count, startsTurn: shown.startsTurn(index)) else {
+                    // Weighed as encoded or as the app's window holds it,
+                    // whichever is more (`HistoryWindowPolicy.residentWeight`):
+                    // three hundred replies of 9,700 characters encode in
+                    // 5.97 MB and weigh 6.13 MB there, past its 6 MB.
+                    guard fill.admit(max(try row.data().count, Self.residentWeight(of: row)), startsTurn: shown.startsTurn(index)) else {
                         if forward, let around, around > first, index <= around { return nil }
                         break
                     }

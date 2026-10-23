@@ -154,6 +154,30 @@ final class TranscriptPagingTests: XCTestCase {
         }
     }
 
+    /// A capped piece of a turn too long for the window — the newest rows of
+    /// it an earlier page read, or the first rows a newer page read — is not
+    /// a whole turn that fits, though it is no longer than the window: the
+    /// page that read it says the turn goes on past it. Taken for one, the
+    /// window waited for room it would never have, and the read added nothing
+    /// (0.1.131 review: a 1,500-row turn before a 50-row turn on screen).
+    @MainActor func testACappedPieceOfATurnGivesTheRowsThereIsRoomFor() throws {
+        let piece = Array(turns(1, work: 1_499).suffix(750)) // rows 750..<1500 of a 1,500-row turn: no question
+        let next = Array(turns(2, work: 49).dropFirst(50))    // q1 and 49 rows
+        let open = turns(1, work: 49)                          // q0 and 49 rows
+        let start = Array(turns(2, work: 1_499).dropFirst(1_500).prefix(750)) // q1 and the first 749 rows of its 1,500
+        try withCaps(rows: 750) {
+            let screen = Set(next.suffix(10).map(\.id))
+            let earlier = try XCTUnwrap(TranscriptPaging.window(piece + next, keeping: screen, keepingEarlier: true, firstContinues: true))
+            XCTAssertEqual(earlier.map(\.id), (piece + next)[50...].map(\.id), "the piece's newest rows, as many as there is room for")
+            let lower = Set(open.suffix(10).map(\.id))
+            let newer = try XCTUnwrap(TranscriptPaging.window(open + start, keeping: lower, keepingEarlier: false, lastContinues: true))
+            XCTAssertEqual(newer.map(\.id), (open + start)[..<750].map(\.id), "the piece's first rows, as many as there is room for")
+            // The same rows as a whole turn: one that fits on its own waits.
+            let whole = try XCTUnwrap(TranscriptPaging.window(open + start, keeping: lower, keepingEarlier: false))
+            XCTAssertEqual(whole.map(\.id), open.map(\.id))
+        }
+    }
+
     func testHistoryProjectionKeepsClockTurnAndModelTime() {
         let projected = TranscriptMessage.project(id: "a1", message: ["role": .string("assistant"), "content": .string("Reply"), "timestamp": .number(1_700_000_000_000), "nativeTurn": .string("turn-9"), "nativeModelMs": .number(840)])
         XCTAssertEqual(projected.at, 1_700_000_000_000); XCTAssertEqual(projected.turn, "turn-9"); XCTAssertEqual(projected.modelMs, 840)

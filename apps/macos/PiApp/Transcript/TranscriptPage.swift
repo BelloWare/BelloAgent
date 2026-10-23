@@ -535,7 +535,16 @@ struct ContentGeometry: Equatable {
         // a reveal does (`unfoldTurn`), before the rows are drawn: read around
         // the place, the page holds the whole turn from its question, and its
         // fold closed over the row the reader left, which drew as nothing.
-        if let restoring { openFold(holding: drawingMessageID(for: restoring.id), in: items) }
+        // Only a place the fold hides whole: a place at the answer, whose
+        // prose the fold leaves drawn, opens nothing. Taken from the answer's
+        // first row, its response's line, which the fold folds, it opened all
+        // of the turn's work, and a fold the reader had closed opened again
+        // when they came back to the chat.
+        if let restoring {
+            let drawing = drawingMessageID(for: restoring.id)
+            let holders = items.filter { $0.messageIDs.contains(drawing) }
+            if !holders.contains(where: { !isFoldedAway($0) }) { openFold(of: holders.first) }
+        }
         snapshot = next
         PerformanceProbe.shared.transcriptSnapshotApplied(session.id, deltaAt: session.displayObservedAt)
         scheduleSettle()
@@ -867,14 +876,24 @@ struct ContentGeometry: Equatable {
     /// Opens the finished turn that has folded message `messageID` away, so
     /// a place in it can be shown. Returns whether the page holds the message.
     @discardableResult func unfoldTurn(containing messageID: String) -> Bool {
-        guard let snapshot, disclosure != nil, snapshot.items.contains(where: { $0.messageIDs.contains(messageID) }) else { return false }
-        openFold(holding: messageID, in: snapshot.items)
+        guard let snapshot, disclosure != nil, let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        openFold(of: item)
         return true
     }
-    /// Opens the finished turn among `items` whose fold hides message
-    /// `messageID`; a row no fold hides opens nothing.
-    private func openFold(holding messageID: String, in items: [TranscriptItem]) {
-        guard let disclosure, let item = items.first(where: { $0.messageIDs.contains(messageID) }) else { return }
+    /// Whether a closed turn fold hides `item`.
+    private func isFoldedAway(_ item: TranscriptItem) -> Bool {
+        let group: String?
+        switch item {
+        case .message(let message): group = message.foldGroup
+        case .block(let block): group = block.foldGroup
+        }
+        guard let group, let disclosure else { return false }
+        return !disclosure.isOpen(.turnFold(group))
+    }
+    /// Opens the finished turn whose fold hides `item`; a row no fold hides
+    /// opens nothing.
+    private func openFold(of item: TranscriptItem?) {
+        guard let disclosure, let item else { return }
         let group: String?
         switch item {
         case .message(let message): group = message.foldGroup
