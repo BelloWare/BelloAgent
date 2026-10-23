@@ -37,6 +37,44 @@ final class HistoricalEditTests: HelperTestCase {
         catch let error as AgentError { XCTAssertEqual(error.code, "edit_changed") }
         await session.close()
     }
+    /// Send checks an edit against the conversation through the edited
+    /// message (`sourcePrefix`, owner decision 2026-10-23): rows a run added
+    /// after it since the original was read leave the edit valid. An older
+    /// reader's whole timeline, a prefix that is not the conversation's, and
+    /// an occurrence another edit has replaced are still refused.
+    func testEditCheckedThroughItsMessageSurvivesRowsAddedAfterIt() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), state = root.appendingPathComponent("state")
+        let client = ScriptClient([answer("first answer"), answer("second answer"), answer("third answer"), answer("edited answer")])
+        let session = try AgentSession(id: "prefix", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        for (id, text) in [("u1", "first"), ("u2", "second")] {
+            _ = try await session.submit(Submission(commandID: id, turnID: id, text: text), steer: false)
+            try await eventually { !(await session.isRunning) }
+        }
+        let prepared = try await session.prepareEdit("u2")
+        let prefix = try XCTUnwrap(prepared["sourcePrefix"].text), timeline = try XCTUnwrap(prepared["sourceTimeline"].text)
+        let digest = prepared["sourceTextDigest"].text
+        XCTAssertNotEqual(prefix, timeline, "The prefix stops at the edited message")
+        // A run goes on after the read: its rows come after the edited message.
+        _ = try await session.submit(Submission(commandID: "u3", turnID: "u3", text: "third"), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let edit = Submission(commandID: "edit", turnID: "e2", text: "second, edited")
+        do { _ = try await session.edit(fromMessageID: "u2", input: edit, expectedTimeline: timeline, expectedTextDigest: digest); XCTFail("An older reader's whole timeline still refuses") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "edit_changed") }
+        do { _ = try await session.edit(fromMessageID: "u2", input: edit, expectedTimeline: timeline, expectedTextDigest: digest, expectedPrefix: "stale"); XCTFail("Another prefix refuses") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "edit_changed") }
+        _ = try await session.edit(fromMessageID: "u2", input: edit, expectedTimeline: timeline, expectedTextDigest: digest, expectedPrefix: prefix)
+        try await eventually { !(await session.isRunning) }
+        let snapshot = await session.snapshot()
+        XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
+        XCTAssertEqual(snapshot["messages"].list.last { $0["role"].text == "user" }?["text"].text, "second, edited")
+        XCTAssertFalse(snapshot["messages"].list.contains { $0["id"].text == "u3" }, "The rows after the edited message are left")
+        // The occurrence that edit replaced is off the timeline: the same checks refuse it.
+        do { _ = try await session.edit(fromMessageID: "u2", input: Submission(commandID: "again", turnID: "e3", text: "again"), expectedTextDigest: digest, expectedPrefix: prefix); XCTFail("A replaced message refuses") }
+        catch let error as AgentError { XCTAssertTrue(["edit_target", "edit_changed"].contains(error.code), error.code) }
+        await session.close()
+    }
     func testSharedGoldenJournalHasSameOrderedContextAndRejectsAbandonedTarget() throws {
         var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
         func replay(_ suffix: String) throws -> ConversationReplay {

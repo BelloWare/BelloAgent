@@ -113,10 +113,26 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// where the reader left them — a reply still arriving, its turn still
     /// live. Kept on the page, they changed under the reader as soon as the
     /// finished page replaced them.
+    /// So are rows read out of sight once the helper's rows have moved past
+    /// them: another run has come and gone since they were read.
     var heldRowsOutlived: Bool {
         !busy && !loading && runState == .idle && sendingRows.isEmpty
-            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
+            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending }
+                || heldRowsRevision.map { $0 != helperDisplayRevision } == true)
     }
+    /// The read that brings such rows up to date while the chat is still out
+    /// of sight (`WorkspaceModel.catchUpFinishedRows`).
+    var finishedRowsRead: Task<Void, Never>?
+    /// A status asked for that read while one was under way: the chat is
+    /// looked at again once it is done.
+    var finishedRowsAgain = false
+    /// The helper's revision of this chat's rows, as its last snapshot gave
+    /// it: also for a chat out of sight, which is sent its status, not its rows.
+    var helperDisplayRevision: String?
+    /// The helper's revision the rows held here were read at, when the chat
+    /// read them for itself out of sight (`catchUpFinishedRows`); nil for
+    /// rows from anywhere else.
+    var heldRowsRevision: String?
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     /// Where the window stands in the whole chat, for the room the transcript
@@ -390,9 +406,11 @@ struct TranscriptVersionView: Equatable, Sendable {
         if changed { footer.cost = reading }
         let held = reading.held
         // The pause's card shows the figures themselves: it follows them.
-        guard held != costLimitHeld else { if changed && costPaused { publishTranscript() }; return }
-        costLimitHeld = held
-        if failureCode == Self.costLimitCode || costPaused { publishTranscript() }
+        if held != costLimitHeld {
+            costLimitHeld = held
+            if failureCode == Self.costLimitCode || costPaused { publishTranscript() }
+        } else if changed && costPaused { publishTranscript() }
+        if changed, costPaused, !preflightNotice.isEmpty { updateComposedNotice() }
     }
     /// The owner changed the limit this chat runs under. A message refused
     /// at the old one is a draft to send again, so its notice goes: sent
@@ -400,8 +418,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     func costLimitChanged() {
         if sendFailureCode == Self.costLimitCode { sendFailure = nil }
     }
-    /// The last limit sent to the helper for this chat, so a snapshot that
-    /// shows another one (a change the helper missed) is answered once.
+    /// The limit carried by an open, or acknowledged by a configure.
     var costLimitSent: CostLimit?
     /// The marker an edit leaves is drawn by the edited message's version
     /// switcher instead, once the helper numbers its versions. A marker
@@ -518,7 +535,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var continuable: Bool? { didSet { if continuable != oldValue { publishTranscript() } } }
     /// A Resume of this chat is on its way to the helper: the row's Resume and
     /// the menu's are off until it is answered, so a double click sends one.
-    @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
+    @Published var resuming = false { didSet { if resuming != oldValue {
+        publishTranscript()
+        if costPaused, !preflightNotice.isEmpty { updateComposedNotice() }
+    } } }
     /// The chat's run stopped before it finished (Stop, a quit, a restart or
     /// an update paused it) and Resume would go on with it.
     /// A family paused at its limit offers it only once the limit is raised.
@@ -528,7 +548,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
-        beginTranscriptBatch(); defer { endTranscriptBatch() }
+        beginTranscriptBatch(); defer {
+            endTranscriptBatch()
+            if costPaused, !preflightNotice.isEmpty { updateComposedNotice() }
+        }
         let waiting = snapshot["familyWaiting"]?.bool ?? false
         if familyWaiting != waiting { familyWaiting = waiting }
         let pending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0
@@ -547,6 +570,7 @@ struct TranscriptVersionView: Equatable, Sendable {
         let continues = snapshot["continuable"]?.bool
         if continuable != continues { continuable = continues }
         let pausedAtLimit = snapshot["costPaused"]?.bool ?? false
+        costPausePreflight = pausedAtLimit && snapshot["errorCode"]?.string == Self.costLimitCode
         if costPaused != pausedAtLimit { costPaused = pausedAtLimit }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
         let failure = RunState(rawValue: nextState) == .error ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
@@ -638,6 +662,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var queueEditNotice = "" {
         didSet { if queueEditNotice != oldValue { updateComposedNotice() } }
     }
+    private var costPausePreflight = false
     /// The preflight explanation last shown below the composer. A run
     /// failure already shown in the transcript does not contribute a part.
     var preflightNotice = "" {
@@ -646,8 +671,19 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Keep the rendered value cached, but derive it only from its parts.
     /// Clearing either part must work without another helper snapshot.
     func updateComposedNotice() {
-        let composed = [queueEditNotice, preflightNotice].filter { !$0.isEmpty }.joined(separator: "\n")
+        let preflight = costPaused && costPausePreflight && !costLimitHeld && !preflightNotice.isEmpty ? raisedCostPauseNotice : preflightNotice
+        let composed = [queueEditNotice, preflight].filter { !$0.isEmpty }.joined(separator: "\n")
         if notice != composed { notice = composed }
+    }
+    /// The helper retains the pause-time figures until Resume. The composer,
+    /// like the card, follows the chat's live limit and the shared spend.
+    private var raisedCostPauseNotice: String {
+        let reading = footer.cost, shared = reading.budgetOwnerID != nil || isManagedSubagent
+        let limit = reading.limit.usd == nil ? "There is no limit now." : "The \(shared ? "main chat’s " : "")limit is now \(reading.limit.label)."
+        if isManagedSubagent { return limit + " This sub-agent goes on when the main chat resumes." }
+        if resuming { return limit + " Resuming…" }
+        if queueEditHold != nil || continuable == false { return limit + " Finish or cancel the message edit, then choose Resume." }
+        return limit + " Choose Resume to continue."
     }
     /// The message being rewritten keeps images or skills, so its text may be empty.
     var queueEditKeepsInput = false
@@ -815,13 +851,25 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var editingMessageID: String?
     var draftBeforeEdit: DraftRecord?
     var editGeneration = UUID()
+    /// Which read of the edited message's original is current: Edit again on
+    /// the same edit starts another read without making a new edit, so an
+    /// image import into it keeps its place (`editGeneration` stays).
+    var editPreparation = UUID()
     @Published var editPreparing = false
     @Published var editSubmitting = false
     @Published var editInputReviewRequired = false
     @Published var editMissingAttachments: Set<String> = []
     @Published var editNotice = ""
+    /// The question in the composer came from its row on screen, and its
+    /// complete original — its images and skills, what Send is checked
+    /// against — is not read yet (`WorkspaceModel.editMessage`). Saved with
+    /// the draft (`MessageEditDraft.inputPending`), so a restart reads it again.
+    @Published var editInputPending = false
     var editSourceTimeline: String?
     var editSourceTextDigest: String?
+    /// What Send checks the edit against: the conversation through the edited
+    /// message, from the read of its original (`turn.edit`'s `editSourcePrefix`).
+    var editSourcePrefix: String?
     /// The branch this reader's edit is making (`sendEdit`), until the
     /// snapshot that first carries it is adopted (`adoptOwnBranch`).
     var pendingBranch: PendingBranch?
@@ -844,15 +892,15 @@ struct TranscriptVersionView: Equatable, Sendable {
             var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews); saved.queuedEdit = unreconciledQueuedEdit
             return saved
         }
-        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews) }
+        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews, inputPending: editInputPending ? true : nil, sourcePrefix: editSourcePrefix) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews)
     }
     func restoreDraft(_ saved: DraftRecord) {
         draft = saved.text; attachments = saved.attachments ?? []; skills = saved.skills ?? []; directCommand = false
         submissionReviews = saved.submissionReviews ?? []
         editingMessageID = saved.edit?.messageID
-        editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest
-        editInputReviewRequired = saved.edit?.inputReviewRequired ?? false
+        editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest; editSourcePrefix = saved.edit?.sourcePrefix
+        editInputReviewRequired = saved.edit?.inputReviewRequired ?? false; editInputPending = saved.edit?.inputPending == true
         editGeneration = UUID(); editPreparing = false; editSubmitting = false; editNotice = ""; editMissingAttachments = []
         draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills, submissionReviews: $0.originalSubmissionReviews) }
     }

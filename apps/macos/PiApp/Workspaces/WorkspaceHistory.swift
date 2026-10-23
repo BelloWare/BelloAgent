@@ -14,13 +14,16 @@ extension WorkspaceModel {
     /// read in place of `around` (a scroller dragged into rows not read yet).
     /// `validating`: for a position read, a boundary of the window it lands
     /// in, which a journal read checks the file against.
+    /// `followsNavigation`: a read for the reader ends when they navigate
+    /// anywhere; one a chat makes for itself out of sight
+    /// (`catchUpFinishedRows`) answers to that chat alone.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
-                                validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
-        let navigation = transcriptNavigation(item.id)
+                                validating: ConversationCursor? = nil, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
+        let navigation = followsNavigation ? transcriptNavigation(item.id) : nil
         func checkNavigation() throws {
             try Task.checkCancellation()
-            guard navigation.isCurrent(in: self) else { throw CancellationError() }
+            if let navigation, !navigation.isCurrent(in: self) { throw CancellationError() }
         }
         try checkNavigation()
         if let historyWindowLoader {
@@ -77,7 +80,7 @@ extension WorkspaceModel {
                                                                      position: around == nil && !start ? position : nil,
                                                                      validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
-                    guard navigation.isCurrent(in: self), let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
+                    guard navigation?.isCurrent(in: self) ?? true, let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
                 }
             })
@@ -92,22 +95,7 @@ extension WorkspaceModel {
     /// `landing`: how far below the viewport's top the `around` row lands.
     func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0) {
         view.beginTranscriptBatch()
-        if view.taskPresentation?.active == nil {
-            view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
-        }
-        view.presentation.identity = (page.incarnation, page.lineage)
-        view.historyProgress = nil
-        view.presentation.partialTurnInput = page.partialTurnInput
-        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
-        view.historyPositions.reset(page)
-        view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
-        if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
-        else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
-        view.browsingHistory = page.newer != nil
-        view.projectedRows = []; view.projectionRevision = nil
-        view.historyState = page.messages.isEmpty ? .empty : .preparing
-        view.messages = page.messages
-        view.adoptedPage = view.pageRows
+        adoptPage(page, into: view, around: around, landing: landing, presenting: true)
         if let count = page.assistantCount {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
@@ -132,6 +120,29 @@ extension WorkspaceModel {
         if page.messages.isEmpty { historyViewportReady(view.id, generation: view.presentationGeneration) }
     }
 
+    /// A page's rows on the chat's display, and where they stand in the chat:
+    /// what adopting a page read in changes besides its presentation.
+    /// `presenting`: the page the transcript shows next, which prepares for
+    /// it; else rows held for the chat's next opening (`catchUpFinishedRows`).
+    func adoptPage(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0, presenting: Bool) {
+        if view.taskPresentation?.active == nil {
+            view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
+        }
+        view.presentation.identity = (page.incarnation, page.lineage)
+        view.historyProgress = nil
+        view.presentation.partialTurnInput = page.partialTurnInput
+        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
+        view.historyPositions.reset(page)
+        view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
+        if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
+        else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
+        view.browsingHistory = page.newer != nil
+        view.projectedRows = []; view.projectionRevision = nil
+        if presenting { view.historyState = page.messages.isEmpty ? .empty : .preparing; view.heldRowsRevision = nil }
+        view.messages = page.messages
+        view.adoptedPage = view.pageRows
+    }
+
     /// A chat's rows shown again as they were, when its journal has not
     /// changed since they were read: placed where the reader left them, then
     /// ready, as a page read in is.
@@ -154,6 +165,7 @@ extension WorkspaceModel {
         view.refreshingCachedRows = false
         view.presentation.readyAt = PerformanceProbe.now
         view.contextSelectionReady = true
+        openSteps?(id, "viewport ready")
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         view.presentation.secondary?.cancel()
         let navigation = transcriptNavigation(id)

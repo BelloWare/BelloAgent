@@ -75,6 +75,7 @@ extension WorkspaceModel {
            view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
            view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
             view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
+            resumeEditPreparation(view)
         }
         if let version = metadata.anchorVersion { view.anchorVersion = version }
         if !view.anchorWritePending, view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
@@ -354,6 +355,7 @@ extension WorkspaceModel {
                 try await store.restoreConflict(conflict, replacing: live, version: view.draftVersion, write: store.draftWriter.capture(view.id))
                 // Typing is disabled while this explicit recovery commits.
                 view.restoreDraft(conflict.draft)
+                resumeEditPreparation(view)
                 view.unreconciledQueuedEdit = conflict.draft.queuedEdit
                 if let queued = conflict.draft.queuedEdit { await reconcileQueuedEdit(view, queued) }
                 view.draftConflicts = try await store.draftConflicts(id: view.id)

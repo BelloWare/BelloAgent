@@ -10,6 +10,7 @@ extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
                 focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        openSteps?(id, "select")
         releasedHelperSessions.remove(id)
         if item.isSubagent { await openSubagentTab(id); return }
         let focusesComposer = focusesComposer && !item.isSubagent
@@ -25,6 +26,7 @@ extension WorkspaceModel {
         }
         let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch,
                                                            focusesComposer: focusesComposer)
+        openSteps?(id, heldRows.cached ? "prepared on held rows" : "prepared without rows")
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
         releaseUnreadDisplays(keeping: id)
         let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
@@ -139,7 +141,9 @@ extension WorkspaceModel {
         // Rows from a run that finished while the chat was in the background
         // are not kept on the page: they are the run as the reader left it,
         // and they would change under the reader when the finished page came.
-        // The chat opens as a chat opened for the first time does.
+        // They are read again as the run ends (`catchUpFinishedRows`); opened
+        // before that read has landed, the chat opens as a chat opened for
+        // the first time does.
         if view.hasPresentedRows, view.heldRowsOutlived { view.messages = []; view.presentation.identity = nil }
         let held = view.beginHistoryPresentation()
         view.contextSelectionReady = false; view.browsingHistory = true
@@ -190,7 +194,8 @@ extension WorkspaceModel {
         }
     }
     /// The displays of chats nobody is reading are let go of, least recently
-    /// used first, until no more than eight are kept.
+    /// used first, until no more than eight are kept. A run that ends while
+    /// its chat is out of sight counts as a use of it (`refresh`).
     func releaseUnreadDisplays(keeping id: String) {
         // A new chat that was never sent has nothing written anywhere (see
         // `materializeChat`): its display is the only place its draft lives,
@@ -205,6 +210,86 @@ extension WorkspaceModel {
             releaseHelperSession(other.id)
         }
     }
+    /// A chat the reader left while its reply was arriving holds that reply
+    /// as it was: a chat in the background is asked for its status, not its
+    /// rows (`heldRowsOutlived`). Once its run has finished, its page is read
+    /// here as opening it reads it, figures and all, and held in place of
+    /// those rows while the chat is still out of sight. Opened then, the chat
+    /// shows its finished rows at once, as a revisit shows the rows it kept,
+    /// and reads its page behind them. Before, it opened on a blank page and
+    /// read its history behind the loading cover (OPEN-1). The read gives way
+    /// to the chat being opened, or running again, before it lands; a run
+    /// that has come and gone meanwhile sends it back for the newer page.
+    func catchUpFinishedRows(_ id: String) {
+        guard catchesUpFinishedRows, let view = displays[id] else { return }
+        // Asked while a read, or the scan after it, is under way (another run
+        // ended meanwhile, say): the chat is looked at again once it is done.
+        guard view.finishedRowsRead == nil else { view.finishedRowsAgain = true; return }
+        guard view.hasPresentedRows, view.heldRowsOutlived, !view.browsingHistory,
+              !receivesRows(id), let item = record(id), !item.isSubagent, !item.isBackgroundTask else { return }
+        let generation = view.presentation.readGeneration
+        view.finishedRowsRead = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            defer {
+                view.finishedRowsRead = nil
+                if view.finishedRowsAgain { view.finishedRowsAgain = false; self.catchUpFinishedRows(id) }
+            }
+            @MainActor func current() -> Bool {
+                !Task.isCancelled && !self.isShutDown && self.displays[id] === view && view.presentation.readGeneration == generation
+                    && view.heldRowsOutlived && !self.receivesRows(id) && self.record(id)?.path == item.path
+            }
+            // The page is read for the helper's rows as they are when the read
+            // starts. A run that comes and goes meanwhile moves them past it,
+            // so the page is read again; one still under way stops the read
+            // (`current`), and its own end reads the chat again.
+            var adopted = false
+            for _ in 0..<3 where !adopted {
+                let revision = view.helperDisplayRevision
+                do {
+                    // The chat's own read: the reader moving between other
+                    // chats meanwhile is no reason to drop it, as it is for theirs.
+                    var page = try await self.readInitialWindow(item, holding: view.scrollAnchor, followsNavigation: false)
+                    guard current() else { return }
+                    page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
+                    guard current() else { return }
+                    guard view.helperDisplayRevision == revision else { continue }
+                    view.beginTranscriptBatch()
+                    self.adoptPage(page, into: view, presenting: false)
+                    view.heldRowsRevision = revision
+                    view.endTranscriptBatch()
+                    adopted = true
+                } catch {
+                    // Not read now, the chat's page is read as it opens.
+                    return
+                }
+            }
+            // What the opening reads of the journal before its page — which
+            // of another chat's agents it refers to, and what its own agents
+            // sent — is a scan of the whole file once it has changed, about
+            // 0.3 s for a 50 MiB chat. It is scanned now, off the reader every
+            // chat's reads go through (a chat opened meanwhile does not wait
+            // on it), and kept there for the revision scanned, so the opening
+            // finds it read.
+            guard adopted, let path = item.path, !item.imported, let revision = HistoryReader.currentRevision(path: path) else { return }
+            let journal = URL(fileURLWithPath: path), owner = item.id
+            let fingerprint = self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == owner })
+                ? try? HistoryReader.coordinationFingerprint(journal) : nil
+            let scan = await Task.detached(priority: .utility) { () -> (plans: [DiscoveredSubagent]?, coordination: AgentCoordination?, scanned: Int) in
+                var scanned = 0
+                let plans = try? HistoryReader.scanPlans(path: journal, ownerID: owner, childID: nil, includeInherited: true, scanned: &scanned)
+                let coordination = fingerprint == nil ? nil : try? HistoryReader.scanCoordination(path: journal, ownerID: owner, scanned: &scanned)
+                return (plans, coordination, scanned)
+            }.value
+            if let plans = scan.plans { await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned) }
+            if let coordination = scan.coordination, let fingerprint {
+                await self.history.keepCoordination(coordination, path: journal, ownerID: owner, fingerprint: fingerprint)
+            }
+        }
+    }
+    /// Whether the snapshot loop brings this chat its rows (`refresh`): the
+    /// chat selected, its side beside it, a sub-agent's tab on screen. Any
+    /// other chat is asked for its status alone.
+    func receivesRows(_ id: String) -> Bool { id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id) }
     /// Reads the opened chat's saved draft and place, then its page, and shows
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
@@ -220,10 +305,12 @@ extension WorkspaceModel {
         }
         do {
             await readInheritedSubagents(item, current: current)
+            openSteps?(id, "inherited agents read")
             guard current() else { return }
             try await attachManagedSubagent(item, current: current)
             guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
+            openSteps?(id, "draft read")
             let owner = item.delegation.flatMap { record($0.budgetOwnerSessionID) } ?? item
             view.childSummaries = subagentSummaries.filter { $0.value.link.budgetOwnerSessionID == item.id }
             if item.isSubagent || !view.childSummaries.isEmpty, let path = owner.path,
@@ -258,6 +345,7 @@ extension WorkspaceModel {
                view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
                await self.history.unchanged(revision) {
                 guard current() else { return }
+                openSteps?(id, "held rows unchanged")
                 self.presentHeldHistory(view, identity: heldRows.identity, partialTurnInput: heldRows.partialTurnInput)
                 if self.opened.contains(id) { self.refresh(id) }
                 return
@@ -267,10 +355,12 @@ extension WorkspaceModel {
             // page was dropped with nothing reading the chat any more, and
             // it stayed on "Preparing…" until it was opened again.
             var source = item, page = try await self.readInitialWindow(source, holding: held)
+            openSteps?(id, "page read")
             for reads in 1...4 {
                 guard current(), let now = self.record(id) else { return }
                 if now.path == source.path {
                     page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                    openSteps?(id, "figures read")
                     guard current() else { return }
                     if self.record(id)?.path == source.path { break }
                 }
@@ -278,6 +368,7 @@ extension WorkspaceModel {
                 source = renamed; page = try await self.readInitialWindow(source, holding: held)
             }
             self.adoptInitialHistory(page, into: view)
+            openSteps?(id, "adopted")
             if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                 view.notice = LiteLLMConfiguration.unsupportedAPIMessage
             }
@@ -298,11 +389,12 @@ extension WorkspaceModel {
     /// alone dropped that position on every switch back and relaunch. A row
     /// no longer in the conversation (an edit, another branch) opens on the
     /// newest page, as before.
-    func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?) async throws -> ConversationHistoryPage {
-        let latest = try await readConversationWindow(source, cursor: nil)
+    /// `followsNavigation`: see `readConversationWindow`.
+    func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
+        let latest = try await readConversationWindow(source, cursor: nil, followsNavigation: followsNavigation)
         guard let anchor, !anchor.followsBottom, !anchor.id.isEmpty, !latest.messages.contains(where: { $0.id == anchor.id }) else { return latest }
         do {
-            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id)
+            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id, followsNavigation: followsNavigation)
             return around.messages.contains(where: { $0.id == anchor.id }) ? around : latest
         } catch is CancellationError { throw CancellationError() }
         catch { try Task.checkCancellation(); return latest }

@@ -10,7 +10,13 @@ extension AgentSession {
     /// The journal keeps every record; only the live context and the displayed
     /// timeline drop the abandoned tail. Nothing is written unless the new
     /// submission is itself acceptable.
-    public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil, admittedAt: Int? = nil) async throws -> JSON {
+    ///
+    /// `expectedPrefix`, when the reader's preparation gave it, is what the
+    /// edit is checked against: the conversation through the edited message
+    /// (`sourcePrefix`). Rows added after that message since, as a run adds
+    /// them, leave the edit valid. Without it (an older reader) the whole
+    /// timeline must be as it was (`expectedTimeline`).
+    public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil, expectedPrefix: String? = nil, admittedAt: Int? = nil) async throws -> JSON {
         try requireIndependentSession()
         let admittedAt = admittedAt ?? stopCount
         try checkSubmissionStop(admittedAt)
@@ -37,7 +43,11 @@ extension AgentSession {
         let images = try loadImages(input.attachments)
         let effective = try profile.overriding(input)
         guard images.isEmpty || effective.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
-        guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
+        if let expectedPrefix {
+            guard expectedPrefix == plan.sourcePrefix else { throw AgentError("edit_changed", "The conversation before the edited message changed. Select the message again.") }
+        } else {
+            guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
+        }
         let target = history.first { $0.id == messageID }
         let textDigest = sha256(Data((target?.displayText ?? target?.text ?? "").utf8))
         guard expectedTextDigest == nil || expectedTextDigest == textDigest else { throw AgentError("edit_changed", "The original message changed. Select it again.") }
