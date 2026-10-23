@@ -47,6 +47,14 @@ extension PiKit {
         private(set) var isTrackingMouse = false
         private var tracking: NSTrackingArea?
         private var shownPressed = false
+        private struct ContentState: Equatable {
+            let hovering: Bool
+            let pressed: Bool
+            let enabled: Bool
+            let effectivelyEnabled: Bool
+            let selection: NSControl.StateValue
+        }
+        private var shownContentState: ContentState?
 
         override init(frame: NSRect) {
             super.init(frame: frame)
@@ -140,6 +148,9 @@ extension PiKit {
         override var isEnabled: Bool {
             didSet { if oldValue != isEnabled { refreshFace(); window?.invalidateCursorRects(for: self) } }
         }
+        override var state: NSControl.StateValue {
+            didSet { if oldValue != state { refreshFace() } }
+        }
         /// Enabled, and not inside a disabled selectable row: SwiftUI disabled
         /// a row's controls with the row, so they read disabled, look it, and
         /// leave the key-view loop. Its own `isEnabled` stays the app's.
@@ -153,10 +164,16 @@ extension PiKit {
             let pressedNow = isPressedDown
             let changedPress = pressedNow != shownPressed
             shownPressed = pressedNow
+            let contentState = ContentState(hovering: hovering, pressed: pressedNow, enabled: isEnabled,
+                                            effectivelyEnabled: isEffectivelyEnabled, selection: state)
+            if contentState != shownContentState {
+                shownContentState = contentState
+                redrawContent()
+            }
             effectiveAppearance.performAsCurrentDrawingAppearance {
                 Motion.layers(Motion.quick, animated: animated && window != nil) {
                     styleFace()
-                    face.opacity = isEffectivelyEnabled ? 1 : disabledOpacity
+                    face.opacity = contentState.effectivelyEnabled ? 1 : disabledOpacity
                     let scale: CGFloat = pressedNow && pressScales && !Motion.reduced ? 0.97 : 1
                     if changedPress || !animated { face.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale)) }
                 }
@@ -189,27 +206,33 @@ extension PiKit {
             // Continuous capsule borders leave straight seams at their ends.
             // Keep the fill and content geometry; only the outline uses arcs.
             stroke.cornerCurve = circularCorners || radius >= min(face.bounds.width, face.bounds.height) / 2 ? .circular : .continuous
-            content.contentsScale = piScale
+            // DrawingLayer redraws on a bounds change; moving or laying
+            // out the same face keeps its existing text and symbol images.
+            updateContentEnvironment()
             CATransaction.commit()
-            content.setNeedsDisplay()
         }
         override var isFlipped: Bool { true }
         override func viewDidChangeEffectiveAppearance() {
             super.viewDidChangeEffectiveAppearance()
-            content.appearance = effectiveAppearance
-            content.setNeedsDisplay()
+            updateContentEnvironment()
             refreshFace(animated: false)
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            content.contentsScale = piScale
-            content.appearance = effectiveAppearance
-            content.setNeedsDisplay()
+            updateContentEnvironment()
             refreshFace(animated: false)
             if window == nil, hovering { setHovering(false) }
         }
         /// Redraws the content (a label or a symbol changed).
         func redrawContent() { content.setNeedsDisplay() }
+
+        private func updateContentEnvironment() {
+            let scale = piScale, appearance = effectiveAppearance
+            guard content.contentsScale != scale || content.appearance != appearance else { return }
+            content.contentsScale = scale
+            content.appearance = appearance
+            redrawContent()
+        }
 
         // The cell draws nothing; the layers are the control.
         override func draw(_ dirtyRect: NSRect) {}
@@ -247,9 +270,8 @@ extension PiKit {
         override func viewDidChangeBackingProperties() {
             super.viewDidChangeBackingProperties()
             // A window moved between a 1x and a 2x display redraws at its scale.
-            content.contentsScale = piScale
+            updateContentEnvironment()
             invalidateIntrinsicContentSize(); needsLayout = true
-            content.setNeedsDisplay()
         }
 
         // MARK: Focus
@@ -271,14 +293,14 @@ extension PiKit {
     /// `.piDanger` button styles draw it: a label, optionally after a symbol.
     @MainActor final class Button: ButtonBase {
         enum Style: Equatable { case primary, secondary, ghost, ghostDanger, danger }
-        var style: Style { didSet { invalidate() } }
-        var compact: Bool { didSet { invalidate() } }
+        var style: Style { didSet { if oldValue != style { invalidate() } } }
+        var compact: Bool { didSet { if oldValue != compact { invalidate() } } }
         /// The label.
         override var title: String { didSet { if oldValue != title { invalidate() } } }
         /// A symbol before the label, as `Label(_:systemImage:)`.
-        var symbol: String? { didSet { invalidate() } }
+        var symbol: String? { didSet { if oldValue != symbol { invalidate() } } }
         /// The symbol after the label instead, as the pager's Next.
-        var symbolTrailing = false { didSet { invalidate() } }
+        var symbolTrailing = false { didSet { if oldValue != symbolTrailing { invalidate() } } }
 
         init(_ title: String, symbol: String? = nil, style: Style = .secondary, compact: Bool = false, action: (() -> Void)? = nil) {
             self.style = style; self.compact = compact; self.symbol = symbol
@@ -400,11 +422,11 @@ extension PiKit {
     /// `PiIconButton`. Its tooltip is `label`; VoiceOver says `spokenLabel`
     /// when it names the item acted on ("Remove follow-up 2").
     @MainActor final class IconButton: ButtonBase {
-        var symbol: String { didSet { redrawContent() } }
+        var symbol: String { didSet { if oldValue != symbol { redrawContent() } } }
         var label: String { didSet { applyLabels() } }
         var spokenLabel: String? { didSet { applyLabels() } }
-        var tone: PiTone { didSet { redrawContent() } }
-        var size: CGFloat { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+        var tone: PiTone { didSet { if oldValue != tone { redrawContent() } } }
+        var size: CGFloat { didSet { if oldValue != size { invalidateIntrinsicContentSize(); redrawContent() } } }
         var filled: Bool { didSet { refreshFace() } }
 
         init(symbol: String, label: String, tone: PiTone = .neutral, size: CGFloat = 28, filled: Bool = false,
