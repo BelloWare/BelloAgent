@@ -801,7 +801,7 @@ actor HistoryReader {
     }
     func editTarget(path: String, id: String) throws -> [String: WireValue] {
         let page = try read(path: path, around: id, targetTurns: 1, whole: true)
-        guard page.notice == nil, let index = indexes[path], try index.branch.index(of: id) != nil,
+        guard page.notice == nil, let index = indexes[path], let position = try index.branch.index(of: id),
               let ref = try index.branch.ref(id), ref.type == "message", ref.role == "user" else {
             throw HostError.failure("The editable user message is unavailable, abandoned, or its history needs recovery.")
         }
@@ -814,7 +814,10 @@ actor HistoryReader {
         guard text.utf8.count <= SubmissionLimits.messageBytes, try stamp(file) == index.stamp else { throw HostError.failure("The original input is too large or changed during loading.") }
         let blocks = message["content"]?.array ?? []
         let expanded = message["content"]?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
-        return ["messageId": .string(id), "text": .string(text), "sourceTimeline": .string(EditReplayPlan.digest(try index.branch.timelineIDs())),
+        let timeline = try index.branch.timelineIDs()
+        guard timeline.indices.contains(position), timeline[position] == id else { throw StoreError.unreadableRecord }
+        return ["messageId": .string(id), "text": .string(text), "sourceTimeline": .string(EditReplayPlan.digest(timeline)),
+                "sourcePrefix": .string(EditReplayPlan.digest(Array(timeline.prefix(through: position)))),
                 "sourceTextDigest": .string(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()),
                 "input": message["nativeUserInput"] ?? .null,
                 "legacyInputs": .bool(message["nativeUserInput"] == nil && (expanded != text || blocks.contains { $0.object?["type"]?.string == "image" }))]

@@ -203,15 +203,43 @@ extension ComposerTextView {
     /// exactly as it is.
     func applySkillChange(_ skills: [SkillChip], actionName: String) {
         guard let display = skillStrip.display, !display.recoveringDraft, display.id == sessionID, display.skills != skills else { return }
-        let previous = display.skills
+        applySkillChange(from: display.skills, to: skills, actionName: actionName)
+    }
+    /// The step from `from` to `to`, made over the skills the composer holds
+    /// now; its Undo is the step back. A skill that came in by other means
+    /// since the step was recorded (an edited message's original, read after
+    /// it) stays through Undo and Redo.
+    private func applySkillChange(from: [SkillChip], to: [SkillChip], actionName: String) {
+        guard let display = skillStrip.display, !display.recoveringDraft, display.id == sessionID else { return }
         breakUndoCoalescing()
+        let skills = Self.skills(display.skills, steppedFrom: from, to: to)
         display.skills = skills
         skillTokens = skills
         skillStrip.changed?()
         undoManager?.registerUndo(withTarget: self) { editor in
-            MainActor.assumeIsolated { editor.applySkillChange(previous, actionName: actionName) }
+            MainActor.assumeIsolated { editor.applySkillChange(from: to, to: from, actionName: actionName) }
         }
         undoManager?.setActionName(actionName)
+    }
+    /// `current` with the step from `from` to `to` made in it: what the step
+    /// removed goes, what it set comes back where it stands in `to` among the
+    /// skills there (a token removed from the front comes back at the front),
+    /// and every other skill stays where it is.
+    nonisolated static func skills(_ current: [SkillChip], steppedFrom from: [SkillChip], to: [SkillChip]) -> [SkillChip] {
+        let removed = Set(from.map(\.id)).subtracting(to.map(\.id))
+        var result = current.filter { !removed.contains($0.id) }.map { chip in to.first { $0.id == chip.id } ?? chip }
+        for (index, chip) in to.enumerated() where !result.contains(where: { $0.id == chip.id }) {
+            // After the nearest skill before it in `to` that is here, else
+            // before the nearest one after it, else at the end.
+            if let before = to[..<index].reversed().lazy.compactMap({ previous in result.firstIndex { $0.id == previous.id } }).first {
+                result.insert(chip, at: before + 1)
+            } else if let after = to[(index + 1)...].lazy.compactMap({ next in result.firstIndex { $0.id == next.id } }).first {
+                result.insert(chip, at: after)
+            } else {
+                result.append(chip)
+            }
+        }
+        return result
     }
     /// Backspace with the caret at the very start of the text.
     @discardableResult func removeLastSkillToken() -> Bool {

@@ -338,6 +338,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
+    /// Test seam: each step an Edit's preparation reaches (`editMessage`), so
+    /// a fixture can time what the composer waits on.
+    var messageEditStep: ((String) -> Void)?
     /// Suspends legacy cost accounting in opening-race fixtures.
     var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]

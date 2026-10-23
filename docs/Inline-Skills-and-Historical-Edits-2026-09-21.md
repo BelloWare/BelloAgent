@@ -74,7 +74,12 @@ New `branch` records retain their ordinary append-only envelope and add:
 | `nativeState` | Accepted replacement and command receipt in the same commit |
 
 The live edit checks the journal head across asynchronous validation and verifies
-the preparation's timeline/text digests. Readers recompute the historical plan
+the preparation's timeline/text digests. Since 0.1.131 (owner decision, "Re-check
+at Send") a reader that has it sends `editSourcePrefix`, the digest of the timeline
+through the edited message, in place of the whole timeline: rows added after that
+message since the preparation (a run that went on) leave the edit valid, while a
+changed message or a changed conversation before it still refuses it. Without it
+the whole timeline must be unchanged, as before. Readers recompute the historical plan
 and require exact ordered replay/prefix/digest agreement. Physical journal-head
 identity is diagnostic on reopen because forks preserve records while stripping
 inherited queue authorization; it is not used to guess a missing branch.
@@ -92,7 +97,8 @@ User messages now have `nativeUserInput` version 1 containing attachment
 references and skill identity/hash/intent/argument metadata. Raw images and
 expanded skill bodies are not duplicated into that envelope. The read-only
 `session.edit.prepare` RPC returns at most 16,384 UTF-16 units per page, full
-text length, target/timeline/text identity and first-page input metadata. Native
+text length, target/timeline/text identity (the timeline both whole, `sourceTimeline`,
+and through the target, `sourcePrefix`) and first-page input metadata. Native
 assembly rejects non-progress, changed identities and oversized input.
 The handshake advertises `session.edit.prepare` and `native-branch-v2`.
 **Ship this helper and native reader together**; earlier binaries cannot read

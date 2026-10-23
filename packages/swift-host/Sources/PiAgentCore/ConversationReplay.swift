@@ -56,6 +56,7 @@ extension AgentSession {
         guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline, expectedTextDigest == nil || expectedTextDigest == digest else { throw AgentError("edit_changed", "The source changed during edit preparation. Select the message again.") }
         var page = try textPage(text, offset: offset)
         page["messageId"] = JSON(messageID); page["sourceTimeline"] = JSON(plan.sourceTimeline); page["sourceTextDigest"] = JSON(digest)
+        page["sourcePrefix"] = JSON(plan.sourcePrefix)
         if offset == 0 {
             page["input"] = message.userInput ?? .null
             page["legacyInputs"] = JSON(message.userInput == nil && (message.displayText != nil && message.displayText != message.text || message.content.contains { $0["type"].text == "image" }))
