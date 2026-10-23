@@ -67,7 +67,7 @@ About 0.02 ms a row a token. A sample of the 3,000-row case (`perf/profile-strea
 
 Also measured: the request log's read of a whole window (`LiveAccountingTests`, three requests in the archive) 15.7 ms at 750 rows and 59.5 ms at 3,000; a helper page decoded on the main thread (`TranscriptMessage.page`) 5.6 ms for 250 tool-heavy rows, 22.5 ms for 1,000; profiled, a 1,000-row journal page reads in about 150 ms off the main thread, 60% of it decoding JSON, 15% the offset index and 15% weighing each row.
 
-**Chosen: pages of 250 rows (1 MiB) in a window of 750 rows (6 MB).** Against dev/next it reads a tool-heavy chat back in 19 loads instead of 48 and a normal chat in 7 instead of 70, opens faster, lands each page in about half the time, never starts a window inside a turn, and keeps a reply's tokens at 7 ms in a chat just opened (dev/next 3 ms) and 17.5 ms with a full window (dev/next 12.2 ms at its 500). The owner's 1,000 rows would have read the same chat back in two loads, but streamed a reply in a chat just opened at 22 ms a token and, with a full window, at 61 ms; it waits on making a token's cost independent of the window (Open items).
+**Chosen: pages of 250 rows (1 MiB) in a window of 750 rows (6 MB).** Against dev/next it reads a tool-heavy chat back in 19 loads instead of 48 and a normal chat in 7 instead of 70, opens faster, lands each page in about half the time, never starts a window inside a turn, and keeps a reply's tokens at 7 ms in a chat just opened (dev/next 3 ms) and 17.5 ms with a full window (dev/next 12.2 ms at its 500). The owner's 1,000 rows would have read the same chat back in two loads, but streamed a reply in a chat just opened at 22 ms a token and, with a full window, at 61 ms; it waits on making a token's cost independent of the window. The owner confirmed the choice on 2026-10-23: "250 now, 1,000 later" (Open items, 1).
 
 ### dev/next against this branch
 
@@ -155,7 +155,7 @@ After the last round no mutation marker is left and every mutated file is byte-i
 
 ## Open items
 
-1. **Owner decision: the page size.** Chosen (the conservative option): 250-row pages in a 750-row window. Options:
+1. **The page size: decided.** The owner, 2026-10-23: "250 now, 1,000 later". 0.1.131 ships 250-row pages in a 750-row window (a below). Once this branch is merged, a follow-up makes a streamed update cost only what changed (b) and then raises pages to 1,000 rows; it is not part of this branch. The options as measured:
    - (a) Keep 250 / 750: 19 loads to read the tool-heavy chat back, 7 for the normal one; a token costs 7 ms in a chat just opened (dev/next 3 ms) and up to 17.5 ms with a full window (dev/next 12.2 ms).
    - (b) First make a streamed token cost what changed rather than the whole window (`TranscriptNativeDocument.update`, `SessionDisplay.presentedMessages` and `TranscriptActivity.patch` each walk every row per token), then raise pages to the owner's 1,000 rows: 2 loads for the same chat. A performance project of its own, in the streaming path.
    - (c) 1,000 / 3,000 now: 2 loads, but 22 ms a token in a chat just opened and up to 61 ms with a full window.
