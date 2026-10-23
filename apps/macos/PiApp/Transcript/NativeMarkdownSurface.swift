@@ -75,20 +75,25 @@ import AppKit
     /// text view marked lays out what it would draw — for a reply just
     /// built, its whole text at the page's width, before the measurement
     /// that lays it out again at the narrower column beside the session
-    /// card. Drawing still lays out what it draws.
+    /// card. The visible glyphs are laid out just before drawing.
     override func setNeedsDisplay(_ invalidRect: NSRect, avoidAdditionalLayout flag: Bool) {
         let drawnAsLaidOut = window != nil && textContainer?.containerSize.width == frame.width
         super.setNeedsDisplay(invalidRect, avoidAdditionalLayout: flag || !drawnAsLaidOut)
     }
     var didDraw: (() -> Void)?
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        didDraw?()
+        // A cached height can place this text at a width whose glyphs are
+        // no longer laid out. Display invalidation avoided layout above;
+        // prepare the visible glyphs before AppKit draws, not after it.
+        var characters: NSRange?
         if let manager = layoutManager, let container = textContainer, (textStorage?.length ?? 0) > 0 {
             let rect = visibleRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
             let glyphs = manager.glyphRange(forBoundingRect: rect, in: container)
-            resolveFileLinks(in: manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+            characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         }
+        super.draw(dirtyRect)
+        didDraw?()
+        if let characters { resolveFileLinks(in: characters) }
     }
     convenience init() { self.init(frame: .zero, textContainer: nil) }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {

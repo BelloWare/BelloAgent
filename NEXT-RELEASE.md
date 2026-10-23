@@ -6,6 +6,7 @@
 
 Owner, 2026-10-22: "once you release the current version, please check this and try to replicate this and actually fix this."
 
+- [x] DRAW-1: PERF-1 deferred layout when a reply joined the page, but a cached height could put it on screen before its glyphs were laid out; the existing glyph lookup ran after AppKit had drawn nothing. Prepare visible glyphs before drawing, keeping one layout at the row's width. Pixel regression and mutation confirmed; all 423 release-gate PNGs compared and all gallery captures inspected, with no remaining blank prose. [Validation](docs/validation/a131-blanktext-0.1.131.md).
 - [ ] SCROLL-1: opening a long chat shows a turn's tool calls grouped ("42 calls") when the whole turn is loaded but as detailed rows when the loaded window starts inside it, and scrolling through a long chat loads too little at a time. Grouping must not depend on how much is loaded; the owner suggests loading far more rows at once (about 1,000).
 - [ ] EDIT-1: editing an earlier message can take very long to start even when the message is on screen.
 - [ ] OPEN-1: with several chats running, clicking one that has just finished can take a long time to load. Owner: "it doesn't make sense to me, because I mean it just finished." A chat that just finished must open as fast as an idle one.
