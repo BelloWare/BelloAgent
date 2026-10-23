@@ -16,7 +16,9 @@ import AppKit
     let turns: Int
     /// The journal's first and last message ids.
     let firstID = "u0"
-    var lastID: String { "a\(turns - 1)b" }
+    var lastID: String { journalLastID ?? "a\(turns - 1)b" }
+    /// A journal written by the test itself names its own last message.
+    private let journalLastID: String?
 
     /// `bigOutputTurn`: that turn's first tool output is larger than a page
     /// may hold (`HistoryWindowPolicy.envelopeBytes`), and its second one
@@ -68,12 +70,16 @@ import AppKit
         return data
     }
 
-    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil, markTurn: Int? = nil) async throws {
+    /// `journal`: the chat's journal and its last message's id, in place of
+    /// the one `journal(turns:)` writes (`turns` is then the test's own count).
+    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil, markTurn: Int? = nil,
+         journal: (data: Data, lastID: String)? = nil) async throws {
         self.turns = turns
+        journalLastID = journal?.lastID
         root = scratchRoot("long-chat-scroll")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let file = root.appendingPathComponent("long.jsonl")
-        try Self.journal(turns: turns, bigOutputTurn: bigOutputTurn, markTurn: markTurn).write(to: file)
+        try (journal?.data ?? Self.journal(turns: turns, bigOutputTurn: bigOutputTurn, markTurn: markTurn)).write(to: file)
         model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         try await model.reloadConfiguration()
         chat = ChatRecord(id: "long", workspaceID: "project", title: "Long", path: file.path, profileID: "profile")

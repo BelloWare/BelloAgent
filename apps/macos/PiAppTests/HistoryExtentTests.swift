@@ -5,6 +5,13 @@ import XCTest
 /// the timeline, a page can be read at any row of it, and the transcript
 /// knows how many rows lie before and after the window it holds.
 final class HistoryExtentTests: XCTestCase {
+    /// `LongChatScroll`'s turns are five rows, and these tests of the room
+    /// kept for rows not read page three of them at a time, as the 0.1.71
+    /// plan did (`usePlanPages`), so their chats are many pages long.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        usePlanPages(rows: 15)
+    }
     @MainActor private func journal(turns: Int) throws -> URL {
         let root = scratchRoot("history-extent")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -144,9 +151,11 @@ final class HistoryExtentTests: XCTestCase {
         let newest = try await reader.window(path: file.path)
         XCTAssertEqual(newest.total, 200)
         XCTAssertEqual(newest.start, 200 - newest.messages.count, "the newest page ends at the last row")
+        // Row 101 is turn 20's first reply: the page starts at that turn's
+        // question, so the turn reads whole, and holds the row.
         let middle = try await reader.window(path: file.path, position: 101)
-        XCTAssertEqual(middle.start, 101)
-        XCTAssertEqual(middle.messages.first?.id, "a20a", "row 101 is turn 20's first reply")
+        XCTAssertEqual(middle.start, 100)
+        XCTAssertEqual(middle.messages.first?.id, "u20"); XCTAssertEqual(middle.messages.dropFirst().first?.id, "a20a")
         XCTAssertNotNil(middle.older); XCTAssertNotNil(middle.newer)
         let first = try await reader.window(path: file.path, position: 0)
         XCTAssertEqual(first.start, 0)
@@ -244,6 +253,22 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertFalse(drawn.contains("a0"), "The fixture's empty reply draws no row")
         XCTAssertEqual(WorkspaceModel.landingMessageID(in: [empty, question, reply]), "u1")
         XCTAssertEqual(WorkspaceModel.landingMessageID(in: [question, reply]), "u1")
+    }
+
+    /// A page read by position starts at the question of the turn that holds
+    /// the row (0.1.131), and lands on that row, where the room put it: not
+    /// on the turn's question rows earlier.
+    @MainActor func testAPositionReadLandsOnTheRowAtThatPosition() async throws {
+        let rows: [WireValue] = [("u20", "user"), ("a20a", "assistant"), ("a20b", "assistant"), ("u21", "user")].map {
+            .object(["id": .string($0.0), "role": .string($0.1), "text": .string($0.0)])
+        }
+        let page = try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("i"), "lineage": .string("l"),
+            "messages": .array(rows), "older": .null, "newer": .null, "start": .number(100), "total": .number(200)]))
+        let found = try await WorkspaceModel.drawablePage(from: page, at: 102) { _, _ in page }
+        XCTAssertEqual(found?.landing, "a20b")
+        let start = try await WorkspaceModel.drawablePage(from: page, at: 100) { _, _ in page }
+        XCTAssertEqual(start?.landing, "u20")
+        XCTAssertEqual(WorkspaceModel.landingMessageID(in: page.messages, from: 9), "u21", "past the page's end: its last row drawn")
     }
 
     /// A page holding only rows with nothing to draw is not the end of the

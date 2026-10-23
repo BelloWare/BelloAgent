@@ -326,6 +326,10 @@ final class LiveAccountingTests: XCTestCase {
         try await model.traces.close(); await model.store?.close()
     }
 
+    /// The request log is asked about a whole resident window's rows in one
+    /// read. In 0.1.131 the window grew past the read's old bound of 500
+    /// rows, and every read of a window longer than that failed whole: no
+    /// figures on any row and "metrics unavailable" in the footer.
     @MainActor func testFullNativePageKeepsAccountingPastTheOldHundredRowLimit() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -335,7 +339,8 @@ final class LiveAccountingTests: XCTestCase {
         let chat = ChatRecord(id: "long-chat", workspaceID: "w", title: "Long chat", path: nil, profileID: "p")
         model.chats = [chat]
         let view = SessionDisplay(id: chat.id)
-        view.messages = (0..<600).map { .init(id: "row-\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Row \($0)") }
+        let resident = HistoryWindowPolicy.residentRows
+        view.messages = (0..<(resident + 100)).map { .init(id: "row-\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Row \($0)") }
         // A page past the read's limit is a window a held row stretched: its
         // earliest rows were drawn with their figures already.
         var earlier = GatewayTotals(); earlier.requests = 1; earlier.costUSD = 0.004
@@ -349,8 +354,10 @@ final class LiveAccountingTests: XCTestCase {
             value["outputMessageIds"] = .array([.string("row-\(output)")])
             try await model.traces.begin(value, workspace: "w"); try await model.traces.finish(value)
         }
+        let started = ProcessInfo.processInfo.systemUptime
         await model.refreshAccounting(view, workspaceID: "w")
-        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).count, 500)
+        print(String(format: "PERF accounting read of a %d-row window: %.1f ms", resident, (ProcessInfo.processInfo.systemUptime - started) * 1000))
+        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).count, resident)
         XCTAssertEqual(TranscriptPage.accountingPage(view.messages).first?.id, "row-100", "The read asks about the newest rows")
         XCTAssertEqual(view.footer.gateway.requests, 3)
         XCTAssertEqual(try XCTUnwrap(view.footer.gateway.costUSD), 0.007, accuracy: 0.00000001)

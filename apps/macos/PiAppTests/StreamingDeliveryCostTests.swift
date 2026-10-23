@@ -9,7 +9,9 @@ import Combine
 /// and publishing it. Printed as PERF lines; the asserts only pin the budget
 /// the main actor has, so a slow machine does not fail the suite on noise.
 final class StreamingDeliveryCostTests: XCTestCase {
-    static let rowCount = 300
+    /// The rows the window holds; `PI_DELTA_ROWS` measures another window
+    /// (the resident window holds up to `HistoryWindowPolicy.residentRows`).
+    static let rowCount = testEnvironment("PI_DELTA_ROWS").flatMap(Int.init) ?? 300
     /// A row shaped like the helper's display projection.
     private static func row(_ index: Int) -> WireValue {
         .object(["id": .string("m\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
@@ -42,12 +44,13 @@ final class StreamingDeliveryCostTests: XCTestCase {
             XCTAssertEqual(storage(windowed), storage(page), "a page that fits was copied (keepingEarlier: \(keepingEarlier))")
         }
         XCTAssertEqual(storage(TranscriptPage.displayPage(page)), storage(page), "the page's display page copied a page that fits")
-        // A page past the caps is still cut at the same edge as before.
+        // A page past the caps is cut where a turn starts: the window holds
+        // whole turns (a question and its reply, here).
         let caps = TranscriptPaging.residentCaps
         defer { TranscriptPaging.residentCaps = caps }
         TranscriptPaging.residentCaps = (rows: 10, bytes: caps.bytes)
         XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: true).map(\.id), page.prefix(10).map(\.id))
-        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(10).map(\.id))
+        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(9).map(\.id))
     }
 
     /// The stages a delta passes through, each timed on its own.

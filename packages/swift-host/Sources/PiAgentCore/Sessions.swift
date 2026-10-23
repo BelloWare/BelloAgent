@@ -346,6 +346,9 @@ public actor AgentSession {
     /// the loaded ones, and rows an edit hid before the checkpoint (earlier
     /// versions), are only in the journal.
     var partialHistory = false
+    /// Metadata and original input offsets for edits, taken on over appends.
+    var editPreparationIndex: EditPreparationIndex?
+    var editPreparationLoad: SharedHistoryLoad?
     /// The newest edit marker among all shown rows, from the metadata file,
     /// when it is before the loaded rows: the timeline a page cursor names.
     var checkpointLineage: String?
@@ -369,7 +372,7 @@ public actor AgentSession {
     /// Shared full-history read for edits and version requests.
     var fullHistoryLoad: SharedHistoryLoad?
     /// Test seam: what a background load, or a load of older rows, waits on
-    /// before each stage ("replay", "prepare", "index", "full").
+    /// before each stage ("replay", "prepare", "index", "full", "edit").
     var historyFillHold: (@Sendable (String) async -> Void)?
     func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
     /// Test seams: where each replay of the journal starts reading, and how
@@ -377,6 +380,9 @@ public actor AgentSession {
     // Test seam: a page has reached a row; nil in production.
     var historyPageStep: (@Sendable (String) -> Void)?
     func noteHistoryPageSteps(_ step: (@Sendable (String) -> Void)?) { historyPageStep = step }
+    // Test seam: what a history page may hold; the standard limits in production.
+    var historyPageLimits = HistoryWindowPolicy.PageLimits.standard
+    func limitHistoryPages(_ limits: HistoryWindowPolicy.PageLimits) { historyPageLimits = limits }
     var historyReads: (@Sendable (UInt64) -> Void)?
     func noteHistoryReads(_ reads: (@Sendable (UInt64) -> Void)?) { historyReads = reads }
     var historyLoadJoins = 0

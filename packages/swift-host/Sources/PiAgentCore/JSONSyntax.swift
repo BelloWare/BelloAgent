@@ -13,13 +13,25 @@ import Foundation
 enum JSONSyntax {
     static func plainlyValid(_ line: Data) -> Bool {
         line.withUnsafeBytes { raw -> Bool in
-            var scanner = Scanner(bytes: raw.bindMemory(to: UInt8.self))
+            var scanner = Scanner(bytes: raw.bindMemory(to: UInt8.self), checkingValues: false)
+            return scanner.document()
+        }
+    }
+
+    /// Metadata-only edit reads also skip payloads. Validate UTF-8 and finite
+    /// numbers without building those values; unusual encodings and unicode
+    /// escapes still go to the original parser. True proves it accepts the
+    /// whole line, including fields the metadata decoder never asks for.
+    static func checked(_ line: Data) -> Bool {
+        line.withUnsafeBytes { raw in
+            var scanner = Scanner(bytes: raw.bindMemory(to: UInt8.self), checkingValues: true)
             return scanner.document()
         }
     }
 
     private struct Scanner {
         let bytes: UnsafeBufferPointer<UInt8>
+        let checkingValues: Bool
         var index = 0
         /// The parser's own bound on nesting.
         private static let maximumDepth = 512
@@ -95,26 +107,35 @@ enum JSONSyntax {
                 return take(UInt8(ascii: "]"))
             }
         }
-        /// Plain ASCII, no control character, and only the escapes that stand
-        /// for one ASCII character.
+        /// Plain ASCII, or validated UTF-8 for checked reads, with only the
+        /// escapes that stand for one ASCII character.
         private mutating func string() -> Bool {
             index += 1
+            let start = index
+            var ascii = true
             while let byte = peek {
                 index += 1
                 switch byte {
-                case UInt8(ascii: "\""): return true
+                case UInt8(ascii: "\""):
+                    return ascii || String(bytes: bytes[start..<(index - 1)], encoding: .utf8) != nil
                 case UInt8(ascii: "\\"):
                     guard let escape = peek, [UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"), UInt8(ascii: "b"),
                                               UInt8(ascii: "f"), UInt8(ascii: "n"), UInt8(ascii: "r"), UInt8(ascii: "t")].contains(escape) else { return false }
                     index += 1
                 default:
-                    guard byte >= 0x20, byte < 0x80 else { return false }
+                    guard byte >= 0x20 else { return false }
+                    if byte >= 0x80 {
+                        guard checkingValues else { return false }
+                        ascii = false
+                    }
                 }
             }
             return false
         }
-        /// JSON's grammar, with no exponent and at most fifteen digits.
+        /// The conservative numeric grammar, or the parser's finite-double
+        /// check when an edit needs skipped payloads validated too.
         private mutating func number() -> Bool {
+            let start = index
             var digits = 0
             _ = take(UInt8(ascii: "-"))
             guard let first = peek, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(first) else { return false }
@@ -127,8 +148,20 @@ enum JSONSyntax {
                 guard fraction > 0 else { return false }
                 digits += fraction
             }
-            if peek == UInt8(ascii: "e") || peek == UInt8(ascii: "E") { return false }
-            return digits <= 15
+            if !checkingValues {
+                if peek == UInt8(ascii: "e") || peek == UInt8(ascii: "E") { return false }
+                return digits <= 15
+            }
+            if peek == UInt8(ascii: "e") || peek == UInt8(ascii: "E") {
+                index += 1
+                if !take(UInt8(ascii: "+")) { _ = take(UInt8(ascii: "-")) }
+                guard skipDigits() > 0 else { return false }
+            }
+            let text = String(decoding: bytes[start..<index], as: UTF8.self)
+            guard let value = Double(text), value.isFinite else { return false }
+            if value == 0, let mantissa = text.split(whereSeparator: { $0 == "e" || $0 == "E" }).first,
+               mantissa.contains(where: { ("1"..."9").contains($0) }) { return false }
+            return true
         }
         private mutating func skipDigits() -> Int {
             let start = index

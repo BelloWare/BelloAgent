@@ -14,7 +14,8 @@ import Foundation
 struct OlderRows: Sendable {
     struct Entry: Sendable {
         var span: JournalCheckpoint.Row
-        var user: Bool
+        /// The row opens a display turn (`HistoryWindowPolicy.startsTurn`).
+        var startsTurn: Bool
     }
     /// The shown rows before the loaded ones, in order (`shown` of them),
     /// then the rows no timeline shows now: the versions an edit hid.
@@ -60,9 +61,11 @@ struct ShownRows {
         if let older, position < older.shown { return older.rows[position].span.id }
         return visible[position - olderCount].id
     }
-    func isUser(_ position: Int) -> Bool {
-        if let older, position < older.shown { return older.rows[position].user }
-        return visible[position - olderCount].role == "user"
+    /// Whether the row at `position` opens a display turn: where a history
+    /// page may start or end (`HistoryWindowPolicy.page`).
+    func startsTurn(_ position: Int) -> Bool {
+        if let older, position < older.shown { return older.rows[position].startsTurn }
+        return visible[position - olderCount].startsDisplayTurn
     }
     func position(of id: String) -> Int? {
         if let at = older?.positions[id] { return at < olderCount ? at : nil }
@@ -413,7 +416,7 @@ extension AgentSession {
             let span = replayed.rowSpans[message.id]
             if let span { if message.kind != nil { checked.append((message, span)) } } else { index.kept[message.id] = message }
             index.positions[message.id] = index.rows.count
-            index.rows.append(.init(span: span ?? .init(id: message.id, kind: .message, offset: 0, length: 0), user: message.role == "user"))
+            index.rows.append(.init(span: span ?? .init(id: message.id, kind: .message, offset: 0, length: 0), startsTurn: message.startsDisplayTurn))
         }
         for message in replayed.visible[..<shown] { try cancellation.checkCancellation(); add(message) }
         index.shown = shown

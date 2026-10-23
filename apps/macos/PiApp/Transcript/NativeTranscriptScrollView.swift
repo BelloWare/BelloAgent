@@ -14,6 +14,11 @@ enum TranscriptKeyScroll {
 }
 
 final class TranscriptNativeScrollView: NSScrollView {
+    // An always-visible scroller keeps its gutter before the first rows are
+    // measured; appearing afterward would reflow the whole page by 15 points.
+    override var scrollerStyle: NSScroller.Style {
+        didSet { autohidesScrollers = scrollerStyle != .legacy }
+    }
     override var frame: NSRect {
         willSet {
             if frame != newValue { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }
@@ -685,7 +690,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             let measuring = ProcessInfo.processInfo.systemUptime
             var first = self.rows.count
             for row in nearest {
-                if row.superview == nil { self.addSubview(row) }
+                if row.superview == nil, !row.foldedAway { self.addSubview(row) }
                 _ = row.measure(width: self.rowWidth)
                 first = min(first, row.layoutIndex)
                 if ProcessInfo.processInfo.systemUptime - measuring >= self.slicePlacementSeconds { break }
@@ -1068,7 +1073,7 @@ final class TranscriptNativeScrollView: NSScrollView {
               rows(overlapping: buffered).contains(where: { approximate.contains($0.itemID) }) {
             rounds += 1; correctionRounds += 1
             for row in rows(overlapping: buffered) where approximate.contains(row.itemID) {
-                if row.superview == nil { addSubview(row) }
+                if row.superview == nil, !row.foldedAway { addSubview(row) }
                 _ = row.measure(width: rowWidth)
                 estimated.remove(row.itemID); approximate.remove(row.itemID)
             }
@@ -1078,7 +1083,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             buffered = Self.buffered(clip.bounds)
         }
         let retention = buffered.insetBy(dx: 0, dy: -buffered.height * Self.hostReach)
-        var cold = rows(overlapping: retention).contains { !$0.isHosted }
+        var cold = rows(overlapping: retention).contains { !$0.isHosted && !$0.foldedAway }
         // Previously hosted rows include those leaving the viewport, and
         // selection/motion can keep one outside the normal retention band.
         var candidates = visibilityRows
@@ -1093,7 +1098,10 @@ final class TranscriptNativeScrollView: NSScrollView {
             // measured in a slice, pages away from the viewport, has nothing
             // on screen to finish and detaches at once.
             let nearby = Self.overlaps(row.frame, retention)
-            let needed = !approximate.contains(row.itemID) && (Self.overlaps(row.frame, buffered) || row === selected
+            // A row a turn's fold hides draws nothing: it is not mounted, and
+            // one just folded away detaches once its motion has ended.
+            let needed = !approximate.contains(row.itemID) && (!row.foldedAway || row.isInDisclosureMotion)
+                && (Self.overlaps(row.frame, buffered) || row === selected
                 || (row.superview != nil && row.needsMountedValidation && nearby))
             if needed, row.superview == nil {
                 if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountedRows += 1 }
@@ -1119,7 +1127,7 @@ final class TranscriptNativeScrollView: NSScrollView {
                     row.releaseHost()
                     if TranscriptLayoutClock.recording { TranscriptLayoutClock.hostReleaseSeconds += TranscriptLayoutClock.now - started }
                 }
-                else if !row.isHosted { cold = true }
+                else if !row.isHosted, !row.foldedAway { cold = true }
             }
         }
         visibilityRows = candidates.filter { $0.isHosted || $0.superview != nil }
@@ -1150,7 +1158,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // The nearest row in the direction of travel is the one they reach
         // first, so it is the one that gets built first.
         let edge = forward ? view.maxY : view.minY
-        var cold = rows.filter { !$0.isHosted && Self.overlaps($0.frame, ready) }
+        var cold = rows.filter { !$0.isHosted && !$0.foldedAway && Self.overlaps($0.frame, ready) }
         guard !cold.isEmpty else { return false }
         if cold.count > limit {
             cold.sort { abs($0.frame.midY - edge) < abs($1.frame.midY - edge) }
@@ -1457,7 +1465,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             if deferring, let scale { row.restoreSharedMeasurement(width: nextWidth, backingScale: scale) }
             // Changed offscreen content and width reflows need the same window
             // metrics as visible rows. Cached rows need no mounting to measure.
-            if !row.hasMeasurement(width: nextWidth), row.superview == nil { addSubview(row) }
+            if !row.hasMeasurement(width: nextWidth), row.superview == nil, !row.foldedAway || row.isHosted { addSubview(row) }
             let size = row.measure(width: nextWidth)
             let rect = CGRect(x: left, y: y, width: nextWidth, height: size.height)
             // A row that only moves keeps its tree: laying it out again is

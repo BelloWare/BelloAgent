@@ -6,6 +6,13 @@ import AppKit
 /// whole chat, loaded or not, steps to each — reading in the page of one the
 /// window does not hold — marks them, and closes with Escape.
 final class TranscriptFindTests: XCTestCase {
+    /// Find reaches matches far above the window: these chats page three
+    /// five-row turns at a time, as the 0.1.71 plan did (`usePlanPages`), so
+    /// most of a chat is outside it.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        usePlanPages(rows: 15)
+    }
     @MainActor private func chat(turns: Int = 60) async throws -> LongChatScroll {
         let chat = try await LongChatScroll(turns: turns)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)

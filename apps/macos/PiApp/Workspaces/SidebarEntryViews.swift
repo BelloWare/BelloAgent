@@ -453,7 +453,7 @@ import Combine
 /// A plain label button: a symbol and words in the caption font, no face,
 /// dimming when disabled (`Label` in `.buttonStyle(.plain)`).
 @MainActor final class SidebarLinkButton: PiKit.ButtonBase {
-    override var title: String { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+    override var title: String { didSet { if oldValue != title { invalidateIntrinsicContentSize(); redrawContent() } } }
     let symbol: String
     let ink: NSColor
     init(title: String, symbol: String, ink: NSColor, action: @escaping () -> Void) {

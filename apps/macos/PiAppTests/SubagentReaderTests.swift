@@ -1268,6 +1268,7 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertFalse(model.subagentReaderCommandsEnabled(tab.key), "The Reports page still covers a reader embedded in the workspace")
     }
     @MainActor func testReopeningUnchangedHistoryCancelsPagingWithoutKeepingItsLoadingFlags() async throws {
+        usePlanPages(rows: 6) // three turns a page, so the journal has an earlier one
         let (model, gate) = try fixture()
         let path = model.root.appendingPathComponent("paging.jsonl")
         var data = Data()

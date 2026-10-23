@@ -70,16 +70,19 @@ final class StatPillRollTests: XCTestCase, SerialTestLane {
         defer { window.contentView = nil; window.close() }
         PiKit.Motion.reducedOverride = false
         defer { PiKit.Motion.reducedOverride = nil }
-        var wholeDraws = 0
+        var wholeDraws = 0, readingDraws = 0
         let draw = pill.content.drawer
         pill.content.drawer = { rect in wholeDraws += 1; draw?(rect) }
+        let drawReading = pill.readingLayer.drawer
+        pill.readingLayer.drawer = { rect in readingDraws += 1; drawReading?(rect) }
         pill.update(label: "7.4K tok · $0.006", scope: AnyHashable(1))
         XCTAssertTrue(pill.isRolling)
         try await eventually("the layer animation finishing", timeout: .seconds(2), poll: .milliseconds(8)) {
             holder.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
             return !pill.isRolling
         }
-        XCTAssertGreaterThan(wholeDraws, 0, "The test observed the changed face being drawn")
-        XCTAssertLessThanOrEqual(wholeDraws, 3, "The glyph layers animate without redrawing the whole pill each frame")
+        XCTAssertGreaterThan(readingDraws, 0, "The test observed the changed reading being drawn")
+        XCTAssertLessThanOrEqual(readingDraws, 3, "The glyph layers animate without redrawing the whole reading each frame")
+        XCTAssertEqual(wholeDraws, 0, "A reading that changes at the same size keeps the unchanged symbol")
     }
 }

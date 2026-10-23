@@ -9,6 +9,12 @@ import AppKit
 /// reader makes moves the chat onto a new branch, and the page goes there
 /// with them. Every check is on what the reader sees, pass after pass.
 class HistoryEdgeTestCase: XCTestCase {
+    /// `PagedChat`'s turns are a question and a reply, and its tests page as
+    /// the 0.1.71 plan did, three turns at a time (`usePlanPages`).
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        usePlanPages(rows: 6)
+    }
 
     // MARK: What one pass shows
 

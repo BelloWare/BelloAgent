@@ -98,7 +98,7 @@ extension AgentSession {
     /// on one gets `session_closed`. For a close and an unload.
     func cancelHistoryLoads() {
         cancelHistoryFill()
-        olderRowsLoad?.cancel(); fullHistoryLoad?.cancel()
+        olderRowsLoad?.cancel(); fullHistoryLoad?.cancel(); editPreparationLoad?.cancel()
         contentLoad?.load.cancel()
         Discarded.release(contentCache); contentCache = nil
     }

@@ -141,12 +141,13 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
         var label: String
         var shown: Double?
         var ready: Double?
+        var accepted: Double?
         var steps: [(String, Double)] = []
         var note = ""
         var description: String {
             func ms(_ value: Double?) -> String { value.map { String(format: "%.0f ms", $0 * 1000) } ?? "never" }
             let trail = steps.map { String(format: "%@ %.0f", $0.0, $0.1 * 1000) }.joined(separator: ", ")
-            return "EDIT-LATENCY \(label): composer shows the question at \(ms(shown)), original loaded at \(ms(ready)) [steps ms: \(trail)]\(note.isEmpty ? "" : " " + note)"
+            return "EDIT-LATENCY \(label): composer shows the question at \(ms(shown)), original loaded at \(ms(ready))\(accepted.map { ", Send accepted at \(ms($0))" } ?? "") [steps ms: \(trail)]\(note.isEmpty ? "" : " " + note)"
         }
     }
 
@@ -154,7 +155,7 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
     /// under the banner, editable, and then for the preparation to end: the
     /// complete original loaded, which is when Send can take the edit.
     @MainActor private func edit(_ launched: Launched, _ id: String, text: String, label: String, timeout: Double = 120,
-                                 typeWhileLoading: String? = nil) async throws -> Timing {
+                                 typeWhileLoading: String? = nil, sendOnReady: Bool = false) async throws -> Timing {
         let model = launched.model
         let view = try XCTUnwrap(model.displays[chatID])
         let row = try XCTUnwrap(launched.userRow(id), "\(label): the question is not on screen")
@@ -190,6 +191,14 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
         }
         if let failure = timing.steps.first(where: { $0.0.hasPrefix("failed") }) { timing.note += " (\(failure.0))" }
         if view.editingMessageID != id { timing.note += " (the composer never entered the edit; notice: \(view.notice))" }
+        if sendOnReady {
+            XCTAssertFalse(view.editInputPending, view.editNotice)
+            view.draft += " (edited in generated latency fixture)"
+            model.sendEdit(sessionID: chatID)
+            try await eventually("The generated edit is accepted", timeout: .seconds(120)) { !view.editSubmitting }
+            XCTAssertNil(view.editingMessageID, view.editNotice)
+            timing.accepted = ProcessInfo.processInfo.systemUptime - start
+        }
         print(timing)
         model.cancelEdit(sessionID: chatID)
         if typeWhileLoading != nil { view.draft = "" }
@@ -283,7 +292,7 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
         model.prewarmsHelpers = true; model.automaticContextOperation = nil
         try await reopen(launched)
         try await measure("helper warm, chat opened from its metadata file")
-        try await measure("helper warm, every row loaded (second edit)")
+        try await measure("helper warm, cached preparation (second edit)")
 
         try await reopen(launched)
         let item = try XCTUnwrap(model.record(chatID)), host = try XCTUnwrap(model.hosts[item.workspaceID])
@@ -292,7 +301,7 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
         print(String(format: "EDIT-LATENCY session.edit.prepare, chat opened from its metadata file: %.0f ms", (ProcessInfo.processInfo.systemUptime - clock) * 1000))
         clock = ProcessInfo.processInfo.systemUptime
         _ = try await host.request("session.edit.prepare", sessionID: chatID, params: ["messageId": .string(first.id)])
-        print(String(format: "EDIT-LATENCY session.edit.prepare, every row loaded: %.0f ms", (ProcessInfo.processInfo.systemUptime - clock) * 1000))
+        print(String(format: "EDIT-LATENCY session.edit.prepare, cached preparation: %.0f ms", (ProcessInfo.processInfo.systemUptime - clock) * 1000))
 
         // During a run, on a chat opened from its metadata file.
         try await reopen(launched)
@@ -322,5 +331,10 @@ final class MessageEditLatencyTests: XCTestCase, SerialTestLane {
         // Typing while the original loads.
         try await reopen(launched)
         try await measure("typing while it loads (chat opened from its metadata file)", timeout: 60, typeWhileLoading: "x")
+
+        try await reopen(launched)
+        let sending = try target()
+        _ = try await edit(launched, sending.id, text: sending.text, label: "press Edit through accepted Send, cold helper",
+                           sendOnReady: true)
     }
 }

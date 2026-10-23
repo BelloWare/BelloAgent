@@ -323,8 +323,9 @@ extension WorkspaceModel {
                 // its rows and stopped taking the helper's: the reply
                 // being written stopped mid-sentence and stayed that
                 // way, behind "Load newer messages", until the chat
-                // was left and opened again.
-                messages = Array(merged[start...])
+                // was left and opened again. From the start of the held
+                // row's turn, so the turn reads whole.
+                messages = Array(merged[TranscriptPaging.turnStart(start, in: merged)...])
             }
             // Touch only the rows whose accounting actually moved:
             // writing every row copies the whole page's storage and
@@ -358,6 +359,8 @@ extension WorkspaceModel {
                 // when the chat was opened again.
                 let edge = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: first.id)
                 let trimmed = first.id != merged.first?.id
+                // Trimmed whole turns at a time: no turn's question is above the window.
+                if trimmed, TranscriptPaging.startsTurn(first), view.presentation.partialTurnInput != nil { view.presentation.partialTurnInput = nil }
                 let older: ConversationCursor?? = first.id == projected.first?.id ? .some(liveOlder ?? (trimmed ? edge : nil))
                     : view.olderPage.cursor != nil || trimmed ? .some(edge) : .none
                 if let older, older != view.olderPage.cursor {
@@ -514,6 +517,7 @@ extension WorkspaceModel {
         // there are rows before the window (`HistoryExtent`).
         view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
         view.messages = bounded
+        if TranscriptPaging.startsTurn(first) { view.presentation.partialTurnInput = nil }
         let edge = ConversationCursor(incarnation: identity.incarnation, lineage: identity.lineage, entry: first.id)
         if !view.olderPage.loading { view.olderPage = .init(cursor: edge) } else { view.olderPage.cursor = edge }
         if view.before != edge.entry { view.before = edge.entry }
