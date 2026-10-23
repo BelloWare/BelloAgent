@@ -214,12 +214,6 @@ extension WorkspaceModel {
         guard location.sessionID == view.id else { return }
         view.composerEditor = editor; view.composerLocation = location
         view.completionParse?.cancel()
-        // A queue edit replaces text only. Its original skills stay with the
-        // helper; slash text here must not consume Return or add new chips
-        // which the queued-save validator would then refuse.
-        guard view.queueEditingID == nil else {
-            view.completionToken = nil; view.completionVisible = false; return
-        }
         guard let token = SlashCompletionToken.local(in: editor.string as NSString, at: location, directInput: view.directCommand) else {
             view.completionToken = nil; if view.completionVisible { view.completionVisible = false }; return
         }
@@ -255,7 +249,10 @@ extension WorkspaceModel {
     }
     func completions(_ view: SessionDisplay) -> [CommandCompletion] {
         guard view.completionVisible, let token = view.completionToken else { return [] }
-        let builtins = token.wholeMessageCommandEligible ? LeadingCommand.reserved.filter { $0.hasPrefix(token.query.lowercased()) }.map { CommandCompletion(id: "builtin:" + $0, name: $0, detail: "Built-in command", skill: nil) } : []
+        let editing = view.queueEditingID != nil || view.editingMessageID != nil
+        let builtins = token.wholeMessageCommandEligible ? LeadingCommand.reserved.filter { $0.hasPrefix(token.query.lowercased()) }.map {
+            CommandCompletion(id: "builtin:" + $0, name: $0, detail: editing ? ($0 == "debug" ? "Inspect this chat; keep the edit" : "Finish or cancel the edit first") : "Built-in command", skill: nil)
+        } : []
         let skills = view.skillCatalog.authorizes ? SkillSearch.search(view.skillCatalog.entries, query: token.query, actionable: true).map {
             CommandCompletion(id: $0.id, name: $0.name, detail: $0.scope + " · " + $0.path, skill: $0)
         } : []
@@ -267,7 +264,6 @@ extension WorkspaceModel {
         if view.completionSelectionID != id { view.completionSelectionID = id }
     }
     func completionKey(_ key: UInt16, modifiers: NSEvent.ModifierFlags = [], view: SessionDisplay) -> Bool {
-        guard view.queueEditingID == nil else { return false }
         guard modifiers.intersection([.command, .shift, .option, .control]).isEmpty else { return false }
         let choices = completions(view); guard view.completionVisible else { return false }
         if key == 53 { view.completionVisible = false; view.completionParse?.cancel(); return true }
@@ -283,7 +279,7 @@ extension WorkspaceModel {
         return false
     }
     func chooseCompletion(_ choice: CommandCompletion, view: SessionDisplay) {
-        guard !view.recoveringDraft, view.queueEditingID == nil else { return }
+        guard !view.recoveringDraft, !view.queueEditResolving, !view.editSubmitting else { return }
         guard let token = view.completionToken, let editor = view.composerEditor,
               editor.completionLocation == token.location, editor.selectedRange() == token.location.selectedRangeUTF16,
               !editor.hasMarkedText(), view.composerLocation == token.location,
@@ -298,12 +294,18 @@ extension WorkspaceModel {
                 if let view { self?.draftChanged(view) }
             }
         } else if token.wholeMessageCommandEligible {
+            if resolveEditingBuiltin(LeadingCommand(name: choice.name, arguments: ""), view: view) { return }
             editor.insertText("/" + choice.name + " ", replacementRange: token.replacementRangeUTF16); view.directCommand = true
         }
         view.completionVisible = false; view.completionToken = nil; view.completionParse?.cancel()
     }
     func canSelectSkill(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
-        guard !view.recoveringDraft, view.queueEditingID == nil else { return false }
+        guard !view.recoveringDraft, !view.queueEditResolving, !view.editSubmitting else { return false }
+        return skillIsAvailable(skill, view: view)
+    }
+    // Recovery checks the catalog while Send still holds the input lock.
+    // That lock prevents a new selection; it does not revoke existing chips.
+    func skillIsAvailable(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
         guard let workspaceID = record(view.id)?.workspaceID, skillEnabledInBelloAgent(skill.id), skill.canSelect,
               view.skillCatalog.authorizes, view.skillCatalog.scope == skillScope(sessionID: view.id, workspaceID: workspaceID) else { return false }
         return view.skillCatalog.entries.contains { $0.skill.id == skill.id && $0.skill.canSelect && $0.skill.contentHash == skill.contentHash && $0.skill.metadataHash == skill.metadataHash }
@@ -318,6 +320,7 @@ extension WorkspaceModel {
     }
     func resolveLeadingCommand(_ view: SessionDisplay, steer: Bool) -> Bool {
         guard let command = LeadingCommand.parse(view.draft, directInput: view.directCommand) else { return false }
+        if resolveEditingBuiltin(command, view: view) { return true }
         view.completionVisible = false
         if LeadingCommand.reserved.contains(command.name) {
             if command.name == "side" {
@@ -360,10 +363,27 @@ extension WorkspaceModel {
         // Continue the same explicit Send action with the resolved structured chip.
         send(steer: steer, sessionID: view.id); return true
     }
+    /// Whole-chat actions must not escape an edit or become replacement prose.
+    /// Inspection is read-only and leaves every part of the edit in place.
+    func resolveEditingBuiltin(_ command: LeadingCommand, view: SessionDisplay) -> Bool {
+        guard view.queueEditingID != nil || view.editingMessageID != nil, LeadingCommand.reserved.contains(command.name) else { return false }
+        let notice: String
+        if command.name == "debug", command.arguments.isEmpty {
+            inspect(view.id)
+            notice = "/debug opened the Session Inspector. Your edit is kept; remove the command before saving it."
+        } else if command.name == "debug" {
+            notice = "/debug takes no arguments. Your edit is kept."
+        } else {
+            notice = "/\(command.name) changes the chat, not the edited message. Finish or cancel this edit, then use the command. Your edit is kept."
+        }
+        if view.queueEditingID != nil { view.queueEditNotice = notice }
+        else { view.editNotice = notice; view.notice = notice }
+        return true
+    }
     func editSkillArguments(_ chip: SkillChip, view: SessionDisplay) {
-        guard !view.recoveringDraft else { return }
+        guard !view.recoveringDraft, !view.queueEditResolving, !view.editSubmitting else { return }
         if !questions.askText("Arguments for /\(chip.name)", value: chip.arguments, action: "Save Arguments", limit: 16384, about: view.id, entered: { [weak self] text in
-            guard let self, !view.recoveringDraft, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
+            guard let self, !view.recoveringDraft, !view.queueEditResolving, !view.editSubmitting, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
             view.skills[index].arguments = text
             self.draftChanged(view)
         }) { view.notice = PiQuestion.busyNotice }

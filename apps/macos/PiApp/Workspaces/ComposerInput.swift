@@ -330,7 +330,7 @@ import AppKit
             }()
             banner.update(title: state.queueSteering ? "Editing a steering message" : "Editing a queued message",
                           detail: state.queueNotice.isEmpty
-                            ? "Return or ⌘Return saves in the same place. Waiting messages are paused." + (state.queueKeepsInput ? " Original images and skills are kept." : "")
+                            ? "Return or ⌘Return saves in the same place. Waiting messages are paused." + (state.queueKeepsInput ? " Original images are kept." : "")
                             : state.queueNotice,
                           detailColor: state.queueNotice.isEmpty ? .piInkSecondary : .piDanger,
                           waiting: state.queueResolving, cancelEnabled: !state.queueResolving && !state.disabled,
@@ -356,7 +356,7 @@ import AppKit
         for control in PiKit.controls(in: chips) { control.isEnabled = !state.disabled }
         // The bar.
         attach.isEnabled = state.draftReady && !state.queueEditing && state.supportsImages && !state.disabled
-        skills.isEnabled = !state.queueEditing && !state.disabled
+        skills.isEnabled = !state.queueResolving && !state.disabled
         steer.isHidden = !(state.busy && !state.editing && !state.queueEditing)
         steer.title = state.form.runControls.steerIsCompact ? "" : "Steer run"
         steer.isEnabled = !state.loading && !state.disabled && !state.importingImages

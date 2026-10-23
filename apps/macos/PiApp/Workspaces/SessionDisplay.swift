@@ -685,8 +685,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         if queueEditHold != nil || continuable == false { return limit + " Finish or cancel the message edit, then choose Resume." }
         return limit + " Choose Resume to continue."
     }
-    /// The message being rewritten keeps images or skills, so its text may be empty.
+    /// The message being rewritten keeps images in the helper, so its text may be empty.
     var queueEditKeepsInput = false
+    var queueEditOriginalSkills: [SkillChip]?
     /// A Save, Cancel or Remove sent and not answered, and the text a Save
     /// sent: kept in the saved draft until the helper's answer is known.
     var queueEditPendingOperation: String?
@@ -884,6 +885,7 @@ struct TranscriptVersionView: Equatable, Sendable {
             if let editID = queueEditID, let turnID = queueEditingID {
                 var record = QueuedEditDraft(editID: editID, turnID: turnID, rewrite: draft, original: queueEditOriginal, pending: queueEditPendingOperation)
                 record.sentDigest = queueEditSentDigest
+                record.skills = skills; record.originalSkills = queueEditOriginalSkills
                 saved.queuedEdit = record
             }
             return saved

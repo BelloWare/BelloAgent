@@ -5,7 +5,7 @@ import XCTest
 /// The native queue row, composer and application menu, with the packaged
 /// helper and generated loopback responses. Key-window/menu ownership is serial.
 final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
-    @MainActor func testReturnSavesSlashTextWhileEditingInsteadOfOpeningSkillCompletion() async throws {
+    @MainActor func testSlashListOwnsReturnUntilDismissedWhileEditingAQueuedMessage() async throws {
         let fixture = try await fixture()
         let id = try await fixture.queued(paused: true)
         try await fixture.edit(id)
@@ -14,7 +14,10 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
         // Wait for the native location callback, including the code classifier.
         try await eventually("native caret reported") { fixture.session.composerLocation?.selectedRangeUTF16.location == editor.string.utf16.count }
         await fixture.session.completionParse?.value
-        XCTAssertFalse(fixture.session.completionVisible, "A queued rewrite is text only: completion must not take Return")
+        XCTAssertTrue(fixture.session.completionVisible, "The list opens even when no skill matches")
+        fixture.key()
+        XCTAssertNotNil(fixture.session.queueEditingID, "Return belongs to the open slash list")
+        fixture.key(code: 53)
         fixture.key()
         try await eventually("Return saved the literal rewrite", timeout: .seconds(5)) { fixture.session.queueEditingID == nil }
         let result = try await fixture.host.request("queue.read", sessionID: fixture.session.id, params: ["turnId": .string(id)]).object ?? [:]
@@ -318,7 +321,7 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
         for save in [false, true] {
             fixture.session.draft = "My parked draft"; fixture.session.skills = [skill.chip]; fixture.session.attachments = [attachment]
             try await fixture.edit(inputID)
-            XCTAssertEqual(fixture.session.draft, ""); XCTAssertTrue(fixture.session.skills.isEmpty); XCTAssertTrue(fixture.session.attachments.isEmpty)
+            XCTAssertEqual(fixture.session.draft, ""); XCTAssertEqual(fixture.session.skills.map(\.id), [skill.id]); XCTAssertTrue(fixture.session.attachments.isEmpty)
             XCTAssertTrue(fixture.pane.composer.send.isEnabled, "Image/skill-only queued messages can save empty text")
             let banner = try XCTUnwrap(ConversationPaneTests.views(ComposerEditBanner.self, in: fixture.pane).first)
             if save { banner.save.performClick(nil) } else { banner.cancel.performClick(nil) }
@@ -330,6 +333,62 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
         let check = try await fixture.host.request("queue.edit.begin", sessionID: fixture.session.id, params: ["turnId": .string(inputID), "editId": .string("verify-inputs")]).object ?? [:]
         XCTAssertEqual(check["attachmentCount"]?.number, 1); XCTAssertEqual(check["skillCount"]?.number, 1)
         _ = try await fixture.host.request("queue.edit.cancel", sessionID: fixture.session.id, params: ["editId": .string("verify-inputs")])
+    }
+
+    @MainActor func testSlashSkillAndChipArgumentsSurviveRelaunchAndSaveThroughTheMenu() async throws {
+        let first = try await fixture()
+        let id = try await first.queued(paused: true)
+        let folder = URL(fileURLWithPath: first.setup.workspace.path).appendingPathComponent(".agents/skills/queue-rewrite")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("---\nname: queue-rewrite\ndescription: Generated edit skill\n---\nReview the replacement.\n".utf8).write(to: folder.appendingPathComponent("SKILL.md"))
+        await first.model.loadSkillCatalog(refresh: true, sessionID: first.session.id)
+        first.session.draft = "Parked before skill edit"
+        try await first.edit(id); try first.type("Please use /queue-rewrite")
+        try await eventually("queued slash list opens") { first.session.completionVisible }
+        first.key(code: 48)
+        XCTAssertEqual(first.session.skills.map(\.name), ["queue-rewrite"])
+        first.pane.composer.refresh()
+        let editor = try XCTUnwrap(first.pane.composer.field?.documentView as? ComposerTextView)
+        let token = try XCTUnwrap(editor.skillTokenViews.first)
+        first.model.questions.enterText = { _, value in XCTAssertEqual(value, ""); return "check the revised tests" }
+        token.performClick(nil)
+        try await eventually("skill popover opens") { SkillPopovers.shared.presented != nil }
+        SkillPopovers.shared.presented?.actions.editArguments?()
+        try await eventually("chip arguments edited") { first.session.skills.first?.arguments == "check the revised tests" }
+        try await first.model.flushDrafts()
+        let saved = try await first.model.store?.get(DraftRecord.self, kind: "draft", id: first.session.id)
+        XCTAssertEqual(saved?.queuedEdit?.skills?.first?.arguments, "check the revised tests")
+        await first.model.stopHostsAndWait(); first.model.shutdown()
+        try await first.model.traces.close(); await first.model.store?.close()
+        first.window.contentView = nil; first.window.close()
+        let model = WorkspaceModel(stateRoot: first.setup.state, vault: first.setup.vault)
+        await model.restore(); await model.select(first.session.id)
+        let view = try XCTUnwrap(model.selected)
+        let second = try await mount(model, chat: try XCTUnwrap(model.record(view.id)), session: view, setup: first.setup)
+        try await eventually("skill edit resumed") { view.queueEditingID == id }
+        XCTAssertEqual(view.skills.first?.arguments, "check the revised tests")
+        XCTAssertEqual(view.draft, "Please use ")
+        model.submitFocusedComposer(intent: .steer, in: second.window)
+        try await eventually("menu saves skills") { view.queueEditingID == nil }
+        XCTAssertEqual(view.draft, "Parked before skill edit")
+        let check = try await second.host.request("queue.edit.begin", sessionID: view.id, params: ["turnId": .string(id), "editId": .string("verify-skills")]).object ?? [:]
+        XCTAssertEqual(check["skills"]?.array?.first?.object?["name"]?.string, "queue-rewrite")
+        XCTAssertEqual(check["skills"]?.array?.first?.object?["arguments"]?.string, "check the revised tests")
+        _ = try await second.host.request("queue.edit.cancel", sessionID: view.id, params: ["editId": .string("verify-skills")])
+        try await second.edit(id)
+        second.pane.composer.refresh()
+        let current = try XCTUnwrap(second.pane.composer.field?.documentView as? ComposerTextView)
+        let selected = try XCTUnwrap(current.skillTokenViews.first)
+        selected.performClick(nil)
+        try await eventually("saved chip popover opens") { SkillPopovers.shared.presented != nil }
+        SkillPopovers.shared.presented?.actions.remove?()
+        XCTAssertTrue(view.skills.isEmpty)
+        try second.type("Replacement without the skill")
+        second.pane.composer.send.performClick(nil)
+        try await eventually("removed skill saved") { view.queueEditingID == nil }
+        let cleared = try await second.host.request("queue.edit.begin", sessionID: view.id, params: ["turnId": .string(id), "editId": .string("verify-cleared")]).object ?? [:]
+        XCTAssertEqual(cleared["skillCount"]?.number, 0)
+        _ = try await second.host.request("queue.edit.cancel", sessionID: view.id, params: ["editId": .string("verify-cleared")])
     }
 
     @MainActor func testEditAndParkedDraftSurviveRelaunchAndSaveDurably() async throws {
