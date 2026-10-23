@@ -365,7 +365,7 @@ extension WorkspaceModel {
     }
     /// Whole-chat actions must not escape an edit or become replacement prose.
     /// Inspection is read-only and leaves every part of the edit in place.
-    private func resolveEditingBuiltin(_ command: LeadingCommand, view: SessionDisplay) -> Bool {
+    func resolveEditingBuiltin(_ command: LeadingCommand, view: SessionDisplay) -> Bool {
         guard view.queueEditingID != nil || view.editingMessageID != nil, LeadingCommand.reserved.contains(command.name) else { return false }
         let notice: String
         if command.name == "debug", command.arguments.isEmpty {

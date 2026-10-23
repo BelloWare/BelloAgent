@@ -135,6 +135,42 @@ final class EditSlashCommandTests: XCTestCase {
             XCTAssertEqual(pane.session.draft, "/debug extra")
         }
     }
+    @MainActor func testDebugDuringAnActiveRunKeepsTheEarlierEditThroughCommandReturnAndCompletion() async throws {
+        for fromList in [false, true] {
+            let pane = try await fixture(queued: false)
+            defer { pane.close() }
+            defer { SessionInspectorWindows.shared.closeAll() }
+            try await type("Use /rev", in: pane); try key(48, in: pane)
+            pane.session.skills[0].arguments = "Keep these review arguments"
+            pane.session.runState = .running
+            try await type("/debug", in: pane)
+            let before = pane.session.savedDraft, generation = pane.session.editGeneration
+            XCTAssertTrue(pane.session.busy)
+            XCTAssertTrue(pane.model.editBlocker(pane.session)?.contains("current run") == true)
+            if fromList {
+                let row = try XCTUnwrap(ConversationPaneTests.views(SlashCompletionRowView.self, in: pane.hosted).first { $0.choice.name == "debug" })
+                row.performClick(nil)
+            } else { try key(36, flags: .command, in: pane) }
+            XCTAssertEqual(pane.model.lastInspectorFocus, .latestRequest)
+            XCTAssertTrue(pane.session.editNotice.contains("/debug opened the Session Inspector"), pane.session.editNotice)
+            XCTAssertEqual(pane.session.savedDraft, before, "Inspection keeps the complete edit and the parked draft")
+            XCTAssertEqual(pane.session.editGeneration, generation)
+            XCTAssertEqual(pane.session.editingMessageID, "u1")
+            XCTAssertEqual(pane.session.runState, .running)
+            XCTAssertFalse(pane.session.editSubmitting); XCTAssertFalse(pane.session.loading)
+            XCTAssertTrue(pane.session.submittingCommands.isEmpty)
+
+            SessionInspectorWindows.shared.closeAll(); pane.model.lastInspectorFocus = nil
+            try await type("Keep the replacement", in: pane)
+            try key(36, flags: .command, in: pane)
+            XCTAssertNil(pane.model.lastInspectorFocus)
+            XCTAssertTrue(pane.session.editNotice.contains("current run"), "A real resend still waits for idle")
+            XCTAssertEqual(pane.session.draft, "Keep the replacement")
+            XCTAssertEqual(pane.session.skills, before.skills)
+            XCTAssertEqual(pane.session.editingMessageID, "u1")
+            XCTAssertFalse(pane.session.editSubmitting); XCTAssertFalse(pane.session.loading)
+        }
+    }
     @MainActor func testLeadingSkillCommandsResolveArgumentsBeforeEitherEditSubmits() async throws {
         for queued in [true, false] {
             let pane = try await fixture(queued: queued)
