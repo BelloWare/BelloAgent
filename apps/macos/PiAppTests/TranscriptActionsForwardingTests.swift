@@ -10,6 +10,9 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Each action a pane makes arrives once, from a row, through both relays.
     @MainActor func testEveryActionReachesThePaneThroughBothRelays() async {
         var calls: [String] = []
+        let context = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let bitmap = TranscriptImageBitmap(context.makeImage()!)
         let pane = TranscriptActions(
             inspect: { calls.append("inspect \($0)") },
             edit: { calls.append("edit \($0)") },
@@ -30,7 +33,8 @@ final class TranscriptActionsForwardingTests: XCTestCase {
             openSubagent: { calls.append("openSubagent \($0.sessionID)") },
             inspectSubagent: { calls.append("inspectSubagent \($0.sessionID)") },
             stopSubagent: { calls.append("stopSubagent \($0.sessionID)") },
-            openAgentSource: { calls.append("openAgentSource \($0.childID)") })
+            openAgentSource: { calls.append("openAgentSource \($0.childID)") },
+            loadImage: { calls.append("loadImage \($0.id) \($1) \($2)"); return bitmap })
         let relay = TranscriptActionRelay()
         relay.current = pane
         let document = relay.forwarded
@@ -47,9 +51,11 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         XCTAssertEqual(resolved, ReplyFileLocation(path: "/p/a.swift", line: 3))
         let child = SubagentTarget(SubagentTranscriptTests.link)
         row.openSubagent?(child); row.inspectSubagent?(child); row.stopSubagent?(child); row.openAgentSource?(.init(childID: "chat-child", turn: 2))
+        let loaded = try? await row.loadImage?(TranscriptMessage(id: "image", role: "user", text: ""), 1, 128)
+        XCTAssertTrue(loaded === bitmap)
         XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "resume", "inspectTurn",
                                "skillPressed m4 review", "skillHovered m5 review true", "costLimit raise",
-                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3", "openSubagent chat-child", "inspectSubagent chat-child", "stopSubagent chat-child", "openAgentSource chat-child"])
+                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3", "openSubagent chat-child", "inspectSubagent chat-child", "stopSubagent chat-child", "openAgentSource chat-child", "loadImage image 1 128"])
         XCTAssertNil(row.quoteReply, "Rows never ask for a quote; the page's selection controller does")
 
         // The rows keep the closures they were handed; the pane's newer
@@ -73,7 +79,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Fails when `TranscriptActions` gains or loses an action, so the
     /// relays cannot fall behind it.
     @MainActor func testTheRelaysForwardEveryAction() {
-        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 20,
+        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 21,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }

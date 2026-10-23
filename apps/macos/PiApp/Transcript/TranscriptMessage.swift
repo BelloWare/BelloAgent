@@ -68,6 +68,13 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// User rows: the skills the message was sent with, in the order the
     /// model received them ahead of its text. Nil when it used none.
     var skills: [TranscriptSkillUse]? = nil
+    /// User images are loaded only for visible thumbnails or an open preview.
+    var imageCount: Int? = nil
+    var imageOnly: Bool? = nil
+    var imageReference: TranscriptImageReference? = nil
+    /// The optimistic Sending row still owns the submitted file references.
+    var imageAttachments: [AttachmentRecord]? = nil
+    var userText: String { imageOnly == true ? "" : text }
     /// What a user row with images and no text reads as. Display only: the
     /// message the model received is its images, with no text.
     static func imageOnlyText(_ count: Int) -> String { count == 1 ? "Image" : "\(count) images" }
@@ -136,9 +143,12 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
-        if role == "user", result.text.isEmpty {
+        if role == "user" {
             let images = blocks.filter { $0.object?["type"]?.string == "image" }.count
-            if images > 0 { result.text = Self.imageOnlyText(images) }
+            if images > 0 {
+                result.imageCount = images
+                if result.text.isEmpty { result.text = Self.imageOnlyText(images); result.imageOnly = true }
+            }
         }
         if role == "assistant" { result.reply = ReplyRecord.journaled(message) }
         return result
@@ -355,7 +365,11 @@ extension TranscriptMessage {
             guard let skills = list.array else { throw Unexpected.shape }
             row.skills = try skills.map(skill)
         }
-        if row.role == "user", row.text.isEmpty, let images = try optionalInt(fields["imageCount"]), images > 0 { row.text = TranscriptMessage.imageOnlyText(images) }
+        row.imageCount = try optionalInt(fields["imageCount"])
+        row.imageOnly = try optionalBool(fields["imageOnly"])
+        if row.role == "user", row.text.isEmpty, let images = row.imageCount, images > 0 {
+            row.text = TranscriptMessage.imageOnlyText(images); row.imageOnly = true
+        }
         row.reply = try reply(fields["reply"])
         row.versions = try versionMark(fields["versions"])
         if let list = fields["requestAttemptIDs"], list != .null {

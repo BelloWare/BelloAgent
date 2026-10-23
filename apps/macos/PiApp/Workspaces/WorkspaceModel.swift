@@ -378,6 +378,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// finds out without opening SQLite on the main actor at launch.
     private(set) var store: MetadataStore?
     let history = HistoryReader()
+    let transcriptImageReader = HistoryReader()
+    let transcriptImages = TranscriptImageCache()
     let modelCatalog: ModelCatalog
     let traces: PayloadArchive
     /// Owned by `WorkspaceChatLifecycle.swift`: the throwaway archive a
