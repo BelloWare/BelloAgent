@@ -416,6 +416,32 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         XCTAssertTrue(model.displays.values.max { $0.used < $1.used } === view, "the run's end counts as a use: the chat is the one used last")
     }
 
+    /// A short run can start and end between two of a chat's statuses, which
+    /// are coalesced: the chat reads idle on both, and only its rows have
+    /// moved (`displayRevision`). That run's end counts as a use of the chat
+    /// too. Before, only a chat seen running and then idle was counted, so the
+    /// chats the reader opened next could let go of one whose short run went
+    /// unseen, finished rows and all (review, round 5).
+    @MainActor func testARunUnseenBetweenTwoStatusesCountsAsAUse() async throws {
+        let afterBoth = Self.finishedPage + [(id: "q2", role: "user", text: "And a short one"), (id: "r2", role: "assistant", text: "A short answer.")]
+        let reads = Reads(), model = try await model(reads, laterReads: afterBoth)
+        let view = leftWhileArriving(model)
+        view.state = "running"
+        model.opened.insert(view.id)
+        let host = try await answeringHost(model)
+        // Its run ends out of sight, and its page is read.
+        try await status("idle", seq: 5, revision: "epoch:5", of: view, in: model, host: host)
+        if let read = view.finishedRowsRead { await read.value }
+        // The reader opens another chat since.
+        await model.select("other")
+        XCTAssertFalse(model.displays.values.max { $0.used < $1.used } === view, "the chat opened since is the one used last")
+        // A short run comes and goes between two statuses: idle on both, its rows moved.
+        try await status("idle", seq: 9, revision: "epoch:9", of: view, in: model, host: host)
+        XCTAssertTrue(model.displays.values.max { $0.used < $1.used } === view, "the unseen run's end counts as a use: the chat is the one used last")
+        if let read = view.finishedRowsRead { await read.value }
+        XCTAssertEqual(view.messages.map(\.id), ["q", "r", "q2", "r2"], "and its rows are read again")
+    }
+
     /// The chat on screen gets its rows from the snapshot loop, and a chat
     /// still running, or holding no outlived rows, needs no read.
     @MainActor func testOnlyAFinishedChatOutOfSightIsRead() async throws {

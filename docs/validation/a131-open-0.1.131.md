@@ -408,3 +408,30 @@ Validation of the round (Debug, final code): FinishedRowsCatchUpTests 11 and
 WorkspaceDisplayMemoryTests 2 passed (`debug-r4-parallel.log`);
 ChatOpenPlacementTests 7 and WorkspaceRefreshLifecycleTests 38 passed under the
 lock (`debug-r4-serial.log`).
+
+## Round 5 — 2026-10-23: review of `c395ede8`
+
+One P2, confirmed and fixed: **a short run that went unseen was not counted
+as a use.** A chat's statuses are coalesced, so a short run can start and end
+between two of them: the chat reads idle on both. The catch-up still read its
+finished rows (its row revision had moved), but "a run's end counts as use"
+required the chat to have been seen running, so the chat kept the recency of
+its last opening, and the chats opened next could let it go, rows and all.
+Now a chat out of sight also counts as used when a status shows it idle with
+its rows moved since the status before (`displayRevision`, the evidence the
+catch-up uses): `WorkspaceRefresh.swift`, one condition beside the existing
+one. A chat with no earlier revision (its first status) is not counted on
+that alone.
+
+- **Test.** `FinishedRowsCatchUpTests.testARunUnseenBetweenTwoStatusesCountsAsAUse`
+  (real snapshot loop, answering helper): the run ends (seen, revision 5),
+  the reader opens another chat, then a status shows the chat idle at
+  revision 9. The chat is the one used last, and its rows are read again.
+  **Failing first** on `c395ede8`'s code (`debug-r5-before.log`): the other
+  chat stayed the one used last, while the rows were read again, as the
+  review describes. The fix is one condition, so that run is also its
+  mutation check.
+- **Validation (Debug, final code).** FinishedRowsCatchUpTests 12 and
+  WorkspaceDisplayMemoryTests 2 passed (`debug-r5-parallel.log`);
+  ChatOpenPlacementTests 7 (with the seen run end's test from round 2) and
+  WorkspaceRefreshLifecycleTests 38 passed under the lock (`debug-r5-serial.log`).

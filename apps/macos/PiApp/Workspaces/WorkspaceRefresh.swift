@@ -147,6 +147,7 @@ extension WorkspaceModel {
                         view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
+                    let previousRevision = view.helperDisplayRevision
                     if let revision = result["displayRevision"]?.string { view.helperDisplayRevision = revision }
                     let wasBusy = view.busy
                     helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
@@ -166,8 +167,13 @@ extension WorkspaceModel {
                         // A run that ends out of sight counts as a use of its
                         // chat (owner, 2026-10-23): its display stays among
                         // the eight kept (`releaseUnreadDisplays`), finished
-                        // rows and all, for the reader who opens it next.
-                        if wasBusy, !view.busy { view.used = Date() }
+                        // rows and all, for the reader who opens it next. The
+                        // end shows as the chat going idle; a short run that
+                        // came and went between two statuses (they are
+                        // coalesced) shows only as its rows having moved
+                        // (`displayRevision`) with the chat idle on both.
+                        let rowsMoved = previousRevision != nil && view.helperDisplayRevision != previousRevision
+                        if !view.busy, wasBusy || rowsMoved { view.used = Date() }
                         // It left the rows it was writing as the reader saw
                         // them: they are read again now, before the reader
                         // opens the chat.
