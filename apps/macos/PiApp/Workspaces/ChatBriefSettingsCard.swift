@@ -53,6 +53,12 @@ import Combine
         // A brief written or a batch's step: the figures and the progress again.
         watches.append(briefs.$batch.removeDuplicates().dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.update(); self?.readUsage() } })
         watches.append(briefs.$writing.removeDuplicates().dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.readUsage() } })
+        // Which chats have no brief changes with the chat list (one archived,
+        // restored, added, briefed) and with the saved switch, neither of
+        // which Settings' own refresh watches: shown once the change is in.
+        watches.append(Publishers.Merge(model.$chats.map { _ in () }, model.$configuration.map { _ in () })
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.update() } })
         update()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }

@@ -159,7 +159,7 @@ struct ChatBriefUsage: Equatable, Sendable {
     func lastProblem(_ id: String) -> String? {
         switch outcomes[id] {
         case .noMiniModel?: return "Its connection has no mini model to write one. Choose one in Settings → Connections."
-        case .unreadable?: return "Its history could not be read."
+        case .unreadable(let why)?: return "Its history could not be read. " + why
         case .failed(let why)?: return "The last request failed. " + why
         default: return nil
         }
@@ -336,7 +336,10 @@ extension WorkspaceModel {
         // Everything read was the chat's on this connection: still on it now,
         // and again just before the request is sent, or nothing is sent.
         do { try requireConnection(lease) } catch { return Self.movedConnection(error) ? .connectionChanged : .noMiniModel }
-        guard page.notice == nil, let current = chatRecord(id),
+        // A damaged record or a tail cut off mid-write: nothing is summed
+        // up from what is left, and the chat says why.
+        if let notice = page.notice { return .unreadable(notice) }
+        guard let current = chatRecord(id),
               let plan = ChatBriefPlan(profile: profile, descriptors: descriptors, title: current.displayTitle, previous: current.brief,
                                        rows: page.messages, partialTurnInput: page.partialTurnInput) else { return .nothingNew }
         let request = MiniModelRequest(model: plan.model, contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens,

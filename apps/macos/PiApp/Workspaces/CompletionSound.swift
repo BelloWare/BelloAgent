@@ -35,6 +35,31 @@ struct SessionCompletionTracker {
     }
 }
 
+/// Every run's end, for chat briefs: a command receipt that becomes
+/// terminal, or a run that ended leaving its receipt as it was after it
+/// journaled more (a retry runs its failed command again, and fails again):
+/// the session settled again on a newer display revision.
+struct RunEndTracker {
+    private var receipts = SessionCompletionTracker(endings: SessionCompletionTracker.runEndings)
+    private var epoch: String?
+    /// The display revision the session last settled on.
+    private var settled: String?
+    /// A session with no run under way.
+    static let settledStates: Set<String> = ["idle", "error", "paused"]
+
+    mutating func observe(_ snapshot: [String: WireValue], baseline: Bool = false) -> Bool {
+        let ended = receipts.observe(snapshot, baseline: baseline)
+        let nextEpoch = snapshot["monitoring"]?.object?["epoch"]?.string
+        let reset = baseline || epoch != nextEpoch
+        defer { epoch = nextEpoch }
+        if reset { settled = nil }
+        guard let state = snapshot["state"]?.string, Self.settledStates.contains(state),
+              let revision = snapshot["displayRevision"]?.string else { return ended }
+        defer { settled = revision }
+        return ended || (!reset && settled.map { $0 != revision } == true)
+    }
+}
+
 /// One short native chime, shared by every session. Completions within one
 /// second share a cue instead of overlapping or building a playback backlog.
 @MainActor final class CompletionSound {

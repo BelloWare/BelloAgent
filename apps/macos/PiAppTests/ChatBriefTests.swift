@@ -305,6 +305,53 @@ final class ChatBriefPlanTests: XCTestCase {
     }
 }
 
+/// Settings → Chats & notifications → Chat briefs, kept current while open.
+@MainActor final class ChatBriefSettingsLiveTests: XCTestCase {
+    /// A chat unarchived while Settings is open makes Write Briefs available
+    /// at once: the card follows the chat list, which Settings' own refresh
+    /// does not watch.
+    func testWriteBriefsFollowsTheChatListWhileSettingsIsOpen() async throws {
+        let root = scratchRoot("brief-settings-live")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        var profile = ProfileRecord(); profile.name = "Team"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "team-model"
+        profile.contextWindow = 16000; profile.maxOutputTokens = 2048
+        let connection = VaultProfile(profile: profile, apiKey: "sk-saved")
+        _ = try await vault.update(expectedRevision: 0) { $0.profiles = [connection] }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        var chat = ChatRecord(id: "later", workspaceID: "project", title: "Later", path: root.appendingPathComponent("later.jsonl").path, profileID: profile.id)
+        chat.archivedAt = Date()
+        model.chats = [chat]
+        let controller = ConnectionSettingsController(model: model)
+        await controller.load(discardingDrafts: false)
+        model.settingsSection = .chats
+        let view = ProfileSettingsView(model: model, controller: controller, windowChrome: false, dismiss: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
+        func findCard(_ view: NSView) -> ChatBriefSettingsCard? { (view as? ChatBriefSettingsCard) ?? view.subviews.lazy.compactMap { findCard($0) }.first }
+        var found: ChatBriefSettingsCard?
+        for _ in 0..<200 where found == nil {
+            view.refresh(); view.layoutSubtreeIfNeeded(); found = findCard(view)
+            if found == nil { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let card = try XCTUnwrap(found)
+        // Opening reads the usage twice (now and once the archive settles);
+        // after that nothing but the chat list can change what it offers.
+        try await Task.sleep(for: ChatBriefSettingsCard.settleDelay + .seconds(1))
+        XCTAssertFalse(card.batchButton.isEnabled, "An archived chat is not offered")
+        XCTAssertEqual(card.batchButton.title, "Write Briefs")
+        model.chats[0].archivedAt = nil
+        try await eventually("the action follows the chat list", timeout: .seconds(1)) {
+            card.batchButton.isEnabled && card.batchButton.title == "Write Briefs for 1 Chat"
+        }
+        model.chats[0].archivedAt = Date()
+        try await eventually("and back", timeout: .seconds(1)) { !card.batchButton.isEnabled && card.batchButton.title == "Write Briefs" }
+    }
+}
+
 /// Sidebar search's Titles & details finds a chat by its brief and keywords
 /// while briefs are on, in Topics and Flat: a main chat's and a saved side's.
 final class ChatBriefSearchTests: XCTestCase {
@@ -617,16 +664,21 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
 
     /// What the helper's snapshots say when a run ends: its command receipt
     /// turns `state`, completed unless said (`observeSessionCompletion`),
-    /// after a quiet baseline.
-    @MainActor private func finishRun(_ model: WorkspaceModel, _ id: String, receipts: [String], state: String = "completed") {
+    /// after a quiet baseline; with `runState` and `revision`, the session's
+    /// own state and display revision too.
+    @MainActor private func finishRun(_ model: WorkspaceModel, _ id: String, receipts: [String], state: String = "completed",
+                                      runState: String? = nil, revision: String? = nil) {
         if model.displays[id] == nil {
             model.displays[id] = SessionDisplay(id: id)
             model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array([])], baseline: true)
         }
-        model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array(receipts.enumerated().map {
+        var snapshot: [String: WireValue] = ["monitoring": .object(["epoch": .string("brief")]), "commands": .array(receipts.enumerated().map {
             .object(["commandId": .string($0.element), "turnId": .string($0.element),
                      "state": .string($0.offset == receipts.count - 1 ? state : "completed")])
-        })])
+        })]
+        if let runState { snapshot["state"] = .string(runState) }
+        if let revision { snapshot["displayRevision"] = .string(revision) }
+        model.observeSessionCompletion(sessionID: id, snapshot: snapshot)
     }
     /// The brief requests on the Background requests page, oldest first.
     @MainActor private func briefRequests(_ model: WorkspaceModel) -> [ChatRecord] {
@@ -1085,6 +1137,75 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         try await eventually("the failed run's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "failing-a1" }
         XCTAssertEqual(gateway.requests.count, 2)
         XCTAssertTrue(gateway.requests[1].prompt.contains("A second question the provider failed on."))
+    }
+
+    /// A failed run retried, failing again: the helper reuses the run's
+    /// command, so its receipt stays failed, but the retry journaled more of a
+    /// reply. That retry's end is a run's end too: the brief takes it in.
+    @MainActor func testARetryThatFailsAgainStillUpdatesItsBrief() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, journal) = try await self.chat("retried", fixture, title: "Retried chat", turns: [("First question.", "First answer.")])
+        finishRun(model, chat.id, receipts: ["t1"], runState: "idle", revision: "e:1")
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a0" }
+        try journal.message("retried-u1", role: "user", "Second question.")
+        try journal.message("retried-a1", role: "assistant", "Half a reply before the provider failed.")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:2")
+        try await eventually("the failed run's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a1" }
+        // Retried: the same command runs again, its receipt still failed.
+        try journal.message("retried-a2", role: "assistant", "More of the reply, from the retry, before it failed again.")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "running", revision: "e:3")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4")
+        try await eventually("the retry's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a2" }
+        XCTAssertEqual(gateway.requests.count, 3)
+        XCTAssertTrue(gateway.requests[2].prompt.contains("More of the reply, from the retry"))
+        // Settled with nothing new: nothing more.
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(gateway.requests.count, 3)
+    }
+
+    /// A journal the reader keeps a notice for (a damaged record, a tail cut
+    /// off mid-write) is not summed up from what is left of it: Write Brief
+    /// says it could not be read, and sends nothing.
+    @MainActor func testAChatWhoseHistoryHasANoticeIsReportedUnreadable() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, journal) = try await self.chat("damaged", fixture, title: "Damaged chat", turns: [("A question.", "An answer.")])
+        let handle = try FileHandle(forWritingTo: journal.url)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(#"{"type":"message","id":"damaged-cut","message":{"role":"user","con"#.utf8)); try handle.close()
+        model.writeBriefNow(chat.id)
+        try await eventually("the chat is looked at", timeout: .seconds(30)) { model.chatBriefs.outcomes[chat.id] != nil }
+        guard case .unreadable(let why)? = model.chatBriefs.outcomes[chat.id] else {
+            return XCTFail("A page with a notice is unreadable: \(String(describing: model.chatBriefs.outcomes[chat.id]))")
+        }
+        XCTAssertFalse(why.isEmpty)
+        XCTAssertTrue(model.chatBriefs.lastProblem(chat.id)?.contains("could not be read") == true, model.chatBriefs.lastProblem(chat.id) ?? "")
+        XCTAssertTrue(gateway.requests.isEmpty, "Nothing is sent from a page with a notice")
+        XCTAssertNil(model.record(chat.id)?.brief)
+    }
+
+    /// Quitting lets go of the briefs reader's history indexes, whose files
+    /// are in the temporary folder, as it does of the shared reader's.
+    @MainActor func testQuittingReleasesTheBriefsReadersIndexes() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model
+        let (chat, journal) = try await self.chat("quitting", fixture, title: "Quitting", turns: [("A question.", "An answer.")])
+        finishRun(model, chat.id, receipts: ["t1"])
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        let reader = try XCTUnwrap(model.chatBriefsStorage?.reader)
+        let held = await reader.indexedPaths
+        XCTAssertTrue(held.contains(journal.url.path), "The brief's read built an index: \(held)")
+        try await eventually("nothing is under way", timeout: .seconds(30)) { !model.hasActiveWork }
+        let lifecycle = ApplicationLifecycle()
+        lifecycle.model = model
+        var answers: [Bool] = []
+        lifecycle.answerTermination = { answers.append($0) }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        try await eventually("quitting answers", timeout: .seconds(60)) { !answers.isEmpty }
+        XCTAssertEqual(answers, [true])
+        let left = await reader.indexedPaths
+        XCTAssertTrue(left.isEmpty, "Quitting released the briefs reader's indexes: \(left)")
     }
 
     /// A chat archived while Write Briefs waits on an earlier one is left

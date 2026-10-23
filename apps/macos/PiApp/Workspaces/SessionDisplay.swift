@@ -189,8 +189,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var draftReady = true
     @Published var recoveringDraft = false
     var completionTracker = SessionCompletionTracker()
-    /// Every run's end, failed or stopped too: what updates the chat's brief.
-    var runEndTracker = SessionCompletionTracker(endings: SessionCompletionTracker.runEndings)
+    /// Every run's end, failed, stopped or retried too: what updates the
+    /// chat's brief.
+    var runEndTracker = RunEndTracker()
     var webhookTracker = WebhookFinishTracker()
     var monitoringEpoch: String?
     var monitoringCursor: Double?

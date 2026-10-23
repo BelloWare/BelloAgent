@@ -105,6 +105,52 @@ Runs on the fixed code, of what round 3 changes:
 | Serial, under the lock (`r3-green-serial.log`): `ChatBriefTests` 15, `ChatBriefHoverTests` 2, `WebhookTests` 18 (run's-end tracking), `InlineSkillPillTests` 16 (the hover presenter) | 51 passed, 1 skipped (the capture that needs `PI_APP_UI_SCREENSHOT_ROOT`), 0 failed |
 | Parallel (`r3-green-parallel.log`): `CompletionSoundTests` 8 (the chime still takes completed runs only), `ChatBriefPlanTests` 7, `ChatBriefSettingsTests` 1, `ChatBriefSearchTests` 1 | 17 passed, 0 failed |
 
+## Round 4: Astra's re-review of round 3 (2026-10-23)
+
+Three findings on `df0faff8`, and one from the review of a sibling branch,
+each fixed with a test that failed first on the unfixed code
+(`r4-red-parallel-2.log`, `r4-red-e2e.log`, `r4-red-quit.log`) and passes now:
+
+1. **[P2] A retry that ends the same way is a run's end too.** A retried run
+   reuses its command, so its receipt goes failed → failed and round 3's
+   tracker missed it, though the retry had journaled more of a reply. Briefs
+   now track run endings with `RunEndTracker` (`CompletionSound.swift`): a
+   receipt that becomes terminal, or the session settling again (idle, error
+   or paused) on a newer display revision than it last settled on.
+   `testARetryThatFailsAgainStillUpdatesItsBrief`: the retry's end updates
+   the brief with the reply it added; settling again with nothing new asks
+   nothing (red: the retry's end was missed).
+2. **[P2] Write Briefs follows the chat list while Settings is open.**
+   Settings' own refresh does not watch the chat list, so an unbriefed chat
+   unarchived with Settings open left Write Briefs unavailable. The card now
+   watches the chat list and the saved switch itself (debounced to 100 ms).
+   `ChatBriefSettingsLiveTests.testWriteBriefsFollowsTheChatListWhileSettingsIsOpen`
+   waits out the card's two opening usage reads, then unarchives and
+   archives the chat (red: the button never changed).
+3. **[P3] A history notice is reported as unreadable.** A page the reader
+   keeps a notice for (a damaged record, a tail cut off mid-write) was taken
+   for "nothing new", so Write Brief silently did nothing. It is now
+   `.unreadable` with the notice, the card says so, and nothing is generated
+   from the page. `testAChatWhoseHistoryHasANoticeIsReportedUnreadable`, on a
+   journal whose last record is cut off (red: `.nothingNew`).
+4. **Quitting lets go of the briefs reader's indexes** (raised by the review
+   of a sibling branch with a reader of its own). The quit path released only
+   the shared reader's history indexes, whose files are in the temporary
+   folder; the briefs reader's stayed until a later launch cleaned them up.
+   `ApplicationLifecycle` now releases both, in one added line beside the
+   shared reader's. `testQuittingReleasesTheBriefsReadersIndexes`: a brief's
+   read builds an index on the briefs reader, and the app's own quit path
+   (`applicationShouldTerminate`) leaves it holding none (red: it still held
+   the journal's).
+
+Runs of what round 4 changes:
+
+| Run | Result |
+| --- | --- |
+| The four tests on the unfixed code (`r4-red-parallel-2.log`, `r4-red-e2e.log`, `r4-red-quit.log`) | 4 failed, each for the reason found |
+| Serial, under the lock, after the fixes (`r4-green-serial.log`): `ChatBriefTests` 18, `ChatBriefHoverTests` 2, `WebhookTests` 18 (run's-end tracking) | 38 passed, 0 failed |
+| Parallel (`r4-green-parallel.log`): `ChatBriefSettingsLiveTests` 1, `ChatBriefSettingsTests` 1, `CompletionSoundTests` 8 (the chime's tracker is unchanged), `ChatBriefPlanTests` 7 | 17 passed, 0 failed |
+
 ## What it does
 
 - **A brief per chat.** At the end of every run (completed, failed, stopped or
@@ -216,6 +262,10 @@ Runs on the fixed code, of what round 3 changes:
   level with it), `refresh(over:width:view:)` (a shown card rebuilt without
   fading), and a `pointerLocation` seam. Off by default: skill pills are
   unchanged.
+- Round 4: `RunEndTracker` (`CompletionSound.swift`; `SessionDisplay.runEndTracker`),
+  the settings card watching the chat list and the saved switch, a history
+  notice as `.unreadable`, the quit path releasing the briefs reader's
+  indexes (`ApplicationLifecycle.swift`).
 - Round 3: `ChatBriefs.reader` (brief reads off `WorkspaceModel.history`;
   `HistoryReader.indexedPaths` is the tests' seam), `SessionCompletionTracker.endings`
   and `SessionDisplay.runEndTracker` (`CompletionSound.swift`,
