@@ -4,6 +4,8 @@
 
 ## 0.1.131
 
+- [x] PASTE-2: Send could overtake a lazy clipboard read and send text without its image (also on 0.1.130); unavailable URL metadata could discard bitmap data, some refusals were silent, and chips had no thumbnails. Paste now reserves the draft before data reads, keeps usable image data, explains refusals and draws thumbnails. Real menu/key regressions and the 120-paste matrix pass; seven mutations caught. [Validation](docs/validation/a131-paste2-0.1.131.md).
+
 Owner, 2026-10-22: "once you release the current version, please check this and try to replicate this and actually fix this."
 
 - [x] DRAW-1: PERF-1 deferred layout when a reply joined the page, but a cached height could put it on screen before its glyphs were laid out; the existing glyph lookup ran after AppKit had drawn nothing. Prepare visible glyphs before drawing, keeping one layout at the row's width. Pixel regression and mutation confirmed; all 423 release-gate PNGs compared and all gallery captures inspected, with no remaining blank prose. [Validation](docs/validation/a131-blanktext-0.1.131.md).
