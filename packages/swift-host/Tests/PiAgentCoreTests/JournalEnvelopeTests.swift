@@ -68,12 +68,30 @@ final class JournalEnvelopeTests: HelperTestCase {
         ]
         for text in lines {
             let line = Data(text.utf8)
-            if JSONSyntax.plainlyValid(line) { XCTAssertNoThrow(try JSON.parse(line), "taken, so the parser takes it: \(text)") }
+            for accepted in [JSONSyntax.plainlyValid(line), JSONSyntax.checked(line)] where accepted {
+                XCTAssertNoThrow(try JSON.parse(line), "taken, so the parser takes it: \(text)")
+            }
         }
         XCTAssertTrue(JSONSyntax.plainlyValid(Data(#"{"customType":"pi-app.native.state.v1","data":{"active":false,"queue":[]},"id":"s","parentId":"p","timestamp":"t","type":"custom"}"#.utf8)))
         for text in [#"{"a":fals}"#, #"{"a":1e5}"#, #"{"a":"é"}"#, #"{"a":01}"#, #"{"a":1234567890123456}"#, control] {
             XCTAssertFalse(JSONSyntax.plainlyValid(Data(text.utf8)), "left to the parser: \(text)")
         }
+    }
+
+    func testEditSyntaxChecksSkippedUnicodeAndNumberPayloadsAgainstTheParser() {
+        let texts = [#"{"unknown":"漢字🌍é","n":1792768191111.123}"#, #"[1.2345678901234567,1e99,-5e-324,0e999]"#,
+                     #"{"unknown":1e999}"#, #"{"unknown":1e-999}"#, #"{"unknown":"\uD800"}"#, #"{"unknown":"\uD83C\uDF0D"}"#,
+                     #"{"n":01}"#, #"{"n":1e+}"#, #"{"a":1,"a":2,}"#]
+        for text in texts {
+            let bytes = Data(text.utf8)
+            if JSONSyntax.checked(bytes) { XCTAssertNoThrow(try JSON.parse(bytes), text) }
+        }
+        XCTAssertTrue(JSONSyntax.checked(Data(texts[0].utf8)))
+        for text in [texts[2], texts[3]] { XCTAssertFalse(JSONSyntax.checked(Data(text.utf8))) }
+        let invalidUTF8 = Data([123,34,120,34,58,34,0xFF,34,125])
+        XCTAssertFalse(JSONSyntax.checked(invalidUTF8)); XCTAssertThrowsError(try JSON.parse(invalidUTF8))
+        let deep = Data((String(repeating: "[", count: 513) + "0" + String(repeating: "]", count: 513)).utf8)
+        XCTAssertFalse(JSONSyntax.checked(deep)); XCTAssertThrowsError(try JSON.parse(deep))
     }
 
     /// A run-state record a copied fork leaves out is still checked: a

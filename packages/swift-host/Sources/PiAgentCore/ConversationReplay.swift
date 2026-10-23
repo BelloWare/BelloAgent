@@ -46,10 +46,8 @@ extension AgentSession {
     public func prepareEdit(_ messageID: String, offset: Int = 0, expectedTimeline: String? = nil, expectedTextDigest: String? = nil) async throws -> JSON {
         guard !closed, !ephemeral else { throw AgentError("edit_unavailable", "Keep and reopen this conversation before editing.") }
         let capturedHead = journal?.head
-        try await loadFullHistory()
+        let (plan, message) = try await editSource(messageID)
         guard !closed, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed during edit preparation. Select the message again.") }
-        let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
-        guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("edit_target", "The message is not retained.") }
         let text = message.displayText ?? message.text
         guard text.utf8.count <= 262_144 else { throw AgentError("message_limit", "The original input exceeds the editor limit.") }
         let digest = sha256(Data(text.utf8))

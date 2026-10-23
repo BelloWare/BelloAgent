@@ -192,28 +192,28 @@ final class HistoryFillTests: HelperTestCase {
         await session.close()
     }
 
-    func testEditPreparationAndVersionsShareAFullLoadWithoutHoldingTheActor() async throws {
+    func testEditPreparationDoesNotWaitForVersionsFullLoad() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate()
         let partial = await session.partialHistory
         XCTAssertTrue(partial)
         await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
-        let prepared = Task { try await session.prepareEdit("u2b") }
-        try await eventually { await gate.entered == 1 }
         let versions = Task { try await session.messageVersions(["messageId": "u2b"]) }
+        try await eventually { await gate.entered == 1 }
         let page = Task { try await session.versionPage(["messageId": "u2"]) }
-        // A snapshot remains available while all three requests wait on the
-        // worker. The retained prefix is not adopted until the gate opens.
+        let input = try await session.prepareEdit("u2b")
+        // Preparation and snapshots remain available while version reads
+        // wait for their full-history worker.
         let snapshot = await session.snapshot(), stillPartial = await session.partialHistory
         XCTAssertFalse(snapshot["messages"].list.isEmpty)
         XCTAssertTrue(stillPartial)
         await gate.release()
-        let input = try await prepared.value, listed = try await versions.value, original = try await page.value
+        let listed = try await versions.value, original = try await page.value
         XCTAssertEqual(input["text"].text, "the edited question")
         XCTAssertEqual(listed["count"].int, 2)
         XCTAssertEqual(original["messages"].list.first?["text"].text, "the original question")
         let loads = await gate.entered
-        XCTAssertEqual(loads, 1, "concurrent requests share one full-history preparation")
+        XCTAssertEqual(loads, 1, "the version requests share one full-history preparation")
         await session.close()
     }
 
@@ -239,18 +239,16 @@ final class HistoryFillTests: HelperTestCase {
 
     func testEditWaitsOffActorAndRejectsAConversationChangedWhileLoading() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
-        let path = try await source(chat), gate = Gate(), replays = Gate(), starts = Starts()
-        await replays.release()
+        let path = try await source(chat), gate = Gate(), starts = Starts()
         let session = try chat.session(chatID, client: ScriptClient([answer("answer during the load")]), resume: path)
         await session.holdHistoryFill { stage in
-            if stage == "full" { await gate.wait() }
-            if stage == "replay" { await replays.wait() }
+            if stage == "edit" { await gate.wait() }
         }
         await session.noteHistoryReads { starts.note($0) }
         let edit = Task { try await session.edit(fromMessageID: "u2b", input: Submission(commandID: "edit-again", turnID: "edit-again", text: "replacement")) }
         try await eventually { await gate.entered == 1 }
         // A send and its reply finish while the edit's worker is held. Its
-        // first snapshot is now stale, so it must rebuild and reject the edit.
+        // first snapshot is now stale, so it must reject the edit.
         try await send(session, "during-load", "a new question")
         await gate.release()
         do { _ = try await edit.value; XCTFail("the changed conversation must not be branched") }
@@ -258,15 +256,12 @@ final class HistoryFillTests: HelperTestCase {
         let visible = await session.visible.map(\.id), loads = await gate.entered
         XCTAssertTrue(visible.contains("during-load"))
         XCTAssertFalse(visible.contains("edit-again"))
-        XCTAssertEqual(loads, 2, "a write while preparing requires a new snapshot")
-        let replayed = await replays.entered, from = starts.bytes
-        XCTAssertEqual(replayed, 1, "the second try goes on from the first's replay")
-        // The journal read from its start once, then each try from where
-        // that replay ended.
-        XCTAssertEqual(from.count, 3, "\(from)")
-        XCTAssertEqual(from.first, 0)
-        XCTAssertGreaterThan(from.last ?? 0, 0)
-        XCTAssertEqual(Set(from.dropFirst()).count, 1, "the second try goes on where the first replay ended: \(from)")
+        XCTAssertEqual(loads, 1)
+        XCTAssertTrue(starts.bytes.isEmpty, "An edit must not start a full journal replay")
+        let covered = await session.editPreparationIndex?.covered, size = await session.journalSizeForTesting
+        XCTAssertLessThan(try XCTUnwrap(covered), try XCTUnwrap(size), "The stale read keeps its prefix for the next preparation")
+        let again = try await session.prepareEdit("u2b")
+        XCTAssertEqual(again["text"].text, "the edited question")
         await session.close()
     }
 
@@ -612,7 +607,7 @@ final class HistoryFillTests: HelperTestCase {
     func testACloseOrUnloadStopsALoadAndTheCommandsWaitingOnIt() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat)
-        for (stage, unload) in [("index", false), ("index", true), ("full", false), ("full", true), ("replay", true)] {
+        for (stage, unload) in [("index", false), ("index", true), ("full", false), ("full", true), ("replay", true), ("edit", false), ("edit", true)] {
             let what = "\(unload ? "unload" : "close") during \(stage)"
             let gate = Gate(), session = try chat.session(chatID, resume: path)
             await session.holdHistoryFill { if $0 == stage { await gate.wait() } }
@@ -620,10 +615,12 @@ final class HistoryFillTests: HelperTestCase {
             func code(_ work: @escaping @Sendable () async throws -> JSON) -> Task<String?, Never> {
                 Task { do { _ = try await work(); return nil } catch let error as AgentError { return error.code } catch { return "\(error)" } }
             }
-            let started = stage == "full" ? code { try await session.messageVersions(["messageId": "u2b"]) }
+            let started = stage == "edit" ? code { try await session.prepareEdit("u2b") }
+                        : stage == "full" ? code { try await session.messageVersions(["messageId": "u2b"]) }
                                           : code { try await session.historyWindow(["version": 2, "cursor": first["older"]]) }
             try await eventually { await gate.entered == 1 }
-            let joined = stage == "full" ? code { try await session.versionPage(["messageId": "u2"]) }
+            let joined = stage == "edit" ? code { try await session.prepareEdit("u3") }
+                       : stage == "full" ? code { try await session.versionPage(["messageId": "u2"]) }
                                          : code { try await session.contentSearch(["query": "question"]) }
             try await eventually { await session.historyLoadJoins == 1 }
             if unload { let unloaded = await session.unloadIfIdle(); XCTAssertTrue(unloaded, what) } else { await session.close() }
