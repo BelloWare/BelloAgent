@@ -37,6 +37,11 @@ extension AgentSession {
         guard !closed, isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         try validate(input,steer:false)
+        // Older and abandoned messages still reserve their IDs even when
+        // the checkpoint left them out of the resident history.
+        if partialHistory, editPreparationIndex?.replay.history.contains(where: { $0.id == input.turnID }) == true {
+            throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made")
+        }
         try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
         try checkSubmissionStop(admittedAt)
         guard isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }

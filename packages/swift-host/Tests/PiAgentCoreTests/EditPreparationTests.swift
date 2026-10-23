@@ -158,6 +158,52 @@ final class EditPreparationTests: HelperTestCase {
         }
     }
 
+    func testColdForkRejectsReplacementIDsInUnloadedHistoryLikeFullReplay() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("edit-index.jsonl")
+        do {
+            let journal = try SessionJournal(url: path, id: "edit-index", cwd: root, binding: fixtureProfile().binding, create: true)
+            for record in try generated(0) { try journal.append(record.removing(["id", "parentId"]), id: identity(record["id"])) }
+        }
+        let whole = try open(root, path: path); await whole.close()
+        let parent = try open(root, path: path)
+        // A summarized user and reply, a replaced turn, and a retained row
+        // outside the fork's selected timeline must all reserve their IDs.
+        for (number, collision) in ["s0-r0-t0", "s0-r0-t0-answer", "s0-r0-t6", "unselected"].enumerated() {
+            let id = "collision-fork-\(number)", fork = try await parent.fork(to: id)
+            let forkPath = URL(fileURLWithPath: try XCTUnwrap(fork["path"].text))
+            let input = Submission(commandID: "edit", turnID: collision, text: "replacement")
+            let oracle = try open(root, path: forkPath, id: id)
+            try await oracle.loadFullHistory()
+            do { _ = try await oracle.edit(fromMessageID: "replacement-2", input: input); XCTFail("Full history accepted \(collision)") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "duplicate_turn") }
+            await oracle.close()
+
+            let cold = try open(root, path: forkPath, id: id)
+            let held = await cold.history.map(\.id), receipts = await cold.commands, partial = await cold.partialHistory
+            XCTAssertTrue(partial)
+            XCTAssertTrue(receipts.isEmpty, "Forks do not inherit accepted-turn receipts")
+            XCTAssertFalse(held.contains(collision), "The ID must be outside the checkpoint's resident rows")
+            // Exercise both a direct Send and Send after cached preparation.
+            if number % 2 == 0 { _ = try await cold.prepareEdit("replacement-2") }
+            let before = try Data(contentsOf: forkPath), head = await cold.journal?.head
+            do { _ = try await cold.edit(fromMessageID: "replacement-2", input: input); XCTFail("Cold history accepted \(collision)") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "duplicate_turn") }
+            try await eventually { !(await cold.isRunning) }
+            let afterHead = await cold.journal?.head, after = await cold.history.map(\.id), stillPartial = await cold.partialHistory
+            let queued = await cold.queue.count, afterReceipts = await cold.commands, indexed = await cold.editPreparationIndex?.replay.history.map(\.id)
+            XCTAssertTrue(try XCTUnwrap(indexed).contains(collision))
+            XCTAssertEqual(try Data(contentsOf: forkPath), before, "A refused edit must write no branch or replacement")
+            XCTAssertEqual(afterHead, head)
+            XCTAssertEqual(after, held)
+            XCTAssertEqual(afterReceipts, receipts)
+            XCTAssertEqual(queued, 0)
+            XCTAssertTrue(stillPartial, "Checking all IDs must not load full history")
+            await cold.close()
+        }
+        await parent.close()
+    }
+
     func testDamagedEarlierCheckpointsAreRefusedLikeFullReplay() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         for (number, needle) in [#""nativeBranchVersion":2"#, #""nativeCompactionVersion":2"#, #""sourceTimelineDigest":""#, #""arguments":"kept""#].enumerated() {
