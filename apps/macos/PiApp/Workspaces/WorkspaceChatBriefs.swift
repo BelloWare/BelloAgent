@@ -58,6 +58,9 @@ struct ChatBriefBatch: Equatable, Sendable {
     /// Over: every chat looked at, or stopped (`stopped` says why).
     var finished = false
     var stopped: String?
+    /// The background requests it made itself: what it spent, and nothing a
+    /// run's end asked for in the same chats.
+    var requests: [String] = []
 }
 
 /// What brief requests came to over a window, from the request archive.
@@ -168,17 +171,26 @@ struct ChatBriefUsage: Equatable, Sendable {
         }
     }
 
-    @discardableResult private func start(_ id: String) -> Task<Void, Never>? {
+    /// `batch`: the batch (its generation) the request is for, which keeps
+    /// the request's ID as its own.
+    @discardableResult private func start(_ id: String, batch generation: UInt64? = nil) -> Task<Void, Never>? {
         if let running = tasks[id] { return running }
         guard let model else { return nil }
         attempts += 1
+        var kept: (@MainActor (String) -> Void)?
+        if let generation {
+            kept = { [weak self] (request: String) in
+                guard let self, self.batchGeneration == generation else { return }
+                self.batch?.requests.append(request)
+            }
+        }
         let task = Task { [weak self, weak model] in
-            var outcome = await model?.writeBrief(id) ?? .skipped
+            var outcome = await model?.writeBrief(id, onRequest: kept) ?? .skipped
             // Moved to another connection while it was prepared: asked
             // again, once, on the connection it is on now.
             if outcome == .connectionChanged, !Task.isCancelled {
                 self?.attempts += 1
-                outcome = await model?.writeBrief(id) ?? .skipped
+                outcome = await model?.writeBrief(id, onRequest: kept) ?? .skipped
             }
             self?.finished(id, outcome)
         }
@@ -232,7 +244,7 @@ struct ChatBriefUsage: Equatable, Sendable {
                     // Looked at again as its turn comes: archived, or given a
                     // brief, since the batch began, it is left alone.
                     self.batchCurrent = id
-                    await self.start(id)?.value
+                    await self.start(id, batch: generation)?.value
                     outcome = self.outcomes[id]
                 }
                 guard !Task.isCancelled, self.batchGeneration == generation else { return }
@@ -316,7 +328,7 @@ extension WorkspaceModel {
     /// the first read until the request is sent: a chat moved to another
     /// connection meanwhile sends nothing through the old one
     /// (`connectionChanged`). The brief lands on the chat's record only.
-    func writeBrief(_ id: String) async -> ChatBriefOutcome {
+    func writeBrief(_ id: String, onRequest: (@MainActor (String) -> Void)? = nil) async -> ChatBriefOutcome {
         // A move to another connection under way finishes first: the brief is
         // asked of the connection the chat is on.
         while let change = connectionSwitches[id], !Task.isCancelled { await change.task.value }
@@ -357,7 +369,7 @@ extension WorkspaceModel {
                                        modelOutputLimit: plan.modelOutputLimit, thinkingLevel: plan.thinkingLevel, prompt: plan.prompt,
                                        task: BackgroundRequestKind.brief.raw, title: "Chat brief", timeout: 60, name: "brief request")
         do {
-            let messages = try await askMiniModel(request, profile: profile, sourceID: id, sourceLease: lease) { messages in
+            let messages = try await askMiniModel(request, profile: profile, sourceID: id, sourceLease: lease, onRecord: onRequest) { messages in
                 guard let result = ChatBriefPlan.result(from: messages) else { throw HostError.failure("The mini model did not return a usable brief.") }
                 return result
             }
@@ -383,10 +395,16 @@ extension WorkspaceModel {
     /// and the cost the gateway reported for them; only `sources`' chats'
     /// when given.
     func briefUsage(since start: Date, for sources: Set<String>? = nil) async -> ChatBriefUsage {
-        let recent = chats.filter { chat in
+        await briefUsage(of: chats.filter { chat in
             chat.backgroundTask == BackgroundRequestKind.brief.raw && (chat.backgroundTaskStartedAt ?? .distantPast) >= start
                 && (sources.map { sources in chat.sourceSessionID.map(sources.contains) == true } ?? true)
-        }
+        })
+    }
+    /// What these brief requests came to: a batch's own (`ChatBriefBatch.requests`).
+    func briefUsage(requests: Set<String>) async -> ChatBriefUsage {
+        await briefUsage(of: chats.filter { $0.backgroundTask == BackgroundRequestKind.brief.raw && requests.contains($0.id) })
+    }
+    private func briefUsage(of recent: [ChatRecord]) async -> ChatBriefUsage {
         guard !recent.isEmpty else { return ChatBriefUsage() }
         let scopes = recent.map { SessionUsageScope(sessionID: $0.id, workspaceID: $0.workspaceID) }
         var totals: [SessionUsageScope: GatewayTotals] = [:]

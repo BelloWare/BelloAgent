@@ -667,7 +667,7 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
     /// after a quiet baseline; with `runState` and `revision`, the session's
     /// own state and display revision too.
     @MainActor private func finishRun(_ model: WorkspaceModel, _ id: String, receipts: [String], state: String = "completed",
-                                      runState: String? = nil, revision: String? = nil) {
+                                      runState: String? = nil, revision: String? = nil, endedAt: Double?? = nil) {
         if model.displays[id] == nil {
             model.displays[id] = SessionDisplay(id: id)
             model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array([])], baseline: true)
@@ -678,6 +678,8 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         })]
         if let runState { snapshot["state"] = .string(runState) }
         if let revision { snapshot["displayRevision"] = .string(revision) }
+        // When the session's last run ended (`turnMetrics.endedAt`); null while one runs.
+        if let endedAt { snapshot["turnMetrics"] = .object(["endedAt": endedAt.map { .number($0) } ?? .null]) }
         model.observeSessionCompletion(sessionID: id, snapshot: snapshot)
     }
     /// The brief requests on the Background requests page, oldest first.
@@ -924,6 +926,37 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(spent.requests, 3); XCTAssertEqual(spent.costUSD, 0.012, accuracy: 1e-9)
     }
 
+    /// What Write Briefs spent is what its own requests cost: a chat it wrote
+    /// a brief for, updated later at a run's end, adds nothing to it.
+    @MainActor func testWriteBriefsSpendIsItsOwnRequestsOnly() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        var journals: [String: SearchJournal] = [:]
+        for (index, id) in ["one", "two"].enumerated() {
+            journals[id] = try await chat(id, fixture, title: id, turns: [("Question \(id).", "Answer \(id).")], activity: Int64(10 - index) * 1_000_000).1
+        }
+        let card = ChatBriefSettingsCard(model: model, get: { model.briefSettings }, set: { _ in })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = card
+        defer { window.contentView = nil; window.close() }
+        model.chatBriefs.startBatch()
+        try await eventually("the batch is over", timeout: .seconds(120)) { model.chatBriefs.batch?.finished == true }
+        XCTAssertEqual(model.chatBriefs.batch?.requests.count, 2, "The batch keeps its own requests")
+        try await eventually("its spend is read", timeout: .seconds(30)) { abs(card.batchSpend.costUSD - 0.008) < 1e-9 }
+        // Later, a run ends in one of its chats, with something new.
+        try journals["one"]?.message("one-u1", role: "user", "A later question.")
+        try journals["one"]?.message("one-a1", role: "assistant", "A later answer.")
+        finishRun(model, "one", receipts: ["t1"])
+        try await eventually("the later update lands", timeout: .seconds(60)) { model.record("one")?.brief?.through == "one-a1" }
+        XCTAssertEqual(gateway.requests.count, 3)
+        try await eventually("the figures are read again with the later request's cost", timeout: .seconds(30)) {
+            card.month.requests == 3 && abs(card.month.costUSD - 0.012) < 1e-9
+        }
+        XCTAssertEqual(card.batchSpend.requests, 2); XCTAssertEqual(card.batchSpend.costUSD, 0.008, accuracy: 1e-9, "The later request is not the batch's")
+        card.update()
+        XCTAssertTrue(card.batchDetail.contains("$0.008"), card.batchDetail)
+    }
+
     /// Stop stops the batch and the request it waits on; three failed
     /// requests in a row stop it too. Settings shows how far it got.
     @MainActor func testWriteBriefsStopsWhenToldAndAfterThreeFailedRequestsInARow() async throws {
@@ -1146,23 +1179,41 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         let fixture = try await self.fixture()
         let model = fixture.model, gateway = fixture.gateway
         let (chat, journal) = try await self.chat("retried", fixture, title: "Retried chat", turns: [("First question.", "First answer.")])
-        finishRun(model, chat.id, receipts: ["t1"], runState: "idle", revision: "e:1")
+        finishRun(model, chat.id, receipts: ["t1"], runState: "idle", revision: "e:1", endedAt: 1_000)
         try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a0" }
         try journal.message("retried-u1", role: "user", "Second question.")
         try journal.message("retried-a1", role: "assistant", "Half a reply before the provider failed.")
-        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:2")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:2", endedAt: 2_000)
         try await eventually("the failed run's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a1" }
-        // Retried: the same command runs again, its receipt still failed.
+        // Retried: the same command runs again, its receipt still failed;
+        // the run's own end time is what says it ended.
         try journal.message("retried-a2", role: "assistant", "More of the reply, from the retry, before it failed again.")
-        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "running", revision: "e:3")
-        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "running", revision: "e:3", endedAt: .some(nil))
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4", endedAt: 3_000)
         try await eventually("the retry's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "retried-a2" }
         XCTAssertEqual(gateway.requests.count, 3)
         XCTAssertTrue(gateway.requests[2].prompt.contains("More of the reply, from the retry"))
         // Settled with nothing new: nothing more.
-        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed", runState: "error", revision: "e:4", endedAt: 3_000)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(gateway.requests.count, 3)
+    }
+
+    /// A read of a chat's history with no run (older message versions opened,
+    /// its whole history loaded) moves the display revision while the session
+    /// stays idle: that is no run's end, and a chat without a brief is not
+    /// given one for it.
+    @MainActor func testAHistoryReadWithNoRunAsksForNoBrief() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, _) = try await self.chat("versions", fixture, title: "Versions", turns: [("A question.", "An answer.")])
+        finishRun(model, chat.id, receipts: [], runState: "idle", revision: "e:1", endedAt: 1_000)
+        finishRun(model, chat.id, receipts: [], runState: "idle", revision: "e:2", endedAt: 1_000)
+        finishRun(model, chat.id, receipts: [], runState: "idle", revision: "e:3", endedAt: 1_000)
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertTrue(gateway.requests.isEmpty, "No run ended: nothing is asked")
+        XCTAssertEqual(model.chatBriefs.attempts, 0)
+        XCTAssertNil(model.record(chat.id)?.brief)
     }
 
     /// A journal the reader keeps a notice for (a damaged record, a tail cut

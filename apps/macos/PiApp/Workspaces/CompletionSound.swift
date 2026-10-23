@@ -36,27 +36,32 @@ struct SessionCompletionTracker {
 }
 
 /// Every run's end, for chat briefs: a command receipt that becomes
-/// terminal, or a run that ended leaving its receipt as it was after it
-/// journaled more (a retry runs its failed command again, and fails again):
-/// the session settled again on a newer display revision.
+/// terminal, or a run that ended leaving its receipt as it was (a retry runs
+/// its failed command again, and fails again): the session's last run has a
+/// new end time (`turnMetrics.endedAt`, which every run sets as it ends). A
+/// read of history with no run (older versions opened) moves the display
+/// revision but no run's end, and counts for nothing.
 struct RunEndTracker {
     private var receipts = SessionCompletionTracker(endings: SessionCompletionTracker.runEndings)
     private var epoch: String?
-    /// The display revision the session last settled on.
-    private var settled: String?
-    /// A session with no run under way.
-    static let settledStates: Set<String> = ["idle", "error", "paused"]
+    /// Whether the run end time has been seen since the helper (its epoch)
+    /// was first seen: the first one seen is where things stand, not an end.
+    private var seen = false
+    /// The end time of the last run seen to end.
+    private var lastEnded: Double?
 
     mutating func observe(_ snapshot: [String: WireValue], baseline: Bool = false) -> Bool {
         let ended = receipts.observe(snapshot, baseline: baseline)
         let nextEpoch = snapshot["monitoring"]?.object?["epoch"]?.string
-        let reset = baseline || epoch != nextEpoch
-        defer { epoch = nextEpoch }
-        if reset { settled = nil }
-        guard let state = snapshot["state"]?.string, Self.settledStates.contains(state),
-              let revision = snapshot["displayRevision"]?.string else { return ended }
-        defer { settled = revision }
-        return ended || (!reset && settled.map { $0 != revision } == true)
+        if baseline || epoch != nextEpoch { seen = false; lastEnded = nil }
+        epoch = nextEpoch
+        guard let metrics = snapshot["turnMetrics"]?.object else { return ended }
+        // A run under way has none; one that ends sets it.
+        let endedAt = metrics["endedAt"]?.number
+        guard seen else { seen = true; lastEnded = endedAt; return ended }
+        guard let endedAt, endedAt != lastEnded else { return ended }
+        lastEnded = endedAt
+        return true
     }
 }
 

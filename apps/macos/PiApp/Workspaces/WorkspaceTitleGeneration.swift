@@ -153,7 +153,9 @@ extension WorkspaceModel {
     /// With `sourceLease`, nothing is sent once the source chat has moved to
     /// another connection (`connectionChanged`): what was read from it goes
     /// only to the connection it was read on.
+    /// `onRecord` is told the request's own ID once its record is made.
     func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String, sourceLease: ConnectionLease? = nil,
+                      onRecord: (@MainActor (String) -> Void)? = nil,
                       result: ([TranscriptMessage]) throws -> String) async throws -> [TranscriptMessage] {
         // Once a quit or an update has begun (`installPreparing`), no helper
         // is started and nothing is sent: the known helpers are stopping.
@@ -168,6 +170,7 @@ extension WorkspaceModel {
         do { try await store.put(item, kind: "chat", id: taskID) }
         catch { backgroundRequestsRunning.remove(taskID); throw error }
         chats.append(item)
+        onRecord?(taskID)
         let display = SessionDisplay(id: taskID); displays[taskID] = display; display.loading = true
         var host: HostSupervisor?
         defer {

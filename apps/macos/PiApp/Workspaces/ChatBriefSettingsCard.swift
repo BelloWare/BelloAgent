@@ -164,7 +164,7 @@ import Combine
                 let today = await self.model.briefUsage(since: Calendar.current.startOfDay(for: now))
                 let month = await self.model.briefUsage(since: now.addingTimeInterval(-30 * 86_400))
                 var spent = ChatBriefUsage()
-                if let batch = self.model.chatBriefs.batch { spent = await self.model.briefUsage(since: batch.startedAt, for: Set(batch.chats)) }
+                if let batch = self.model.chatBriefs.batch { spent = await self.model.briefUsage(requests: Set(batch.requests)) }
                 guard !Task.isCancelled else { return }
                 self.today = today; self.month = month; self.batchSpend = spent
                 self.update()

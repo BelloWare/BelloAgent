@@ -190,6 +190,42 @@ Runs of what round 5 changes:
 | Serial, under the lock, after the fixes (`r5-green-serial.log`): `ChatBriefTests` 20, `ChatBriefHoverTests` 2, `TitleGenerationTests` 12, `WebhookTests` 18, `MiniModelSettingsTests` 1, `BackgroundRequestsTests` 6 (every caller of `askMiniModel`) | 59 passed, 0 failed |
 | The barrier test again with its final record check (`r5-barrier-green.log`) | passed |
 
+## Round 6: Astra's re-review of round 5 (2026-10-24)
+
+Two findings on `3acf4c1d`, each fixed with a test that failed first on the
+unfixed code (`r6-red.log`) and passes now:
+
+1. **[P2] A run's end is told by the run's own end time, not by the display
+   revision.** Round 4's fallback took the session settling on a newer
+   display revision for a run's end, but loading a chat's whole history (to
+   open older message versions) moves the revision with no run, so a chat
+   without a brief could be asked about with no run's end and no Write Brief.
+   `RunEndTracker` now keeps the receipts rule and, for a retry that leaves its
+   receipt as it was, the session's last run end time (`turnMetrics.endedAt`,
+   which the helper sets as every run, retries included, ends); the first one
+   seen after a (re)start is where things stand, not an end.
+   `testAHistoryReadWithNoRunAsksForNoBrief`: the revision moves twice while
+   idle with the same end time, and nothing is asked (red: two requests and a
+   brief). The retry test now gives each snapshot its end time; without the
+   end-time rule it fails (`r6-mut-no-end-time.log`).
+2. **[P2] Write Briefs' spend is its own requests'.** Its spend was every brief
+   request for its chats since it began, so a run's end in one of them after
+   it finished added to it. The batch now keeps the IDs of the requests it made
+   (`ChatBriefBatch.requests`, told by `askMiniModel(onRecord:)` as each
+   record is made, a retry's on a new connection included), and Settings sums
+   those (`briefUsage(requests:)`). `testWriteBriefsSpendIsItsOwnRequestsOnly`:
+   two chats written ($0.008), then a run's end in one of them ($0.004 more):
+   the batch still shows $0.008 while the 30 days show $0.012 (red: $0.012,
+   3 requests).
+
+Runs of what round 6 changes:
+
+| Run | Result |
+| --- | --- |
+| The two tests on the unfixed code (`r6-red.log`) | 2 failed, each for the reason found |
+| Serial, under the lock (`r6-green-serial.log`): `ChatBriefTests` 22, `ChatBriefHoverTests` 2, `WebhookTests` 18, `TitleGenerationTests` 12 (`askMiniModel`'s callers, the run's-end tracking) | 54 passed, 0 failed |
+| Parallel (`r6-green-parallel.log`): `CompletionSoundTests` 8, `ChatBriefSettingsTests` 1, `ChatBriefSettingsLiveTests` 1, `ChatBriefPlanTests` 7 | 17 passed, 0 failed |
+
 ## What it does
 
 - **A brief per chat.** At the end of every run (completed, failed, stopped or
@@ -301,6 +337,9 @@ Runs of what round 5 changes:
   level with it), `refresh(over:width:view:)` (a shown card rebuilt without
   fading), and a `pointerLocation` seam. Off by default: skill pills are
   unchanged.
+- Round 6: `RunEndTracker` on the run's end time (`turnMetrics.endedAt`)
+  instead of the display revision; `ChatBriefBatch.requests`,
+  `askMiniModel(onRecord:)` and `briefUsage(requests:)` for the batch's spend.
 - Round 5: the partial turn's question read from its row
   (`WorkspaceChatBriefs.swift`), `ChatBriefs.busy` in
   `WorkspaceModel.hasActiveWork`, `installPreparing` rechecked in
