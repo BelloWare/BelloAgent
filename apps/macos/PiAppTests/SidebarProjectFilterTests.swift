@@ -310,6 +310,13 @@ final class SidebarProjectFilterTests: XCTestCase {
         XCTAssertEqual(place([60, 60, 60, 60], available: 300).shown, [0, 1, 2, 3], "The last chip needs no room for \"+N\"")
         XCTAssertEqual(place([60, 60, 60, 60], chosen: 3, available: 240), .init(shown: [0, 3], widths: [60, 60], hidden: [1, 2]))
         XCTAssertEqual(place([60, 60, 60, 200], chosen: 3, available: 260).shown, [3], "A wide chosen chip goes first, cut short")
+        // The menu is for chips that do not fit: 40 + 100 + 4 + 25 = 169 of 176
+        // points, though "+N" (40) is wider than the last chip.
+        XCTAssertEqual(place([100, 25], available: 176), .init(shown: [0, 1], widths: [100, 25], hidden: []),
+                       "Chips that all fit need no \"+N\", whatever its width")
+        XCTAssertEqual(place([100, 25], chosen: 1, available: 176), .init(shown: [0, 1], widths: [100, 25], hidden: []))
+        XCTAssertEqual(place([100, 25], available: 168), .init(shown: [0], widths: [84], hidden: [1]),
+                       "A point short, the second goes into the menu")
     }
 
     @MainActor func testChipOrderHoldsWhileThePointerIsOverTheBar() throws {
@@ -365,6 +372,30 @@ final class SidebarProjectFilterTests: XCTestCase {
         let elsewhere = try await waitForNewChat(other, after: "scroll")
         XCTAssertEqual(elsewhere.workspaceID, "app", "No project takes no new chats: the selected chat's project does")
         XCTAssertNil(other.sidebarProjectFilter, "The new chat's project is listed")
+    }
+
+    /// New Chat in a project that takes none falls back to the open chat's
+    /// project, and may reuse the empty chat already open there instead of
+    /// making another: that chat is listed too.
+    @MainActor func testNewChatThatReusesTheOpenEmptyChatListsItsProjectAgain() async throws {
+        for chosen in [scratch, "gone", "untrusted"] {
+            let model = try fixture(); prepareNewChat(model)
+            model.workspaces.append(WorkspaceRecord(id: "untrusted", path: model.root.appendingPathComponent("untrusted").path, trusted: false))
+            model.chats.append(chat("strange", in: "untrusted", order: 3))
+            model.selectedID = "scroll"; model.selectedWorkspaceID = "app"
+            model.newChat()
+            let empty = try await waitForNewChat(model, after: "scroll")
+            XCTAssertEqual(empty.workspaceID, "app")
+            XCTAssertTrue(model.isPendingEmpty(empty.id))
+            model.setSidebarProjectFilter(chosen)
+            XCTAssertEqual(model.sidebarFlatProject, chosen)
+            XCTAssertFalse(ids(model).contains(empty.id))
+            model.newChat()
+            XCTAssertEqual(model.selectedID, empty.id, "\(chosen): New Chat reuses the empty chat it falls back to")
+            XCTAssertTrue(model.workspaceChangesInFlight.isEmpty, "\(chosen): nothing new is made")
+            XCTAssertNil(model.sidebarProjectFilter, "\(chosen): the reused chat's project is listed again")
+            XCTAssertTrue(ids(model).contains(empty.id), "\(chosen): the chat New Chat opened is in the list")
+        }
     }
 
     @MainActor func testTheChoiceIsNotSavedAndTopicsIgnoresIt() async throws {

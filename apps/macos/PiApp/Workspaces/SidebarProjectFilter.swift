@@ -35,6 +35,11 @@ extension WorkspaceModel {
     func setSidebarProjectFilter(_ id: String?) {
         if sidebarProjectFilter != id { sidebarProjectFilter = id }
     }
+    /// `chat` is being shown from outside the list: Flat narrowed to another
+    /// project lists every project again, so the chat's row is there.
+    func listSidebarProject(of chat: ChatRecord) {
+        if let chosen = sidebarProjectFilter, chosen != chat.workspaceID { sidebarProjectFilter = nil }
+    }
 
     /// The chips: every project Flat lists chats of (archived ones while the
     /// archive is shown), newest activity first, as its rows are ordered. The
@@ -64,10 +69,10 @@ extension WorkspaceModel {
     }
 }
 
-/// Which chips fit beside All: the project chips in their order while they
-/// fit whole next to "+N" for the rest; only a first chip with no room to be
-/// whole is cut short. The chosen chip is always shown, in the place of the
-/// last chip that fits (first, when only one does).
+/// Which chips fit beside All: every one when they all do; else the project
+/// chips in their order while they fit whole next to "+N" for the rest, only
+/// a first chip with no room to be whole cut short. The chosen chip is always
+/// shown, in the place of the last chip that fits (first, when only one does).
 enum SidebarChipFit {
     struct Placement: Equatable {
         /// Indexes into the chips, in the order shown, and each one's width.
@@ -81,6 +86,11 @@ enum SidebarChipFit {
     static func place(natural: [CGFloat], chosen: Int?, available: CGFloat, leading: CGFloat, spacing: CGFloat,
                       minimum: CGFloat, more: (Int) -> CGFloat) -> Placement {
         let order = Array(natural.indices)
+        // The menu is for chips that do not fit: room kept for "+N" must not
+        // push out a last chip narrower than it.
+        if leading + natural.reduce(0, +) + spacing * CGFloat(max(0, natural.count - 1)) <= available + 0.5 {
+            return Placement(shown: order, widths: natural, hidden: [])
+        }
         func fit(_ order: [Int], forcingFirst: Bool = false) -> Placement {
             var placement = Placement(), x = leading
             for (position, index) in order.enumerated() {

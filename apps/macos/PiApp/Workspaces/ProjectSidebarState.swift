@@ -164,7 +164,7 @@ extension WorkspaceModel {
         guard !item.isBackgroundTask else { return }
         if item.isArchived { showArchivedSessions = true }
         // Flat narrowed to another project lists every project again.
-        if let chosen = sidebarProjectFilter, chosen != item.workspaceID { sidebarProjectFilter = nil }
+        listSidebarProject(of: item)
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
         forgetLaunchReveal(project: item.workspaceID)
         var value = projectSidebarStates[item.workspaceID] ?? ProjectSidebarState(id: item.workspaceID)

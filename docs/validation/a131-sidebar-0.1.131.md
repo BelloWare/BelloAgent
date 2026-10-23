@@ -36,9 +36,9 @@ app, real preferences, real chats, Keychain, paid provider or `xctrace`.
   chosen. With only one project with chats, there is nothing to choose and no
   bar. Labels are the rows' project tags ("Retained chats" for one retained
   group; several keep their id suffixes apart).
-- **Overflow.** Chips are whole: they fill the row in order beside "+N ▾" for
-  the rest; only a first chip with no room to be whole is cut short (long names
-  at the minimum width). "+N ▾" opens a Pi menu of the hidden projects, newest
+- **Overflow.** Chips are whole: when they do not all fit, they fill the row
+  in order beside "+N ▾" for the rest; only a first chip with no room to be
+  whole is cut short (long names at the minimum width). "+N ▾" opens a Pi menu of the hidden projects, newest
   first. The chosen chip is always shown: it takes the last place that fits.
 - **Tags.** A Flat row's project tag is a button while Flat lists every project
   and no search is on: hover shades it, the pointer is a hand, and a press
@@ -54,13 +54,20 @@ app, real preferences, real chats, Keychain, paid provider or `xctrace`.
   hide some of its chats (a raised count otherwise showed "Show less" under two
   rows).
 - **New Chat** in Flat starts in the chosen project when it is a trusted one,
-  so the new chat is listed where the reader is looking.
+  so the new chat is listed where the reader is looking. When the chosen
+  project takes no new chats (No project, a retained group, an untrusted
+  project), New Chat falls back as before, and the chat it opens, a new one
+  or the empty one it reuses, is listed: every project again.
 - **Opening a chat of another project from elsewhere** (menu bar, report,
   notifications, a new chat in another project) lists every project again, as
   Topics expands a collapsed project to show the open chat. Clicks in the
   sidebar and keyboard steps never change the choice.
 
-## Owner decisions — needs owner decision (conservative defaults shipped)
+## Owner decisions
+
+**Owner, 2026-10-23, after reviewing the screenshots: all three defaults
+kept.** A search covers every project; the chosen chip is kept until the app
+quits; chips only in Flat. The options as they were put:
 
 1. **Search with a chosen project.** Shipped: **a search looks across every
    project**; while it is on, the chips give their place to the search scope
@@ -205,3 +212,31 @@ from every project.
   only if a project with that id came back.
 - Release performance was not measured: the chips are one pass over the chats
   per sidebar change, cached with the index (see the Debug note above).
+
+## Round 2: review findings (Codex Astra on `63a29d33`)
+
+- **[P2] New Chat reusing an empty chat left it hidden.** With Flat narrowed to
+  No project, a retained group or an untrusted project, New Chat falls back to
+  the open chat's trusted project; when that open chat is an empty pending
+  chat, `createNewChat(topicID:)` reuses it and returns without `select`, so
+  `revealProjectChat` never ran and the chat New Chat opened stayed out of the
+  list. The reuse branch now lists it the same way
+  (`listSidebarProject(of:)`, shared with `revealProjectChat`). It only
+  changes the project filter; Topics' reuse behaves as before.
+- **[P3] Room kept for "+N" pushed out a chip that fit.** The fit reserved the
+  menu button's width before each chip, so a last chip narrower than "+N"
+  could be pushed into the menu with room to spare: widths [100, 25] in 176
+  points (All 40, gaps 4, "+N" 40) need 169, yet the first was cut to 92 and
+  the second hidden. The fit now shows every chip whenever the whole row fits,
+  and keeps room for "+N" only when some chip does not.
+
+| Log | Result |
+| --- | --- |
+| `r2-red.log`, before the fixes | SidebarProjectFilterTests 17: **2 tests fail, 8 assertions**: the fit gives `shown [0] widths [92] hidden [1]` for [100, 25] in 176 (and, with the second chosen, reorders a row that fits); New Chat's reuse keeps the choice and its chat out of the list for No project, a retained group and an untrusted project alike. |
+| `r2-green-parallel.log`, one process: SidebarProjectFilterTests 17, SidebarFlatTopicsTests 30, DeferredCreationTests 4 | **51** passed, 0 failed |
+| `r2-serial.log`, under the lock: PendingChatProjectTests 24, TopicOrganizationTests 14, ProjectSidebarTests 8 | **46** passed, 0 failed |
+
+The red run is the fixes taken out, which is also their mutation check: each
+fix is the only difference between `r2-red.log` and the green runs. The
+galleries were not rerun: in both, every chip row is wider than the bar, where
+the fit is unchanged.
