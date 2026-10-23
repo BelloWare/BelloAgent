@@ -1450,11 +1450,18 @@ and `14e-sidebar-search-opened-*` (a snippet pressed: its chat open at that
 message). The full gallery renders them after the archive scene.
 
 `PI_APP_UI_GALLERY_FLAT_TOPICS_ONLY=1` (with `TEST_RUNNER_` beside it) renders
-only a project listed flat at the 920×600 window: `14f-sidebar-flat-topics-*`
-(no topic folders, every chat of the project newest first with its topic as a
-tag, one of them unread). The full gallery renders it after the archive scene,
-then groups the project again, archives the chats it added and removes the
-topic it added.
+only the combined Flat list, at the normal and the 920×600 window:
+`14f-sidebar-flat-all-*` (every project's chats newest first, each with its
+project and topic tags, under the project chips), `14g-sidebar-header-menu-*`
+(the open header menu), `14h-sidebar-flat-project-*` (narrowed to one project
+by its chip) and `14i-sidebar-flat-overflow-*` (the open "+N" menu of the
+projects whose chips do not fit). The full gallery renders them after the
+archive scene, then lists Topics again and removes the chats and topic it added.
+
+`SidebarProjectFilterGalleryTests` draws the project chips on their own,
+offscreen, when `TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY` names a folder:
+`project-filter-{all,project,search}-{300,200}-*` and
+`project-filter-from-menu-200-*`, in both appearances.
 
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the

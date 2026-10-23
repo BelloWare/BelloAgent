@@ -111,6 +111,8 @@ extension WorkspaceModel {
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
             displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return false
         }
+        // From the sub-agent's tab, outside the sidebar: Flat lists its chat.
+        listSidebarProject(of: parent)
         let sideOwner = selectedID == parent.id ? nil : (side(parent.id)?.parentID ?? sideFamilyOwner(parent))
         let mainID = sideOwner ?? parent.id
         // Showing the owning ordinary side intentionally replaces an embedded

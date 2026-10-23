@@ -239,6 +239,9 @@ extension WorkspaceModel {
         return value
     }
     func openFamilySide(_ id: String) async {
+        // The Agents list opens it as its row would, nothing unfolded, but
+        // from outside the sidebar: Flat lists its family's project.
+        if let side = record(id) { listSidebarProject(of: side) }
         await openFromSidebar(id)
     }
     func openNewFamilySide(_ ownerID: String) {

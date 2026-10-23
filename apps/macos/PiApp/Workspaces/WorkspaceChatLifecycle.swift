@@ -34,6 +34,8 @@ extension WorkspaceModel {
         // reuses that draft or waits for defaults before changing selection.
         if let current = selectedID { pendingChatProjectChoices[current] = nil }
         if let current = selectedID, isPendingEmpty(current), let item = record(current), item.workspaceID == workspaceID, item.profileID == profileChoice, effectiveTopicID(for: item) == topicID {
+            // Reused rather than selected: listed as a new chat would be.
+            listSidebarProject(of: item)
             displays[current]?.composerFocusRequest += 1; return
         }
         workspaceChangesInFlight.insert(workspaceID)

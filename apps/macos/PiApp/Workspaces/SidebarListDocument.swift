@@ -33,6 +33,8 @@ import QuartzCore
     var removeTopic: ((String) -> Void)?
     var setShownRoots: ((String, Int, String) -> Void)?
     var setSideFolded: ((String, Bool) -> Void)?
+    /// A row's project tag was pressed: narrow Flat to that project.
+    var chooseProject: ((String) -> Void)?
     /// Where a drag over the list would drop, for the headers' highlight.
     var dropTargetChanged: (((project: String, topic: String?)?) -> Void)?
 

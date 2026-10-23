@@ -252,6 +252,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var renameTarget: RenameTarget?
     @Published var projectSidebarStates: [String: ProjectSidebarState] = [:] { didSet { sidebarIndex.invalidate() } }
     @Published var sidebarViewState = SidebarViewState() { didSet { sidebarIndex.invalidate() } }
+    /// Owned by `SidebarProjectFilter.swift`: the project Flat is narrowed
+    /// to, nil for All. Kept while the app runs, never saved.
+    @Published var sidebarProjectFilter: String? { didSet { if sidebarProjectFilter != oldValue { sidebarIndex.invalidate() } } }
     var sidebarViewWrite: Task<Void, Never>?
     var dirtySidebarViewState = false
     var sidebarViewModeChanged = false

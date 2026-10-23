@@ -115,6 +115,11 @@ import Combine
             else { model.setSidebarSideFolded(id, folded: folded) }
         }
         body.archive = token.guardAction { model.toggleSessionArchive(id) }
+        let project = chat.workspaceID
+        body.chooseProject = token.guardAction { [weak self] in
+            if let choose = (self?.superview as? SidebarListDocument)?.chooseProject { choose(project) }
+            else { model.setSidebarProjectFilter(project) }
+        }
         body.bindActions(to: actionBinding)
         actionBinding.install(in: self)
         let hold = dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument })
@@ -203,7 +208,8 @@ import Combine
         return ChatRowBodyView.Content(stats: stats, title: model.subagentSearchTitle(chat), subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        familyActivity: state.familyActivity, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
-                                       projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, hasSide: state.hasSide,
+                                       projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, choosesProject: state.choosesProject,
+                                       topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
                                        archivable: !chat.isSubagent && !chat.isUtilityChat, available: state.available)
     }
