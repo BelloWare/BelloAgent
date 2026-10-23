@@ -386,7 +386,10 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
         // Its connection is gone: Write Brief asks nothing of anyone.
         var plain = ChatRecord(id: "plain", workspaceID: "project", title: "Welcome copy", path: root.appendingPathComponent("b.jsonl").path, profileID: "gone")
         plain.lastActivityAt = 1
-        model.chats = [briefed, plain]
+        // Never asked about before: nothing earlier can say why it has no brief.
+        var fresh = ChatRecord(id: "fresh", workspaceID: "project", title: "Pricing notes", path: root.appendingPathComponent("c.jsonl").path, profileID: "gone")
+        fresh.lastActivityAt = 0
+        model.chats = [briefed, plain, fresh]
         XCTAssertTrue(model.briefSettings.enabled, "On by default")
         let sidebar = WorkspaceSidebarView(model: model)
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
@@ -473,25 +476,29 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(menuIDs(plainRow).contains("writeBrief")); XCTAssertFalse(menuIDs(briefedRow).contains("writeBrief"))
 
         // While the brief is being written (here, waiting out a connection
-        // change), the card and the menu say so; once it is done, the card up
-        // offers Write Brief again.
+        // change), the card already up says so the moment the request starts,
+        // and the menu too; once it is done, the card offers Write Brief again
+        // and says why none was written.
+        let freshRow = try XCTUnwrap(row("fresh"))
+        freshRow.body.setHovering(true)
+        try await eventually("the card comes up", timeout: .seconds(5)) { presenter.isShown && presenter.anchorView === freshRow.body }
+        func shownCard() -> SidebarBriefCardView? { cardViews(presenter.panel?.contentView).first }
+        XCTAssertNotNil(shownCard()?.writeButton)
         let (released, release) = AsyncStream<Never>.makeStream()
-        model.connectionSwitches["plain"] = (UUID(), Task { for await _ in released {} })
-        model.writeBriefNow("plain")
-        XCTAssertTrue(model.chatBriefs.isWriting("plain"))
-        let writingItem = SidebarChatRowView.entries(model: model, chat: plainRow.chat, state: plainRow.state)
+        model.connectionSwitches["fresh"] = (UUID(), Task { for await _ in released {} })
+        model.writeBriefNow("fresh")
+        XCTAssertTrue(model.chatBriefs.isWriting("fresh"))
+        XCTAssertNil(shownCard()?.writeButton, "The card up says the brief is being written as the request starts")
+        XCTAssertTrue(texts(try XCTUnwrap(shownCard())).joined().contains("Writing the brief…"))
+        let writingItem = SidebarChatRowView.entries(model: model, chat: freshRow.chat, state: freshRow.state)
             .lazy.compactMap { entry -> PiMenuItem? in if case .item(let item) = entry, item.identifier == "writeBrief" { return item }; return nil }.first
         XCTAssertEqual(writingItem?.title, "Writing Brief…"); XCTAssertEqual(writingItem?.enabled, false)
-        plainRow.body.setHovering(true)
-        try await eventually("the card comes up while it is written", timeout: .seconds(5)) { presenter.isShown }
-        func shownCard() -> SidebarBriefCardView? { cardViews(presenter.panel?.contentView).first }
-        XCTAssertTrue(texts(try XCTUnwrap(shownCard())).joined().contains("Writing the brief…"))
-        XCTAssertNil(shownCard()?.writeButton)
-        model.connectionSwitches["plain"] = nil; release.finish()
-        try await eventually("done, the card offers it again", timeout: .seconds(5)) { shownCard()?.writeButton != nil }
-        XCTAssertEqual(model.chatBriefs.outcomes["plain"], .noMiniModel); XCTAssertEqual(model.chatBriefs.attempts, 2)
+        model.connectionSwitches["fresh"] = nil; release.finish()
+        try await eventually("the request is over", timeout: .seconds(5)) { model.chatBriefs.outcomes["fresh"] != nil }
+        XCTAssertEqual(model.chatBriefs.outcomes["fresh"], .noMiniModel)
+        XCTAssertNotNil(shownCard()?.writeButton, "Done, the card offers Write Brief again")
         XCTAssertTrue(texts(try XCTUnwrap(shownCard())).joined().contains("no mini model"), "It says why no brief was written")
-        plainRow.body.setHovering(false)
+        freshRow.body.setHovering(false)
         try await eventually("off the row and the card, it goes", timeout: .seconds(5)) { !presenter.isShown }
 
         // Off: no card, no Write Brief, and the tooltip is back.
@@ -511,6 +518,29 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
             XCTAssertFalse(presenter.isShown)
             row.body.setHovering(false)
         }
+    }
+
+    /// The pointer has left the control and the card, and the card's grace is
+    /// running, when what it says changes: the card shown again is still on its
+    /// way out, and goes when the grace is over.
+    @MainActor func testACardRefreshedWhileItIsLeavingStillGoes() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let anchor = NSView(frame: NSRect(x: 20, y: 20, width: 200, height: 40))
+        window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 200)); window.contentView?.addSubview(anchor); window.orderFront(nil)
+        let presenter = PiHoverCardPresenter()
+        presenter.interactive = true; presenter.placement = .trailing
+        presenter.delay = .milliseconds(10); presenter.reducesMotion = true; presenter.leaveGrace = .milliseconds(80)
+        presenter.pointerLocation = { NSPoint(x: -10_000, y: -10_000) }
+        defer { presenter.hide(); window.close() }
+        func card(_ text: String) -> NSView { ShellText(text, font: .systemFont(ofSize: 12), color: .piInk) }
+        presenter.hover(true, over: anchor, width: 200) { card("Before") }
+        try await eventually("the card comes up", timeout: .seconds(5)) { presenter.isShown }
+        presenter.hover(false, over: anchor, width: 200) { NSView() }
+        XCTAssertTrue(presenter.isShown, "The grace has begun")
+        presenter.refresh(over: anchor, width: 200) { card("After") }
+        XCTAssertTrue(presenter.isShown, "Shown again with what it now says")
+        try await eventually("the card goes once the grace is over", timeout: .seconds(3)) { !presenter.isShown }
     }
 
     /// A press as the window server delivers it: the button's tracking loop
@@ -586,14 +616,16 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
     }
 
     /// What the helper's snapshots say when a run ends: its command receipt
-    /// turns completed (`observeSessionCompletion`), after a quiet baseline.
-    @MainActor private func finishRun(_ model: WorkspaceModel, _ id: String, receipts: [String]) {
+    /// turns `state`, completed unless said (`observeSessionCompletion`),
+    /// after a quiet baseline.
+    @MainActor private func finishRun(_ model: WorkspaceModel, _ id: String, receipts: [String], state: String = "completed") {
         if model.displays[id] == nil {
             model.displays[id] = SessionDisplay(id: id)
             model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array([])], baseline: true)
         }
-        model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array(receipts.map {
-            .object(["commandId": .string($0), "turnId": .string($0), "state": .string("completed")])
+        model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array(receipts.enumerated().map {
+            .object(["commandId": .string($0.element), "turnId": .string($0.element),
+                     "state": .string($0.offset == receipts.count - 1 ? state : "completed")])
         })])
     }
     /// The brief requests on the Background requests page, oldest first.
@@ -1022,6 +1054,59 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         }
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(other.requests.count, 1); XCTAssertTrue(first.requests.isEmpty)
+    }
+
+    /// A brief is read on a reader of its own, never on the one every chat's
+    /// opening and paging goes through, even for a chat that is open: a long
+    /// journal's index rebuilt for a brief holds up nothing else.
+    @MainActor func testABriefReadsItsChatOffTheSharedHistoryReader() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model
+        let (chat, journal) = try await self.chat("open", fixture, title: "Open chat", turns: [("A question while it is open.", "An answer.")])
+        finishRun(model, chat.id, receipts: ["t1"])
+        XCTAssertNotNil(model.displays[chat.id], "The chat is open")
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        let shared = await model.history.indexedPaths
+        XCTAssertFalse(shared.contains(journal.url.path), "The shared reader never read the chat for its brief: \(shared)")
+    }
+
+    /// A run that adds messages and then fails ends a run all the same: the
+    /// chat's brief is updated, as for any run's end (the chime is for
+    /// completed runs only).
+    @MainActor func testARunThatFailsStillUpdatesItsBrief() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, journal) = try await self.chat("failing", fixture, title: "Failing chat", turns: [("First question.", "First answer.")])
+        finishRun(model, chat.id, receipts: ["t1"])
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "failing-a0" }
+        try journal.message("failing-u1", role: "user", "A second question the provider failed on.")
+        try journal.message("failing-a1", role: "assistant", "Half an answer before the failure.")
+        finishRun(model, chat.id, receipts: ["t1", "t2"], state: "failed")
+        try await eventually("the failed run's end updates it", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "failing-a1" }
+        XCTAssertEqual(gateway.requests.count, 2)
+        XCTAssertTrue(gateway.requests[1].prompt.contains("A second question the provider failed on."))
+    }
+
+    /// A chat archived while Write Briefs waits on an earlier one is left
+    /// alone when its turn comes, as an archived chat is when it starts.
+    @MainActor func testWriteBriefsLeavesAChatArchivedWhileItWaits() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        for (index, id) in ["first", "second", "third"].enumerated() {
+            _ = try await chat(id, fixture, title: id, turns: [("Question for the \(id) chat.", "Answer.")], activity: Int64(10 - index) * 1_000_000)
+        }
+        gateway.hold(true)
+        model.chatBriefs.startBatch()
+        XCTAssertEqual(model.chatBriefs.batch?.total, 3)
+        try await eventually("the first request is sent", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        model.chats[try XCTUnwrap(model.chats.firstIndex { $0.id == "second" })].archivedAt = Date()
+        gateway.hold(false)
+        try await eventually("the batch is over", timeout: .seconds(120)) { model.chatBriefs.batch?.finished == true }
+        XCTAssertEqual(gateway.requests.count, 2, "The archived chat is not asked about")
+        XCTAssertFalse(gateway.requests.contains { $0.prompt.contains("Question for the second chat.") })
+        XCTAssertNil(model.record("second")?.brief)
+        XCTAssertNotNil(model.record("first")?.brief); XCTAssertNotNil(model.record("third")?.brief)
+        XCTAssertEqual(model.chatBriefs.batch?.done, 3); XCTAssertEqual(model.chatBriefs.batch?.written, 2)
     }
 
     /// Beside the setting: brief requests today and over the last 30 days,

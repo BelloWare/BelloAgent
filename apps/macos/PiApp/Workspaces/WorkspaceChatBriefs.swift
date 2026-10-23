@@ -119,6 +119,10 @@ struct ChatBriefUsage: Equatable, Sendable {
     private var batchCurrent: String?
     private var watch: AnyCancellable?
     private var stopped = false
+    /// Brief reads go through a reader of their own, never the one every
+    /// chat's opening and paging goes through (`WorkspaceModel.history`): a
+    /// long journal's index rebuilt for a brief holds up nothing else.
+    let reader = HistoryReader()
     /// Test seams: requests begun, how each chat's last one ended, and a hook
     /// run just before a request is sent.
     private(set) var attempts = 0
@@ -164,7 +168,7 @@ struct ChatBriefUsage: Equatable, Sendable {
     @discardableResult private func start(_ id: String) -> Task<Void, Never>? {
         if let running = tasks[id] { return running }
         guard let model else { return nil }
-        attempts += 1; writing.insert(id)
+        attempts += 1
         let task = Task { [weak self, weak model] in
             var outcome = await model?.writeBrief(id) ?? .skipped
             // Moved to another connection while it was prepared: asked
@@ -176,12 +180,18 @@ struct ChatBriefUsage: Equatable, Sendable {
             self?.finished(id, outcome)
         }
         tasks[id] = task
+        // Published last: what a card reads as it changes (`isWriting`) is
+        // already true.
+        writing.insert(id)
         return task
     }
 
     private func finished(_ id: String, _ outcome: ChatBriefOutcome) {
-        tasks[id] = nil; writing.remove(id)
+        tasks[id] = nil
         outcomes[id] = outcome
+        // Published last: a card reading the chat as it changes finds the
+        // request over and how it ended (`lastProblem`).
+        writing.remove(id)
         // A run ended meanwhile: one more update, from where this one read to.
         if pending.remove(id) != nil { write(id) }
     }
@@ -215,7 +225,9 @@ struct ChatBriefUsage: Equatable, Sendable {
                     // Being written already (a run's end): that request counts.
                     await running.value
                     outcome = self.outcomes[id]
-                } else if let model = self.model, let chat = model.chatRecord(id), chat.brief == nil, model.briefEligible(chat) {
+                } else if let model = self.model, let chat = model.chatRecord(id), chat.brief == nil, !chat.isArchived, model.briefEligible(chat) {
+                    // Looked at again as its turn comes: archived, or given a
+                    // brief, since the batch began, it is left alone.
                     self.batchCurrent = id
                     await self.start(id)?.value
                     outcome = self.outcomes[id]
@@ -296,8 +308,8 @@ extension WorkspaceModel {
     func sidebarBrief(_ chat: ChatRecord) -> ChatBrief? { offersBrief(chat) ? chat.brief : nil }
 
     /// Writes or updates one chat's brief: the connection's mini model asked
-    /// with the earlier brief and the chat's newest page, read on a reader of
-    /// its own unless the chat is open. The chat's connection is held from
+    /// with the earlier brief and the chat's newest page, read on the briefs'
+    /// own reader (`ChatBriefs.reader`), open or not. The chat's connection is held from
     /// the first read until the request is sent: a chat moved to another
     /// connection meanwhile sends nothing through the old one
     /// (`connectionChanged`). The brief lands on the chat's record only.
@@ -317,7 +329,7 @@ extension WorkspaceModel {
         guard TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors) != nil else { return .noMiniModel }
         let activity = chatRecord(id)?.activityStamp ?? chat.activityStamp
         let page: HistoryPage
-        do { page = displays[id] != nil ? try await history.read(path: path) : try await HistoryReader().read(path: path) }
+        do { page = try await chatBriefs.reader.read(path: path) }
         catch { return .unreadable(error.localizedDescription) }
         await chatBriefs.beforeDispatch?(id)
         guard !Task.isCancelled, briefSettings.enabled else { return .skipped }

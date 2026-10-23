@@ -61,10 +61,54 @@ Astra's review of `3d7b5893`, and what answers it:
   exactly once however many runs ended meanwhile, and reads on from where
   that request read to.
 
+## Round 3: Astra's review of round 2 (2026-10-23)
+
+Five findings on `15b4a227`, each fixed with a test that failed first: all
+five failed on the unfixed code, each for the reason found
+(`r3-red.log`), and pass now.
+
+1. **[P2] Brief reads kept off the shared history reader.** An open chat's
+   brief was read through `WorkspaceModel.history`, the reader every chat's
+   opening and paging goes through, so a long journal whose index had to be
+   rebuilt held them up (OPEN-1 keeps its run-end scans off it for the same
+   reason). Every brief is now read on the briefs' own reader
+   (`ChatBriefs.reader`, which keeps its indexes for the next update).
+   `testABriefReadsItsChatOffTheSharedHistoryReader`: an open chat's brief
+   leaves the shared reader holding no index for its journal (red: it held
+   one).
+2. **[P2] A failed run's end updates the brief.** Briefs followed the chime's
+   completion tracker, which takes completed runs only. They now have a
+   tracker of their own over every run's end
+   (`SessionCompletionTracker(endings: runEndings)`: completed, failed,
+   cancelled, interrupted, output-limited); the chime still takes completed
+   runs only. `testARunThatFailsStillUpdatesItsBrief` (red: no update after a
+   failed run).
+3. **[P2] A chat archived while Write Briefs waits is left alone.** Each queued
+   chat is looked at again as its turn comes, archived status included.
+   `testWriteBriefsLeavesAChatArchivedWhileItWaits` (red: the archived chat
+   was asked, 3 requests instead of 2).
+4. **[P2] The card no longer reads state before it is set.** `writing` is now
+   published last: when a request starts, `tasks` already holds it; when it
+   ends, `tasks` and `outcomes` are already updated. The hover test's
+   in-flight step now uses a chat never asked about before (red: the card kept
+   offering Write Brief as the request started, and once it ended said
+   nothing of why no brief was written).
+5. **[P2] A refresh keeps the card's dismissal.** `PiHoverCardPresenter.refresh`
+   keeps a card that was leaving on its way out (its grace starts again).
+   `testACardRefreshedWhileItIsLeavingStillGoes` (red: the card stayed up).
+
+Runs on the fixed code, of what round 3 changes:
+
+| Run | Result |
+| --- | --- |
+| The five tests on the unfixed code (`r3-red.log`) | 5 failed, each for the reason found |
+| Serial, under the lock (`r3-green-serial.log`): `ChatBriefTests` 15, `ChatBriefHoverTests` 2, `WebhookTests` 18 (run's-end tracking), `InlineSkillPillTests` 16 (the hover presenter) | 51 passed, 1 skipped (the capture that needs `PI_APP_UI_SCREENSHOT_ROOT`), 0 failed |
+| Parallel (`r3-green-parallel.log`): `CompletionSoundTests` 8 (the chime still takes completed runs only), `ChatBriefPlanTests` 7, `ChatBriefSettingsTests` 1, `ChatBriefSearchTests` 1 | 17 passed, 0 failed |
+
 ## What it does
 
-- **A brief per chat.** At the end of every run, the chat's connection's mini
-  model writes one or two sentences on what the chat is about and where it
+- **A brief per chat.** At the end of every run (completed, failed, stopped or
+  cut short), the chat's connection's mini model writes one or two sentences on what the chat is about and where it
   stands, and up to six keywords someone would search for (topics, files,
   tools, errors, names). The next update sends the earlier brief and keywords
   plus **only the rows after the one the brief read last**, so an update costs
@@ -73,8 +117,8 @@ Astra's review of `3d7b5893`, and what answers it:
 - **One request at a time per chat.** A run that ends while the chat's brief is
   being written does not start a second request; the chat gets exactly one more
   update when the first one ends, however many runs ended meanwhile.
-- **Bounded input.** The request reads the chat's newest page (60 rows, the
-  history reader's), quotes only user and assistant text (no tool output,
+- **Bounded input.** The request reads the chat's newest page (60 rows, on the
+  briefs' own history reader, never the one chats open through), quotes only user and assistant text (no tool output,
   notices or summaries), each message clipped to 1,200 characters (start and
   end kept), newest first until 8,000 characters are used, then in the order
   they were said. A page that starts inside a long turn also quotes that turn's
@@ -172,6 +216,12 @@ Astra's review of `3d7b5893`, and what answers it:
   level with it), `refresh(over:width:view:)` (a shown card rebuilt without
   fading), and a `pointerLocation` seam. Off by default: skill pills are
   unchanged.
+- Round 3: `ChatBriefs.reader` (brief reads off `WorkspaceModel.history`;
+  `HistoryReader.indexedPaths` is the tests' seam), `SessionCompletionTracker.endings`
+  and `SessionDisplay.runEndTracker` (`CompletionSound.swift`,
+  `SessionDisplay.swift`: every run's end for briefs, completed runs for the
+  chime), Write Briefs rechecking archived status, `writing` published last,
+  `PiHoverCardPresenter.refresh` keeping a leaving card leaving.
 - `apps/macos/PiApp/Workspaces/WorkspaceTitleGeneration.swift`:
   `askMiniModel(…, sourceLease:)` rechecks the source chat's connection just
   before `turn.submit` (title suggestions and webhooks pass none: unchanged).

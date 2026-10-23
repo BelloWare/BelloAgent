@@ -75,9 +75,13 @@ import AppKit
     /// says changed while it was up.
     func refresh(over anchor: NSView, width: CGFloat, view: () -> NSView) {
         guard self.anchor === anchor, isShown else { return }
+        // A card on its way out stays on its way out: the pointer has left it
+        // and the control, and no exit comes from a card it is not on.
+        let wasLeaving = leaving != nil
         hide()
         self.anchor = anchor
         show(over: anchor, width: width, view: view(), fades: false)
+        if wasLeaving { leave() }
     }
 
     /// The pointer left the control or the card: the card goes unless the
