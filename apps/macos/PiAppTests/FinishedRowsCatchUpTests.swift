@@ -31,9 +31,11 @@ final class FinishedRowsCatchUpTests: XCTestCase {
     }
     private static let finishedPage = [(id: "q", role: "user", text: "A large answer, please"), (id: "r", role: "assistant", text: "The whole answer.")]
 
-    /// `firstRead`: what the chat's first read returns, when not its finished page.
+    /// `firstRead`, `laterReads`: what the chat's first read, and the reads
+    /// after it, return when not its finished page.
     /// `journal`, `otherJournal`: the finished chat's and another chat's journals, when they have one.
-    @MainActor private func model(_ reads: Reads, firstRead: [(id: String, role: String, text: String)]? = nil, journal: URL? = nil,
+    @MainActor private func model(_ reads: Reads, firstRead: [(id: String, role: String, text: String)]? = nil,
+                                  laterReads: [(id: String, role: String, text: String)]? = nil, journal: URL? = nil,
                                   otherJournal: URL? = nil) async throws -> WorkspaceModel {
         let root = scratchRoot("finished-rows")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -45,7 +47,7 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         model.historyWindowLoader = { id, _, _, _ in
             let read = await reads.enter(id)
             guard id == "finished" else { return try Self.page([(id: "s", role: "assistant", text: "Shown")]) }
-            return try Self.page(read == 1 ? firstRead ?? Self.finishedPage : Self.finishedPage)
+            return try Self.page(read == 1 ? firstRead ?? Self.finishedPage : laterReads ?? Self.finishedPage)
         }
         await model.select("shown")
         return model
@@ -205,39 +207,141 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         await opening.value
     }
 
+    /// Where a journal's plan scan waits, as it begins, until released: the
+    /// scan held open for as long as a test needs it.
+    private final class ScanGate: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var entered = false, released = false
+        private let path: String
+        init(_ path: URL) { self.path = path.path }
+        var hasEntered: Bool { condition.lock(); defer { condition.unlock() }; return entered }
+        func enter(_ scanned: URL) {
+            guard scanned.path == path else { return }
+            condition.lock(); defer { condition.unlock() }
+            entered = true
+            let deadline = Date().addingTimeInterval(30)
+            while !released, condition.wait(until: deadline) {}
+        }
+        func release() { condition.lock(); released = true; condition.broadcast(); condition.unlock() }
+    }
+
     /// The journal scan read for a finished chat out of sight runs off the
-    /// reader every chat's reads go through: a chat opened meanwhile reads at
-    /// once instead of waiting for it. Before, the scan ran on that reader, so
-    /// another chat's opening waited for the whole scan, hundreds of
-    /// milliseconds in a long chat, its own reads already cached (review,
-    /// round 2).
+    /// reader every chat's reads go through: a chat opened while it is under
+    /// way reads at once instead of waiting for it. Before, the scan ran on
+    /// that reader, and another chat's opening waited for the whole scan,
+    /// hundreds of milliseconds in a long chat, its own reads already cached
+    /// (review, round 2). The scan is held open here until the other chat's
+    /// read has completed (review, round 3).
     @MainActor func testAChatOpenedWhileTheFinishedJournalIsScannedDoesNotWaitForIt() async throws {
-        // About 16 MB, long enough to scan that an opening overlaps it.
-        let journal = try self.journal("finished", turns: 2_000, replyBytes: 8_192)
+        let journal = try self.journal("finished", turns: 200, replyBytes: 1_000)
         let otherJournal = try self.journal("other", turns: 3, replyBytes: 100)
         let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: journal.path)[.size] as? Int)
         let reads = Reads(), model = try await model(reads, journal: journal, otherJournal: otherJournal)
         let other = try XCTUnwrap(model.record("other"))
         await model.readInheritedSubagents(other, current: { true })
+        let gate = ScanGate(journal)
+        HistoryReader.planScanStarting = { gate.enter($0) }
+        addTeardownBlock { HistoryReader.planScanStarting = nil; gate.release() }
         let view = leftWhileArriving(model)
         model.catchUpFinishedRows(view.id)
         let read = try XCTUnwrap(view.finishedRowsRead)
-        // The page is held; the scan follows it.
-        while view.heldRowsOutlived { await Task.yield() }
-        var scanningAtFirstRead: Bool?
-        model.openSteps = { chat, step in
-            if chat == "other", step == "inherited agents read", scanningAtFirstRead == nil { scanningAtFirstRead = view.finishedRowsRead != nil }
-        }
-        await model.select("other")
+        let start = ProcessInfo.processInfo.systemUptime
+        while !gate.hasEntered, ProcessInfo.processInfo.systemUptime - start < 10 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(gate.hasEntered, "the finished chat's journal scan began")
+        // The other chat opens while that scan is held; its first read is of
+        // its own journal, already cached.
+        var readOwnJournal = false
+        model.openSteps = { chat, step in if chat == "other", step == "inherited agents read" { readOwnJournal = true } }
+        let opening = Task { @MainActor in await model.select("other") }
+        let asked = ProcessInfo.processInfo.systemUptime
+        while !readOwnJournal, ProcessInfo.processInfo.systemUptime - asked < 10 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(readOwnJournal, "the other chat read while the finished journal's scan was held")
+        gate.release()
+        await opening.value; await read.value
         model.openSteps = nil
-        XCTAssertEqual(scanningAtFirstRead, true, "the other chat read its journal while the finished one's was still being scanned")
-        await read.value
         let scanned = await model.history.subagentScannedBytes
         XCTAssertGreaterThanOrEqual(scanned, size, "the finished chat's journal was scanned whole, off the reader")
         let item = try XCTUnwrap(model.record(view.id))
         await model.readInheritedSubagents(item, current: { true })
         let again = await model.history.subagentScannedBytes
         XCTAssertEqual(again, scanned, "and kept: the opening finds it read")
+    }
+
+    /// The commands a host sent, for the test to answer.
+    @MainActor private final class Commands { var frames: [[String: WireValue]] = []; var answered = 0 }
+
+    /// A connected helper whose commands the test answers itself, as the
+    /// project's host.
+    @MainActor private func answeringHost(_ model: WorkspaceModel) async throws -> (host: HostSupervisor, commands: Commands) {
+        let commands = Commands()
+        let host = HostSupervisor(commandSender: { commands.frames.append($0) })
+        let folder = scratchRoot("finished-rows-host")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try await host.connect(cwd: folder, state: folder.appendingPathComponent("host"))
+        addTeardownBlock { @MainActor in try? await host.shutdownAndWait(); try? FileManager.default.removeItem(at: folder) }
+        model.hosts["project"] = host
+        return (host, commands)
+    }
+
+    /// The snapshot loop asks for the chat's status, as an event in it does,
+    /// and every status it asks for is answered with `state` and the helper's
+    /// row revision `revision`, until it asks no more.
+    @MainActor private func status(_ state: String, seq: Int, revision: String, of view: SessionDisplay, in model: WorkspaceModel,
+                                   host: (host: HostSupervisor, commands: Commands)) async throws {
+        model.refresh(view.id)
+        var quiet = 0
+        while quiet < 10 {
+            if host.commands.answered < host.commands.frames.count {
+                let frame = host.commands.frames[host.commands.answered]; host.commands.answered += 1
+                let result: WireValue = frame["method"]?.string == "session.status"
+                    ? .object(["sessionId": .string(view.id), "seq": .number(Double(seq)), "state": .string(state), "runStatus": .string(state),
+                               "displayRevision": .string(revision), "queue": .array([]), "queueCount": .number(0)])
+                    : .object([:])
+                host.host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.host.epoch)),
+                                          "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true), "result": result]),
+                                  connectionID: try XCTUnwrap(host.host.connectionID))
+                quiet = 0
+            } else if view.snapshotInFlight { quiet = 0 } else { quiet += 1 }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    /// A run that starts and ends while the finished page is still being
+    /// read moves the helper's rows past that page: it is read again, and the
+    /// chat holds the page as it is after both runs; a run the read missed
+    /// sends the chat back for its page too. Before, the older page was put in
+    /// place, its rows finished, so nothing read the chat again, and it opened
+    /// on the run before and then changed to the newer page (review, round 3).
+    @MainActor func testARunThatComesAndGoesDuringTheReadSendsItBackForTheNewerPage() async throws {
+        let afterBoth = Self.finishedPage + [(id: "q2", role: "user", text: "And a short one"), (id: "r2", role: "assistant", text: "A short answer.")]
+        let reads = Reads(), model = try await model(reads, laterReads: afterBoth)
+        let view = leftWhileArriving(model)
+        view.state = "running"
+        model.opened.insert(view.id)
+        let host = try await answeringHost(model)
+        await reads.hold("finished")
+        // The run ends out of sight, and its page is read.
+        try await status("idle", seq: 5, revision: "epoch:5", of: view, in: model, host: host)
+        let read = try XCTUnwrap(view.finishedRowsRead, "the end of the run reads the finished page")
+        while await reads.count("finished") < 1 { await Task.yield() }
+        // A short follow-up runs and ends while that read is under way.
+        try await status("running", seq: 6, revision: "epoch:6", of: view, in: model, host: host)
+        try await status("idle", seq: 9, revision: "epoch:9", of: view, in: model, host: host)
+        await reads.release(); await read.value
+        XCTAssertEqual(view.messages.map(\.id), ["q", "r", "q2", "r2"], "the chat holds the page as it is after both runs")
+        XCTAssertFalse(view.heldRowsOutlived)
+        // A run the snapshot loop only learns of afterwards.
+        let before = await reads.count("finished")
+        try await status("idle", seq: 12, revision: "epoch:12", of: view, in: model, host: host)
+        await view.finishedRowsRead?.value
+        let after = await reads.count("finished")
+        XCTAssertEqual(after, before + 1, "rows the helper's have moved past are read again")
+        XCTAssertFalse(view.heldRowsOutlived)
+        let opening = Task { @MainActor in await model.select(view.id) }
+        while model.selectedID != view.id { await Task.yield() }
+        XCTAssertEqual(view.presentedMessages.map(\.id), ["q", "r", "q2", "r2"], "opened, it is on that page at once")
+        XCTAssertFalse(ConversationPaneView.coversTranscript(view))
+        await opening.value
     }
 
     /// The chat on screen gets its rows from the snapshot loop, and a chat

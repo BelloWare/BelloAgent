@@ -218,7 +218,8 @@ extension WorkspaceModel {
     /// shows its finished rows at once, as a revisit shows the rows it kept,
     /// and reads its page behind them. Before, it opened on a blank page and
     /// read its history behind the loading cover (OPEN-1). The read gives way
-    /// to the chat being opened, or running again, before it lands.
+    /// to the chat being opened, or running again, before it lands; a run
+    /// that has come and gone meanwhile sends it back for the newer page.
     func catchUpFinishedRows(_ id: String) {
         guard catchesUpFinishedRows, let view = displays[id], view.finishedRowsRead == nil, view.hasPresentedRows, view.heldRowsOutlived, !view.browsingHistory,
               !receivesRows(id), let item = record(id), !item.isSubagent, !item.isBackgroundTask else { return }
@@ -230,40 +231,51 @@ extension WorkspaceModel {
                 !Task.isCancelled && !self.isShutDown && self.displays[id] === view && view.presentation.readGeneration == generation
                     && view.heldRowsOutlived && !self.receivesRows(id) && self.record(id)?.path == item.path
             }
-            do {
-                // The chat's own read: the reader moving between other chats
-                // meanwhile is no reason to drop it, as it is for theirs.
-                var page = try await self.readInitialWindow(item, holding: view.scrollAnchor, followsNavigation: false)
-                guard current() else { return }
-                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-                guard current() else { return }
-                view.beginTranscriptBatch()
-                self.adoptPage(page, into: view, presenting: false)
-                view.endTranscriptBatch()
-                // What the opening reads of the journal before its page —
-                // which of another chat's agents it refers to, and what its
-                // own agents sent — is a scan of the whole file once it has
-                // changed, about 0.3 s for a 50 MiB chat. It is scanned now,
-                // off the reader every chat's reads go through (a chat opened
-                // meanwhile does not wait on it), and kept there for the
-                // revision scanned, so the opening finds it read.
-                if let path = item.path, !item.imported, let revision = HistoryReader.currentRevision(path: path) {
-                    let journal = URL(fileURLWithPath: path), owner = item.id
-                    let fingerprint = self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == owner })
-                        ? try? HistoryReader.coordinationFingerprint(journal) : nil
-                    let scan = await Task.detached(priority: .utility) { () -> (plans: [DiscoveredSubagent]?, coordination: AgentCoordination?, scanned: Int) in
-                        var scanned = 0
-                        let plans = try? HistoryReader.scanPlans(path: journal, ownerID: owner, childID: nil, includeInherited: true, scanned: &scanned)
-                        let coordination = fingerprint == nil ? nil : try? HistoryReader.scanCoordination(path: journal, ownerID: owner, scanned: &scanned)
-                        return (plans, coordination, scanned)
-                    }.value
-                    if let plans = scan.plans { await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned) }
-                    if let coordination = scan.coordination, let fingerprint {
-                        await self.history.keepCoordination(coordination, path: journal, ownerID: owner, fingerprint: fingerprint)
-                    }
+            // The page is read for the helper's rows as they are when the read
+            // starts. A run that comes and goes meanwhile moves them past it,
+            // so the page is read again; one still under way stops the read
+            // (`current`), and its own end reads the chat again.
+            var adopted = false
+            for _ in 0..<3 where !adopted {
+                let revision = view.helperDisplayRevision
+                do {
+                    // The chat's own read: the reader moving between other
+                    // chats meanwhile is no reason to drop it, as it is for theirs.
+                    var page = try await self.readInitialWindow(item, holding: view.scrollAnchor, followsNavigation: false)
+                    guard current() else { return }
+                    page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
+                    guard current() else { return }
+                    guard view.helperDisplayRevision == revision else { continue }
+                    view.beginTranscriptBatch()
+                    self.adoptPage(page, into: view, presenting: false)
+                    view.heldRowsRevision = revision
+                    view.endTranscriptBatch()
+                    adopted = true
+                } catch {
+                    // Not read now, the chat's page is read as it opens.
+                    return
                 }
-            } catch {
-                // Not read now, the chat's page is read as it opens.
+            }
+            // What the opening reads of the journal before its page — which
+            // of another chat's agents it refers to, and what its own agents
+            // sent — is a scan of the whole file once it has changed, about
+            // 0.3 s for a 50 MiB chat. It is scanned now, off the reader every
+            // chat's reads go through (a chat opened meanwhile does not wait
+            // on it), and kept there for the revision scanned, so the opening
+            // finds it read.
+            guard adopted, let path = item.path, !item.imported, let revision = HistoryReader.currentRevision(path: path) else { return }
+            let journal = URL(fileURLWithPath: path), owner = item.id
+            let fingerprint = self.subagentSummaries.values.contains(where: { $0.link.budgetOwnerSessionID == owner })
+                ? try? HistoryReader.coordinationFingerprint(journal) : nil
+            let scan = await Task.detached(priority: .utility) { () -> (plans: [DiscoveredSubagent]?, coordination: AgentCoordination?, scanned: Int) in
+                var scanned = 0
+                let plans = try? HistoryReader.scanPlans(path: journal, ownerID: owner, childID: nil, includeInherited: true, scanned: &scanned)
+                let coordination = fingerprint == nil ? nil : try? HistoryReader.scanCoordination(path: journal, ownerID: owner, scanned: &scanned)
+                return (plans, coordination, scanned)
+            }.value
+            if let plans = scan.plans { await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned) }
+            if let coordination = scan.coordination, let fingerprint {
+                await self.history.keepCoordination(coordination, path: journal, ownerID: owner, fingerprint: fingerprint)
             }
         }
     }

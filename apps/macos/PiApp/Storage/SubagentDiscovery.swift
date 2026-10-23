@@ -70,6 +70,7 @@ extension HistoryReader {
     /// (`WorkspaceModel.catchUpFinishedRows`), where waiting on it would hold
     /// up every chat's reads.
     nonisolated static func scanPlans(path: URL, ownerID: String, childID: String?, includeInherited: Bool, scanned: inout Int) throws -> [DiscoveredSubagent] {
+        if childID == nil { planScanStarting?(path) }
         var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
         try subagentRecords(path, scanned: &scanned) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
@@ -99,6 +100,9 @@ extension HistoryReader {
         }
         return found
     }
+    /// Test seam: called as a whole scan of a journal's plans begins, on the
+    /// thread that scans it, before anything is read. Nil in the app.
+    nonisolated(unsafe) static var planScanStarting: (@Sendable (URL) -> Void)?
     /// Every plan a whole scan found, kept for the revision the journal had
     /// before it began while the journal still has it. `scanned`: what a scan
     /// made off this reader read.

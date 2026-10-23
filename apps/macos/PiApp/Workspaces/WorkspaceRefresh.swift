@@ -147,6 +147,7 @@ extension WorkspaceModel {
                         view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
+                    if let revision = result["displayRevision"]?.string { view.helperDisplayRevision = revision }
                     let wasBusy = view.busy
                     helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
@@ -292,7 +293,7 @@ extension WorkspaceModel {
                 view.browsingHistory = true
                 if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
             }
-            view.historyRevision = nil
+            view.historyRevision = nil; view.heldRowsRevision = nil
             view.projectedRows = projected
             // Rows the reader scrolled up to stay in front of the helper's window.
             let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)

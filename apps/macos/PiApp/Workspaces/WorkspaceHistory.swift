@@ -138,7 +138,7 @@ extension WorkspaceModel {
         else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
         view.browsingHistory = page.newer != nil
         view.projectedRows = []; view.projectionRevision = nil
-        if presenting { view.historyState = page.messages.isEmpty ? .empty : .preparing }
+        if presenting { view.historyState = page.messages.isEmpty ? .empty : .preparing; view.heldRowsRevision = nil }
         view.messages = page.messages
         view.adoptedPage = view.pageRows
     }

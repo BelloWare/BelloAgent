@@ -305,3 +305,63 @@ Validation of the round (Debug; `debug-review-parallel.log`,
 These are the classes that use the scans split above (sub-agent plans,
 discovery, deletion, coordination, display, effort, steering) and the opening
 and history-reading paths the catch-up goes through. No helper or wire change.
+
+## Round 3 — 2026-10-23: review of `9a681e3a`
+
+Two P2 findings, both confirmed and fixed.
+
+- **A run that came and went during the read left an older page in place.**
+  If a short follow-up started and ended while the read was under way (it
+  waits up to 150 ms for figures), the chat was idle again with its rows still
+  outlived and the same presentation, so the older page was put in place. Its
+  rows were finished, so nothing read the chat again, and opened it showed the
+  run before and then changed to the newer page. Now the display keeps the
+  helper's row revision from every snapshot, also a status
+  (`helperDisplayRevision`, from `displayRevision`, which the helper moves only
+  when its rows change). The read is bound to the revision at its start: if
+  the revision has moved when the page and figures are back, the page is read
+  again (up to three times; a run still under way stops the read, and its end
+  reads the chat again). The page held keeps the revision it was read at
+  (`heldRowsRevision`), and rows read out of sight count as outlived
+  (`heldRowsOutlived`) once the helper's rows move past them. So a run the read
+  missed reads the chat again, and an opening before that lands opens as
+  before, covered, instead of showing the older page. Rows from anywhere else
+  (an opening's page, a snapshot's rows) carry no such revision and keep the
+  old rule.
+- **The overlap test could fail with correct code.** It waited for the page to
+  be held, which says nothing about whether the scan was still running, and
+  relied on a 16 MB journal taking long enough. A test seam,
+  `HistoryReader.planScanStarting`, is called as a whole plan scan begins, on
+  the thread that scans. The test holds the scan there, checks that the other
+  chat's first read completes, and only then releases it. A small journal
+  does.
+
+Tests, `FinishedRowsCatchUpTests` (9 now):
+
+- `testARunThatComesAndGoesDuringTheReadSendsItBackForTheNewerPage` (new):
+  the real snapshot loop, with a connected helper whose commands the test
+  answers (as `FreshPresentationTests` does). The run ends out of sight
+  (revision 5) and the page read is held; a follow-up runs (6) and ends (9);
+  released, the chat holds the page after both runs. A later status with a
+  newer revision (12) reads the chat again, and opened it is on that page,
+  uncovered.
+- `testAChatOpenedWhileTheFinishedJournalIsScannedDoesNotWaitForIt` (reworked):
+  the scan held at `planScanStarting` until the other chat's first read has
+  completed.
+- **Mutations** (Debug): without the revision check, the new test fails (the
+  older page `[q, r]` is held, `debug-r3-mutation-revision.log`); with the scan
+  back on the shared reader, the reworked test fails (the other chat's read
+  waits behind the held scan, `debug-r3-mutation-onreader.log`). The other
+  eight pass in each.
+
+Validation of the round (Debug, final code; serial classes under the lock):
+
+| Classes | Result |
+| --- | --- |
+| FinishedRowsCatchUpTests 9, SubagentDiscoveryTests 15, WorkspaceLoadingTests 13 | 37 passed (`debug-r3-parallel.log`) |
+| ChatOpenPlacementTests 7, ChatLoadStabilityTests 1, FreshPresentationTests 21, WorkspaceRefreshLifecycleTests 38 | 67 passed (`debug-r3-serial.log`) |
+
+The classes are the ones the round reaches: the catch-up and its seams, the
+plan scan, the snapshot loop (the revision is read from every snapshot, and a
+snapshot's rows clear the held revision), and the opening, whose fallback now
+also covers rows read out of sight that the helper's rows have moved past.

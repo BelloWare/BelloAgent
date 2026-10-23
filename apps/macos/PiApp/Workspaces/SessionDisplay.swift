@@ -113,13 +113,23 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// where the reader left them — a reply still arriving, its turn still
     /// live. Kept on the page, they changed under the reader as soon as the
     /// finished page replaced them.
+    /// So are rows read out of sight once the helper's rows have moved past
+    /// them: another run has come and gone since they were read.
     var heldRowsOutlived: Bool {
         !busy && !loading && runState == .idle && sendingRows.isEmpty
-            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
+            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending }
+                || heldRowsRevision.map { $0 != helperDisplayRevision } == true)
     }
     /// The read that brings such rows up to date while the chat is still out
     /// of sight (`WorkspaceModel.catchUpFinishedRows`).
     var finishedRowsRead: Task<Void, Never>?
+    /// The helper's revision of this chat's rows, as its last snapshot gave
+    /// it: also for a chat out of sight, which is sent its status, not its rows.
+    var helperDisplayRevision: String?
+    /// The helper's revision the rows held here were read at, when the chat
+    /// read them for itself out of sight (`catchUpFinishedRows`); nil for
+    /// rows from anywhere else.
+    var heldRowsRevision: String?
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     /// Where the window stands in the whole chat, for the room the transcript
