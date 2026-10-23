@@ -288,6 +288,52 @@ final class ChatOpenPlacementTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(Array(changes.prefix(12)), [], "Once drawn, nothing on it moves (\(changes.count) changes)")
     }
 
+    /// OPEN-1, the owner's decision of 2026-10-23: a run's end counts as a use
+    /// of its chat. Past eight open chats the display of the one used longest
+    /// ago is let go of, and a chat that ran a long time out of sight was that
+    /// one: once its run had ended, opening any other chat let go of it,
+    /// finished rows and all, and it opened covered again. Its run's end now
+    /// puts it at the front: it keeps its display, and opens on its finished
+    /// rows at once.
+    @MainActor func testAChatWhoseRunEndsOutOfSightKeepsItsDisplayAmongTheEight() async throws {
+        let setup = try await setup()
+        let launched = await launch(setup)
+        let model = launched.model
+        await model.restore()
+        model.selectedWorkspaceID = setup.workspace.id; model.profileChoice = setup.profile.id
+        func chat(_ name: String) -> ChatRecord { ChatRecord(id: "chat-\(name)-" + UUID().uuidString, workspaceID: setup.workspace.id, title: name, path: nil, profileID: setup.profile.id) }
+        let finishing = chat("finishing"), others = (1...9).map { chat("idle-\($0)") }
+        for item in [finishing] + others { model.chats.append(item); try await model.store?.put(item, kind: "chat", id: item.id) }
+        // Nine chats opened, as a reader with many open has them; then one
+        // with a reply, and a long one the reader leaves arriving.
+        for item in others { await model.select(item.id) }
+        await model.select(finishing.id)
+        let view = try XCTUnwrap(model.displays[finishing.id])
+        view.draft = "And a short one"; model.send(sessionID: finishing.id)
+        await waitFor("The first reply never finished") { quiet(view) }
+        view.draft = "A large answer, please"; model.send(sessionID: finishing.id)
+        await waitFor("The long reply never started arriving") { view.messages.last?.isStreaming == true && (view.messages.last?.text.count ?? 0) > 400 }
+        // Every other chat is opened after it: it is the one used longest ago.
+        for item in others { await model.select(item.id) }
+        XCTAssertTrue(model.displays.values.min { $0.used < $1.used } === view, "the running chat is the one used longest ago")
+        await waitFor("The long reply never finished in the background", seconds: 90) { !view.busy && view.state == "idle" }
+        await waitFor("The finished reply never reached the chat while it was out of sight", seconds: 10) {
+            view.messages.last?.role == "assistant" && !view.messages.contains { $0.isStreaming || $0.isSending }
+        }
+        XCTAssertTrue(model.displays.values.max { $0.used < $1.used } === view, "its run's end counts as a use: it is the chat used last")
+        // The reader opens another chat, and one display is let go of.
+        await model.select(others[0].id)
+        XCTAssertLessThanOrEqual(model.displays.count, 8, "no more than eight are kept")
+        XCTAssertTrue(model.displays[finishing.id] === view, "the chat whose run just ended keeps its display")
+        // Opened, it is on its finished rows at once, uncovered.
+        let opening = Task { @MainActor in await model.openFromSidebar(finishing.id) }
+        while model.selectedID != finishing.id { await Task.yield() }
+        let opened = try XCTUnwrap(model.displays[finishing.id])
+        XCTAssertTrue(opened.presentedMessages.contains { $0.role == "assistant" && $0.id == opened.messages.last?.id && !$0.isStreaming }, "its finished reply is on the page at once")
+        XCTAssertFalse(ConversationPaneView.coversTranscript(opened), "nothing covers it")
+        await opening.value
+    }
+
     /// Found by `SoakTests`: the live turn bar of a chat that is running, or
     /// has just been sent to, stood under the next chat the reader opened,
     /// and went a moment later. The bar takes its room from the

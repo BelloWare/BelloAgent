@@ -78,6 +78,14 @@ because its cache is keyed by the journal's revision.
   after the run's end), the chat opens as before 0.1.131: rows dropped, read
   behind the cover. Every opening the probe made 0.5 s after a run's end found
   the finished rows already held.
+- **A run's end counts as a use of its chat** (owner decision, 2026-10-23;
+  round 2 below). Past eight open chats, `releaseUnreadDisplays` lets go of the
+  display of the one used longest ago, and a chat that ran a long time out of
+  sight was usually that one: once its run had ended, opening any other chat
+  let go of it, finished rows and all, and its next opening was a first
+  opening. A run that ends while its chat is out of sight now moves the chat to
+  the front (`used`, set where the snapshot loop sees the run end), so it keeps
+  its display. Memory stays bounded at eight.
 - Test seams: `openSteps` (each step of an opening, with its time, as
   `sendSteps` does for a send) and `catchesUpFinishedRows` (off: read as it
   opens, as before, so one build can compare both).
@@ -207,12 +215,6 @@ concurrent and acceptance suites were not run.
   95 ms here). Keeping them would mean keeping live rows out of sight, which
   `TranscriptKeptRows` refuses by design. PERF-1 (a131-layout) removes part of
   the cost beside the floating card.
-- **Displays beyond eight.** `releaseUnreadDisplays` lets go of the least
-  recently opened displays without work, and a chat that ran a long time in
-  the background is usually that: once its run has ended, opening any other
-  chat while more than eight are held lets go of it, rows and all, and its next
-  opening is a first opening (covered). Options: leave it; count a run's end as
-  use; keep a display while it holds an unread reply.
 - **Runs that end in an error, or stopped or paused**, keep the rows the
   reader left: `heldRowsOutlived` covers idle runs, as since 0.1.114, and such a
   chat shows them and then the page in their place. Unchanged.
@@ -221,3 +223,31 @@ concurrent and acceptance suites were not run.
   close the gap.
 - **First openings** (nothing held) still scan the journal before reading the
   page; the scan could follow the page instead.
+
+## Round 2 — 2026-10-23: a run's end counts as use
+
+Owner decision on the open question of round 1: "Run's end counts as use". A
+chat whose run ends while it is out of sight moves to the front of the display
+order, as if just opened, so `releaseUnreadDisplays` keeps it among the eight
+and its finished rows (the read above) are still there when the reader clicks
+it. Memory stays bounded at eight.
+
+- **Change.** `WorkspaceModel.refresh`: when a snapshot of a chat out of sight
+  shows its run has ended (busy before the snapshot, not after: idle, failed or
+  paused), its display's `used` becomes now. Nothing else reads `used`.
+- **Test.** `ChatOpenPlacementTests.testAChatWhoseRunEndsOutOfSightKeepsItsDisplayAmongTheEight`
+  (serial lane; real window, helper and gateway): nine chats open, then one
+  with a reply and a long one the reader leaves arriving; the nine are opened
+  again, so the running chat is the one used longest ago. Once its run has
+  ended out of sight it is the chat used last; opening another chat lets go of
+  one display and keeps no more than eight, and not this one; opened, it is on
+  its finished rows at once, uncovered.
+  **Failing first and mutation:** with the new line disabled (a Debug build
+  with its condition never true), 4 failures (`debug-use-off.log`): the chat
+  is not the one used last, opening another chat lets go of its display, and
+  opened it is covered without its finished reply.
+- **Validation (Debug, under the lock).** `ChatOpenPlacementTests` 7 passed
+  (the new test and the six before), `WorkspaceDisplayMemoryTests` 2 passed
+  (`debug-use-on.log`): 9 executed, 0 failures. These are the classes the
+  change reaches: nothing else reads `used`, and the release order is only
+  changed by a run's end observed out of sight.

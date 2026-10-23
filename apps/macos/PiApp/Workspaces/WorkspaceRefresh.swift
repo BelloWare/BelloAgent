@@ -147,6 +147,7 @@ extension WorkspaceModel {
                         view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
+                    let wasBusy = view.busy
                     helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
                         try applySnapshotRows(projected, from: result, to: view, id: id, item: item)
@@ -158,10 +159,17 @@ extension WorkspaceModel {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
                     applyToolNotice(result, to: view, id: id, item: item)
-                    // A run that ended out of sight left the rows it was
-                    // writing as the reader saw them: they are read again
-                    // now, before the reader opens the chat.
-                    if !visible { catchUpFinishedRows(id) }
+                    if !visible {
+                        // A run that ends out of sight counts as a use of its
+                        // chat (owner, 2026-10-23): its display stays among
+                        // the eight kept (`releaseUnreadDisplays`), finished
+                        // rows and all, for the reader who opens it next.
+                        if wasBusy, !view.busy { view.used = Date() }
+                        // It left the rows it was writing as the reader saw
+                        // them: they are read again now, before the reader
+                        // opens the chat.
+                        catchUpFinishedRows(id)
+                    }
                 }
                 // Looked up by id; finding the index is only needed to write.
                 if let path = result["path"]?.string, let known = chatRecord(id), known.path != path, let index = chats.firstIndex(where: { $0.id == id }) {
