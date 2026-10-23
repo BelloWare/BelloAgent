@@ -8,9 +8,11 @@ extension PiKit {
     /// middle past `maxLabelWidth`, and a trailing chevron, on a white
     /// capsule in a strong hairline. The dropdown and the menu button.
     @MainActor class PillFaceButton: ButtonBase {
-        var label: String { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
-        var icon: String? { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
-        var maxLabelWidth: CGFloat? { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+        // A face set to what it already shows is not drawn again: drawing
+        // makes its symbols' images anew.
+        var label: String { didSet { if label != oldValue { invalidateIntrinsicContentSize(); redrawContent() } } }
+        var icon: String? { didSet { if icon != oldValue { invalidateIntrinsicContentSize(); redrawContent() } } }
+        var maxLabelWidth: CGFloat? { didSet { if maxLabelWidth != oldValue { invalidateIntrinsicContentSize(); redrawContent() } } }
         let chevron: String
         let compact: Bool
         let fontSize: CGFloat
@@ -507,7 +509,7 @@ extension PiKit {
         let entries: @MainActor () -> [PiMenuEntry]
         /// The title, kept as the accessibility name and tooltip when it changes.
         override var label: String {
-            didSet { setAccessibilityLabel(label); if help.isEmpty { toolTip = label } }
+            didSet { if label != oldValue { setAccessibilityLabel(label); if help.isEmpty { toolTip = label } } }
         }
         private let help: String
         init(title: String, icon: String? = nil, identifier: String? = nil, help: String = "", maxLabelWidth: CGFloat? = nil,
