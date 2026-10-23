@@ -95,30 +95,52 @@ enum TranscriptPaging {
     /// as many whole turns as it can toward the requested side — earlier
     /// ones when `keepingEarlier` — letting go of the turns past the kept
     /// ones on the other side and of the farthest ones of the requested
-    /// side. Turns too long for the caps keep just the kept rows. Nil when
-    /// the kept rows alone pass a cap.
+    /// side. Turns too long for the caps keep just the kept rows, and a turn
+    /// too long for them toward the requested side gives the rows of it
+    /// nearest the kept ones that there is still room for. Nil when the kept
+    /// rows alone pass a cap.
     static func window(_ messages: [TranscriptMessage], keeping: Set<String>, keepingEarlier: Bool) -> [TranscriptMessage]? {
         let indices = messages.indices.filter { keeping.contains(messages[$0].id) }
         guard let low = indices.first, let high = indices.last else { return window(messages, keepingEarlier: keepingEarlier) }
         let caps = residentCaps
         func measure(_ range: Range<Int>) -> (rows: Int, bytes: Int) { (range.count, range.reduce(0) { $0 + size(messages[$1]) }) }
+        // Whether the window could hold `turn` whole on its own.
+        func fitsAlone(_ turn: Range<Int>) -> Bool {
+            let whole = measure(turn); return whole.rows <= caps.rows && (whole.bytes <= caps.bytes || whole.rows == 1)
+        }
         var start = turnStart(low, in: messages), end = turnEnd(high, in: messages)
         var (kept, bytes) = measure(start..<end)
         if kept > caps.rows || (bytes > caps.bytes && kept > 1) {
             start = low; end = high + 1; (kept, bytes) = measure(start..<end)
             guard kept <= caps.rows, bytes <= caps.bytes || kept == 1 else { return nil }
         }
+        // A turn the window can never hold whole is cut anyway: it gives the
+        // rows nearest the kept ones that there is room for, so a page read
+        // toward it always adds rows. Taken whole or not at all, its other
+        // rows were always more than the window has, and the read added
+        // nothing and was refused, leaving the reader at blank room. A turn
+        // that fits on its own waits, whole, for room.
         if keepingEarlier {
             while start > 0 {
                 let previous = turnStart(start - 1, in: messages), more = measure(previous..<start)
-                guard kept + more.rows <= caps.rows, bytes + more.bytes <= caps.bytes else { break }
-                start = previous; kept += more.rows; bytes += more.bytes
+                if kept + more.rows <= caps.rows, bytes + more.bytes <= caps.bytes { start = previous; kept += more.rows; bytes += more.bytes; continue }
+                if !fitsAlone(previous..<turnEnd(start - 1, in: messages)) {
+                    while start > previous, kept < caps.rows, bytes + size(messages[start - 1]) <= caps.bytes {
+                        start -= 1; kept += 1; bytes += size(messages[start])
+                    }
+                }
+                break
             }
         } else {
             while end < messages.count {
                 let next = turnEnd(end, in: messages), more = measure(end..<next)
-                guard kept + more.rows <= caps.rows, bytes + more.bytes <= caps.bytes else { break }
-                end = next; kept += more.rows; bytes += more.bytes
+                if kept + more.rows <= caps.rows, bytes + more.bytes <= caps.bytes { end = next; kept += more.rows; bytes += more.bytes; continue }
+                if !fitsAlone(turnStart(end, in: messages)..<next) {
+                    while end < next, kept < caps.rows, bytes + size(messages[end]) <= caps.bytes {
+                        bytes += size(messages[end]); end += 1; kept += 1
+                    }
+                }
+                break
             }
         }
         return Array(messages[start..<end])
@@ -138,6 +160,15 @@ enum TranscriptPaging {
     static func endsTurn(_ window: [TranscriptMessage], in all: [TranscriptMessage]) -> Bool {
         guard let last = window.last, let at = all.lastIndex(where: { $0.id == last.id }), at + 1 < all.count else { return false }
         return startsTurn(all[at + 1])
+    }
+    /// The question of the turn `window` starts inside of, as the page's
+    /// earlier edge names it (`partialTurnInput`): the nearest question
+    /// before its first row in `all`, which it was cut from, or `fallback`
+    /// when `all` starts inside that same turn. Nil when the window starts
+    /// where a turn does.
+    static func partialTurnInput(of window: [TranscriptMessage], in all: [TranscriptMessage], fallback: String?) -> String? {
+        guard let first = window.first, !startsTurn(first), let at = all.firstIndex(where: { $0.id == first.id }) else { return nil }
+        return all[..<at].last(where: startsTurn)?.id ?? fallback
     }
     /// The resident window's two caps: `HistoryWindowPolicy`'s, which the app
     /// never changes. A test seam: a fixture lowers them so that a short chat

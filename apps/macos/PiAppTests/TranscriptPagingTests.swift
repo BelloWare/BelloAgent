@@ -49,11 +49,11 @@ final class TranscriptPagingTests: XCTestCase {
             [TranscriptMessage(id: "q\(turn)", role: "user", text: "Question \(turn)")] + (0..<work).map { row("w\(turn)_\($0)") }
         }
     }
-    @MainActor private func withCaps(rows: Int, _ body: () -> Void) {
+    @MainActor private func withCaps(rows: Int, _ body: () throws -> Void) rethrows {
         let caps = TranscriptPaging.residentCaps
         defer { TranscriptPaging.residentCaps = caps }
         TranscriptPaging.residentCaps = (rows: rows, bytes: caps.bytes)
-        body()
+        try body()
     }
 
     /// The resident window lets go of whole turns (0.1.131): a turn it holds
@@ -116,6 +116,41 @@ final class TranscriptPagingTests: XCTestCase {
         // Rows on screen past the caps on their own: still nil.
         withCaps(rows: 3) {
             XCTAssertNil(TranscriptPaging.window(page, keeping: ["q0", "w0_3"], keepingEarlier: true))
+        }
+    }
+
+    /// A turn too long for the window is cut, and a read toward the rest of
+    /// it takes the rows of it nearest the screen that there is room for: it
+    /// kept only the rows on screen, since the turn's other rows were more
+    /// than the window has, added nothing, and the read was refused, in
+    /// either direction (0.1.131 review: a 1,500-row turn, rows 750–759 on
+    /// screen). A turn that fits the window on its own still comes whole or
+    /// waits.
+    @MainActor func testATurnTooLongForTheWindowGivesTheRowsThereIsRoomFor() throws {
+        let long = turns(1, work: 1_499) // q0 and 1,499 rows
+        try withCaps(rows: 750) {
+            // Earlier rows of the turn, the screen at its rows 750–759.
+            let top = Set(long[750..<760].map(\.id))
+            let earlier = try XCTUnwrap(TranscriptPaging.window(long, keeping: top, keepingEarlier: true))
+            XCTAssertEqual(earlier.map(\.id), long[10..<760].map(\.id))
+            // Newer rows of it, the screen at its rows 740–749.
+            let bottom = Set(long[740..<750].map(\.id))
+            let newer = try XCTUnwrap(TranscriptPaging.window(long, keeping: bottom, keepingEarlier: false))
+            XCTAssertEqual(newer.map(\.id), long[740..<1490].map(\.id))
+            // A turn too long for the window before the one on screen gives
+            // its newest rows, as many as there is room for.
+            let after = long + turns(2, work: 49).dropFirst(50) // q1 and 49 rows
+            let short = Set(after.suffix(5).map(\.id))
+            let joined = try XCTUnwrap(TranscriptPaging.window(after, keeping: short, keepingEarlier: true))
+            XCTAssertEqual(joined.map(\.id), after[800...].map(\.id))
+            XCTAssertEqual(TranscriptPaging.partialTurnInput(of: joined, in: after, fallback: nil), "q0")
+        }
+        // One that fits on its own but not beside the turn on screen waits.
+        let page = turns(3, work: 4)
+        try withCaps(rows: 8) {
+            let kept = try XCTUnwrap(TranscriptPaging.window(page, keeping: ["w2_1"], keepingEarlier: true))
+            XCTAssertEqual(kept.first?.id, "q2", "q1's turn waits: it would fit only on its own")
+            XCTAssertNil(TranscriptPaging.partialTurnInput(of: kept, in: page, fallback: "q9"))
         }
     }
 

@@ -357,13 +357,17 @@ extension WorkspaceModel {
                     if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
                     if evicted, let first = joined.first {
                         var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge)
-                        // The window now starts where a turn does: no turn's question is above it.
-                        if TranscriptPaging.startsTurn(first) { view.presentation.partialTurnInput = nil }
+                        // Where the window now starts: at a turn's question, or
+                        // inside a turn (one too long for the window), whose
+                        // question the earlier edge names.
+                        view.presentation.partialTurnInput = TranscriptPaging.partialTurnInput(of: joined, in: unbounded,
+                                                                                               fallback: view.presentation.partialTurnInput)
                     }
                 } else {
                     view.olderPage = .init(cursor: page.older)
                     if trimmedFar, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
-                    view.presentation.partialTurnInput = trimmedFar ? nil : page.partialTurnInput
+                    view.presentation.partialTurnInput = trimmedFar
+                        ? TranscriptPaging.partialTurnInput(of: joined, in: unbounded, fallback: page.partialTurnInput) : page.partialTurnInput
                     if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
                 }
                 view.before = view.olderPage.cursor?.entry

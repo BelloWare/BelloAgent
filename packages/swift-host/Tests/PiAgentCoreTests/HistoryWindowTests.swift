@@ -159,6 +159,30 @@ final class HistoryWindowTests: HelperTestCase {
         XCTAssertEqual(HistoryWindowPolicy.page(count: 50, before: 50, startsTurn: { $0 == 10 || $0 == 30 }), 0..<50)
     }
 
+    /// A page read around a row starts at that row's question only when the
+    /// row is still within the `turnRows` a page from there may hold: a row
+    /// exactly that far from its question started its page at the question
+    /// and fell just past its end, so find, reveal and a position read never
+    /// showed it (0.1.131 review: `around: 750` in a 1,500-row turn read
+    /// rows 0..<750).
+    func testAPageAroundARowAsFarFromItsQuestionAsAPageReachesHoldsTheRow() {
+        let reach = HistoryWindowPolicy.PageLimits.standard.turnRows
+        for question in [0, 10] {
+            let count = question + 2 * reach
+            let opens: (Int) -> Bool = { $0 == question }
+            for row in [question + reach - 1, question + reach, question + reach + 1, count - 1] {
+                let page = HistoryWindowPolicy.page(count: count, around: row, startsTurn: opens)
+                XCTAssertTrue(page.contains(row), "question \(question): the page around \(row) is \(page)")
+                XCTAssertEqual(page.lowerBound, row - question < reach ? question : row,
+                               "question \(question): the page around \(row) starts at its question only while it reaches the row")
+                XCTAssertLessThanOrEqual(page.count, reach)
+            }
+            // A timeline that holds only the newest rows of a longer one.
+            let page = HistoryWindowPolicy.page(count: count, around: question + reach, firstIsStart: false, startsTurn: opens)
+            XCTAssertTrue(page.contains(question + reach), "\(page)")
+        }
+    }
+
     /// A page filled within its byte budget keeps whole turns: one that runs
     /// out of room ends where its last whole turn does, read forward or back.
     /// Its first turn alone may take the resident window's bytes; only a

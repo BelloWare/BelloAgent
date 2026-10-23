@@ -140,4 +140,109 @@ final class HistoryTurnPagingTests: XCTestCase {
         XCTAssertEqual(earlier.messages.map(\.id), ["q0", "a0", "q1", "a1", "q2", "w0", "w1", "w2"], "The turn the kept rows began inside reads whole")
         XCTAssertTrue(earlier.endsTurn)
     }
+
+    /// A journal of messages `(id, message)` after the session header.
+    private func write(_ rows: [(String, [String: WireValue])], name: String) throws -> URL {
+        let encoder = JSONEncoder()
+        var data = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string(name)]); data.append(10)
+        var parent: String?
+        for (id, message) in rows {
+            data.append(try encoder.encode(["type": WireValue.string("message"), "id": .string(id), "parentId": parent.map(WireValue.string) ?? .null,
+                                            "message": .object(message)]))
+            data.append(10); parent = id
+        }
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-" + UUID().uuidString + ".jsonl")
+        try data.write(to: path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: path) }
+        return path
+    }
+    /// One turn twice as long as the resident window: a question, `q0`, and
+    /// replies `a1`…
+    private func longTurn() throws -> (path: URL, ids: [String]) {
+        let count = 2 * HistoryWindowPolicy.residentRows
+        let rows = (0..<count).map { index -> (String, [String: WireValue]) in
+            index == 0 ? ("q0", ["role": .string("user"), "content": .string("Read every file.")])
+                : ("a\(index)", ["role": .string("assistant"), "content": .string("Step \(index).")])
+        }
+        return (try write(rows, name: "long-turn"), rows.map(\.0))
+    }
+
+    /// A page read around a row as far from its question as a page reaches
+    /// holds that row: it started at the question and ended just before the
+    /// row, so find, reveal and a position read never showed it (0.1.131
+    /// review). One row nearer, the page starts at the question.
+    func testAPageAroundARowAsFarFromItsQuestionAsAPageReachesHoldsIt() async throws {
+        let (path, ids) = try longTurn()
+        let reader = HistoryReader(), reach = HistoryWindowPolicy.PageLimits.standard.turnRows
+        let around = try await reader.window(path: path.path, around: ids[reach])
+        XCTAssertTrue(around.messages.contains { $0.id == ids[reach] }, "The page around \(ids[reach]) runs \(around.messages.first?.id ?? "-")…\(around.messages.last?.id ?? "-")")
+        XCTAssertEqual(around.messages.first?.id, ids[reach]); XCTAssertEqual(around.partialTurnInput, "q0")
+        let placed = try await reader.window(path: path.path, position: reach)
+        XCTAssertTrue(placed.messages.contains { $0.id == ids[reach] }); XCTAssertEqual(placed.start, reach)
+        let near = try await reader.window(path: path.path, around: ids[reach - 1])
+        XCTAssertEqual(near.messages.first?.id, "q0"); XCTAssertTrue(near.messages.contains { $0.id == ids[reach - 1] })
+    }
+
+    /// A saved turn of a hundred tool results of 32 KiB each weighs 3.3 MB
+    /// as its rows are read and 6.7 MB once each output also fills the card
+    /// of the call it answers. Weighed as read, the whole turn made the page,
+    /// past the window's 6 MB once resolved: installed whole and folded, it
+    /// lost its question at the next update and unfolded (0.1.131 review).
+    /// Weighed as the window holds it, the page fits the window, and a turn
+    /// too heavy for it reads as the cut turn it is.
+    func testAPageOfLongToolResultsFitsTheWindowItOpens() async throws {
+        let output = String(repeating: "x", count: 32 * 1024)
+        var rows: [(String, [String: WireValue])] = [("q0", ["role": .string("user"), "content": .string("Read the logs.")])]
+        for call in 0..<100 {
+            rows.append(("a\(call)", ["role": .string("assistant"), "content": .array([.object(["type": .string("toolCall"), "id": .string("c\(call)"),
+                                                                                              "name": .string("read"), "arguments": .object(["path": .string("log\(call)")])])])]))
+            rows.append(("r\(call)", ["role": .string("toolResult"), "toolCallId": .string("c\(call)"), "toolName": .string("read"),
+                                      "content": .array([.object(["type": .string("text"), "text": .string(output)])])]))
+        }
+        rows.append(("z", ["role": .string("assistant"), "content": .string("Done.")]))
+        let path = try write(rows, name: "long-results")
+        let page = try await HistoryReader().window(path: path.path)
+        let bytes = page.messages.reduce(0) { $0 + TranscriptPaging.size($1) }
+        XCTAssertLessThanOrEqual(bytes, TranscriptPaging.residentCaps.bytes, "The page holds \(bytes) bytes as the window weighs them")
+        XCTAssertEqual(TranscriptPaging.window(page.messages, keepingEarlier: false).map(\.id), page.messages.map(\.id),
+                       "The next update lets go of nothing the page opened with")
+        if page.messages.first?.id == "q0" { XCTAssertNil(page.partialTurnInput) } else { XCTAssertEqual(page.partialTurnInput, "q0") }
+        // The cards still show their outputs.
+        XCTAssertEqual(page.messages.first { $0.id == "a99" }?.tools?.first?.output.count, output.count)
+    }
+
+    /// A read the page makes on its own into a turn longer than the window,
+    /// with the reader at the window's edge, adds the rows of that turn there
+    /// is room for, in either direction, and the window names the turn's
+    /// question. It kept only the rows on screen, added none and was refused,
+    /// so scrolling stalled in blank room (0.1.131 review).
+    @MainActor func testAReadIntoATurnLongerThanTheWindowAddsTheRowsThereIsRoomFor() async throws {
+        let (path, ids) = try longTurn()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("long-turn-state-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = makeWorkspaceModel(stateRoot: root)
+        model.chats = [ChatRecord(id: "long", workspaceID: "workspace", title: "Long", path: path.path, profileID: "profile")]
+        await model.select("long")
+        let view = try XCTUnwrap(model.selected), reach = HistoryWindowPolicy.residentRows
+        XCTAssertEqual(view.messages.map(\.id), Array(ids.suffix(reach))); XCTAssertEqual(view.presentation.partialTurnInput, "q0")
+        model.historyViewportReady(view.id, generation: view.presentationGeneration)
+        // On screen, the window's first ten rows: the rows before them come in.
+        let top = Set(view.messages.prefix(10).map(\.id))
+        view.visibleMessageIDs = { top }
+        let earlier = await model.loadHistoryPage(view.id, newer: false, automatic: true)
+        XCTAssertTrue(earlier, "The earlier read adds rows")
+        XCTAssertEqual(view.messages.map(\.id), Array(ids[10..<(reach + 10)]))
+        XCTAssertEqual(view.olderPage.cursor?.entry, ids[10]); XCTAssertEqual(view.presentation.partialTurnInput, "q0")
+        // The turn's first rows, the reader at their last ten: newer rows come in.
+        model.reloadHistory(view.id, around: "q0"); await view.presentation.navigation?.value
+        XCTAssertEqual(view.messages.map(\.id), Array(ids.prefix(reach)))
+        model.historyViewportReady(view.id, generation: view.presentationGeneration)
+        let bottom = Set(view.messages.suffix(10).map(\.id))
+        view.visibleMessageIDs = { bottom }
+        let newer = await model.loadHistoryPage(view.id, newer: true, automatic: true)
+        XCTAssertTrue(newer, "The newer read adds rows")
+        XCTAssertEqual(view.messages.map(\.id), Array(ids[(reach - 10)..<(2 * reach - 10)]))
+        XCTAssertEqual(view.newerPage.cursor?.entry, ids[2 * reach - 11]); XCTAssertEqual(view.presentation.partialTurnInput, "q0")
+        model.shutdown(); await model.store?.close()
+    }
 }

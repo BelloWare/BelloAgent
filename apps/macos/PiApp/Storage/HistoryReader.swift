@@ -1529,7 +1529,8 @@ actor HistoryReader {
             decodedRecords += 1
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
             var message = Self.displayedMessage(value, ref: ref)
-            if let result = ToolResultRecord.of(value["message"]?.object ?? [:]) { toolResults[ref.id] = result.record }
+            let result = ToolResultRecord.of(value["message"]?.object ?? [:])
+            if let result { toolResults[ref.id] = result.record }
             if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {
                 message.versions = MessageVersionMark(index: at + 1, count: ids.count, ids: ids.count <= 64 ? ids : nil)
             }
@@ -1537,7 +1538,15 @@ actor HistoryReader {
             // A page may hold one large complete row. Never shorten a source
             // just to fit the preferred window size; native layout is virtual.
             if wholeTurns {
-                guard fill.admit(count, startsTurn: ref.turnStart == true) else {
+                // Weighed as encoded or as the window will hold it
+                // (`TranscriptPaging.size`), whichever is more, and a result's
+                // output once more for the card of the call it answers, which
+                // `resolvingToolResults` fills below. Weighed as read, a turn of
+                // a hundred 32 KiB results fit its 6 MB as 3.3 MB and held 6.7 MB
+                // once resolved: past the window's caps, the next update let go
+                // of its question and the turn, folded, unfolded.
+                let weight = max(count, TranscriptPaging.size(message)) + (result?.record.output.utf8.count ?? 0)
+                guard fill.admit(weight, startsTurn: ref.turnStart == true) else {
                     if forward, let target, target > range.lowerBound, index <= target, target < range.upperBound {
                         return try decodePage(target..<range.upperBound, forward: true, wholeTurns: true, from: file, path: path, identity: identity,
                                               branch: branch, versions: versions, retainedRun: retainedRun)

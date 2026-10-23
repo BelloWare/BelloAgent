@@ -89,7 +89,8 @@ public enum HistoryWindowPolicy {
     /// as the next turn still fits in the limits' rows. A page holds at least
     /// one turn whole, a turn longer than that too, up to the limits'
     /// `turnRows`; only a turn longer still is cut, and a page read around a
-    /// row of such a turn starts at that row. `startsTurn` says which rows
+    /// row of such a turn that a page from its question would not reach
+    /// starts at that row. `startsTurn` says which rows
     /// open a turn (`startsTurn(role:kind:agentDelivery:)`). `firstIsStart`:
     /// row 0 is the conversation's own first row, where any page may start;
     /// false for a timeline that holds only the newest rows of a longer one.
@@ -101,7 +102,12 @@ public enum HistoryWindowPolicy {
             if around != nil, start < count {
                 var turn = start
                 while turn > 0, !startsTurn(turn), start - turn < longest { turn -= 1 }
-                if (turn == 0 && firstIsStart) || startsTurn(turn) { start = turn }
+                // To the row's question only while the page from there still
+                // reaches the row: a page holds at most `longest` rows, and a
+                // row exactly that far from its question fell just past the
+                // end of a page started there, so find, reveal and a position
+                // read never showed it.
+                if (turn == 0 && firstIsStart) || startsTurn(turn), start - turn < longest { start = turn }
             }
             // `aligned`: where the page last stood at the end of a turn.
             var end = start, aligned = start
