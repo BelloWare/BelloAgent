@@ -64,8 +64,10 @@ extension WorkspaceModel {
     /// once and asks everything of that one plan.
     static func commandItems(_ session: SessionDisplay) -> [TranscriptItem] {
         let presented = session.presentedMessages, page = TranscriptPage.displayPage(presented)
+        // As the transcript plans it (`TranscriptPage.receive`): a window that
+        // ends where a turn does folds that turn, and so must its commands.
         return TaskTranscriptPlan.items(page, lifecycle: session.taskPresentation,
-                                        complete: page.count == presented.count && !session.newerPage.available)
+                                        complete: page.count == presented.count && session.newerPage.lastTurnFinished)
     }
     private static func position(of anchorID: String, in items: [TranscriptItem], response: Bool = false) -> Int? {
         items.firstIndex { item in

@@ -9,9 +9,9 @@ import XCTest
 // `HistoryReader.decodedRecords`, `MetadataStore.decodedChats`,
 // `PayloadArchive`'s statement counters, `TranscriptLayoutClock` — each sit
 // under a "Test seams" heading beside the state they measure, and cost
-// nothing when nothing reads them; `TranscriptPaging.residentCaps` and
-// `TranscriptIdleScheduler.interval` hold the app's own values unless a
-// fixture sets them.
+// nothing when nothing reads them; `TranscriptPaging.residentCaps`,
+// `TranscriptPaging.pageLimits` and `TranscriptIdleScheduler.interval` hold
+// the app's own values unless a fixture sets them.
 
 /// One opt-in knob, read under both the names it can arrive as. xcodebuild
 /// hands the test host `TEST_RUNNER_<NAME>` with the prefix kept, while the
@@ -37,6 +37,23 @@ func scratchBase() -> String { testEnvironment("PI_APP_SCRATCH_ROOT") ?? NSTempo
 /// works through a variable the script cannot see, or when a count it
 /// asserts depends on how fast the machine is.
 protocol SerialTestLane {}
+
+extension XCTestCase {
+    /// Pages a chat read from its journal the way the 0.1.71 plan did: three
+    /// turns (`rows`: six rows of a question and a reply, fifteen of
+    /// `LongChatScroll`'s five-row turns), one envelope, a long turn cut at
+    /// sixty rows. For the tests of paging itself — edges, retries, reveals,
+    /// reads where the reader dragged to — whose fixtures were sized for
+    /// pages that small. Since 0.1.131 a page is whole turns up to a thousand
+    /// rows (`HistoryWindowPolicy.PageLimits.standard`), which
+    /// `HistoryTurnPagingTests` and `LongTurnPagingTests` hold.
+    func usePlanPages(rows: Int) {
+        let limits = TranscriptPaging.pageLimits
+        TranscriptPaging.pageLimits = .init(rows: rows, bytes: HistoryWindowPolicy.envelopeBytes,
+                                            turnRows: HistoryWindowPolicy.rows, turnBytes: HistoryWindowPolicy.envelopeBytes)
+        addTeardownBlock { TranscriptPaging.pageLimits = limits }
+    }
+}
 
 /// A fresh directory under `scratchBase()`, named after the test that asked
 /// for it so a leftover says who left it.

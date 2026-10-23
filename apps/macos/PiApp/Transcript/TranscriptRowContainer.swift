@@ -128,13 +128,19 @@ struct TranscriptRowEnvironment: Equatable {
     var hostedFittingHeight: CGFloat { host().confirmHeight() }
     /// Whether this row is holding a SwiftUI tree right now.
     var isHosted: Bool { hosted != nil }
+    /// A row its finished turn's fold hides (`TranscriptTurnFold`): it draws
+    /// nothing and stands at one point, so it needs no tree until the fold
+    /// opens. A page of whole turns holds hundreds of them, and a reader
+    /// scrolling past folded turns brought a whole turn's worth of them into
+    /// the buffered viewport at once, each built and measured to draw nothing.
+    var foldedAway: Bool { disclosure.foldedAway }
     /// Set while this row's tree has not been laid out since it was built or
     /// its content changed. A row mounted only because it is near the
     /// viewport waits for the reader to actually reach it.
     private(set) var awaitingViewportLayout = false
     /// Builds the row's tree so it is ready to draw. A row near the viewport
     /// is prepared; only one the reader can actually see is laid out.
-    func prepareToDraw() { host() }
+    func prepareToDraw() { if !foldedAway || hosted != nil { host() } }
     /// What a row about to arrive can usefully do before it arrives. Laying
     /// it out and drawing it into its backing store here as well was tried
     /// and measured: a first read through a four-hundred-row page went from
@@ -143,6 +149,7 @@ struct TranscriptRowEnvironment: Equatable {
     /// shows it, and an unmounted row's drawing is thrown away. Building the
     /// tree is the part that pays.
     func prepareForTheReader() {
+        guard !foldedAway || hosted != nil else { return }
         host()
         // Laying it out here is what leaves the frame that shows it with
         // nothing to do. The shared scheduler admits one of these per frame,
@@ -245,6 +252,7 @@ struct TranscriptRowEnvironment: Equatable {
     func layoutForViewport() {
         let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.viewportLayoutSeconds += TranscriptLayoutClock.now - started } }
+        guard !foldedAway || self.hosted != nil else { awaitingViewportLayout = false; return }
         let hosted = host()
         if hosted.needsLayout || needsLayout {
             nativeSizingPasses += 1
@@ -268,7 +276,11 @@ struct TranscriptRowEnvironment: Equatable {
     /// answer is kept rather than counting the row's characters again.
     func estimatedHeight(width: CGFloat) -> CGFloat {
         if let estimate, estimate.width == width { return estimate.height }
-        let height = TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
+        // A row its finished turn's fold hides draws nothing, and measures a
+        // point. A page of whole turns holds hundreds of them; standing at
+        // their open heights, they made a page many screens taller than it
+        // draws, which then shrank under the reader as they were measured.
+        let height = disclosure.foldedAway ? 1 : TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
         estimate = (width, height)
         return height
     }
@@ -673,6 +685,17 @@ struct TranscriptRowEnvironment: Equatable {
         // width on every update. Keep both exact results; changing the root for
         // an already known speculative width would redo native text layout.
         if let cached = measurements.last(where: { $0.width == target }) { return cached }
+        // Folded away with no tree: the point such a row measures, without
+        // building a tree only to draw nothing (`foldedAway`).
+        if foldedAway, hosted == nil {
+            width = target
+            let result = CGSize(width: target, height: 1)
+            if measurements.count == 4 { measurements.removeFirst() }
+            measurements.append(result); measurementCount += 1
+            grewWithoutATree = false; streamingHeightKnown = false; tokensSinceMeasured = 0
+            measurementScale = window?.backingScaleFactor
+            return result
+        }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer {
             if TranscriptLayoutClock.recording {
@@ -754,7 +777,8 @@ struct TranscriptRowEnvironment: Equatable {
             for child in view.subviews { if !prepared(child) { return false } }
             return true
         }
-        guard let hosted else { return false }; return prepared(hosted)
+        // A folded row draws nothing, so it has nothing to prepare.
+        guard let hosted else { return foldedAway }; return prepared(hosted)
     }
     func contentSizeChanged() {
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.intrinsicInvalidations += 1 }

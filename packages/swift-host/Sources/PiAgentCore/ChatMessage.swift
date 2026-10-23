@@ -76,6 +76,11 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var retainedOutput: String? = nil
     /// User rows: the hidden note sent ahead of this message (`ContextNote`).
     public var contextNote: ContextNote? = nil
+    /// Whether this row opens a display turn: a message of the reader's, a
+    /// steer among them, never an agent's delivery (`HistoryWindowPolicy.startsTurn`).
+    public var startsDisplayTurn: Bool {
+        HistoryWindowPolicy.startsTurn(role: role, kind: kind, agentDelivery: nativeAgentDelivery.map { !$0.isNull } ?? false)
+    }
     public var text: String { content.filter { $0["type"].text == "text" }.compactMap { $0["text"].text }.joined() }
     public var thinking: String { content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.joined() }
     public var pi: JSON {

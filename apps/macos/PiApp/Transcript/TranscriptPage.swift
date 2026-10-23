@@ -453,8 +453,12 @@ struct ContentGeometry: Equatable {
         // A page short of the conversation's newest row — cut by the resident
         // window, or a history window with newer rows after it — may end in
         // the middle of a turn; that turn folds only on its task's receipt.
+        // Windows are cut where turns end (`HistoryWindowPolicy.page`), and
+        // one that ends where its last turn does says so: that turn is
+        // finished, and reads as it will once the next turn is read in.
+        let newer = session.newerPage
         let items = patch?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
-                                                              complete: page.count == messages.count && !session.newerPage.available)
+                                                              complete: page.count == messages.count && newer.lastTurnFinished)
         // A token keeps every row's identity and place (see `patch`), all of
         // them already proved unique and already seen by the page presented.
         // Hashing every id of a long chat again, twice for uniqueness and
@@ -483,12 +487,14 @@ struct ContentGeometry: Equatable {
                 seen.insert(message.id)
             }
         }
+        var restoring: TranscriptAnchor?
         if !initialized {
             if let anchor = session.scrollAnchor {
                 // Restoring a saved position is an explicit destination too.
                 // Geometry from the initial top-of-page mount must not win.
                 explicitDestination = !anchor.followsBottom
                 followsBottom = anchor.followsBottom; pendingAnchor = anchor.followsBottom ? nil : anchor
+                if !anchor.followsBottom { restoring = anchor }
             } else { followsBottom = true; pendingAnchor = nil }
             // A chat the reader opens starts at the question of its last turn.
             // A jump they asked for — back to the latest reply, which reloads
@@ -525,6 +531,20 @@ struct ContentGeometry: Equatable {
         // The rows changed, so which row holds the anchor may have changed too.
         pendingAnchorRow = nil
         if !sameIdentities { indexMessageRows(items, messages: page) }
+        // A place restored inside a finished turn's work opens that turn, as
+        // a reveal does (`unfoldTurn`), before the rows are drawn: read around
+        // the place, the page holds the whole turn from its question, and its
+        // fold closed over the row the reader left, which drew as nothing.
+        // Only a place the fold hides whole: a place at the answer, whose
+        // prose the fold leaves drawn, opens nothing. Taken from the answer's
+        // first row, its response's line, which the fold folds, it opened all
+        // of the turn's work, and a fold the reader had closed opened again
+        // when they came back to the chat.
+        if let restoring {
+            let drawing = drawingMessageID(for: restoring.id)
+            let holders = items.filter { $0.messageIDs.contains(drawing) }
+            if !holders.contains(where: { !isFoldedAway($0) }) { openFold(of: holders.first) }
+        }
         snapshot = next
         PerformanceProbe.shared.transcriptSnapshotApplied(session.id, deltaAt: session.displayObservedAt)
         scheduleSettle()
@@ -856,15 +876,30 @@ struct ContentGeometry: Equatable {
     /// Opens the finished turn that has folded message `messageID` away, so
     /// a place in it can be shown. Returns whether the page holds the message.
     @discardableResult func unfoldTurn(containing messageID: String) -> Bool {
-        guard let snapshot, let disclosure else { return false }
-        guard let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        guard let snapshot, disclosure != nil, let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        openFold(of: item)
+        return true
+    }
+    /// Whether a closed turn fold hides `item`.
+    private func isFoldedAway(_ item: TranscriptItem) -> Bool {
+        let group: String?
+        switch item {
+        case .message(let message): group = message.foldGroup
+        case .block(let block): group = block.foldGroup
+        }
+        guard let group, let disclosure else { return false }
+        return !disclosure.isOpen(.turnFold(group))
+    }
+    /// Opens the finished turn whose fold hides `item`; a row no fold hides
+    /// opens nothing.
+    private func openFold(of item: TranscriptItem?) {
+        guard let disclosure, let item else { return }
         let group: String?
         switch item {
         case .message(let message): group = message.foldGroup
         case .block(let block): group = block.foldGroup
         }
         if let group, !disclosure.isOpen(.turnFold(group)) { disclosure.setOpen(true, .turnFold(group)) }
-        return true
     }
     /// Whether the page is still taking the reader somewhere: a destination
     /// asked for (a saved place, a reveal) or a first placement not yet

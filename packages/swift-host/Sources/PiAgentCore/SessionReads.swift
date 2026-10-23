@@ -16,7 +16,19 @@ extension AgentSession {
             try await historyWindow(params, cancellation: cancellation)
         } onCancel: { cancellation.cancel() }
     }
-    private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation) async throws -> JSON {
+    /// What a display row weighs in the app's window, from the fields the app
+    /// reads (`HistoryWindowPolicy.residentWeight`).
+    static func residentWeight(of row: JSON) -> Int {
+        let tools = row["tools"].list.reduce(0) { $0 + ($1["input"].text?.utf8.count ?? 0) + ($1["output"].text?.utf8.count ?? 0) }
+        let segments = row["responseTimeline"]["segments"].list
+        return HistoryWindowPolicy.residentWeight(text: row["text"].text?.utf8.count ?? 0, thinking: row["thinking"].text?.utf8.count ?? 0, toolBytes: tools,
+                                                  segmentBytes: segments.reduce(0) { $0 + ($1["text"].text?.utf8.count ?? 0) }, segments: segments.count)
+    }
+    /// A page whose first turn began before the rows a chat opened from its
+    /// metadata file loaded: the read loads where the older rows are and
+    /// reads again (`historyWindow(_:cancellation:olderLoaded:)`).
+    private struct TurnBeganBeforeLoadedRows: Error {}
+    private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation, olderLoaded: Bool = false) async throws -> JSON {
         try cancellation.checkCancellation()
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
         // Retained readers can follow a same-ID runtime replacement using
@@ -45,7 +57,7 @@ extension AgentSession {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }
-        return try withShownRows { shown in
+        do { return try withShownRows { shown in
             shown.cancellation = cancellation
             shown.readStep = historyPageStep
             let boundary = entry.flatMap(shown.position)
@@ -55,26 +67,53 @@ extension AgentSession {
                 : position.map { shown.count > 0 ? min(max(0, $0 - shown.base), shown.count - 1) : nil } ?? target.flatMap(shown.position)
             if !fromStart && target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
             let forward = params["direction"].text == "newer" || around != nil
-            let range = HistoryWindowPolicy.range(count: shown.count, before: forward ? nil : boundary,
-                                                  after: forward ? boundary : nil, around: around, isUser: shown.isUser)
+            // Whole display turns, as the desktop's journal reader pages them.
+            // The first loaded row is the chat's own first only when no row
+            // before it is left to load: the loaded rows of a chat opened from
+            // its metadata file can begin inside a turn.
+            let limits = historyPageLimits
+            let range = HistoryWindowPolicy.page(count: shown.count, before: forward ? nil : boundary,
+                                                 after: forward ? boundary : nil, around: around, limits: limits,
+                                                 firstIsStart: shown.base == 0, startsTurn: shown.startsTurn)
+            // A page whose first turn began before the loaded rows needs the
+            // rows before them, as a row before them does (`HistoryReader.read`
+            // does the same): pages hold whole turns, and that turn, shown from
+            // its loaded tail, folded once reading earlier completed it.
+            if !olderLoaded, shown.base > 0, range.lowerBound < shown.count, !shown.startsTurn(range.lowerBound),
+               !(0..<range.lowerBound).contains(where: shown.startsTurn) { throw TurnBeganBeforeLoadedRows() }
             try shown.prefetch(range)
             let candidates = try range.map { try shown.row($0) }
             let keys = Set(candidates.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
             let sourceIDs = Set(candidates.map(\.id))
             let tasks = try JSON.parse(JSONEncoder().encode(recentTaskPresentations.filter { keys.contains($0.key) || $0.anchorSourceID.map(sourceIDs.contains) == true }))
-            var rows: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance + (try tasks.data().count)
-            var start = forward ? range.lowerBound : range.upperBound, end = start
-            let positions = forward ? Array(range) : Array(range.reversed())
-            for index in positions {
-                historyPageStep?("history")
-                try cancellation.checkCancellation()
-                let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
-                let size = try row.data().count
-                guard rows.isEmpty || bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
-                bytes += size + 1
-                if forward { rows.append(row); end = index + 1 }
-                else { rows.insert(row, at: 0); start = index }
+            let metadata = HistoryWindowPolicy.metadataAllowance + (try tasks.data().count)
+            // Fills the page from `first` on (back from the range's end when
+            // reading back). A page read around a row from the start of its
+            // turn, whose rows before that row are past the budget, starts at
+            // the row instead: the page must hold it.
+            func filled(from first: Int) throws -> (rows: [JSON], start: Int)? {
+                var read: [JSON] = [], fill = HistoryWindowPolicy.PageFill(forward: forward, bytes: metadata, limits: limits)
+                for index in forward ? Array(first..<range.upperBound) : Array(range.reversed()) {
+                    historyPageStep?("history")
+                    try cancellation.checkCancellation()
+                    let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
+                    // Weighed as encoded or as the app's window holds it,
+                    // whichever is more (`HistoryWindowPolicy.residentWeight`):
+                    // three hundred replies of 9,700 characters encode in
+                    // 5.97 MB and weigh 6.13 MB there, past its 6 MB.
+                    guard fill.admit(max(try row.data().count, Self.residentWeight(of: row)), startsTurn: shown.startsTurn(index)) else {
+                        if forward, let around, around > first, index <= around { return nil }
+                        break
+                    }
+                    read.append(row)
+                }
+                // A page that ran out of room keeps the whole turns it read.
+                read.removeLast(read.count - fill.kept)
+                return (forward ? read : read.reversed(), forward ? first : range.upperBound - read.count)
             }
+            let page = try filled(from: range.lowerBound) ?? filled(from: around ?? range.lowerBound)!
+            let rows = page.rows, start = page.start
+            let end = forward ? start + rows.count : range.upperBound
             func boundaryValue(_ entry: String) throws -> JSON {
                 try JSON.parse(JSONEncoder().encode(ConversationCursor(incarnation: displayEpoch, lineage: lineage, entry: entry)))
             }
@@ -83,12 +122,19 @@ extension AgentSession {
                 "incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"start":JSON(base + start),"end":JSON(base + end),
                 "older": (start > 0 || base > 0) && !rows.isEmpty ? try boundaryValue(shown.id(start)) : .null,
                 "newer": end < shown.count && !rows.isEmpty ? try boundaryValue(shown.id(end - 1)) : .null]
-            if start < shown.count && !shown.isUser(start), let input = (0..<start).last(where: shown.isUser) {
+            if start < shown.count && !shown.startsTurn(start), let input = (0..<start).last(where: shown.startsTurn) {
                 result["partialTurnInput"] = JSON(shown.id(input))
             }
+            // The page's last row ends its turn: the next row, if any, opens
+            // one. The last turn of a page that stops short of the newest row
+            // then reads as the finished turn it is.
+            result["endsTurn"] = JSON(end >= shown.count || shown.startsTurn(end))
             result["taskRecords"] = tasks
             try cancellation.checkCancellation()
             return result
+        } } catch is TurnBeganBeforeLoadedRows {
+            try await loadOlderRows()
+            return try await historyWindow(params, cancellation: cancellation, olderLoaded: true)
         }
     }
     /// Complete tool arguments. Large documents use automatic IPC transfer

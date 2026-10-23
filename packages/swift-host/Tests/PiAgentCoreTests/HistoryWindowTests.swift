@@ -5,7 +5,8 @@ final class HistoryWindowTests: HelperTestCase {
     func testReaderRebindsTheSameBoundaryAcrossRuntimeReplacement() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var rows: [ChatMessage] = []
-        for index in 0..<30 {
+        // Longer than a page, so a page around m12 has rows after it.
+        for index in 0..<(HistoryWindowPolicy.pageRows + 30) {
             var row = ChatMessage(role: index % 2 == 0 ? "user" : "assistant", content: [textBlock("Message \(index)")])
             row.id = "m\(index)"; rows.append(row)
         }
@@ -44,10 +45,13 @@ final class HistoryWindowTests: HelperTestCase {
         addTeardownBlock { await session.close() }
         let before = await session.context.map(\.id)
         var page = try await session.historyWindow([:]), ids = page["messages"].list.compactMap { $0["id"].text }
-        XCTAssertEqual(ids, (2196..<2202).map { "m\($0)" })
+        // Whole turns of a question and a reply, a page's rows of them.
+        XCTAssertEqual(ids, ((2202 - HistoryWindowPolicy.pageRows)..<2202).map { "m\($0)" })
+        XCTAssertEqual(page["endsTurn"], true)
         while !page["older"].isNull {
             page = try await session.historyWindow(["cursor": page["older"]])
-            XCTAssertLessThan(try page.data().count + 1024, HistoryWindowPolicy.envelopeBytes)
+            XCTAssertLessThan(try page.data().count + 1024, HistoryWindowPolicy.pageBytes)
+            XCTAssertTrue(page["messages"].list.first?["role"].text == "user", "Every page starts at a question")
             ids = page["messages"].list.compactMap { $0["id"].text } + ids
         }
         XCTAssertEqual(ids, rows.map(\.id))
@@ -63,10 +67,11 @@ final class HistoryWindowTests: HelperTestCase {
         XCTAssertEqual(around["messages"].list.first?["id"].text, "m4")
         do { _ = try await session.historyWindow(["cursor": ["incarnation":"stale", "lineage":"root", "entry":"m4"]]); XCTFail("Stale source accepted") } catch { }
         // A page can be read at any row of the timeline: where the reader
-        // dragged the transcript's scroller to. It says where it stands.
+        // dragged the transcript's scroller to. It starts where that row's
+        // turn does, so the turn reads whole, and says where it stands.
         let middle = try await session.historyWindow(["position": 1101])
-        XCTAssertEqual(middle["messages"].list.first?["id"].text, "m1101")
-        XCTAssertEqual(middle["start"].int, 1101); XCTAssertEqual(middle["total"].int, 2202)
+        XCTAssertEqual(middle["messages"].list.first?["id"].text, "m1100")
+        XCTAssertEqual(middle["start"].int, 1100); XCTAssertEqual(middle["total"].int, 2202)
         XCTAssertFalse(middle["older"].isNull); XCTAssertFalse(middle["newer"].isNull)
         let past = try await session.historyWindow(["position": 9999])
         XCTAssertEqual(past["messages"].list.last?["id"].text, "m2201", "a position past the end reads the last row's page")
@@ -91,11 +96,202 @@ final class HistoryWindowTests: HelperTestCase {
             XCTAssertEqual(forward, walked)
         }
     }
+    /// History pages hold whole display turns (0.1.131): a page starts where
+    /// a turn does and ends where one does, whatever the turns' lengths, so a
+    /// turn's work folds the same however much of the chat is read; only a
+    /// turn longer than the resident window is cut. Read back, forward, or
+    /// around any row, the pages cover every row exactly once.
+    func testPagesHoldWholeTurnsAndCoverTheTimeline() {
+        let longest = HistoryWindowPolicy.residentRows, rows = HistoryWindowPolicy.pageRows
+        for seed in 1...60 {
+            var state = UInt64(seed)
+            func next(_ bound: Int) -> Int {
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                return Int((state >> 33) % UInt64(bound))
+            }
+            // Rows before the first question (a chat that opens on a notice),
+            // then turns of a few rows to more than a page, a few longer than
+            // the resident window.
+            var starts: [Int] = [], count = next(3)
+            for _ in 0..<(2 + next(12)) {
+                starts.append(count)
+                count += next(10) == 0 ? longest + 1 + next(500) : 1 + next(seed % 3 == 0 ? 1_500 : 140)
+            }
+            let opens = Set(starts)
+            let giant = Set(zip(starts, starts.dropFirst() + [count]).filter { $1 - $0 > longest }.flatMap { Array($0.0..<$0.1) })
+            func check(_ range: Range<Int>, _ label: String) {
+                XCTAssertFalse(range.isEmpty, label)
+                XCTAssertTrue(range.lowerBound == 0 || opens.contains(range.lowerBound) || giant.contains(range.lowerBound), "\(label): starts inside a turn at \(range.lowerBound)")
+                XCTAssertTrue(range.upperBound == count || opens.contains(range.upperBound) || giant.contains(range.upperBound - 1), "\(label): ends inside a turn at \(range.upperBound)")
+                XCTAssertLessThanOrEqual(range.count, longest, label)
+                if range.count > rows {
+                    XCTAssertTrue(opens.filter { range.contains($0) && $0 != range.lowerBound }.isEmpty, "\(label): a page past \(rows) rows holds one turn")
+                }
+            }
+            var end = count, back: [Int] = []
+            while end > 0 {
+                let range = HistoryWindowPolicy.page(count: count, before: end, startsTurn: opens.contains)
+                check(range, "seed \(seed), back from \(end)")
+                back = Array(range) + back; end = range.lowerBound
+            }
+            XCTAssertEqual(back, Array(0..<count), "seed \(seed): reading back covers every row once")
+            var after = -1, forward: [Int] = []
+            while after < count - 1 {
+                let range = HistoryWindowPolicy.page(count: count, after: after, startsTurn: opens.contains)
+                check(range, "seed \(seed), forward after \(after)")
+                forward += range; after = range.upperBound - 1
+            }
+            XCTAssertEqual(forward, back, "seed \(seed): reading forward covers every row once")
+            for row in stride(from: 0, to: count, by: max(1, count / 37)) {
+                let range = HistoryWindowPolicy.page(count: count, around: row, startsTurn: opens.contains)
+                check(range, "seed \(seed), around \(row)")
+                XCTAssertTrue(range.contains(row), "seed \(seed): the page around \(row) holds it")
+                if !giant.contains(row) {
+                    XCTAssertEqual(range.lowerBound, starts.last { $0 <= row } ?? 0, "seed \(seed): the page around \(row) starts at its turn")
+                }
+            }
+        }
+        // A timeline that holds only the newest rows of a longer one (a chat
+        // opened from its metadata file) does not start a page at its first
+        // row unless a turn starts there: that row's turn began before it.
+        let newest = HistoryWindowPolicy.page(count: 50, before: 50, firstIsStart: false, startsTurn: { $0 == 10 || $0 == 30 })
+        XCTAssertEqual(newest, 10..<50)
+        XCTAssertEqual(HistoryWindowPolicy.page(count: 50, before: 50, startsTurn: { $0 == 10 || $0 == 30 }), 0..<50)
+    }
+
+    /// A page read around a row starts at that row's question only when the
+    /// row is still within the `turnRows` a page from there may hold: a row
+    /// exactly that far from its question started its page at the question
+    /// and fell just past its end, so find, reveal and a position read never
+    /// showed it (0.1.131 review: `around: 750` in a 1,500-row turn read
+    /// rows 0..<750).
+    func testAPageAroundARowAsFarFromItsQuestionAsAPageReachesHoldsTheRow() {
+        let reach = HistoryWindowPolicy.PageLimits.standard.turnRows
+        for question in [0, 10] {
+            let count = question + 2 * reach
+            let opens: (Int) -> Bool = { $0 == question }
+            for row in [question + reach - 1, question + reach, question + reach + 1, count - 1] {
+                let page = HistoryWindowPolicy.page(count: count, around: row, startsTurn: opens)
+                XCTAssertTrue(page.contains(row), "question \(question): the page around \(row) is \(page)")
+                XCTAssertEqual(page.lowerBound, row - question < reach ? question : row,
+                               "question \(question): the page around \(row) starts at its question only while it reaches the row")
+                XCTAssertLessThanOrEqual(page.count, reach)
+            }
+            // A timeline that holds only the newest rows of a longer one.
+            let page = HistoryWindowPolicy.page(count: count, around: question + reach, firstIsStart: false, startsTurn: opens)
+            XCTAssertTrue(page.contains(question + reach), "\(page)")
+        }
+    }
+
+    /// A page filled within its byte budget keeps whole turns: one that runs
+    /// out of room ends where its last whole turn does, read forward or back.
+    /// Its first turn alone may take the resident window's bytes; only a
+    /// turn longer still is cut.
+    func testAPageFilledWithinItsBytesKeepsWholeTurns() {
+        let page = HistoryWindowPolicy.pageBytes
+        func fill(_ sizes: [Int], starts: Set<Int>, forward: Bool) -> Int {
+            var fill = HistoryWindowPolicy.PageFill(forward: forward)
+            for index in (forward ? Array(sizes.indices) : sizes.indices.reversed()) {
+                guard fill.admit(sizes[index], startsTurn: starts.contains(index)) else { break }
+            }
+            return fill.kept
+        }
+        // Turns of four rows, each row a tenth of a page: two whole turns fit.
+        let tenth = Array(repeating: page / 10, count: 40), fours = Set(stride(from: 0, to: 40, by: 4))
+        XCTAssertEqual(fill(tenth, starts: fours, forward: true), 8)
+        XCTAssertEqual(fill(tenth, starts: fours, forward: false), 8)
+        // Rows that all fit are all kept.
+        XCTAssertEqual(fill(Array(repeating: 100, count: 40), starts: fours, forward: true), 40)
+        // A first turn of two pages is read whole, and nothing after it.
+        let long = Array(repeating: page / 10, count: 20) + Array(repeating: 100, count: 4)
+        XCTAssertEqual(fill(long, starts: [0, 20], forward: true), 20)
+        XCTAssertEqual(fill(long.reversed(), starts: [0, 4], forward: false), 20)
+        // A turn longer than the resident window is cut where the bytes run out.
+        let giant = Array(repeating: HistoryWindowPolicy.residentBytes / 10, count: 30)
+        XCTAssertEqual(fill(giant, starts: [0], forward: true), 9)
+        // One row larger than any budget still makes a page.
+        XCTAssertEqual(fill([HistoryWindowPolicy.residentBytes * 2, 10], starts: [0, 1], forward: true), 1)
+    }
+
+    /// The helper pages a long tool-heavy chat in whole turns: an agent's
+    /// delivery inside a turn is never where a page starts, every page says
+    /// whether it ends where its turn does, and no page names a partial turn.
+    func testHelperPagesStartAtTheReadersQuestionsNeverAtAgentDeliveries() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var rows: [ChatMessage] = []
+        for turn in 0..<12 {
+            var question = ChatMessage(role: "user", content: [textBlock("Question \(turn)")]); question.id = "u\(turn)"; rows.append(question)
+            for step in 0..<(120 + turn * 13 % 90) {
+                if step % 40 == 39 {
+                    var delivery = ChatMessage(role: "user", content: [textBlock("{\"report\":\"done\"}")]); delivery.id = "d\(turn)_\(step)"
+                    delivery.nativeAgentDelivery = ["version": 1, "author": "subagent"]; delivery.kind = "agent_message"
+                    rows.append(delivery); continue
+                }
+                var call = ChatMessage(role: "assistant", content: [["type": "toolCall", "id": JSON("c\(turn)_\(step)"), "name": "read", "arguments": ["path": JSON("f\(step)")]]])
+                call.id = "a\(turn)_\(step)"
+                var result = ChatMessage(role: "toolResult", content: [textBlock("output \(step)")]); result.id = "r\(turn)_\(step)"; result.toolCallId = "c\(turn)_\(step)"
+                rows += [call, result]
+            }
+            var answer = ChatMessage(role: "assistant", content: [textBlock("Answer \(turn)")]); answer.id = "z\(turn)"; rows.append(answer)
+        }
+        let session = try AgentSession(id: "deliveries", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let ids = rows.map(\.id)
+        var page = try await session.historyWindow([:]), walked: [String] = [], pages = 0
+        while true {
+            let shown = page["messages"].list.compactMap { $0["id"].text }
+            pages += 1
+            XCTAssertTrue(shown.first?.hasPrefix("u") == true, "page \(pages) starts at \(shown.first ?? "-"), not at a question")
+            XCTAssertTrue(page["partialTurnInput"].isNull)
+            let after = (ids.firstIndex(of: shown.last ?? "") ?? ids.count) + 1
+            XCTAssertEqual(page["endsTurn"].flag, after >= ids.count || ids[after].hasPrefix("u"))
+            // A page's rows, or one turn alone that is longer than a page.
+            let questions = shown.filter { $0.hasPrefix("u") }.count
+            XCTAssertTrue(shown.count <= HistoryWindowPolicy.pageRows || questions == 1, "page \(pages): \(shown.count) rows in \(questions) turns")
+            XCTAssertLessThanOrEqual(shown.count, HistoryWindowPolicy.residentRows)
+            walked = shown + walked
+            if page["older"].isNull { break }
+            page = try await session.historyWindow(["cursor": page["older"]])
+        }
+        XCTAssertGreaterThan(pages, 1, "The chat is longer than a page")
+        XCTAssertEqual(walked, ids)
+        // Around a delivery, the page starts at the question of its turn.
+        let around = try await session.historyWindow(["around": "d5_79"])
+        XCTAssertEqual(around["messages"].list.first?["id"].text, "u5")
+    }
+
+    /// A page read around a row starts at the question of its turn, so the
+    /// turn reads whole; when the rows before that row are past the turn's
+    /// byte budget on their own, the page starts at the row instead, as it
+    /// did before pages held whole turns: a page read around a row holds it.
+    func testAPageAroundARowPastItsTurnsBudgetStartsAtTheRow() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var question = ChatMessage(role: "user", content: [textBlock("Read the logs")]); question.id = "u"
+        var huge = ChatMessage(role: "assistant", content: [textBlock(String(repeating: "log line\n", count: 20_000))]); huge.id = "huge"
+        var target = ChatMessage(role: "assistant", content: [textBlock("The error is on line 12.")]); target.id = "target"
+        var next = ChatMessage(role: "user", content: [textBlock("Fix it")]); next.id = "u2"
+        let session = try AgentSession(id: "around", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: [question, huge, target, next], autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        // A turn's budget smaller than its long reply (180 KB), as the
+        // resident window's 6 MB is smaller than a reply longer still.
+        await session.limitHistoryPages(.init(rows: 1_000, bytes: 64 * 1024, turnRows: 3_000, turnBytes: 128 * 1024))
+        let page = try await session.historyWindow(["around": "target"])
+        XCTAssertEqual(page["messages"].list.map { $0["id"].text }, ["target", "u2"])
+        XCTAssertEqual(page["partialTurnInput"].text, "u", "The page starts inside the turn and says whose turn it is")
+        // A turn that fits reads whole from its question.
+        let whole = try await session.historyWindow(["around": "u2"])
+        XCTAssertEqual(whole["messages"].list.map { $0["id"].text }, ["u2"])
+    }
+
     func testLongToolTurnKeepsOccurrenceResultsAndByteBoundedViews() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var user = ChatMessage(role: "user", content: [textBlock("Inspect the fixtures")]); user.id = "input"
         var rows = [user]
-        for index in 0..<101 {
+        // One turn longer than the resident window: no page holds it whole.
+        let calls = HistoryWindowPolicy.residentRows / 2 + 50
+        for index in 0..<calls {
             var call = ChatMessage(role: "assistant", content: [["type":"toolCall", "id":"reused-provider-id", "name":"read", "arguments":["path":JSON("file-\(index)")]]])
             call.id = "call-\(index)"
             var result = ChatMessage(role: "toolResult", content: [textBlock("result-\(index)")]); result.id = "result-\(index)"; result.toolCallId = "reused-provider-id"
@@ -114,7 +310,8 @@ final class HistoryWindowTests: HelperTestCase {
                 XCTAssertEqual(row["tools"].list.first?["output"].text, "result-" + index)
                 XCTAssertEqual(row["toolCallCount"].int, 1)
             }
-            XCTAssertLessThan(try page.data().count + 1024, HistoryWindowPolicy.envelopeBytes)
+            XCTAssertLessThan(try page.data().count + 1024, HistoryWindowPolicy.residentBytes)
+            XCTAssertLessThanOrEqual(page["messages"].list.count, HistoryWindowPolicy.residentRows)
             if page["older"].isNull { break }
             page = try await session.historyWindow(["cursor":page["older"]])
         }
@@ -126,6 +323,96 @@ final class HistoryWindowTests: HelperTestCase {
         XCTAssertEqual(bounded, huge, "A page budget must not truncate individual content")
         let snapshot = await session.snapshot(["includeMetrics":false])
         XCTAssertLessThan(try snapshot.data().count, HistoryWindowPolicy.envelopeBytes)
+    }
+
+    /// A page fits the app's window as the app weighs a row
+    /// (`TranscriptPaging.size`: its text, reasoning, tool inputs and outputs,
+    /// each timeline segment's text and 512, and 512 more), not only as its
+    /// wire encoding does. A question and three hundred replies of 9,700
+    /// characters encode in 5.97 MB but weigh 6.13 MB in the window, past its
+    /// 6 MB: the page held the whole turn, and the app's window let go of its
+    /// question and unfolded it (0.1.131 review). Too heavy for the window,
+    /// the turn reads as the cut turn it is.
+    func testAPageFitsTheAppsWindowAsTheAppWeighsItsRows() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var question = ChatMessage(role: "user", content: [textBlock("Write it all out.")]); question.id = "q"
+        var rows = [question]
+        for index in 0..<300 {
+            var reply = ChatMessage(role: "assistant", content: [textBlock(String(repeating: "a", count: 9_700))]); reply.id = "r\(index)"
+            rows.append(reply)
+        }
+        let session = try AgentSession(id: "weights", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let page = try await session.historyWindow([:])
+        // As `TranscriptPaging.size` weighs a row.
+        func resident(_ row: JSON) -> Int {
+            let tools = row["tools"].list.reduce(0) { $0 + ($1["input"].text?.utf8.count ?? 0) + ($1["output"].text?.utf8.count ?? 0) }
+            let segments = row["responseTimeline"]["segments"].list.reduce(0) { $0 + ($1["text"].text?.utf8.count ?? 0) + 512 }
+            return (row["text"].text?.utf8.count ?? 0) + (row["thinking"].text?.utf8.count ?? 0) + tools + segments + 512
+        }
+        let bytes = page["messages"].list.reduce(0) { $0 + resident($1) }
+        XCTAssertLessThanOrEqual(bytes, HistoryWindowPolicy.residentBytes, "The page weighs \(bytes) bytes in the app's window")
+        XCTAssertEqual(page["partialTurnInput"].text, "q", "The turn is too heavy for the window: the page holds its newest rows")
+    }
+
+    /// A chat reopened from its metadata file loads the rows after its last
+    /// compaction, which can begin inside a turn: one the compaction split,
+    /// its question among the rows not loaded. The newest page starts at the
+    /// first question among the loaded rows, as the desktop's journal reader
+    /// does, and the page before it reads the rows not loaded to hold that
+    /// turn whole. The newest page held the loaded tail of that turn as if
+    /// the chat began there, call by call, and the turn folded once reading
+    /// earlier completed it (0.1.131 review).
+    func testAReopenedChatsPagesStartAtAQuestionWhenItsLoadedRowsBeginInsideATurn() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root)
+        // Keeping the least it can, the compaction cuts the turn at its last reply.
+        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+        func open(_ replies: [ModelReply], resume: String? = nil) throws -> AgentSession {
+            try AgentSession(id: "split", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
+                             client: ScriptClient(replies), tools: RecordingTools(), traces: TraceStore(), resumePath: resume,
+                             autoCompaction: false, compactionPolicy: policy)
+        }
+        func send(_ session: AgentSession, _ id: String, _ text: String) async throws {
+            _ = try await session.submit(Submission(commandID: id, turnID: id, text: text), steer: false)
+            try await eventually { !(await session.isRunning) }
+        }
+        // Two long answers to summarize, then a turn of two calls and its answer.
+        let long = String(repeating: "the earlier answer ", count: 400)
+        let writer = try open([answer("First " + long), answer("Second " + long), toolReply(["first"]), toolReply(["second"]), answer("Answer 0"),
+                               answer("Summary of the reads."), answer("Answer 1"), answer("Answer 2"), answer("Answer 3")])
+        try await send(writer, "h0", "The first question")
+        try await send(writer, "h1", "The second question")
+        try await send(writer, "q0", "Read both files.")
+        try await writer.compact(commandID: "compact")
+        try await eventually { !(await writer.isRunning) }
+        for turn in 1..<4 { try await send(writer, "q\(turn)", "Question \(turn)") }
+        let written = await writer.path
+        let path = try XCTUnwrap(written)
+        await writer.close()
+
+        let reader = try open([], resume: path)
+        addTeardownBlock { await reader.close() }
+        let older = await reader.olderRows, visible = await reader.visible
+        XCTAssertGreaterThan(older, 0, "Reopened from its metadata file")
+        let first = try XCTUnwrap(visible.first)
+        XCTAssertFalse(first.startsDisplayTurn, "The loaded rows begin inside the split turn: \(visible.map(\.id))")
+        let question = try XCTUnwrap(visible.first { $0.startsDisplayTurn }?.id)
+        let newest = try await reader.historyWindow(["version": 2])
+        XCTAssertEqual(newest["messages"].list.first?["id"].text, question, "The newest page starts at the first question among the loaded rows")
+        XCTAssertTrue(newest["partialTurnInput"].isNull)
+        // The page before reads the rows not loaded: the turns before, whole,
+        // the split one among them from its question to its last row.
+        let earlier = try await reader.historyWindow(["version": 2, "direction": "older", "cursor": newest["older"]])
+        let rows = earlier["messages"].list.compactMap { $0["id"].text }
+        XCTAssertEqual(rows.first, "h0", "\(rows)")
+        XCTAssertTrue(rows.contains("q0") && rows.contains(first.id), "The split turn reads whole: \(rows)")
+        XCTAssertEqual(rows.last.flatMap { last in visible.firstIndex { $0.id == last } }.map { $0 + 1 }, visible.firstIndex { $0.id == question },
+                       "and the page ends where the newest one starts")
+        XCTAssertEqual(earlier["endsTurn"].flag, true)
+        XCTAssertTrue(earlier["older"].isNull)
+        XCTAssertTrue(earlier["partialTurnInput"].isNull)
     }
 
 }

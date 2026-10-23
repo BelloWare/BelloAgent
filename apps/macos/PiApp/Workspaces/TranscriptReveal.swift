@@ -158,7 +158,7 @@ extension WorkspaceModel {
                 // show) is read past, after it and then before it; one with
                 // nothing drawn on either side within reach is not asked for
                 // again at once.
-                guard let found = try await Self.drawablePage(from: page, reading: { boundary, newer in
+                guard let found = try await Self.drawablePage(from: page, at: position, reading: { boundary, newer in
                     guard current() else { throw CancellationError() }
                     return try await self.readConversationWindow(item, cursor: boundary, newer: newer)
                 }) else { pause(retrying: nil); return }
@@ -209,12 +209,15 @@ extension WorkspaceModel {
         }
     }
 
-    /// The page a position read lands on, and its row: the page read, or —
-    /// when it holds no row to draw (old records with nothing to show) — the
-    /// next page after it that does, then the one before.
-    @MainActor static func drawablePage(from page: ConversationHistoryPage, limit: Int = 8,
+    /// The page a position read lands on, and its row: the page read, at
+    /// the row of timeline position `at` (the page starts where that row's
+    /// turn does, so it holds the turn whole), or — when it holds no row to
+    /// draw (old records with nothing to show) — the next page after it that
+    /// does, then the one before.
+    @MainActor static func drawablePage(from page: ConversationHistoryPage, at position: Int? = nil, limit: Int = 8,
                                         reading: (ConversationCursor, Bool) async throws -> ConversationHistoryPage) async throws -> (page: ConversationHistoryPage, landing: String)? {
-        if let landing = landingMessageID(in: page.messages) { return (page, landing) }
+        let row = position.flatMap { position in page.start.map { max(0, position - $0) } } ?? 0
+        if let landing = landingMessageID(in: page.messages, from: row) { return (page, landing) }
         for newer in [true, false] {
             var current = page
             for _ in 0..<limit {
@@ -229,9 +232,12 @@ extension WorkspaceModel {
     /// transcript draws a row for, as the page's own row plan says
     /// (`TranscriptActivity.blocks`) — not an edit's marker, a record folded
     /// into another row, or an old reply with nothing to show.
-    @MainActor static func landingMessageID(in messages: [TranscriptMessage]) -> String? {
+    /// `from`: the page's row the reader is at; the first drawn one from
+    /// there on, else the last one before it.
+    @MainActor static func landingMessageID(in messages: [TranscriptMessage], from row: Int = 0) -> String? {
         let drawn = Set(TranscriptActivity.blocks(of: SessionDisplay.hidingBranchMarkers(messages), complete: false).flatMap(\.messageIDs))
-        return messages.first { drawn.contains($0.id) }?.id
+        let row = min(row, messages.count)
+        return (messages[row...].first { drawn.contains($0.id) } ?? messages[..<row].last { drawn.contains($0.id) })?.id
     }
 
     /// Whether a read failed because the history is no longer the one the
