@@ -834,7 +834,13 @@ public actor NativeHostService {
             try await session.reorderQueue(order); return ["accepted":true]
         case "queue.read": return try await session.queuedText(required(params["turnId"],"turn id"))
         case "queue.edit.begin": return try await session.beginQueueEdit(turnID:required(params["turnId"],"turn id"),editID:required(params["editId"],"edit id"),basis:params["basis"].int)
-        case "queue.edit.save": return try await session.saveQueueEdit(editID:required(params["editId"],"edit id"),text:params["text"].text ?? "")
+        case "queue.edit.save":
+            var skills: [JSON]?
+            if let value = params.map["skills"] {
+                guard case .array(let selected) = value else { throw AgentError("invalid_params", "Skills must be an array of explicit selections") }
+                skills = selected
+            }
+            return try await session.saveQueueEdit(editID:required(params["editId"],"edit id"),text:params["text"].text ?? "",skills:skills)
         case "queue.edit.cancel": return try await session.cancelQueueEdit(editID:required(params["editId"],"edit id"))
         case "queue.edit.remove": return try await session.removeQueueEdit(editID:required(params["editId"],"edit id"))
         case "queue.edit.status": return try await session.queueEditStatus(editID:required(params["editId"],"edit id"))

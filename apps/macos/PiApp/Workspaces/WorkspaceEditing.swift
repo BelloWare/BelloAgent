@@ -268,6 +268,7 @@ extension WorkspaceModel {
     func sendEdit(sessionID: String? = nil) {
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), let view = displays[id], view.draftReady, view.imageImports == 0, let messageID = view.editingMessageID, let store else { return }
         if let reason = editBlocker(view) { view.notice = reason; view.editNotice = reason; return }
+        if resolveLeadingCommand(view, steer: false) { return }
         guard view.hasSubmittableInput else { view.editNotice = "Enter a replacement message, add an image or select a skill."; return }
         guard !item.imported, !isEphemeral(id) else { view.notice = "Continue or keep this chat before editing its messages."; return }
         guard !item.isArchived else { view.notice = WorkspaceModel.archivedNotice; return }

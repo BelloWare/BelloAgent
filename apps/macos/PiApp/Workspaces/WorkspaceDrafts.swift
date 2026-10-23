@@ -110,7 +110,7 @@ extension WorkspaceModel {
                 guard let editID = intent.queueEditID else { continue }
                 if !confirmed.contains(intent.id) {
                     guard let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
-                          status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+                          status["state"]?.string == "saved", (status["inputDigest"] ?? status["textDigest"])?.string == QueuedEditDraft.digest(intent.text, skills: intent.skills) else { continue }
                 }
                 // Positive evidence belongs to the command, even if its
                 // reader moved away while the reply was in flight.

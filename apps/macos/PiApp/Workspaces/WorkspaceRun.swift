@@ -8,10 +8,10 @@ extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
         guard page == .chats, record(sessionID)?.isSubagent != true, let view = displays[sessionID], view.draftReady, view.imageImports == 0, !view.loading, !installPreparing else { return }
-        if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
-        if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
-        if intent == .steer, view.completionVisible {
+        let editing = view.queueEditingID != nil || view.editingMessageID != nil
+        let editingBuiltin = editing && LeadingCommand.parse(view.draft, directInput: view.directCommand).map { LeadingCommand.reserved.contains($0.name) } == true
+        if intent == .steer, view.completionVisible, !editingBuiltin {
             view.notice = "Select or dismiss the skill suggestions before steering."; return
         }
         if let command = LeadingCommand.parse(view.draft, directInput: view.directCommand),
@@ -21,6 +21,8 @@ extension WorkspaceModel {
             Task { await loadSkillCatalog(sessionID: sessionID) }
             return
         }
+        if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
+        if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         send(steer: intent == .steer && view.busy, sessionID: sessionID)
     }
 
