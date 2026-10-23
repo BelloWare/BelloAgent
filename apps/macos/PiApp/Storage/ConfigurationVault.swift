@@ -131,8 +131,8 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { retry ?? RetryPreferences() }
         set { retry = newValue }
     }
-    /// Chat briefs (`WorkspaceChatBriefs.swift`); absent in older vaults,
-    /// which have them off.
+    /// Chat briefs (`WorkspaceChatBriefs.swift`); absent until the reader
+    /// changes them, which leaves them on.
     var chatBriefs: ChatBriefSettings?
     var briefSettings: ChatBriefSettings {
         get { chatBriefs ?? ChatBriefSettings() }
@@ -168,7 +168,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               [dashboard.purpose, dashboard.api, dashboard.requestedAlias, dashboard.effectiveModel].allSatisfy({ ($0?.utf8.count ?? 0) <= 256 }),
               dashboard.windowPreset.map({ DashboardWindowPreset(rawValue: $0) != nil }) ?? true,
               transcriptView.map({ TranscriptDisplayMode(rawValue: $0) != nil }) ?? true,
-              chatCostLimit?.isValid ?? true, retry?.isValid ?? true, chatBriefs?.isValid ?? true,
+              chatCostLimit?.isValid ?? true, retry?.isValid ?? true,
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }

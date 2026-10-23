@@ -453,8 +453,13 @@ final class WebhookTests: XCTestCase {
 
         // The mini model's request: no tools, the webhook's own instructions,
         // and the chat's title, request, output and the user's instructions.
+        // It is the webhook's own request: the same run's end also asks the
+        // mini model for the chat's brief (on by default since 0.1.131).
+        await live.waitUntil("The webhook's request was not kept") { live.model.chats.contains { $0.backgroundTask == "webhook" } }
+        let webhookRequest = try XCTUnwrap(live.model.chats.first { $0.backgroundTask == "webhook" })
         let captures = try await live.gatewayRecords()
-        let asked = try XCTUnwrap(captures.first { $0.body["model"]?.string == "fixture-fast" }, "The mini model was asked")
+        let asked = try XCTUnwrap(captures.first { $0.sessionID == webhookRequest.id }, "The mini model was asked")
+        XCTAssertEqual(asked.body["model"]?.string, "fixture-fast")
         XCTAssertEqual(asked.body["tools"]?.array ?? [], [])
         let input = asked.body["input"]?.array ?? []
         XCTAssertTrue(input.first?.object?["content"]?.string?.hasPrefix("Write the notification a webhook sends") == true, "\(input.first ?? .null)")

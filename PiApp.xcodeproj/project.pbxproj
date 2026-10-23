@@ -478,6 +478,7 @@
 		55125455E5EA2B24A9FD3A33 /* TranscriptNativeParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E9AB8E20FCCA78D49C9D2D /* TranscriptNativeParts.swift */; };
 		551E61229A124EE626574D91 /* SubagentPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D49033E4E836204B9C4A357 /* SubagentPanelTests.swift */; };
 		55257EFEFA9BA6A35F95622B /* SubagentDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A102F5C4FCF4883213F4689D /* SubagentDiscovery.swift */; };
+		553C4DE9B67E03C187AEEDFA /* ChatBriefSettingsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BA375423504A972C223A63E /* ChatBriefSettingsCard.swift */; };
 		555BA01794D58E16F58F5129 /* Attachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6663D82E5EC8EAC4A690C9BA /* Attachments.swift */; };
 		556A3CC7E36C6F3763AB2C9C /* FileSyntax.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD57EFB4E67144FAA5E2E23D /* FileSyntax.swift */; };
 		55704A077D414C11989ABB93 /* SidebarGroupHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E362E213F43C007D06A9748B /* SidebarGroupHeader.swift */; };
@@ -807,6 +808,7 @@
 		94B93CC1C9E4C7B7CE30AC9E /* SkillDetails.swift in Sources */ = {isa = PBXBuildFile; fileRef = D956D8C97FD52F6842CEF585 /* SkillDetails.swift */; };
 		950A372B4EE0C6E7EEC026A5 /* WorkspaceMessageReads.swift in Sources */ = {isa = PBXBuildFile; fileRef = D46D57A51B76483809B64D68 /* WorkspaceMessageReads.swift */; };
 		9549A798E72BBACA5A5D640C /* TranscriptStreamingScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2792B3E6D3BDF980BF8A79B5 /* TranscriptStreamingScrollTests.swift */; };
+		954F348DA28D1C6D8D34DFD9 /* ChatBriefSettingsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BA375423504A972C223A63E /* ChatBriefSettingsCard.swift */; };
 		956376A38B6E57D8C1E4AD78 /* RunState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6880BFD8E34399DD9052B2F1 /* RunState.swift */; };
 		9573FF92AFE4F97E112E647A /* TerminalInverseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E47E4D5B7E34789E9CDBF7 /* TerminalInverseTests.swift */; };
 		95D3CAF8CB07E736E0139718 /* WorkspaceBridges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00C1E3B62E239235A31A9BAD /* WorkspaceBridges.swift */; };
@@ -1481,6 +1483,7 @@
 		0AC854ACC2CC0D4A1B8EC683 /* ShellComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellComposerTests.swift; sourceTree = "<group>"; };
 		0B162FD5C22E6A09BA9C373C /* TranscriptNativeMarkdownIslands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeMarkdownIslands.swift; sourceTree = "<group>"; };
 		0B525741E5086CF15D0E9B0C /* GitOperationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitOperationSheet.swift; sourceTree = "<group>"; };
+		0BA375423504A972C223A63E /* ChatBriefSettingsCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatBriefSettingsCard.swift; sourceTree = "<group>"; };
 		0BBA5B183D7ADB05CC81ED8A /* JSONOutlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONOutlineView.swift; sourceTree = "<group>"; };
 		0C0DEDC55A20BCA391C9CA7D /* SessionTimingHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionTimingHistory.swift; sourceTree = "<group>"; };
 		0C888A5DEB00178FA3D923AF /* TopicStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicStorageTests.swift; sourceTree = "<group>"; };
@@ -2728,6 +2731,7 @@
 				2206D707BD5D35F95B4D6615 /* BackgroundRequests.swift */,
 				D51696E6BD063730FC189626 /* CatalogModelPickerView.swift */,
 				ED71C031FFBF71685420D21F /* ChatBriefPlan.swift */,
+				0BA375423504A972C223A63E /* ChatBriefSettingsCard.swift */,
 				D8C362F58C86FAB0586061C4 /* CompletionSound.swift */,
 				C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */,
 				38BC3B375BFE99870D221920 /* ComposerInput.swift */,
@@ -3872,6 +3876,7 @@
 				DA00E0D7CA604272C49E14E6 /* CatalogModelPickerView.swift in Sources */,
 				790DDE106D87D6D457ED404C /* ChangesTab.swift in Sources */,
 				ACB8A89189D0C1C67E30118C /* ChatBriefPlan.swift in Sources */,
+				954F348DA28D1C6D8D34DFD9 /* ChatBriefSettingsCard.swift in Sources */,
 				C5123388825D4A61C1F1224F /* ChatQuestionSheet.swift in Sources */,
 				E713679ECABFDE06DFFE62FB /* ChatRecordMerge.swift in Sources */,
 				9A586CC9AC10FE8747A6C756 /* ChatSearchIndex.swift in Sources */,
@@ -4306,6 +4311,7 @@
 				15169CA939688A6674B00F75 /* CatalogModelPickerView.swift in Sources */,
 				8BCEAA5B591CA69A7DDAB266 /* ChangesTab.swift in Sources */,
 				C05A3E3C1AD424E8F3A8D5C6 /* ChatBriefPlan.swift in Sources */,
+				553C4DE9B67E03C187AEEDFA /* ChatBriefSettingsCard.swift in Sources */,
 				5AB3D194AB63702F4A2C5F7D /* ChatQuestionSheet.swift in Sources */,
 				305BCCCF69540813161F0C02 /* ChatRecordMerge.swift in Sources */,
 				39EBC651C392AF5271D0829F /* ChatSearchIndex.swift in Sources */,

@@ -305,6 +305,8 @@ struct ChatRowStats: Equatable {
         /// The chat's brief: shown, with `help`, by the card the pointer
         /// brings up in place of the tooltip (`SidebarBriefCard.swift`).
         var brief: ChatBrief?
+        /// The card comes up for this chat: its brief, or Write Brief.
+        var offersBrief = false
         /// Project and topic tags in the combined Flat list only.
         var projectTag: String?
         var projectTagFullName: String?
@@ -490,9 +492,9 @@ struct ChatRowStats: Equatable {
             metrics.isHidden = true; subtitle.isHidden = false
             subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
         }
-        // A chat with a brief says it, and the rest, in its card instead.
-        toolTip = new.brief == nil ? new.help : nil
-        if before?.brief != new.brief || before?.help != new.help { showBrief(hovering) }
+        // A chat offering a brief says it, and the rest, in its card instead.
+        toolTip = new.offersBrief ? nil : new.help
+        if before?.brief != new.brief || before?.offersBrief != new.offersBrief || before?.help != new.help { refreshBrief() }
         row1.relayoutAll(); tags.relayoutAll()
         invalidateIntrinsicContentSize(); needsLayout = true
     }
@@ -549,11 +551,28 @@ struct ChatRowStats: Equatable {
         if !inside, confirming { setConfirming(false) } else { applyControls() }
     }
     /// The brief's card comes up once the pointer rests on the row, and goes
-    /// when it leaves or the row stops having a brief.
+    /// when it leaves or the row stops offering a brief.
     private func showBrief(_ inside: Bool) {
-        guard inside, let content, let brief = content.brief else { SidebarBriefCard.hover(false, anchor: self); return }
-        SidebarBriefCard.hover(true, anchor: self, brief: brief, help: content.help)
+        guard inside, content?.offersBrief == true else { SidebarBriefCard.hover(false, anchor: self); return }
+        SidebarBriefCard.hover(true, anchor: self) { [weak self] in self?.briefCard ?? SidebarBriefCard.Content(help: "") }
     }
+    /// What the card says changed: shown again at once while it is up, gone
+    /// when the row no longer offers a brief.
+    private func refreshBrief() {
+        guard content?.offersBrief == true else { SidebarBriefCard.anchorLeft(self); return }
+        if hovering, SidebarBriefCard.presenter.anchorView !== self { showBrief(true) }
+        else { SidebarBriefCard.refresh(self) { briefCard } }
+    }
+    private var briefCard: SidebarBriefCard.Content {
+        let brief = content?.brief
+        return SidebarBriefCard.Content(brief: brief, help: content?.help ?? "", writing: brief == nil && briefWriting?() == true,
+                                        problem: brief == nil ? briefProblem?() : nil, write: brief == nil ? writeBrief : nil)
+    }
+    /// Write Brief, whether the chat's brief is being written, and why its
+    /// last request wrote none (`SidebarChatRowView`).
+    var writeBrief: (() -> Void)?
+    var briefWriting: (() -> Bool)?
+    var briefProblem: (() -> String?)?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { SidebarBriefCard.anchorLeft(self) }

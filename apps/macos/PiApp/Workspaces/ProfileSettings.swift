@@ -434,19 +434,14 @@ import Combine
         updaters.append { [weak webhook] in webhook?.update() }
         return [transcript, briefsCard(), notifications, webhook]
     }
-    /// Chat briefs (`WorkspaceChatBriefs.swift`): on or off, and the most they may spend in a day.
-    private func briefsCard() -> SettingsCard {
+    /// Chat briefs (`WorkspaceChatBriefs.swift`): on or off, what they cost,
+    /// and briefs for the chats without one.
+    private func briefsCard() -> ChatBriefSettingsCard {
         let controller = controller
-        func update(_ change: (inout ChatBriefSettings) -> Void) { var settings = controller.preferences.briefSettings; change(&settings); controller.preferences.briefSettings = settings }
-        let caps = Set(ChatBriefSettings.capChoices + [controller.preferences.briefSettings.dailyCapUSD]).sorted()
-        return SettingsCard(title: "Chat briefs", footer: "A brief is kept with the app's list of chats: nothing is added to the chat, its history or what its model is sent. A chat's text goes only to its own connection's mini model; a chat whose connection has none gets no brief. Each request is listed under Background requests and counted in Usage.", rows: [
-            SettingsRow(label: "Write chat briefs", detail: "When a chat finishes a run, its connection's mini model sums it up in a sentence or two, with a few keywords. Sidebar search finds chats by them, and resting the pointer on a chat shows them.",
-                        control: toggle(label: "Write chat briefs", identifier: "settings-chat-briefs",
-                                        get: { controller.preferences.briefSettings.enabled }, set: { value in update { $0.enabled = value } })),
-            SettingsRow(label: "Spending cap", detail: "The most brief requests may spend in any 24 hours. Chats without a brief get one at a time, newest first, until it is reached.", last: true,
-                        control: dropdown(caps.map { ($0, ChatBriefSettings.capLabel($0)) }, name: "Spending cap for chat briefs", identifier: "settings-chat-briefs-cap",
-                                          get: { controller.preferences.briefSettings.dailyCapUSD }, set: { value in update { $0.dailyCapUSD = value } })),
-        ])
+        let card = ChatBriefSettingsCard(model: model, get: { controller.preferences.briefSettings }, set: { controller.preferences.briefSettings = $0 },
+                                         enabled: enabled)
+        updaters.append { [weak card] in card?.update() }
+        return card
     }
 
     // MARK: App

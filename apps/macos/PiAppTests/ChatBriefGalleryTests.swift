@@ -2,11 +2,13 @@ import AppKit
 import XCTest
 @testable import PiApp
 
-/// Chat briefs (FIND-1) on screen: a row's hover card in Flat and Topics at
-/// two widths, a search that finds a chat by a keyword, Settings' Chat briefs
-/// card on and off, and the Background requests page's Chat briefs filter.
-/// Light and dark. Generated chats only. Set PI_APP_CHAT_BRIEF_GALLERY to a
-/// folder to write them.
+/// Chat briefs (FIND-1) on screen: a row's hover card beside it in Flat and
+/// Topics at two widths, with a brief and with Write Brief; a search that
+/// finds a chat by a keyword; Settings' Chat briefs card off, on with chats
+/// without a brief, while Write Briefs runs, and once it is done, wide and
+/// narrow; and the Background requests page's Chat briefs filter. Light and
+/// dark. Generated chats and a loopback gateway only. Set
+/// PI_APP_CHAT_BRIEF_GALLERY to a folder to write them.
 final class ChatBriefGalleryTests: XCTestCase, SerialTestLane {
     private static let themes: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
 
@@ -53,28 +55,38 @@ final class ChatBriefGalleryTests: XCTestCase, SerialTestLane {
         return model
     }
 
-    /// The hover card over its row, in Flat and Topics, wide and narrow.
+    /// The hover card beside its row, in Flat and Topics, wide and narrow:
+    /// a chat's brief, and Write Brief for a chat without one.
     @MainActor func testHoverCardScenes() async throws {
         let folder = try folder(), model = try model()
         let sidebar = WorkspaceSidebarView(model: model)
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 300, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = sidebar; window.orderFront(nil)
-        SidebarBriefCard.presenter.delay = .milliseconds(10); SidebarBriefCard.presenter.reducesMotion = true
-        defer { SidebarBriefCard.presenter.hide(); SidebarBriefCard.presenter.delay = PiHoverCardPresenter.delay; window.contentView = nil; window.close() }
-        for (layout, flat) in [("flat", true), ("topics", false)] {
-            model.setSidebarFlat(flat)
-            for width: CGFloat in [300, 220] {
-                window.setContentSize(NSSize(width: width, height: 560))
-                for (theme, appearance) in Self.themes {
-                    window.appearance = NSAppearance(named: appearance)
-                    SidebarBriefCard.presenter.hide()
-                    sidebar.needsLayout = true; sidebar.settle(); window.displayIfNeeded()
-                    let row = try XCTUnwrap(rowView("tokenizer", in: sidebar), "The briefed chat is listed")
-                    row.body.setHovering(true)
-                    try await eventually("the card comes up", timeout: .seconds(5)) { SidebarBriefCard.presenter.isShown }
-                    try await shown(window)
-                    try capture(window, to: folder.appendingPathComponent("hover-\(layout)-\(Int(width))-\(theme).png"))
-                    row.body.setHovering(false)
+        let presenter = SidebarBriefCard.presenter
+        presenter.delay = .milliseconds(10); presenter.reducesMotion = true; presenter.leaveGrace = .zero
+        presenter.pointerLocation = { NSPoint(x: -10_000, y: -10_000) }
+        defer {
+            presenter.hide(); presenter.delay = PiHoverCardPresenter.delay; presenter.leaveGrace = .milliseconds(300)
+            presenter.pointerLocation = { NSEvent.mouseLocation }
+            window.contentView = nil; window.close()
+        }
+        for (card, chat) in [("brief", "tokenizer"), ("write", "welcome")] {
+            for (layout, flat) in [("flat", true), ("topics", false)] {
+                model.setSidebarFlat(flat)
+                for width: CGFloat in [300, 220] {
+                    window.setContentSize(NSSize(width: width, height: 560))
+                    for (theme, appearance) in Self.themes {
+                        window.appearance = NSAppearance(named: appearance)
+                        presenter.hide()
+                        sidebar.needsLayout = true; sidebar.settle(); window.displayIfNeeded()
+                        let row = try XCTUnwrap(rowView(chat, in: sidebar), "The chat is listed")
+                        row.body.setHovering(true)
+                        try await eventually("the card comes up", timeout: .seconds(5)) { presenter.isShown }
+                        try await shown(window)
+                        try capture(window, to: folder.appendingPathComponent("hover-\(card)-\(layout)-\(Int(width))-\(theme).png"))
+                        row.body.setHovering(false)
+                        try await eventually("the card goes", timeout: .seconds(5)) { !presenter.isShown }
+                    }
                 }
             }
         }
@@ -98,14 +110,37 @@ final class ChatBriefGalleryTests: XCTestCase, SerialTestLane {
         }
     }
 
-    /// Settings → Chats & notifications, its Chat briefs card on and off.
+    /// Settings → Chats & notifications, its Chat briefs card: off; on with
+    /// chats without a brief; while Write Briefs runs (wide and narrow); and
+    /// once it is done. The briefs are written by the packaged helper through
+    /// a loopback gateway that reports a cost of $0.004 a request.
     @MainActor func testSettingsScenes() async throws {
         let folder = try folder()
         let root = scratchRoot("brief-settings-gallery")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let project = root.appendingPathComponent("project"), journals = root.appendingPathComponent("journals")
+        for folder in [project, journals] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let gateway = try BriefGateway()
+        addTeardownBlock { gateway.stop() }
+        var profile = ProfileRecord(); profile.id = "studio"; profile.name = "Studio"; profile.baseUrl = try await gateway.start()
+        profile.modelId = "design-model"; profile.miniModelId = "mini-fixture"
+        var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-brief-key")]
+        configuration.workspaces = [.init(id: "orchard", path: project.path, trusted: true)]
+        configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("isolated-codex").path)])
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
         registerWorkspaceFixtureTeardown(model, root: root)
         try await model.reloadConfiguration()
+        let titles = ["Launch checklist", "Welcome screen copy", "Pricing page review", "Press kit outline", "Release notes draft"]
+        for (index, title) in titles.enumerated() {
+            let id = "chat-\(index)"
+            let journal = try SearchJournal(journals.appendingPathComponent(id + ".jsonl"), id: id)
+            try journal.message(id + "-u0", role: "user", "Help with the \(title.lowercased())."); try journal.message(id + "-a0", role: "assistant", "Here is a start.")
+            var chat = ChatRecord(id: id, workspaceID: "orchard", title: title, path: journal.url.path, profileID: profile.id)
+            chat.lastActivityAt = Int64(10 - index); chat.sidebarOrder = chat.lastActivityAt
+            try await model.store?.put(chat, kind: "chat", id: id)
+            model.chats.append(chat)
+        }
         let controller = ConnectionSettingsController(model: model)
         await controller.load(discardingDrafts: false)
         model.settingsSection = .chats
@@ -113,15 +148,40 @@ final class ChatBriefGalleryTests: XCTestCase, SerialTestLane {
         let window = NSWindow(contentRect: NSRect(x: 200, y: 120, width: 880, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = view; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
-        for (state, enabled) in [("off", false), ("on", true)] {
-            controller.preferences.briefSettings.enabled = enabled
-            for (theme, appearance) in Self.themes {
-                window.appearance = NSAppearance(named: appearance)
-                for _ in 0..<5 { view.refresh(); view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(40)) }
-                try await shown(window)
-                try capture(window, to: folder.appendingPathComponent("settings-chats-\(state)-\(theme).png"))
+        func card() -> ChatBriefSettingsCard? {
+            func walk(_ view: NSView) -> ChatBriefSettingsCard? { (view as? ChatBriefSettingsCard) ?? view.subviews.lazy.compactMap(walk).first }
+            return walk(view)
+        }
+        func scenes(_ state: String, widths: [CGFloat] = [880]) async throws {
+            for width in widths {
+                window.setContentSize(NSSize(width: width, height: 780))
+                for (theme, appearance) in Self.themes {
+                    window.appearance = NSAppearance(named: appearance)
+                    for _ in 0..<5 { card()?.update(); view.refresh(); view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(40)) }
+                    try await shown(window)
+                    try capture(window, to: folder.appendingPathComponent("settings-chats-\(state)\(widths.count > 1 ? "-\(Int(width))" : "")-\(theme).png"))
+                }
             }
         }
+        controller.preferences.briefSettings.enabled = false
+        try await scenes("off")
+        controller.preferences.briefSettings.enabled = true
+        try await eventually("the card is up", timeout: .seconds(5)) { card() != nil }
+        try await scenes("on")
+        // One brief written, the next one on its way.
+        gateway.hold(true)
+        try XCTUnwrap(card()).batchButton.performClick(nil)
+        try await eventually("the first request", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        gateway.answerHeld()
+        try await eventually("the second request, the first brief's cost read", timeout: .seconds(60)) {
+            gateway.requests.count == 2 && model.chatBriefs.batch?.written == 1 && (card()?.batchSpend.costUSD ?? 0) > 0
+        }
+        try await scenes("writing", widths: [880, 640])
+        gateway.hold(false)
+        try await eventually("the batch is over", timeout: .seconds(120)) { model.chatBriefs.batch?.finished == true }
+        try await eventually("its cost read", timeout: .seconds(30)) { abs((card()?.batchSpend.costUSD ?? 0) - 0.02) < 1e-9 && card()?.today.requests == 5 }
+        window.setContentSize(NSSize(width: 880, height: 780))
+        try await scenes("done")
     }
 
     /// The Background requests page with brief requests, and its Chat briefs filter.

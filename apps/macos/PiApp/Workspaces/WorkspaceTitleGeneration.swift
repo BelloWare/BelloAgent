@@ -150,7 +150,10 @@ extension WorkspaceModel {
     /// produced, and throws when it produced nothing usable; the request is
     /// kept with it, or with why it failed, on the Background requests page.
     /// Cancelling the calling task stops the request as well as the polling.
-    func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String,
+    /// With `sourceLease`, nothing is sent once the source chat has moved to
+    /// another connection (`connectionChanged`): what was read from it goes
+    /// only to the connection it was read on.
+    func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String, sourceLease: ConnectionLease? = nil,
                       result: ([TranscriptMessage]) throws -> String) async throws -> [TranscriptMessage] {
         guard let store else { throw StoreError.unavailable }
         let taskID = UUID().uuidString
@@ -186,6 +189,7 @@ extension WorkspaceModel {
             let connected = try await open(item); host = connected
             let turn = UUID().uuidString
             try requireConnection(lease)
+            if let sourceLease { try requireConnection(sourceLease) }
             _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(request.prompt), "clientTurnId": .string(turn)]))
             let deadline = ProcessInfo.processInfo.systemUptime + request.timeout
             while ProcessInfo.processInfo.systemUptime < deadline {

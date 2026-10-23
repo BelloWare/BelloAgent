@@ -1465,9 +1465,12 @@ offscreen, when `TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY` names a folder:
 
 `ChatBriefGalleryTests` draws chat briefs (0.1.131) from generated chats when
 `TEST_RUNNER_PI_APP_CHAT_BRIEF_GALLERY` names a folder, in both appearances:
-`hover-{flat,topics}-{300,220}-*` (a row's brief card over the sidebar),
-`search-keyword-*` (Titles & details finding a chat by a keyword),
-`settings-chats-{off,on}-*` (Settings' Chat briefs card) and
+`hover-{brief,write}-{flat,topics}-{300,220}-*` (a row's card beside it: the
+brief, or Write Brief for a chat without one), `search-keyword-*` (Titles &
+details finding a chat by a keyword), `settings-chats-{off,on,done}-*` and
+`settings-chats-writing-{880,640}-*` (Settings' Chat briefs card: off, on with
+chats without a brief, Write Briefs under way and done; its briefs written by
+the packaged helper through a loopback gateway) and
 `background-{all,briefs}-{1000,700}-*` (the Background requests page and its
 Chat briefs filter). It shows windows: run it under the lane lock.
 

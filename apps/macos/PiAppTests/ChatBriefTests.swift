@@ -131,18 +131,31 @@ final class ChatBriefPlanTests: XCTestCase {
         XCTAssertFalse(ChatBrief.key(ChatBrief.folded("ab"), holds: ChatBrief.folded("abc")))
     }
 
-    /// The cap counts what the gateway reported, and a request it reported
-    /// nothing for (or not yet) at the estimate.
-    func testTheCapCountsReportedSpendAndUnreportedRequestsAtTheEstimate() {
-        let unreported = ChatBriefs.unreportedCost
-        XCTAssertEqual(ChatBriefs.spend([]), 0)
-        XCTAssertEqual(ChatBriefs.spend([GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.004)]), 0.004, accuracy: 1e-12)
-        XCTAssertEqual(ChatBriefs.spend([GatewayTotals(requests: 1, costSamples: 0, costUSD: nil)]), unreported, accuracy: 1e-12)
-        XCTAssertEqual(ChatBriefs.spend([GatewayTotals(requests: 2, costSamples: 1, costUSD: 0.003)]), 0.003 + unreported, accuracy: 1e-12)
-        XCTAssertEqual(ChatBriefs.spend([nil]), unreported, accuracy: 1e-12, "A request the archive has no row for yet")
-        XCTAssertEqual(ChatBriefs.spend([GatewayTotals()]), unreported, accuracy: 1e-12)
-        XCTAssertEqual(ChatBriefs.spend([GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.002), nil, GatewayTotals(requests: 1, costSamples: 1, costUSD: 0)]),
-                       0.002 + unreported, accuracy: 1e-12)
+    /// Usage beside the setting: every request the Background requests page
+    /// lists, and what the gateway reported for those that reached it.
+    func testUsageCountsEveryRequestAndWhatTheGatewayReported() {
+        func over(_ totals: [GatewayTotals?]) -> [(totals: GatewayTotals?, over: Bool)] { totals.map { (totals: $0, over: true) } }
+        XCTAssertEqual(ChatBriefUsage.sum([]), ChatBriefUsage())
+        XCTAssertEqual(ChatBriefUsage.sum([]).label, "None"); XCTAssertNil(ChatBriefUsage.sum([]).note)
+        let one = ChatBriefUsage.sum(over([GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.004)]))
+        XCTAssertEqual(one.requests, 1); XCTAssertEqual(one.costUSD, 0.004, accuracy: 1e-12); XCTAssertEqual(one.unreported, 0)
+        XCTAssertEqual(one.label, "1 request · $0.004"); XCTAssertNil(one.note)
+        // Never reached the gateway, or not in the archive yet: a request, at no cost, and not "unreported".
+        XCTAssertEqual(ChatBriefUsage.sum(over([nil])), ChatBriefUsage(requests: 1))
+        XCTAssertEqual(ChatBriefUsage.sum(over([GatewayTotals()])), ChatBriefUsage(requests: 1))
+        XCTAssertEqual(ChatBriefUsage.sum(over([nil])).label, "1 request · $0.00")
+        // Reached it, over, and no cost came back; one still running has none to report yet.
+        let silent = ChatBriefUsage.sum(over([GatewayTotals(requests: 1, costSamples: 0, costUSD: nil)]))
+        XCTAssertEqual(silent, ChatBriefUsage(requests: 1, costUSD: 0, unreported: 1))
+        XCTAssertEqual(silent.label, "1 request · $0.00"); XCTAssertEqual(silent.note, "1 came back without a reported cost.")
+        XCTAssertEqual(ChatBriefUsage.sum([(totals: GatewayTotals(requests: 1, costSamples: 0, costUSD: nil), over: false)]), ChatBriefUsage(requests: 1))
+        let mixed = ChatBriefUsage.sum(over([GatewayTotals(requests: 2, costSamples: 1, costUSD: 0.003), nil,
+                                             GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.0022), GatewayTotals(requests: 1, costSamples: 1, costUSD: -1)]))
+        XCTAssertEqual(mixed.requests, 4); XCTAssertEqual(mixed.costUSD, 0.0052, accuracy: 1e-12); XCTAssertEqual(mixed.unreported, 0)
+        XCTAssertEqual(mixed.label, "4 requests · $0.0052")
+        XCTAssertEqual(ChatBriefUsage(requests: 2, costUSD: 1.234).label, "2 requests · $1.23")
+        XCTAssertEqual(ChatBriefUsage(requests: 3, unreported: 2).note, "2 came back without a reported cost.")
+        XCTAssertEqual(ChatBriefUsage.dollars(0.00004), "<$0.0001"); XCTAssertEqual(ChatBriefUsage.dollars(.nan), "$0.00")
     }
 
     /// A brief lands on the chat's record and stays there: a copy read
@@ -185,31 +198,37 @@ final class ChatBriefPlanTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ChatRecord.self, from: JSONEncoder().encode(encoded)).brief, brief)
     }
 
-    /// Off in an older vault; the choice and its cap are kept and checked;
-    /// Settings carries an edit of them over another writer's change.
-    @MainActor func testBriefsAreOffInAnOlderVaultAndTheirSettingIsKept() throws {
+    /// On unless the reader turns them off, in a new vault and an older one
+    /// alike; the choice is kept, a vault written with the dropped spending
+    /// cap still reads, and Settings carries an edit over another writer's
+    /// change.
+    @MainActor func testBriefsAreOnUnlessTurnedOffAndTheChoiceIsKept() throws {
+        XCTAssertTrue(VaultConfiguration().briefSettings.enabled, "On by default")
+        XCTAssertTrue(ChatBriefSettings().enabled)
         let old = try JSONEncoder().encode(VaultConfiguration())
-        XCTAssertFalse(String(decoding: old, as: UTF8.self).contains("chatBriefs"))
-        let decoded = try ConfigurationVault.decode(old)
-        XCTAssertFalse(decoded.briefSettings.enabled); XCTAssertEqual(decoded.briefSettings.dailyCapUSD, ChatBriefSettings.defaultCap)
-        var configuration = VaultConfiguration(); configuration.briefSettings = ChatBriefSettings(enabled: true, dailyCapUSD: 1)
-        XCTAssertEqual(try ConfigurationVault.decode(JSONEncoder().encode(configuration)).briefSettings, ChatBriefSettings(enabled: true, dailyCapUSD: 1))
-        let sparse = try JSONDecoder().decode(ChatBriefSettings.self, from: Data(#"{"enabled": true}"#.utf8))
-        XCTAssertEqual(sparse, ChatBriefSettings(enabled: true, dailyCapUSD: ChatBriefSettings.defaultCap))
-        for bad in [0, -1, 101] {
-            configuration.briefSettings.dailyCapUSD = Double(bad)
-            XCTAssertThrowsError(try configuration.validate(persisted: false), "cap \(bad)")
-        }
-        var edits = VaultConfiguration(); edits.briefSettings.enabled = true
+        XCTAssertFalse(String(decoding: old, as: UTF8.self).contains("chatBriefs"), "Nothing is written until the reader changes it")
+        XCTAssertTrue(try ConfigurationVault.decode(old).briefSettings.enabled, "An older vault has them on")
+        var configuration = VaultConfiguration(); configuration.briefSettings = ChatBriefSettings(enabled: false)
+        XCTAssertFalse(try ConfigurationVault.decode(JSONEncoder().encode(configuration)).briefSettings.enabled, "Turned off stays off")
+        XCTAssertEqual(try JSONDecoder().decode(ChatBriefSettings.self, from: Data("{}".utf8)), ChatBriefSettings(enabled: true))
+        // A vault a development build wrote with a daily cap: the cap is gone, the choice stays, and it is valid.
+        var capped = try XCTUnwrap(JSONSerialization.jsonObject(with: old) as? [String: Any])
+        capped["chatBriefs"] = ["enabled": false, "dailyCapUSD": 101]
+        let decoded = try ConfigurationVault.decode(JSONSerialization.data(withJSONObject: capped))
+        XCTAssertEqual(decoded.briefSettings, ChatBriefSettings(enabled: false))
+        XCTAssertNoThrow(try decoded.validate(persisted: false))
+        var edits = VaultConfiguration(); edits.briefSettings.enabled = false
         var elsewhere = VaultConfiguration(); elsewhere.automaticUpdateChecks = false
         let merged = ConnectionSettingsController.merging(edits, from: VaultConfiguration(), onto: elsewhere)
-        XCTAssertTrue(merged.briefSettings.enabled); XCTAssertFalse(merged.automaticUpdateChecks)
+        XCTAssertFalse(merged.briefSettings.enabled); XCTAssertFalse(merged.automaticUpdateChecks)
     }
 }
 
 /// Settings → Chats & notifications → Chat briefs.
 @MainActor final class ChatBriefSettingsTests: XCTestCase {
-    func testTheSwitchAndTheCapAreInChatsAndSaveWithThePreferences() async throws {
+    /// On by default with no spending cap; what brief requests came to; and
+    /// Write Briefs for the chats without one, which goes with briefs off.
+    func testTheSwitchIsOnByDefaultBesideUsageAndWriteBriefsForChatsWithoutOne() async throws {
         let root = scratchRoot("brief-settings")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         // Settings saves its preferences with a connection, as the app always has one.
@@ -228,8 +247,12 @@ final class ChatBriefPlanTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = view
         addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
-        func find<T: NSView>(_ type: T.Type, _ id: String) -> T? {
-            func walk(_ v: NSView) -> T? { if let t = v as? T, t.accessibilityIdentifier() == id { return t }; for s in v.subviews { if let f = walk(s) { return f } }; return nil }
+        func find<T: NSView>(_ type: T.Type, _ id: String? = nil) -> T? {
+            func walk(_ v: NSView) -> T? {
+                if let t = v as? T, id == nil || t.accessibilityIdentifier() == id { return t }
+                for s in v.subviews { if let f = walk(s) { return f } }
+                return nil
+            }
             return walk(view)
         }
         var toggle: PiKit.Switch?
@@ -238,21 +261,52 @@ final class ChatBriefPlanTests: XCTestCase {
             if toggle == nil { try await Task.sleep(for: .milliseconds(10)) }
         }
         let briefs = try XCTUnwrap(toggle, "The switch is in Chats & notifications")
-        let cap = try XCTUnwrap(find(PiKit.Dropdown<Double>.self, "settings-chat-briefs-cap"))
-        XCTAssertFalse(briefs.isOn, "Off until turned on"); XCTAssertEqual(cap.selection, ChatBriefSettings.defaultCap)
+        XCTAssertTrue(briefs.isOn, "On by default")
+        XCTAssertNil(find(PiKit.Dropdown<Double>.self, "settings-chat-briefs-cap"), "No spending cap")
+        let card = try XCTUnwrap(find(ChatBriefSettingsCard.self))
+        let today = try XCTUnwrap(find(PiKit.TextLine.self, "settings-chat-briefs-today"))
+        let month = try XCTUnwrap(find(PiKit.TextLine.self, "settings-chat-briefs-month"))
+        try await eventually("the archive is read") { today.line.text == "None" && month.line.text == "None" }
+        XCTAssertEqual(card.batchDetail, "Every chat has a brief.")
+        XCTAssertEqual(card.batchButton.title, "Write Briefs"); XCTAssertFalse(card.batchButton.isEnabled)
+
+        // Chats without a brief: main chats and saved sides, never a sub-agent's or a request's.
+        func chat(_ id: String, parent: String? = nil, brief: ChatBrief? = nil) -> ChatRecord {
+            var chat = ChatRecord(id: id, workspaceID: "project", title: id, path: root.appendingPathComponent(id + ".jsonl").path, profileID: profile.id,
+                                  parentSessionID: parent)
+            chat.brief = brief
+            return chat
+        }
+        var request = chat("request"); request.workspaceID = WorkspaceRecord.scratchID; request.backgroundTask = "chat-brief"
+        model.chats = [chat("first"), chat("second"), chat("kept-side", parent: "first"),
+                       chat("briefed", brief: ChatBrief(text: "Done", keywords: [], through: nil, at: Date(), activity: nil)), request]
+        card.update()
+        XCTAssertEqual(card.batchButton.title, "Write Briefs for 3 Chats"); XCTAssertTrue(card.batchButton.isEnabled)
+        XCTAssertTrue(card.batchDetail.hasPrefix("3 chats have no brief yet."), card.batchDetail)
+
         briefs.performClick(nil)
-        XCTAssertTrue(controller.preferences.briefSettings.enabled)
+        XCTAssertFalse(controller.preferences.briefSettings.enabled)
         XCTAssertEqual(controller.editedSections, [.chats])
+        card.update()
+        XCTAssertEqual(card.batchDetail, "Chat briefs are off.", "Switched off, though not saved yet: nothing to write")
+        XCTAssertFalse(card.batchButton.isEnabled)
         let outcome = await controller.saveAll()
         XCTAssertEqual(outcome, .saved, controller.message)
         let saved = try await vault.load()
-        XCTAssertEqual(saved.briefSettings, ChatBriefSettings(enabled: true))
-        XCTAssertTrue(model.briefSettings.enabled)
+        XCTAssertEqual(saved.briefSettings, ChatBriefSettings(enabled: false))
+        XCTAssertFalse(model.briefSettings.enabled)
+        card.update()
+        XCTAssertFalse(card.batchButton.isEnabled, "Off: nothing to write")
+        XCTAssertEqual(card.batchDetail, "Chat briefs are off.")
+        // Switched on again but not saved: saved first.
+        briefs.performClick(nil)
+        card.update()
+        XCTAssertEqual(card.batchDetail, "Save to turn chat briefs on, then write them here."); XCTAssertFalse(card.batchButton.isEnabled)
     }
 }
 
 /// Sidebar search's Titles & details finds a chat by its brief and keywords
-/// while briefs are on, in Topics and Flat, and only a main chat's.
+/// while briefs are on, in Topics and Flat: a main chat's and a saved side's.
 final class ChatBriefSearchTests: XCTestCase {
     @MainActor private func fixture() throws -> WorkspaceSidebarView {
         let root = scratchRoot("brief-search")
@@ -292,8 +346,13 @@ final class ChatBriefSearchTests: XCTestCase {
                 XCTAssertTrue(view.list.contents.entries.contains { $0.id == "chat|chat" }, query)
                 XCTAssertTrue(model.sidebarMatches(model.chats[0], query: query), query)
             }
+            view.setFilter("— side"); view.settle()
+            let byTitle = model.sidebarChatOrder
+            XCTAssertEqual(byTitle, ["chat", "side"], "A side found by its title is listed under its chat")
             view.setFilter("quince"); view.settle()
-            XCTAssertTrue(model.sidebarChatOrder.isEmpty, "Only a main chat has a brief to be found by")
+            XCTAssertEqual(model.sidebarChatOrder, byTitle, "A saved side is found by its own brief, as by its title")
+            XCTAssertTrue(model.sidebarMatches(model.chats[2], query: "Marmalade"))
+            XCTAssertFalse(model.sidebarMatches(model.chats[0], query: "quince"), "A side's brief is its own, not its chat's")
         }
         model.sidebarSearch.setScope(.fullChats)
         view.setFilter("tokenizer"); view.settle()
@@ -308,10 +367,11 @@ final class ChatBriefSearchTests: XCTestCase {
     }
 }
 
-/// The card a row brings up when the pointer rests on it: the chat's brief,
-/// in place of the row's tooltip, only while briefs are on.
+/// The card a row brings up when the pointer rests on it while briefs are
+/// on: the chat's brief, or Write Brief for a chat without one, beside the
+/// row and in place of its tooltip.
 final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
-    @MainActor func testRestingOnARowWithABriefShowsItsCardInPlaceOfTheTooltip() async throws {
+    @MainActor func testRestingOnARowShowsItsBriefOrWriteBriefBesideItInPlaceOfTheTooltip() async throws {
         let root = scratchRoot("brief-hover")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -323,15 +383,23 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
                               through: "m1", at: Date().addingTimeInterval(-300), activity: 1)
         var briefed = ChatRecord(id: "briefed", workspaceID: "project", title: "Lantern parser", path: root.appendingPathComponent("a.jsonl").path, profileID: "profile")
         briefed.brief = brief; briefed.lastActivityAt = 2
-        var plain = ChatRecord(id: "plain", workspaceID: "project", title: "Welcome copy", path: root.appendingPathComponent("b.jsonl").path, profileID: "profile")
+        // Its connection is gone: Write Brief asks nothing of anyone.
+        var plain = ChatRecord(id: "plain", workspaceID: "project", title: "Welcome copy", path: root.appendingPathComponent("b.jsonl").path, profileID: "gone")
         plain.lastActivityAt = 1
         model.chats = [briefed, plain]
-        model.configuration.briefSettings.enabled = true
+        XCTAssertTrue(model.briefSettings.enabled, "On by default")
         let sidebar = WorkspaceSidebarView(model: model)
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = sidebar; window.orderFront(nil)
-        SidebarBriefCard.presenter.delay = .milliseconds(10); SidebarBriefCard.presenter.reducesMotion = true
-        defer { SidebarBriefCard.presenter.hide(); SidebarBriefCard.presenter.delay = PiHoverCardPresenter.delay; window.contentView = nil; window.close() }
+        let presenter = SidebarBriefCard.presenter
+        var pointer = NSPoint(x: -10_000, y: -10_000)
+        presenter.delay = .milliseconds(10); presenter.reducesMotion = true; presenter.leaveGrace = .milliseconds(40)
+        presenter.pointerLocation = { pointer }
+        defer {
+            presenter.hide(); presenter.delay = PiHoverCardPresenter.delay; presenter.leaveGrace = .milliseconds(300)
+            presenter.pointerLocation = { NSEvent.mouseLocation }
+            window.contentView = nil; window.close()
+        }
         sidebar.settle()
         func row(_ id: String, in view: NSView? = nil) -> SidebarChatRowView? {
             let view = view ?? sidebar
@@ -342,42 +410,123 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
             guard let view else { return [] }
             return ((view as? SidebarBriefCardView).map { [$0] } ?? []) + view.subviews.flatMap { cardViews($0) }
         }
+        func texts(_ view: NSView) -> [String] { ((view as? ShellText).map { [$0.text] } ?? []) + view.subviews.flatMap { texts($0) } }
+        func onScreen(_ view: NSView) -> CGRect { (view.window ?? window).convertToScreen(view.convert(view.bounds, to: nil)) }
         let briefedRow = try XCTUnwrap(row("briefed")), plainRow = try XCTUnwrap(row("plain"))
         XCTAssertEqual(briefedRow.body.content?.brief, brief)
         XCTAssertNil(briefedRow.body.toolTip, "The card says what the tooltip would")
-        XCTAssertEqual(plainRow.body.toolTip, plainRow.body.content?.help, "A chat without a brief keeps its tooltip")
+        XCTAssertNil(plainRow.body.toolTip, "A chat without a brief offers one in its card instead")
         XCTAssertEqual(briefedRow.row.accessibilityHelp(), brief.text, "VoiceOver reads the brief")
         XCTAssertNil(plainRow.row.accessibilityHelp())
 
         briefedRow.body.setHovering(true)
-        try await eventually("the card comes up", timeout: .seconds(5)) { SidebarBriefCard.presenter.isShown }
-        let card = try XCTUnwrap(cardViews(SidebarBriefCard.presenter.panel?.contentView).first)
-        XCTAssertEqual(card.brief, brief)
-        func texts(_ view: NSView) -> [String] { ((view as? ShellText).map { [$0.text] } ?? []) + view.subviews.flatMap { texts($0) } }
+        try await eventually("the card comes up", timeout: .seconds(5)) { presenter.isShown }
+        var panel = try XCTUnwrap(presenter.panel)
+        panel.layoutIfNeeded(); panel.displayIfNeeded()
+        let card = try XCTUnwrap(cardViews(panel.contentView).first)
+        XCTAssertEqual(card.brief, brief); XCTAssertNil(card.writeButton)
         let shown = texts(card).joined(separator: "\n")
         XCTAssertTrue(shown.contains(brief.text), shown); XCTAssertTrue(shown.contains("tokenizer · PR 812"), shown)
         XCTAssertTrue(shown.contains(try XCTUnwrap(briefedRow.body.content?.help)), "The row's state and figures, as the tooltip had them")
+        // Beside the row, its top level with the row's: it covers no other row.
+        let rowRect = onScreen(briefedRow.body)
+        var cardRect = panel.frame.insetBy(dx: PiHoverCardPresenter.shadowMargin, dy: PiHoverCardPresenter.shadowMargin)
+        XCTAssertEqual(cardRect.minX, rowRect.maxX + PiHoverCardPresenter.gap, accuracy: 1, "Beside the row's trailing edge")
+        XCTAssertEqual(cardRect.maxY, rowRect.maxY, accuracy: 1)
+        XCTAssertFalse(panel.ignoresMouseEvents, "The pointer can reach the card")
+        // The pointer leaves the row for the card: it stays. Off both: it goes.
+        pointer = NSPoint(x: cardRect.midX, y: cardRect.midY)
         briefedRow.body.setHovering(false)
-        XCTAssertFalse(SidebarBriefCard.presenter.isShown, "Leaving the row takes the card away")
-        plainRow.body.setHovering(true)
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertFalse(SidebarBriefCard.presenter.isShown, "No brief, no card")
-        plainRow.body.setHovering(false)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(presenter.isShown, "On the card, the card stays")
+        pointer = NSPoint(x: -10_000, y: -10_000)
+        briefedRow.body.setHovering(false)
+        try await eventually("off the row and the card, it goes", timeout: .seconds(5)) { !presenter.isShown }
 
-        // Off: no card, and the tooltip is back.
+        // Without a brief: Write Brief, pressed on the card as the window server delivers a click.
+        plainRow.body.setHovering(true)
+        try await eventually("the card comes up for the chat without a brief", timeout: .seconds(5)) { presenter.isShown }
+        panel = try XCTUnwrap(presenter.panel)
+        // Drawn, as it is before anyone can press it.
+        panel.layoutIfNeeded(); panel.displayIfNeeded()
+        let writeCard = try XCTUnwrap(cardViews(panel.contentView).first)
+        XCTAssertNil(writeCard.brief)
+        XCTAssertTrue(texts(writeCard).joined().contains("No brief yet."))
+        let button = try XCTUnwrap(writeCard.writeButton)
+        cardRect = panel.frame.insetBy(dx: PiHoverCardPresenter.shadowMargin, dy: PiHoverCardPresenter.shadowMargin)
+        XCTAssertTrue(cardRect.contains(onScreen(button)) && button.frame.width > 0, "The button is on the card")
+        XCTAssertEqual(model.chatBriefs.attempts, 0)
+        pointer = NSPoint(x: onScreen(button).midX, y: onScreen(button).midY)
+        plainRow.body.setHovering(false)
+        try click(button)
+        try await eventually("the press asks for the brief", timeout: .seconds(5)) { model.chatBriefs.outcomes["plain"] != nil }
+        XCTAssertEqual(model.chatBriefs.outcomes["plain"], .noMiniModel, "No connection, nothing sent")
+        XCTAssertEqual(model.chatBriefs.attempts, 1)
+        XCTAssertFalse(presenter.isShown, "Pressing it puts the card away")
+        XCTAssertFalse(panel.isKeyWindow, "The card never takes focus")
+        pointer = NSPoint(x: -10_000, y: -10_000)
+
+        // The row's menu offers it too, only for a chat without a brief.
+        func menuIDs(_ row: SidebarChatRowView) -> [String] {
+            SidebarChatRowView.entries(model: model, chat: row.chat, state: row.state).compactMap { if case .item(let item) = $0 { return item.identifier }; return nil }
+        }
+        XCTAssertTrue(menuIDs(plainRow).contains("writeBrief")); XCTAssertFalse(menuIDs(briefedRow).contains("writeBrief"))
+
+        // While the brief is being written (here, waiting out a connection
+        // change), the card and the menu say so; once it is done, the card up
+        // offers Write Brief again.
+        let (released, release) = AsyncStream<Never>.makeStream()
+        model.connectionSwitches["plain"] = (UUID(), Task { for await _ in released {} })
+        model.writeBriefNow("plain")
+        XCTAssertTrue(model.chatBriefs.isWriting("plain"))
+        let writingItem = SidebarChatRowView.entries(model: model, chat: plainRow.chat, state: plainRow.state)
+            .lazy.compactMap { entry -> PiMenuItem? in if case .item(let item) = entry, item.identifier == "writeBrief" { return item }; return nil }.first
+        XCTAssertEqual(writingItem?.title, "Writing Brief…"); XCTAssertEqual(writingItem?.enabled, false)
+        plainRow.body.setHovering(true)
+        try await eventually("the card comes up while it is written", timeout: .seconds(5)) { presenter.isShown }
+        func shownCard() -> SidebarBriefCardView? { cardViews(presenter.panel?.contentView).first }
+        XCTAssertTrue(texts(try XCTUnwrap(shownCard())).joined().contains("Writing the brief…"))
+        XCTAssertNil(shownCard()?.writeButton)
+        model.connectionSwitches["plain"] = nil; release.finish()
+        try await eventually("done, the card offers it again", timeout: .seconds(5)) { shownCard()?.writeButton != nil }
+        XCTAssertEqual(model.chatBriefs.outcomes["plain"], .noMiniModel); XCTAssertEqual(model.chatBriefs.attempts, 2)
+        XCTAssertTrue(texts(try XCTUnwrap(shownCard())).joined().contains("no mini model"), "It says why no brief was written")
+        plainRow.body.setHovering(false)
+        try await eventually("off the row and the card, it goes", timeout: .seconds(5)) { !presenter.isShown }
+
+        // Off: no card, no Write Brief, and the tooltip is back.
         briefedRow.body.setHovering(true)
-        try await eventually("the card comes up again", timeout: .seconds(5)) { SidebarBriefCard.presenter.isShown }
+        try await eventually("the card comes up again", timeout: .seconds(5)) { presenter.isShown }
         model.configuration.briefSettings.enabled = false
         sidebar.needsLayout = true; sidebar.settle()
-        let offRow = try XCTUnwrap(row("briefed"))
+        let offRow = try XCTUnwrap(row("briefed")), offPlain = try XCTUnwrap(row("plain"))
         XCTAssertNil(offRow.body.content?.brief)
-        XCTAssertFalse(SidebarBriefCard.presenter.isShown, "A card up when briefs go off goes")
-        XCTAssertEqual(offRow.body.toolTip, offRow.body.content?.help)
+        XCTAssertFalse(presenter.isShown, "A card up when briefs go off goes")
+        XCTAssertEqual(offRow.body.toolTip, offRow.body.content?.help); XCTAssertEqual(offPlain.body.toolTip, offPlain.body.content?.help)
         XCTAssertNil(offRow.row.accessibilityHelp())
-        offRow.body.setHovering(false); offRow.body.setHovering(true)
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertFalse(SidebarBriefCard.presenter.isShown)
-        offRow.body.setHovering(false)
+        XCTAssertFalse(menuIDs(offPlain).contains("writeBrief"))
+        for row in [offRow, offPlain] {
+            row.body.setHovering(false); row.body.setHovering(true)
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertFalse(presenter.isShown)
+            row.body.setHovering(false)
+        }
+    }
+
+    /// A press as the window server delivers it: the button's tracking loop
+    /// finds its release queued, and the press goes to the window it is in,
+    /// key or not.
+    @MainActor private func click(_ view: NSView) throws {
+        let window = try XCTUnwrap(view.window)
+        let point = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                             pressure: type == .leftMouseDown ? 1 : 0))
+        }
+        let down = try event(.leftMouseDown), up = try event(.leftMouseUp)
+        NSApp.postEvent(up, atStart: false)
+        window.sendEvent(down)
     }
 }
 
@@ -385,10 +534,12 @@ final class ChatBriefHoverTests: XCTestCase, SerialTestLane {
 /// mini model: when a request is sent, what it holds, where the brief lands,
 /// and that nothing reaches the conversation. Synthetic data only.
 final class ChatBriefTests: XCTestCase, SerialTestLane {
-    struct Fixture { let model: WorkspaceModel; let gateway: BriefGateway; let root: URL; let journals: URL }
+    struct Fixture { let model: WorkspaceModel; let gateway: BriefGateway; let other: BriefGateway?; let root: URL; let journals: URL }
 
-    @MainActor private func fixture(mini: String? = "mini-fixture", briefs: ChatBriefSettings = ChatBriefSettings(enabled: true),
-                                    cost: String = "0.004") async throws -> Fixture {
+    /// Briefs as the vault has them: `nil` writes nothing, which leaves them on.
+    /// `second` adds a connection "profile-b" on a gateway of its own.
+    @MainActor private func fixture(mini: String? = "mini-fixture", briefs: ChatBriefSettings? = nil, cost: String = "0.004",
+                                    second: Bool = false) async throws -> Fixture {
         let root = scratchRoot("chat-briefs")
         let project = root.appendingPathComponent("project"), journals = root.appendingPathComponent("journals")
         for folder in [project, journals] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
@@ -400,27 +551,34 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         profile.modelId = "conversation-model"; profile.miniModelId = mini
         var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-brief-key")]
+        var other: BriefGateway?
+        if second {
+            let gateway = try BriefGateway(cost: cost)
+            addTeardownBlock { gateway.stop() }
+            var moved = profile; moved.id = "profile-b"; moved.name = "Other connection"; moved.baseUrl = try await gateway.start()
+            configuration.profiles.append(VaultProfile(profile: moved, apiKey: "synthetic-brief-key-b"))
+            other = gateway
+        }
         configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
         // The mini model's own chats run outside every project: an isolated Codex home, never the tester's.
         configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("isolated-codex").path)])
-        configuration.chatBriefs = briefs
+        if let briefs { configuration.chatBriefs = briefs }
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
                                    vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
         registerWorkspaceFixtureTeardown(model, root: root)
         try await model.reloadConfiguration()
-        let schedule = model.chatBriefs
-        schedule.updateDelay = .zero; schedule.minimumInterval = 0; schedule.backfillGap = .zero
-        return Fixture(model: model, gateway: gateway, root: root, journals: journals)
+        return Fixture(model: model, gateway: gateway, other: other, root: root, journals: journals)
     }
 
     /// A saved chat with a journal of `turns`, its activity at `activity`.
-    @MainActor private func chat(_ id: String, _ fixture: Fixture, title: String, turns: [(String, String)], activity: Int64 = 1) async throws -> (ChatRecord, SearchJournal) {
+    @MainActor private func chat(_ id: String, _ fixture: Fixture, title: String, turns: [(String, String)], activity: Int64 = 1,
+                                 parent: String? = nil) async throws -> (ChatRecord, SearchJournal) {
         let journal = try SearchJournal(fixture.journals.appendingPathComponent(id + ".jsonl"), id: id)
         for (index, turn) in turns.enumerated() {
             try journal.message("\(id)-u\(index)", role: "user", turn.0)
             try journal.message("\(id)-a\(index)", role: "assistant", turn.1)
         }
-        var chat = ChatRecord(id: id, workspaceID: "project", title: title, path: journal.url.path, profileID: "profile")
+        var chat = ChatRecord(id: id, workspaceID: "project", title: title, path: journal.url.path, profileID: "profile", parentSessionID: parent)
         chat.lastActivityAt = activity; chat.sidebarOrder = activity
         try await fixture.model.store?.put(chat, kind: "chat", id: id)
         fixture.model.chats.append(chat)
@@ -437,6 +595,10 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         model.observeSessionCompletion(sessionID: id, snapshot: ["monitoring": .object(["epoch": .string("brief")]), "commands": .array(receipts.map {
             .object(["commandId": .string($0), "turnId": .string($0), "state": .string("completed")])
         })])
+    }
+    /// The brief requests on the Background requests page, oldest first.
+    @MainActor private func briefRequests(_ model: WorkspaceModel) -> [ChatRecord] {
+        model.chats.filter { $0.backgroundTask == "chat-brief" }
     }
 
     @MainActor func testARunsEndWritesTheBriefAndTheNextUpdateReadsOnlyWhatIsNew() async throws {
@@ -526,33 +688,281 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(model.record(chat.id)?.brief?.through, "long-a1999")
     }
 
-    /// Off, nothing is asked: not at a run's end, not for chats without a
-    /// brief. Turned off while the mini model answers, the request stops
-    /// and no brief lands.
+    /// A run that ends while its chat's brief is being written: never a
+    /// second request at once, and exactly one more update once it is done,
+    /// reading on from where the first one read to.
+    @MainActor func testARunThatEndsWhileItsBriefIsWrittenGetsExactlyOneMoreUpdate() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, journal) = try await self.chat("busy", fixture, title: "Busy chat", turns: [("First question about the lantern parser.", "First answer.")])
+        gateway.hold(true)
+        finishRun(model, chat.id, receipts: ["t1"])
+        try await eventually("the first request is sent", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        XCTAssertTrue(model.chatBriefs.isWriting(chat.id)); XCTAssertEqual(model.chatBriefs.writing, [chat.id])
+        // Two more runs end while it is written.
+        try journal.message("busy-u1", role: "user", "Second question about streaming.")
+        try journal.message("busy-a1", role: "assistant", "Second answer.")
+        finishRun(model, chat.id, receipts: ["t1", "t2"])
+        try journal.message("busy-u2", role: "user", "Third question about recovery.")
+        try journal.message("busy-a2", role: "assistant", "Third answer.")
+        finishRun(model, chat.id, receipts: ["t1", "t2", "t3"])
+        XCTAssertEqual(model.chatBriefs.pending, [chat.id], "One update waits, for both")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(gateway.requests.count, 1, "Never two requests at once for one chat")
+        gateway.hold(false)
+        try await eventually("the update after it lands", timeout: .seconds(60)) { model.record(chat.id)?.brief?.through == "busy-a2" }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(gateway.requests.count, 2, "Exactly one more")
+        XCTAssertTrue(model.chatBriefs.pending.isEmpty); XCTAssertTrue(model.chatBriefs.writing.isEmpty)
+        XCTAssertEqual(model.chatBriefs.attempts, 2)
+        let update = gateway.requests[1].prompt
+        XCTAssertTrue(update.contains(#"Earlier brief: "Brief 1: the lantern parser moves to streaming input.""#), update)
+        XCTAssertTrue(update.contains("Second question about streaming.")); XCTAssertTrue(update.contains("Third question about recovery."))
+        XCTAssertFalse(update.contains("First question"), "It reads on from where the first one read to")
+        XCTAssertEqual(model.record(chat.id)?.brief?.text, "Brief 2: the lantern parser moves to streaming input.")
+    }
+
+    /// Write Brief on a chat without one asks for it at once, an archived
+    /// chat's too (whose run's end and Write Briefs leave it alone); while it
+    /// is written the menu says so, and a chat with a brief offers nothing.
+    @MainActor func testWriteBriefAsksForOneChatAndItsMenuSaysSoWhileItIsWritten() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, _) = try await self.chat("asked", fixture, title: "Asked", turns: [("Plan the release notes.", "Here is an outline.")])
+        model.chats[try XCTUnwrap(model.chats.firstIndex { $0.id == chat.id })].archivedAt = Date()
+        finishRun(model, chat.id, receipts: ["t1"])
+        XCTAssertFalse(model.chatBriefs.chatsWithoutBrief().contains { $0.id == chat.id }, "Write Briefs leaves an archived chat out")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(gateway.requests.isEmpty, "An archived chat's run's end asks nothing"); XCTAssertEqual(model.chatBriefs.attempts, 0)
+        func item() throws -> PiMenuItem? {
+            let record = try XCTUnwrap(model.record(chat.id))
+            return SidebarChatRowView.entries(model: model, chat: record, state: SidebarChatRowState(offersBrief: model.offersBrief(record)))
+                .lazy.compactMap { entry -> PiMenuItem? in if case .item(let item) = entry, item.identifier == "writeBrief" { return item }; return nil }.first
+        }
+        let write = try XCTUnwrap(try item(), "A chat without a brief offers Write Brief")
+        XCTAssertEqual(write.title, "Write Brief"); XCTAssertTrue(write.enabled)
+        gateway.hold(true)
+        write.perform()
+        try await eventually("it is asked for at once", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        let writing = try XCTUnwrap(try item())
+        XCTAssertEqual(writing.title, "Writing Brief…"); XCTAssertFalse(writing.enabled)
+        gateway.hold(false)
+        try await eventually("the brief lands", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        XCTAssertNil(try item(), "A chat with a brief has none to write")
+        XCTAssertEqual(gateway.requests.count, 1)
+        XCTAssertTrue(gateway.requests[0].prompt.contains("Plan the release notes."))
+    }
+
+    /// A saved side gets a brief of its own at its run's end, and search finds
+    /// it by it; a side not saved never has one asked for.
+    @MainActor func testASavedSideGetsItsBriefAndAnUnsavedSideNever() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (main, _) = try await chat("main", fixture, title: "Main chat", turns: [("Main question.", "Main answer.")], activity: 2)
+        let (side, _) = try await chat("kept-side", fixture, title: "Kept side", turns: [("Side question about quinces.", "Side answer.")], parent: main.id)
+        finishRun(model, side.id, receipts: ["t1"])
+        try await eventually("the saved side's brief is written", timeout: .seconds(60)) { model.record(side.id)?.brief != nil }
+        XCTAssertTrue(gateway.requests[0].prompt.contains("Side question about quinces."))
+        XCTAssertFalse(gateway.requests[0].prompt.contains("Main question."), "Its own messages, not its chat's")
+        XCTAssertNil(model.record(main.id)?.brief)
+        XCTAssertTrue(model.sidebarMatches(try XCTUnwrap(model.record(side.id)), query: "tokenizer-1"), "Search finds it by its brief")
+        // A side open but not saved: no request at its run's end, nor when asked.
+        let (draft, _) = try await chat("draft-side", fixture, title: "Main chat — side", turns: [("Unsaved question.", "Unsaved answer.")], parent: main.id)
+        model.sides[main.id] = SideRecord(id: draft.id, parentID: main.id, workspaceID: "project", profileID: "profile", title: draft.title)
+        XCTAssertTrue(model.isEphemeral(draft.id))
+        finishRun(model, draft.id, receipts: ["t1"])
+        model.writeBriefNow(draft.id)
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(gateway.requests.count, 1)
+        XCTAssertNil(model.chatBriefs.outcomes[draft.id]); XCTAssertNil(model.record(draft.id)?.brief)
+        XCTAssertFalse(model.chatBriefs.chatsWithoutBrief().contains { $0.id == draft.id })
+    }
+
+    /// Write Briefs for the chats without one: one request at a time, newest
+    /// first; a chat that cannot have one is passed over, and a chat with a
+    /// brief is left alone. What it spent comes from the archive.
+    @MainActor func testWriteBriefsGoesOneAtATimeNewestFirstAndPassesOverChatsThatCannotHaveOne() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        _ = try await chat("orphan", fixture, title: "Orphan", turns: [("Orphan question.", "Orphan answer.")], activity: 6_000_000)
+        let orphan = try XCTUnwrap(model.chats.firstIndex { $0.id == "orphan" })
+        model.chats[orphan].profileID = "deleted-connection"
+        let (_, broken) = try await chat("broken", fixture, title: "Broken", turns: [("Broken question.", "Broken answer.")], activity: 5_000_000)
+        try FileManager.default.removeItem(at: broken.url)
+        var journals: [String: SearchJournal] = [:]
+        for (id, activity) in [("archived", 7_000_000), ("newest", 4_000_000), ("middle", 3_000_000), ("briefed", 2_500_000), ("oldest", 1_000_000)] as [(String, Int64)] {
+            journals[id] = try await chat(id, fixture, title: id, turns: [("Question for the \(id) chat.", "Answer for the \(id) chat.")], activity: activity).1
+        }
+        model.chats[try XCTUnwrap(model.chats.firstIndex { $0.id == "archived" })].archivedAt = Date()
+        let earlier = ChatBrief(text: "Earlier", keywords: [], through: "briefed-a0", at: Date(), activity: 2_500_000)
+        _ = try await model.store?.applyChatBrief(earlier, chatID: "briefed")
+        model.chats[try XCTUnwrap(model.chats.firstIndex { $0.id == "briefed" })].brief = earlier
+        XCTAssertEqual(model.chatBriefs.chatsWithoutBrief().map(\.id), ["orphan", "broken", "newest", "middle", "oldest"])
+        gateway.hold(true)
+        model.chatBriefs.startBatch()
+        XCTAssertEqual(model.chatBriefs.batch?.total, 5); XCTAssertTrue(model.chatBriefs.batchRunning)
+        try await eventually("the first request is sent", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(gateway.requests.count, 1, "One at a time")
+        XCTAssertEqual(model.chatBriefs.batch?.done, 2, "The chats that cannot have one are passed over")
+        // Meanwhile a run ends on the chat that has a brief: its own update
+        // goes out beside the batch's request, and is not the batch's.
+        try journals["briefed"]?.message("briefed-u1", role: "user", "Second question for the briefed chat.")
+        try journals["briefed"]?.message("briefed-a1", role: "assistant", "Second answer for the briefed chat.")
+        finishRun(model, "briefed", receipts: ["t1"])
+        try await eventually("the run's end asks for its update", timeout: .seconds(60)) { gateway.requests.count == 2 }
+        gateway.hold(false)
+        try await eventually("the batch is over", timeout: .seconds(120)) { model.chatBriefs.batch?.finished == true }
+        try await eventually("the run's end's update lands", timeout: .seconds(60)) { model.record("briefed")?.brief?.through == "briefed-a1" }
+        let batch = try XCTUnwrap(model.chatBriefs.batch)
+        XCTAssertEqual(batch.done, 5); XCTAssertEqual(batch.written, 3); XCTAssertEqual(batch.failed, 0); XCTAssertNil(batch.stopped)
+        XCTAssertFalse(model.chatBriefs.batchRunning)
+        XCTAssertEqual(gateway.requests.count, 4)
+        let asked = gateway.requests.map(\.prompt).filter { !$0.contains("Second question for the briefed chat.") }
+        XCTAssertEqual(asked.count, 3, "The batch asked three times")
+        for (index, id) in ["newest", "middle", "oldest"].enumerated() {
+            XCTAssertTrue(asked[index].contains("Question for the \(id) chat."), "Newest first: \(id)")
+            XCTAssertNotNil(model.record(id)?.brief)
+        }
+        XCTAssertEqual(model.chatBriefs.outcomes["orphan"], .noMiniModel, "No connection, no mini model to ask")
+        guard case .unreadable? = model.chatBriefs.outcomes["broken"] else {
+            return XCTFail("The unreadable chat is passed over: \(String(describing: model.chatBriefs.outcomes["broken"]))")
+        }
+        XCTAssertFalse(asked.contains { $0.contains("Earlier brief: none yet") && $0.contains("briefed chat") }, "The batch leaves a chat with a brief alone")
+        XCTAssertNil(model.record("archived")?.brief, "An archived chat is left alone")
+        XCTAssertTrue(model.chatBriefs.chatsWithoutBrief().map(\.id).allSatisfy { ["orphan", "broken"].contains($0) })
+        // What it spent: its own three requests, not the run's end's beside them.
+        try await eventually("the archive has what it cost", timeout: .seconds(30), until: {
+            let all = await model.briefUsage(since: batch.startedAt)
+            return all.requests == 4 && abs(all.costUSD - 0.016) < 1e-9
+        })
+        let spent = await model.briefUsage(since: batch.startedAt, for: Set(batch.chats))
+        XCTAssertEqual(spent.requests, 3); XCTAssertEqual(spent.costUSD, 0.012, accuracy: 1e-9)
+    }
+
+    /// Stop stops the batch and the request it waits on; three failed
+    /// requests in a row stop it too. Settings shows how far it got.
+    @MainActor func testWriteBriefsStopsWhenToldAndAfterThreeFailedRequestsInARow() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        for (index, id) in ["one", "two", "three", "four"].enumerated() {
+            _ = try await chat(id, fixture, title: id, turns: [("Question \(id).", "Answer \(id).")], activity: Int64(10 - index) * 1_000_000)
+        }
+        let card = ChatBriefSettingsCard(model: model, get: { model.briefSettings }, set: { _ in })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = card
+        defer { window.contentView = nil; window.close() }
+        card.update()
+        XCTAssertEqual(card.batchButton.title, "Write Briefs for 4 Chats")
+        gateway.hold(true)
+        card.batchButton.performClick(nil)
+        try await eventually("the first request is sent", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        // Under way, it has reached the gateway and has no cost yet: it is not
+        // one that came back without a cost.
+        let started = try XCTUnwrap(model.chatBriefs.batch?.startedAt)
+        let underway = try XCTUnwrap(briefRequests(model).first)
+        try await eventually("the request under way is in the archive", timeout: .seconds(30), until: {
+            ((try? await model.traces.list(sessionID: underway.id, workspaceID: WorkspaceRecord.scratchID)) ?? []).count == 1
+        })
+        let running = await model.briefUsage(since: started)
+        XCTAssertEqual(running.requests, 1); XCTAssertEqual(running.unreported, 0, "A request still running has no cost to report yet")
+        card.update()
+        XCTAssertEqual(card.batchButton.title, "Stop")
+        XCTAssertTrue(card.batchDetail.hasPrefix("0 of 4 chats · 0 written · "), card.batchDetail)
+        card.batchButton.performClick(nil)
+        let stopped = try XCTUnwrap(model.chatBriefs.batch)
+        XCTAssertTrue(stopped.finished); XCTAssertEqual(stopped.stopped, "Stopped."); XCTAssertFalse(model.chatBriefs.batchRunning)
+        try await eventually("the request it waited on stops", timeout: .seconds(30)) { self.briefRequests(model).first?.backgroundTaskOutcome == "interrupted" }
+        try await eventually("nothing is under way") { model.chatBriefs.writing.isEmpty }
+        try await eventually("stopped, it came back without a cost", timeout: .seconds(30), until: {
+            await model.briefUsage(since: started) == ChatBriefUsage(requests: 1, costUSD: 0, unreported: 1)
+        })
+        gateway.hold(false)
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(gateway.requests.count, 1, "Nothing more is asked once stopped")
+        XCTAssertTrue(model.chats.filter { !$0.isUtilityChat }.allSatisfy { $0.brief == nil })
+        card.update()
+        XCTAssertTrue(card.batchDetail.hasPrefix("Wrote 0 briefs for 4 chats · "), card.batchDetail)
+        XCTAssertTrue(card.batchDetail.contains("Stopped."), card.batchDetail)
+        XCTAssertEqual(card.batchButton.title, "Write Briefs for 4 Chats")
+
+        // The mini model answers with nothing usable: the third failure in a row ends it.
+        gateway.unusable(true)
+        model.chatBriefs.startBatch()
+        try await eventually("three failures end it", timeout: .seconds(120)) { model.chatBriefs.batch?.finished == true }
+        let failed = try XCTUnwrap(model.chatBriefs.batch)
+        XCTAssertEqual(failed.done, 3); XCTAssertEqual(failed.failed, 3); XCTAssertEqual(failed.written, 0)
+        XCTAssertTrue(failed.stopped?.hasPrefix("Stopped after three failed requests in a row.") == true, failed.stopped ?? "")
+        XCTAssertEqual(gateway.requests.count, 4, "The fourth chat is not asked about")
+        XCTAssertEqual(briefRequests(model).filter { $0.backgroundTaskOutcome == "failed" }.count, 3)
+    }
+
+    /// Off, nothing is asked: not at a run's end, not by Write Brief or Write
+    /// Briefs. Turned on, nothing is asked by itself. Turned off while the
+    /// mini model answers, the request stops and no brief lands.
     @MainActor func testTheSettingStopsEveryBriefRequest() async throws {
         let fixture = try await self.fixture(briefs: ChatBriefSettings(enabled: false))
         let model = fixture.model, gateway = fixture.gateway
         let (chat, _) = try await self.chat("chat-off", fixture, title: "Off", turns: [("Plan the release notes.", "Here is an outline.")])
-        model.chatBriefs.start(after: .zero)
         finishRun(model, chat.id, receipts: ["t1"])
+        model.writeBriefNow(chat.id)
+        model.chatBriefs.startBatch()
         try await Task.sleep(for: .milliseconds(800))
-        XCTAssertTrue(gateway.requests.isEmpty, "Off: neither a run's end nor the chats without one ask anything")
-        XCTAssertEqual(model.chatBriefs.attempts, 0); XCTAssertTrue(model.chatBriefs.due.isEmpty)
+        XCTAssertTrue(gateway.requests.isEmpty, "Off: neither a run's end, Write Brief nor Write Briefs asks anything")
+        XCTAssertEqual(model.chatBriefs.attempts, 0); XCTAssertNil(model.chatBriefs.batch)
+        XCTAssertFalse(model.offersBrief(chat)); XCTAssertTrue(model.chatBriefs.chatsWithoutBrief().isEmpty)
 
         gateway.hold(true)
         try await model.updateConfiguration { $0.briefSettings.enabled = true }
-        try await eventually("turned on, the chat without a brief is asked about", timeout: .seconds(60)) { gateway.requests.count == 1 }
+        try await Task.sleep(for: .milliseconds(1_500))
+        XCTAssertTrue(gateway.requests.isEmpty, "Turned on, nothing is asked by itself")
+        finishRun(model, chat.id, receipts: ["t1", "t2"])
+        try await eventually("a run's end asks", timeout: .seconds(60)) { gateway.requests.count == 1 }
         try await model.updateConfiguration { $0.briefSettings.enabled = false }
         try await eventually("turned off, the request under way stops", timeout: .seconds(30)) {
-            model.chats.contains { $0.backgroundTask == "chat-brief" && $0.backgroundTaskOutcome == "interrupted" }
+            self.briefRequests(model).contains { $0.backgroundTaskOutcome == "interrupted" }
         }
-        try await eventually("nothing is under way") { model.chatBriefs.current == nil }
+        try await eventually("nothing is under way") { model.chatBriefs.writing.isEmpty }
         XCTAssertNil(model.record(chat.id)?.brief, "No brief lands from a stopped request")
         gateway.hold(false)
-        finishRun(model, chat.id, receipts: ["t1", "t2"])
+        finishRun(model, chat.id, receipts: ["t1", "t2", "t3"])
         try await Task.sleep(for: .milliseconds(800))
         XCTAssertEqual(gateway.requests.count, 1, "Nothing more is asked while briefs are off")
         XCTAssertNil(model.record(chat.id)?.brief)
+    }
+
+    /// A launch asks nothing: chats without a brief wait for their next run's
+    /// end, Write Brief or Write Briefs. There is no background backfill.
+    @MainActor func testALaunchAsksNothingForChatsWithoutABrief() async throws {
+        let root = scratchRoot("chat-briefs-launch")
+        let project = root.appendingPathComponent("project"), journals = root.appendingPathComponent("journals"), state = root.appendingPathComponent("state")
+        for folder in [project, journals, state] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let gateway = try BriefGateway()
+        addTeardownBlock { gateway.stop() }
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = try await gateway.start()
+        profile.modelId = "conversation-model"; profile.miniModelId = "mini-fixture"
+        var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-brief-key")]
+        configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
+        // The store as an upgrade finds it: saved chats, none with a brief.
+        let store = MetadataStore(url: state.appendingPathComponent("desktop.sqlite"))
+        for id in ["one", "two"] {
+            let journal = try SearchJournal(journals.appendingPathComponent(id + ".jsonl"), id: id)
+            try journal.message(id + "-u0", role: "user", "A question for \(id)."); try journal.message(id + "-a0", role: "assistant", "An answer.")
+            var chat = ChatRecord(id: id, workspaceID: "project", title: id, path: journal.url.path, profileID: profile.id)
+            chat.lastActivityAt = 1; chat.sidebarOrder = 1
+            try await store.put(chat, kind: "chat", id: id)
+        }
+        await store.close()
+        let model = WorkspaceModel(stateRoot: state, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        await model.restore()
+        XCTAssertEqual(Set(model.chats.filter { !$0.isUtilityChat }.map(\.id)), ["one", "two"])
+        XCTAssertTrue(model.briefSettings.enabled)
+        try await Task.sleep(for: .seconds(2))
+        XCTAssertTrue(gateway.requests.isEmpty, "Nothing is asked until a run ends or the reader asks")
+        XCTAssertEqual(model.chatBriefsStorage?.attempts ?? 0, 0)
+        XCTAssertEqual(Set(model.chatBriefs.chatsWithoutBrief().map(\.id)), ["one", "two"], "Settings offers to write them")
     }
 
     /// A chat whose connection has no mini model is never asked about: the
@@ -561,80 +971,104 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         let fixture = try await self.fixture(mini: nil)
         let model = fixture.model, gateway = fixture.gateway
         let (chat, _) = try await self.chat("no-mini", fixture, title: "No mini", turns: [("Draft the welcome copy.", "Here is a draft.")])
-        model.chatBriefs.start(after: .zero)
         finishRun(model, chat.id, receipts: ["t1"])
         try await eventually("the chat is looked at", timeout: .seconds(30)) { model.chatBriefs.outcomes[chat.id] == .noMiniModel }
+        model.writeBriefNow(chat.id)
+        try await eventually("asked again, it is looked at again", timeout: .seconds(30)) { model.chatBriefs.attempts == 2 && model.chatBriefs.writing.isEmpty }
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertTrue(gateway.requests.isEmpty, "No request at all")
-        XCTAssertFalse(model.chats.contains { $0.backgroundTask == "chat-brief" })
-        XCTAssertEqual(model.chatBriefs.attempts, 1, "Not looked at again for every chance it gets")
+        XCTAssertTrue(briefRequests(model).isEmpty)
+        XCTAssertEqual(model.chatBriefs.outcomes[chat.id], .noMiniModel)
         XCTAssertNil(model.record(chat.id)?.brief)
     }
 
-    /// A chat whose connection is gone can have no brief; it is looked at
-    /// once, and the chats after it still get theirs. It used to be picked
-    /// again at every turn, ahead of every other chat.
-    @MainActor func testAChatWhoseConnectionIsGoneDoesNotHoldUpTheOthers() async throws {
-        let fixture = try await self.fixture()
-        let model = fixture.model, gateway = fixture.gateway
-        _ = try await chat("orphan", fixture, title: "Orphan", turns: [("A question.", "An answer.")], activity: 3_000_000)
-        let index = try XCTUnwrap(model.chats.firstIndex { $0.id == "orphan" })
-        model.chats[index].profileID = "deleted-connection"
-        let (kept, _) = try await chat("kept", fixture, title: "Kept", turns: [("Another question.", "Another answer.")], activity: 1_000_000)
-        model.chatBriefs.start(after: .zero)
-        try await eventually("the chat with a connection gets its brief", timeout: .seconds(60)) { model.record(kept.id)?.brief != nil }
-        try await Task.sleep(for: .milliseconds(500))
-        XCTAssertNil(model.record("orphan")?.brief)
-        XCTAssertEqual(model.chatBriefs.outcomes["orphan"], .noMiniModel, "No connection, no mini model to ask")
-        XCTAssertEqual(model.chatBriefs.attempts, 2, "The chat without a connection is looked at once")
-        XCTAssertEqual(gateway.requests.count, 1)
+    /// A chat moved to another connection while its brief is prepared sends
+    /// nothing through the one it left: it is asked again, once, on the one
+    /// it is on. A request whose chat moves just before it is sent is not sent.
+    @MainActor func testAChatMovedToAnotherConnectionWhileItsBriefIsPreparedSendsNothingThroughTheOldOne() async throws {
+        let fixture = try await self.fixture(second: true)
+        let model = fixture.model, first = fixture.gateway, other = try XCTUnwrap(fixture.other)
+        let (chat, _) = try await self.chat("moving", fixture, title: "Moving", turns: [("Which connection reads this?", "Only the chat's own.")])
+        final class Once { var done = false }
+        let once = Once()
+        // What a connection change does to the chat between the reads and the request (`setConnection`).
+        model.chatBriefs.beforeDispatch = { id in
+            guard !once.done else { return }
+            once.done = true
+            model.connectionGenerations[id, default: 0] &+= 1
+            if let index = model.chats.firstIndex(where: { $0.id == id }) { model.chats[index].profileID = "profile-b" }
+        }
+        model.writeBriefNow(chat.id)
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        XCTAssertTrue(first.requests.isEmpty, "Nothing went to the connection the chat left")
+        XCTAssertEqual(other.requests.count, 1, "Asked again on the one it is on")
+        XCTAssertTrue(other.requests[0].head.lowercased().contains("authorization: bearer synthetic-brief-key-b"))
+        XCTAssertEqual(model.chatBriefs.attempts, 2); XCTAssertEqual(model.chatBriefs.outcomes[chat.id], .written)
+        XCTAssertEqual(briefRequests(model).map(\.profileID), ["profile-b"], "One request, on the new connection")
+
+        // Moved after everything was read and just before the request goes: it does not go.
+        model.chatBriefs.beforeDispatch = nil
+        let current = try XCTUnwrap(model.record(chat.id))
+        let lease = try model.connectionLease(for: current)
+        model.connectionGenerations[chat.id, default: 0] &+= 1
+        let profile = try XCTUnwrap(model.profiles.first { $0.id == "profile-b" })
+        let request = MiniModelRequest(model: "mini-fixture", contextWindow: profile.contextWindow, maxOutputTokens: 512, modelOutputLimit: nil, thinkingLevel: "default",
+                                       prompt: "Never sent", task: "chat-brief", title: "Chat brief", timeout: 30, name: "brief request")
+        do {
+            _ = try await model.askMiniModel(request, profile: profile, sourceID: chat.id, sourceLease: lease) { _ in "" }
+            XCTFail("A request whose chat moved is not sent")
+        } catch {
+            guard case .rejected("connection_changed", _)? = error as? HostError else { return XCTFail("\(error)") }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(other.requests.count, 1); XCTAssertTrue(first.requests.isEmpty)
     }
 
-    /// A chat whose journal cannot be read is set aside on its own; it does
-    /// not pause the briefs of every other chat as a failed request does.
-    @MainActor func testAChatWhoseJournalCannotBeReadDoesNotPauseTheOthers() async throws {
+    /// Beside the setting: brief requests today and over the last 30 days,
+    /// counted as the Background requests page lists them, at the cost the
+    /// gateway reported.
+    @MainActor func testUsageBesideTheSettingCountsTodayAndTheLast30Days() async throws {
         let fixture = try await self.fixture()
-        let model = fixture.model, gateway = fixture.gateway
-        let (_, broken) = try await chat("broken", fixture, title: "Broken", turns: [("A question.", "An answer.")], activity: 3_000_000)
-        try FileManager.default.removeItem(at: broken.url)
-        let (kept, _) = try await chat("kept", fixture, title: "Kept", turns: [("Another question.", "Another answer.")], activity: 1_000_000)
-        model.chatBriefs.start(after: .zero)
-        try await eventually("the readable chat gets its brief", timeout: .seconds(60)) { model.record(kept.id)?.brief != nil }
-        guard case .unreadable? = model.chatBriefs.outcomes["broken"] else {
-            return XCTFail("The unreadable chat is set aside: \(String(describing: model.chatBriefs.outcomes["broken"]))")
+        let model = fixture.model
+        let (chat, _) = try await self.chat("counted", fixture, title: "Counted", turns: [("Count this request.", "Counted.")])
+        let now = Date()
+        func request(_ id: String, daysAgo: Double) -> ChatRecord {
+            var value = ChatRecord(id: id, workspaceID: WorkspaceRecord.scratchID, title: "Chat brief", path: nil, profileID: "profile")
+            value.backgroundTask = "chat-brief"; value.sourceSessionID = chat.id; value.backgroundTaskOutcome = "completed"
+            value.backgroundTaskStartedAt = now.addingTimeInterval(-daysAgo * 86_400)
+            return value
         }
-        XCTAssertNil(model.record("broken")?.brief)
-        XCTAssertEqual(gateway.requests.count, 1, "Nothing is sent for a chat that could not be read")
-        XCTAssertFalse(model.chatBriefs.paused, "Nothing waits on it")
-    }
-
-    /// Chats without a brief get one at a time, newest first, until the
-    /// day's brief requests reach the cap; then nothing more is sent.
-    @MainActor func testTheSpendingCapStopsTheBackfill() async throws {
-        let fixture = try await self.fixture(briefs: ChatBriefSettings(enabled: true, dailyCapUSD: 0.02), cost: "0.01")
-        let model = fixture.model, gateway = fixture.gateway
-        for (index, id) in ["oldest", "middle", "newest"].enumerated() {
-            _ = try await chat(id, fixture, title: id, turns: [("Question for the \(id) chat.", "Answer for the \(id) chat.")], activity: Int64(index + 1) * 1_000_000)
+        model.chats += [request("ten-days", daysAgo: 10), request("forty-days", daysAgo: 40)]
+        var title = request("a-title", daysAgo: 0); title.backgroundTask = "session-title"
+        model.chats.append(title)
+        model.writeBriefNow(chat.id)
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        let card = ChatBriefSettingsCard(model: model, get: { model.briefSettings }, set: { _ in })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = card
+        defer { window.contentView = nil; window.close() }
+        try await eventually("the archive has the request's cost", timeout: .seconds(30)) {
+            card.today.requests == 1 && abs(card.today.costUSD - 0.004) < 1e-9 && card.month.requests == 2
         }
-        model.chatBriefs.start(after: .zero)
-        try await eventually("the cap is reached", timeout: .seconds(90)) { model.chatBriefs.capReached }
-        XCTAssertEqual(gateway.requests.count, 2, "Two requests at $0.01 reach the $0.02 cap; a third is never sent")
-        XCTAssertNotNil(model.record("newest")?.brief); XCTAssertNotNil(model.record("middle")?.brief)
-        XCTAssertNil(model.record("oldest")?.brief, "Newest first: the oldest waits for the cap to free up")
-        XCTAssertEqual(model.chatBriefs.outcomes["oldest"], .capReached)
-        XCTAssertTrue(gateway.requests[0].prompt.contains("Question for the newest chat."))
-        let spent = await model.briefSpend()
-        XCTAssertEqual(spent, 0.02, accuracy: 1e-9)
-        // Past the cap a run's end asks nothing either.
-        finishRun(model, "oldest", receipts: ["t1"])
-        try await Task.sleep(for: .milliseconds(800))
-        XCTAssertEqual(gateway.requests.count, 2)
+        XCTAssertEqual(card.today, ChatBriefUsage(requests: 1, costUSD: card.today.costUSD))
+        XCTAssertEqual(card.month.requests, 2, "Ten days ago counts; forty days ago and other requests do not")
+        XCTAssertEqual(card.month.costUSD, 0.004, accuracy: 1e-9)
+        func figure(_ id: String) -> String? {
+            func walk(_ view: NSView) -> PiKit.TextLine? {
+                if let line = view as? PiKit.TextLine, line.accessibilityIdentifier() == id { return line }
+                return view.subviews.lazy.compactMap(walk).first
+            }
+            return walk(card)?.line.text
+        }
+        XCTAssertEqual(figure("settings-chat-briefs-today"), "1 request · $0.004")
+        XCTAssertEqual(figure("settings-chat-briefs-month"), "2 requests · $0.004")
     }
 }
 
 /// A loopback Responses gateway for chat briefs. It keeps every request and
 /// answers each with a numbered brief as JSON and a fixed reported cost, or
-/// holds it unanswered while told to. Synthetic credentials and data only.
+/// with nothing usable while told to; it holds requests unanswered while
+/// told to, and answers them when let go. Synthetic credentials and data only.
 final class BriefGateway: @unchecked Sendable {
     struct Request {
         let head: String
@@ -654,9 +1088,28 @@ final class BriefGateway: @unchecked Sendable {
     private var captured: [Request] = []
     private var connections: [NWConnection] = []
     private var holding = false
+    private var held: [(NWConnection, Int)] = []
+    private var useless = false
     private let cost: String
     var requests: [Request] { lock.withLock { captured } }
-    func hold(_ value: Bool) { lock.withLock { holding = value } }
+    /// Held: requests wait unanswered, as for a slow model. Let go: those
+    /// still waiting are answered (a stopped one's connection is closed).
+    func hold(_ value: Bool) {
+        let release = lock.withLock { () -> [(NWConnection, Int)] in
+            holding = value
+            guard !value else { return [] }
+            defer { held = [] }
+            return held
+        }
+        for (connection, number) in release { answer(connection, number: number) }
+    }
+    /// Answers the requests waiting now, and goes on holding the next ones.
+    func answerHeld() {
+        let release = lock.withLock { () -> [(NWConnection, Int)] in defer { held = [] }; return held }
+        for (connection, number) in release { answer(connection, number: number) }
+    }
+    /// Answers with text that holds no brief.
+    func unusable(_ value: Bool) { lock.withLock { useless = value } }
 
     init(cost: String = "0.004") throws {
         self.cost = cost
@@ -708,20 +1161,26 @@ final class BriefGateway: @unchecked Sendable {
             let body = (try? JSONDecoder().decode([String: WireValue].self, from: payload)) ?? [:]
             let (number, holding) = self.lock.withLock { () -> (Int, Bool) in
                 self.captured.append(Request(head: head, raw: String(decoding: payload, as: UTF8.self), body: body))
+                if self.holding { self.held.append((connection, self.captured.count)) }
                 return (self.captured.count, self.holding)
             }
-            // Held: never answered, as a slow model; the app stops it or the test ends.
+            // Held: answered once let go, unless the app stops it first.
             guard !holding else { return }
-            let brief: [String: Any] = ["brief": "Brief \(number): the lantern parser moves to streaming input.", "keywords": ["lantern", "tokenizer-\(number)"]]
-            let text = String(decoding: (try? JSONSerialization.data(withJSONObject: brief, options: [.sortedKeys])) ?? Data(), as: UTF8.self)
-            let response: [String: Any] = [
-                "id": "resp_brief_\(number)", "object": "response", "status": "completed", "model": "resolved-mini-fixture",
-                "output": [["id": "msg_brief_\(number)", "type": "message", "role": "assistant", "status": "completed",
-                            "content": [["type": "output_text", "text": text]]]],
-                "usage": ["input_tokens": 120, "output_tokens": 30, "total_tokens": 150]]
-            let encoded = (try? JSONSerialization.data(withJSONObject: response)) ?? Data()
-            let reply = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(encoded.count)\r\nx-litellm-response-cost: \(self.cost)\r\nConnection: close\r\n\r\n".utf8) + encoded
-            connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            self.answer(connection, number: number)
         }
+    }
+
+    private func answer(_ connection: NWConnection, number: Int) {
+        let brief: [String: Any] = ["brief": "Brief \(number): the lantern parser moves to streaming input.", "keywords": ["lantern", "tokenizer-\(number)"]]
+        let text = lock.withLock { useless } ? "I can't help with that."
+            : String(decoding: (try? JSONSerialization.data(withJSONObject: brief, options: [.sortedKeys])) ?? Data(), as: UTF8.self)
+        let response: [String: Any] = [
+            "id": "resp_brief_\(number)", "object": "response", "status": "completed", "model": "resolved-mini-fixture",
+            "output": [["id": "msg_brief_\(number)", "type": "message", "role": "assistant", "status": "completed",
+                        "content": [["type": "output_text", "text": text]]]],
+            "usage": ["input_tokens": 120, "output_tokens": 30, "total_tokens": 150]]
+        let encoded = (try? JSONSerialization.data(withJSONObject: response)) ?? Data()
+        let reply = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(encoded.count)\r\nx-litellm-response-cost: \(cost)\r\nConnection: close\r\n\r\n".utf8) + encoded
+        connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
     }
 }

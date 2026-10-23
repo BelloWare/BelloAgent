@@ -263,6 +263,17 @@ final class SidebarAppearanceTests: XCTestCase {
         model.configuration.briefSettings.enabled = false; _ = try frame()
         XCTAssertNil(rowView("long", in: hosted)?.body.content?.brief, "briefs going off leave the row")
         XCTAssertNotNil(rowView("long", in: hosted)?.body.toolTip)
+        // A chat that can have a brief and has none offers Write Brief in its
+        // card instead of the tooltip: briefs going on and off reach it too.
+        let unbriefed = try XCTUnwrap(model.chats.firstIndex { $0.id == "grouped" })
+        model.chats[unbriefed].path = root.appendingPathComponent("grouped.jsonl").path; _ = try frame()
+        XCTAssertEqual(rowView("grouped", in: hosted)?.body.content?.offersBrief, false, "off, no row offers a brief")
+        model.configuration.briefSettings.enabled = true; _ = try frame()
+        XCTAssertEqual(rowView("grouped", in: hosted)?.body.content?.offersBrief, true, "on, a chat without a brief offers one")
+        XCTAssertNil(rowView("grouped", in: hosted)?.body.toolTip, "its card says what the tooltip did")
+        model.configuration.briefSettings.enabled = false; _ = try frame()
+        XCTAssertEqual(rowView("grouped", in: hosted)?.body.content?.offersBrief, false)
+        XCTAssertNotNil(rowView("grouped", in: hosted)?.body.toolTip)
         // The group headers are compared on their own values too, so every
         // one of these has to reach them.
         try changes("a topic was renamed") { model.topics[0].title = "Renamed while the sidebar is up" }
