@@ -590,7 +590,10 @@ struct TranscriptRowEnvironment: Equatable {
     private func inputs() -> TranscriptRowInputs {
         // The relay reads the latest callbacks without replacing unchanged
         // SwiftUI text fields merely because their parent's closures changed.
-        let relay = TranscriptActions.forwarding { [weak self] in self?.actions }
+        let images: Bool
+        if case .message(let message) = item { images = (message.imageCount ?? 0) > 0 }
+        else { images = false }
+        let relay = TranscriptActions.forwarding(images: images) { [weak self] in self?.actions }
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }

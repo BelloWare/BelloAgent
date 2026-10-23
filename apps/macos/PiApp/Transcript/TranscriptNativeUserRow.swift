@@ -190,7 +190,6 @@ import AppKit
         var bubble: CGRect = .zero
         var skills: CGRect = .zero
         var text: CGRect = .zero
-        var images: CGRect = .zero
         var truncated: CGRect = .zero
         var band: CGRect = .zero
         var height: CGFloat = 0
@@ -211,7 +210,7 @@ import AppKit
         }
         let skillsHeight = skills?.height(width: textWidth) ?? 0
         let textHeight = showsText && !message.userText.isEmpty ? text.exactHeight(width: textWidth) : 0
-        let imagesHeight = TranscriptImageMetrics.height(count: message.imageCount ?? 0, width: textWidth)
+        let imagesHeight = images.map { TranscriptImageMetrics.height(count: $0.buttons.count, width: textWidth) } ?? 0
         var inner = skillsHeight
         if skills != nil, showsText || images != nil { inner += Self.skillGap }
         if showsText { inner += textHeight }
@@ -219,7 +218,6 @@ import AppKit
         plan.bubble = CGRect(x: width - bubbleWidth, y: y, width: bubbleWidth, height: inner + 2 * Self.padding.height)
         plan.skills = CGRect(x: plan.bubble.minX + Self.padding.width, y: plan.bubble.minY + Self.padding.height, width: textWidth, height: skillsHeight)
         plan.text = CGRect(x: plan.skills.minX, y: plan.skills.maxY + (skills != nil && (showsText || images != nil) ? Self.skillGap : 0), width: textWidth, height: ceil(textHeight))
-        plan.images = CGRect(x: plan.skills.minX, y: plan.bubble.maxY - Self.padding.height - imagesHeight, width: textWidth, height: imagesHeight)
         y = plan.bubble.maxY + Self.gap
         if let truncatedText {
             let used = truncatedText.usedWidth(width: width), height = truncatedText.exactHeight(width: width)
@@ -232,7 +230,7 @@ import AppKit
         // the middle of it, as SwiftUI placed it.
         plan.height = ceil(content)
         let shift = (plan.height - content) / 2
-        for keyPath in [\Plan.failed, \Plan.bubble, \Plan.skills, \Plan.text, \Plan.images, \Plan.truncated, \Plan.band] {
+        for keyPath in [\Plan.failed, \Plan.bubble, \Plan.skills, \Plan.text, \Plan.truncated, \Plan.band] {
             plan[keyPath: keyPath] = plan[keyPath: keyPath].offsetBy(dx: 0, dy: shift)
         }
         return plan
@@ -250,7 +248,8 @@ import AppKit
         let hidden = inputs.disclosure.foldedAway
         let message = message
         bubble.isHidden = hidden; text.isHidden = hidden || !showsText || message.userText.isEmpty; clock.isHidden = hidden
-        for view in [failedLabel, skills, images, truncatedText, switcher, accounting] as [NSView?] { view?.isHidden = hidden }
+        for view in [failedLabel, skills, truncatedText, switcher, accounting] as [NSView?] { view?.isHidden = hidden }
+        images?.isHidden = hidden
         guard !hidden else { return }
         // Frames on the pixel grid, as SwiftUI places views.
         let width = bounds.width
@@ -260,7 +259,11 @@ import AppKit
         // The text keeps its exact place: SwiftUI does not round a text's origin.
         text.frame = mirrored(plan.text)
         skills?.frame = mirrored(plan.skills)
-        images?.frame = mirrored(plan.images)
+        if let images {
+            let height = TranscriptImageMetrics.height(count: images.buttons.count, width: plan.text.width)
+            images.frame = mirrored(CGRect(x: plan.text.minX, y: plan.bubble.maxY - Self.padding.height - height,
+                                           width: plan.text.width, height: height))
+        }
         if let failedLabel { failedLabel.frame = TranscriptMotion.mirrored(plan.failed, of: failedLabel, width: width, rtl) }
         truncatedText?.frame = mirrored(CGRect(x: plan.truncated.minX, y: plan.truncated.minY, width: plan.truncated.width, height: ceil(plan.truncated.height)))
         // The band, as its `HStack` lays it out ten points apart: the versions,

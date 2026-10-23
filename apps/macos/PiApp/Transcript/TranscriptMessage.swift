@@ -33,6 +33,9 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var id: String; var role: String; var text: String
     var thinking: String? = nil; var tools: [ToolView]? = nil; var state: String? = nil; var truncated: Bool? = nil
+    /// Display only: this row replaces the latest version and is read-only.
+    /// Keep the small flags together so image references do not widen a row.
+    var earlierVersion: Bool? = nil
     /// "length" when the reply reached the output limit the request carried.
     var stopReason: String? = nil
     var accounting: GatewayTotals? = nil
@@ -65,15 +68,10 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// this row. Never read from or written to a journal — the projector
     /// leaves it nil and an absent optional encodes to nothing.
     var foldGroup: String? = nil
-    /// User rows: the skills the message was sent with, in the order the
-    /// model received them ahead of its text. Nil when it used none.
+    /// User rows: the skills the message was sent with, in model input order.
     var skills: [TranscriptSkillUse]? = nil
-    /// User images are loaded only for visible thumbnails or an open preview.
-    var imageCount: Int? = nil
-    var imageOnly: Bool? = nil
-    var imageReference: TranscriptImageReference? = nil
-    /// The optimistic Sending row still owns the submitted file references.
-    var imageAttachments: [AttachmentRecord]? = nil
+    /// Absent on ordinary messages; counts and references, never pixels.
+    var imageContent: TranscriptImageContent? = nil
     var userText: String { imageOnly == true ? "" : text }
     /// What a user row with images and no text reads as. Display only: the
     /// message the model received is its images, with no text.
@@ -94,13 +92,18 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// Rows of an earlier version (`session.version.page`): every request the
     /// row came from, so its Details open the Inspector at those requests.
     var requestAttemptIDs: [String]? = nil
-    /// Display only, set by the app: this row belongs to an earlier version on
-    /// screen in place of the latest one, and is read-only.
-    var earlierVersion: Bool? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
-        let text = content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
+        var images = 0
+        let text = content?.string ?? blocks.compactMap { part -> String? in
+            let block = part.object
+            switch block?["type"]?.string {
+            case "text": return block?["text"]?.string
+            case "image": images += 1; return nil
+            default: return nil
+            }
+        }.joined()
         let thinking = blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined()
         let role = message["role"]?.string ?? "system"
         let toolBlocks = blocks.filter { $0.object?["type"]?.string == "toolCall" }
@@ -143,12 +146,9 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
-        if role == "user" {
-            let images = blocks.filter { $0.object?["type"]?.string == "image" }.count
-            if images > 0 {
-                result.imageCount = images
-                if result.text.isEmpty { result.text = Self.imageOnlyText(images); result.imageOnly = true }
-            }
+        if role == "user", images > 0 {
+            result.imageCount = images
+            if result.text.isEmpty { result.text = Self.imageOnlyText(images); result.imageOnly = true }
         }
         if role == "assistant" { result.reply = ReplyRecord.journaled(message) }
         return result
@@ -365,8 +365,8 @@ extension TranscriptMessage {
             guard let skills = list.array else { throw Unexpected.shape }
             row.skills = try skills.map(skill)
         }
-        row.imageCount = try optionalInt(fields["imageCount"])
-        row.imageOnly = try optionalBool(fields["imageOnly"])
+        if let count = fields["imageCount"] { row.imageCount = try optionalInt(count) }
+        if let only = fields["imageOnly"] { row.imageOnly = try optionalBool(only) }
         if row.role == "user", row.text.isEmpty, let images = row.imageCount, images > 0 {
             row.text = TranscriptMessage.imageOnlyText(images); row.imageOnly = true
         }

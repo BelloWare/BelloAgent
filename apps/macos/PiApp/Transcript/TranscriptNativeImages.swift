@@ -4,8 +4,12 @@ import ObjectiveC
 enum TranscriptImageMetrics {
     static let side: CGFloat = 64
     static let gap: CGFloat = 6
+    @MainActor static var heightReads = 0
     static func columns(width: CGFloat) -> Int { max(1, Int((max(0, width) + gap) / (side + gap))) }
     static func height(count: Int, width: CGFloat) -> CGFloat {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { if TranscriptLayoutClock.recording { heightReads += 1 } }
+        }
         guard count > 0 else { return 0 }
         let rows = (count + columns(width: width) - 1) / columns(width: width)
         return CGFloat(rows) * side + CGFloat(rows - 1) * gap

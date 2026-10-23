@@ -226,9 +226,12 @@ final class HistoryIndexFilesTests: XCTestCase {
         }
         let before = try ownedIndexes()
         _ = try await model.history.read(path: journal.path.path)
-        _ = try await model.transcriptImageReader.imageReference(path: journal.path.path, id: "caption")
+        model.chats = [ChatRecord(id: "chat", workspaceID: "fixture", title: "Images", path: journal.path.path, profileID: "fixture")]
+        let live = try TranscriptImageTests.message(id: "caption")
+        _ = try await model.transcriptImage(live, sessionID: "chat", index: 0, pixels: 128)
+        let imageReader = try XCTUnwrap(model.transcriptImageReader)
         let historyCount = await model.history.retainedIndexCount
-        let imageCount = await model.transcriptImageReader.retainedIndexCount
+        let imageCount = await imageReader.retainedIndexCount
         XCTAssertEqual(historyCount, 1); XCTAssertEqual(imageCount, 1)
         let created = try ownedIndexes().subtracting(before)
         XCTAssertEqual(created.count, 2, "The model owns a real temporary database in each reader")
@@ -247,12 +250,12 @@ final class HistoryIndexFilesTests: XCTestCase {
         XCTAssertEqual(answers, [true]); XCTAssertTrue(model.isShutDown)
         XCTAssertEqual(remainingAtAnswer, [], "Both readers' index files must be gone before termination is accepted")
         let historyAfter = await model.history.retainedIndexCount
-        let imageAfter = await model.transcriptImageReader.retainedIndexCount
+        let imageAfter = await imageReader.retainedIndexCount
         XCTAssertEqual(historyAfter, 0); XCTAssertEqual(imageAfter, 0, "The model stays alive here; cleanup cannot rely on deinit")
 
         // Release test-held readers before fixture teardown, including when a
         // regression leaves one open.
-        await model.history.releaseIndexes(); await model.transcriptImageReader.releaseIndexes()
+        await model.history.releaseIndexes(); await imageReader.releaseIndexes()
         try await model.traces.close(); await model.store?.close()
     }
 }
