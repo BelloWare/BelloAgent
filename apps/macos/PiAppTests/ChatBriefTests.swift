@@ -403,7 +403,7 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
             try journal.message("\(id)-a\(index)", role: "assistant", turn.1)
         }
         var chat = ChatRecord(id: id, workspaceID: "project", title: title, path: journal.url.path, profileID: "profile")
-        chat.lastActivityAt = activity
+        chat.lastActivityAt = activity; chat.sidebarOrder = activity
         try await fixture.model.store?.put(chat, kind: "chat", id: id)
         fixture.model.chats.append(chat)
         return (chat, journal)
@@ -551,6 +551,43 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         XCTAssertFalse(model.chats.contains { $0.backgroundTask == "chat-brief" })
         XCTAssertEqual(model.chatBriefs.attempts, 1, "Not looked at again for every chance it gets")
         XCTAssertNil(model.record(chat.id)?.brief)
+    }
+
+    /// A chat whose connection is gone can have no brief; it is looked at
+    /// once, and the chats after it still get theirs. It used to be picked
+    /// again at every turn, ahead of every other chat.
+    @MainActor func testAChatWhoseConnectionIsGoneDoesNotHoldUpTheOthers() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        _ = try await chat("orphan", fixture, title: "Orphan", turns: [("A question.", "An answer.")], activity: 3_000_000)
+        let index = try XCTUnwrap(model.chats.firstIndex { $0.id == "orphan" })
+        model.chats[index].profileID = "deleted-connection"
+        let (kept, _) = try await chat("kept", fixture, title: "Kept", turns: [("Another question.", "Another answer.")], activity: 1_000_000)
+        model.chatBriefs.start(after: .zero)
+        try await eventually("the chat with a connection gets its brief", timeout: .seconds(60)) { model.record(kept.id)?.brief != nil }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(model.record("orphan")?.brief)
+        XCTAssertEqual(model.chatBriefs.outcomes["orphan"], .noMiniModel, "No connection, no mini model to ask")
+        XCTAssertEqual(model.chatBriefs.attempts, 2, "The chat without a connection is looked at once")
+        XCTAssertEqual(gateway.requests.count, 1)
+    }
+
+    /// A chat whose journal cannot be read is set aside on its own; it does
+    /// not pause the briefs of every other chat as a failed request does.
+    @MainActor func testAChatWhoseJournalCannotBeReadDoesNotPauseTheOthers() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (_, broken) = try await chat("broken", fixture, title: "Broken", turns: [("A question.", "An answer.")], activity: 3_000_000)
+        try FileManager.default.removeItem(at: broken.url)
+        let (kept, _) = try await chat("kept", fixture, title: "Kept", turns: [("Another question.", "Another answer.")], activity: 1_000_000)
+        model.chatBriefs.start(after: .zero)
+        try await eventually("the readable chat gets its brief", timeout: .seconds(60)) { model.record(kept.id)?.brief != nil }
+        guard case .unreadable? = model.chatBriefs.outcomes["broken"] else {
+            return XCTFail("The unreadable chat is set aside: \(String(describing: model.chatBriefs.outcomes["broken"]))")
+        }
+        XCTAssertNil(model.record("broken")?.brief)
+        XCTAssertEqual(gateway.requests.count, 1, "Nothing is sent for a chat that could not be read")
+        XCTAssertFalse(model.chatBriefs.paused, "Nothing waits on it")
     }
 
     /// Chats without a brief get one at a time, newest first, until the

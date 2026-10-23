@@ -39,6 +39,9 @@ enum ChatBriefOutcome: Equatable, Sendable {
     case nothingNew
     /// The chat's connection has no mini model: nothing was sent.
     case noMiniModel
+    /// The chat's history could not be read: nothing was sent, and the chat
+    /// is set aside until it changes.
+    case unreadable(String)
     /// The day's brief requests reached the cap: nothing was sent.
     case capReached
     case failed(String)
@@ -85,6 +88,8 @@ enum ChatBriefOutcome: Equatable, Sendable {
     private var pausedUntil: ContinuousClock.Instant?
     /// The day's brief requests reached the cap.
     private(set) var capReached = false
+    /// Nothing is sent before a pause ends (a failure or the cap).
+    var paused: Bool { pausedUntil.map { $0 > .now } ?? false }
     /// Chats looked at, at the activity they had: nothing more to do for
     /// them until they change (nothing new, a failure, a reply with no brief).
     private var settled: [String: Int64] = [:]
@@ -201,6 +206,7 @@ enum ChatBriefOutcome: Equatable, Sendable {
         case .noMiniModel: noMiniModel[profile] = now + capPause
         case .capReached: capReached = true; pausedUntil = now + capPause
         case .failed: settled[id] = activity; pausedUntil = now + failurePause
+        case .unreadable: settled[id] = activity
         case .skipped: break
         }
         reschedule()
@@ -278,8 +284,9 @@ extension WorkspaceModel {
     /// open. The brief lands on the chat's record only.
     func writeBrief(_ id: String, backfill: Bool) async -> ChatBriefOutcome {
         guard briefSettings.enabled, !isShutDown, !installPreparing, let store, let chat = chatRecord(id), briefEligible(chat),
-              !(backfill && chat.isArchived), let path = chat.path,
-              let profile = profiles.first(where: { $0.id == chat.profileID }) else { return .skipped }
+              !(backfill && chat.isArchived), let path = chat.path else { return .skipped }
+        // A chat whose connection is gone has no mini model to ask.
+        guard let profile = profiles.first(where: { $0.id == chat.profileID }) else { return .noMiniModel }
         let spent = await briefSpend()
         guard !Task.isCancelled, briefSettings.enabled else { return .skipped }
         guard spent < briefSettings.dailyCapUSD else { return .capReached }
@@ -290,7 +297,7 @@ extension WorkspaceModel {
         let activity = chatRecord(id)?.activityStamp ?? chat.activityStamp
         let page: HistoryPage
         do { page = displays[id] != nil ? try await history.read(path: path) : try await HistoryReader().read(path: path) }
-        catch { return .failed("The chat's history could not be read: " + error.localizedDescription) }
+        catch { return .unreadable(error.localizedDescription) }
         guard !Task.isCancelled, briefSettings.enabled else { return .skipped }
         guard page.notice == nil, let current = chatRecord(id),
               let plan = ChatBriefPlan(profile: profile, descriptors: descriptors, title: current.displayTitle, previous: current.brief,
