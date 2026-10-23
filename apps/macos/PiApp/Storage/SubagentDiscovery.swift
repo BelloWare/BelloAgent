@@ -59,8 +59,20 @@ extension HistoryReader {
             subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
             return cached.plans.filter(matches)
         }
+        let found = try Self.scanPlans(path: path, ownerID: ownerID, childID: childID, includeInherited: includeInherited, scanned: &subagentScannedBytes)
+        try Task.checkCancellation()
+        if childID == nil, let revision { keepPlans(found, path: path, ownerID: ownerID, revision: revision) }
+        return found.filter(matches)
+    }
+    /// The plans a scan of the journal finds: every start, or for `childID`
+    /// the starts up to that child's. It reads nothing of this reader, so a
+    /// whole scan can also run off it and be kept here after
+    /// (`WorkspaceModel.catchUpFinishedRows`), where waiting on it would hold
+    /// up every chat's reads.
+    nonisolated static func scanPlans(path: URL, ownerID: String, childID: String?, includeInherited: Bool, scanned: inout Int) throws -> [DiscoveredSubagent] {
+        if childID == nil { planScanStarting?(path) }
         var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
-        try subagentRecords(path) { row, line in
+        try subagentRecords(path, scanned: &scanned) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
             if let data = Self.subagentPlan(row),
                let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
@@ -86,25 +98,36 @@ extension HistoryReader {
             }
             return true
         }
-        try Task.checkCancellation()
-        if childID == nil, let revision, Self.currentRevision(path: path.path) == revision {
-            subagentPlanCache[path.path] = (ownerID, revision, found)
-            subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
-            while subagentPlanRecency.count > 8 {
-                subagentPlanCache.removeValue(forKey: subagentPlanRecency.removeFirst())
-            }
+        return found
+    }
+    /// Test seam: called as a whole scan of a journal's plans begins, on the
+    /// thread that scans it, before anything is read. Nil in the app.
+    nonisolated(unsafe) static var planScanStarting: (@Sendable (URL) -> Void)?
+    /// Every plan a whole scan found, kept for the revision the journal had
+    /// before it began while the journal still has it. `scanned`: what a scan
+    /// made off this reader read.
+    func keepPlans(_ plans: [DiscoveredSubagent], path: URL, ownerID: String, revision: HistoryRevision, scanned: Int = 0) {
+        subagentScannedBytes += scanned
+        guard Self.currentRevision(path: path.path) == revision else { return }
+        subagentPlanCache[path.path] = (ownerID, revision, plans)
+        subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
+        while subagentPlanRecency.count > 8 {
+            subagentPlanCache.removeValue(forKey: subagentPlanRecency.removeFirst())
         }
-        return found.filter(matches)
     }
     /// Streaming scan: retain only origins/plans/status, never transcript or
     /// capture bodies. A torn final line is left for the helper's recovery.
     func subagentRecords(_ path: URL, visit: ([String: WireValue], Int) throws -> Bool) throws {
+        try Self.subagentRecords(path, scanned: &subagentScannedBytes, visit: visit)
+    }
+    /// The same scan, counting what it reads in `scanned`.
+    nonisolated static func subagentRecords(_ path: URL, scanned: inout Int, visit: ([String: WireValue], Int) throws -> Bool) throws {
         let file = try FileHandle(forReadingFrom: path); defer { try? file.close() }
         var pending = Data(), line = 0
         // Run-state records carry a cost-limit pause (`costPaused`).
         let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run", "pi-app.native.state.v1"].map { Data($0.utf8) }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
-            subagentScannedBytes += bytes.count
+            scanned += bytes.count
             try Task.checkCancellation()
             var start = bytes.startIndex
             while let end = bytes[start...].firstIndex(of: 10) {

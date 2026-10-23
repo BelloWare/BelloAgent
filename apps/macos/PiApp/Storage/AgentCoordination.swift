@@ -27,17 +27,29 @@ struct AgentCoordination: Equatable, Sendable {
 
 extension HistoryReader {
     func agentCoordination(path: URL, ownerID: String) throws -> AgentCoordination {
+        let fingerprint = try Self.coordinationFingerprint(path)
+        if let cached = agentCoordinationCache[ownerID + "|" + path.path], cached.fingerprint == fingerprint { return cached.value }
+        let value = try Self.scanCoordination(path: path, ownerID: ownerID, scanned: &subagentScannedBytes)
+        keepCoordination(value, path: path, ownerID: ownerID, fingerprint: fingerprint, checkingFile: false)
+        return value
+    }
+    /// The journal as the coordination cache knows it: the file, its size and
+    /// when it was last written.
+    nonisolated static func coordinationFingerprint(_ path: URL) throws -> String {
         let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
-        let fingerprint = [attributes[.systemFileNumber], attributes[.size], attributes[.modificationDate]].map { String(describing: $0) }.joined(separator: ":")
-        let cacheKey = ownerID + "|" + path.path
-        if let cached = agentCoordinationCache[cacheKey], cached.fingerprint == fingerprint { return cached.value }
+        return [attributes[.systemFileNumber], attributes[.size], attributes[.modificationDate]].map { String(describing: $0) }.joined(separator: ":")
+    }
+    /// A scan of the journal for its agents' coordination. It reads nothing of
+    /// this reader, so it can also run off it and be kept here after
+    /// (`WorkspaceModel.catchUpFinishedRows`).
+    nonisolated static func scanCoordination(path: URL, ownerID: String, scanned: inout Int) throws -> AgentCoordination {
         var entries: [String: AgentCoordinationEntry] = [:], order: [String] = [], children: Set<String> = [], held: Set<String> = []
         var numbers: [String: Int] = [:]
         func add(_ entry: AgentCoordinationEntry) {
             if entries[entry.id] == nil { order.append(entry.id) }
             entries[entry.id] = entry
         }
-        try subagentRecords(path) { row, line in
+        try subagentRecords(path, scanned: &scanned) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID else { throw StoreError.invalidRecord } }
             if let plan = Self.subagentPlan(row), let raw = plan["origin"],
                let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid {
@@ -83,12 +95,18 @@ extension HistoryReader {
             }
             return true
         }
-        let value = AgentCoordination(entries: order.compactMap { id in
+        return AgentCoordination(entries: order.compactMap { id in
             entries[id].map { value in var entry = value; entry.subagentNumber = numbers[entry.childID]; return entry }
         }, heldChildren: held.intersection(children), subagentNumbers: numbers)
+    }
+    /// A scan's coordination, kept for the journal it read. A scan made off
+    /// this reader (`checkingFile`, `scanned`) is kept only while the file is
+    /// still the one it read.
+    func keepCoordination(_ value: AgentCoordination, path: URL, ownerID: String, fingerprint: String, checkingFile: Bool = true, scanned: Int = 0) {
+        subagentScannedBytes += scanned
+        if checkingFile { guard (try? Self.coordinationFingerprint(path)) == fingerprint else { return } }
         if agentCoordinationCache.count >= 8 { agentCoordinationCache.removeAll(keepingCapacity: true) }
-        agentCoordinationCache[cacheKey] = (fingerprint, value)
-        return value
+        agentCoordinationCache[ownerID + "|" + path.path] = (fingerprint, value)
     }
 }
 

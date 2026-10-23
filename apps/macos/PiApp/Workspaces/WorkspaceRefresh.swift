@@ -147,6 +147,9 @@ extension WorkspaceModel {
                         view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
+                    let previousRevision = view.helperDisplayRevision
+                    if let revision = result["displayRevision"]?.string { view.helperDisplayRevision = revision }
+                    let wasBusy = view.busy
                     helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
                         try applySnapshotRows(projected, from: result, to: view, id: id, item: item)
@@ -158,6 +161,24 @@ extension WorkspaceModel {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
                     applyToolNotice(result, to: view, id: id, item: item)
+                    // Out of sight now: the reader may have left the chat
+                    // since this snapshot was asked for.
+                    if !receivesRows(id) {
+                        // A run that ends out of sight counts as a use of its
+                        // chat (owner, 2026-10-23): its display stays among
+                        // the eight kept (`releaseUnreadDisplays`), finished
+                        // rows and all, for the reader who opens it next. The
+                        // end shows as the chat going idle; a short run that
+                        // came and went between two statuses (they are
+                        // coalesced) shows only as its rows having moved
+                        // (`displayRevision`) with the chat idle on both.
+                        let rowsMoved = previousRevision != nil && view.helperDisplayRevision != previousRevision
+                        if !view.busy, wasBusy || rowsMoved { view.used = Date() }
+                        // It left the rows it was writing as the reader saw
+                        // them: they are read again now, before the reader
+                        // opens the chat.
+                        catchUpFinishedRows(id)
+                    }
                 }
                 // Looked up by id; finding the index is only needed to write.
                 if let path = result["path"]?.string, let known = chatRecord(id), known.path != path, let index = chats.firstIndex(where: { $0.id == id }) {
@@ -280,7 +301,7 @@ extension WorkspaceModel {
                 view.browsingHistory = true
                 if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
             }
-            view.historyRevision = nil
+            view.historyRevision = nil; view.heldRowsRevision = nil
             view.projectedRows = projected
             // Rows the reader scrolled up to stay in front of the helper's window.
             let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)

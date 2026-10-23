@@ -586,6 +586,7 @@
 		6A039EAD46F38767CCFEC0FF /* PiSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = D80597E095990C3687130A85 /* PiSurfaces.swift */; };
 		6A6154C8C9314F1E50D78B4E /* WorkspaceDraftMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC089FE1954B75F6159369C8 /* WorkspaceDraftMarks.swift */; };
 		6A8AC4BF4961423BB9F63C64 /* WorkspaceSessionOrganization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73FBA5FF8548033D25100B8F /* WorkspaceSessionOrganization.swift */; };
+		6AA4316BE277C4ED54F81051 /* FinishedChatOpeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68DD4D2A383C786E91892B2A /* FinishedChatOpeningTests.swift */; };
 		6AAB17D911447D32F2FFF565 /* SkillSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 955E7C3A9B2196B0A5D3B5E4 /* SkillSelection.swift */; };
 		6B8F4DF57D4F7543B33A2325 /* TranscriptRowParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09D7B831B32271777AA1810D /* TranscriptRowParts.swift */; };
 		6B94EEC3BC9DEA1521A27FB7 /* NativeCodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6427530A7EFDEB3F383961E5 /* NativeCodeEditor.swift */; };
@@ -898,6 +899,7 @@
 		A5114124332DC5089E0AC0BC /* PiChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E24161406CFEDA97C796EF4 /* PiChart.swift */; };
 		A52AB21941292D9C77994131 /* MarkdownIslandsReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFB65910CB55B831ED715C6D /* MarkdownIslandsReference.swift */; };
 		A5512624EC6A71197D8F0519 /* TranscriptQuoteSelectionReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32855B3FB3C95F77E009CDB7 /* TranscriptQuoteSelectionReference.swift */; };
+		A5C07001228C000A6C189CD7 /* FinishedRowsCatchUpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B0ABD63C945D0FBC890A82 /* FinishedRowsCatchUpTests.swift */; };
 		A5C3EC8CF3CB56B15BC5895C /* PseudoTerminalReapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE8AD793C228AD2764F26D3 /* PseudoTerminalReapTests.swift */; };
 		A5D4C7A85333E0B587889F5E /* SessionTimingHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0DEDC55A20BCA391C9CA7D /* SessionTimingHistory.swift */; };
 		A614CF27521C2BE01FF0F3F0 /* SessionStatsPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 404C31A143E07012FAC91956 /* SessionStatsPopovers.swift */; };
@@ -1831,6 +1833,7 @@
 		6897FF60C60BA8224C9134D3 /* ModelCatalogEndpointTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogEndpointTests.swift; sourceTree = "<group>"; };
 		68A7FF5B5C8FA0B1E7177808 /* ChatLoadStabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatLoadStabilityTests.swift; sourceTree = "<group>"; };
 		68C26FF51F44662BBECDC4AB /* GitHunkReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHunkReview.swift; sourceTree = "<group>"; };
+		68DD4D2A383C786E91892B2A /* FinishedChatOpeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinishedChatOpeningTests.swift; sourceTree = "<group>"; };
 		68EA3EE2DE495E889C907B47 /* GitPanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelLayoutTests.swift; sourceTree = "<group>"; };
 		69466F66E2437F3843F98A6A /* NativeMarkdownSurfaceStreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSurfaceStreamingTests.swift; sourceTree = "<group>"; };
 		6946C6DEA3B111C33B59E496 /* GitFilesFixGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitFilesFixGalleryTests.swift; sourceTree = "<group>"; };
@@ -2056,6 +2059,7 @@
 		A7A156F6BD638FD9E0B65310 /* PiPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPopover.swift; sourceTree = "<group>"; };
 		A7E9AB8E20FCCA78D49C9D2D /* TranscriptNativeParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeParts.swift; sourceTree = "<group>"; };
 		A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignContrastTests.swift; sourceTree = "<group>"; };
+		A8B0ABD63C945D0FBC890A82 /* FinishedRowsCatchUpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinishedRowsCatchUpTests.swift; sourceTree = "<group>"; };
 		A8B1A1FFBFCA58D4F3B08845 /* GitBranchesGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitBranchesGalleryTests.swift; sourceTree = "<group>"; };
 		A8C4CB92D02391C74645C043 /* LaunchFixtureVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchFixtureVault.swift; sourceTree = "<group>"; };
 		A8DC4C61029E4047E1A19DBE /* SideKeepNoticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SideKeepNoticeView.swift; sourceTree = "<group>"; };
@@ -3211,6 +3215,8 @@
 				DA0FD2003F8CE751430D382D /* FileSyntaxTests.swift */,
 				7A14F4AC9EEE2D4BD6AD5E31 /* FileTabTests.swift */,
 				ABCF39B6330FA37816D695C3 /* FileTextViewTests.swift */,
+				68DD4D2A383C786E91892B2A /* FinishedChatOpeningTests.swift */,
+				A8B0ABD63C945D0FBC890A82 /* FinishedRowsCatchUpTests.swift */,
 				1BF427C296FBCF51243F2DDD /* FiveSessionWorkspacePerformanceTests.swift */,
 				2F1AF3781E7A133B52D8005B /* FixtureHooks.swift */,
 				887A9FFFC678E5D63E9C722C /* ForkCloneReaderTests.swift */,
@@ -4775,6 +4781,8 @@
 				277747D6EE17AE1F4F3443E9 /* FileSyntaxTests.swift in Sources */,
 				45017BDF74E6B14832EACF0E /* FileTabTests.swift in Sources */,
 				17D1DC7156E9C31A0C5C4428 /* FileTextViewTests.swift in Sources */,
+				6AA4316BE277C4ED54F81051 /* FinishedChatOpeningTests.swift in Sources */,
+				A5C07001228C000A6C189CD7 /* FinishedRowsCatchUpTests.swift in Sources */,
 				0E410EB4C96E23787F27B04B /* FiveSessionWorkspacePerformanceTests.swift in Sources */,
 				EC16BC87CFB3C0164554F475 /* FixtureHooks.swift in Sources */,
 				1993EA786741E30AD3119E83 /* ForkCloneReaderTests.swift in Sources */,
