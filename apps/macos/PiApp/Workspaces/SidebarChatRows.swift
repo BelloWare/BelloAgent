@@ -302,6 +302,9 @@ struct ChatRowStats: Equatable {
         var markedUnreadOnly = false
         /// The pencil: the chat's composer holds something unsent.
         var hasDraft = false
+        /// The chat's brief: shown, with `help`, by the card the pointer
+        /// brings up in place of the tooltip (`SidebarBriefCard.swift`).
+        var brief: ChatBrief?
         /// Project and topic tags in the combined Flat list only.
         var projectTag: String?
         var projectTagFullName: String?
@@ -423,6 +426,7 @@ struct ChatRowStats: Equatable {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        SidebarBriefCard.anchorLeft(self)
         hovering = false; confirming = false
         // A different chat should not animate from the old title or keep its
         // Archive confirmation, even if the pointer never exited the old row.
@@ -486,7 +490,9 @@ struct ChatRowStats: Equatable {
             metrics.isHidden = true; subtitle.isHidden = false
             subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
         }
-        toolTip = new.help
+        // A chat with a brief says it, and the rest, in its card instead.
+        toolTip = new.brief == nil ? new.help : nil
+        if before?.brief != new.brief || before?.help != new.help { showBrief(hovering) }
         row1.relayoutAll(); tags.relayoutAll()
         invalidateIntrinsicContentSize(); needsLayout = true
     }
@@ -533,11 +539,24 @@ struct ChatRowStats: Equatable {
         let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true; applyControls() }
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
+    override func mouseEntered(with event: NSEvent) { setHovering(true) }
+    override func mouseExited(with event: NSEvent) { setHovering(false) }
+    /// The pointer came onto the row or left it (tests call this directly).
+    func setHovering(_ inside: Bool) {
+        hovering = inside
+        showBrief(inside)
         // Leaving the row puts the question away.
-        if confirming { setConfirming(false) } else { applyControls() }
+        if !inside, confirming { setConfirming(false) } else { applyControls() }
+    }
+    /// The brief's card comes up once the pointer rests on the row, and goes
+    /// when it leaves or the row stops having a brief.
+    private func showBrief(_ inside: Bool) {
+        guard inside, let content, let brief = content.brief else { SidebarBriefCard.hover(false, anchor: self); return }
+        SidebarBriefCard.hover(true, anchor: self, brief: brief, help: content.help)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { SidebarBriefCard.anchorLeft(self) }
     }
 
     // MARK: Layout

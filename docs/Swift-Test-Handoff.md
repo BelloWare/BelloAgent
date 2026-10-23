@@ -1463,6 +1463,14 @@ offscreen, when `TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY` names a folder:
 `project-filter-{all,project,search}-{300,200}-*` and
 `project-filter-from-menu-200-*`, in both appearances.
 
+`ChatBriefGalleryTests` draws chat briefs (0.1.131) from generated chats when
+`TEST_RUNNER_PI_APP_CHAT_BRIEF_GALLERY` names a folder, in both appearances:
+`hover-{flat,topics}-{300,220}-*` (a row's brief card over the sidebar),
+`search-keyword-*` (Titles & details finding a chat by a keyword),
+`settings-chats-{off,on}-*` (Settings' Chat briefs card) and
+`background-{all,briefs}-{1000,700}-*` (the Background requests page and its
+Chat briefs filter). It shows windows: run it under the lane lock.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and

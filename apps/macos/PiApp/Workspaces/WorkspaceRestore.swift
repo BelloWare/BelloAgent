@@ -85,6 +85,8 @@ extension WorkspaceModel {
             scheduleJournalSlimming()
             schedulePastedImageCleanup()
             if archiveOpen { scheduleToolOutputCleanup() }
+            // Chats without a brief get one, slowly, once the launch has settled.
+            startChatBriefs()
         } catch { restoring = false; launching = false; self.error = "Chats could not be restored. \(error.localizedDescription)" }
     }
     /// A chat's journal is named in its record only once the helper has made

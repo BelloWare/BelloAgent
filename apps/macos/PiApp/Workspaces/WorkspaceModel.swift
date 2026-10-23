@@ -217,6 +217,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `SidebarSearch.swift`: the filter's search inside chats,
     /// made when the sidebar first asks for it.
     var sidebarSearchStorage: SidebarSearch?
+    /// Owned by `WorkspaceChatBriefs.swift`: when chat briefs are written,
+    /// made when launch or a finished run first asks.
+    var chatBriefsStorage: ChatBriefs?
     /// Chats whose side chats are folded away. Owned here rather than by the
     /// group's own `@State`, which forgot the fold whenever the project was
     /// collapsed, the archive filter flipped or the sidebar was rebuilt. Both
@@ -365,7 +368,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
     var sidePublications: Set<String> = []
     let vault: ConfigurationVault
-    @Published var configuration = VaultConfiguration()
+    /// Chat briefs going on or off change what sidebar search matches.
+    @Published var configuration = VaultConfiguration() { didSet { if configuration.briefSettings.enabled != oldValue.briefSettings.enabled { sidebarIndex.invalidate() } } }
     @Published var configurationLoaded = false
     /// Set while the vault could not be read at launch: each activation of
     /// the app tries again (`retryConfigurationWhenActive`).

@@ -63,6 +63,8 @@ extension WorkspaceModel {
         guard !isShutDown, let display = displays[sessionID] else { return }
         let completed = display.completionTracker.observe(snapshot, baseline: baseline)
         observeWebhookFinish(sessionID: sessionID, snapshot: snapshot, baseline: baseline)
+        // The chat's brief is updated once it rests (`WorkspaceChatBriefs.swift`).
+        if completed { noteBriefRunFinished(sessionID) }
         // Always consume the receipt, including while muted, so turning sound
         // on or restoring a chat cannot replay a completion that already passed.
         guard completed, configuration.playsCompletionSound,

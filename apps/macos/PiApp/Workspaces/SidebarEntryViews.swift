@@ -207,7 +207,7 @@ import Combine
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: model.subagentSearchTitle(chat), subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        familyActivity: state.familyActivity, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
-                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, brief: state.brief,
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, choosesProject: state.choosesProject,
                                        topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
@@ -230,6 +230,8 @@ import Combine
         let content = Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained)
         body.update(content)
         if row.accessibilityLabel() != content.accessibilityLabel { row.setAccessibilityLabel(content.accessibilityLabel) }
+        // VoiceOver reads the brief the hover card shows.
+        if row.accessibilityHelp() != content.brief?.text { row.setAccessibilityHelp(content.brief?.text) }
         // A line more or less under the title: the list lays out again.
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }

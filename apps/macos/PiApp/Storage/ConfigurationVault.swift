@@ -131,6 +131,13 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { retry ?? RetryPreferences() }
         set { retry = newValue }
     }
+    /// Chat briefs (`WorkspaceChatBriefs.swift`); absent in older vaults,
+    /// which have them off.
+    var chatBriefs: ChatBriefSettings?
+    var briefSettings: ChatBriefSettings {
+        get { chatBriefs ?? ChatBriefSettings() }
+        set { chatBriefs = newValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
@@ -161,7 +168,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               [dashboard.purpose, dashboard.api, dashboard.requestedAlias, dashboard.effectiveModel].allSatisfy({ ($0?.utf8.count ?? 0) <= 256 }),
               dashboard.windowPreset.map({ DashboardWindowPreset(rawValue: $0) != nil }) ?? true,
               transcriptView.map({ TranscriptDisplayMode(rawValue: $0) != nil }) ?? true,
-              chatCostLimit?.isValid ?? true, retry?.isValid ?? true,
+              chatCostLimit?.isValid ?? true, retry?.isValid ?? true, chatBriefs?.isValid ?? true,
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }
