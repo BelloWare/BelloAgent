@@ -242,7 +242,9 @@ struct ResponseLine: Equatable, Sendable {
     var foldable: Bool = false
 }
 
-enum TranscriptItem: Equatable, Sendable, Identifiable {
+// A retained plan shares immutable payloads. Replacing one item must copy
+// references to its neighbours, rather than all their message/usage fields.
+indirect enum TranscriptItem: Equatable, Sendable, Identifiable {
     case message(TranscriptMessage)
     case block(TranscriptBlock)
     var id: String {
@@ -268,22 +270,22 @@ enum TranscriptRenderIdentity {
 }
 
 extension TranscriptMessage {
-    var isStreaming: Bool { state == "streaming" }
+    var isStreaming: Bool { self.state == "streaming" }
     /// How a reply ended when it failed or was stopped, "error" or "aborted":
     /// the row's state when the app shows the failure itself, else its stop
     /// reason, which is where the helper's rows and the journal's both keep it.
     var failedEnd: String? {
-        for value in [state, stopReason] { if let value, ["error", "aborted"].contains(value) { return value } }
+        for value in [self.state, self.stopReason] { if let value, ["error", "aborted"].contains(value) { return value } }
         return nil
     }
     /// A reply still being written, or one that ended without finishing.
     var endedUnfinished: Bool {
         let unfinished: Set<String> = ["streaming", "error", "aborted", "failed", "cancelled", "interrupted"]
-        return unfinished.contains(state ?? "") || unfinished.contains(stopReason ?? "")
+        return unfinished.contains(self.state ?? "") || unfinished.contains(self.stopReason ?? "")
     }
     /// A reply with no prose: only tool calls, exposed reasoning, or both. It folds into the next reply's block.
     var isActivityOnly: Bool {
-        role == "assistant" && !TranscriptActivity.hasVisibleText(text)
-            && (!(tools ?? []).isEmpty || TranscriptActivity.hasVisibleText(thinking))
+        self.role == "assistant" && !TranscriptActivity.hasVisibleText(self.text)
+            && (!(self.tools ?? []).isEmpty || TranscriptActivity.hasVisibleText(self.thinking))
     }
 }

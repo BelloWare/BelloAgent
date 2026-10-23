@@ -440,7 +440,10 @@ final class TranscriptSurfaceMarker: NSView {
     /// no layout and so cost the page nothing per tick. Reduce Motion snaps.
     private func updateLiveBar(_ session: SessionDisplay) {
         let turn = page.liveTurn
-        let key = LiveKey(session: ObjectIdentifier(session), turn: turn, state: page.state, reduceMotion: reduceMotion,
+        // The bar reads figures and execution metadata. A request's growing
+        // text belongs to its transcript row and changes none of that chrome.
+        let figures = turn.map { turn in var value = turn; value.requests = []; return value }
+        let key = LiveKey(session: ObjectIdentifier(session), turn: figures, state: page.state, reduceMotion: reduceMotion,
                           offered: actions.offered, environment: environment)
         guard key != liveKey else { return }
         liveKey = key

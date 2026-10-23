@@ -7,16 +7,18 @@ import Foundation
 /// What a snapshot asks of the rows: a whole page, a patch to the page held,
 /// or nothing. Done off the main actor.
 enum SnapshotRowWork: Sendable {
-    case skip, page(WireValue), patch(WireValue, [TranscriptMessage])
+    case skip, page(WireValue), patch(WireValue, TranscriptRowUpdates.Page)
     var needed: Bool { if case .skip = self { return false }; return true }
-    func apply() throws -> (rows: [TranscriptMessage]?, resync: Bool) {
+    func apply() throws -> (rows: [TranscriptMessage]?, resync: Bool, page: TranscriptRowUpdates.Page?) {
         switch self {
-        case .skip: return (nil, false)
-        case .page(let value): return (try TranscriptMessage.page(value), false)
+        case .skip: return (nil, false, nil)
+        case .page(let value):
+            let page = TranscriptRowUpdates.Page(try TranscriptMessage.page(value))
+            return (page.rows, false, page)
         case .patch(let patch, let held):
             // A patch that does not fit the page held asks for a whole page.
-            guard let applied = TranscriptRowUpdates.apply(patch, to: held) else { return (nil, true) }
-            return (applied, false)
+            guard let applied = held.applying(patch) else { return (nil, true, nil) }
+            return (applied.rows, false, applied)
         }
     }
 }
@@ -103,24 +105,37 @@ extension WorkspaceModel {
                 // presentation, happen off the main actor in one hop; only
                 // the finished values cross back to it.
                 let rows: SnapshotRowWork = !view.browsingHistory && view.presentationGeneration == generation
-                    ? result["messages"].map(SnapshotRowWork.page) ?? result["messageDelta"].map { .patch($0, view.projectedRows) } ?? .skip : .skip
+                    ? result["messages"].map(SnapshotRowWork.page) ?? result["messageDelta"].map { .patch($0, view.projectedPage) } ?? .skip : .skip
                 // A snapshot older than the one applied is not applied; its
                 // presentation is not worth decoding. A snapshot that leaves
                 // it out has an unchanged one: the presentation held stays.
                 let presentation = sequence >= view.lastSequence ? result["taskPresentation"] : nil
                 var incoming: [TranscriptMessage]?, resyncNeeded = false, lifecycle: TaskPresentationProjection?
+                var incomingStream: TranscriptStreamUpdate?
+                var incomingPage: TranscriptRowUpdates.Page?
                 var helperQueue: [[String: WireValue]]?
                 if rows.needed || presentation != nil {
                     let decoder = view.taskPresentationDecoder
-                    let decoded = try await Task.detached { () throws -> (rows: [TranscriptMessage]?, resync: Bool, lifecycle: TaskPresentationProjection?, decoder: TaskPresentationDecoder) in
+                    let displayed = view.messages, positions = view.messagePositions, bytes = view.messageBytes, revision = view.messagesRevision
+                    let accounting = view.messageAccounting, accountingRevision = view.accountingRevision, caps = TranscriptPaging.residentCaps
+                    let held = heldRows(view)
+                    let decoded = try await Task.detached { () throws -> (rows: [TranscriptMessage]?, resync: Bool, lifecycle: TaskPresentationProjection?, decoder: TaskPresentationDecoder, stream: TranscriptStreamUpdate?, page: TranscriptRowUpdates.Page?) in
                         let applied = try rows.apply()
                         var decoder = decoder
                         let lifecycle = presentation.flatMap { decoder.decode($0) }
-                        return (applied.rows, applied.resync, lifecycle, decoder)
+                        let stream: TranscriptStreamUpdate?
+                        if case .patch(let delta, _) = rows, let projected = applied.rows {
+                            stream = TranscriptStreamUpdate.prepare(delta: delta, projected: projected, displayed: displayed, positions: positions, bytes: bytes,
+                                                                    revision: revision, accounting: accounting, accountingRevision: accountingRevision, caps: caps, held: held,
+                                                                    follows: result["historyFollows"]?.string)
+                        } else { stream = nil }
+                        return (applied.rows, applied.resync, lifecycle, decoder, stream, applied.page)
                     }.value
                     guard current(), view.snapshotEpoch == appliedEpoch else { return }
                     view.taskPresentationDecoder = decoded.decoder
                     incoming = decoded.rows; resyncNeeded = decoded.resync; lifecycle = decoded.lifecycle
+                    incomingStream = decoded.stream
+                    incomingPage = decoded.page
                 }
                 guard current() else { return }
                 guard view.presentationGeneration == generation else { view.dirty = true; return }
@@ -151,8 +166,8 @@ extension WorkspaceModel {
                     if let revision = result["displayRevision"]?.string { view.helperDisplayRevision = revision }
                     let wasBusy = view.busy
                     helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
-                    if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
-                        try applySnapshotRows(projected, from: result, to: view, id: id, item: item)
+                    if let projection = incomingPage, !view.browsingHistory, view.presentationGeneration == generation {
+                        try applySnapshotRows(projection, stream: incomingStream, from: result, to: view, id: id, item: item)
                     } else if resyncNeeded {
                         // The update does not fit the page held here. Forget
                         // the cursor so the next read is a whole page.
@@ -286,13 +301,26 @@ extension WorkspaceModel {
     /// A snapshot's rows, merged into the chat's window, and the window's
     /// edges. A branch this display did not make leaves the rows as they are
     /// and says the conversation changed elsewhere.
-    private func applySnapshotRows(_ projected: [TranscriptMessage], from result: [String: WireValue], to view: SessionDisplay,
+    private func applySnapshotRows(_ projection: TranscriptRowUpdates.Page, stream: TranscriptStreamUpdate?, from result: [String: WireValue], to view: SessionDisplay,
                                    id: String, item: ChatRecord) throws {
+        let projected = projection.rows
         let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
         if let held = view.presentation.identity, let lineage, held.lineage != lineage {
             view.newerPage.error = Self.branchChangedElsewhere
             view.browsingHistory = true
         } else {
+            if let stream, stream.revision == view.messagesRevision, stream.accountingRevision == view.accountingRevision,
+               incarnation == nil || view.presentation.identity?.incarnation == incarnation,
+               lineage == nil || view.presentation.identity?.lineage == lineage,
+               stream.held.map({ $0 == heldRows(view) }) ?? true,
+               stream.tail.map({ view.replaceMessageTail(stream.rows, from: $0) }) ?? view.replaceMessages(stream.rows, at: stream.indices) {
+                view.historyRevision = nil; view.heldRowsRevision = nil
+                view.projectedPage = projection; view.projectionRevision = result["displayRevision"]?.string
+                if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
+                if view.historyPositions.total == nil, view.olderPage.cursor != nil { reacquireHistoryPositions(id) }
+                if view.historyState == .dormant || view.historyState == .empty { view.historyState = view.messages.isEmpty ? .empty : .preparing }
+                return
+            }
             let follows = result["historyFollows"]?.string
             let overlaps = view.messages.isEmpty || TranscriptPaging.joins(view.messages, follows: follows)
                 || projected.contains { row in view.messages.contains { $0.id == row.id } }
@@ -302,7 +330,7 @@ extension WorkspaceModel {
                 if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
             }
             view.historyRevision = nil; view.heldRowsRevision = nil
-            view.projectedRows = projected
+            view.projectedPage = projection
             // Rows the reader scrolled up to stay in front of the helper's window.
             let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)
             // Rows that do not join the window change nothing in it,
@@ -496,7 +524,7 @@ extension WorkspaceModel {
     /// from when they are not following the newest row.
     func heldRows(_ view: SessionDisplay) -> Set<String> {
         var held = view.pinnedHistoryIDs
-        if let anchor = view.scrollAnchor, !anchor.followsBottom, view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
+        if let anchor = view.scrollAnchor, !anchor.followsBottom, view.messagePositions[anchor.id] != nil { held.insert(anchor.id) }
         return held
     }
     /// A window a held row stretched past its budget goes back to it once

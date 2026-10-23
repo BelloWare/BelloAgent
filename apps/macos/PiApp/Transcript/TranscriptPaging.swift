@@ -11,6 +11,7 @@ enum TranscriptPaging {
     static func merge(previous: [TranscriptMessage], live: [TranscriptMessage], follows: String? = nil) -> [TranscriptMessage] {
         guard !previous.isEmpty else { return live }
         guard let firstLive = live.first else { return previous }
+        if previous.first?.id == firstLive.id { return live }
         let liveIDs = Set(live.map(\.id))
         if let cut = previous.firstIndex(where: { $0.id == firstLive.id }) {
             return previous[..<cut].filter { !liveIDs.contains($0.id) } + live

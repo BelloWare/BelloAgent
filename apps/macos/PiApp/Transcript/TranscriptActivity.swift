@@ -804,54 +804,82 @@ enum TranscriptActivity {
 
     // MARK: Blocks and turns
 
+    /// Source-to-item membership is stable across cosmetic fragments. Build
+    /// it with the complete plan, then look up only the changed sources.
+    struct PatchIndex {
+        private var places: [String: [Int]] = [:]
+        private var blocked: [String: Int] = [:]
+        private(set) var messageVisits = 0
+        private(set) var itemVisits = 0
+        init(_ items: [TranscriptItem]) {
+            for (index, item) in items.enumerated() { add(item, at: index) }
+        }
+        private static func blockers(_ item: TranscriptItem) -> Set<String> {
+            guard case .block(let block) = item else { return [] }
+            return Set((block.presentation != .work || block.task != nil ? block.taskSummary?.requests.map(\.id) ?? [] : [])
+                + (block.turn?.requests.map(\.id) ?? []))
+        }
+        private mutating func add(_ item: TranscriptItem, at index: Int) {
+            for id in Set(item.messageIDs) { places[id, default: []].append(index) }
+            for id in Self.blockers(item) { blocked[id, default: 0] += 1 }
+        }
+        mutating func replaceTail(_ old: ArraySlice<TranscriptItem>, with next: ArraySlice<TranscriptItem>, from start: Int) {
+            for item in old {
+                for id in Set(item.messageIDs) {
+                    places[id]?.removeAll { $0 >= start }
+                    if places[id]?.isEmpty == true { places[id] = nil }
+                }
+                for id in Self.blockers(item) {
+                    blocked[id, default: 0] -= 1
+                    if blocked[id] == 0 { blocked[id] = nil }
+                }
+            }
+            for (offset, item) in next.enumerated() { add(item, at: start + offset) }
+        }
+        mutating func patch(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage],
+                            changed indices: [Int]? = nil) -> (items: [TranscriptItem], changed: Bool, places: [Int])? {
+            guard previous.count == page.count else { return nil }
+            var before: [TranscriptMessage] = [], changed: [TranscriptMessage] = []
+            for index in indices ?? Array(page.indices) {
+                guard page.indices.contains(index) else { return nil }
+                messageVisits += 1
+                if previous[index] != page[index] { before.append(previous[index]); changed.append(page[index]) }
+            }
+            guard TaskTranscriptPlan.cosmetic(from: before, to: changed),
+                  changed.allSatisfy({ $0.role == "assistant" && $0.kind == nil && blocked[$0.id] == nil }),
+                  zip(before, changed).allSatisfy({ $0.accounting == $1.accounting }) else { return nil }
+            if changed.isEmpty { return (items, false, []) }
+            var replacements: [String: TranscriptItem] = [:]
+            var affected = Set<Int>()
+            for message in changed {
+                affected.formUnion(places[message.id] ?? [])
+                // Keep the unfolded planner: a local fragment cannot decide a
+                // finished turn's fold without the rest of that turn.
+                for item in TaskTranscriptPlan.rows([message], lifecycle: nil) {
+                    guard replacements.updateValue(item, forKey: item.id) == nil else { return nil }
+                }
+            }
+            itemVisits += affected.count
+            guard Set(affected.map { items[$0].id }) == Set(replacements.keys) else { return nil }
+            var result = items
+            let ordered = affected.sorted()
+            for index in ordered {
+                guard let replacement = replacements[items[index].id],
+                      Set(replacement.messageIDs) == Set(items[index].messageIDs) else { return nil }
+                result[index] = replacement
+            }
+            return (result, true, ordered)
+        }
+    }
+
     static func patched(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> [TranscriptItem]? {
         patch(items, from: previous, to: page)?.items
     }
-    /// `patched`, saying too whether any row changed. A patch keeps every
-    /// row's identity and place: the same ids, in the same order.
-    ///
-    /// One pass over the page finds the rows a token changed; the checks
-    /// that follow read only those. Comparing the whole page again for each
-    /// check — whether it is cosmetic, which rows changed, whether their
-    /// accounting did — walked every row three times more on every token.
-    static func patch(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> (items: [TranscriptItem], changed: Bool)? {
-        guard previous.count == page.count else { return nil }
-        var before: [TranscriptMessage] = [], changed: [TranscriptMessage] = []
-        for (lhs, rhs) in zip(previous, page) where lhs != rhs { before.append(lhs); changed.append(rhs) }
-        // Rows that did not change are cosmetic and keep their accounting.
-        guard TaskTranscriptPlan.cosmetic(from: before, to: changed),
-              changed.allSatisfy({ $0.role == "assistant" && $0.kind == nil }),
-              zip(before, changed).allSatisfy({ $0.accounting == $1.accounting }) else { return nil }
-        if changed.isEmpty { return (items, false) }
-        let sources = Set(changed.map(\.id))
-        var replacements: [String: TranscriptItem] = [:]
-        for message in changed {
-            // The unfolded planner: a patch replaces rows in place and must
-            // not re-decide a turn's fold from one message out of context.
-            for item in TaskTranscriptPlan.rows([message], lifecycle: nil) {
-                guard replacements.updateValue(item, forKey: item.id) == nil else { return nil }
-            }
-        }
-        var affected = Set<String>(), places: [Int] = []
-        for (index, item) in items.enumerated() {
-            switch item {
-            case .message(let message): if sources.contains(message.id) { affected.insert(item.id); places.append(index) }
-            case .block(let block):
-                let ownsSource = block.message.map { sources.contains($0.id) } == true ||
-                    block.activity.contains { sources.contains($0.id) }
-                if block.taskSummary?.requests.contains(where: { sources.contains($0.id) }) == true,
-                   block.presentation != .work || block.task != nil { return nil }
-                if block.turn?.requests.contains(where: { sources.contains($0.id) }) == true { return nil }
-                if ownsSource { affected.insert(item.id); places.append(index) }
-            }
-        }
-        // Membership changes, legacy grouping changes and terminal aggregates
-        // take the complete planner. Ordinary part fragments touch local rows.
-        guard affected == Set(replacements.keys) else { return nil }
-        // Only the rows the token touched are replaced, in their places.
-        var result = items
-        for index in places { if let replacement = replacements[items[index].id] { result[index] = replacement } }
-        return (result, true)
+    /// Unindexed callers retain the complete comparison. A page keeps its
+    /// index and takes the delivery's changed indices instead.
+    static func patch(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> (items: [TranscriptItem], changed: Bool, places: [Int])? {
+        var index = PatchIndex(items)
+        return index.patch(items, from: previous, to: page)
     }
     /// `complete` says whether the page reaches the conversation's newest
     /// row (see `TaskTranscriptPlan.items`).
