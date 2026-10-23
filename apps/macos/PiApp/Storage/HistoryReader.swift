@@ -81,6 +81,13 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    /// Test seam: hold an edit's index scan while another chat reads.
+    var editReadStarted: (@Sendable () -> Void)?
+    func observeEditRead(_ observer: (@Sendable () -> Void)?) { editReadStarted = observer }
+    /// Each chat's edit scan owns its indexes and executor. A cold scan must
+    /// not hold up another chat's page/read on this shared reader.
+    private var editReaders: [String: HistoryReader] = [:]
+    private var editRecency: [String] = []
     var agentCoordinationCache: [String: (fingerprint: String, value: AgentCoordination)] = [:]
     /// Complete plan scans only. Keep metadata for the same number of journals
     /// as transcript pages; a cached reopen must not rescan a large journal.
@@ -378,6 +385,7 @@ actor HistoryReader {
         searchGeneration += 1; searchContinuation = nil
         indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll()
         subagentPlanCache.removeAll(); subagentPlanRecency.removeAll()
+        editReaders.removeAll(); editRecency.removeAll()
     }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
@@ -807,13 +815,25 @@ actor HistoryReader {
         }
         return ref.type == "branch" ? RetainedConversation.edit : ConversationContent.text(record, adopted: ref.adopted)
     }
-    func editTarget(path: String, id: String) throws -> [String: WireValue] {
-        let page = try read(path: path, around: id, targetTurns: 1, whole: true)
-        guard page.notice == nil, let index = indexes[path], let position = try index.branch.index(of: id),
+    func editTarget(path: String, id: String) async throws -> [String: WireValue] {
+        let reader = editReaders[path] ?? HistoryReader(indexDirectory: indexDirectory)
+        editReaders[path] = reader
+        editRecency.removeAll { $0 == path }; editRecency.append(path)
+        while editRecency.count > Self.retainedIndexes { editReaders.removeValue(forKey: editRecency.removeFirst()) }
+        return try await reader.indexedEditTarget(path: path, id: id, started: editReadStarted)
+    }
+    private func indexedEditTarget(path: String, id: String, started: (@Sendable () -> Void)?) throws -> [String: WireValue] {
+        started?()
+        try Task.checkCancellation()
+        let file = try open(path); defer { try? file.close() }
+        let identity = try stamp(file), size = try file.seekToEnd()
+        try file.seek(toOffset: 0)
+        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: nil, around: id, after: nil,
+                                       targetTurns: 1, progress: nil, whole: true)
+        guard journal.notice == nil, let index = indexes[path], let position = try index.branch.index(of: id),
               let ref = try index.branch.ref(id), ref.type == "message", ref.role == "user" else {
             throw HostError.failure("The editable user message is unavailable, abandoned, or its history needs recovery.")
         }
-        let file = try open(path); defer { try? file.close() }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         try file.seek(toOffset: ref.offset)
         guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
