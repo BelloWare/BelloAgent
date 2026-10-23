@@ -84,6 +84,9 @@ actor HistoryReader {
     /// Generated fixtures append after indexing, as a live helper can.
     private var imageReferenceIndexed: (@Sendable () throws -> Void)?
     func observeImageReference(_ observer: (@Sendable () throws -> Void)?) { imageReferenceIndexed = observer }
+    /// Generated fixtures append after a chunk is read, while a cold scan is under way.
+    private var indexChunkRead: (@Sendable (UInt64) throws -> Void)?
+    func observeIndexChunks(_ observer: (@Sendable (UInt64) throws -> Void)?) { indexChunkRead = observer }
     /// Test seam: hold an edit's index scan while another chat reads.
     var editReadStarted: (@Sendable () -> Void)?
     func observeEditRead(_ observer: (@Sendable () -> Void)?) { editReadStarted = observer }
@@ -867,7 +870,7 @@ actor HistoryReader {
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file), size = try file.seekToEnd()
         let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: nil, around: id, after: nil,
-                                       targetTurns: nil, progress: nil, whole: false)
+                                       targetTurns: nil, progress: nil, whole: false, bounded: true)
         try imageReferenceIndexed?()
         // A helper can append while the index is read, or be halfway through
         // its next record. The complete record this offset names still reads;
@@ -1377,6 +1380,7 @@ actor HistoryReader {
             let count = bounded ? Int(min(65_536, size - min(size, readOffset))) : 65_536
             guard count > 0, let chunk = try file.read(upToCount: count), !chunk.isEmpty else { break }
             readOffset += UInt64(chunk.count)
+            try indexChunkRead?(readOffset)
             try Task.checkCancellation()
             var start = chunk.startIndex
             while let index = Self.newline(in: chunk, from: start) {

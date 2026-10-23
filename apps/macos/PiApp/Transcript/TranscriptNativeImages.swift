@@ -1,4 +1,5 @@
 import AppKit
+import ObjectiveC
 
 enum TranscriptImageMetrics {
     static let side: CGFloat = 64
@@ -20,12 +21,11 @@ enum TranscriptImageMetrics {
     private struct Identity: Equatable {
         let id: String; let count: Int; let reference: TranscriptImageReference?; let attachments: [AttachmentRecord]?
     }
-    private var sheet: PiSheetWindow?
     private var rightToLeft = false
-    private var visibilityObservation: NSObjectProtocol?
+    private var visibilityObservations: [NSObjectProtocol] = []
     override var isFlipped: Bool { true }
     deinit {
-        MainActor.assumeIsolated { if let visibilityObservation { NotificationCenter.default.removeObserver(visibilityObservation) } }
+        MainActor.assumeIsolated { for observer in visibilityObservations { NotificationCenter.default.removeObserver(observer) } }
     }
 
     func update(message: TranscriptMessage, actions: TranscriptActions, environment: TranscriptRowEnvironment) {
@@ -43,13 +43,9 @@ enum TranscriptImageMetrics {
                     return try await action(message, index, pixels)
                 }
                 let button = TranscriptImageButton(label: label, load: load)
-                button.onPress = { [weak self, weak button] in
-                    guard let self, let window = button?.window, window.attachedSheet == nil else { return }
-                    self.sheet = AppKitSheets.present(on: window, size: CGSize(width: min(800, max(320, window.frame.width - 60)),
-                                                                             height: min(620, max(300, window.frame.height - 80)))) { dismiss in
-                        TranscriptImageViewer(label: label, load: load, dismiss: dismiss)
-                    }
-                    self.sheet?.onEnded = { [weak self] _ in self?.sheet = nil }
+                button.onPress = { [weak button] in
+                    guard let window = button?.window else { return }
+                    TranscriptImagePresentation.present(on: window, label: label, load: load)
                 }
                 addSubview(button); buttons.append(button)
             }
@@ -70,16 +66,30 @@ enum TranscriptImageMetrics {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let visibilityObservation { NotificationCenter.default.removeObserver(visibilityObservation); self.visibilityObservation = nil }
-        if window == nil { sheet?.end(animated: false, requested: true); sheet = nil; return }
+        for observer in visibilityObservations { NotificationCenter.default.removeObserver(observer) }
+        visibilityObservations.removeAll()
+        guard window != nil else { return }
         if let clip = enclosingScrollView?.contentView {
             clip.postsBoundsChangedNotifications = true
-            visibilityObservation = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
+            visibilityObservations.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.loadVisibleImages() }
+            })
+        }
+        // Earlier rows can fold without scrolling this clip. Observe only
+        // this image row's placement; its unchanged subtree needs no layout.
+        var ancestor = superview
+        while let view = ancestor {
+            if view is TranscriptRowContainer {
+                view.postsFrameChangedNotifications = true
+                visibilityObservations.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.loadVisibleImages() }
+                })
+                break
             }
+            ancestor = view.superview
         }
         // Mounted rows are positioned after their measured children. Check
-        // once that pass has settled, then only as the viewport changes.
+        // once that pass has settled, then as placement or viewport changes.
         DispatchQueue.main.async { [weak self] in self?.loadVisibleImages() }
     }
     private func loadVisibleImages() { for button in buttons { button.loadIfVisible() } }
@@ -88,6 +98,7 @@ enum TranscriptImageMetrics {
 @MainActor final class TranscriptImageButton: PiKit.ButtonBase {
     private let load: @MainActor (Int) async throws -> TranscriptImageBitmap
     private var task: Task<Void, Never>?
+    var readingTask: Task<Void, Never>? { task }
     private var generation = UUID()
     private(set) var bitmap: TranscriptImageBitmap?
     private var drawnImage: NSImage?
@@ -161,6 +172,31 @@ enum TranscriptImageMetrics {
                 self.setAccessibilityHelp(error.localizedDescription + " Open image to try again.")
                 self.redrawContent()
             }
+        }
+    }
+}
+
+@MainActor private var transcriptImagePresentationKey: UInt8 = 0
+
+/// The window owns its viewer; virtualized rows own only their thumbnails.
+@MainActor private final class TranscriptImagePresentation {
+    private var sheet: PiSheetWindow?
+    static func present(on parent: NSWindow, label: String, load: @escaping @MainActor (Int) async throws -> TranscriptImageBitmap) {
+        guard parent.attachedSheet == nil else { return }
+        let owner: TranscriptImagePresentation
+        if let current = objc_getAssociatedObject(parent, &transcriptImagePresentationKey) as? TranscriptImagePresentation { owner = current }
+        else {
+            owner = TranscriptImagePresentation()
+            objc_setAssociatedObject(parent, &transcriptImagePresentationKey, owner, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+        guard owner.sheet == nil else { return }
+        let sheet = AppKitSheets.present(on: parent, size: CGSize(width: min(800, max(320, parent.frame.width - 60)),
+                                                                height: min(620, max(300, parent.frame.height - 80)))) { dismiss in
+            TranscriptImageViewer(label: label, load: load, dismiss: dismiss)
+        }
+        owner.sheet = sheet
+        sheet.onEnded = { [weak owner, weak sheet] _ in
+            if owner?.sheet === sheet { owner?.sheet = nil }
         }
     }
 }
