@@ -1208,6 +1208,72 @@ final class ChatBriefTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(left.isEmpty, "Quitting released the briefs reader's indexes: \(left)")
     }
 
+    /// The newest page starts inside a long, tool-heavy turn: the brief quotes
+    /// the question that opened the turn, never the row ID the page names it by.
+    @MainActor func testAPageStartingInsideATurnQuotesItsQuestionNotItsRowID() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (chat, journal) = try await self.chat("heavy", fixture, title: "Tool-heavy chat", turns: [])
+        try journal.message("heavy-question", role: "user", "Please move every parser module onto the streaming reader.")
+        for index in 0..<40 {
+            try journal.message("heavy-call-\(index)", role: "assistant",
+                                [["type": "toolCall", "id": "call-\(index)", "name": "read", "arguments": ["path": "Parser\(index).swift"]]])
+            try journal.message("heavy-result-\(index)", role: "toolResult", [["type": "text", "text": "contents of Parser\(index).swift"]],
+                                extra: ["toolCallId": "call-\(index)", "toolName": "read", "isError": false])
+        }
+        try journal.message("heavy-answer", role: "assistant", "Every parser module now reads from the streaming reader.")
+        let page = try await HistoryReader().read(path: journal.url.path)
+        XCTAssertEqual(page.partialTurnInput, "heavy-question", "The newest page starts inside the turn and names its question's row")
+        finishRun(model, chat.id, receipts: ["t1"])
+        try await eventually("the brief is written", timeout: .seconds(60)) { model.record(chat.id)?.brief != nil }
+        let prompt = try XCTUnwrap(gateway.requests.first).prompt
+        XCTAssertTrue(prompt.contains("Please move every parser module onto the streaming reader."), prompt)
+        XCTAssertFalse(prompt.contains("heavy-question"), "The row's ID is not quoted as the question")
+        XCTAssertTrue(prompt.contains("Every parser module now reads from the streaming reader."))
+    }
+
+    /// A brief being prepared (its model list, its chat's page) is work under
+    /// way: an update's idle barrier waits for it. One that a quit or an update
+    /// overtakes anyway sends nothing, and the mini model is asked nothing once
+    /// either has begun.
+    @MainActor func testABriefBeingPreparedHoldsTheUpdateBarrierAndSendsNothingAfterIt() async throws {
+        let fixture = try await self.fixture()
+        let model = fixture.model, gateway = fixture.gateway
+        let (first, _) = try await self.chat("prepared", fixture, title: "Prepared", turns: [("A question.", "An answer.")])
+        let (second, _) = try await self.chat("overtaken", fixture, title: "Overtaken", turns: [("Another question.", "Another answer.")])
+        // Held in its preparation (here, waiting out a connection change).
+        let (released, release) = AsyncStream<Never>.makeStream()
+        model.connectionSwitches[first.id] = (UUID(), Task { for await _ in released {} })
+        model.writeBriefNow(first.id)
+        XCTAssertTrue(model.hasActiveWork, "A brief being prepared is work under way")
+        XCTAssertFalse(model.acquireUpdateBarrier(), "The update's barrier waits for it")
+        XCTAssertFalse(model.installPreparing)
+        model.connectionSwitches[first.id] = nil; release.finish()
+        try await eventually("its brief is written", timeout: .seconds(60)) { model.record(first.id)?.brief != nil }
+        try await eventually("nothing is under way", timeout: .seconds(30)) { !model.hasActiveWork }
+        XCTAssertEqual(gateway.requests.count, 1)
+        // A quit or an update that begins while the next one is prepared.
+        model.chatBriefs.beforeDispatch = { _ in model.installPreparing = true }
+        model.writeBriefNow(second.id)
+        try await eventually("it is over", timeout: .seconds(30)) { model.chatBriefs.outcomes[second.id] != nil }
+        XCTAssertEqual(model.chatBriefs.outcomes[second.id], .skipped)
+        XCTAssertEqual(gateway.requests.count, 1, "Nothing is sent once a quit or an update has begun")
+        XCTAssertFalse(model.chats.contains { $0.backgroundTask == "chat-brief" && $0.sourceSessionID == second.id })
+        // Nor does any request to the mini model start a helper or send.
+        model.chatBriefs.beforeDispatch = nil
+        let profile = try XCTUnwrap(model.profiles.first)
+        let request = MiniModelRequest(model: "mini-fixture", contextWindow: profile.contextWindow, maxOutputTokens: 512, modelOutputLimit: nil,
+                                       thinkingLevel: "default", prompt: "Never sent", task: "chat-brief", title: "Chat brief", timeout: 30, name: "brief request")
+        do {
+            _ = try await model.askMiniModel(request, profile: profile, sourceID: second.id) { _ in "" }
+            XCTFail("Nothing is asked of the mini model once a quit or an update has begun")
+        } catch {}
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(gateway.requests.count, 1)
+        XCTAssertFalse(model.chats.contains { $0.backgroundTask == "chat-brief" && $0.sourceSessionID == second.id }, "Not even its request's record is made")
+        model.installPreparing = false
+    }
+
     /// A chat archived while Write Briefs waits on an earlier one is left
     /// alone when its turn comes, as an archived chat is when it starts.
     @MainActor func testWriteBriefsLeavesAChatArchivedWhileItWaits() async throws {

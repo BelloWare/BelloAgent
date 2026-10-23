@@ -91,8 +91,9 @@ struct ChatBriefPlan: Sendable {
 
     /// Nil when the connection has no mini model, the mini model's window is
     /// too small, or nothing has been said since `previous` was written.
-    /// `rows` is the chat's newest page; `partialTurnInput` is the request of
-    /// the turn the page starts inside (`HistoryPage.partialTurnInput`).
+    /// `rows` is the chat's newest page; `partialTurnInput` is the text of the
+    /// request of the turn the page starts inside (read from the row
+    /// `HistoryPage.partialTurnInput` names).
     init?(profile: ProfileRecord, descriptors: [ModelDescriptor], title: String, previous: ChatBrief?,
           rows: [TranscriptMessage], partialTurnInput: String? = nil) {
         guard let alias = TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors), let last = rows.last else { return nil }

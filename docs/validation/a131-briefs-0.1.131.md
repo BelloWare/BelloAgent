@@ -151,6 +151,45 @@ Runs of what round 4 changes:
 | Serial, under the lock, after the fixes (`r4-green-serial.log`): `ChatBriefTests` 18, `ChatBriefHoverTests` 2, `WebhookTests` 18 (run's-end tracking) | 38 passed, 0 failed |
 | Parallel (`r4-green-parallel.log`): `ChatBriefSettingsLiveTests` 1, `ChatBriefSettingsTests` 1, `CompletionSoundTests` 8 (the chime's tracker is unchanged), `ChatBriefPlanTests` 7 | 17 passed, 0 failed |
 
+## Round 5: Astra's re-review of round 4 (2026-10-24)
+
+Two findings on `eb907d5a`, each fixed with a test that failed first on the
+unfixed code (`r5-red.log`) and passes now:
+
+1. **[P2] A turn's question is quoted, not its row's ID.** When the newest
+   page starts inside a long turn, `HistoryPage.partialTurnInput` names the
+   question that opened the turn by its row ID; the brief quoted that ID as a
+   user message and left the question out. The row is now read on the briefs
+   reader (`message(path:id:field:offset:)`: at most one 16,384-character
+   page of it, then clipped like any message) and quoted as text; a row that
+   cannot be read is left out. `testAPageStartingInsideATurnQuotesItsQuestionNotItsRowID`:
+   a question, 40 tool calls and results and an answer, so the newest page
+   starts inside the turn (red: the prompt carried `heavy-question` and not
+   the question).
+2. **[P2] A brief being prepared holds the update and quit barrier.** While a
+   brief listed models or read its chat, `hasActiveWork` did not count it, and
+   nothing rechecked `installPreparing` before the request, so a quit or an
+   update could quiesce the helpers and the brief then start one. Now:
+   `hasActiveWork` counts every brief being prepared or asked for
+   (`ChatBriefs.busy`); `writeBrief` rechecks `installPreparing` and shutdown
+   after each await; and `askMiniModel` refuses (with no request record) once
+   a quit or an update has begun, again before it opens a session and before
+   it sends. Asking during the request was already counted (its display
+   loads). `testABriefBeingPreparedHoldsTheUpdateBarrierAndSendsNothingAfterIt`
+   (red: not counted, and the barrier was taken). Mutants: leaving the brief
+   out of `hasActiveWork` and dropping `askMiniModel`'s first check are each
+   caught (`r5-mut-active-work.log`, `r5-mut-ask-start.log`); the recheck in
+   `writeBrief` is the first of these layers and is not caught alone, since
+   `askMiniModel` refuses the same request.
+
+Runs of what round 5 changes:
+
+| Run | Result |
+| --- | --- |
+| The two tests on the unfixed code (`r5-red.log`) | 2 failed, each for the reason found |
+| Serial, under the lock, after the fixes (`r5-green-serial.log`): `ChatBriefTests` 20, `ChatBriefHoverTests` 2, `TitleGenerationTests` 12, `WebhookTests` 18, `MiniModelSettingsTests` 1, `BackgroundRequestsTests` 6 (every caller of `askMiniModel`) | 59 passed, 0 failed |
+| The barrier test again with its final record check (`r5-barrier-green.log`) | passed |
+
 ## What it does
 
 - **A brief per chat.** At the end of every run (completed, failed, stopped or
@@ -262,6 +301,10 @@ Runs of what round 4 changes:
   level with it), `refresh(over:width:view:)` (a shown card rebuilt without
   fading), and a `pointerLocation` seam. Off by default: skill pills are
   unchanged.
+- Round 5: the partial turn's question read from its row
+  (`WorkspaceChatBriefs.swift`), `ChatBriefs.busy` in
+  `WorkspaceModel.hasActiveWork`, `installPreparing` rechecked in
+  `writeBrief` and enforced by `askMiniModel` (`WorkspaceTitleGeneration.swift`).
 - Round 4: `RunEndTracker` (`CompletionSound.swift`; `SessionDisplay.runEndTracker`),
   the settings card watching the chat list and the saved switch, a history
   notice as `.unreadable`, the quit path releasing the briefs reader's

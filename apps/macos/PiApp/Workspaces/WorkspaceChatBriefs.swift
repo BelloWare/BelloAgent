@@ -154,6 +154,9 @@ struct ChatBriefUsage: Equatable, Sendable {
         start(id)
     }
     func isWriting(_ id: String) -> Bool { tasks[id] != nil }
+    /// A brief being prepared or asked for: work under way, which a quit or
+    /// an update's idle barrier waits for (`WorkspaceModel.hasActiveWork`).
+    var busy: Bool { !tasks.isEmpty }
     /// Why the chat's last request wrote no brief, where the reader can do
     /// something about it: its hover card says so.
     func lastProblem(_ id: String) -> String? {
@@ -324,15 +327,23 @@ extension WorkspaceModel {
         let lease: ConnectionLease
         do { lease = try connectionLease(for: chat) } catch { return Self.movedConnection(error) ? .connectionChanged : .noMiniModel }
         _ = await listModels(for: profile)
-        guard !Task.isCancelled, briefSettings.enabled else { return .skipped }
+        // A quit or an update that began meanwhile (`installPreparing`) has
+        // stopped, or is stopping, the helpers: nothing more is started.
+        guard !Task.isCancelled, briefSettings.enabled, !installPreparing, !isShutDown else { return .skipped }
         let descriptors = catalogEntry(for: profile).descriptors
         guard TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors) != nil else { return .noMiniModel }
         let activity = chatRecord(id)?.activityStamp ?? chat.activityStamp
         let page: HistoryPage
         do { page = try await chatBriefs.reader.read(path: path) }
         catch { return .unreadable(error.localizedDescription) }
+        // A page that starts inside a long turn names the question that opened
+        // it by its row: quoted as text, as much of it as a message takes.
+        var opening: String?
+        if let row = page.partialTurnInput, page.notice == nil {
+            opening = try? await chatBriefs.reader.message(path: path, id: row, field: "content", offset: 0).0
+        }
         await chatBriefs.beforeDispatch?(id)
-        guard !Task.isCancelled, briefSettings.enabled else { return .skipped }
+        guard !Task.isCancelled, briefSettings.enabled, !installPreparing, !isShutDown else { return .skipped }
         // Everything read was the chat's on this connection: still on it now,
         // and again just before the request is sent, or nothing is sent.
         do { try requireConnection(lease) } catch { return Self.movedConnection(error) ? .connectionChanged : .noMiniModel }
@@ -341,7 +352,7 @@ extension WorkspaceModel {
         if let notice = page.notice { return .unreadable(notice) }
         guard let current = chatRecord(id),
               let plan = ChatBriefPlan(profile: profile, descriptors: descriptors, title: current.displayTitle, previous: current.brief,
-                                       rows: page.messages, partialTurnInput: page.partialTurnInput) else { return .nothingNew }
+                                       rows: page.messages, partialTurnInput: opening) else { return .nothingNew }
         let request = MiniModelRequest(model: plan.model, contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens,
                                        modelOutputLimit: plan.modelOutputLimit, thinkingLevel: plan.thinkingLevel, prompt: plan.prompt,
                                        task: BackgroundRequestKind.brief.raw, title: "Chat brief", timeout: 60, name: "brief request")
