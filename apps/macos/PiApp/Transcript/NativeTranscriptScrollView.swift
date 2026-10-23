@@ -14,6 +14,11 @@ enum TranscriptKeyScroll {
 }
 
 final class TranscriptNativeScrollView: NSScrollView {
+    // An always-visible scroller keeps its gutter before the first rows are
+    // measured; appearing afterward would reflow the whole page by 15 points.
+    override var scrollerStyle: NSScroller.Style {
+        didSet { autohidesScrollers = scrollerStyle != .legacy }
+    }
     override var frame: NSRect {
         willSet {
             if frame != newValue { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }

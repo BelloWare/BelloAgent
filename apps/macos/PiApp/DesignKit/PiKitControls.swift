@@ -229,8 +229,18 @@ extension PiKit {
 
         /// One tab: its title, ink by whether it is chosen.
         @MainActor final class Tab: ButtonBase {
+            /// Actual label measurements, for sizing regressions.
+            private(set) var textMeasurements = 0
+            private var measuredSize: (scale: CGFloat, size: NSSize)?
             var chosen = false { didSet { if oldValue != chosen { redrawContent() } } }
-            override var title: String { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+            override var title: String {
+                get { super.title }
+                set {
+                    guard super.title != newValue else { return }
+                    super.title = newValue
+                    invalidateIntrinsicContentSize(); redrawContent()
+                }
+            }
             var line: Line { Line(title, font: .systemFont(ofSize: 12, weight: .medium), color: chosen ? .piInk : .piInkSecondary) }
             private let horizontalPadding: CGFloat
             private let keyboardFocusable: Bool
@@ -240,7 +250,20 @@ extension PiKit {
                 super.init(frame: .zero); self.title = title; pressScales = false
             }
             required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-            override var intrinsicContentSize: NSSize { let text = line.size(scale: piScale); return NSSize(width: text.width + horizontalPadding * 2, height: text.height + 10) }
+            override func invalidateIntrinsicContentSize() {
+                measuredSize = nil
+                super.invalidateIntrinsicContentSize()
+                superview?.invalidateIntrinsicContentSize(); superview?.needsLayout = true
+            }
+            override var intrinsicContentSize: NSSize {
+                let scale = piScale
+                if let measuredSize, measuredSize.scale == scale { return measuredSize.size }
+                textMeasurements += 1
+                let text = line.size(scale: scale)
+                let size = NSSize(width: text.width + horizontalPadding * 2, height: text.height + 10)
+                measuredSize = (scale, size)
+                return size
+            }
             override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
             override func drawContent(in rect: CGRect) { line.draw(at: CGPoint(x: horizontalPadding, y: 5), scale: piScale) }
             override func isAccessibilitySelected() -> Bool { chosen }

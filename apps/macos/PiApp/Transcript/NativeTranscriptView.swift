@@ -103,7 +103,7 @@ final class TranscriptSurfaceMarker: NSView {
         super.init(frame: frame)
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
+        scrollView.autohidesScrollers = scrollView.scrollerStyle != .legacy
         scrollView.drawsBackground = false
         scrollView.contentView.drawsBackground = false
         scrollView.borderType = .noBorder
