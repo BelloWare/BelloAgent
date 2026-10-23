@@ -195,7 +195,12 @@ extension WorkspaceModel {
         try await task.value
         // Only persistence is serialized: a slow helper acknowledgement
         // must not hold up the next choice's save or publication.
-        await sendCostLimit(id)
+        // The saved choice reaches the helper whatever becomes of the
+        // caller: an editor that goes away mid-save (its popover closed by
+        // a click outside it, or by AppKit once the Raise limit… pill it
+        // points at leaves the window) cancels its own task, and a send
+        // from a cancelled task never left (LIMIT-1).
+        await Task { [weak self] in await self?.sendCostLimit(id) }.value
     }
     private func persistCostLimit(_ limit: CostLimit?, for id: String) async throws {
         if let index = chats.firstIndex(where: { $0.id == id }) {
