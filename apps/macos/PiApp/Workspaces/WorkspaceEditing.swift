@@ -75,10 +75,10 @@ extension WorkspaceModel {
             resumeEditPreparation(view, shown: shown.flatMap(Self.editOpening))
             return
         }
-        let generation = UUID(), draft = view.savedDraft
+        let generation = UUID(), attempt = UUID(), draft = view.savedDraft
         let focusOrigin = focusedSessionID ?? selectedID
         let focus = QueueEditFocus(self, view)
-        view.editGeneration = generation; view.editPreparing = true; view.editNotice = Self.editLoadingNotice
+        view.editGeneration = generation; view.editPreparation = attempt; view.editPreparing = true; view.editNotice = Self.editLoadingNotice
         let outputUse = beginToolOutputUse(.messageEdit)
         // The draft an edit sets aside must be the chat's own: until its
         // saved draft is read, the question waits for its original as before.
@@ -92,10 +92,10 @@ extension WorkspaceModel {
         messageEditStep?(opening == nil ? "begin" : "shown")
         Task {
             defer { finishToolOutputUse(outputUse) }
-            defer { if view.editGeneration == generation { view.editPreparing = false } }
+            defer { if view.editGeneration == generation, view.editPreparation == attempt { view.editPreparing = false } }
             // A composer that took the question keeps what is typed in it;
             // one still waiting takes the original only over the draft it had.
-            let current = { view.editGeneration == generation && (opening != nil || view.savedDraft == draft) }
+            let current = { view.editGeneration == generation && view.editPreparation == attempt && (opening != nil || view.savedDraft == draft) }
             do {
                 try await prepareToolOutputUse(outputUse)
                 messageEditStep?("outputs")
@@ -123,13 +123,15 @@ extension WorkspaceModel {
     /// `shown`: the question's row as it reads now, when it is on screen.
     func resumeEditPreparation(_ view: SessionDisplay, shown: String? = nil) {
         guard view.editInputPending, let messageID = view.editingMessageID, let item = record(view.id), !item.isSubagent else { return }
-        let generation = UUID()
-        view.editGeneration = generation; view.editPreparing = true
+        // The same edit, read again: its generation stays (an image import
+        // into it keeps its place), and only this read is current.
+        let generation = view.editGeneration, attempt = UUID()
+        view.editPreparation = attempt; view.editPreparing = true
         let outputUse = beginToolOutputUse(.messageEdit)
         Task {
             defer { finishToolOutputUse(outputUse) }
-            defer { if view.editGeneration == generation { view.editPreparing = false } }
-            let current = { view.editGeneration == generation && view.editingMessageID == messageID }
+            defer { if view.editGeneration == generation, view.editPreparation == attempt { view.editPreparing = false } }
+            let current = { view.editGeneration == generation && view.editPreparation == attempt && view.editingMessageID == messageID }
             do {
                 try await prepareToolOutputUse(outputUse)
                 guard let original = try await readEditOriginal(item, messageID: messageID, current: current), current() else { return }

@@ -346,6 +346,66 @@ made again at Send against the conversation **through the edited message**:
   `test-concurrent-native-host.py`, `test-native-acceptance.py`): 40, 4 and 3
   tests, all OK (`evidence/wire-*.log`).
 
+## Round 3: the re-review's findings (Astra, on a8a14c39)
+
+- *Undo of a skill step dropped the original's skill.* A skill chosen through
+  the slash list (`replaceCompletion`) or a token removed
+  (`applySkillChange`) while the original loaded recorded its Undo as a
+  snapshot of the skills then. The original's skill, read in after, was lost
+  on Undo, and Redo brought back only the chosen one. Both steps are now
+  recorded as steps (`ComposerTextView.skills(_:steppedFrom:to:)`): Undo takes
+  back what the step added and puts back what it removed, over the skills the
+  composer holds now, and any other skill stays where it is.
+- *Edit again cancelled an image import into the same edit.* An import keeps
+  its place while the edit's `editGeneration` stays (`beginImageImport`), and
+  the read of the original started over by Edit again changed it. Each read
+  now has its own token (`SessionDisplay.editPreparation`); Edit again on the
+  same edit starts a new read and leaves the generation alone. A new edit,
+  Cancel, a restore and Send change the generation as before.
+
+**Failing first** (`evidence/round3-failing-first.log`, the a8a14c39 sources):
+`testAnImageImportGoingOnKeepsItsPlaceWhenEditIsChosenAgain` failed ("Edit
+again on the same edit keeps an image import under way"; "The original
+arriving keeps it too"), and the first form of the undo test failed (Undo left
+`[]` for `[original]`; Redo left `["skill-notes"]`). The undo test was then
+extended to a token removal recorded before the original arrived, after the
+first mutation run showed the snapshot form of `applySkillChange` slipped past
+it; with both snapshot forms restored (`r5r6`, the pre-fix composer) it fails.
+
+**Mutations** (`evidence/mutation-r5…r7*.log`; each reverted):
+
+| Mutation | Caught by |
+| --- | --- |
+| r5: the slash-list step's Undo as a snapshot | `testUndoOfSkillStepsMadeWhileTheOriginalLoadedKeepsTheOriginalsSkill` |
+| r6: the token step's Undo as a snapshot | the same test |
+| r5 and r6 together (the pre-fix composer) | the same test |
+| r7: Edit again makes a new edit generation | `testAnImageImportGoingOnKeepsItsPlaceWhenEditIsChosenAgain` |
+
+The r5–r6 run also failed `testAnEditIsStillRefusedWhenItsMessageOrWhatItBranchesFromChanged`
+once; 25 repeats reproduced it once more. Its cause was the test, not the
+change: it read the helper's refusal from `view.notice`, which the chat's next
+refresh sets back to the tool notice (`applyToolNotice`,
+`WorkspaceRefresh.swift:375`). It now reads the edit banner's reason
+(`editNotice`) and checks that Send was made; 25 repeats then passed
+(`evidence/refusal-repeat-4.log`).
+
+**Classes covering round 3** (Debug):
+
+- `MessageEditStartTests`: 14 tests, 0 failures (`evidence/round3-start.log`
+  and the parallel run below).
+- Parallel lane (`evidence/round3-parallel.log`, the 22 classes above, with
+  `ComposerImportSubmissionTests`, `ImageFormatImportTests`,
+  `PastedAttachmentTests` and `QueuedAttachmentLimitTests` for the image
+  imports): **380 tests, 379 passed, 0 failed, 1 skipped**.
+- Serial lane under the lock (`evidence/round3-serial.log.1`):
+  `InlineSkillTests` (8) and `InlineSkillPillTests` (16) for the skill steps,
+  `ConversationPaneTests` (85) for the composer, and `HistoricalEditingTests`
+  (5), `HistoricalEditFocusTests` (1), `HistoryEdgeTests` (16),
+  `MessageDetailTests` (10), `MessageVersionTranscriptTests` (8): **149 tests,
+  148 passed, 1 skipped** (`testCaptureSkillPillLooks`, an opt-in capture),
+  0 failures.
+- No helper or wire change in this round.
+
 ## Known
 
 - **Send still waits for the whole journal once.** The first read of a chat the

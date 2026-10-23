@@ -203,15 +203,32 @@ extension ComposerTextView {
     /// exactly as it is.
     func applySkillChange(_ skills: [SkillChip], actionName: String) {
         guard let display = skillStrip.display, !display.recoveringDraft, display.id == sessionID, display.skills != skills else { return }
-        let previous = display.skills
+        applySkillChange(from: display.skills, to: skills, actionName: actionName)
+    }
+    /// The step from `from` to `to`, made over the skills the composer holds
+    /// now; its Undo is the step back. A skill that came in by other means
+    /// since the step was recorded (an edited message's original, read after
+    /// it) stays through Undo and Redo.
+    private func applySkillChange(from: [SkillChip], to: [SkillChip], actionName: String) {
+        guard let display = skillStrip.display, !display.recoveringDraft, display.id == sessionID else { return }
         breakUndoCoalescing()
+        let skills = Self.skills(display.skills, steppedFrom: from, to: to)
         display.skills = skills
         skillTokens = skills
         skillStrip.changed?()
         undoManager?.registerUndo(withTarget: self) { editor in
-            MainActor.assumeIsolated { editor.applySkillChange(previous, actionName: actionName) }
+            MainActor.assumeIsolated { editor.applySkillChange(from: to, to: from, actionName: actionName) }
         }
         undoManager?.setActionName(actionName)
+    }
+    /// `current` with the step from `from` to `to` made in it: what the step
+    /// removed goes, what it set takes its place or is added after, and every
+    /// other skill stays where it is.
+    static func skills(_ current: [SkillChip], steppedFrom from: [SkillChip], to: [SkillChip]) -> [SkillChip] {
+        let removed = Set(from.map(\.id)).subtracting(to.map(\.id))
+        var result = current.filter { !removed.contains($0.id) }.map { chip in to.first { $0.id == chip.id } ?? chip }
+        result += to.filter { chip in !result.contains { $0.id == chip.id } }
+        return result
     }
     /// Backspace with the caret at the very start of the text.
     @discardableResult func removeLastSkillToken() -> Bool {

@@ -206,6 +206,70 @@ final class MessageEditStartTests: XCTestCase {
         XCTAssertEqual(view.attachments, [bench.image])
     }
 
+    /// Undo of a skill step made while the original loaded (a skill chosen
+    /// through the slash list, a token removed) takes back that step only:
+    /// the original's own skill, which arrived after the steps were recorded,
+    /// stays through Undo and Redo (review, 2026-10-23).
+    @MainActor func testUndoOfSkillStepsMadeWhileTheOriginalLoadedKeepsTheOriginalsSkill() async throws {
+        let bench = try await Bench(self)
+        let model = bench.model, view = bench.view
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let editor = ComposerTextView(frame: window.contentView!.bounds); editor.isRichText = false; editor.allowsUndo = true; editor.sessionID = view.id
+        editor.skillStrip.display = view
+        window.contentView?.addSubview(editor)
+        model.editMessage("u2", sessionID: view.id)
+        editor.string = view.draft
+        let undo = try XCTUnwrap(editor.undoManager)
+        undo.groupsByEvent = false
+        func step(_ change: () -> Void) { undo.beginUndoGrouping(); change(); undo.endUndoGrouping() }
+        func chip(_ name: String) -> SkillChip { SkillChip(id: "skill-" + name, name: name, path: "/skills/\(name)/SKILL.md", contentHash: name, metadataHash: name + "-meta") }
+        let notes = chip("notes"), lint = chip("lint")
+        func choose(_ chosen: SkillChip) {
+            let end = NSRange(location: (editor.string as NSString).length, length: 0)
+            editor.replaceCompletion(range: end, with: "", skills: view.skills + [chosen], display: view, changed: {})
+        }
+        step { choose(notes) }
+        step { choose(lint) }
+        step { editor.skillTokens = view.skills; editor.applySkillChange([notes], actionName: "Remove Skill") }
+        XCTAssertEqual(view.skills.map(\.id), [notes.id])
+        try await eventually("The original is asked for") { bench.asked.count == 1 }
+        bench.answer(.success(try bench.original()))
+        try await eventually("The original is read") { !view.editPreparing }
+        let original = bench.skill.id
+        XCTAssertEqual(view.skills.map(\.id), [original, notes.id])
+        undo.undo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id, lint.id], "Undo of the removal brings back only what it removed")
+        undo.undo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id], "Undo of a choice takes back only that skill")
+        undo.undo(); XCTAssertEqual(view.skills.map(\.id), [original])
+        undo.redo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id], "Redo puts it back beside the original's")
+        undo.redo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id, lint.id])
+        undo.redo(); XCTAssertEqual(view.skills.map(\.id), [original, notes.id])
+    }
+
+    /// An image import under way when Edit is chosen again on the same edit
+    /// (its original unread) still lands in the composer: the edit and its
+    /// draft are the same, only the read starts over (review, 2026-10-23).
+    @MainActor func testAnImageImportGoingOnKeepsItsPlaceWhenEditIsChosenAgain() async throws {
+        let bench = try await Bench(self)
+        let model = bench.model, view = bench.view
+        model.editMessage("u2", sessionID: view.id)
+        try await eventually("The original is asked for") { bench.asked.count == 1 }
+        bench.answer(.failure(HostError.failure("The journal could not be read.")))
+        try await eventually("The read ends") { !view.editPreparing }
+        let importing = model.beginImageImport(sessionID: view.id)
+        XCTAssertTrue(importing.isCurrent())
+        model.editMessage("u2", sessionID: view.id)
+        XCTAssertTrue(importing.isCurrent(), "Edit again on the same edit keeps an image import under way")
+        try await eventually("The original is asked for again") { bench.asked.count == 2 }
+        bench.answer(.success(try bench.original()))
+        try await eventually("The original is read") { !view.editPreparing }
+        XCTAssertTrue(importing.isCurrent(), "The original arriving keeps it too")
+        importing.finish()
+        model.cancelEdit(sessionID: view.id)
+        XCTAssertFalse(importing.isCurrent(), "Cancel ends the edit the import was for")
+    }
+
     /// A read the helper refused because rows were written while it loaded
     /// the whole history (a run going on) is made again.
     @MainActor func testAReadThatMetRowsWrittenMeanwhileIsMadeAgain() async throws {
@@ -444,9 +508,12 @@ final class MessageEditStartTests: XCTestCase {
         try await live.editElsewhere("q1", as: "q1b", "The second question, rewritten elsewhere")
         try await eventually("The rewrite reaches the chat", timeout: .seconds(30)) { !view.hasWork && !view.loading }
         model.sendEdit(sessionID: live.chat.id)
+        XCTAssertTrue(view.editSubmitting, "Send is made: \(model.editBlocker(view) ?? view.notice)")
         try await eventually("Send settles", timeout: .seconds(30)) { !view.editSubmitting }
         XCTAssertEqual(view.editingMessageID, "q2", "The edit stays in the composer")
-        XCTAssertEqual(view.draft, "The third question, edited"); XCTAssertFalse(view.notice.isEmpty)
+        // The banner keeps the helper's reason; the line under the composer
+        // goes back to the tool notice at the chat's next refresh.
+        XCTAssertEqual(view.draft, "The third question, edited"); XCTAssertTrue(view.editNotice.contains("abandoned branch"), view.editNotice)
         try await live.settle()
         let first = try await live.userTexts()
         XCTAssertEqual(first, ["The first question", "The second question, rewritten elsewhere"])
@@ -461,9 +528,10 @@ final class MessageEditStartTests: XCTestCase {
         try await live.editElsewhere("q1b", as: "q1c", "The second question, rewritten again elsewhere")
         try await eventually("The rewrite reaches the chat", timeout: .seconds(30)) { !view.hasWork && !view.loading }
         model.sendEdit(sessionID: live.chat.id)
+        XCTAssertTrue(view.editSubmitting, "Send is made: \(model.editBlocker(view) ?? view.notice)")
         try await eventually("Send settles", timeout: .seconds(30)) { !view.editSubmitting }
         XCTAssertEqual(view.editingMessageID, "q1b", "The edit stays in the composer")
-        XCTAssertEqual(view.draft, "The second question, edited here"); XCTAssertFalse(view.notice.isEmpty)
+        XCTAssertEqual(view.draft, "The second question, edited here"); XCTAssertTrue(view.editNotice.contains("abandoned branch"), view.editNotice)
         try await live.settle()
         let second = try await live.userTexts()
         XCTAssertEqual(second, ["The first question", "The second question, rewritten again elsewhere"])

@@ -381,7 +381,9 @@ struct ComposerEditMeasurement {
         breakUndoCoalescing()
         undoManager?.disableUndoRegistration()
         insertText(text, replacementRange: NSRange(location: 0, length: textStorage?.length ?? 0))
-        setSelectedRange(selection); display.draft = text; display.skills = skills
+        // The skills as a step from `previous`, over what the composer holds
+        // now (`skills(_:steppedFrom:to:)`): Undo keeps a skill read in since.
+        setSelectedRange(selection); display.draft = text; display.skills = Self.skills(display.skills, steppedFrom: previous.1, to: skills)
         display.directCommand = false; display.completionVisible = false; changed()
         undoManager?.enableUndoRegistration()
         undoManager?.registerUndo(withTarget: self) { [weak display] editor in

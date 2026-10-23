@@ -815,6 +815,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var editingMessageID: String?
     var draftBeforeEdit: DraftRecord?
     var editGeneration = UUID()
+    /// Which read of the edited message's original is current: Edit again on
+    /// the same edit starts another read without making a new edit, so an
+    /// image import into it keeps its place (`editGeneration` stays).
+    var editPreparation = UUID()
     @Published var editPreparing = false
     @Published var editSubmitting = false
     @Published var editInputReviewRequired = false
