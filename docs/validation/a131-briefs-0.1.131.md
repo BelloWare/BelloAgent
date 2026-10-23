@@ -193,23 +193,23 @@ Astra's review of `3d7b5893`, and what answers it:
 - Docs: `Features.md` (F24), `docs/Background-Requests.md`,
   `docs/Swift-Test-Handoff.md` (the gallery), `NEXT-RELEASE.md` (FIND-1).
 
-## Needs owner decision (round 2)
+## Lead decisions (round 2, 2026-10-23)
 
-Each was decided conservatively; the first option is what is built.
+The lead kept the first option of each; the owner can change any of them.
 
 1. **Archived chats.** (a) They keep their briefs, and Write Brief works on
    them, but a run's end and Write Briefs leave them alone, as round 1's
    backfill did (round 1's option "also archived chats in the backfill" was not
-   chosen) (built); (b) treat them as every other main chat.
+   chosen) (kept); (b) treat them as every other main chat.
 2. **Write Briefs and failures.** (a) Three failed requests in a row stop it,
-   with the reason (built); (b) go on to the end whatever fails; (c) stop at
+   with the reason (kept); (b) go on to the end whatever fails; (c) stop at
    the first failure.
 3. **The card for a chat without a brief.** (a) The card, with "No brief yet."
-   and Write Brief, replaces the row's tooltip whenever briefs are on (built);
+   and Write Brief, replaces the row's tooltip whenever briefs are on (kept);
    (b) such rows keep their tooltip, and Write Brief is in the menu only.
 4. **What the usage rows count.** (a) Every brief request the Background
    requests page lists (failed and stopped ones too) with the cost the gateway
-   reported (built); (b) completed requests only.
+   reported (kept); (b) completed requests only.
 
 ## Tests (round 2)
 
@@ -304,7 +304,10 @@ answers them when let go; journals are generated.
   picked by its own session, not as the first mini-model request; it failed
   until then); `UIScreenshotTests` (its fixture turns briefs off, so its
   Background requests and usage scenes stay as they are described; not run
-  here: it is the full gallery, and only its vault changed).
+  here: it is the full gallery, and only its vault changed); `SoakTests`, at
+  the lead's request (its fixture turns briefs off through
+  `gatewayWorkspace(chatBriefs:)`, and it fails if any launch lists a brief
+  request).
 - `SidebarAppearanceTests.testEveryRowRedrawsWhenSomethingItShowsChanges`:
   extended for `offersBrief`, as the row signature's comment asks.
 - Gallery: `ChatBriefGalleryTests` (4 tests, below).
@@ -392,6 +395,8 @@ restored byte for byte (`mut-*.log`; `r2-mutations.txt`). All 38 caught.
 | `ChatBriefTests` and `ChatBriefHoverTests` again after the batch test was strengthened (`r2-final-e2e.log`) | 13 passed, 0 failed |
 | After merging `dev/next` again (`f1331028`: PERF-3, SCROLL-1, EDIT-2, the new plan lines; `SidebarEntryViews.swift` and the project file merged without conflict), parallel (`r2-post-merge-parallel.log`): the three brief classes, `ChatSwitchRefreshTests` and `LiveAccountingTests` (new or changed there) and 13 sidebar and settings classes above | 147 passed, 0 failed |
 | The same, serial, under the lock (`r2-post-merge-serial.log`): `ChatBriefTests`, `ChatBriefHoverTests`, `SidebarAppearanceTests`, `StatPillRollTests`, `SubagentReaderTests`, `TranscriptRevealTests` (changed there), `SidebarInteractionTests`, `SidebarNativeBindingTests`, `SessionReadStateTests`, `WebhookTests`, `InlineSkillPillTests`, `TitleGenerationTests` | 168 passed, 1 skipped (the same capture), 0 failed |
+| `SoakTests`, briefs off in its fixture, a short run under the lock: `TEST_RUNNER_PI_SOAK_SECONDS=20`, the stall and launch limits raised to 5,000 and 60,000 ms because this is a Debug build and the check is about requests, not speed (`r3-soak-short-2.log`) | passed: 18 seeded runs and the cycles after them, no brief request listed |
+| The same with the fixture's briefs left on (`r3-soak-mutant.log`; not committed) | failed as it should: 17 brief requests |
 | The same serial lane before the `WebhookTests` fix, and without the last two classes (`r2-final-serial.log`) | 143 passed, 1 skipped, 1 failed: `WebhookTests.testAFinishedChatSendsItsWebhookWithTheMiniModelsParameters` took the run's brief request for the webhook's (below) |
 
 The classes are those whose code or fixtures round 2 touches: the hover
@@ -447,9 +452,12 @@ row following the switch as shown and as saved).
   soak now also sends a brief request. `ui-gateway.py` answers a brief's
   prompt as any other prompt (it treats only a webhook's prompt as data), so
   its replies hold no brief, or a scenario's tool call when the quoted chat
-  names one: each is a failed request. The soak's numbers are not comparable
-  with soaks from before 0.1.131 unless its fixture turns briefs off, or the
-  gateway learns to answer a brief. Not changed here: the soak is the lead's.
+  names one: each is a failed request. At the lead's request its fixture now
+  turns briefs off (`gatewayWorkspace(chatBriefs: false)`), so soak numbers stay
+  comparable with earlier releases, and the soak checks that no launch lists a
+  brief request. No other soak or perf harness gives its connection a mini
+  model (`PerformanceBaselineTests` and the other `PI_PERF` tests, the launch
+  and benchmark fixtures), so none of them sends a brief request.
 - **A card that hides itself from its own button.** `PiHoverCardPresenter.hide()`
   released the panel at once; pressing a button on an interactive card that
   hides it would have released the panel while it was still handling the
