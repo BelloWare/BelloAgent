@@ -17,12 +17,26 @@ final class CostPauseGalleryTests: XCTestCase, SerialTestLane {
         for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
             for size in [NSSize(width: 700, height: 600), NSSize(width: 920, height: 600), NSSize(width: 1240, height: 800)] {
                 fixture.window.appearance = NSAppearance(named: appearance); fixture.window.setContentSize(size)
-                for scene in ["family-cost-limit", "family-cost-limit-raised", "child-cost-paused"] {
-                    fixture.show(scene); await fixture.settle()
-                    let session = scene == "child-cost-paused" ? fixture.child : fixture.parent
+                for scene in ["family-cost-limit", "family-cost-limit-raised", "child-cost-paused", "child-cost-paused-raised"] {
+                    fixture.show(scene == "child-cost-paused-raised" ? "child-cost-paused" : scene)
+                    let session = scene.hasPrefix("child-") ? fixture.child : fixture.parent
+                    session.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true),
+                        "continuable": .bool(!session.isManagedSubagent), "costPaused": .bool(true), "errorCode": .string("cost_limit")])
+                    session.preflightNotice = session.isManagedSubagent
+                        ? "Paused at the shared cost limit. Raise the main chat’s limit above the spend, then choose Resume."
+                        : "Paused at the cost limit: $1.03 spent of $1.00. Raise the limit above the spend, then choose Resume."
+                    if scene == "child-cost-paused-raised" {
+                        var reading = session.footer.cost; reading.limit = .usd(5); session.applyCostReading(reading)
+                    }
+                    await fixture.settle()
                     let card = try XCTUnwrap(session.presentedMessages.last)
-                    XCTAssertEqual(card.failureCode, scene == "child-cost-paused" ? SessionDisplay.costPausedChildCode
+                    XCTAssertEqual(card.failureCode, scene.hasPrefix("child-") ? SessionDisplay.costPausedChildCode
                                    : scene == "family-cost-limit" ? SessionDisplay.costPausedCode : SessionDisplay.costPausedRaisedCode)
+                    let line = try XCTUnwrap(ConversationPaneTests.views(FooterNotice.self, in: fixture.content).first)
+                    if scene.hasSuffix("raised") {
+                        XCTAssertFalse(line.text.contains("Raise the"), line.text)
+                        XCTAssertTrue(line.text.contains("$5.00"), line.text)
+                    }
                     let revealed = await fixture.model.revealInTranscript(sessionID: session.id, messageID: card.id)
                     XCTAssertTrue(revealed); await fixture.settle()
                     let notice = ConversationPaneTests.views(TranscriptNativeFailureRow.self, in: fixture.content).first { $0.accessibilityIdentifier() == "cost-paused-notice" }
@@ -50,6 +64,6 @@ final class CostPauseGalleryTests: XCTestCase, SerialTestLane {
                 }
             }
         }
-        XCTAssertEqual(written.count, 24)
+        XCTAssertEqual(written.count, 30)
     }
 }
