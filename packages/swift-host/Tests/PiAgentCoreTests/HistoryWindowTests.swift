@@ -325,4 +325,63 @@ final class HistoryWindowTests: HelperTestCase {
         XCTAssertLessThan(try snapshot.data().count, HistoryWindowPolicy.envelopeBytes)
     }
 
+    /// A chat reopened from its metadata file loads the rows after its last
+    /// compaction, which can begin inside a turn: one the compaction split,
+    /// its question among the rows not loaded. The newest page starts at the
+    /// first question among the loaded rows, as the desktop's journal reader
+    /// does, and the page before it reads the rows not loaded to hold that
+    /// turn whole. The newest page held the loaded tail of that turn as if
+    /// the chat began there, call by call, and the turn folded once reading
+    /// earlier completed it (0.1.131 review).
+    func testAReopenedChatsPagesStartAtAQuestionWhenItsLoadedRowsBeginInsideATurn() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root)
+        // Keeping the least it can, the compaction cuts the turn at its last reply.
+        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+        func open(_ replies: [ModelReply], resume: String? = nil) throws -> AgentSession {
+            try AgentSession(id: "split", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
+                             client: ScriptClient(replies), tools: RecordingTools(), traces: TraceStore(), resumePath: resume,
+                             autoCompaction: false, compactionPolicy: policy)
+        }
+        func send(_ session: AgentSession, _ id: String, _ text: String) async throws {
+            _ = try await session.submit(Submission(commandID: id, turnID: id, text: text), steer: false)
+            try await eventually { !(await session.isRunning) }
+        }
+        // Two long answers to summarize, then a turn of two calls and its answer.
+        let long = String(repeating: "the earlier answer ", count: 400)
+        let writer = try open([answer("First " + long), answer("Second " + long), toolReply(["first"]), toolReply(["second"]), answer("Answer 0"),
+                               answer("Summary of the reads."), answer("Answer 1"), answer("Answer 2"), answer("Answer 3")])
+        try await send(writer, "h0", "The first question")
+        try await send(writer, "h1", "The second question")
+        try await send(writer, "q0", "Read both files.")
+        try await writer.compact(commandID: "compact")
+        try await eventually { !(await writer.isRunning) }
+        for turn in 1..<4 { try await send(writer, "q\(turn)", "Question \(turn)") }
+        let written = await writer.path
+        let path = try XCTUnwrap(written)
+        await writer.close()
+
+        let reader = try open([], resume: path)
+        addTeardownBlock { await reader.close() }
+        let older = await reader.olderRows, visible = await reader.visible
+        XCTAssertGreaterThan(older, 0, "Reopened from its metadata file")
+        let first = try XCTUnwrap(visible.first)
+        XCTAssertFalse(first.startsDisplayTurn, "The loaded rows begin inside the split turn: \(visible.map(\.id))")
+        let question = try XCTUnwrap(visible.first { $0.startsDisplayTurn }?.id)
+        let newest = try await reader.historyWindow(["version": 2])
+        XCTAssertEqual(newest["messages"].list.first?["id"].text, question, "The newest page starts at the first question among the loaded rows")
+        XCTAssertTrue(newest["partialTurnInput"].isNull)
+        // The page before reads the rows not loaded: the turns before, whole,
+        // the split one among them from its question to its last row.
+        let earlier = try await reader.historyWindow(["version": 2, "direction": "older", "cursor": newest["older"]])
+        let rows = earlier["messages"].list.compactMap { $0["id"].text }
+        XCTAssertEqual(rows.first, "h0", "\(rows)")
+        XCTAssertTrue(rows.contains("q0") && rows.contains(first.id), "The split turn reads whole: \(rows)")
+        XCTAssertEqual(rows.last.flatMap { last in visible.firstIndex { $0.id == last } }.map { $0 + 1 }, visible.firstIndex { $0.id == question },
+                       "and the page ends where the newest one starts")
+        XCTAssertEqual(earlier["endsTurn"].flag, true)
+        XCTAssertTrue(earlier["older"].isNull)
+        XCTAssertTrue(earlier["partialTurnInput"].isNull)
+    }
+
 }

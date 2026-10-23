@@ -16,7 +16,11 @@ extension AgentSession {
             try await historyWindow(params, cancellation: cancellation)
         } onCancel: { cancellation.cancel() }
     }
-    private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation) async throws -> JSON {
+    /// A page whose first turn began before the rows a chat opened from its
+    /// metadata file loaded: the read loads where the older rows are and
+    /// reads again (`historyWindow(_:cancellation:olderLoaded:)`).
+    private struct TurnBeganBeforeLoadedRows: Error {}
+    private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation, olderLoaded: Bool = false) async throws -> JSON {
         try cancellation.checkCancellation()
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
         // Retained readers can follow a same-ID runtime replacement using
@@ -45,7 +49,7 @@ extension AgentSession {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }
-        return try withShownRows { shown in
+        do { return try withShownRows { shown in
             shown.cancellation = cancellation
             shown.readStep = historyPageStep
             let boundary = entry.flatMap(shown.position)
@@ -56,9 +60,19 @@ extension AgentSession {
             if !fromStart && target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
             let forward = params["direction"].text == "newer" || around != nil
             // Whole display turns, as the desktop's journal reader pages them.
+            // The first loaded row is the chat's own first only when no row
+            // before it is left to load: the loaded rows of a chat opened from
+            // its metadata file can begin inside a turn.
             let limits = historyPageLimits
             let range = HistoryWindowPolicy.page(count: shown.count, before: forward ? nil : boundary,
-                                                 after: forward ? boundary : nil, around: around, limits: limits, startsTurn: shown.startsTurn)
+                                                 after: forward ? boundary : nil, around: around, limits: limits,
+                                                 firstIsStart: shown.base == 0, startsTurn: shown.startsTurn)
+            // A page whose first turn began before the loaded rows needs the
+            // rows before them, as a row before them does (`HistoryReader.read`
+            // does the same): pages hold whole turns, and that turn, shown from
+            // its loaded tail, folded once reading earlier completed it.
+            if !olderLoaded, shown.base > 0, range.lowerBound < shown.count, !shown.startsTurn(range.lowerBound),
+               !(0..<range.lowerBound).contains(where: shown.startsTurn) { throw TurnBeganBeforeLoadedRows() }
             try shown.prefetch(range)
             let candidates = try range.map { try shown.row($0) }
             let keys = Set(candidates.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
@@ -106,6 +120,9 @@ extension AgentSession {
             result["taskRecords"] = tasks
             try cancellation.checkCancellation()
             return result
+        } } catch is TurnBeganBeforeLoadedRows {
+            try await loadOlderRows()
+            return try await historyWindow(params, cancellation: cancellation, olderLoaded: true)
         }
     }
     /// Complete tool arguments. Large documents use automatic IPC transfer
