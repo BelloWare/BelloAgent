@@ -2,6 +2,42 @@ import XCTest
 @testable import PiAgentCore
 
 final class HistoryWindowTests: HelperTestCase {
+    func testOpeningHistoryIsSmallAndLaterReadsKeepTheFullPage() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var rows: [ChatMessage] = []
+        for index in 0..<2202 {
+            var row = ChatMessage(role: index % 2 == 0 ? "user" : "assistant", content: [textBlock("Row \(index)")])
+            row.id = "m\(index)"; rows.append(row)
+        }
+        let session = try AgentSession(id: "opening", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let first = try await session.historyWindow(["opening": true])
+        XCTAssertEqual(first["messages"].list.count, 250)
+        XCTAssertEqual(first["messages"].list.first?["id"].text, "m1952")
+        let older = try await session.historyWindow(["cursor": first["older"]])
+        XCTAssertEqual(older["messages"].list.count, 1_000)
+        let normal = try await session.historyWindow([:])
+        XCTAssertEqual(normal["messages"].list.count, 1_000)
+        let around = try await session.historyWindow(["around": "m300", "opening": true])
+        XCTAssertEqual(around["messages"].list.count, 250)
+        XCTAssertEqual(around["messages"].list.first?["id"].text, "m300")
+    }
+
+    func testOpeningHistoryKeepsALargerTurnWhole() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let rows = (0..<512).map { index in
+            var row = ChatMessage(role: index == 0 ? "user" : "assistant", content: [textBlock("Row \(index)")])
+            row.id = "m\(index)"; return row
+        }
+        let session = try AgentSession(id: "opening-turn", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let page = try await session.historyWindow(["opening": true])
+        XCTAssertEqual(page["messages"].list.map { $0["id"].text }, rows.map(\.id))
+        XCTAssertTrue(page["older"].isNull); XCTAssertTrue(page["newer"].isNull)
+    }
+
     func testAThousandRowPageReadsFourThousandRowsInFourWholeTurnLoads() {
         var end = 4_000, pages = 0
         while end > 0 {

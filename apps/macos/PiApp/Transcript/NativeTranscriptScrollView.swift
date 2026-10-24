@@ -1206,6 +1206,7 @@ final class TranscriptNativeScrollView: NSScrollView {
                 if row.superview == nil, !row.foldedAway { addSubview(row) }
                 _ = row.measure(width: rowWidth)
                 estimated.remove(row.itemID); approximate.remove(row.itemID)
+                markDirty(from: row.layoutIndex)
             }
             placingCorrection = true
             layoutNow()

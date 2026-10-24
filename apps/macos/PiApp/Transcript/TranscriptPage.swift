@@ -473,7 +473,8 @@ struct ContentGeometry: Equatable {
         // one that ends where its last turn does says so: that turn is
         // finished, and reads as it will once the next turn is read in.
         let tail = patch == nil && initialized ? snapshot.flatMap { tailPlan?.replacing($0, with: input, complete: complete) } : nil
-        let items = patch?.items ?? tail?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle, complete: complete)
+        let prepared = patch == nil && tail == nil ? TranscriptOpeningPlans.take(for: session, input: input, complete: complete) : nil
+        let items = patch?.items ?? tail?.items ?? prepared ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle, complete: complete)
         if let patch { itemChanges.record(patch.places) }
         else if let tail, let current = snapshot {
             patchIndex?.replaceTail(current.items[tail.item...], with: items[tail.item...], from: tail.item)

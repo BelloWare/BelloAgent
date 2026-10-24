@@ -50,6 +50,11 @@ public enum HistoryWindowPolicy {
         public init(rows: Int, bytes: Int, turnRows: Int, turnBytes: Int) {
             self.rows = rows; self.bytes = bytes; self.turnRows = max(rows, turnRows); self.turnBytes = max(bytes, turnBytes)
         }
+        /// The first paint is a small page; later reads keep the full budget.
+        /// A single display turn still has its usual whole-turn allowance.
+        public var opening: Self {
+            Self(rows: min(rows, 250), bytes: min(bytes, 1024 * 1024), turnRows: turnRows, turnBytes: turnBytes)
+        }
         /// A page's rows and bytes; a turn alone may take the resident window's.
         public static let standard = PageLimits(rows: pageRows, bytes: pageBytes, turnRows: residentRows, turnBytes: residentBytes)
     }

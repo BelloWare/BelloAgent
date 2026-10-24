@@ -312,14 +312,20 @@ extension WorkspaceModel {
             if let stream, stream.revision == view.messagesRevision, stream.accountingRevision == view.accountingRevision,
                incarnation == nil || view.presentation.identity?.incarnation == incarnation,
                lineage == nil || view.presentation.identity?.lineage == lineage,
-               stream.held.map({ $0 == heldRows(view) }) ?? true,
-               stream.tail.map({ view.replaceMessageTail(stream.rows, from: $0) }) ?? view.replaceMessages(stream.rows, at: stream.indices) {
-                view.historyRevision = nil; view.heldRowsRevision = nil
-                view.projectedPage = projection; view.projectionRevision = result["displayRevision"]?.string
-                if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
-                if view.historyPositions.total == nil, view.olderPage.cursor != nil { reacquireHistoryPositions(id) }
-                if view.historyState == .dormant || view.historyState == .empty { view.historyState = view.messages.isEmpty ? .empty : .preparing }
-                return
+               stream.held.map({ $0 == heldRows(view) }) ?? true {
+                let before = stream.tail.map { Array(view.messages[$0...]) } ?? stream.indices.map { view.messages[$0] }
+                let after = stream.tail.map { Array(stream.rows[$0...]) } ?? stream.indices.map { stream.rows[$0] }
+                let accountingChanged = Self.accountingTargetsChanged(from: before, to: after)
+                let adopted = stream.tail.map { view.replaceMessageTail(stream.rows, from: $0) } ?? view.replaceMessages(stream.rows, at: stream.indices)
+                if adopted {
+                    if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
+                    view.historyRevision = nil; view.heldRowsRevision = nil
+                    view.projectedPage = projection; view.projectionRevision = result["displayRevision"]?.string
+                    if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
+                    if view.historyPositions.total == nil, view.olderPage.cursor != nil { reacquireHistoryPositions(id) }
+                    if view.historyState == .dormant || view.historyState == .empty { view.historyState = view.messages.isEmpty ? .empty : .preparing }
+                    return
+                }
             }
             let follows = result["historyFollows"]?.string
             let overlaps = view.messages.isEmpty || TranscriptPaging.joins(view.messages, follows: follows)

@@ -883,8 +883,11 @@ enum TranscriptActivity {
     }
     /// `complete` says whether the page reaches the conversation's newest
     /// row (see `TaskTranscriptPlan.items`).
+    static func preparedBlocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?, display: TranscriptDisplayMode, complete: Bool) -> [TranscriptItem] {
+        sayingFailuresOnce(TaskTranscriptPlan.items(messages, lifecycle: lifecycle, display: display, complete: complete), in: messages)
+    }
     static func blocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection? = nil, complete: Bool = true) -> [TranscriptItem] {
-        sayingFailuresOnce(TaskTranscriptPlan.items(messages, lifecycle: lifecycle, complete: complete), in: messages)
+        preparedBlocks(of: messages, lifecycle: lifecycle, display: TranscriptDisplay.mode, complete: complete)
     }
     /// A failed turn's notice is the host's error message, and while that run
     /// is the chat's current failure its card at the foot of the page says

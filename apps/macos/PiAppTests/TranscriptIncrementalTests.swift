@@ -2,6 +2,22 @@ import XCTest
 @testable import PiApp
 
 final class TranscriptIncrementalTests: XCTestCase {
+    @MainActor func testEnteringEstimatedHistoryPlacesNewlyMeasuredRows() throws {
+        let session = SessionDisplay(id: "viewport-estimates")
+        session.messages = TranscriptStressTestCase.history(turns: 500)
+        let stage = TranscriptStressTestCase.Stage(session); defer { stage.close() }
+        let row = stage.rows[stage.rows.count / 2]
+        XCTAssertTrue(stage.document.isApproximate(row.itemID))
+        stage.readerScroll(to: row.frame.minY)
+        XCTAssertGreaterThan(stage.document.approximateRowCount, 100)
+        XCTAssertFalse(stage.document.isApproximate(row.itemID))
+        let exact = row.measure(width: row.frame.width).height
+        XCTAssertEqual(row.frame.height, exact, accuracy: 0.5, "A reached row still has its estimated frame")
+        if let following = stage.rows.dropFirst(row.layoutIndex + 1).first {
+            XCTAssertEqual(following.frame.minY, row.frame.maxY, accuracy: 0.5)
+        }
+    }
+
     @MainActor func testAPartialPlacementKeepsUnresolvedHistorySliced() throws {
         let session = SessionDisplay(id: "partial-unresolved")
         var rows = TranscriptStressTestCase.history(turns: 500)

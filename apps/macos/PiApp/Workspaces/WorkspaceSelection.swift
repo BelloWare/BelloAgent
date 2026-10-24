@@ -391,10 +391,10 @@ extension WorkspaceModel {
     /// newest page, as before.
     /// `followsNavigation`: see `readConversationWindow`.
     func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
-        let latest = try await readConversationWindow(source, cursor: nil, followsNavigation: followsNavigation)
+        let latest = try await readConversationWindow(source, cursor: nil, followsNavigation: followsNavigation, opening: true)
         guard let anchor, !anchor.followsBottom, !anchor.id.isEmpty, !latest.messages.contains(where: { $0.id == anchor.id }) else { return latest }
         do {
-            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id, followsNavigation: followsNavigation)
+            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id, followsNavigation: followsNavigation, opening: true)
             return around.messages.contains(where: { $0.id == anchor.id }) ? around : latest
         } catch is CancellationError { throw CancellationError() }
         catch { try Task.checkCancellation(); return latest }
