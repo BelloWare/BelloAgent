@@ -731,3 +731,43 @@ used for the accepted quiet measurements above. Final build:
 the two final gallery executions give **169 selected green app executions /
 156 unique tests**, recorded in `r2-test-summary-final.json`. Earlier
 expected failures, mutations and diagnostic attempts are reported separately.
+
+## Round 3: live-tail catch-up, held-prefix release and integration (2026-10-26)
+
+Reviewed `a35fc7fc`; merge target `origin/dev/next` `1ef3a524`.
+Both regressions use `WorkspaceRefreshLifecycleTests`' generated, in-memory
+model and scripted helper, with no window or live provider needed.
+
+- A saved-position opening reads a partial last reply; while that read is
+  held, an idle snapshot omits rows because history browsing is still on.
+  The fill closed its newer gap without another snapshot. Closing that gap
+  now clears the retained helper projection and requests fresh live rows,
+  as ordinary forward paging does. The regression checks the fresh request,
+  final reply text and a final response part absent from the stale read.
+- The streaming shortcut treated any held ID as requiring the entire
+  over-budget prefix. It now checks the earliest held row's turn through
+  the retained position index, off the main actor. A later held turn uses
+  the existing trimming path. With a fixture cap of eight, moving either
+  the reading anchor or selection keeps the required **12, then 10 rows**,
+  instead of retaining all **14**, and preserves the held row, live tokens
+  and earlier paging boundary.
+
+Failing first, Release (`r3-failing-build.log`, `r3-failing.log`): **2 tests
+failed / 10 failures** — eight prefix/boundary assertions plus the missing
+refresh timeout and its thrown XCTest error (one marked unexpected). These
+are correctness reproductions, not timing evidence. The run waited for
+IMG-1's perf lock before building/testing. Exact argv and load are in
+`runs.txt`; only the two new methods were selected.
+
+Fixed selection: **2/2 passed** (`r3-fixed.log`). Physical mutations were
+rebuilt and run separately: removing gap catch-up fails **1 test / 2 failures**
+(the missing-request timeout and its thrown helper error); restoring the
+old held-prefix shortcut fails **1 test / 8 assertions**
+(`r3-mutant-opening.log`, `r3-mutant-held-prefix.log`). Each case exercises
+only its own changed path. Both source files are restored in `finally`.
+These focused correctness runs held the lane; their load is not used for
+performance claims.
+
+Restored Release build and both regressions pass **2/2, no skips or failures**
+(`r3-restored-build.log`, `r3-restored.log`). The fixes are committed before
+merging the requested integration tree.

@@ -13,7 +13,11 @@ struct TranscriptStreamUpdate: Sendable {
     static func prepare(delta: WireValue, projected: [TranscriptMessage], displayed: [TranscriptMessage],
                         positions: [String: Int], bytes: Int, revision: UUID, accounting: [String: GatewayTotals],
                         accountingRevision: Int, caps: (rows: Int, bytes: Int), held: Set<String> = [], follows: String? = nil) -> Self? {
-        let extended = (displayed.count > caps.rows || bytes > caps.bytes) && !held.isEmpty
+        // A later held turn no longer needs this prefix. Let ordinary
+        // reconciliation cut the released turns before retaining its rows.
+        let firstHeld = held.compactMap { positions[$0] }.min()
+        let extended = (displayed.count > caps.rows || bytes > caps.bytes)
+            && firstHeld.map { TranscriptPaging.turnStart($0, in: displayed) == 0 } == true
         guard let fields = delta.object, displayed.count <= caps.rows || extended else { return nil }
         var ids = Set<String>()
         for key in ["rows", "appends", "parts", "toolInputs"] {

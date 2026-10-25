@@ -121,6 +121,7 @@ extension WorkspaceModel {
                         edge = cursor
                         if newer { view.newerPage = .init(cursor: more ? cursor : nil, endsTurn: !atSourceEnd || page.endsTurn) }
                         else { view.olderPage = .init(cursor: more ? cursor : nil); view.before = view.olderPage.cursor?.entry }
+                        let wasBrowsing = view.browsingHistory
                         view.browsingHistory = view.newerPage.available
                         let revision = view.projectionRevision
                         view.messagePositions = Dictionary(joined.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
@@ -131,6 +132,10 @@ extension WorkspaceModel {
                         view.projectionRevision = revision
                         view.adoptedPage = view.pageRows
                         view.endTranscriptBatch()
+                        if wasBrowsing && !view.browsingHistory {
+                            view.projectedRows = []; view.projectionRevision = nil
+                            self.refresh(id)
+                        }
                         PerformanceProbe.shared.observe("openingFillStepMs", milliseconds: PerformanceProbe.now - started)
                         self.openSteps?(id, "opening fill step")
                         break
