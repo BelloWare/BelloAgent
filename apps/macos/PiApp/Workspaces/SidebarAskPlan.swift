@@ -29,7 +29,8 @@ struct SidebarAskPlan {
     let request: MiniModelRequest
 
     init?(profile: ProfileRecord, descriptors: [ModelDescriptor], question: String, candidates: [SidebarAskCandidate]) {
-        guard let model = TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors) else { return nil }
+        guard candidates.allSatisfy({ $0.connection == profile.id }),
+              let model = TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors) else { return nil }
         let descriptor = descriptors.first { $0.id == model }
         let context = descriptor?.contextWindow ?? profile.contextWindow
         let output = min(2_048, descriptor?.maxOutputTokens ?? profile.maxOutputTokens)
@@ -114,18 +115,5 @@ struct SidebarAskPlan {
             if found.count == resultLimit { break }
         }
         return found
-    }
-    /// Ranks are comparable within one connection. Interleave equal ranks;
-    /// never send another connection's candidates to a model to merge them.
-    static func merge(_ lists: [[SidebarAskMatch]]) -> [SidebarAskMatch] {
-        var seen: Set<String> = [], merged: [SidebarAskMatch] = []
-        for rank in 0..<(lists.map(\.count).max() ?? 0) {
-            for list in lists where list.indices.contains(rank) {
-                let match = list[rank]
-                if seen.insert(match.id).inserted { merged.append(match) }
-                if merged.count == resultLimit { return merged }
-            }
-        }
-        return merged
     }
 }

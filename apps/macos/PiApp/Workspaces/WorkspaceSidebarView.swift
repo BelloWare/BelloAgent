@@ -24,6 +24,7 @@ import Combine
     let clearFilter = PiKit.IconButton(symbol: "xmark", label: "Clear search", size: 20)
     /// Flat's project chips, in the search scope's place while no search is on.
     let projectFilter = SidebarProjectFilterBar()
+    let askConnection = SidebarAskConnectionButton()
     private var searchKeyLoopFrame = CGRect.null
     private let filterKeys = SidebarFilterDelegate()
     let selectionBar: SidebarSelectionBarView
@@ -96,6 +97,14 @@ import Combine
         }
         searchScope.onSelect = { [weak self] in self?.model.sidebarSearch.setScope($0) }
         searchScope.setAccessibilityIdentifier("sidebarSearchScope")
+        askConnection.entries = { [weak self] in
+            guard let self else { return [] }
+            let ask = self.model.sidebarSearch.askChats
+            return SidebarAskConnectionButton.menu(choices: ask.connections, chosen: ask.connectionID) { [weak self] id in
+                guard let self else { return }
+                self.model.sidebarSearch.askChats.chooseConnection(id, question: self.model.sidebarSearch.query)
+            }
+        }
         clearFilter.setAccessibilityIdentifier("sidebarSearchClear")
         clearFilter.onPress = { [weak self] in self?.setFilter("") }
         filterField.padding.right = 32
@@ -147,7 +156,7 @@ import Combine
         settings.onPress = { [weak self] in self?.model.showProfiles = true }
 
         selectionBar.isHidden = true
-        for view in [headerMenu!, newChat, manage, filterField, searchScope, projectFilter, selectionBar, scroll, empty, hairline,
+        for view in [headerMenu!, newChat, manage, filterField, searchScope, projectFilter, askConnection, selectionBar, scroll, empty, hairline,
                      report, inspector, resources, background, archive, settings] as [NSView] { addSubview(view) }
         model.sidebarFilter = filter
         // Content matches arrive after the titles: the list takes them in.
@@ -216,6 +225,7 @@ import Combine
         for scope in SidebarSearch.Scope.allCases { searchScope.tab(scope)?.isEnabled = enabled }
         if model.sidebarListsFlat { projectFilter.update(chips: model.sidebarProjectChips, chosen: model.sidebarFlatProject) }
         projectFilter.isEnabled = enabled
+        askConnection.isEnabled = enabled
         refreshSearchChrome()
         empty.add.isEnabled = enabled
         for button in [selectionBar.copy, selectionBar.archiveWord, selectionBar.clearWord, selectionBar.archiveIcon, selectionBar.clearIcon] {
@@ -245,8 +255,18 @@ import Combine
         if filterField.field.accessibilityLabel() != label { filterField.field.setAccessibilityLabel(label) }
         let filterFocused = window?.firstResponder === filterField.field
             || (window?.firstResponder as? NSTextView)?.delegate as? NSTextField === filterField.field
-        let pillFocused = (window?.firstResponder as? NSView)?.isDescendant(of: searchScope) == true
+        let pillFocused = (window?.firstResponder as? NSView).map { $0.isDescendant(of: searchScope) || $0.isDescendant(of: askConnection) } == true
         let hidden = filter.isEmpty && !filterFocused && !pillFocused
+        let choices = scope == .ask ? model.sidebarSearch.askChats.connections : []
+        if scope == .ask {
+            let id = model.sidebarSearch.askChats.connectionID
+            askConnection.update(choices.first { $0.id == id })
+        }
+        let chooserHidden = hidden || choices.count < 2
+        if askConnection.isHidden != chooserHidden {
+            askConnection.isHidden = chooserHidden; needsLayout = true
+            window?.recalculateKeyViewLoop()
+        }
         if clearFilter.isHidden != filter.isEmpty { clearFilter.isHidden = filter.isEmpty }
         // Flat's project chips hold the scope's place while no search is on.
         let chips = hidden && model.sidebarListsFlat && projectFilter.offersChoice
@@ -413,6 +433,11 @@ import Combine
         projectFilter.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: scopeSize.height)
         // Reserve the pill's slot: entering/leaving search never moves a row.
         y += scopeSize.height + 6
+        if !askConnection.isHidden {
+            let size = askConnection.intrinsicContentSize
+            askConnection.frame = CGRect(x: PiSpacing.md, y: y, width: min(size.width, max(0, w - PiSpacing.md * 2)), height: size.height)
+            y += size.height + 6
+        }
         if barShown {
             let height = selectionBar.height(forWidth: max(0, w - PiSpacing.md * 2))
             selectionBar.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: height)

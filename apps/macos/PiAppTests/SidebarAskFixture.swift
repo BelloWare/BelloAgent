@@ -9,7 +9,7 @@ import XCTest
     let other: AskGateway?
     let root: URL
 
-    static func make(_ test: XCTestCase, second: Bool = false, mini: String? = "mini-fixture") async throws -> AskFixture {
+    static func make(_ test: XCTestCase, second: Bool = false, mini: String? = "mini-fixture", unavailable: Bool = false) async throws -> AskFixture {
         let root = scratchRoot("sidebar-ask"), project = root.appendingPathComponent("Orchard")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         try Data("PRIVATE PROJECT INSTRUCTION".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
@@ -24,6 +24,10 @@ import XCTest
             var next = profile; next.id = "other"; next.name = "Research"; next.baseUrl = try await extra.start()
             configuration.profiles.append(VaultProfile(profile: next, apiKey: "synthetic-other-key")); other = extra
         }
+        if unavailable {
+            var offline = profile; offline.id = "no-mini"; offline.name = "Personal"; offline.miniModelId = nil
+            configuration.profiles.append(VaultProfile(profile: offline, apiKey: "synthetic-no-mini-key"))
+        }
         configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
         configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
@@ -31,10 +35,12 @@ import XCTest
         try await model.reloadConfiguration()
         return AskFixture(model: model, gateway: gateway, other: other, root: root)
     }
-    @discardableResult func chat(_ id: String, title: String, brief: String? = nil, profile: String = "profile", parent: String? = nil, archived: Bool = false) async throws -> ChatRecord {
+    @discardableResult func chat(_ id: String, title: String, brief: String? = nil, profile: String = "profile", parent: String? = nil, archived: Bool = false,
+                                user: String? = nil, reply: String? = nil) async throws -> ChatRecord {
         let journal = try SearchJournal(root.appendingPathComponent(id + ".jsonl"), id: id)
-        try journal.message(id + "-u", role: "user", "Keep the marmalade tokenizer beside the parser retry checklist.")
-        try journal.message(id + "-a", role: "assistant", "The retry migration keeps parser input incremental.")
+        let subject = brief ?? "The tokenizer retry checklist for \(title)."
+        try journal.message(id + "-u", role: "user", user ?? "Conversation about \(title).")
+        try journal.message(id + "-a", role: "assistant", reply ?? "\(title): \(subject)")
         var chat = ChatRecord(id: id, workspaceID: "project", title: title, path: journal.url.path, profileID: profile, parentSessionID: parent)
         chat.sidebarOrder = Int64(model.chats.count + 1)
         if let brief { chat.brief = ChatBrief(text: brief, keywords: ["tokenizer", "retry"], through: id + "-a", at: Date(), activity: chat.activityStamp) }

@@ -1465,9 +1465,12 @@ offscreen, when `TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY` names a folder:
 
 `SidebarAskGalleryTests` shows sidebar Ask against its loopback mini-model
 gateway when `TEST_RUNNER_PI_APP_ASK_GALLERY` names a folder. It captures
-`ask-{asking,results,error}-{300,200}-{light,dark}.png`: progress and Cancel,
-ranked chats with a reason and a local snippet, and a gateway error. It shows
-a window, so it holds the shared lane lock. Its second test captures
+`ask-{chooser-closed,chooser-open,asking,snippets-pending,results-filled,error}-{300,200}-{light,dark}.png`:
+the PiKit connection chooser (including a disabled no-mini-model connection),
+progress and Cancel, ranked chats with a reason and reserved/final snippets,
+the connection in the summary, and a gateway error. Generated journals have
+distinct text matching their briefs. It shows a window and a real menu, so it
+holds the shared lane lock. Its second test captures
 `background-{all,asks}-{1000,640}-{light,dark}.png`, with the Ask request's
 own kind, result and reported usage, and the Ask chats filter.
 

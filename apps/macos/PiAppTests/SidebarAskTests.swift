@@ -40,13 +40,13 @@ final class SidebarAskPlanTests: XCTestCase {
         XCTAssertEqual(try SidebarAskPlan.parse(reply(#"{"matches":[]}"#), candidates: candidates), [], "No matches is a valid answer")
     }
 
-    func testConnectionsMergeByRankWithoutTrustingModelScores() {
-        let lists: [[SidebarAskMatch]] = [[.init(id: "a", reason: "A"), .init(id: "c", reason: "C")],
-                                          [.init(id: "b", reason: "B"), .init(id: "d", reason: "D")]]
-        XCTAssertEqual(SidebarAskPlan.merge(lists).map(\.id), ["a", "b", "c", "d"])
+    func testAPlanRefusesAnyCandidateOutsideItsChosenConnection() {
+        var profile = ProfileRecord(); profile.id = "profile"; profile.miniModelId = "mini-fixture"
+        var foreign = candidate("foreign"); foreign.connection = "other"
+        XCTAssertNil(SidebarAskPlan(profile: profile, descriptors: [], question: "Find notes", candidates: [candidate("a"), foreign]))
     }
     func testPromptAndContextStayBoundedEvenWithManyLargeNonLatinCandidates() throws {
-        var profile = ProfileRecord(); profile.miniModelId = "mini-fixture"; profile.contextWindow = 16_000; profile.maxOutputTokens = 2_048
+        var profile = ProfileRecord(); profile.id = "profile"; profile.miniModelId = "mini-fixture"; profile.contextWindow = 16_000; profile.maxOutputTokens = 2_048
         var chats = (0..<500).map { candidate("chat-\($0)") }
         for index in chats.indices {
             chats[index].brief = SidebarAskPlan.compact(String(repeating: "長い会話の要約", count: 1_000), bytes: 400)
@@ -65,14 +65,13 @@ final class SidebarAskPlanTests: XCTestCase {
         XCTAssertNil(SidebarAskPlan(profile: profile, descriptors: [], question: "Find", candidates: chats))
     }
 
-    func testResponseAndMergeHaveHardResultLimitsAndDuplicatesDoNotConsumePlaces() throws {
+    func testResponseHasAHardResultLimitAndDuplicatesDoNotConsumePlaces() throws {
         let chats = (0..<100).map { candidate("chat-\($0)") }
         let values = chats.flatMap { [SidebarAskMatch(id: $0.id, reason: "A reason"), SidebarAskMatch(id: $0.id, reason: "Duplicate")] }
         let encoded = try JSONEncoder().encode(["matches": values])
         let matches = try SidebarAskPlan.parse(reply(String(decoding: encoded, as: UTF8.self)), candidates: chats)
         XCTAssertEqual(matches.count, SidebarAskPlan.resultLimit)
         XCTAssertEqual(Set(matches.map(\.id)).count, SidebarAskPlan.resultLimit)
-        XCTAssertEqual(SidebarAskPlan.merge([values]).count, SidebarAskPlan.resultLimit)
     }
 
 }

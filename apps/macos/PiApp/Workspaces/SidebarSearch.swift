@@ -89,6 +89,11 @@ import Combine
                 self.askChats.reset(); self.changed?()
             }
         })
+        for publisher in [model.$profiles.map { _ in () }.eraseToAnyPublisher(), model.modelCatalog.$entries.map { _ in () }.eraseToAnyPublisher()] {
+            watches.append(publisher.dropFirst().sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.askChats.connectionsChanged() }
+            })
+        }
         if Self.startsAutomatically, !indexing {
             settleTask = Task { [weak self] in
                 try? await Task.sleep(for: Self.launchDelay)
@@ -116,7 +121,7 @@ import Combine
 
     func shutdown() {
         stopped = true
-        askChats.reset()
+        askChats.shutdown()
         watches.removeAll()
         worker?.cancel()
         revealing?.cancel(); revealing = nil
@@ -402,6 +407,7 @@ extension WorkspaceModel {
 
 /// What a matching chat's snippet line shows.
 struct SidebarSearchSnippetState: Equatable {
+    enum Confirmation: Equatable { case checking, matched, unavailable }
     var chatID: String
     var title: String
     var kind: ChatSearchKind
@@ -410,16 +416,27 @@ struct SidebarSearchSnippetState: Equatable {
     /// Where the row's title starts, so the snippet lines up under it.
     var indent: CGFloat
     var isReason = false
+    /// Ask keeps two excerpt lines reserved, including when no excerpt exists.
+    var confirmation: Confirmation?
 
     init(chat: ChatRecord, reason: String, indent: CGFloat) {
         chatID = chat.id; title = chat.displayTitle; kind = .assistant; excerpt = reason
         highlight = NSRange(location: 0, length: 0); self.indent = indent; isReason = true
     }
-    init(chat: ChatRecord, hit: ChatSearchHit, indent: CGFloat) {
+    init(chat: ChatRecord, checking: Bool, indent: CGFloat) {
+        chatID = chat.id; title = chat.displayTitle; kind = .assistant
+        excerpt = checking ? "Checking chat text…" : "No matching excerpt available."
+        highlight = NSRange(location: 0, length: 0); self.indent = indent
+        confirmation = checking ? .checking : .unavailable
+    }
+    init(chat: ChatRecord, hit: ChatSearchHit, indent: CGFloat, confirmed: Bool = false) {
         chatID = chat.id; title = chat.displayTitle; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
+        confirmation = confirmed ? .matched : nil
     }
     var symbol: String {
         if isReason { return "sparkle" }
+        if confirmation == .checking { return "clock" }
+        if confirmation == .unavailable { return "magnifyingglass" }
         return switch kind {
         case .user: "person"
         case .assistant: "sparkle"
@@ -428,6 +445,7 @@ struct SidebarSearchSnippetState: Equatable {
     }
     var role: String {
         if isReason { return "Why this chat" }
+        if confirmation == .checking || confirmation == .unavailable { return "Chat text" }
         return switch kind {
         case .user: "Your message"
         case .assistant: "Reply"
@@ -472,6 +490,7 @@ struct SidebarSearchSnippetState: Equatable {
     private static let captionLine = PiKit.Line("Ag", font: PiKit.Font.caption, color: .black).lineHeight
     static func height(of state: SidebarSearchSnippetState, width: CGFloat) -> CGFloat {
         if state.isReason { return captionLine + SnippetPress.vertical * 2 }
+        if state.confirmation != nil { return captionLine * 2 + SnippetPress.vertical * 2 }
         let textWidth = max(0, width - state.indent - SnippetPress.leading - SnippetPress.trailing)
         let line = captionLine
         // No caption glyph is narrower than this: past twice the width's worth, it wraps.
@@ -522,7 +541,7 @@ struct SidebarSearchSnippetState: Equatable {
             text.runs = runs
             shownText = state.excerpt
             setAccessibilityLabel(state.spoken)
-            setAccessibilityHelp(state.isReason ? "Opens this chat" : "Opens the chat at this message")
+            setAccessibilityHelp(state.isReason || state.confirmation == .checking || state.confirmation == .unavailable ? "Opens this chat" : "Opens the chat at this message")
             setAccessibilityIdentifier((state.isReason ? "sidebarAskReason-" : "sidebarSearchSnippet-") + state.chatID)
             needsLayout = true
         }

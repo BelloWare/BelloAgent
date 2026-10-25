@@ -304,6 +304,9 @@ actor ChatSearchIndex {
     /// A pass is running: it may be waiting on a page in the middle of a
     /// transaction, so `close()` leaves the database to the pass's end.
     private var passing = false
+    private var beforeSource: (@Sendable (String) async -> Void)?
+    /// Test seam: a journal whose next index read is slow.
+    func beforeReadingSource(_ action: (@Sendable (String) async -> Void)?) { beforeSource = action }
     func close() {
         stopping = true
         if !passing { removeForgotten(); closeNow() }
@@ -340,6 +343,8 @@ actor ChatSearchIndex {
         }
         ordered.sort { $0.2 > $1.2 }
         for (source, revision, _) in ordered where !forgotten.contains(source.id) {
+            if stopping || Task.isCancelled { break }
+            await beforeSource?(source.id)
             if stopping || Task.isCancelled { break }
             let state = known[source.id]
             guard let revision else {
@@ -615,6 +620,41 @@ final class ChatSearchQuery: @unchecked Sendable {
     /// Stops whatever query is running now.
     func cancel() { lock.lock(); generation &+= 1; lock.unlock() }
     private var stale: Bool { lock.lock(); defer { lock.unlock() }; return generation != running }
+
+    /// A committed, current index for this journal. This reader never waits
+    /// on the library writer's actor or its in-flight journal reads.
+    func indexed(_ source: ChatSearchSource) async throws -> Bool {
+        let mine = lock.withLock { generation }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { [self] in
+                    continuation.resume(with: Result { () throws -> Bool in
+                        lock.lock(); running = mine; let current = generation == mine; lock.unlock()
+                        guard current else { throw CancellationError() }
+                        guard let db = try connection(), let revision = HistoryReader.currentRevision(path: source.path) else { return false }
+                        var statement: OpaquePointer?
+                        guard sqlite3_prepare_v2(db, "SELECT path, revision, unreadable FROM chats WHERE chat=?", -1, &statement, nil) == SQLITE_OK else { return false }
+                        defer { sqlite3_finalize(statement) }
+                        ChatSearchDatabase.bind(statement, 1, source.id)
+                        return sqlite3_step(statement) == SQLITE_ROW && ChatSearchDatabase.text(statement!, 0) == source.path
+                            && ChatSearchDatabase.text(statement!, 1) == revision.stamp && sqlite3_column_int(statement, 2) == 0
+                    })
+                }
+            }
+        } onCancel: { [weak self] in self?.cancel() }
+    }
+
+    /// A temporary confirmation database is removed only after its queued
+    /// reads and connection have finished.
+    func close() async {
+        cancel()
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                if let db { sqlite3_close_v2(db); self.db = nil }
+                continuation.resume()
+            }
+        }
+    }
 
     /// Each listed chat's newest match for `query`, or throws
     /// `CancellationError` when a newer query (or `cancel()`) stopped it.

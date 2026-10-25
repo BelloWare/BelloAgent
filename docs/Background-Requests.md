@@ -13,10 +13,12 @@ The app asks a connection's mini model for five things on its own:
   at a time). Settings shows what brief requests came to today and over the
   last 30 days (`apps/macos/PiApp/Workspaces/WorkspaceChatBriefs.swift`).
 - **Ask chats** (0.1.131). Return in sidebar search's Ask mode ranks a bounded
-  list of titles, briefs and details. Each connection sees only its own
-  candidates; each partition is a separate `chat-ask` request, counted in
-  Usage. Transcript snippets are found locally, after the ranking. Cancel,
-  editing the question or changing search mode stops the request.
+  list of titles, briefs and details from the chosen connection only, in one
+  `chat-ask` request to its mini model and key, counted in Usage. A connection
+  chooser appears when several connections have chats; choosing another after
+  asking cancels and asks the same question there. Rankings appear immediately;
+  the top eight get local transcript snippets as their own journals are checked.
+  Cancel, editing the question or changing search mode stops the work.
 
 Each runs in a chat of its own outside every project, with its own journal,
 captured requests and billing. The Background requests page lists them all.
