@@ -1,6 +1,6 @@
 # Bello Agent 0.1.134 — Ask in sidebar search
 
-Status: **packaged; publication pending.** Marketing version 0.1.134, build 138. Previous public release: 0.1.133/build 137.
+Status: **released and verified 2026-10-27.** Marketing version 0.1.134, build 138. Previous public release: 0.1.133/build 137.
 
 ## Owner request
 
@@ -29,4 +29,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1. Focused che
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `9b6c9486` ("Release Bello Agent 0.1.134"), tag `v0.1.134`, on `main` and `dev/next` (`f4b3c76a` merges `dev/next` into `main`).
+- `BelloAgent-0.1.134.dmg`, sha256 `5dab67c215bb3f6af46e5c95eba6229442e48dcec229af9185ac2c1e7ed86c42`, 16,972,258 bytes; Developer ID signed and notarized (app submission `e84d149c-74a5-45b3-874d-577c227f66c2`, DMG submission `b9ce76d7-8386-455b-99f2-801bcdd52b00`, both Accepted), stapled.
+- `validate-release.py --previous-build 137`: passed (0.1.134 build 138, Ed25519 signature verified).
+- Website commit `6e809f9` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical (on the fourth try, after the site deployed).
