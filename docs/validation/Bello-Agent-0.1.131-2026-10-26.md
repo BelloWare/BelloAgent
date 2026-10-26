@@ -1,6 +1,6 @@
 # Bello Agent 0.1.131 — no family communication limit for sub-agents
 
-Status: **packaged; publication pending.** Marketing version 0.1.131, build 135. Previous public release: 0.1.130/build 134. A helper-only hotfix of 0.1.130, cut from `main`; the work planned as 0.1.131 on `dev/next` ships as 0.1.132.
+Status: **released and verified 2026-10-26.** Marketing version 0.1.131, build 135. Previous public release: 0.1.130/build 134. A helper-only hotfix of 0.1.130, cut from `main`; the work planned as 0.1.131 on `dev/next` ships as 0.1.132.
 
 ## Owner request
 
@@ -31,4 +31,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1. At the owne
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `275b442c` ("Release Bello Agent 0.1.131"), tag `v0.1.131`, on `main` (the merge `ed7ee31b` of `dev/hotfix-0.1.131`, fix `6a35f555`).
+- `BelloAgent-0.1.131.dmg`, sha256 `c39f83add7486023f83b54f6e5418552b7dace57386d93077feb2f0cff593568`, 16,703,964 bytes; Developer ID signed and notarized (app submission `f8978880-14d4-490f-91dd-513d35059544`, DMG submission `3ed73c19-241b-4882-91d3-9f28d8f420fc`, both Accepted), stapled.
+- `validate-release.py --previous-build 134`: passed (0.1.131 build 135, Ed25519 signature verified).
+- Website commit `d8e39cb` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical (on the third try, after the site deployed).
