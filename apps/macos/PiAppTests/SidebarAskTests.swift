@@ -33,7 +33,7 @@ final class SidebarAskPlanTests: XCTestCase {
         var unfinished = reply(#"{"matches":[{"id":"a","reason":"Looks right"}]}"#)
         unfinished[0].truncated = true
         XCTAssertThrowsError(try SidebarAskPlan.parse(unfinished, candidates: candidates))
-        for reason in ["", "\u{1b}fake", "\u{202e}fake"] {
+        for reason in ["", "\u{0}fake", "\u{1b}fake", "\u{202e}fake", "\u{2066}fake"] {
             let data = try JSONEncoder().encode(["matches": [SidebarAskMatch(id: "a", reason: reason)]])
             XCTAssertEqual(try SidebarAskPlan.parse(reply(String(decoding: data, as: UTF8.self)), candidates: candidates), [])
         }
@@ -41,7 +41,7 @@ final class SidebarAskPlanTests: XCTestCase {
     }
 
     func testFencedAndSurroundedRankingsAreAcceptedAndLongReasonsAreShortenedOnCharacterBoundaries() throws {
-        let reason = String(repeating: "👩🏽‍💻é", count: 160)
+        let reason = String(repeating: "👩🏽‍💻é✈️", count: 160)
         let json = String(decoding: try JSONEncoder().encode(["matches": [SidebarAskMatch(id: "a", reason: reason)]]), as: UTF8.self)
         for answer in ["```json\n" + json + "\n```", "Here are the relevant chats.\n" + json] {
             let found = try SidebarAskPlan.parse(reply(answer), candidates: [candidate("a")])

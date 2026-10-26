@@ -171,15 +171,22 @@ final class SidebarAskConnectionTests: XCTestCase {
         let fixture = try await AskFixture.make(self, second: true, catalog: catalog), model = fixture.model
         try await fixture.chat("a", title: "Studio checklist")
         try await fixture.chat("b", title: "Research parser", profile: "other")
-        model.profiles[1].miniModelId = nil; model.profiles[1].catalogUrl = "http://127.0.0.1:1/catalog"
+        try await model.updateConfiguration { saved in
+            saved.profiles[1].profile.miniModelId = nil
+            saved.profiles[1].profile.catalogUrl = "http://127.0.0.1:1/catalog"
+        }
         let sidebar = WorkspaceSidebarView(model: model), search = model.sidebarSearch, ask = search.askChats
         search.setScope(.ask); sidebar.setFilter("Find parser")
         XCTAssertNil(model.catalogEntry(for: model.profiles[1]).fetchedAt)
         XCTAssertEqual(ask.connections.first(where: { $0.id == "other" })?.available, true, "Unknown is not no mini model")
         ask.chooseConnection("other", question: search.query)
         XCTAssertEqual(ask.connectionID, "other"); XCTAssertTrue(fixture.other?.requests.isEmpty == true)
+        // Session opening can start this catalog load too (0.1.132). Ask must
+        // join it without losing the chosen connection or asking twice.
+        _ = model.subagentModels(for: try XCTUnwrap(model.record("b")))
         search.submit(); await ask.settle()
-        XCTAssertEqual(fixture.other?.requests.count, 1); XCTAssertEqual(fixture.other?.requests.first?.body["model"]?.string, "catalog-mini")
+        XCTAssertEqual(fixture.other?.requests.count, 1, ask.status.text)
+        XCTAssertEqual(fixture.other?.requests.first?.body["model"]?.string, "catalog-mini")
         XCTAssertEqual(ask.matches.map(\.id), ["b"]); XCTAssertTrue(fixture.gateway.requests.isEmpty)
     }
 
@@ -462,7 +469,9 @@ private final class AskPlanThreadProbe: @unchecked Sendable {
 
 final class SidebarAskTextTests: XCTestCase {
     func testTailChecksFollowTheNewestParentsAndOmitReasoningAndControlHistory() throws {
-        let root = scratchRoot("ask-tail"); defer { try? FileManager.default.removeItem(at: root) }
+        let root = scratchRoot("ask-tail")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let journal = try SearchJournal(root.appendingPathComponent("chat.jsonl"))
         try journal.message("old", role: "assistant", "Abandonedneedle")
         try journal.record("branch", ["type": "branch", "fromMessageId": "native", "keptIds": []])
@@ -476,7 +485,9 @@ final class SidebarAskTextTests: XCTestCase {
     }
 
     func testIncompleteAndOversizeRecordsNeverMakeAnUnboundedRead() throws {
-        let root = scratchRoot("ask-tail-records"); defer { try? FileManager.default.removeItem(at: root) }
+        let root = scratchRoot("ask-tail-records")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let journal = try SearchJournal(root.appendingPathComponent("chat.jsonl"))
         try journal.message("large", role: "assistant", "needle " + String(repeating: "x", count: 1_000_000))
         let source = ChatSearchSource(id: "chat", path: journal.url.path)

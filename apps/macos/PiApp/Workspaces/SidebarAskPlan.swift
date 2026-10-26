@@ -73,7 +73,9 @@ struct SidebarAskPlan {
         return String(decoding: data, as: UTF8.self)
     }
     private static func unsafe(_ scalar: Unicode.Scalar) -> Bool {
-        (CharacterSet.controlCharacters.contains(scalar) && !CharacterSet.whitespacesAndNewlines.contains(scalar))
+        // Emoji joiners and presentation selectors are visible text formatting.
+        if scalar.value == 0x200d || (0xfe00...0xfe0f).contains(scalar.value) || (0xe0100...0xe01ef).contains(scalar.value) { return false }
+        return (CharacterSet.controlCharacters.contains(scalar) && !CharacterSet.whitespacesAndNewlines.contains(scalar))
             || (0x202a...0x202e).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value)
     }
     static func terms(_ question: String) -> [String] {

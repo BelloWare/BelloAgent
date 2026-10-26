@@ -85,7 +85,11 @@ struct SidebarAskConnection: Equatable {
         guard let model else { return }
         guard let id = chosen, connections.contains(where: { $0.id == id }),
               let profile = model.profiles.first(where: { $0.id == id }) else {
-            reset(); resolveDefault(); changed?(); return
+            let wasSubmitted = submitted
+            reset(); resolveDefault()
+            submitted = wasSubmitted
+            if wasSubmitted { status.text = "Ask stopped because the connection changed or no longer has chats. Press Return to ask again." }
+            changed?(); return
         }
         let next = mini(profile, model: model)
         if chosenMini != next, chosenMini != nil {
