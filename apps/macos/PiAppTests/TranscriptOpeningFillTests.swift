@@ -101,6 +101,67 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(snapshot.items, TranscriptActivity.blocks(of: snapshot.messages, lifecycle: snapshot.lifecycle, complete: snapshot.complete))
     }
 
+    @MainActor func testRepeatedTailEditsStopTheSpeculativeFillAndKeepPagingAvailable() async throws {
+        let chat = try await chat(), view = chat.view
+        view.state = "running"; view.runStatus = "running"
+        let opening = view.messages.map(\.id), boundary = view.olderPage.cursor
+        var projections = 0
+        chat.model.openSteps = { id, step in
+            guard id == view.id, step == "opening fill projected" else { return }
+            projections += 1
+            view.appendMessage(.init(id: "tail-\(projections)", role: "assistant", text: "New response part", state: "streaming", turn: "u29"))
+            // A broken retry limit must fail by count, without hanging the test.
+            if projections == 12 {
+                view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+            }
+        }
+        defer { chat.model.openSteps = nil }
+        chat.model.startOpeningFill(chat.chat.id)
+        let fill = try XCTUnwrap(view.presentation.openingFill)
+        await fill.value
+        print("OPENFILL repeated tail edits: \(projections) projections")
+        XCTAssertEqual(projections, 4, "A busy tail must stop speculative work after a bounded number of projections")
+        XCTAssertNil(view.presentation.openingFill)
+        XCTAssertTrue(view.presentation.openingPage)
+        XCTAssertEqual(view.olderPage.cursor, boundary, "The unread history remains retryable")
+        XCTAssertEqual(view.messages.map(\.id), opening + (0..<projections).map { "tail-\($0 + 1)" })
+        XCTAssertEqual(view.notice, "")
+        chat.model.openSteps = nil
+        let loaded = await chat.model.loadHistoryPage(chat.chat.id, newer: false, automatic: true)
+        XCTAssertTrue(loaded, "Scrolling must still load history after speculative retries are exhausted")
+        XCTAssertGreaterThan(view.messages.count, 1_000)
+        XCTAssertEqual(view.messages.last?.id, "tail-\(projections)")
+    }
+
+    @MainActor func testATransientTailEditCanRetryEachOpeningBatch() async throws {
+        let chat = try await chat(), view = chat.view
+        view.state = "running"; view.runStatus = "running"
+        var projections = 0, admitted = 0, changed = false
+        chat.model.openSteps = { id, step in
+            guard id == view.id else { return }
+            if step == "opening fill step" { admitted += 1; changed = false }
+            if step == "opening fill projected" {
+                projections += 1
+                if !changed {
+                    changed = true
+                    view.appendMessage(.init(id: "tail-\(admitted)", role: "assistant", text: "New response part", state: "streaming", turn: "u29"))
+                }
+            }
+        }
+        defer { chat.model.openSteps = nil }
+        chat.model.startOpeningFill(chat.chat.id)
+        let fill = try XCTUnwrap(view.presentation.openingFill)
+        await fill.value
+        print("OPENFILL transient tail edits: \(projections) projections, \(admitted) admitted batches")
+        XCTAssertGreaterThan(admitted, 4, "The retry allowance starts again for each batch")
+        XCTAssertEqual(projections, 2 * admitted)
+        XCTAssertFalse(view.presentation.openingPage)
+        XCTAssertNil(view.presentation.openingFill)
+        XCTAssertEqual(view.messages.count, 974 + admitted)
+        XCTAssertEqual(view.messages.first?.id, "u20")
+        XCTAssertEqual(view.messages.suffix(admitted).map(\.id), (0..<admitted).map { "tail-\($0)" })
+    }
+
     func testFillPlannerKeepsWholeTurnsInBothDirections() {
         let all = (0..<1_200).map { index in
             TranscriptMessage(id: "m\(index)", role: index % 50 == 0 ? "user" : "assistant", text: "Row \(index)")
