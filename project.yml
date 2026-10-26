@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.133
-    CURRENT_PROJECT_VERSION: 137
+    MARKETING_VERSION: 0.1.134
+    CURRENT_PROJECT_VERSION: 138
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Long chats load in bigger pieces and stay fast, edits start at once, sent images show as thumbnails, pasted images always go out, and chats get searchable briefs."
+    RELEASE_MESSAGE: "Ask about your chats in plain words from sidebar search."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
