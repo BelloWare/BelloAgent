@@ -1,4 +1,4 @@
-# SIDEBAR-2: keep the top of the sidebar at the top — 0.1.131
+# SIDEBAR-2: preserve the sidebar's top and visible selection — 0.1.131
 
 Owner, 2026-10-26:
 
@@ -274,3 +274,64 @@ and the full-size bottom-edge/chips/light scene:
   state-marker regressions.
 
 The owner's decision is implemented; no product choice remains unresolved.
+
+### Merge and final validation
+
+Round 2 implementation: **`b379855d`**. After its pre-merge checks,
+`git fetch origin dev/next` found **`be81ac4f`**, which contains the requested
+`c03168e0` plus STREAM-1's bounded speculative opening retries. Merged that
+tip into `dev/a131-sbscroll` as **`1961c8e7`**, without rewriting either
+history. The merge changed neither `SidebarListDocument.swift` nor
+`SidebarScrollPositionTests.swift`. Removed the duplicate pending SIDEBAR-2
+release entry and retained the checked entry and owner decision. Regenerating
+the project with `xcodegen generate --quiet` made no further changes.
+
+On `1961c8e7`, the same nine-class focused command passes **114 tests**, with
+the two opt-in galleries skipped (`logs/r2-merged-focused.log`: 116 executed,
+zero failures). The following individual commands then pass every gallery
+and serial class, each under the shared full-lane lock:
+
+```sh
+TEST_RUNNER_PI_APP_SIDEBAR_SCROLL_GALLERY="$BUILD/r2-merged-gallery-scroll" \
+  PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SidebarScrollPositionTests
+TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY="$BUILD/r2-merged-gallery-filter" \
+  PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SidebarProjectFilterGalleryTests
+TEST_RUNNER_PI_APP_SIDEBAR_SHOT_ROOT="$BUILD/r2-merged-gallery-sidebar" \
+  PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SidebarAppearanceTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SidebarListedOrderTests
+PI_BUILD_ROOT="$BUILD" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SidebarDropZoneTests
+```
+
+| Class on the merged tree | Passed | Log under `$BUILD/logs` |
+| --- | ---: | --- |
+| SidebarScrollPositionTests | 21 | r2-merged-restored-gallery.log |
+| SidebarDocumentRegressionTests | 10 | r2-merged-focused.log |
+| SidebarProjectFilterTests | 21 | r2-merged-focused.log |
+| SidebarFlatTopicsTests | 30 | r2-merged-focused.log |
+| SessionOrderingTests | 5 | r2-merged-focused.log |
+| SidebarOrderHoldViewTests | 3 | r2-merged-focused.log |
+| SidebarMultiSelectionTests | 4 | r2-merged-focused.log |
+| SidebarSearchSidebarTests | 10 | r2-merged-focused.log |
+| SidebarSearchScopeTests | 12 | r2-merged-focused.log |
+| SidebarProjectFilterGalleryTests | 1 | r2-merged-gallery-filter.log |
+| SidebarAppearanceTests | 6 | r2-merged-appearance.log |
+| SidebarListedOrderTests | 5 | r2-merged-listed-order.log |
+| SidebarDropZoneTests | 6 | r2-merged-drop-zone.log |
+
+**134 distinct methods in 13 classes pass again**, zero failures and no
+remaining skips. The final restored runs also retain the round-1 zero-drift
+behavior and the round-2 edge positions in the table above. No broader native,
+helper or performance suites were run.
+
+The merged gallery runs regenerate all **62 PNGs**. Comparing dimensions and
+decoded RGBA pixels against the inspected pre-merge captures finds **zero
+differences**: scroll 36/36, filter 14/14, sidebar 12/12
+(`logs/r2-merged-pixels.log`). The light/dark/narrow inspection therefore holds
+for the merged tree too. All lock ownership is released after each run; no
+test-host clones were created. The final validation-record commit changes
+documentation only.
