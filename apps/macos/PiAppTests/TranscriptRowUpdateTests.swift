@@ -6,6 +6,25 @@ import XCTest
 /// The app's side of the helper's row updates: what it asks for, what it does
 /// with what comes back, and how it recovers when an update does not fit.
 final class TranscriptRowUpdateTests: XCTestCase {
+    func testIndexedUpdatesKeepPatchSemanticsAfterRowsMoveOrLeave() throws {
+        var held = page(3, streaming: "Partial")
+        var indexed = TranscriptRowUpdates.Page(held)
+        let updates: [WireValue] = [
+            .object(["appends": .array([.object(["id": .string("stream:live"), "text": .string(" answer")])])]),
+            .object(["order": .array([.string("stream:live"), .string("m1"), .string("m0")])]),
+            .object(["appends": .array([.object(["id": .string("m0"), "text": .string(" revised")]),
+                                       .object(["id": .string("stream:live"), "thinking": .string("why")])])]),
+        ]
+        for update in updates {
+            held = try XCTUnwrap(TranscriptRowUpdates.apply(update, to: held))
+            indexed = try XCTUnwrap(indexed.applying(update))
+            XCTAssertEqual(indexed.rows, held)
+        }
+        let invalid: WireValue = .object(["appends": .array([.object(["id": .string("m2"), "text": .string("gone")])])])
+        XCTAssertNil(indexed.applying(invalid), "The index cannot append to a row an earlier order removed")
+        XCTAssertEqual(indexed.rows, held, "A refused patch leaves the held page intact")
+    }
+
     private func page(_ count: Int, streaming: String? = nil) -> [TranscriptMessage] {
         var rows = (0..<count).map { TranscriptMessage(id: "m\($0)", role: $0.isMultiple(of: 2) ? "user" : "assistant", text: "Row \($0)") }
         if let streaming { rows.append(TranscriptMessage(id: "stream:live", role: "assistant", text: streaming, thinking: "", state: "streaming")) }

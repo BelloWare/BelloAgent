@@ -19,19 +19,23 @@ extension WorkspaceModel {
     /// (`catchUpFinishedRows`) answers to that chat alone.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
-                                validating: ConversationCursor? = nil, followsNavigation: Bool = true) async throws -> ConversationHistoryPage {
+                                validating: ConversationCursor? = nil, followsNavigation: Bool = true, opening: Bool = false) async throws -> ConversationHistoryPage {
         let navigation = followsNavigation ? transcriptNavigation(item.id) : nil
         func checkNavigation() throws {
             try Task.checkCancellation()
             if let navigation, !navigation.isCurrent(in: self) { throw CancellationError() }
         }
+        func marked(_ page: ConversationHistoryPage) -> ConversationHistoryPage {
+            var page = page; page.opening = opening; page.openingAround = around; return page
+        }
         try checkNavigation()
         if let historyWindowLoader {
             let page = try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around)
-            try checkNavigation(); return page
+            try checkNavigation(); return marked(page)
         }
         if !isOriginalSubagentReader(item.id), opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
+            if opening { params["opening"] = .bool(true) }
             // Source handoff uses a stable entry id. Numeric file positions are
             // never passed to a helper. The replacement source validates it.
             if let cursor {
@@ -57,7 +61,9 @@ extension WorkspaceModel {
             }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try checkNavigation()
-            return try ConversationHistoryPage(result)
+            let page = try await Task.detached { try ConversationHistoryPage(result) }.value
+            try checkNavigation()
+            return marked(page)
         }
         guard side(item.id)?.pending == true || !isEphemeral(item.id) else { throw HostError.failure("This side's owning helper is unavailable. Its retained history was not changed.") }
         if let path = item.path {
@@ -66,7 +72,7 @@ extension WorkspaceModel {
                                                   after: newer ? cursor.entry : nil, targetTurns: HistoryWindowPolicy.turns)
                 try checkNavigation()
                 guard page.lineage == cursor.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
-                return try ConversationHistoryPage(page)
+                return marked(try ConversationHistoryPage(page))
             }
             // A window the helper read hands over to the journal by a stable
             // entry: still in the journal's branch, on the same lineage.
@@ -78,18 +84,18 @@ extension WorkspaceModel {
             let display = displays[item.id], generation = display?.presentation.readGeneration
             let page = try await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
                                                                      position: around == nil && !start ? position : nil,
-                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
+                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, limits: opening ? TranscriptPaging.pageLimits.opening : nil, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
                     guard navigation?.isCurrent(in: self) ?? true, let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
                 }
             })
             try checkNavigation()
-            return try ConversationHistoryPage(page)
+            return marked(try ConversationHistoryPage(page))
         }
         // A newly created in-memory chat is authoritatively empty.
-        return try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
-            "incarnation": .string("new:" + item.id), "lineage": .string("root"), "older": .null, "newer": .null]))
+        return marked(try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
+            "incarnation": .string("new:" + item.id), "lineage": .string("root"), "older": .null, "newer": .null])))
     }
 
     /// `landing`: how far below the viewport's top the `around` row lands.
@@ -125,6 +131,7 @@ extension WorkspaceModel {
     /// `presenting`: the page the transcript shows next, which prepares for
     /// it; else rows held for the chat's next opening (`catchUpFinishedRows`).
     func adoptPage(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0, presenting: Bool) {
+        view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
         if view.taskPresentation?.active == nil {
             view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
         }
@@ -141,6 +148,8 @@ extension WorkspaceModel {
         if presenting { view.historyState = page.messages.isEmpty ? .empty : .preparing; view.heldRowsRevision = nil }
         view.messages = page.messages
         view.adoptedPage = view.pageRows
+        view.presentation.openingPage = page.opening && page.messages.count < TranscriptPaging.pageLimits.rows
+        view.presentation.openingAround = page.openingAround
     }
 
     /// A chat's rows shown again as they were, when its journal has not
@@ -167,6 +176,7 @@ extension WorkspaceModel {
         view.contextSelectionReady = true
         openSteps?(id, "viewport ready")
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
+        startOpeningFill(id)
         view.presentation.secondary?.cancel()
         let navigation = transcriptNavigation(id)
         view.presentation.secondary = Task { [weak self, weak view] in
@@ -263,6 +273,18 @@ extension WorkspaceModel {
     }
     @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
+        if automatic, let fill = view.presentation.openingFill {
+            let before = newer ? view.newerPage.cursor : view.olderPage.cursor
+            let waitingGeneration = view.presentation.readGeneration, waitingNavigation = transcriptNavigation(id)
+            await fill.value
+            guard !Task.isCancelled, displays[id] === view, !view.historyState.loading,
+                  view.presentation.readGeneration == waitingGeneration, waitingNavigation.isCurrent(in: self),
+                  (newer ? view.newerPage.cursor : view.olderPage.cursor) == before else { return false }
+        }
+        if !automatic {
+            view.presentation.openingPage = false
+            view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+        }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
         let generation = view.presentation.readGeneration, read = UUID()

@@ -365,5 +365,5 @@ extension TranscriptMessage {
     /// Whether this message reads as a plain one: no kind, or a kind no row
     /// knows, as `MessageRowView`'s default drew it. It keeps its kind for
     /// everything else (no Edit, no Fork, no source for an unknown kind).
-    var readsPlain: Bool { kind.map { !Self.drawnKinds.contains($0) } ?? true }
+    var readsPlain: Bool { self.kind.map { !Self.drawnKinds.contains($0) } ?? true }
 }

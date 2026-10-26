@@ -71,7 +71,7 @@ extension AgentSession {
             // The first loaded row is the chat's own first only when no row
             // before it is left to load: the loaded rows of a chat opened from
             // its metadata file can begin inside a turn.
-            let limits = historyPageLimits
+            let limits = params["opening"].flag == true ? historyPageLimits.opening : historyPageLimits
             let range = HistoryWindowPolicy.page(count: shown.count, before: forward ? nil : boundary,
                                                  after: forward ? boundary : nil, around: around, limits: limits,
                                                  firstIsStart: shown.base == 0, startsTurn: shown.startsTurn)

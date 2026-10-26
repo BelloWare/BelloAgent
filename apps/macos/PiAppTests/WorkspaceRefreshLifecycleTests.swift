@@ -20,6 +20,99 @@ import XCTest
 }
 
 final class WorkspaceRefreshLifecycleTests: XCTestCase {
+    @MainActor func testAnOpeningFillReachingTheLiveTailRefreshesAReplyFinishedDuringItsRead() async throws {
+        let f = try await fixture(), gate = HistoryReadGate()
+        defer { Task { await gate.release() } }
+        var rows = try XCTUnwrap(wireRows(0..<400).array)
+        rows[399] = .object(["id": .string("m399"), "role": .string("assistant"), "text": .string("Partial"), "state": .string("streaming")])
+        let cursor: WireValue = .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m1")])
+        var opening = try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string("root"),
+            "messages": .array(Array(rows.prefix(2))), "older": .null, "newer": cursor, "start": .number(0), "total": .number(400)]))
+        opening.opening = true; opening.openingAround = "m0"
+        f.model.adoptPage(opening, into: f.view, presenting: false)
+        f.view.historyState = .ready; f.view.state = "running"; f.view.runStatus = "running"
+        f.view.projectedRows = try TranscriptMessage.page(.array(Array(rows.suffix(4))))
+        f.view.projectionRevision = "runtime:1"
+        let stale = try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string("root"),
+            "messages": .array(Array(rows.dropFirst(2))), "older": .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m2")]),
+            "newer": .null, "start": .number(2), "total": .number(400)]))
+        f.model.historyWindowLoader = { _, _, newer, _ in
+            guard newer else { throw HostError.failure("The saved opening must fill forward") }
+            await gate.read()
+            return stale
+        }
+        f.model.startOpeningFill(f.chat.id)
+        let fill = try XCTUnwrap(f.view.presentation.openingFill)
+        try await eventually("The opening fill never read its stale page", until: { await gate.reads == 1 })
+        rows[399] = .object(["id": .string("m399"), "role": .string("assistant"), "text": .string("Finished reply"), "state": .string("complete")])
+        var finished = liveSnapshot(2, .array(Array(rows.suffix(4)) + [
+            .object(["id": .string("final-part"), "role": .string("assistant"), "text": .string("Final part")])]))
+        try await exchange(f, finished)
+        XCTAssertEqual(f.commands.frames[0]["params"]?.object?["includeMessages"]?.bool, false)
+        XCTAssertEqual(f.view.state, "idle")
+        XCTAssertEqual(f.view.messages.count, 2, "The completion's rows were omitted while browsing history")
+        let answered = f.commands.frames.count
+        await gate.release(); await fill.value
+        XCTAssertFalse(f.view.browsingHistory); XCTAssertNil(f.view.newerPage.cursor)
+        try await eventually("Closing the opening's newer gap did not request fresh live rows", timeout: .seconds(2)) {
+            f.commands.frames.count > answered
+        }
+        let request = f.commands.frames[answered]
+        XCTAssertEqual(request["params"]?.object?["includeMessages"]?.bool, true)
+        XCTAssertNil(request["params"]?.object?["displayRevision"], "The retained projection missed the completion")
+        XCTAssertNil(request["params"]?.object?["messageDelta"])
+        finished["seq"] = .number(3); finished["displayRevision"] = .string("runtime:3")
+        try reply(request, on: f.host, result: finished)
+        try await wait { !f.view.snapshotInFlight }
+        XCTAssertEqual(f.view.messages.first(where: { $0.id == "m399" })?.text, "Finished reply")
+        XCTAssertEqual(f.view.messages.last?.id, "final-part", "The reply's final part arrives without another event or reopening")
+        try await f.host.shutdownAndWait()
+    }
+
+    @MainActor func testAStreamingDeltaLetsGoOfTurnsBeforeTheReadersNewHeldTurn() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        for selection in [false, true] {
+            let f = try await fixture()
+            let initial = try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string("root"),
+                "messages": wireRows(0..<8), "older": .null, "newer": .null, "start": .number(0), "total": .number(8)]))
+            f.model.adoptPage(initial, into: f.view, presenting: false)
+            f.view.historyState = .ready
+            func hold(_ index: Int) {
+                if selection { f.view.pinnedHistoryIDs = ["m\(index)"] }
+                else {
+                    f.view.scrollAnchor = .init(id: "m\(index)", offset: 17, followsBottom: false)
+                    f.model.anchorChanged(f.view)
+                }
+            }
+            hold(1)
+            var growing = liveSnapshot(2, wireRows(6..<14))
+            growing["state"] = .string("running"); growing["runStatus"] = .string("running")
+            try await exchange(f, growing)
+            try await wait { f.model.accountingTasks.isEmpty }
+            XCTAssertEqual(f.view.messages.map(\.id), (0..<14).map { "m\($0)" })
+            _ = f.view.presentedMessages
+            for (sequence, held) in [(3, 3), (4, 5)] {
+                hold(held)
+                f.model.releaseHeldWindow(f.view)
+                XCTAssertGreaterThan(f.view.messages.count, 8, "The held row is still outside the newest bounded window")
+                var delta = liveSnapshot(Double(sequence), .array([]))
+                delta["state"] = .string("running"); delta["runStatus"] = .string("running")
+                delta["messages"] = nil
+                delta["messageDelta"] = .object(["base": .string("runtime:\(sequence - 1)"), "rows": .array([]), "appends": .array([
+                    .object(["id": .string("m13"), "text": .string(" token\(sequence)"), "thinking": .string("")])])])
+                try await exchange(f, delta)
+                try await wait { f.model.accountingTasks.isEmpty }
+                XCTAssertEqual(f.view.messages.map(\.id), ((held - 1)..<14).map { "m\($0)" }, "Released turns leave while the held turn and live tail stay")
+                XCTAssertEqual(f.view.olderPage.cursor?.entry, "m\(held - 1)")
+                XCTAssertTrue(f.view.messages.contains { $0.id == "m\(held)" })
+                XCTAssertTrue(f.view.messages.last?.text.hasSuffix(" token\(sequence)") == true)
+            }
+            try await f.host.shutdownAndWait()
+        }
+    }
+
     @MainActor func testReplacementRuntimeRebindsHeldRevealAndPositionBoundaries() async throws {
         for operation in ["reveal", "home", "position"] {
             let f = try await fixture()

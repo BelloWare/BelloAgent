@@ -22,6 +22,8 @@ struct ConversationPageBoundary: Equatable {
 }
 
 struct ConversationHistoryPage: Sendable {
+    var opening = false
+    var openingAround: String?
     var messages: [TranscriptMessage]
     var older: ConversationCursor?
     var newer: ConversationCursor?
@@ -123,6 +125,9 @@ struct ConversationHistoryPage: Sendable {
     var olderRead: UUID?
     var newerRead: UUID?
     var secondary: Task<Void, Never>?
+    var openingFill: Task<Void, Never>?
+    var openingPage = false
+    var openingAround: String?
     var identity: (incarnation: String, lineage: String)?
     var partialTurnInput: String?
     var automaticFills = 0
@@ -135,13 +140,14 @@ struct ConversationHistoryPage: Sendable {
         navigation?.cancel(); navigation = nil
         olderTask?.cancel(); olderTask = nil; newerTask?.cancel(); newerTask = nil
         secondary?.cancel(); secondary = nil
+        openingFill?.cancel(); openingFill = nil
     }
     func begin() {
         cancel(); generation = UUID(); readGeneration = generation; identity = nil; partialTurnInput = nil; reload = nil
         initializationPending = true
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
     }
-    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel() }
+    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel(); openingFill?.cancel() }
 }
 
 extension SessionDisplay {

@@ -5,6 +5,68 @@ import SwiftUI
 /// Native transcript work is driven by that transcript's revision, not by
 /// another session's cost/queue update repainting its containing workspace.
 final class TranscriptUpdateIsolationTests: XCTestCase {
+    @MainActor func testAFirstStreamingRowReplansOnlyTheTurnItJoins() throws {
+        for count in [300, 750, 3_000] {
+            let session = SessionDisplay(id: "first-fragment-\(count)")
+            session.messages = messages(count)
+            let page = TranscriptPage(); page.presentationInterval = 0; page.bind(session)
+            let document = TranscriptNativeDocument(page: page)
+            document.update(snapshot: page.snapshot, actions: .init(), environment: .init())
+            let prefix = document.retainedRows.dropLast(2).map(ObjectIdentifier.init)
+            let projected = session.presentedMessageVisits, reconciled = document.rowReconciliationVisits
+            TranscriptLayoutClock.recording = true; TranscriptLayoutClock.reset()
+            defer { TranscriptLayoutClock.recording = false }
+            session.appendMessage(.init(id: "live", role: "assistant", text: "First token", state: "streaming"))
+            var delivered = page.snapshot
+            if testEnvironment("PI_STREAM_MUTATION") == "tail" { delivered?.changes = nil }
+            document.update(snapshot: delivered, actions: .init(), environment: .init())
+            XCTAssertEqual(page.snapshot?.items, TranscriptActivity.blocks(of: session.presentedMessages))
+            XCTAssertEqual(Array(document.retainedRows.prefix(prefix.count)).map(ObjectIdentifier.init), prefix)
+            XCTAssertLessThanOrEqual(session.presentedMessageVisits - projected, 1)
+            XCTAssertLessThanOrEqual(document.rowReconciliationVisits - reconciled, 6)
+            XCTAssertLessThanOrEqual(TranscriptLayoutClock.messageRowVisits, 12)
+            XCTAssertEqual(TranscriptLayoutClock.identityWalks, 0)
+        }
+    }
+
+    func testAnActivityPatchVisitsOnlyTheChangedMessageAndItsItems() throws {
+        for count in [300, 750, 3_000] {
+            let previous = messages(count) + [TranscriptMessage(id: "live", role: "assistant", text: "Token", state: "streaming")]
+            let items = TranscriptActivity.blocks(of: previous)
+            var index = TranscriptActivity.PatchIndex(items)
+            var next = previous
+            next[count].text += " continues"
+            let hint: [Int]? = testEnvironment("PI_STREAM_MUTATION") == "activity" ? nil : [count]
+            let patched = try XCTUnwrap(index.patch(items, from: previous, to: next, changed: hint))
+            XCTAssertEqual(patched.items, TranscriptActivity.blocks(of: next))
+            XCTAssertLessThanOrEqual(index.messageVisits, 1, "An activity patch compared unchanged messages at \(count) rows")
+            XCTAssertLessThanOrEqual(index.itemVisits, 2, "An activity patch searched unchanged items at \(count) rows")
+        }
+    }
+
+    @MainActor func testAStreamingTokenVisitsOnlyItsPresentedAndDocumentRows() throws {
+        for count in [300, 750, 3_000] {
+            let session = SessionDisplay(id: "visits-\(count)")
+            session.messages = messages(count) + [TranscriptMessage(id: "live", role: "assistant", text: "Token", state: "streaming")]
+            let page = TranscriptPage()
+            page.presentationInterval = 0
+            page.bind(session)
+            let document = TranscriptNativeDocument(page: page)
+            document.update(snapshot: page.snapshot, actions: .init(), environment: .init())
+            let projection = session.presentedMessageVisits, reconciliation = document.rowReconciliationVisits
+            var live = try XCTUnwrap(session.messages.last)
+            live.text += " continues"
+            if testEnvironment("PI_STREAM_MUTATION") == "projection" { session.messageProjection.invalidate() }
+            session.replaceMessage(at: count, with: live)
+            var delivered = page.snapshot
+            if testEnvironment("PI_STREAM_MUTATION") == "document" { delivered?.changes = nil }
+            document.update(snapshot: delivered, actions: .init(), environment: .init())
+            XCTAssertEqual(page.snapshot?.messages.last?.text, live.text)
+            XCTAssertLessThanOrEqual(session.presentedMessageVisits - projection, 1, "A token projected unchanged history at \(count) rows")
+            XCTAssertLessThanOrEqual(document.rowReconciliationVisits - reconciliation, 2, "A token reconciled unchanged history at \(count) rows")
+        }
+    }
+
     private func messages(_ count: Int = 50) -> [TranscriptMessage] {
         (0..<count).map { index in
             TranscriptMessage(id: "m\(index)", role: index.isMultiple(of: 2) ? "user" : "assistant",
