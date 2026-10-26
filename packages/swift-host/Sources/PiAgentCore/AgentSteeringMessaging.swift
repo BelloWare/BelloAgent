@@ -147,13 +147,9 @@ extension AgentSteeringCoordinator {
             throw AgentError("coordination_limit", "Accepted agent input is held because it cannot fit this request budget; adjust context or Resume")
         }
         let ids = selected.map(\.id)
-        if childTurn == nil, (state.run?.reportContinuations ?? 0) >= 32,
-           selected.contains(where: { $0.kind != "result" && $0.kind != "not_delivered_interrupted" }) {
-            throw AgentMailboxPolicy.cap()
-        }
         let existing = state.deliveries.values.first { !$0.committed && $0.recipientID == recipient.id && $0.eventIDs == ids }
         var delivery = existing ?? AgentDelivery(rowID:UUID().uuidString,recipientID:recipient.id,eventIDs:ids,payload:payload)
-        if existing == nil, childTurn == nil, state.run != nil, (state.run?.reportContinuations ?? 0) < 32 { delivery.continuation = true }
+        if existing == nil, childTurn == nil, state.run != nil { delivery.continuation = true }
         if existing == nil, childTurn == nil, state.run != nil { delivery.cursor = selected.last?.childID }
         if existing == nil { try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery) }
         try await recipient.appendAgentDelivery(delivery,selected:selected)
