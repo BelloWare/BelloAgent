@@ -1627,8 +1627,16 @@ final class TranscriptBugRegressionTests: XCTestCase {
                                    .array([.object(["type": .string("text"), "text": .string("first ")]), .object(["type": .string("text"), "text": .string("second")])])] {
             let fields: [String: WireValue] = ["role": .string("user"), "content": content]
             let message = TranscriptMessage.project(id: "row", message: fields)
-            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), rowPayload(message))
-            XCTAssertEqual(ConversationContent.transcriptText(message), rowPayload(message))
+            let shown = rowPayload(message)
+            let expected: String
+            if message.imageOnly == true {
+                // IMG-1 shows thumbnails alone; copy and Find keep the image label.
+                XCTAssertEqual(shown, "")
+                let count = try XCTUnwrap(message.imageCount)
+                expected = count == 1 ? "Image" : "\(count) images"
+            } else { expected = shown }
+            XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), expected)
+            XCTAssertEqual(ConversationContent.transcriptText(message), expected)
         }
         let fields: [String: WireValue] = ["role": .string("user"), "content": .string("hidden envelope"), "nativeDisplayText": .string("Visible **literal** request")]
         XCTAssertEqual(ConversationContent.transcriptText(["message": .object(fields)]), rowPayload(.project(id: "row", message: fields)))

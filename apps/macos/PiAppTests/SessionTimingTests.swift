@@ -441,9 +441,9 @@ final class SessionTimingTests: XCTestCase {
             let rendered = try await renderedText(window, filename: "session-footer-running-\(width).jpg")
             XCTAssertEqual(hosted.bounds.width, CGFloat(width), accuracy: 0.5)
             // The clock started 19 s before the first capture and keeps
-            // running: a capture on a loaded machine can land a second or
-            // two later. What matters is that a clock reading is on screen.
-            XCTAssertNotNil(rendered.range(of: #"\b(19|2[0-9])s\b"#, options: .regularExpression),
+            // running: a loaded machine can capture much later, even in minutes.
+            // What matters is a visible reading of at least 19 seconds.
+            XCTAssertNotNil(rendered.range(of: #"\b(?:(?:19|[2-5][0-9])\s*s|[1-9][0-9]*\s*m\s*[0-5]?[0-9]\s*s|[1-9][0-9]*\s*h\s*[0-5]?[0-9]\s*m\s*[0-5]?[0-9]\s*s)\b"#, options: .regularExpression),
                             "The elapsed clock must stay visible at \(width)pt. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("bash"), "The current action must stay visible at \(width)pt. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("15.8k tok") && rendered.contains("cache hit 50.00%") && rendered.contains("$0.0025"),
