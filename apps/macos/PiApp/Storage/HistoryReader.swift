@@ -81,6 +81,12 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    /// Generated fixtures append after indexing, as a live helper can.
+    private var imageReferenceIndexed: (@Sendable () throws -> Void)?
+    func observeImageReference(_ observer: (@Sendable () throws -> Void)?) { imageReferenceIndexed = observer }
+    /// Generated fixtures append after a chunk is read, while a cold scan is under way.
+    private var indexChunkRead: (@Sendable (UInt64) throws -> Void)?
+    func observeIndexChunks(_ observer: (@Sendable (UInt64) throws -> Void)?) { indexChunkRead = observer }
     /// Test seam: hold an edit's index scan while another chat reads.
     var editReadStarted: (@Sendable () -> Void)?
     func observeEditRead(_ observer: (@Sendable () -> Void)?) { editReadStarted = observer }
@@ -859,6 +865,23 @@ actor HistoryReader {
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
+    /// Resolve a live row to its retained record without decoding its images.
+    /// Reopened pages attach this reference as they read the row below.
+    func imageReference(path: String, id: String) throws -> TranscriptImageReference {
+        try Task.checkCancellation()
+        let file = try open(path); defer { try? file.close() }
+        let identity = try stamp(file), size = try file.seekToEnd()
+        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: nil, around: id, after: nil,
+                                       targetTurns: nil, progress: nil, whole: false, bounded: true)
+        try imageReferenceIndexed?()
+        // A helper can append while the index is read, or be halfway through
+        // its next record. The complete record this offset names still reads;
+        // the image decoder checks its own descriptor, id and bounds again.
+        let current = try stamp(file)
+        guard let ref = try journal.branch.ref(id), ref.type == "message", ref.role == "user",
+              current.device == identity.device, current.inode == identity.inode, current.size >= identity.size else { throw StoreError.unreadableRecord }
+        return TranscriptImageReference(path: path, id: id, offset: ref.offset, length: ref.length, device: identity.device, inode: identity.inode)
+    }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, retained: Bool = false, knownRevision: String? = nil, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
                        agentPresentation: AgentTranscriptPresentation? = nil) async throws -> ContentSearch {
@@ -1359,6 +1382,7 @@ actor HistoryReader {
             let count = bounded ? Int(min(65_536, size - min(size, readOffset))) : 65_536
             guard count > 0, let chunk = try file.read(upToCount: count), !chunk.isEmpty else { break }
             readOffset += UInt64(chunk.count)
+            try indexChunkRead?(readOffset)
             try Task.checkCancellation()
             var start = chunk.startIndex
             while let index = Self.newline(in: chunk, from: start) {
@@ -1554,6 +1578,10 @@ actor HistoryReader {
             decodedRecords += 1
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
             var message = Self.displayedMessage(value, ref: ref)
+            if (message.imageCount ?? 0) > 0 {
+                message.imageReference = TranscriptImageReference(path: path, id: ref.id, offset: ref.offset, length: ref.length,
+                                                                  device: identity.device, inode: identity.inode)
+            }
             let result = ToolResultRecord.of(value["message"]?.object ?? [:])
             if let result { toolResults[ref.id] = result.record }
             if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {

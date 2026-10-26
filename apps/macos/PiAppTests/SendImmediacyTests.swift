@@ -513,6 +513,9 @@ extension SendImmediacyTests {
         XCTAssertEqual(frame["params"]?.object?["text"]?.string, "", "no text is made up for it")
         XCTAssertEqual(frame["params"]?.object?["attachments"]?.array?.count, 1)
         XCTAssertEqual(chat.session.sendingRows.first?.text, "Image", "the row drawn at once says what it is")
+        XCTAssertEqual(chat.session.sendingRows.first?.imageCount, 1)
+        XCTAssertEqual(chat.session.sendingRows.first?.userText, "")
+        XCTAssertEqual(chat.session.sendingRows.first?.imageAttachments, [image], "The Sending row holds file references, not encoded bytes")
         closed = true
         await chat.close()
     }

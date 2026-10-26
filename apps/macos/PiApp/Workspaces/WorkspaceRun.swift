@@ -132,6 +132,9 @@ extension WorkspaceModel {
             if drawsRow {
                 var row = TranscriptMessage(id: turnID, role: "user", text: text.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, state: TranscriptMessage.sendingState,
                                             at: Date().timeIntervalSince1970 * 1000, turn: turnID, taskRootID: turnID)
+                if !attachments.isEmpty {
+                    row.imageCount = attachments.count; row.imageOnly = text.isEmpty ? true : nil; row.imageAttachments = attachments
+                }
                 // The helper's row names the skills the message used; the row drawn
                 // before it does too, or the pills would appear, and the row grow,
                 // only at the handover.

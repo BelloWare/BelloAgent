@@ -134,8 +134,14 @@ enum TranscriptRowEstimate {
             // 14 points of padding each side and 9 above and below. The row
             // adds 14 above, the band's 6 and 22 under the bubble, and 4 below.
             let body = min(width - 40, TranscriptMetrics.proseWidth) - 28
-            return plain(message.text, width: max(40, body), face: .user) + 18 + 14 + 6 + 22 + 4
-                + skillPills(message.skills ?? [], width: max(40, body), text: !message.text.isEmpty)
+            guard let count = message.imageCount, count > 0 else {
+                return plain(message.text, width: max(40, body), face: .user) + 18 + 14 + 6 + 22 + 4
+                    + skillPills(message.skills ?? [], width: max(40, body), text: !message.text.isEmpty)
+            }
+            let images = TranscriptImageMetrics.height(count: count, width: max(1, body))
+            return plain(message.userText, width: max(40, body), face: .user) + 18 + 14 + 6 + 22 + 4
+                + skillPills(message.skills ?? [], width: max(40, body), text: !message.userText.isEmpty || images > 0)
+                + images + (images > 0 && !message.userText.isEmpty ? 6 : 0)
         }
         let body = min(width, TranscriptMetrics.proseWidth)
         // A reply read as its source is that source in the code panel: the
