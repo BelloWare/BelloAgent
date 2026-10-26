@@ -312,7 +312,9 @@ import AppKit
     /// Less than half the viewport is covered by rows: the reader is looking
     /// at room kept for rows not read yet, or past the page's end.
     var blankViewport: Bool {
-        guard let document, let scroll, let first = document.retainedRows.first, let last = document.retainedRows.last else { return false }
+        guard let document, let scroll,
+              let first = document.retainedRows.first(where: { !$0.foldedAway && $0.frame.height > 0 }),
+              let last = document.retainedRows.last(where: { !$0.foldedAway && $0.frame.height > 0 }) else { return false }
         let view = scroll.contentView.bounds
         let covered = max(0, min(view.maxY, last.frame.maxY) - max(view.minY, first.frame.minY))
         return covered < view.height / 2

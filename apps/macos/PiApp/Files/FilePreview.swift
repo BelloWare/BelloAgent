@@ -32,6 +32,7 @@ import Darwin
     private var madePDFView: PDFView?
     private var suspended = false
     private var savedPage: Int?
+    private var imageLoader: (@MainActor () async throws -> TranscriptImageBitmap)?
     /// Held before decoding by generated-file lifecycle regressions.
     var beforeDecode: (@Sendable () async -> Void)?
     private(set) var decodeStarts = 0
@@ -45,6 +46,11 @@ import Darwin
         return view
     }
     init(url: URL) { self.url = url.standardizedFileURL.resolvingSymlinksInPath() }
+    /// A sent attachment uses the same viewer, read from its journal instead
+    /// of publishing another temporary image file on disk.
+    init(imageName: String, load: @escaping @MainActor () async throws -> TranscriptImageBitmap) {
+        url = URL(fileURLWithPath: imageName); imageLoader = load
+    }
     nonisolated static func kind(for url: URL) -> String? {
         switch url.pathExtension.lowercased() {
         case "pdf": return "pdf"
@@ -61,11 +67,15 @@ import Darwin
         token &+= 1
         let token = token, url = url, previous = error == nil ? fingerprint : nil
         loading = image == nil && pdf == nil
-        let before = beforeDecode
+        let before = beforeDecode, imageLoader = imageLoader
         task = Task { [weak self] in
             let worker = Task.detached(priority: .userInitiated) { [weak self] () -> Reading in
                 await before?()
                 guard !Task.isCancelled else { return Reading(fingerprint: nil, content: .cancelled) }
+                if let imageLoader {
+                    do { return Reading(fingerprint: nil, content: .image(Bitmap(try await imageLoader().image))) }
+                    catch { return Reading(fingerprint: nil, content: .failed(error.localizedDescription)) }
+                }
                 guard url.resolvingSymlinksInPath().path == url.path else {
                     return Reading(fingerprint: nil, content: .failed("The file's path changed. Open it again to check its location."))
                 }

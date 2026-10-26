@@ -398,6 +398,16 @@ final class LongTurnPagingProbeTests: XCTestCase, SerialTestLane {
         func draw() { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
         var document: TranscriptNativeDocument? { LongChatScroll.views(TranscriptNativeScrollView.self, in: pane).first?.documentView as? TranscriptNativeDocument }
         for _ in 0..<10 { draw(); try await Task.sleep(for: .milliseconds(10)) }
+        if testEnvironment("PI_TURN_PROBE_INITIAL_FULL") == "1" {
+            let history = model.history
+            model.historyWindowLoader = { _, cursor, newer, around in
+                try ConversationHistoryPage(await history.window(path: file.path, cursor: cursor, newer: newer, around: around))
+            }
+            model.openSteps = { [weak model] id, step in
+                if id == "tools", step == "adopted" { model?.displays[id]?.presentation.openingPage = false }
+            }
+            print("TURNPROBE control: normal 1,000-row first page, no speculative fill")
+        }
         let opening = Self.footprint()
         let started = ProcessInfo.processInfo.systemUptime
         await model.select("tools")
@@ -411,6 +421,11 @@ final class LongTurnPagingProbeTests: XCTestCase, SerialTestLane {
         }
         let firstRows = ProcessInfo.processInfo.systemUptime - started
         print("TURNPROBE open \(turns) turns: source read \(Self.ms(sourceReady)) ms, first rows \(Self.ms(firstRows)) ms, window \(view.messages.count) rows (\(view.messages.first?.id ?? "-")…\(view.messages.last?.id ?? "-")), document rows \(document?.retainedRows.count ?? 0), footprint +\(String(format: "%.1f", Self.footprint() - opening)) MB")
+        while view.presentation.openingPage, ProcessInfo.processInfo.systemUptime - started < 60 {
+            draw(); try await Task.sleep(for: .milliseconds(1))
+        }
+        draw()
+        print("TURNPROBE full page: \(Self.ms(ProcessInfo.processInfo.systemUptime - started)) ms, \(view.messages.count) rows (\(view.messages.first?.id ?? "-")…\(view.messages.last?.id ?? "-")), footprint +\(String(format: "%.1f", Self.footprint() - opening)) MB")
         for _ in 0..<60 { draw(); try await Task.sleep(for: .milliseconds(16)) }
         var pages = 0, reads: [Double] = [], lands: [Double] = []
         while view.olderPage.cursor != nil, pages < 200 {
@@ -430,8 +445,8 @@ final class LongTurnPagingProbeTests: XCTestCase, SerialTestLane {
         }
         func mean(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count) }
         print("TURNPROBE read back \(turns) turns: \(pages) pages, read mean/max \(Self.ms(mean(reads)))/\(Self.ms(reads.max() ?? 0)) ms, landing mean/max \(Self.ms(mean(lands)))/\(Self.ms(lands.max() ?? 0)) ms, window \(view.messages.count) rows, footprint +\(String(format: "%.1f", Self.footprint() - opening)) MB")
-        // A chat the helper has open reads the same page over the wire: its
-        // frame is decoded off the main actor, its rows on it.
+        // Keep direct main-actor decoding as a diagnostic; actual helper
+        // pages are decoded off the main actor.
         let rows = Array(view.messages.suffix(TranscriptPaging.pageLimits.rows)).map { row -> TranscriptMessage in var row = row; row.accounting = nil; return row }
         let wire = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(rows))
         var decodes: [Double] = []

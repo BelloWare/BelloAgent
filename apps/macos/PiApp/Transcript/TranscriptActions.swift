@@ -12,7 +12,13 @@ struct TranscriptActions {
     var resume: () -> Void = {}
     /// Nil for panes that cannot create a child conversation. Rows never
     /// call it; the page's selection controller does (`forwarding`).
-    var quoteReply: ((TranscriptQuote) -> Void)? = nil
+    var quoteReply: ((TranscriptQuote) -> Void)? {
+        get { inputActions?.quote }
+        set {
+            let image = inputActions?.image
+            inputActions = newValue == nil && image == nil ? nil : InputActions(quote: newValue, image: image)
+        }
+    }
     /// The turn report's info button: the Session Inspector at that turn.
     var inspectTurn: ((TurnSummary) -> Void)? = nil
     /// A skill pill in a sent message (the message's id, the skill, the pill)
@@ -38,13 +44,45 @@ struct TranscriptActions {
     var inspectSubagent: ((SubagentTarget) -> Void)? = nil
     var stopSubagent: ((SubagentTarget) -> Void)? = nil
     var openAgentSource: ((AgentMessageReference) -> Void)? = nil
+    var loadImage: (@MainActor (TranscriptMessage, Int, Int) async throws -> TranscriptImageBitmap)? {
+        get { inputActions?.image }
+        set {
+            let quote = inputActions?.quote
+            inputActions = quote == nil && newValue == nil ? nil : InputActions(quote: quote, image: newValue)
+        }
+    }
+    /// Rows never quote; only image rows need the image callback. Sharing
+    /// this slot keeps every plain row's actions within their old size.
+    private var inputActions: InputActions?
+    private final class InputActions {
+        let quote: ((TranscriptQuote) -> Void)?
+        let image: (@MainActor (TranscriptMessage, Int, Int) async throws -> TranscriptImageBitmap)?
+        init(quote: ((TranscriptQuote) -> Void)?, image: (@MainActor (TranscriptMessage, Int, Int) async throws -> TranscriptImageBitmap)?) {
+            self.quote = quote; self.image = image
+        }
+    }
+    init(inspect: @escaping (String) -> Void = { _ in }, edit: @escaping (String) -> Void = { _ in },
+         copyMessage: @escaping (String) -> Void = { _ in }, stop: @escaping () -> Void = {}, retry: @escaping () -> Void = {}, resume: @escaping () -> Void = {},
+         quoteReply: ((TranscriptQuote) -> Void)? = nil, inspectTurn: ((TurnSummary) -> Void)? = nil,
+         skillPressed: ((String, TranscriptSkillUse, NSView) -> Void)? = nil, skillHovered: ((String, TranscriptSkillUse, NSView, Bool) -> Void)? = nil,
+         costLimit: ((CostLimitNoticeAction, NSView?) -> Void)? = nil, fork: ((String) -> Void)? = nil,
+         switchVersion: ((String, Int) -> Void)? = nil, latestVersion: (() -> Void)? = nil, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil,
+         resolveReplyFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil, openSubagent: ((SubagentTarget) -> Void)? = nil,
+         inspectSubagent: ((SubagentTarget) -> Void)? = nil, stopSubagent: ((SubagentTarget) -> Void)? = nil, openAgentSource: ((AgentMessageReference) -> Void)? = nil,
+         loadImage: (@MainActor (TranscriptMessage, Int, Int) async throws -> TranscriptImageBitmap)? = nil) {
+        self.inspect = inspect; self.edit = edit; self.copyMessage = copyMessage; self.stop = stop; self.retry = retry; self.resume = resume
+        self.inspectTurn = inspectTurn; self.skillPressed = skillPressed; self.skillHovered = skillHovered; self.costLimit = costLimit; self.fork = fork
+        self.switchVersion = switchVersion; self.latestVersion = latestVersion; self.openFile = openFile; self.resolveReplyFile = resolveReplyFile
+        self.openSubagent = openSubagent; self.inspectSubagent = inspectSubagent; self.stopSubagent = stopSubagent; self.openAgentSource = openAgentSource
+        if quoteReply != nil || loadImage != nil { inputActions = InputActions(quote: quoteReply, image: loadImage) }
+    }
     /// Which of the optional actions are offered. A pane makes its actions
     /// afresh each time it is drawn, and every one of them reaches the chat
     /// through the model and the session it was made for; what can differ
     /// between two sets made for the same session is only which are offered.
     var offered: [Bool] {
         [quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
-         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil, openSubagent != nil, inspectSubagent != nil, stopSubagent != nil, openAgentSource != nil]
+         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil, openSubagent != nil, inspectSubagent != nil, stopSubagent != nil, openAgentSource != nil, loadImage != nil]
     }
 }
 
@@ -55,16 +93,16 @@ extension TranscriptActions {
     /// relay forwards to the pane's actions (`TranscriptActionRelay`), and
     /// each row's tree forwards to what the row was last handed.
     ///
-    /// Every action is forwarded but `quoteReply`, which the selection
-    /// controller takes from the pane's own actions. An optional action is
-    /// forwarded even where the source has none, and then does nothing: a
-    /// row decides what it offers from its message and the environment
-    /// (`transcriptForks`), never from which of these are nil.
+    /// The selection controller takes `quoteReply` from the pane's own
+    /// actions. Image rows opt into their image callback; plain rows keep
+    /// none. The other optional actions are forwarded even where the source
+    /// has none, and then do nothing: a row offers them from its message and
+    /// environment (`transcriptForks`), rather than which are nil.
     ///
     /// An action added to `TranscriptActions` must be forwarded here too, or
     /// a row's calls to it go nowhere (`TranscriptActionsForwardingTests`).
-    @MainActor static func forwarding(to source: @escaping @MainActor () -> TranscriptActions?) -> TranscriptActions {
-        TranscriptActions(
+    @MainActor static func forwarding(images: Bool = true, to source: @escaping @MainActor () -> TranscriptActions?) -> TranscriptActions {
+        var actions = TranscriptActions(
             inspect: { source()?.inspect($0) },
             edit: { source()?.edit($0) },
             copyMessage: { source()?.copyMessage($0) },
@@ -85,5 +123,12 @@ extension TranscriptActions {
             stopSubagent: { source()?.stopSubagent?($0) },
             openAgentSource: { source()?.openAgentSource?($0) }
         )
+        if images {
+            actions.loadImage = { message, index, pixels in
+                guard let load = source()?.loadImage else { throw HostError.failure("This image is unavailable.") }
+                return try await load(message, index, pixels)
+            }
+        }
+        return actions
     }
 }

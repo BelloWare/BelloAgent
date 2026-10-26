@@ -202,6 +202,15 @@ final class HistoryExtentTests: XCTestCase {
                                                           "older": .null, "newer": .null])))
         XCTAssertNil(fresh.extent(of: ["n0", "n1"].map(row), reachesStart: true, reachesEnd: true))
         XCTAssertEqual(fresh.extent(of: ["n1", "n2"].map(row), reachesStart: false, reachesEnd: true), HistoryExtent(before: 1, after: 0, total: 3))
+        // Positions can arrive after a reply has begun streaming. Even an
+        // unchanged membership adopts its live rows once for that new read.
+        let late = HistoryPositions()
+        _ = late.extent(of: ["m10", "live"].map(row), reachesStart: false, reachesEnd: true, membershipUnchanged: true)
+        late.record(try page(["m10"], start: 10, total: 11))
+        XCTAssertEqual(late.extent(of: ["m10", "live"].map(row), reachesStart: false, reachesEnd: true, membershipUnchanged: true),
+                       HistoryExtent(before: 10, after: 0, total: 12))
+        XCTAssertEqual(late.extent(of: ["live"].map(row), reachesStart: false, reachesEnd: true, membershipUnchanged: true),
+                       HistoryExtent(before: 11, after: 0, total: 12))
         // A timeline that changed knows nothing until the next page.
         positions.forget()
         XCTAssertNil(positions.extent(of: ["m10"].map(row), reachesStart: false, reachesEnd: false))

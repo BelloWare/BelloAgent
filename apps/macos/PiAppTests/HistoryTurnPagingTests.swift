@@ -191,6 +191,11 @@ final class HistoryTurnPagingTests: XCTestCase {
     /// Weighed as the window holds it, the page fits the window, and a turn
     /// too heavy for it reads as the cut turn it is.
     func testAPageOfLongToolResultsFitsTheWindowItOpens() async throws {
+        // Preserve the original crossing at 6 MB as standard pages grow.
+        let caps = TranscriptPaging.residentCaps, limits = TranscriptPaging.pageLimits
+        defer { TranscriptPaging.residentCaps = caps; TranscriptPaging.pageLimits = limits }
+        TranscriptPaging.residentCaps = (rows: 750, bytes: 6_000_000)
+        TranscriptPaging.pageLimits = .init(rows: 250, bytes: 1024 * 1024, turnRows: 750, turnBytes: 6_000_000)
         let output = String(repeating: "x", count: 32 * 1024)
         var rows: [(String, [String: WireValue])] = [("q0", ["role": .string("user"), "content": .string("Read the logs.")])]
         for call in 0..<100 {
