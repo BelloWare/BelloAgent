@@ -15,21 +15,21 @@ final class AgentSteeringReviewFixTests: HelperTestCase {
         XCTAssertEqual(journal.markerKind,JournalRecordKind.steeringMarker)
         XCTAssertEqual(journal.head,"after")
     }
-    func testReplacementStartsShareFiniteEpochAllowance() throws {
+    func testReplacementStartsHaveNoEpochAllowance() throws {
         var state = AgentFamilyState(ownerID:"parent")
-        for index in 0..<64 {
+        for index in 0..<100 {
             let op = replacement(index)
             try AgentMailboxPolicy.validate(op,state:state); try state.operation(op)
         }
         let restored = try JSONDecoder().decode(AgentFamilyState.self,from:subagentJSON(state).data())
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(replacement(64),state:restored)) { XCTAssertEqual(($0 as? AgentError)?.code,"coordination_limit") }
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(replacement(100),state:restored), "No cap on starts (owner, 2026-10-26)")
     }
-    func testCollectionOnlyContinuationCannotStartOrSendMoreWork() throws {
-        var state = AgentFamilyState(ownerID:"parent"); state.run = AgentFamilyRun(epoch:"epoch",reportContinuations:32)
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(replacement(0),state:state)) { XCTAssertEqual(($0 as? AgentError)?.code,"coordination_limit") }
-        let message = AgentFamilyMessage(id:"m",sequence:1,childID:"child",turn:1,author:"parent",kind:"steer",text:"Keep looping",task:"Task",epoch:"epoch")
+    func testManyContinuationsStillStartAndSendWork() throws {
+        var state = AgentFamilyState(ownerID:"parent"); state.run = AgentFamilyRun(epoch:"epoch",reportContinuations:500)
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(replacement(0),state:state))
+        let message = AgentFamilyMessage(id:"m",sequence:1,childID:"child",turn:1,author:"parent",kind:"steer",text:"Keep going",task:"Task",epoch:"epoch")
         let op = AgentOperation(key:.init(parentSessionID:"parent",assistantMessageID:"a",toolCallID:"send"),digest:"d",receipt:[:],message:message,epoch:"epoch")
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(op,state:state))
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(op,state:state))
     }
     func testResultOnlyDeliveryConsumesContinuationBeforePublishingContext() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

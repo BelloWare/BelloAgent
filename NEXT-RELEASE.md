@@ -1,8 +1,10 @@
-# Next release: 0.1.131
+# Next release: 0.1.132
 
-**Released 2026-10-22:** 0.1.130 (build 134, tag `v0.1.130`) is the latest release; record `docs/validation/Bello-Agent-0.1.130-2026-10-22.md`.
+**Released 2026-10-26:** 0.1.131 (build 135, tag `v0.1.131`) is the latest release, a helper-only hotfix of 0.1.130 that removes the family communication limit; record `docs/validation/Bello-Agent-0.1.131-2026-10-26.md`. The work planned as 0.1.131 on `dev/next` ships as 0.1.132.
 
-## 0.1.131
+## 0.1.132 (planned as 0.1.131)
+
+- [x] Released separately as the 0.1.131 hotfix (owner, 2026-10-26: "nah, remove that limit!"): no family communication limit for sub-agents. [Record](docs/validation/Bello-Agent-0.1.131-2026-10-26.md).
 
 - [x] PASTE-2: Owner, 2026-10-23: "when I paste an image, I see a flash, but not image thumbnail or anything". Send could overtake a lazy clipboard read and send text without its image (also on 0.1.130); unavailable URL metadata could discard bitmap data, some refusals were silent, and chips had no thumbnails. Paste now reserves the draft before data reads, keeps usable image data, explains refusals and draws thumbnails. Real menu/key regressions and the 120-paste matrix pass; seven mutations caught. [Validation](docs/validation/a131-paste2-0.1.131.md).
 

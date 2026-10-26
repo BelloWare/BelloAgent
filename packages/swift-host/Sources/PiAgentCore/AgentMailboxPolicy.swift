@@ -1,23 +1,13 @@
 import Foundation
 
-/// Recomputed from immutable acceptance rows: restart/compaction cannot refill
-/// quotas. A real user task (or explicit Resume) opens the authorization epoch.
+/// Bounds a family's mailboxes and its report rate, recomputed from immutable
+/// acceptance rows so restart/compaction cannot refill them. How much a family
+/// communicates is not capped (owner, 2026-10-26): starts, follow-ups,
+/// messages and report continuations are unlimited; the chat's cost limit
+/// bounds a runaway family.
 enum AgentMailboxPolicy {
     static func validate(_ op: AgentOperation, state: AgentFamilyState) throws {
         let epoch = state.operations.values.filter { $0.epoch == op.epoch }
-        // Replacement children spend the same finite authorization as follow-ups.
-        if op.turn != nil { guard epoch.compactMap(\.turn).count < 64 else { throw cap() } }
-        if state.run?.epoch == op.epoch, (state.run?.reportContinuations ?? 0) >= 32,
-           op.turn != nil || op.message?.author == "parent" { throw cap() }
-        if let turn = op.turn, turn.turn > 1 {
-            let follows = epoch.compactMap(\.turn).filter { $0.turn > 1 }
-            guard follows.count < 64, follows.filter({ $0.childID == turn.childID }).count < 8 else { throw cap() }
-        }
-        let child = op.message?.childID ?? (op.turn?.turn ?? 0 > 1 ? op.turn?.childID : nil)
-        if let child {
-            let messages = epoch.filter { $0.message != nil || ($0.turn?.turn ?? 0) > 1 }
-            guard messages.count < 256, messages.filter({ ($0.message?.childID ?? $0.turn?.childID) == child }).count < 32 else { throw cap() }
-        }
         if let message = op.message {
             let pending = state.messages.values.filter { $0.author == message.author && $0.disposition == "pending" }
             if message.author == "parent" {
@@ -41,5 +31,4 @@ enum AgentMailboxPolicy {
         }
         return min(burst,value + max(0,now-time)*refill)
     }
-    static func cap() -> AgentError { AgentError("coordination_limit", "Family communication limit reached; a new user task or explicit Resume is required") }
 }
