@@ -1,6 +1,6 @@
 # Bello Agent 0.1.132 — sub-agents fall back to the parent's model; local model catalogs
 
-Status: **packaged; publication pending.** Marketing version 0.1.132, build 136. Previous public release: 0.1.131/build 135. A hotfix of 0.1.131 cut from `main`; the work planned as 0.1.131 on `dev/next` ships as 0.1.133.
+Status: **released and verified 2026-10-27.** Marketing version 0.1.132, build 136. Previous public release: 0.1.131/build 135. A hotfix of 0.1.131 cut from `main`; the work planned as 0.1.131 on `dev/next` ships as 0.1.133.
 
 ## Owner request
 
@@ -31,4 +31,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1. No full gat
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `243c6001` ("Release Bello Agent 0.1.132"), tag `v0.1.132`, on `main` (merges `27d5498b` and `6c2ee8cc`).
+- `BelloAgent-0.1.132.dmg`, sha256 `bd68b412adbd57f6f7a9f947b7abe2006353290c9a0ccb6c75ee786fcfc43a70`, 16,707,987 bytes; Developer ID signed and notarized (app submission `65243b67-e4d4-46bc-ade0-86cc17c1df96`, DMG submission `dfe0579a-4677-47e1-a78b-e49a4228b9cd`, both Accepted), stapled.
+- `validate-release.py --previous-build 135`: passed (0.1.132 build 136, Ed25519 signature verified).
+- Website commit `bf46d13` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical (on the fourth try, after the site deployed).
