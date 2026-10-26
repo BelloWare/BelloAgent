@@ -16,6 +16,7 @@ enum SidebarEntry: Equatable {
     case chat(chat: ChatRecord, state: SidebarChatRowState, projectID: String)
     /// Under a chat the filter listed for its messages: the match (`SidebarSearch.swift`).
     case searchSnippet(SidebarSearchSnippetState)
+    case askStatus(SidebarAsk.Status)
     case side(SidebarSideRowState)
     case subagentGroup(SubagentGroupState)
     case pagination(groupID: String, projectID: String, hiddenRoots: Int, shownRoots: Int, indent: CGFloat)
@@ -31,7 +32,8 @@ enum SidebarEntry: Equatable {
         case .topicRemove(let id, _): return "remove|" + id
         case .archiveHeading(let group, _, _): return "archived|" + group
         case .chat(let chat, _, _): return "chat|" + chat.id
-        case .searchSnippet(let state): return "snippet|" + state.chatID
+        case .searchSnippet(let state): return (state.isReason ? "reason|" : "snippet|") + state.chatID
+        case .askStatus: return "ask-status"
         case .side(let state): return "side|" + state.id
         case .subagentGroup(let state): return "subagents|" + state.parentID
         case .pagination(let group, _, _, _, _): return "pages|" + group
@@ -67,6 +69,7 @@ struct SidebarListContents: Equatable {
     /// Builds the list from `model`, as `ProjectSidebarGroup` built each project.
     @MainActor static func build(model: WorkspaceModel, filter: String, sidebarWidth: CGFloat, confirmingRemove: Set<String>, removing: Set<String>,
                       dropTarget: (project: String, topic: String?)?) -> SidebarListContents {
+        if model.sidebarSearchIfStarted?.scope == .ask { return SidebarAsk.contents(model: model, width: sidebarWidth) }
         var contents = SidebarListContents()
         let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
         let names = model.sidebarConnectionCount > 1

@@ -120,7 +120,8 @@ extension WorkspaceModel {
     /// its active chats and then, while the archive switch is on, its
     /// archived ones.
     var sidebarChatOrder: [String] {
-        sidebarIndex.order {
+        if sidebarSearchIfStarted?.scope == .ask { return sidebarSearch.askChats.listedMatches.map(\.id) }
+        return sidebarIndex.order {
             let query = sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
             let archive = sidebarShowsArchived
             if sidebarListsFlat {

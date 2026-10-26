@@ -27,7 +27,7 @@ final class SidebarSearchGalleryTests: XCTestCase, SerialTestLane {
         sidebar.setFilter("marmalade")
         for flat in [false, true] {
             model.setSidebarFlat(flat)
-            for scope in SidebarSearch.Scope.allCases {
+            for scope in [SidebarSearch.Scope.titlesAndDetails, .fullChats] {
                 sidebar.searchScope.tab(scope)?.performClick(nil)
                 await model.sidebarSearch.settleQuery(); sidebar.settle()
                 XCTAssertEqual(Set(model.sidebarChatOrder), scope == .fullChats
@@ -77,7 +77,7 @@ final class SidebarSearchGalleryTests: XCTestCase, SerialTestLane {
         sidebar.setFilter("lantern")
         for flat in [false, true] {
             model.setSidebarFlat(flat)
-            for scope in SidebarSearch.Scope.allCases {
+            for scope in [SidebarSearch.Scope.titlesAndDetails, .fullChats] {
                 sidebar.searchScope.tab(scope)?.performClick(nil)
                 await model.sidebarSearch.settleQuery(); sidebar.settle()
                 for width: CGFloat in [300, 200] {
@@ -133,16 +133,18 @@ final class SidebarSearchKeyboardTests: XCTestCase, SerialTestLane {
         window.selectNextKeyView(nil)
         XCTAssertTrue(window.firstResponder === sidebar.searchScope.tab(.fullChats), "Tab reaches the second scope")
         window.selectNextKeyView(nil)
+        XCTAssertTrue(window.firstResponder === sidebar.searchScope.tab(.ask), "Tab reaches Ask")
+        window.selectNextKeyView(nil)
         let chain = [sidebar.filterField.field, sidebar.searchScope.tab(.titlesAndDetails)!, sidebar.searchScope.tab(.fullChats)!, sidebar.clearFilter, sidebar.scroll].map {
             "\($0.accessibilityLabel() ?? String(describing: type(of: $0)))) key=\($0.canBecomeKeyView) next=\($0.nextKeyView?.accessibilityLabel() ?? String(describing: $0.nextKeyView)) valid=\($0.nextValidKeyView?.accessibilityLabel() ?? String(describing: $0.nextValidKeyView))"
         }.joined(separator: "\n")
         XCTAssertFalse((window.firstResponder as? NSView)?.isDescendant(of: sidebar.searchScope) == true, "Tab also leaves the pill: \(String(describing: window.firstResponder))\n" + chain)
         let ax = try await AXClient.find(in: window) { $0.label == "Search scope" }
         XCTAssertEqual(ax.role, "AXGroup")
-        XCTAssertEqual(ax.children.map(\.label), ["Titles & details", "Full chats"])
-        XCTAssertEqual(ax.children.map(\.selected), [true, false])
+        XCTAssertEqual(ax.children.map(\.label), ["Titles & details", "Full chats", "Ask"])
+        XCTAssertEqual(ax.children.map(\.selected), [true, false, false])
         sidebar.searchScope.tab(.fullChats)?.performClick(nil)
-        _ = try await AXClient.find(in: window) { $0.label == "Search scope" && $0.children.map(\.selected) == [false, true] }
+        _ = try await AXClient.find(in: window) { $0.label == "Search scope" && $0.children.map(\.selected) == [false, true, false] }
         for query in ["l", "lantern", ""] {
             sidebar.setFilter(query); sidebar.settle()
             XCTAssertEqual(sidebar.scroll.frame.minY, origin)

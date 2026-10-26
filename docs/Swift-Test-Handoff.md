@@ -1463,6 +1463,17 @@ offscreen, when `TEST_RUNNER_PI_APP_PROJECT_FILTER_GALLERY` names a folder:
 `project-filter-{all,project,search}-{300,200}-*` and
 `project-filter-from-menu-200-*`, in both appearances.
 
+`SidebarAskGalleryTests` shows sidebar Ask against its loopback mini-model
+gateway when `TEST_RUNNER_PI_APP_ASK_GALLERY` names a folder. It captures
+`ask-{chooser-closed,chooser-open,asking,snippets-pending,results-filled,error}-{300,200}-{light,dark}.png`:
+the PiKit connection chooser (including a disabled no-mini-model connection),
+progress and Cancel, ranked chats with a reason and reserved/final snippets,
+the connection in the summary, and a gateway error. Generated journals have
+distinct text matching their briefs. It shows a window and a real menu, so it
+holds the shared lane lock. Its second test captures
+`background-{all,asks}-{1000,640}-{light,dark}.png`, with the Ask request's
+own kind, result and reported usage, and the Ask chats filter.
+
 `ChatBriefGalleryTests` draws chat briefs (0.1.131) from generated chats when
 `TEST_RUNNER_PI_APP_CHAT_BRIEF_GALLERY` names a folder, in both appearances:
 `hover-{brief,write}-{flat,topics}-{300,220}-*` (a row's card beside it: the

@@ -226,6 +226,22 @@ chat's brief and keywords. **Full chats** adds message-content matches,
 snippets and reveal-on-open through the existing content index. The accessible
 Pi scope pill appears while searching; clearing the field resets the scope,
 which is never persisted. Both modes apply in Topics, Flat and archived groups.
+**Ask** accepts a question in plain words: typing stays local, Return asks the
+chosen connection's mini model about only its own candidates (titles, briefs,
+keywords, project, topic and last activity). With chats on several connections,
+a PiKit menu pill chooses one in Settings order; connections without a mini model
+are disabled. It defaults to the selected chat's connection when available,
+otherwise the first available one, and keeps the choice until quit. Choosing
+another connection after asking cancels and asks the same question there.
+Local word overlap and recency prefilter at most 96 candidates; each prompt is
+bounded by 32,000 bytes and the mini model's context. Results keep validated
+chat IDs and a plain one-line reason immediately, with local full-text snippets
+for the top eight where a question or keyword matches. Snippets fill reserved
+space as each chat is checked, independently of library-wide indexing. Clicking
+a result opens its chat, at its snippet when present. Progress, Cancel and
+failures appear in the result area. Each Ask is an Ask chats background request
+(`chat-ask`) counted in Usage, without a spending cap. Briefs off uses titles
+and details only; the archive switch applies, and search spans every project.
 Choosing a chat reveals its topic.
 Topics are organization metadata, not filesystem folders or permission scopes.
 
