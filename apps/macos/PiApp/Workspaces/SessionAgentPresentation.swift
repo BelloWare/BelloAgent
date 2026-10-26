@@ -8,7 +8,10 @@ extension SessionDisplay {
             childSummaries: childSummaries, heldAgentChildren: heldAgentChildren)
     }
     func parentAuthoredTask(_ source: TranscriptMessage) -> TranscriptMessage { agentPresentation.parentAuthoredTask(source) }
-    func presentAgentState(_ source: TranscriptMessage) -> TranscriptMessage { agentPresentation.presentAgentState(source) }
+    func presentAgentState(_ source: TranscriptMessage) -> TranscriptMessage {
+        presentedMessageVisits += 1
+        return agentPresentation.presentAgentState(source)
+    }
 }
 
 /// The display's agent inputs, captured with its messages for a history read.

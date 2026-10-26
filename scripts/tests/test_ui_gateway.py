@@ -85,6 +85,30 @@ class UIGatewayTests(unittest.TestCase):
             return next(event["response"]["model"] for event in events if event["type"] == "response.completed")
         return next(event["message"]["model"] for event in events if event["type"] == "message_start")
 
+    def test_pasted_image_requests_reach_the_gateway_without_losing_the_image(self):
+        path, headers, body = self.request(prompt="Describe the generated image")
+        image = {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64," +
+                 base64.b64encode(b"\x89PNG\r\n\x1a\ngenerated fixture").decode()}
+        body["input"][-1]["content"].append(image)
+        status, raw, _ = self.send(path, headers, body)
+        self.assertEqual(status, 200)
+        self.assertEqual(base64.b64decode(gateway.Gateway.records[-1]["request"]), raw)
+        for invalid in [dict(image, image_url="https://example.invalid/image.png"),
+                        dict(image, image_url="data:image/png;base64,not base64"),
+                        dict(image, image_url="data:image/png;base64,"), dict(image, detail="invented")]:
+            body["input"][-1]["content"][-1] = invalid
+            self.assertEqual(self.send(path, headers, body)[0], 400)
+        body["input"][-1] = {"role": "assistant", "content": [image]}
+        self.assertEqual(self.send(path, headers, body)[0], 400)
+
+    def test_image_only_message_does_not_reuse_the_previous_text_prompt(self):
+        path, headers, body = self.request(prompt="An earlier question")
+        body["input"].append({"role": "user", "content": [{"type": "input_image", "detail": "auto",
+            "image_url": "data:image/png;base64," + base64.b64encode(b"generated image").decode()}]})
+        result = gateway.validate_request("POST", path, headers, body, api_key="synthetic-loopback-only-key",
+            historical_tool_schemas=gateway.Gateway.historical_tool_schemas)
+        self.assertEqual(result["latest_text"], "")
+
     def test_conditional_effort_schema_preserves_common_and_branch_constraints(self):
         from litellm_contract import validate_arguments, FixtureContractError
         path, headers, body = self.request()

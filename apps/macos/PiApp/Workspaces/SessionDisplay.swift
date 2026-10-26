@@ -189,6 +189,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var draftReady = true
     @Published var recoveringDraft = false
     var completionTracker = SessionCompletionTracker()
+    /// Every run's end, failed, stopped or retried too: what updates the
+    /// chat's brief.
+    var runEndTracker = RunEndTracker()
     var webhookTracker = WebhookFinishTracker()
     var monitoringEpoch: String?
     var monitoringCursor: Double?
@@ -198,7 +201,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// is not the snapshot loop adopting a presentation (`adoptTaskPresentation`)
     /// forgets its revision, so the next snapshot carries the helper's whole
     /// presentation again, as every snapshot did before 0.1.85.
-    var taskPresentation: TaskPresentationProjection? { didSet { taskPresentationRevision = nil; if oldValue != taskPresentation { publishTranscript() } } }
+    var taskPresentation: TaskPresentationProjection? { didSet { taskPresentationRevision = nil; if oldValue != taskPresentation { publishTranscript(invalidateProjection: false) } } }
     /// The helper's revision of `taskPresentation`, sent back with the next
     /// snapshot so an unchanged presentation is left out of the reply.
     var taskPresentationRevision: String?
@@ -207,8 +210,28 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     private var transcriptBatchDepth = 0
     func beginTranscriptBatch() { transcriptBatchDepth += 1 }
-    func endTranscriptBatch() { transcriptBatchDepth -= 1; if transcriptBatchDepth == 0 { publishTranscript() } }
-    var messages: [TranscriptMessage] = [] { didSet { projectionRevision = nil; adoptDeliveredSending(); publishTranscript() } }
+    func endTranscriptBatch() { transcriptBatchDepth -= 1; if transcriptBatchDepth == 0 { publishTranscript(invalidateProjection: false) } }
+    var messages: [TranscriptMessage] = [] {
+        didSet {
+            projectionRevision = nil; messagesRevision = UUID()
+            if !replacingMessages {
+                messagePositions = Dictionary(messages.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+                messageBytes = messages.reduce(0) { $0 + TranscriptPaging.size($1) }
+            }
+            adoptDeliveredSending()
+            publishTranscript(invalidateProjection: !replacingMessages)
+        }
+    }
+    var messagesRevision = UUID()
+    var messagePositions: [String: Int] = [:]
+    var messageBytes = 0
+    var replacingMessages = false
+    var messageProjection = TranscriptMessageProjection()
+    var presentedMessageVisits = 0
+    func replaceMessage(at index: Int, with row: TranscriptMessage) {
+        var next = messages; next[index] = row
+        if !replaceMessages(next, at: [index]) { messages = next }
+    }
     /// Messages this chat has sent that the helper has not shown yet. Each is
     /// drawn on Return, at the foot of the conversation, and the helper's own
     /// row for it — the same id, the submission's `clientTurnId` — takes its
@@ -266,6 +289,14 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// where the conversation stopped. Errors live in the flow of the chat,
     /// not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
+        let context = TranscriptMessageProjection.Context(self)
+        if messageProjection.context != context { messageProjection.invalidate() }
+        if let rows = messageProjection.rows { return rows }
+        let rows = makePresentedMessages()
+        messageProjection.install(rows, context: context, sources: messagePositions)
+        return rows
+    }
+    private func makePresentedMessages() -> [TranscriptMessage] {
         if historyState == .loading && !refreshingCachedRows { return [] }
         // An earlier version of an edited message, read-only, in place of the
         // latest one and everything after it.
@@ -442,7 +473,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     var versionFocus: String?
     /// The read of the version on screen.
     var versionLoad: Task<Void, Never>?
-    func publishTranscript() {
+    func publishTranscript(invalidateProjection: Bool = true) {
+        if invalidateProjection { messageProjection.invalidate() }
         guard transcriptBatchDepth == 0 else { return }
         let rows = presentedMessages
         var lifecycle = taskPresentation
@@ -452,9 +484,13 @@ struct TranscriptVersionView: Equatable, Sendable {
             merged.recent += version.tasks.filter { !held.contains($0.key) }
             lifecycle = merged
         }
-        let input = TranscriptPresentationInput(messages:rows, lifecycle:lifecycle)
-        if presentationChanges.value != input { presentationChanges.send(input) }
-        if transcriptChanges.value != rows { transcriptChanges.send(rows) }
+        let changes = messageProjection.changes
+        let previous = presentationChanges.value
+        let changed = changes.indices(since: previous.changes).map { !$0.isEmpty }
+            ?? changes.tailStart(since: previous.changes).map { _ in true } ?? (previous.messages != rows)
+        let input = TranscriptPresentationInput(messages: rows, lifecycle: lifecycle, changes: changes)
+        if changed || previous.lifecycle != lifecycle { presentationChanges.send(input) }
+        if changed { transcriptChanges.send(rows) }
     }
     /// "Retrying (attempt 2 of 6) after: …" while the helper waits to retry a transient failure.
     @Published var retryNotice: String? { didSet { if retryNotice != oldValue { publishTranscript() } } }
@@ -685,8 +721,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         if queueEditHold != nil || continuable == false { return limit + " Finish or cancel the message edit, then choose Resume." }
         return limit + " Choose Resume to continue."
     }
-    /// The message being rewritten keeps images or skills, so its text may be empty.
+    /// The message being rewritten keeps images in the helper, so its text may be empty.
     var queueEditKeepsInput = false
+    var queueEditOriginalSkills: [SkillChip]?
     /// A Save, Cancel or Remove sent and not answered, and the text a Save
     /// sent: kept in the saved draft until the helper's answer is known.
     var queueEditPendingOperation: String?
@@ -884,6 +921,7 @@ struct TranscriptVersionView: Equatable, Sendable {
             if let editID = queueEditID, let turnID = queueEditingID {
                 var record = QueuedEditDraft(editID: editID, turnID: turnID, rewrite: draft, original: queueEditOriginal, pending: queueEditPendingOperation)
                 record.sentDigest = queueEditSentDigest
+                record.skills = skills; record.originalSkills = queueEditOriginalSkills
                 saved.queuedEdit = record
             }
             return saved
@@ -910,7 +948,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// accounting. The next read is a list of changes to this, and the rows it
     /// does not change are reused by identity, so every later comparison of a
     /// settled row is a pointer check rather than a string compare.
-    var projectedRows: [TranscriptMessage] = []
+    var projectedPage = TranscriptRowUpdates.Page([])
+    var projectedRows: [TranscriptMessage] {
+        get { projectedPage.rows }
+        set { projectedPage = TranscriptRowUpdates.Page(newValue) }
+    }
     var historyRevision: HistoryRevision?
     /// The rows of the page last read in, by count and ends: while the rows
     /// are still those, the page is what a fresh read of an unchanged journal

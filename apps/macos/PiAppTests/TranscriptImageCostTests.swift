@@ -4,19 +4,47 @@ import ObjectiveC
 @testable import PiApp
 
 final class TranscriptImageCostTests: XCTestCase {
-    @MainActor func testSkillOnlyRowsKeepTheirExistingStorage() throws {
-        let recording = TranscriptLayoutClock.recording
-        defer { TranscriptLayoutClock.recording = recording }
-        TranscriptLayoutClock.recording = true; TranscriptMessageContentClock.allocations = 0
+    func testEveryMessageFieldSurvivesTheFlatRoundTrip() throws {
+        var message = TranscriptMessage(id: "all-fields", role: "user", text: "Caption")
+        message.thinking = "Reason"; message.tools = [.init(id: "call", name: "read", state: "completed", input: "{}", output: "Result", truncated: false)]
+        message.state = "complete"; message.truncated = true; message.stopReason = "length"
+        message.accounting = GatewayTotals(requests: 1); message.kind = "fixture"
+        message.nativeAgentDelivery = .object(["fixture": .bool(true)]); message.agentNumbers = ["child": 1]
+        message.detail = "Details"; message.at = 123; message.turn = "turn"; message.modelMs = 456; message.toolCallCount = 1
+        message.taskRootID = "root"; message.taskExecutionID = "execution"; message.presentationSourceID = "source"; message.operationID = "operation"
+        message.toolCallID = "call"; message.responseTimeline = ResponseTimeline(); message.foldGroup = "fold"
+        message.skills = [TranscriptNativeRowParityTests.skill("review")]
+        message.imageCount = 2; message.imageOnly = false
+        message.imageReference = TranscriptImageReference(path: "/generated/images.jsonl", id: message.id, offset: 123, length: 456, device: 1, inode: 2)
+        message.imageAttachments = [AttachmentRecord(id: "image", path: "/generated/image.png", sha256: "fixture", bytes: 1, mimeType: "image/png", name: "First image")]
+        message.reply = ReplyRecord(attempt: "attempt", requested: "model"); message.failureCode = "fixture"
+        message.versions = MessageVersionMark(index: 1, count: 2, ids: ["all-fields", "latest"])
+        message.requestAttemptIDs = ["attempt"]; message.earlierVersion = true
+        let bytes = try JSONEncoder().encode(message)
+        let fields = try XCTUnwrap(JSONDecoder().decode(WireValue.self, from: bytes).object)
+        let keys: Set<String> = ["id", "role", "text", "thinking", "tools", "state", "truncated", "stopReason", "accounting", "kind",
+            "nativeAgentDelivery", "agentNumbers", "detail", "at", "turn", "modelMs", "toolCallCount", "taskRootID", "taskExecutionID",
+            "presentationSourceID", "operationID", "toolCallID", "responseTimeline", "foldGroup", "skills", "imageCount", "imageOnly",
+            "imageReference", "imageAttachments", "reply", "failureCode", "versions", "requestAttemptIDs", "earlierVersion"]
+        XCTAssertEqual(Set(fields.keys), keys, "Every message field stays at the helper's flat top level")
+        let decoded = try JSONDecoder().decode(TranscriptMessage.self, from: bytes)
+        XCTAssertEqual(decoded, message)
+        XCTAssertEqual(decoded.imageCount, message.imageCount); XCTAssertEqual(decoded.imageOnly, message.imageOnly)
+        XCTAssertEqual(decoded.imageReference, message.imageReference); XCTAssertEqual(decoded.imageAttachments, message.imageAttachments)
+        XCTAssertEqual(decoded.imageAttachments?.map(\.name), message.imageAttachments?.map(\.name))
+    }
+
+    func testSkillOnlyRowsKeepImageFieldsEmpty() throws {
         var message = TranscriptMessage(id: "skill", role: "user", text: "Review")
         message.skills = [TranscriptNativeRowParityTests.skill("review")]
         let decoded = try JSONDecoder().decode(TranscriptMessage.self, from: JSONEncoder().encode(message))
         XCTAssertEqual(decoded.skills, message.skills)
-        XCTAssertEqual(TranscriptMessageContentClock.allocations, 0, "A message with skills but no images needs no new content container")
+        XCTAssertNil(decoded.imageCount); XCTAssertNil(decoded.imageOnly)
+        XCTAssertNil(decoded.imageReference); XCTAssertNil(decoded.imageAttachments)
     }
 
     @MainActor func testImageMetadataDoesNotWidenTheCommonRow() {
-        XCTAssertLessThanOrEqual(MemoryLayout<TranscriptMessage>.stride, 1_272, "The pre-image row's storage budget")
+        XCTAssertEqual(MemoryLayout<TranscriptMessage>.stride, MemoryLayout<AnyObject>.stride, "All message fields share STREAM-1's single storage reference")
         XCTAssertLessThanOrEqual(MemoryLayout<TranscriptItem>.stride, 5_600, "Work blocks carry messages, including image-free replies")
         XCTAssertLessThanOrEqual(MemoryLayout<TranscriptActions>.stride, 320, "Image actions must fit within the pre-image action budget")
         for type: AnyClass in [TranscriptRowContainer.self, TranscriptNativeUserRow.self, TranscriptNativePartRow.self] {
@@ -36,9 +64,11 @@ final class TranscriptImageCostTests: XCTestCase {
         TranscriptLayoutClock.recording = true; TranscriptImageMetrics.heightReads = 0
         for caption in ["Question", "Image", "2 images", ""] {
             let message = TranscriptMessage(id: caption, role: "user", text: caption)
-            XCTAssertNil(message.imageContent, "Plain rows allocate no image metadata")
+            XCTAssertNil(message.imageCount); XCTAssertNil(message.imageOnly)
+            XCTAssertNil(message.imageReference); XCTAssertNil(message.imageAttachments)
             let decoded = try JSONDecoder().decode(TranscriptMessage.self, from: JSONEncoder().encode(message))
-            XCTAssertNil(decoded.imageContent, "Decoding a plain row allocates no user-content container")
+            XCTAssertNil(decoded.imageCount); XCTAssertNil(decoded.imageOnly)
+            XCTAssertNil(decoded.imageReference); XCTAssertNil(decoded.imageAttachments)
             let item = TranscriptItem.message(message)
             _ = TranscriptRowEstimate.height(of: item, width: 500)
             let row = TranscriptRowContainer(item: item, fresh: false, actions: TranscriptActions())
@@ -64,13 +94,20 @@ final class TranscriptImageCostTests: XCTestCase {
         XCTAssertEqual(fields["imageCount"]?.number, 2); XCTAssertEqual(fields["imageOnly"]?.bool, true)
         XCTAssertEqual(fields["skills"]?.array?.count, 1)
         XCTAssertEqual(try JSONDecoder().decode(TranscriptMessage.self, from: bytes), original)
+        var nested = original
+        nested.imageAttachments?[0].name = "Changed"
+        nested.imageAttachments?.append(AttachmentRecord(id: "second", path: "/generated/second.png", sha256: "fixture", bytes: 1, mimeType: "image/png"))
+        XCTAssertNil(original.imageAttachments?.first?.name, "Nested attachment edits must copy shared message storage")
+        XCTAssertEqual(original.imageAttachments?.count, 1)
+        XCTAssertEqual(nested.imageAttachments?.first?.name, "Changed"); XCTAssertEqual(nested.imageAttachments?.count, 2)
         var copy = original
         copy.skills = nil; copy.imageCount = 1; copy.imageOnly = false; copy.imageReference = nil; copy.imageAttachments = nil
         XCTAssertEqual(original.imageCount, 2); XCTAssertEqual(original.imageOnly, true)
         XCTAssertNotNil(original.imageReference); XCTAssertEqual(original.imageAttachments?.count, 1)
         XCTAssertEqual(original.skills?.count, 1); XCTAssertNotEqual(copy, original)
         copy.imageCount = nil; copy.imageOnly = nil
-        XCTAssertNil(copy.imageContent, "Clearing the last user content releases its container")
+        XCTAssertNil(copy.imageCount); XCTAssertNil(copy.imageOnly)
+        XCTAssertNil(copy.imageReference); XCTAssertNil(copy.imageAttachments)
         let actions = TranscriptActions(quoteReply: { _ in }, loadImage: { _, _, _ in throw CancellationError() })
         var changed = actions; changed.quoteReply = nil; changed.loadImage = nil
         XCTAssertNotNil(actions.quoteReply); XCTAssertNotNil(actions.loadImage)

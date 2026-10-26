@@ -54,22 +54,22 @@ final class WorkspaceLoadingTests: XCTestCase {
     @MainActor func testFreshSelectionAndWarmRevisitReadWholeTurnPages() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         // Turns of a question and a reply, and a last question on its own.
-        let rows = 2 * HistoryWindowPolicy.pageRows + 501, page = HistoryWindowPolicy.pageRows
+        let rows = 2 * HistoryWindowPolicy.pageRows + 501, page = HistoryWindowPolicy.pageRows, first = HistoryWindowPolicy.PageLimits.standard.opening.rows
         let path = root.appendingPathComponent("history.jsonl"); try journal(rows, path: path)
         let model = try await fixture(root: root, path: path)
         let started = ProcessInfo.processInfo.systemUptime
         await model.select("a")
         let view = try XCTUnwrap(model.selected)
         // A page back from the end, starting at a question: one row short of a page.
-        XCTAssertEqual(view.messages.map(\.id), ((rows - page + 1)..<rows).map { "m\($0)" })
+        XCTAssertEqual(view.messages.map(\.id), ((rows - first + 1)..<rows).map { "m\($0)" })
         model.historyViewportReady("a", generation: view.presentationGeneration)
         let loaded = await model.loadEarlierPage(sessionID: "a")
-        XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, 2 * page - 1)
-        XCTAssertEqual(view.messages.first?.id, "m\(rows - 2 * page + 1)", "The earlier page starts at a question too")
+        XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, first + page - 1)
+        XCTAssertEqual(view.messages.first?.id, "m\(rows - first - page + 1)", "The earlier page starts at a question too")
         view.scrollAnchor = .init(id: "m600", offset: 17, followsBottom: false)
         await model.select("b"); await model.select("a")
         // Still one bounded page, read from the turn the reader was in.
-        XCTAssertEqual(view.messages.map(\.id), (600..<(600 + page)).map { "m\($0)" }); XCTAssertEqual(view.scrollAnchor?.id, "m600")
+        XCTAssertEqual(view.messages.map(\.id), (600..<(600 + first)).map { "m\($0)" }); XCTAssertEqual(view.scrollAnchor?.id, "m600")
         XCTAssertTrue(model.hosts.isEmpty)
         print("FRESH selection+revisit source ms \((ProcessInfo.processInfo.systemUptime-started)*1000)")
         try await close(model)
@@ -85,9 +85,11 @@ final class WorkspaceLoadingTests: XCTestCase {
         let coldStart = ProcessInfo.processInfo.systemUptime
         await model.select("a")
         let cold = (ProcessInfo.processInfo.systemUptime - coldStart) * 1_000
-        let display = try XCTUnwrap(model.selected), messages = display.messages.map(\.id)
+        let display = try XCTUnwrap(model.selected)
         model.historyViewportReady("a", generation: display.presentationGeneration)
         XCTAssertEqual(display.historyState, .ready)
+        try await eventually("The opening fill did not settle", timeout: .seconds(20)) { !display.presentation.openingPage }
+        let messages = display.messages.map(\.id)
         let scans = await model.history.subagentScannedBytes
         let indexed = await model.history.indexedBytes, decoded = await model.history.decodedRecords
         let acceptance = await model.history.acceptanceScannedBytes

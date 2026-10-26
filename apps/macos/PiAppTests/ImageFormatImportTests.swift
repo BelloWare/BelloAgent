@@ -102,7 +102,7 @@ final class ImageFormatImportTests: XCTestCase {
             composer.refresh()
             var labels: [String] = [], pending: [NSView] = [composer]
             while let view = pending.popLast() {
-                if let chip = view as? PiKit.Chip { labels.append(chip.main.text) } else { pending += view.subviews.reversed() }
+                if let chip = view as? ComposerImageAttachmentChip { labels.append(chip.main.text) } else { pending += view.subviews.reversed() }
             }
             return labels
         }

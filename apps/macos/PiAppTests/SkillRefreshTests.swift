@@ -343,6 +343,10 @@ final class SkillRefreshTests: XCTestCase {
         f.model.editMessage(question, sessionID: f.chat.id)
         await waitFor("The edit never opened") { !f.view.editPreparing && f.view.editingMessageID == question }
         try await choose("review-notes", in: f.view, f.model)
+        try await choose("style-guide", in: f.view, f.model)
+        f.view.skills[0].arguments = "Keep the release details"
+        f.view.skills[0].intent = "leading-command"
+        let style = f.view.skills[1]
         f.view.draft = "Edited question"
         try writeSkill(f.skills, "review-notes", description: "Review the notes", body: "UPDATED_NOTES_BODY")
         f.model.sendEdit(sessionID: f.chat.id)
@@ -350,12 +354,17 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(f.view.editNotice, "\u{201C}review-notes\u{201D} changed since you chose it. Press Send to use the updated version.")
         XCTAssertEqual(f.view.editingMessageID, question, "The edit is still open")
         XCTAssertEqual(f.view.draft, "Edited question")
+        XCTAssertEqual(f.view.skills.map(\.name), ["review-notes", "style-guide"])
         XCTAssertEqual(f.view.skills.first?.contentHash, current("review-notes", in: f.view)?.contentHash)
+        XCTAssertEqual(f.view.skills.first?.arguments, "Keep the release details")
+        XCTAssertEqual(f.view.skills.first?.intent, "leading-command")
+        XCTAssertEqual(f.view.skills.last, style, "The unchanged chip stays intact too")
         XCTAssertEqual(userRows(f.view), 1, "Nothing was sent")
         f.model.sendEdit(sessionID: f.chat.id)
         await waitFor("The confirmed edit never finished") { f.view.editingMessageID == nil && quiet(f.view) && (f.view.messages.last { $0.role == "assistant" }?.text.contains("Edited question") ?? false) }
         let reply = f.view.messages.last { $0.role == "assistant" }?.text ?? ""
         XCTAssertTrue(reply.contains("UPDATED_NOTES_BODY")); XCTAssertFalse(reply.contains("ORIGINAL_NOTES_BODY"))
+        XCTAssertTrue(reply.contains("STYLE_GUIDE_BODY"))
     }
 
     /// A side chat's composer is put right the same way.

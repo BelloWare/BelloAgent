@@ -21,6 +21,8 @@ extension ChatRecord {
     /// - A copy with no sidebar order or parent keeps the ones held.
     /// - The last activity only moves forward: a copy read before a reply
     ///   or a send landed does not move the chat back down the sidebar.
+    /// - So does the brief: a copy read before one was written keeps it, and
+    ///   an older brief never replaces a newer one.
     /// - A copy with no title claim keeps the claim of the title request
     ///   still running, unless the write releases it on purpose
     ///   (`releasingTitleClaim`).
@@ -45,6 +47,7 @@ extension ChatRecord {
             chat.parentSessionID = chat.delegationIssue == nil ? delegation.call.parentSessionID : nil
         }
         if let held = previous.lastActivityAt, held > (chat.lastActivityAt ?? .min) { chat.lastActivityAt = held }
+        if let held = previous.brief, held.at > (chat.brief?.at ?? .distantPast) { chat.brief = held }
         if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
         if previous.isBackgroundTask {
             chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID

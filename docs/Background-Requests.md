@@ -1,11 +1,17 @@
 # Background requests
 
-The app asks a connection's mini model for three things on its own:
+The app asks a connection's mini model for four things on its own:
 
 - **Chat titles.** A new chat's title is written from its first message.
 - **Title suggestions.** The Rename sheet asks for three titles.
 - **Webhook notifications.** A webhook's parameters are written when a chat
   finishes or its preview is opened (Settings → Chats & notifications).
+- **Chat briefs** (0.1.131, on unless turned off in Settings → Chats &
+  notifications). A chat's brief and keywords are updated at the end of each
+  of its runs; a chat without one gets one when the reader asks (Write Brief
+  on the chat, or Write Briefs in Settings for every chat without one, one
+  at a time). Settings shows what brief requests came to today and over the
+  last 30 days (`apps/macos/PiApp/Workspaces/WorkspaceChatBriefs.swift`).
 
 Each runs in a chat of its own outside every project, with its own journal,
 captured requests and billing. The Background requests page lists them all.
@@ -34,19 +40,21 @@ on the page if it was open.
 ## The list
 
 Requests are listed newest first. The filter shows All, Chat titles, Title
-suggestions or Webhooks. The header counts the requests shown, how many are
+suggestions, Webhooks or Chat briefs. The header counts the requests shown, how many are
 running and how many failed, with their reported tokens and cost.
 
 Each row shows two lines:
 
 1. The kind and what the request produced: the title, the three suggestions,
-   or the notification's parameters (`name: value`). Then how long it took,
+   the notification's parameters (`name: value`), or the brief with its
+   keywords. Then how long it took,
    and its status:
    - **Running**, with a spinner;
    - **Done**;
    - **Failed**, with the reason in place of a result;
    - **Interrupted**: stopped by its reader (the Rename sheet or the webhook
-     preview closed first), or cut short when the app quit or crashed.
+     preview closed first, Write Briefs stopped, or chat briefs turned off),
+     or cut short when the app quit or crashed.
 2. When it was sent (exact time on hover). Then the chat it was for, which
    opens that chat on click, and the chat's project, the connection and the
    model. At the right, the tokens and cost the gateway reported, read from

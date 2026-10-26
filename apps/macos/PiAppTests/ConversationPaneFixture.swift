@@ -138,6 +138,8 @@ final class ConversationPaneTests: XCTestCase {
     private(set) var calls: [(method: String, params: [String: WireValue])] = []
     private(set) var outcomes: [String: String] = [:]
     private(set) var savedDigests: [String: String] = [:]
+    private(set) var savedInputDigests: [String: String] = [:]
+    var skills: [String: [SkillChip]] = [:]
     var revision = 0
     /// Held back until opened, per method.
     var gates: [String: AsyncGate] = [:]
@@ -177,7 +179,8 @@ final class ConversationPaneTests: XCTestCase {
             hold = Hold(editID: editID, turnID: turnID)
             var text = row["text"]?.string ?? ""
             if row["kind"]?.string == "steering", text.hasPrefix("[Steering] ") { text = String(text.dropFirst("[Steering] ".count)) }
-            return ["editId": .string(editID), "turnId": .string(turnID), "text": .string(wholeTexts[turnID] ?? text), "revision": .number(Double(revision))]
+            return ["editId": .string(editID), "turnId": .string(turnID), "text": .string(wholeTexts[turnID] ?? text), "revision": .number(Double(revision)),
+                    "skills": try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(skills[turnID] ?? []))]
         case "queue.edit.save", "queue.edit.cancel", "queue.edit.remove":
             let outcome = method == "queue.edit.save" ? "saved" : method == "queue.edit.cancel" ? "cancelled" : "removed"
             if let done = outcomes[editID] { if done == outcome { return ["accepted": .bool(true), "revision": .number(Double(revision))] }; throw HostError.rejected("queue_edit_" + done, "resolved") }
@@ -188,6 +191,17 @@ final class ConversationPaneTests: XCTestCase {
             }
             if outcome == "saved", let text = params["text"]?.string, let index = session.queue.firstIndex(where: { $0["turnId"]?.string == hold.turnID }) {
                 session.queue[index]["text"] = .string(text); savedDigests[editID] = WorkspaceModel.textDigest(text)
+                if let value = params["skills"] {
+                    let available = session.skills + (skills[hold.turnID] ?? []) + session.skillCatalog.entries.map { $0.skill.chip }
+                    let selected = try (value.array ?? []).map { wire -> SkillChip in
+                        guard var chip = available.first(where: { $0.id == wire.object?["id"]?.string }) else { throw HostError.failure("Unknown fixture skill") }
+                        chip.arguments = wire.object?["arguments"]?.string ?? ""
+                        chip.intent = wire.object?["intent"]?.string ?? "picker"
+                        return chip
+                    }
+                    skills[hold.turnID] = selected
+                    savedInputDigests[editID] = QueuedEditDraft.digest(text, skills: selected)
+                }
             }
             if outcome == "removed" { session.queue.removeAll { $0["turnId"]?.string == hold.turnID } }
             self.hold = nil; outcomes[editID] = outcome; revision += 1
@@ -204,10 +218,12 @@ final class ConversationPaneTests: XCTestCase {
         case "queue.edit.status":
             if let hold, hold.editID == editID {
                 let text = session.queue.first { $0["turnId"]?.string == hold.turnID }?["text"]?.string ?? ""
-                return ["state": .string("active"), "editId": .string(editID), "turnId": .string(hold.turnID), "text": .string(text), "revision": .number(Double(revision))]
+                return ["state": .string("active"), "editId": .string(editID), "turnId": .string(hold.turnID), "text": .string(text), "revision": .number(Double(revision)),
+                        "skills": try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(skills[hold.turnID] ?? []))]
             }
             var status: [String: WireValue] = ["state": .string(outcomes[editID] ?? "unknown"), "editId": .string(editID), "revision": .number(Double(revision))]
             if let digest = savedDigests[editID] { status["textDigest"] = .string(digest) }
+            if let digest = savedInputDigests[editID] { status["inputDigest"] = .string(digest) }
             return status
         default: throw HostError.rejected("unknown", method)
         }

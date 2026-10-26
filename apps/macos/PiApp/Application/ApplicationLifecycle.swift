@@ -105,6 +105,7 @@ class ApplicationLifecycle: NSObject, NSApplicationDelegate {
                 // History indexes have files in the temporary folder.
                 await model.history.releaseIndexes()
                 await model.transcriptImageReader?.releaseIndexes()
+                await model.chatBriefsStorage?.reader.releaseIndexes()
                 model.shutdown()
                 answer(sender, true)
             } catch {

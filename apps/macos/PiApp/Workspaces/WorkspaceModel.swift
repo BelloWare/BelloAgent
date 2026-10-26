@@ -217,6 +217,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `SidebarSearch.swift`: the filter's search inside chats,
     /// made when the sidebar first asks for it.
     var sidebarSearchStorage: SidebarSearch?
+    /// Owned by `WorkspaceChatBriefs.swift`: when chat briefs are written,
+    /// made when launch or a finished run first asks.
+    var chatBriefsStorage: ChatBriefs?
     /// Chats whose side chats are folded away. Owned here rather than by the
     /// group's own `@State`, which forgot the fold whenever the project was
     /// collapsed, the archive filter flipped or the sidebar was rebuilt. Both
@@ -368,7 +371,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
     var sidePublications: Set<String> = []
     let vault: ConfigurationVault
-    @Published var configuration = VaultConfiguration()
+    /// Chat briefs going on or off change what sidebar search matches.
+    @Published var configuration = VaultConfiguration() { didSet { if configuration.briefSettings.enabled != oldValue.briefSettings.enabled { sidebarIndex.invalidate() } } }
     @Published var configurationLoaded = false
     /// Set while the vault could not be read at launch: each activation of
     /// the app tries again (`retryConfigurationWhenActive`).
@@ -584,7 +588,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } || chatBriefsStorage?.busy == true }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 

@@ -698,6 +698,27 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(reopened['messages'][2]['id'],ledger['id'])
         self.peer.command('session.message.read',{'messageId':first},session)
         self.peer.command('session.close',session=session)
+    def test_opening_history_is_small_and_following_pages_keep_the_full_budget(self):
+        session='opening-history'; value=self.open(session=session)
+        path=pathlib.Path(value['path']); self.peer.command('session.close',session=session)
+        records=[json.loads(line) for line in path.read_bytes().split(b'\n') if line]
+        parent=records[-1]['id']
+        with path.open('ab') as out:
+            for index in range(2202):
+                row={'type':'message','id':f'm{index}','parentId':parent,
+                     'message':{'role':'user' if index%2==0 else 'assistant','timestamp':index,
+                                'content':[{'type':'text','text':f'Row {index}'}]}}
+                out.write(encoded(row)+b'\n'); parent=row['id']
+        self.open(session=session,path=str(path))
+        first=self.peer.command('session.history',{'version':2,'opening':True},session)
+        self.assertEqual(len(first['messages']),250)
+        self.assertEqual(first['messages'][0]['id'],'m1952')
+        older=self.peer.command('session.history',{'version':2,'cursor':first['older']},session)
+        self.assertEqual(len(older['messages']),1000)
+        self.assertEqual(older['messages'][0]['role'],'user')
+        full=self.peer.command('session.history',{'version':2},session)
+        self.assertEqual(len(full['messages']),1000)
+
     def test_a_result_beyond_the_frame_limit_is_read_back_whole_through_a_display_transfer(self):
         # A reply over the 1 MiB frame limit, to a reader that takes display
         # transfers, comes as a transfer and is read back in chunks, whole.

@@ -30,68 +30,163 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var subagentNumber: Int? = nil
     var subagentEffort: String? = nil
 }
+/// Copies of a message share immutable fields until one is edited. Snapshot
+/// arrays can then retain history without copying every row's payload per token.
+@dynamicMemberLookup
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
-    var id: String; var role: String; var text: String
-    var thinking: String? = nil; var tools: [ToolView]? = nil; var state: String? = nil; var truncated: Bool? = nil
-    /// Display only: this row replaces the latest version and is read-only.
-    /// Keep the small flags together so image references do not widen a row.
-    var earlierVersion: Bool? = nil
-    /// "length" when the reply reached the output limit the request carried.
-    var stopReason: String? = nil
-    var accounting: GatewayTotals? = nil
-    /// Display-only marker kind from the host: "compaction" (summary written by
-    /// context compaction) or "branch" (edit-and-resend point). `detail` carries
-    /// its human-readable caption. History projection leaves both nil.
-    var kind: String? = nil
-    var nativeAgentDelivery: WireValue? = nil
-    /// Only the children named by this delivery batch, not the whole family.
-    var agentNumbers: [String: Int]? = nil
-    var detail: String? = nil
-    /// Milliseconds since 1970 when the host appended the message.
-    var at: Double? = nil
-    /// The turn (user message id) the host appended the row under, when known.
-    var turn: String? = nil
-    /// Assistant rows: the model request's duration in milliseconds, when the host measured it.
-    var modelMs: Double? = nil
-    /// Validated logical calls in the whole reply, before bounding its cards.
-    var toolCallCount: Int? = nil
-    var taskRootID: String? = nil
-    var taskExecutionID: String? = nil
-    var presentationSourceID: String? = nil
-    var operationID: String? = nil
-    /// Tool result rows: the call this result belongs to. The reply that made
-    /// the call carries the same result in its card, so a chronological
-    /// transcript shows it once, at the call, instead of twice.
-    var toolCallID: String? = nil
-    var responseTimeline: ResponseTimeline? = nil
-    /// Display only, set by the planner: the finished turn whose fold hides
-    /// this row. Never read from or written to a journal — the projector
-    /// leaves it nil and an absent optional encodes to nothing.
-    var foldGroup: String? = nil
-    /// User rows: the skills the message was sent with, in model input order.
-    var skills: [TranscriptSkillUse]? = nil
-    /// Absent on ordinary messages; counts and references, never pixels.
-    var imageContent: TranscriptImageContent? = nil
-    var userText: String { imageOnly == true ? "" : text }
+    struct Fields: Codable, Sendable, Equatable {
+        var id: String; var role: String; var text: String
+        var thinking: String? = nil; var tools: [ToolView]? = nil; var state: String? = nil; var truncated: Bool? = nil
+        /// "length" when the reply reached the output limit the request carried.
+        var stopReason: String? = nil
+        var accounting: GatewayTotals? = nil
+        /// Display-only marker kind from the host: "compaction" (summary written by
+        /// context compaction) or "branch" (edit-and-resend point). `detail` carries
+        /// its human-readable caption. History projection leaves both nil.
+        var kind: String? = nil
+        var nativeAgentDelivery: WireValue? = nil
+        /// Only the children named by this delivery batch, not the whole family.
+        var agentNumbers: [String: Int]? = nil
+        var detail: String? = nil
+        /// Milliseconds since 1970 when the host appended the message.
+        var at: Double? = nil
+        /// The turn (user message id) the host appended the row under, when known.
+        var turn: String? = nil
+        /// Assistant rows: the model request's duration in milliseconds, when the host measured it.
+        var modelMs: Double? = nil
+        /// Validated logical calls in the whole reply, before bounding its cards.
+        var toolCallCount: Int? = nil
+        var taskRootID: String? = nil
+        var taskExecutionID: String? = nil
+        var presentationSourceID: String? = nil
+        var operationID: String? = nil
+        /// Tool result rows: the call this result belongs to. The reply that made
+        /// the call carries the same result in its card, so a chronological
+        /// transcript shows it once, at the call, instead of twice.
+        var toolCallID: String? = nil
+        var responseTimeline: ResponseTimeline? = nil
+        /// Display only, set by the planner: the finished turn whose fold hides
+        /// this row. Never read from or written to a journal — the projector
+        /// leaves it nil and an absent optional encodes to nothing.
+        var foldGroup: String? = nil
+        /// User rows: the skills the message was sent with, in the order the
+        /// model received them ahead of its text. Nil when it used none.
+        var skills: [TranscriptSkillUse]? = nil
+        var imageCount: Int? = nil
+        var imageOnly: Bool? = nil
+        var imageReference: TranscriptImageReference? = nil
+        /// The optimistic Sending row still owns the submitted file references.
+        var imageAttachments: [AttachmentRecord]? = nil
+        /// Assistant rows: what the helper recorded of the request the row came
+        /// from. The turn report reads it for a request the request log has no
+        /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.
+        var reply: ReplyRecord? = nil
+        /// Failure rows the app adds: the helper's code for what failed, when it
+        /// has a notice of its own (`cost_limit`: a stop at the chat's cost limit).
+        /// Display only, like `foldGroup`.
+        var failureCode: String? = nil
+        /// User rows of an edited message: which version this is, of how many,
+        /// and every version's message id, oldest first. Nil for a message never
+        /// edited, and from helpers before 0.1.93.
+        var versions: MessageVersionMark? = nil
+        /// Rows of an earlier version (`session.version.page`): every request the
+        /// row came from, so its Details open the Inspector at those requests.
+        var requestAttemptIDs: [String]? = nil
+        /// Display only, set by the app: this row belongs to an earlier version on
+        /// screen in place of the latest one, and is read-only.
+        var earlierVersion: Bool? = nil
+    }
+    // Only this value type exposes its storage. Every mutation first takes
+    // a unique copy, including mutations through nested tools or timelines.
+    private final class Storage: @unchecked Sendable {
+        var fields: Fields
+        init(_ fields: Fields) { self.fields = fields }
+    }
+    private var storage: Storage
+    private mutating func makeUnique() {
+        if !isKnownUniquelyReferenced(&storage) { storage = Storage(storage.fields) }
+    }
+    var id: String {
+        get { storage.fields.id }
+        set { makeUnique(); storage.fields.id = newValue }
+        _modify { makeUnique(); yield &storage.fields.id }
+    }
+    subscript<Value>(dynamicMember keyPath: WritableKeyPath<Fields, Value>) -> Value {
+        get { storage.fields[keyPath: keyPath] }
+        set { makeUnique(); storage.fields[keyPath: keyPath] = newValue }
+        _modify { makeUnique(); yield &storage.fields[keyPath: keyPath] }
+    }
+    init(id: String,
+         role: String,
+         text: String,
+         thinking: String? = nil,
+         tools: [ToolView]? = nil,
+         state: String? = nil,
+         truncated: Bool? = nil,
+         stopReason: String? = nil,
+         accounting: GatewayTotals? = nil,
+         kind: String? = nil,
+         nativeAgentDelivery: WireValue? = nil,
+         agentNumbers: [String: Int]? = nil,
+         detail: String? = nil,
+         at: Double? = nil,
+         turn: String? = nil,
+         modelMs: Double? = nil,
+         toolCallCount: Int? = nil,
+         taskRootID: String? = nil,
+         taskExecutionID: String? = nil,
+         presentationSourceID: String? = nil,
+         operationID: String? = nil,
+         toolCallID: String? = nil,
+         responseTimeline: ResponseTimeline? = nil,
+         foldGroup: String? = nil,
+         skills: [TranscriptSkillUse]? = nil,
+         reply: ReplyRecord? = nil,
+         failureCode: String? = nil,
+         versions: MessageVersionMark? = nil,
+         requestAttemptIDs: [String]? = nil,
+         earlierVersion: Bool? = nil) {
+        storage = Storage(Fields(id: id,
+                                 role: role,
+                                 text: text,
+                                 thinking: thinking,
+                                 tools: tools,
+                                 state: state,
+                                 truncated: truncated,
+                                 stopReason: stopReason,
+                                 accounting: accounting,
+                                 kind: kind,
+                                 nativeAgentDelivery: nativeAgentDelivery,
+                                 agentNumbers: agentNumbers,
+                                 detail: detail,
+                                 at: at,
+                                 turn: turn,
+                                 modelMs: modelMs,
+                                 toolCallCount: toolCallCount,
+                                 taskRootID: taskRootID,
+                                 taskExecutionID: taskExecutionID,
+                                 presentationSourceID: presentationSourceID,
+                                 operationID: operationID,
+                                 toolCallID: toolCallID,
+                                 responseTimeline: responseTimeline,
+                                 foldGroup: foldGroup,
+                                 skills: skills,
+                                 reply: reply,
+                                 failureCode: failureCode,
+                                 versions: versions,
+                                 requestAttemptIDs: requestAttemptIDs,
+                                 earlierVersion: earlierVersion))
+    }
+    init(from decoder: Decoder) throws { storage = Storage(try Fields(from: decoder)) }
+    func encode(to encoder: Encoder) throws { try storage.fields.encode(to: encoder) }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.storage.fields == rhs.storage.fields
+    }
+    var userText: String { self.imageOnly == true ? "" : self.text }
     /// What a user row with images and no text reads as. Display only: the
     /// message the model received is its images, with no text.
     static func imageOnlyText(_ count: Int) -> String { count == 1 ? "Image" : "\(count) images" }
     static func compactionText(_ entry: [String: WireValue]) -> String { "Conversation summary:\n" + (entry["summary"]?.string ?? "") }
-    /// Assistant rows: what the helper recorded of the request the row came
-    /// from. The turn report reads it for a request the request log has no
-    /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.
-    var reply: ReplyRecord? = nil
-    /// Failure rows the app adds: the helper's code for what failed, when it
-    /// has a notice of its own (`cost_limit`: a stop at the chat's cost limit).
-    /// Display only, like `foldGroup`.
-    var failureCode: String? = nil
-    /// User rows of an edited message: which version this is, of how many,
-    /// and every version's message id, oldest first. Nil for a message never
-    /// edited, and from helpers before 0.1.93.
-    var versions: MessageVersionMark? = nil
-    /// Rows of an earlier version (`session.version.page`): every request the
-    /// row came from, so its Details open the Inspector at those requests.
-    var requestAttemptIDs: [String]? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -217,7 +312,7 @@ extension TranscriptMessage {
     /// own row for it has the same id, the submission's `clientTurnId`, and
     /// takes its place when it arrives.
     static let sendingState = "sending"
-    var isSending: Bool { role == "user" && state == Self.sendingState }
+    var isSending: Bool { self.role == "user" && self.state == Self.sendingState }
 }
 
 /// What a journal recorded about one finished call: the helper writes this

@@ -26,6 +26,7 @@ struct HistoryExtent: Equatable {
 @MainActor final class HistoryPositions {
     private var positions: [String: Int] = [:]
     private(set) var total: Int?
+    private var adoptedWindow = false
     /// The height one row of the timeline takes in this chat, measured from
     /// the rows the transcript has laid out (`TranscriptNativeDocument`).
     var rowHeight: CGFloat?
@@ -39,7 +40,7 @@ struct HistoryExtent: Equatable {
     /// A page that replaces the window: what was known of the old one may
     /// belong to another timeline.
     func reset(_ page: ConversationHistoryPage) {
-        positions = [:]; total = nil; rowHeightFirstID = nil
+        positions = [:]; total = nil; rowHeightFirstID = nil; adoptedWindow = false
         // A page with nothing before or after it is the whole timeline, said
         // or not (a chat just made is authoritatively empty).
         if page.start == nil, page.older == nil, page.newer == nil {
@@ -50,9 +51,10 @@ struct HistoryExtent: Equatable {
     }
     /// The timeline changed under the window (an edit's new branch): nothing
     /// known still holds until the next page says.
-    func forget() { positions = [:]; total = nil }
+    func forget() { positions = [:]; total = nil; adoptedWindow = false }
     func record(_ page: ConversationHistoryPage) {
         guard let start = page.start, let total = page.total else { return }
+        adoptedWindow = false
         self.total = total
         for (offset, message) in page.messages.enumerated() { positions[message.id] = start + offset }
     }
@@ -69,8 +71,14 @@ struct HistoryExtent: Equatable {
     /// nothing lies outside it. The rows of the window no page named — the
     /// live rows a run adds — take their places from it, so the window is
     /// still placed once the rows a page named have left it.
-    func extent(of rows: [TranscriptMessage], reachesStart: Bool, reachesEnd: Bool) -> HistoryExtent? {
-        defer { if let total, let placed = placed(rows, reachesStart: reachesStart) { adopt(rows, from: placed, reachesEnd: reachesEnd, total: total) } }
+    func extent(of rows: [TranscriptMessage], reachesStart: Bool, reachesEnd: Bool, membershipUnchanged: Bool = false, sourceTail: Int? = nil) -> HistoryExtent? {
+        defer {
+            if !membershipUnchanged || !adoptedWindow, let total, let placed = placed(rows, reachesStart: reachesStart) {
+                let start = adoptedWindow ? sourceTail ?? 0 : 0
+                adopt(start == 0 ? rows : Array(rows.dropFirst(start)), from: placed + start, reachesEnd: reachesEnd, total: total, keeping: rows)
+                adoptedWindow = true
+            }
+        }
         guard let total, !rows.isEmpty, !positions.isEmpty else { return nil }
         var before: Int? = reachesStart ? 0 : nil
         if before == nil, let index = rows.firstIndex(where: { positions[$0.id] != nil }), let position = positions[rows[index].id] {
@@ -90,11 +98,11 @@ struct HistoryExtent: Equatable {
         guard let index = rows.firstIndex(where: { positions[$0.id] != nil }), let position = positions[rows[index].id] else { return nil }
         return max(0, position - index)
     }
-    private func adopt(_ rows: [TranscriptMessage], from first: Int, reachesEnd: Bool, total: Int) {
+    private func adopt(_ rows: [TranscriptMessage], from first: Int, reachesEnd: Bool, total: Int, keeping window: [TranscriptMessage]) {
         for (offset, row) in rows.enumerated() where positions[row.id] == nil { positions[row.id] = first + offset }
         // A window at the newest row is the timeline's end: rows a run added
         // count in its total.
         if reachesEnd { self.total = max(total, first + rows.count) }
-        prune(keeping: rows)
+        prune(keeping: window)
     }
 }

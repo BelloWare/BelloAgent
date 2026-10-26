@@ -29,8 +29,9 @@ final class TimelineStreamingFastPathTests: XCTestCase {
             consume(kind: "text", update: "append", text: token, output: 1)
         }
         private mutating func consume(kind: String, update: String, text: String, output: Int) {
-            message.responseTimeline?.consume(ResponsePartEvent(attemptID: "attempt-" + message.id, ordinal: ordinal,
-                                                                itemID: "\(message.id)-item-\(output)", outputIndex: output,
+            let id = message.id
+            message.responseTimeline?.consume(ResponsePartEvent(attemptID: "attempt-" + id, ordinal: ordinal,
+                                                                itemID: "\(id)-item-\(output)", outputIndex: output,
                                                                 partIndex: 0, kind: kind, update: update, text: text,
                                                                 callID: nil, name: nil))
             ordinal += 1
