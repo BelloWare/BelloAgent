@@ -18,6 +18,8 @@ import AppKit
         onPress = { [weak self] in guard let self else { return }; PiMenus.popUp(self.entries?() ?? [], below: self) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var acceptsFirstResponder: Bool { isEffectivelyEnabled }
+    override var canBecomeKeyView: Bool { isEffectivelyEnabled && !isHiddenOrHasHiddenAncestor }
     func update(_ choice: SidebarAskConnection?) {
         let title = choice?.title ?? "Choose a connection", enabled = choice?.available ?? false
         guard title != connection || enabled != available else { return }
@@ -45,7 +47,7 @@ import AppKit
         choices.map { choice in
             PiMenuEntry.button(choice.title + (choice.available ? "" : " · No mini model"), enabled: choice.available,
                                checked: choice.id == chosen, identifier: "sidebarAskConnection-" + choice.id,
-                               help: choice.available ? "Ask only this connection's chats" : "Choose a mini model in Settings") { choose(choice.id) }
+                               help: choice.unresolved ? "The mini model is checked when you ask" : choice.available ? "Ask only this connection's chats" : "Choose a mini model in Settings") { choose(choice.id) }
         }
     }
 }

@@ -621,9 +621,9 @@ final class ChatSearchQuery: @unchecked Sendable {
     func cancel() { lock.lock(); generation &+= 1; lock.unlock() }
     private var stale: Bool { lock.lock(); defer { lock.unlock() }; return generation != running }
 
-    /// A committed, current index for this journal. This reader never waits
+    /// A committed index at this path, optionally accepting an older revision. This reader never waits
     /// on the library writer's actor or its in-flight journal reads.
-    func indexed(_ source: ChatSearchSource) async throws -> Bool {
+    func indexed(_ source: ChatSearchSource, acceptsOlder: Bool = false) async throws -> Bool {
         let mine = lock.withLock { generation }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -637,15 +637,14 @@ final class ChatSearchQuery: @unchecked Sendable {
                         defer { sqlite3_finalize(statement) }
                         ChatSearchDatabase.bind(statement, 1, source.id)
                         return sqlite3_step(statement) == SQLITE_ROW && ChatSearchDatabase.text(statement!, 0) == source.path
-                            && ChatSearchDatabase.text(statement!, 1) == revision.stamp && sqlite3_column_int(statement, 2) == 0
+                            && (acceptsOlder || ChatSearchDatabase.text(statement!, 1) == revision.stamp) && sqlite3_column_int(statement, 2) == 0
                     })
                 }
             }
         } onCancel: { [weak self] in self?.cancel() }
     }
 
-    /// A temporary confirmation database is removed only after its queued
-    /// reads and connection have finished.
+    /// Close only after queued reads have finished.
     func close() async {
         cancel()
         await withCheckedContinuation { continuation in

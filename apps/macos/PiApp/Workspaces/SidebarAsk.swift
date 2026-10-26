@@ -4,6 +4,7 @@ struct SidebarAskConnection: Equatable {
     var id: String
     var title: String
     var available: Bool
+    var unresolved = false
 }
 
 /// An explicit question about one connection's chats. Rankings publish first;
@@ -12,7 +13,6 @@ struct SidebarAskConnection: Equatable {
     struct Status: Equatable {
         var text = "Ask in plain words, then press Return."
         var busy = false
-        var reservesCancelSpace = false
     }
     static let miniNotice = "Ask needs a mini model. Choose one for this connection in Settings."
     private weak var model: WorkspaceModel?
@@ -35,6 +35,9 @@ struct SidebarAskConnection: Equatable {
     var beforeDispatch: (() async -> Void)?
     var beforeSelection: (() async -> Void)?
     var beforeConfirmation: ((String) async -> Void)?
+    var willBuildPlan: (@Sendable () -> Void)?
+    /// Tests retain a check through cancellation and await its last callback.
+    var confirmationWork: Task<Void, Never>? { enrichment }
     var busy: Bool { task != nil || enrichment != nil }
 
     init(model: WorkspaceModel) {
@@ -51,23 +54,23 @@ struct SidebarAskConnection: Equatable {
         let projects = Set(model.sidebarProjects.map(\.id))
         let ids = Set(model.chats.filter { projects.contains($0.workspaceID) && eligible($0, model: model) }.map(\.profileID))
         return model.profiles.filter { ids.contains($0.id) }.map {
-            SidebarAskConnection(id: $0.id, title: $0.name, available: mini($0, model: model) != nil)
+            let entry = model.catalogEntry(for: $0)
+            let unresolved = entry.fetchedAt == nil || entry.error != nil && entry.descriptors.isEmpty
+            return SidebarAskConnection(id: $0.id, title: $0.name, available: mini($0, model: model) != nil || unresolved, unresolved: unresolved)
         }
     }
     private func mini(_ profile: ProfileRecord, model: WorkspaceModel) -> String? {
         TitleGenerationPlan.miniModel(profile: profile, descriptors: model.catalogEntry(for: profile).descriptors)
     }
-    /// Resolved on entering Ask, then kept until quit or the connection goes.
-    var connectionID: String? {
-        guard let model else { return nil }
-        if let chosen, model.profiles.contains(where: { $0.id == chosen }) { return chosen }
-        if chosen != nil { reset() }
+    /// Reading list contents never changes a choice or cancels work.
+    var connectionID: String? { chosen }
+    private func resolveDefault() {
+        guard let model else { return }
         let choices = connections
         let selected = (model.focusedSessionID ?? model.selectedID).flatMap { model.record($0)?.profileID }
         chosen = choices.first { $0.id == selected && $0.available }?.id
             ?? choices.first { $0.available }?.id ?? choices.first?.id
         chosenMini = chosen.flatMap { id in model.profiles.first { $0.id == id }.flatMap { mini($0, model: model) } }
-        return chosen
     }
     var listedMatches: [SidebarAskMatch] {
         guard let model, let connection = connectionID else { return [] }
@@ -79,9 +82,10 @@ struct SidebarAskConnection: Equatable {
     /// Settings/catalog changes never ask. A removed connection gets the
     /// default; a choice that loses its mini model stays chosen, with a notice.
     func connectionsChanged() {
-        guard let model, let id = chosen else { changed?(); return }
-        guard let profile = model.profiles.first(where: { $0.id == id }) else {
-            reset(); chosen = nil; _ = connectionID; changed?(); return
+        guard let model else { return }
+        guard let id = chosen, connections.contains(where: { $0.id == id }),
+              let profile = model.profiles.first(where: { $0.id == id }) else {
+            reset(); resolveDefault(); changed?(); return
         }
         let next = mini(profile, model: model)
         if chosenMini != next, chosenMini != nil {
@@ -92,6 +96,9 @@ struct SidebarAskConnection: Equatable {
             else if wasSubmitted { status.text = "The mini model changed. Press Return to ask again." }
         }
         chosenMini = next
+        matches = matches.filter { match in model.record(match.id).map { $0.profileID == id && eligible($0, model: model) } == true }
+        let remaining = Set(matches.map(\.id))
+        hits = hits.filter { remaining.contains($0.key) }; checkingIDs.formIntersection(remaining)
         if !matches.isEmpty { showSummary(profile.name) }
         changed?()
     }
@@ -124,6 +131,7 @@ struct SidebarAskConnection: Equatable {
     /// enrichment; two provider requests are never in flight together.
     func start(_ question: String) {
         guard task == nil, let model, !model.installPreparing, !model.isShutDown else { return }
+        if chosen == nil { connectionsChanged() }
         let previous = tail
         reset()
         guard !question.isEmpty else { changed?(); return }
@@ -191,8 +199,18 @@ struct SidebarAskConnection: Equatable {
             _ = await model.listModels(for: profile)
             guard current(mine, connection: connection) else { return }
             let descriptors = model.catalogEntry(for: profile).descriptors
-            guard mini(profile, model: model) != nil else { status.text = Self.miniNotice; return }
-            guard let plan = SidebarAskPlan(profile: profile, descriptors: descriptors, question: question, candidates: selected) else {
+            guard mini(profile, model: model) != nil else {
+                if let error = model.catalogEntry(for: profile).error { throw HostError.failure(error) }
+                status.text = Self.miniNotice; return
+            }
+            let willBuildPlan = willBuildPlan
+            let preparing = Task.detached(priority: .userInitiated) {
+                willBuildPlan?()
+                return SidebarAskPlan(profile: profile, descriptors: descriptors, question: question, candidates: selected)
+            }
+            let prepared = await withTaskCancellationHandler { await preparing.value } onCancel: { preparing.cancel() }
+            guard current(mine, connection: connection) else { return }
+            guard let plan = prepared else {
                 throw HostError.failure("The mini model's context is too small for Ask.")
             }
             let sentIDs = Set(plan.candidates.map(\.id)), sentLeases = leases.filter { sentIDs.contains($0.chatID) }
@@ -221,7 +239,6 @@ struct SidebarAskConnection: Equatable {
             guard current(mine, connection: connection) else { return }
             matches = try SidebarAskPlan.parse(messages, candidates: plan.candidates).filter { model.record($0.id)?.profileID == connection }
             checkingIDs = Set(matches.prefix(SidebarAskPlan.confirmationLimit).map(\.id))
-            status.reservesCancelSpace = !matches.isEmpty
             showSummary(profile.name)
             changed?() // The rows exist before any index read, including a cold one.
             if !checkingIDs.isEmpty {
@@ -249,9 +266,6 @@ struct SidebarAskConnection: Equatable {
 
     private func enrich(_ top: [SidebarAskMatch], question: String, connection: String, leases: [WorkspaceModel.ConnectionLease], generation mine: Int) async {
         guard let model, current(mine, connection: connection) else { return }
-        let folder = model.root.appendingPathComponent("ask-text-" + UUID().uuidString, isDirectory: true)
-        let index = ChatSearchIndex(url: folder.appendingPathComponent(ChatSearchDatabase.fileName), indexDirectory: folder)
-        let reader = ChatSearchQuery(url: index.url)
         do {
             for match in top {
                 guard current(mine, connection: connection) else { throw CancellationError() }
@@ -264,20 +278,18 @@ struct SidebarAskConnection: Equatable {
                 do {
                     try model.requireConnection(lease)
                     let source = ChatSearchSource(id: chat.id, path: path, rebuildsOnChange: chat.imported)
-                    let query: ChatSearchQuery
-                    if try await library.indexed(source) { query = library }
-                    else {
-                        // This private, temporary writer reads this journal only.
-                        // It never joins or queues behind the library's writer.
-                        let pass = await index.reconcile([source])
-                        guard !pass.unreadable.contains(source.id) else { throw StoreError.unreadableRecord }
-                        query = reader
-                    }
                     var hit: ChatSearchHit?
-                    for term in [question] + SidebarAskPlan.terms(question) {
-                        guard current(mine, connection: connection) else { throw CancellationError() }
-                        hit = try await query.search(term, in: [match.id])[match.id]
-                        if hit != nil { break }
+                    if try await library.indexed(source, acceptsOlder: true) {
+                        for term in [question] + SidebarAskPlan.terms(question) {
+                            guard current(mine, connection: connection) else { throw CancellationError() }
+                            hit = try await library.search(term, in: [match.id])[match.id]
+                            if hit != nil { break }
+                        }
+                    } else {
+                        // No disk index, offset cache or library-wide pass: read
+                        // only a bounded tail, held in memory for this check.
+                        let check = Task.detached(priority: .utility) { try SidebarAskText.check(source, question: question) }
+                        hit = try await withTaskCancellationHandler { try await check.value } onCancel: { check.cancel() }
                     }
                     try model.requireConnection(lease)
                     guard current(mine, connection: connection) else { throw CancellationError() }
@@ -288,15 +300,63 @@ struct SidebarAskConnection: Equatable {
                 checkingIDs.remove(match.id); changed?()
             }
         } catch { /* A newer question, mode or connection owns the result area. */ }
-        await index.close(); await reader.close()
-        try? FileManager.default.removeItem(at: folder)
+    }
+}
+
+/// A cold excerpt reads at most 256 KiB and 512 complete records. It owns
+/// no files or caches: cancellation, quit and process death leave no text copy.
+/// An existing library entry is preferred, even if its revision is older.
+enum SidebarAskText {
+    static let byteLimit = 262_144
+    static let recordLimit = 512
+    static func check(_ source: ChatSearchSource, question: String) throws -> ChatSearchHit? {
+        try Task.checkCancellation()
+        guard let revision = HistoryReader.currentRevision(path: source.path), let file = FileHandle(forReadingAtPath: source.path) else { return nil }
+        defer { try? file.close() }
+        let size = try file.seekToEnd(), start = size > UInt64(byteLimit) ? size - UInt64(byteLimit) : 0
+        try file.seek(toOffset: start)
+        let data = try file.read(upToCount: byteLimit) ?? Data()
+        var lines = data.split(separator: 10, omittingEmptySubsequences: true)
+        if start > 0, !lines.isEmpty { lines.removeFirst() }
+        if data.last != 10, !lines.isEmpty { lines.removeLast() }
+        var records: [String: [String: WireValue]] = [:], last: String?
+        for line in lines.suffix(recordLimit) {
+            try Task.checkCancellation()
+            guard let row = try? JSONDecoder().decode(WireValue.self, from: Data(line)).object,
+                  let id = row["id"]?.string else { continue }
+            // These operations need older context to establish what is still
+            // displayed. A cold bounded check never guesses at that history.
+            if ["pi-app.native.context.v1", "pi-app.presentation.update.v1"].contains(row["customType"]?.string ?? "") { return nil }
+            records[id] = row; last = id
+        }
+        let terms = [question] + SidebarAskPlan.terms(question)
+        var visited: Set<String> = []
+        while let id = last, visited.insert(id).inserted, let row = records[id] {
+            try Task.checkCancellation()
+            if ["branch", "compaction"].contains(row["type"]?.string ?? "") { break }
+            if row["type"]?.string == "message", let value = row["message"]?.object {
+                let message = TranscriptMessage.project(id: id, message: value)
+                let pieces = ChatSearchIndex.pieces(of: message)
+                for term in terms where ChatSearchDatabase.answers(ChatSearchHit.collapsed(term)) {
+                    for piece in pieces {
+                        if let excerpt = ChatSearchHit.excerpt(of: term, in: piece.text) {
+                            guard HistoryReader.currentRevision(path: source.path) == revision else { return nil }
+                            return ChatSearchHit(chatID: source.id, messageID: id, kind: piece.kind,
+                                excerpt: excerpt.excerpt, highlight: excerpt.highlight, context: excerpt.context)
+                        }
+                    }
+                }
+            }
+            last = row["parentId"]?.string
+        }
+        return nil
     }
 }
 
 /// The result area's progress, cancellation and errors, using PiKit only.
 @MainActor final class SidebarAskStatusView: NSView, SidebarEntryView {
     private let text = ShellText("", font: PiKit.Font.caption, color: .piInkSecondary)
-    let cancel = PiKit.Button("Cancel", symbol: "xmark", compact: true)
+    let cancel = PiKit.IconButton(symbol: "xmark", label: "Cancel Ask", size: 20)
     private var status = SidebarAsk.Status()
     init(status: SidebarAsk.Status, cancel: @escaping () -> Void) {
         super.init(frame: .zero)
@@ -313,13 +373,13 @@ struct SidebarAskConnection: Equatable {
         cancel.isHidden = !status.busy; needsLayout = true
     }
     func entryHeight(width: CGFloat) -> CGFloat {
-        text.height(forWidth: max(0, width - 16)) + 16 + (status.busy || status.reservesCancelSpace ? cancel.intrinsicContentSize.height + 6 : 0)
+        max(20, text.height(forWidth: max(0, width - 44))) + 16
     }
     override func layout() {
         super.layout()
-        let width = max(0, bounds.width - 16), height = text.height(forWidth: width)
+        let width = max(0, bounds.width - 44), height = text.height(forWidth: width)
         text.frame = CGRect(x: 8, y: 8, width: width, height: height)
-        cancel.frame = CGRect(origin: CGPoint(x: 8, y: height + 14), size: cancel.intrinsicContentSize)
+        cancel.frame = CGRect(x: bounds.width - 28, y: 8, width: 20, height: 20)
     }
 }
 

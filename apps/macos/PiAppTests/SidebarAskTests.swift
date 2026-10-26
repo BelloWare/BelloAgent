@@ -33,11 +33,25 @@ final class SidebarAskPlanTests: XCTestCase {
         var unfinished = reply(#"{"matches":[{"id":"a","reason":"Looks right"}]}"#)
         unfinished[0].truncated = true
         XCTAssertThrowsError(try SidebarAskPlan.parse(unfinished, candidates: candidates))
-        for reason in ["", "\u{1b}fake", "\u{202e}fake", String(repeating: "a", count: 241)] {
+        for reason in ["", "\u{1b}fake", "\u{202e}fake"] {
             let data = try JSONEncoder().encode(["matches": [SidebarAskMatch(id: "a", reason: reason)]])
             XCTAssertEqual(try SidebarAskPlan.parse(reply(String(decoding: data, as: UTF8.self)), candidates: candidates), [])
         }
         XCTAssertEqual(try SidebarAskPlan.parse(reply(#"{"matches":[]}"#), candidates: candidates), [], "No matches is a valid answer")
+    }
+
+    func testFencedAndSurroundedRankingsAreAcceptedAndLongReasonsAreShortenedOnCharacterBoundaries() throws {
+        let reason = String(repeating: "👩🏽‍💻é", count: 160)
+        let json = String(decoding: try JSONEncoder().encode(["matches": [SidebarAskMatch(id: "a", reason: reason)]]), as: UTF8.self)
+        for answer in ["```json\n" + json + "\n```", "Here are the relevant chats.\n" + json] {
+            let found = try SidebarAskPlan.parse(reply(answer), candidates: [candidate("a")])
+            XCTAssertEqual(found.count, 1)
+            XCTAssertEqual(found.first?.reason, String(reason.prefix(239)) + "…")
+            XCTAssertEqual(found.first?.reason.count, 240)
+        }
+        var profile = ProfileRecord(); profile.id = "profile"; profile.miniModelId = "mini-fixture"
+        let plan = try XCTUnwrap(SidebarAskPlan(profile: profile, descriptors: [], question: "Find notes", candidates: [candidate("a")]))
+        XCTAssertTrue(plan.request.prompt.contains("No Markdown, no code fences and no text outside the JSON object."))
     }
 
     func testAPlanRefusesAnyCandidateOutsideItsChosenConnection() {

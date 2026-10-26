@@ -9,7 +9,7 @@ import XCTest
     let other: AskGateway?
     let root: URL
 
-    static func make(_ test: XCTestCase, second: Bool = false, mini: String? = "mini-fixture", unavailable: Bool = false) async throws -> AskFixture {
+    static func make(_ test: XCTestCase, second: Bool = false, mini: String? = "mini-fixture", unavailable: Bool = false, catalog: ModelCatalog? = nil) async throws -> AskFixture {
         let root = scratchRoot("sidebar-ask"), project = root.appendingPathComponent("Orchard")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         try Data("PRIVATE PROJECT INSTRUCTION".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
@@ -22,6 +22,7 @@ import XCTest
         if second {
             let extra = try AskGateway(); test.addTeardownBlock { extra.stop() }
             var next = profile; next.id = "other"; next.name = "Research"; next.baseUrl = try await extra.start()
+            next.miniModelId = "other-mini-fixture"
             configuration.profiles.append(VaultProfile(profile: next, apiKey: "synthetic-other-key")); other = extra
         }
         if unavailable {
@@ -30,9 +31,10 @@ import XCTest
         }
         configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
         configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))), modelCatalog: catalog)
         test.registerWorkspaceFixtureTeardown(model, root: root)
         try await model.reloadConfiguration()
+        if unavailable, let profile = model.profiles.first(where: { $0.id == "no-mini" }) { _ = await model.listModels(for: profile) }
         return AskFixture(model: model, gateway: gateway, other: other, root: root)
     }
     @discardableResult func chat(_ id: String, title: String, brief: String? = nil, profile: String = "profile", parent: String? = nil, archived: Bool = false,

@@ -86,6 +86,7 @@ final class SidebarAskTests: XCTestCase {
         await model.sidebarSearch.askChats.settle()
         XCTAssertEqual(model.sidebarChatOrder, ["b"])
         let first = try XCTUnwrap(fixture.gateway.requests.first), second = try XCTUnwrap(other.requests.first)
+        XCTAssertEqual(first.body["model"]?.string, "mini-fixture"); XCTAssertEqual(second.body["model"]?.string, "other-mini-fixture")
         XCTAssertTrue(first.prompt.contains("STUDIO_PRIVATE_BRIEF")); XCTAssertFalse(first.prompt.contains("RESEARCH_PRIVATE_BRIEF"))
         XCTAssertTrue(second.prompt.contains("RESEARCH_PRIVATE_BRIEF")); XCTAssertFalse(second.prompt.contains("STUDIO_PRIVATE_BRIEF"))
         XCTAssertTrue(first.head.contains("synthetic-ask-key")); XCTAssertFalse(first.head.contains("synthetic-other-key"))

@@ -91,7 +91,7 @@ import Combine
         })
         for publisher in [model.$profiles.map { _ in () }.eraseToAnyPublisher(), model.modelCatalog.$entries.map { _ in () }.eraseToAnyPublisher()] {
             watches.append(publisher.dropFirst().sink { [weak self] _ in
-                Task { @MainActor [weak self] in self?.askChats.connectionsChanged() }
+                Task { @MainActor [weak self] in if self?.scope == .ask { self?.askChats.connectionsChanged() } }
             })
         }
         if Self.startsAutomatically, !indexing {
@@ -116,6 +116,8 @@ import Combine
             let index = index
             Task.detached(priority: .utility) { await index.forget(gone) }
         }
+        // Only Ask holds a connection choice; entering Ask resolves it again.
+        if scope == .ask { Task { @MainActor [weak self] in if self?.scope == .ask { self?.askChats.connectionsChanged() } } }
         scheduleReconcile()
     }
 
@@ -149,6 +151,7 @@ import Combine
     func setScope(_ value: Scope) {
         guard scope != value else { return }
         scope = value
+        if value == .ask { askChats.connectionsChanged() }
         updateContentQuery(from: query)
         changed?()
     }

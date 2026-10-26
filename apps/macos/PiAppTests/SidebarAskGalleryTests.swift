@@ -51,12 +51,16 @@ final class SidebarAskGalleryTests: XCTestCase, SerialTestLane {
         defer { NSApp.appearance = oldAppearance; window.contentView = nil; window.close() }
         model.sidebarSearch.setScope(.ask); sidebar.setFilter("Find the tokenizer checklist and parser retry")
         let ask = model.sidebarSearch.askChats
+        func redraw(_ view: NSView) {
+            view.needsLayout = true; view.needsDisplay = true
+            for child in view.subviews { redraw(child) }
+        }
         func capture(_ scene: String, menu: Bool = false) async throws {
             for width: CGFloat in [300, 200] {
                 window.setContentSize(CGSize(width: width, height: 640))
                 for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                     NSApp.appearance = NSAppearance(named: appearance); window.appearance = NSAppearance(named: appearance)
-                    sidebar.needsLayout = true; sidebar.settle(); window.displayIfNeeded()
+                    redraw(sidebar); sidebar.settle(); window.displayIfNeeded(); CATransaction.flush()
                     try await Task.sleep(for: .milliseconds(120))
                     XCTAssertTrue(sidebar.bounds.contains(sidebar.searchScope.frame), "Three search modes fit at \(width)")
                     XCTAssertFalse(sidebar.askConnection.isHidden); XCTAssertTrue(sidebar.bounds.contains(sidebar.askConnection.frame))

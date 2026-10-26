@@ -20,12 +20,13 @@ import Combine
     let filterField = PiKit.TextField(placeholder: "Search titles and details", icon: "magnifyingglass")
     let searchScope = PiKit.Tabs(selection: SidebarSearch.Scope.titlesAndDetails,
                                items: SidebarSearch.Scope.allCases.map { ($0, $0.title) },
-                               horizontalPadding: 1, keyboardFocusable: true, accessibilityName: "Search scope")
+                               horizontalPadding: 6, keyboardFocusable: true, accessibilityName: "Search scope")
     let clearFilter = PiKit.IconButton(symbol: "xmark", label: "Clear search", size: 20)
     /// Flat's project chips, in the search scope's place while no search is on.
     let projectFilter = SidebarProjectFilterBar()
     let askConnection = SidebarAskConnectionButton()
     private var searchKeyLoopFrame = CGRect.null
+    private var askKeyLoopFrame = CGRect.null
     private let filterKeys = SidebarFilterDelegate()
     let selectionBar: SidebarSelectionBarView
     let scroll = NSScrollView()
@@ -428,8 +429,17 @@ import Combine
         filterField.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: fieldHeight)
         clearFilter.frame = CGRect(x: filterField.bounds.width - 26, y: (fieldHeight - 20) / 2, width: 20, height: 20)
         y += fieldHeight + 6
+        let fullWidth = SidebarSearch.Scope.allCases.reduce(CGFloat(0)) { $0 + PiKit.Line($1.title, font: .systemFont(ofSize: 12, weight: .medium), color: .piInk).size(scale: piScale).width + 12 } + 10
+        let shortLabels = fullWidth > w - PiSpacing.md * 2
+        let scopeItems = SidebarSearch.Scope.allCases.map { ($0, shortLabels && $0 == .titlesAndDetails ? "Details" : $0.title) }
+        if searchScope.items.map(\.1) != scopeItems.map(\.1) { searchScope.items = scopeItems }
+        for scope in SidebarSearch.Scope.allCases {
+            searchScope.tab(scope)?.setAccessibilityLabel(scope.title)
+            searchScope.tab(scope)?.toolTip = scope.title
+        }
         let scopeSize = searchScope.intrinsicContentSize
         searchScope.frame = CGRect(x: PiSpacing.md, y: y, width: scopeSize.width, height: scopeSize.height)
+        searchScope.layoutSubtreeIfNeeded()
         projectFilter.frame = CGRect(x: PiSpacing.md, y: y, width: max(0, w - PiSpacing.md * 2), height: scopeSize.height)
         // Reserve the pill's slot: entering/leaving search never moves a row.
         y += scopeSize.height + 6
@@ -460,8 +470,9 @@ import Combine
             button.frame = CGRect(x: x, y: bottom + 1 + 6, width: 28, height: 28); x += 28 + 2
         }
         settings.frame = CGRect(x: w - PiSpacing.sm - 28, y: bottom + 1 + 6, width: 28, height: 28)
-        if let window, searchKeyLoopFrame != searchScope.frame {
+        if let window, searchKeyLoopFrame != searchScope.frame || askKeyLoopFrame != askConnection.frame {
             searchKeyLoopFrame = searchScope.frame
+            askKeyLoopFrame = askConnection.frame
             window.recalculateKeyViewLoop()
         }
     }
