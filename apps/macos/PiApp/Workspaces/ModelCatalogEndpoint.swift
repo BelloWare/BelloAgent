@@ -76,7 +76,7 @@ struct ModelCatalogEndpoint: Sendable {
         case url, credential, redirected, http(Int), oversized, malformed(String), timedOut, unavailable, bundledUnavailable
         var errorDescription: String? {
             switch self {
-            case .url: return "Use an HTTPS catalog URL, or explicit loopback HTTP, without credentials or a fragment."
+            case .url: return "Use an HTTPS catalog URL, loopback HTTP, or a local file (file://, /… or ~/…). URLs cannot contain credentials or a fragment."
             case .credential: return "The catalog API key is invalid."
             case .redirected: return "The catalog endpoint redirected. Use its final URL; the API key was not forwarded."
             case .http(let status): return "The catalog endpoint answered HTTP \(status)."
@@ -84,7 +84,7 @@ struct ModelCatalogEndpoint: Sendable {
             case .malformed(let reason): return "The catalog response was not in the expected format: \(reason)."
             case .timedOut: return "The catalog request timed out."
             case .unavailable: return "The catalog endpoint could not be reached."
-            case .bundledUnavailable: return "The bundled Bello model catalog could not be loaded. Reinstall the app or configure a custom catalog URL."
+            case .bundledUnavailable: return "The bundled Bello model catalog could not be loaded. Reinstall the app or use a custom catalog URL or local file."
             }
         }
     }
@@ -101,28 +101,45 @@ struct ModelCatalogEndpoint: Sendable {
 
     static func url(_ value: String) throws -> URL {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.utf8.count <= 8192, !trimmed.contains(where: \.isWhitespace),
-              !trimmed.utf8.contains(where: { $0 < 32 || $0 == 127 }),
-              let components = URLComponents(string: trimmed), let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+        guard trimmed.utf8.count <= 8192,
+              !trimmed.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { throw Failure.url }
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") {
+            return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath, isDirectory: false)
+        }
+        guard !trimmed.contains(where: \.isWhitespace),
+              let components = URLComponents(string: trimmed), let scheme = components.scheme?.lowercased(),
+              components.user == nil, components.password == nil, components.fragment == nil,
+              let url = components.url else { throw Failure.url }
+        if scheme == "file" {
+            guard trimmed.lowercased().hasPrefix("file://"), components.path.hasPrefix("/"),
+                  ["", "localhost"].contains(components.host?.lowercased() ?? ""),
+                  components.port == nil, components.query == nil else { throw Failure.url }
+            return url
+        }
+        guard ["http", "https"].contains(scheme),
               let host = components.host, !host.isEmpty,
               scheme == "https" || ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()),
-              components.user == nil, components.password == nil, components.fragment == nil,
-              components.port.map({ (1...65535).contains($0) }) ?? true,
-              let url = components.url else { throw Failure.url }
+              components.port.map({ (1...65535).contains($0) }) ?? true else { throw Failure.url }
         return url
     }
 
     /// A gateway credential belongs only to that origin, including its port.
     static func usesGatewayCredential(_ url: URL, base: String, api: String) -> Bool {
-        guard let gateway = try? LiteLLMConfiguration.endpoint(base.trimmingCharacters(in: .whitespacesAndNewlines), api: api),
+        guard !url.isFileURL,
+              let gateway = try? LiteLLMConfiguration.endpoint(base.trimmingCharacters(in: .whitespacesAndNewlines), api: api),
               url.scheme?.lowercased() == gateway.scheme?.lowercased(), url.host?.lowercased() == gateway.host?.lowercased() else { return false }
         return (url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)) ==
                (gateway.port ?? (gateway.scheme?.lowercased() == "https" ? 443 : 80))
     }
 
-    /// Downloads one validated URL. Callers supply a key only for the gateway origin.
+    /// Reads one validated location. Callers supply a key only for the gateway origin.
     func fetch(url: URL, key: String) async throws -> [ModelDescriptor] {
         let url = try Self.url(url.absoluteString)
+        if url.isFileURL {
+            // Both the bounded read and the shared parser stay off the main actor.
+            let read = Task.detached(priority: .userInitiated) { try readFile(url) }
+            return try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+        }
         guard key.isEmpty || GatewayModelDiscovery.validKey(key) else { throw Failure.credential }
         let configuration = URLSessionConfiguration.ephemeral
         // The 8 s budget is an idle timeout on each read, not a deadline on the
@@ -166,6 +183,19 @@ struct ModelCatalogEndpoint: Sendable {
             if error.code == .cancelled { throw CancellationError() }
             throw error.code == .timedOut ? Failure.timedOut : Failure.unavailable
         } catch { throw Failure.unavailable }
+    }
+
+    private func readFile(_ url: URL) throws -> [ModelDescriptor] {
+        do {
+            try Task.checkCancellation()
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let body = try file.read(upToCount: limits.bodyBytes + 1) ?? Data()
+            try Task.checkCancellation()
+            return try parse(body)
+        } catch let failure as Failure { throw failure }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw Failure.unavailable }
     }
 
     /// Accepts `{"version": 1, "models": [...]}` or a bare array. Entries keep

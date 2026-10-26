@@ -67,6 +67,10 @@ final class SubagentMarkdownTests: XCTestCase {
         return (model, pane, window)
     }
     @MainActor func testFindQuerySearchesRenderedAgentProseInSavedUnloadedRows() async throws {
+        // Keep the agent turn outside the first page, independent of production page sizes.
+        let limits = TranscriptPaging.pageLimits
+        TranscriptPaging.pageLimits = .init(rows: 60, bytes: limits.bytes, turnRows: limits.turnRows, turnBytes: limits.turnBytes)
+        defer { TranscriptPaging.pageLimits = limits }
         let delivered: WireValue = .object(["version": .number(1), "author": .string("subagent"), "childId": .string("child"), "turn": .number(1),
             "events": .array([.object(["kind": .string("note"), "text": .string("A **typed** observation.")])])])
         var messages: [(String, [String: WireValue])] = [

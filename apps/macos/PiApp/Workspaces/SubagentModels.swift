@@ -20,6 +20,13 @@ extension ModelCatalog.Entry {
 extension WorkspaceModel {
     func subagentModels(for chat: ChatRecord) -> WireValue? {
         guard SubagentPolicy.enabled, !chat.isSubagent, let profile = profiles.first(where: { $0.id == chat.profileID }) else { return nil }
-        return (try? JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(catalogEntry(for: profile).subagentGrants(chat: chat, profile: profile))))
+        let entry = catalogEntry(for: profile)
+        if entry.descriptors.isEmpty, entry.fetchedAt == nil, !entry.loading {
+            Task { [weak self] in
+                guard let self, !self.isShutDown else { return }
+                _ = await self.listModels(for: profile)
+            }
+        }
+        return (try? JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(entry.subagentGrants(chat: chat, profile: profile))))
     }
 }
