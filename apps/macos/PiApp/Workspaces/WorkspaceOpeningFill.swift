@@ -71,6 +71,7 @@ extension WorkspaceModel {
                 }.value
                 var edge = boundary
                 for batch in prepared.batches {
+                    var retries = 0
                     while true {
                         guard current(), (newer ? view.newerPage.cursor : view.olderPage.cursor) == edge,
                               view.presentation.identity?.lineage == boundary.lineage,
@@ -100,11 +101,19 @@ extension WorkspaceModel {
                             TranscriptOpeningProjection(raw: raw, overlay: overlay, agent: agent, lifecycle: plannedLifecycle,
                                                         display: display, complete: complete)
                         }.value
+                        self.openSteps?(id, "opening fill projected")
                         guard current(), (newer ? view.newerPage.cursor : view.olderPage.cursor) == edge else { return }
                         let now = view.presentedMessages
                         guard context == TranscriptMessageProjection.Context(view), accounting == view.accountingRevision,
                               originalLifecycle == view.taskPresentation, display == TranscriptDisplay.mode,
-                              let changed = view.messageProjection.changes.indices(since: log), projection.update(now, at: changed) else { continue }
+                              let changed = view.messageProjection.changes.indices(since: log), projection.update(now, at: changed) else {
+                            // A busy live tail can outpace a full plan. Yield, then
+                            // leave ordinary paging to finish if this batch stays stale.
+                            guard retries < 3 else { return }
+                            try await Task.sleep(for: .milliseconds(16 << retries))
+                            retries += 1
+                            continue
+                        }
                         guard view.messages.count + added.count <= TranscriptPaging.residentCaps.rows,
                               view.messageBytes + addedBytes <= TranscriptPaging.residentCaps.bytes else { return }
                         // The prepared plan is current. Everything through publication is one

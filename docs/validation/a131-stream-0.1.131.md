@@ -872,3 +872,40 @@ with **1 MiB / 4 MiB / 24,000,000 byte** caps and whole-turn allowances.
 Per the lead's evidence on `a9f34673`, the standalone disclosure-curve
 failure is pre-existing test isolation; it was left unchanged and not
 rerun here. Both review findings are resolved.
+
+## Round 4: bounded opening retries (2026-10-26)
+
+Fast-forwarded to `origin/dev/next` `c03168e0`. A stale prepared batch used
+to rebuild its full detached projection immediately, without a bound.
+It now waits **16 / 32 / 64 ms**, then stops after **four projections per
+batch**. Every validation is unchanged; the readable rows and current
+paging boundary remain intact, and ordinary automatic paging still works.
+Each admitted batch starts with a fresh retry allowance.
+
+The existing opening-step seam injects a new response part after each
+projection, before validation. Failing first: **2 tests, 1 passed / 1 failed**;
+the busy-tail regression reaches its fixture safety stop at **12 projections**
+instead of four (`r4-failing.log`). Fixed: **2/2 pass**, busy tail **4**;
+a transient edit per batch completes **8 batches / 16 projections**
+(`r4-fixed.log`). A physical mutation removes the wait and limit: **1 test /
+1 expected assertion failure**, again **12 projections** (`r4-mutant.log`).
+The fixed source is restored in `finally`, rebuilt and hash-checked.
+
+Final Release classes: **TranscriptOpeningFillTests 12/12**,
+**WorkspaceLoadingTests 13/13**, **WorkspaceRefreshLifecycleTests 40/40**:
+**65 unique tests passed, no skips/failures**; the earlier fixed selection
+adds two green executions. Logs are `r4-<Class>.log`; exact build/test argv
+is in `runs.txt`, with selectors in `r4-failing.py`, `r4-fixed.py` and
+`r4-checks.py` under the same build root. These use Round 3's Release
+build-for-testing and serial test-without-building arguments; the opening
+class enables `TEST_RUNNER_PI_OPENING_GALLERY=$PI_BUILD_ROOT/r4-opening-gallery`.
+Helper and wire code did not change.
+
+The opening class holds the lane as `a131-stream perf`: one-minute load
+start/end/peak **2.35 / 2.72 / 2.72**, so no redo. Its existing budget check
+passes: 22 tokens during fill **5.240 / 9.872 ms** (mean/max), versus 12
+after at **3.571 / 8.371 ms**. The opening fixture shows first/full rows
+at **339.7 / 889.7 ms** (one sample); historical and stationary fills have
+**0 jumps / 0 lost / 0 blank frames**, no interval over 50 ms. All six
+first/full light/dark/narrow captures were regenerated and inspected;
+no new clipping or overlap. The 250 / 1,000 / 3,000 row policy is unchanged.
