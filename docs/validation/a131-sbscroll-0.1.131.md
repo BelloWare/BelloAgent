@@ -41,7 +41,7 @@ Other paths checked:
   positions into the new clip coordinates before their animations start.
   That correction must remain for readers below the top.
 
-## Fix
+## Round 1 fix
 
 `ReadingAnchor` distinguishes `.top` from `.entry(id:offset:)`. A clip at or
 within **1 point** below its top (`-scroll.contentInsets.top`) takes `.top`;
@@ -174,20 +174,103 @@ isolated test host's windows were shown by the existing appearance/order
 tests. No test-host clone directories were created (`-parallel-testing-enabled
 NO` throughout).
 
-## Needs owner decision: selection that moves while reading farther down
+## Round 2: owner decision — keep selected chat visible
 
-Conservative choice: keep the existing first-visible-row/offset behavior
-below the top. An unrelated update above it keeps the reader and a visible
-selected row in place. Do not add separate selection tracking when the
-selected chat itself moves elsewhere; the reading anchor can itself be the
-selected row, in which case it stays anchored as before. At the top, showing
-new activity takes precedence over following an older selection.
+The Astra and lead reviews of `5dc43d45` found no regressions. Round 1 kept
+the existing reading-position policy and offered three choices: keep that
+policy, minimally follow a previously visible selection, or always follow
+selection. On **2026-10-26**, the owner chose **"Keep selected chat visible"**:
 
-Options:
+- Below the top, remember the primary selection only if its row intersects
+  the old viewport, even partly. Bulk marks are not primary selection.
+- Restore the normal reading anchor first. If that same selected row has
+  become completely hidden above or below the viewport, scroll only to the
+  nearer edge. Rows taller than the viewport use the edge requiring the
+  smaller correction. A selection still partly showing causes no correction.
+- A selection already off screen is not followed. A primary-selection change
+  does not follow the old selection. A removed reading row does not prevent
+  a surviving visible selection from being kept.
+- The top still wins, and an activity reorder held by the pointer does not
+  move anything until the hold ends.
 
-1. Keep the reading position (chosen, existing behavior).
-2. Scroll just enough to retain a previously visible selected row when it
-   moves outside the viewport.
-3. Always follow the selected chat when its activity changes its position.
+The entry reading anchor now also carries the previously visible selected
+entry ID. Its restoration verifies the row is still selected before applying
+the edge correction. Both chat and side entry selection states are supported;
+the existing focused-chat state identifies the primary row. The final scroll
+is applied before `update` computes `scrollCorrection`, preserving kept,
+remounted and departing animation origins. Direct height relayouts share the
+same anchor capture/restoration.
 
-This work does not introduce a selection-following policy.
+### Failing first and mutation
+
+`logs/r2-red.log`, production still at `5dc43d45`: **18 tests executed,
+6 failed / 58 assertions, 11 passed, 1 gallery skipped**. The seven new tests
+cover a selection moving above and below, previously offscreen selection,
+partly visible selection, bulk marks, pointer hold/top precedence, and
+remounted/departing animations. All reorder cases exercise animated and
+nonanimated updates; the above/below cases cover Flat with chips and grouped
+lists. The offscreen guard already passes before the change.
+
+| Scenario | Round 1 clip origin | Round 2 clip origin / required edge |
+| --- | ---: | ---: |
+| Visible selection moves above, Flat | 945 pt (selection hidden at 0) | 0 pt |
+| Visible selection moves above, grouped | 729 pt (selection hidden at 31) | 31 pt |
+| Visible selection moves below, Flat | 873 pt (selection ends at 2877) | 2609 pt, row bottom at viewport bottom |
+| Visible selection moves below, grouped | 676 pt (selection ends at 2148) | 1880 pt, row bottom at viewport bottom |
+
+`logs/r2-focused.log`: **112 passed, 0 failed, 1 opt-in skip**, the same
+nine-class command as round 1; `SidebarScrollPositionTests` now has 18 tests.
+Additional guards then cover changing the primary selection and deleting the
+reading row, plus a new selection-following gallery.
+
+`logs/r2-mutation.log`: remove only the selection edge-correction block (keep
+round 1's top rule). **21 executed, 7 failed / 61 assertions, 12 passed,
+2 galleries skipped**. The same six failures recur and the removed-reading-row
+case fails too. The original fixed source is restored in `finally` and checked
+byte for byte against `$BUILD/SidebarListDocument.r2-fixed.swift`.
+
+### Restored checks and gallery before the merge
+
+The restored source passes all **21** scroll-position tests with both galleries
+enabled (`logs/r2-restored-gallery.log`). The other four serial/gallery classes
+run individually again, under the shared lock. Combined with the focused run,
+**134 distinct tests in 13 classes pass**, with no failures or remaining skips:
+
+| Class | Passed | Log under `$BUILD/logs` |
+| --- | ---: | --- |
+| SidebarScrollPositionTests | 21 | r2-restored-gallery.log |
+| SidebarDocumentRegressionTests | 10 | r2-focused.log |
+| SidebarProjectFilterTests | 21 | r2-focused.log |
+| SidebarFlatTopicsTests | 30 | r2-focused.log |
+| SessionOrderingTests | 5 | r2-focused.log |
+| SidebarOrderHoldViewTests | 3 | r2-focused.log |
+| SidebarMultiSelectionTests | 4 | r2-focused.log |
+| SidebarSearchSidebarTests | 10 | r2-focused.log |
+| SidebarSearchScopeTests | 12 | r2-focused.log |
+| SidebarProjectFilterGalleryTests | 1 | r2-gallery-filter.log |
+| SidebarAppearanceTests | 6 | r2-appearance.log |
+| SidebarListedOrderTests | 5 | r2-listed-order.log |
+| SidebarDropZoneTests | 6 | r2-drop-zone.log |
+
+Commands are the same nine-class and five individual commands recorded for
+round 1, with gallery destinations `$BUILD/r2-gallery-scroll`,
+`$BUILD/r2-gallery-filter` and `$BUILD/r2-gallery-sidebar`. Red and mutation
+each run only `SidebarScrollPositionTests`, with no gallery environment variable.
+All use `-parallel-testing-enabled NO` and the assigned build root; every heavy
+run checks for a perf/soak quiet window, and each gallery/focus run holds the
+full-lane lock. There are no unrelated test failures.
+
+All **62 PNGs** were regenerated and visually inspected in light/dark and
+200/300-point sidebar widths, using five contact sheets in `$BUILD/r2-review`
+and the full-size bottom-edge/chips/light scene:
+
+- `r2-gallery-scroll`: the previous 12 top/activity scenes, plus 24
+  `selected-{top,bottom}-{flat,chips,groups}-{200,300}-{light,dark}.png` scenes.
+  The selected chat is fully visible at the correct edge; chips and search
+  controls remain intact. A grouped reader following a selection upward stops
+  at the chat's top (31 pt), while the at-top scene keeps its group header too.
+- `r2-gallery-filter`: 14 project-filter scenes, unchanged layout and selection.
+- `r2-gallery-sidebar`: 12 appearance/header/metrics scenes, no overflow or
+  state-marker regressions.
+
+The owner's decision is implemented; no product choice remains unresolved.

@@ -90,6 +90,149 @@ import XCTest
         }
     }
 
+    func testVisibleSelectionMovingAboveTheViewportStopsAtTheTopEdge() throws {
+        try assertSelectionFollows(above: true)
+    }
+
+    func testVisibleSelectionMovingBelowTheViewportStopsAtTheBottomEdge() throws {
+        try assertSelectionFollows(above: false)
+    }
+
+    private func assertSelectionFollows(above: Bool) throws {
+        for flat in [false, true] {
+            for animated in [false, true] {
+                let sidebar = try fixture(flat: flat, chips: flat, selected: "c13")
+                scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+                try assertVisible(sidebar, "c13")
+                let selected = try XCTUnwrap(sidebar.list.views["chat|c13"])
+                let before = selected.frame.minY - sidebar.scroll.contentView.bounds.minY
+                if above { activity(sidebar, "c13", stamp: 1, animated: animated) }
+                else {
+                    sidebar.model.chats[13].sidebarOrder = -1
+                    sidebar.refresh(animated: animated)
+                }
+                let row = try frame(sidebar, "c13"), clip = sidebar.scroll.contentView.bounds
+                let expected = above ? row.minY : row.maxY - clip.height
+                print("SIDEBAR-2 selection above=\(above) flat=\(flat) animated=\(animated): clip \(clip.minY), nearest edge \(expected)")
+                XCTAssertEqual(clip.minY, expected, accuracy: 0.01, "Only the scroll needed to show the row at the nearer edge")
+                try assertVisible(sidebar, "c13")
+                XCTAssertTrue(sidebar.list.views["chat|c13"] === selected)
+                if animated {
+                    XCTAssertNotNil(selected.layer?.animation(forKey: "glide"))
+                    XCTAssertEqual(glideStart(selected, in: sidebar), before, accuracy: 0.01)
+                }
+            }
+        }
+    }
+
+    func testAnOffscreenSelectionDoesNotFollowItsReorder() throws {
+        for id in ["c0", "c25"] {
+            for animated in [false, true] {
+                let sidebar = try fixture(selected: id)
+                scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+                XCTAssertFalse(try frame(sidebar, id).intersects(sidebar.scroll.contentView.bounds))
+                let before = try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY
+                if id == "c25" { activity(sidebar, id, stamp: 1, animated: animated) }
+                else {
+                    sidebar.model.chats[0].sidebarOrder = -1
+                    sidebar.refresh(animated: animated)
+                }
+                XCTAssertEqual(try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY, before, accuracy: 0.01)
+                XCTAssertFalse(try frame(sidebar, id).intersects(sidebar.scroll.contentView.bounds))
+            }
+        }
+    }
+
+    func testAPartlyVisibleSelectionCountsButOneStillShowingDoesNotMoveTheReader() throws {
+        for animated in [false, true] {
+            let sidebar = try fixture(selected: "c15")
+            let row = try frame(sidebar, "c15")
+            scroll(sidebar, to: row.minY + 5 - sidebar.scroll.contentView.bounds.height)
+            let before = sidebar.scroll.contentView.bounds.minY
+            XCTAssertTrue(row.intersects(sidebar.scroll.contentView.bounds))
+            XCTAssertGreaterThan(row.maxY, sidebar.scroll.contentView.bounds.maxY)
+            sidebar.model.chats[15].title = "Still partly visible"
+            sidebar.refresh(animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, before, accuracy: 0.01)
+            activity(sidebar, "c15", stamp: 1, animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, try frame(sidebar, "c15").minY, accuracy: 0.01)
+            try assertVisible(sidebar, "c15")
+        }
+    }
+
+    func testBulkMarksFollowOnlyThePrimarySelection() throws {
+        for animated in [false, true] {
+            let sidebar = try fixture(selected: "c13")
+            sidebar.model.markedSessionIDs = ["c13", "c14", "c15"]
+            sidebar.settle()
+            scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+            let before = try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY
+            activity(sidebar, "c14", stamp: 1, animated: animated)
+            XCTAssertEqual(try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY, before, accuracy: 0.01,
+                           "A marked row is not the primary selection")
+            try assertVisible(sidebar, "c13")
+            activity(sidebar, "c13", stamp: 2, animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, try frame(sidebar, "c13").minY, accuracy: 0.01)
+            try assertVisible(sidebar, "c13")
+            XCTAssertEqual(sidebar.model.markedSessionIDs, ["c13", "c14", "c15"])
+        }
+    }
+
+    func testSelectionFollowingWaitsForThePointerHoldAndDoesNotOverrideTheTop() throws {
+        for animated in [false, true] {
+            let sidebar = try fixture(selected: "c13")
+            scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+            let before = sidebar.scroll.contentView.bounds.minY
+            sidebar.model.setSidebarOrderHold(.pointer, true)
+            activity(sidebar, "c13", stamp: 1, animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, before, accuracy: 0.01)
+            sidebar.model.setSidebarOrderHold(.pointer, false)
+            sidebar.refresh(animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, 0, accuracy: 0.01)
+            try assertVisible(sidebar, "c13")
+            // The now-visible selection can leave again, but the top wins.
+            sidebar.model.chats[13].lastActivityAt = nil
+            sidebar.model.chats[13].sidebarOrder = -1
+            sidebar.refresh(animated: animated)
+            XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, 0, accuracy: 0.01)
+        }
+    }
+
+    func testSelectionCorrectionRebasesRemountedAndDepartingRows() throws {
+        let sidebar = try fixture(selected: "c13")
+        scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+        let before = sidebar.scroll.contentView.bounds.minY
+        XCTAssertNil(sidebar.list.views["chat|c0"])
+        let incoming = try frame(sidebar, "c0").minY - before
+        let leaving = try XCTUnwrap(sidebar.list.views["chat|c14"])
+        let leavingBefore = leaving.frame.minY - before
+        sidebar.model.chats.removeAll { $0.id == "c14" }
+        activity(sidebar, "c13", stamp: 1, animated: true)
+        XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, 0, accuracy: 0.01)
+        let mounted = try XCTUnwrap(sidebar.list.views["chat|c0"])
+        XCTAssertEqual(glideStart(mounted, in: sidebar), incoming, accuracy: 0.01)
+        XCTAssertNotNil(leaving.layer?.animation(forKey: "reveal"))
+        XCTAssertEqual(leaving.frame.minY - sidebar.scroll.contentView.bounds.minY, leavingBefore, accuracy: 0.01)
+    }
+
+    func testASelectionChangeDoesNotFollowTheOldPrimary() throws {
+        let sidebar = try fixture(selected: "c13")
+        scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+        let before = try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY
+        sidebar.model.selectedID = "c0"
+        activity(sidebar, "c13", stamp: 1, animated: true)
+        XCTAssertEqual(try frame(sidebar, "c12").minY - sidebar.scroll.contentView.bounds.minY, before, accuracy: 0.01)
+    }
+
+    func testRemovingTheReadingRowStillKeepsTheVisibleSelection() throws {
+        let sidebar = try fixture(selected: "c13")
+        scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+        sidebar.model.chats.removeAll { $0.id == "c12" }
+        activity(sidebar, "c13", stamp: 1, animated: true)
+        XCTAssertEqual(sidebar.scroll.contentView.bounds.minY, 0, accuracy: 0.01)
+        try assertVisible(sidebar, "c13")
+    }
+
     func testInsertedRowsAndGroupsAtTopStayVisible() throws {
         for flat in [false, true] {
             for animated in [false, true] {
@@ -286,6 +429,40 @@ import XCTest
                     sidebar.cacheDisplay(in: sidebar.bounds, to: image)
                     try XCTUnwrap(image.representation(using: .png, properties: [:]))
                         .write(to: folder.appendingPathComponent("updated-\(mode)-\(Int(width))-\(theme).png"))
+                }
+            }
+        }
+    }
+
+    func testSelectionFollowingGallery() async throws {
+        guard let path = testEnvironment("PI_APP_SIDEBAR_SCROLL_GALLERY") else {
+            throw XCTSkip("Set PI_APP_SIDEBAR_SCROLL_GALLERY for these scenes")
+        }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (mode, flat, chips) in [("flat", true, false), ("chips", true, true), ("groups", false, false)] {
+            for above in [false, true] {
+                for width: CGFloat in [300, 200] {
+                    for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                        let sidebar = try fixture(flat: flat, chips: chips, selected: "c13")
+                        let window = try XCTUnwrap(sidebar.window)
+                        window.setContentSize(NSSize(width: width, height: 640))
+                        window.appearance = NSAppearance(named: appearance)
+                        sidebar.model.chats[13].title = "Selected chat stays visible"
+                        sidebar.settle()
+                        scroll(sidebar, to: try frame(sidebar, "c12").minY + 9)
+                        if above { activity(sidebar, "c13", stamp: 1, animated: true) }
+                        else { sidebar.model.chats[13].sidebarOrder = -1; sidebar.refresh(animated: true) }
+                        sidebar.settle(); window.displayIfNeeded()
+                        try await Task.sleep(for: .milliseconds(250))
+                        try assertVisible(sidebar, "c13")
+                        let row = try frame(sidebar, "c13"), clip = sidebar.scroll.contentView.bounds
+                        XCTAssertEqual(clip.minY, above ? row.minY : row.maxY - clip.height, accuracy: 0.01)
+                        let image = try XCTUnwrap(sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds))
+                        sidebar.cacheDisplay(in: sidebar.bounds, to: image)
+                        let name = "selected-\(above ? "top" : "bottom")-\(mode)-\(Int(width))-\(theme).png"
+                        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent(name))
+                    }
                 }
             }
         }
