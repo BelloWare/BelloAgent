@@ -1,6 +1,7 @@
 import Foundation
 
 struct SubagentSpec: Sendable {
+    static let modelDescription = "An offered model for this connection; omit to inherit the parent's model. If the requested model is not offered, the parent's model is used instead and the result identifies it."
     let task: String, description: String
     let model: String?
     let tools: Set<String>?
@@ -14,7 +15,7 @@ struct SubagentSpec: Sendable {
             description = text
         } else { description = String(SubagentToolResult.bounded(task.split(whereSeparator: \.isWhitespace).joined(separator: " "), bytes: 480).prefix(120)) }
         model = value["model"].text
-        if value.map.keys.contains("model"), model == nil { throw AgentError("subagent_model", "Model must be an offered model ID") }
+        if value.map.keys.contains("model"), model == nil { throw AgentError("subagent_model", "Model must be a model ID string") }
         if value.map.keys.contains("tools") {
             guard case .array(let list) = value["tools"], list.allSatisfy({ $0.text != nil }), Set(list.compactMap(\.text)).count == list.count else {
                 throw AgentError("subagent_tools", "Tools must be a list of unique tool names")
@@ -23,7 +24,7 @@ struct SubagentSpec: Sendable {
         } else { tools = nil }
     }
     static func definition(models: [SubagentModelGrant]) -> ToolDefinition {
-        var model: JSON = ["type":"string", "description":"An offered model for this connection; omit to inherit the parent model."]
+        var model: JSON = ["type":"string", "description":JSON(modelDescription)]
         if !models.isEmpty { model["enum"] = .array(models.map(\.model).sorted().map(JSON.string)) }
         return ToolDefinition("subagent", "Delegate a self-contained task and wait for its result. Multiple calls run concurrently, sharing project files and this chat's cost limit. Include all necessary context: children start fresh and cannot delegate. Interrupted calls are never automatically replayed. " + SubagentSteeringContract.delegationPolicy,
             ["type":"object", "properties":["task":["type":"string","minLength":1], "description":["type":"string","maxLength":120],

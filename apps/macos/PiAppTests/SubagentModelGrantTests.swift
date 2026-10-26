@@ -2,6 +2,30 @@ import XCTest
 @testable import PiApp
 
 final class SubagentModelGrantTests: XCTestCase {
+    @MainActor func testTurnGrantsStartLoadingAnUnopenedCatalog() async throws {
+        try await checkColdCatalog(turn: true)
+    }
+
+    @MainActor func testSessionOpenGrantsStartLoadingAnUnopenedCatalog() async throws {
+        try await checkColdCatalog(turn: false)
+    }
+
+    @MainActor private func checkColdCatalog(turn: Bool) async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("subagent-models-" + UUID().uuidString)
+        let catalog = ModelCatalog(readBundled: { [ModelDescriptor(id: "offered", name: "Offered")] })
+        let model = makeWorkspaceModel(stateRoot: root, modelCatalog: catalog)
+        defer { model.shutdown() }
+        var profile = ProfileRecord(); profile.id = "fixture"; profile.modelId = "parent-model"
+        model.profiles = [profile]
+        let chat = ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: profile.id)
+        let initial = turn ? model.turnOverrides(for: chat)["subagentModels"] : model.subagentModels(for: chat)
+        XCTAssertEqual(initial?.array, [], "Sending proceeds with the current grants before the catalog finishes")
+        try await eventually("Grant preparation starts the catalog without opening a picker") { model.catalogEntry(for: profile).fetchedAt != nil }
+        let later = model.turnOverrides(for: chat)["subagentModels"]
+        XCTAssertEqual(later?.array?.compactMap { $0.object?["model"]?.string }, ["offered"])
+        await model.store?.close()
+    }
+
     func testSummaryEffortWireAndOlderSummaryRemainReadable() throws {
         let data = Data(#"{"link":{"version":1,"delegationID":"d","childSessionID":"child","budgetOwnerSessionID":"parent","call":{"parentSessionID":"parent","assistantMessageID":"a","toolCallID":"t"},"parentTurnID":"turn","parentExecutionID":"execution","depth":1},"description":"Task","model":"model","status":"completed","revision":1,"effort":"low"}"#.utf8)
         let summary = try JSONDecoder().decode(SubagentSummary.self,from:data)

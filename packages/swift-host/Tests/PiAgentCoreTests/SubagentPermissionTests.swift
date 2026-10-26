@@ -65,14 +65,37 @@ final class SubagentPermissionTests: HelperTestCase {
         XCTAssertTrue(retained.isEmpty, "Discovery must not retain mappings or acknowledge invocation outcomes")
     }
 
-    func testExplicitModelMustBeGrantedButUnlistedParentCanBeInherited() throws {
+    func testOfferedModelUsesItsGrantAndOmittedModelInheritsParent() throws {
         let parent = try fixtureProfile()
         XCTAssertEqual(try SubagentModelGrant.resolve(nil, parent: parent, grants: []).1.raw, parent.raw)
-        XCTAssertThrowsError(try SubagentModelGrant.resolve("arbitrary", parent: parent, grants: []))
         let grant = SubagentModelGrant(model: "offered", thinkingLevel: "default", contextWindow: 64000, maxOutputTokens: 4000)
         let chosen = try SubagentModelGrant.resolve("offered", parent: parent, grants: [grant]).1
         XCTAssertEqual(chosen.id, parent.id); XCTAssertEqual(chosen.endpoint, parent.endpoint)
         XCTAssertEqual(chosen.model, "offered"); XCTAssertEqual(chosen.maxOutput, 4000)
+    }
+
+    func testNotOfferedModelInheritsParentsExactProfile() throws {
+        var raw = try fixtureProfile().raw
+        raw["headers"] = ["X-Region":"fixture-region"]
+        raw["routing"] = ["replayPolicy":"pinned", "expectedModel":"fixture-model", "replayContract":"fixture-stable"]
+        let parent = try Profile(raw)
+        for grants in [[], [SubagentModelGrant(model: "offered")]] {
+            let (grant, chosen) = try SubagentModelGrant.resolve("not-offered", parent: parent, grants: grants)
+            XCTAssertEqual(grant, .inherited(parent))
+            XCTAssertEqual(chosen.raw, parent.raw, "Fallback preserves the parent's connection, route, headers and model settings")
+            XCTAssertEqual(try SubagentModelGrant.childModel("not-offered", parent: parent, grants: grants),
+                           try SubagentModelGrant.childModel(nil, parent: parent, grants: grants))
+        }
+    }
+
+    func testParentsOwnModelWorksWithoutACatalogGrant() throws {
+        let parent = try fixtureProfile()
+        for grants in [[], [SubagentModelGrant(model: "other")]] {
+            let (grant, chosen) = try SubagentModelGrant.resolve(parent.model, parent: parent, grants: grants)
+            XCTAssertEqual(grant, .inherited(parent))
+            XCTAssertEqual(chosen.raw, parent.raw)
+            XCTAssertNil(grant.fallbackNotice(requested: parent.model))
+        }
     }
 
     func testManagedChildRefusesIndependentSubmissionAndConfiguration() async throws {
