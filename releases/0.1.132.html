@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.132</h2>
+<ul>
+<li><strong>Sub-agents start even when their model isn't offered.</strong> When the agent asks for a sub-agent on a model your connection doesn't offer, or before the connection's model list has loaded, the sub-agent now runs on the chat's own model instead of failing with “The model is not offered for the parent's saved connection”. The agent is told which model the sub-agent used. The app also loads a connection's model list in the background as soon as a chat needs it.</li>
+<li><strong>Model catalogs from a local file.</strong> A connection's custom model catalog can now be a JSON file on your Mac, given as a <code>file://</code> URL or a path such as <code>~/models.json</code>, as well as an HTTPS URL.</li>
+</ul>
