@@ -18,24 +18,17 @@ public enum HistoryWindowPolicy {
     /// was three turns or sixty rows: less than one turn of a coding agent
     /// that makes forty tool calls.
     ///
-    /// Chosen by measurement (docs/validation/a131-scroll-0.1.131.md):
-    /// every streamed token costs the main thread about 0.02 ms for each row
-    /// the window holds (the page's projection, regrouping and document
-    /// update each walk the whole window), so the window's size is what a
-    /// reply arriving costs: 3 ms a token at 60 rows, 7 ms at 250, 17 ms at
-    /// 750, 22 ms at 1,000 and 61 ms at 3,000. Pages of 1,000 rows read a
-    /// tool-heavy chat back in two loads instead of nineteen, but made every
-    /// token of a reply in a long chat cost five to seven times what it
-    /// did; pages of 250 rows hold about two such turns, read it back in
-    /// nineteen loads instead of forty-eight, open it faster than before
-    /// and land each page in about half the time.
-    public static let pageRows = 250
-    public static let pageBytes = 1024 * 1024
+    /// SCROLL-1 first kept pages at 250 rows because every streamed token
+    /// walked the window. STREAM-1 retains the unchanged projection, plan
+    /// and native rows; its measured token cost stays flat through 3,000
+    /// rows, allowing these larger pages (docs/validation/a131-stream-0.1.131.md).
+    public static let pageRows = 1_000
+    public static let pageBytes = 4 * 1024 * 1024
     /// The resident window: what one chat's transcript holds at once, three
     /// pages. A turn longer than a page is still read whole up to these;
     /// only a turn the window could not hold whole is cut.
-    public static let residentRows = 750
-    public static let residentBytes = 6_000_000
+    public static let residentRows = 3_000
+    public static let residentBytes = 24_000_000
     public static let automaticFills = 2
 
     /// What one display row weighs in the app's resident window
@@ -56,6 +49,11 @@ public enum HistoryWindowPolicy {
         public var rows: Int, bytes: Int, turnRows: Int, turnBytes: Int
         public init(rows: Int, bytes: Int, turnRows: Int, turnBytes: Int) {
             self.rows = rows; self.bytes = bytes; self.turnRows = max(rows, turnRows); self.turnBytes = max(bytes, turnBytes)
+        }
+        /// The first paint is a small page; later reads keep the full budget.
+        /// A single display turn still has its usual whole-turn allowance.
+        public var opening: Self {
+            Self(rows: min(rows, 250), bytes: min(bytes, 1024 * 1024), turnRows: turnRows, turnBytes: turnBytes)
         }
         /// A page's rows and bytes; a turn alone may take the resident window's.
         public static let standard = PageLimits(rows: pageRows, bytes: pageBytes, turnRows: residentRows, turnBytes: residentBytes)

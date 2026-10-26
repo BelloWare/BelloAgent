@@ -2,6 +2,57 @@ import XCTest
 @testable import PiAgentCore
 
 final class HistoryWindowTests: HelperTestCase {
+    func testOpeningHistoryIsSmallAndLaterReadsKeepTheFullPage() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var rows: [ChatMessage] = []
+        for index in 0..<2202 {
+            var row = ChatMessage(role: index % 2 == 0 ? "user" : "assistant", content: [textBlock("Row \(index)")])
+            row.id = "m\(index)"; rows.append(row)
+        }
+        let session = try AgentSession(id: "opening", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let first = try await session.historyWindow(["opening": true])
+        XCTAssertEqual(first["messages"].list.count, 250)
+        XCTAssertEqual(first["messages"].list.first?["id"].text, "m1952")
+        let older = try await session.historyWindow(["cursor": first["older"]])
+        XCTAssertEqual(older["messages"].list.count, 1_000)
+        let normal = try await session.historyWindow([:])
+        XCTAssertEqual(normal["messages"].list.count, 1_000)
+        let around = try await session.historyWindow(["around": "m300", "opening": true])
+        XCTAssertEqual(around["messages"].list.count, 250)
+        XCTAssertEqual(around["messages"].list.first?["id"].text, "m300")
+    }
+
+    func testOpeningHistoryKeepsALargerTurnWhole() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let rows = (0..<512).map { index in
+            var row = ChatMessage(role: index == 0 ? "user" : "assistant", content: [textBlock("Row \(index)")])
+            row.id = "m\(index)"; return row
+        }
+        let session = try AgentSession(id: "opening-turn", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
+        addTeardownBlock { await session.close() }
+        let page = try await session.historyWindow(["opening": true])
+        XCTAssertEqual(page["messages"].list.map { $0["id"].text }, rows.map(\.id))
+        XCTAssertTrue(page["older"].isNull); XCTAssertTrue(page["newer"].isNull)
+    }
+
+    func testAThousandRowPageReadsFourThousandRowsInFourWholeTurnLoads() {
+        var end = 4_000, pages = 0
+        while end > 0 {
+            let page = HistoryWindowPolicy.page(count: 4_000, before: end, startsTurn: { $0.isMultiple(of: 100) })
+            XCTAssertEqual(page.count, 1_000)
+            end = page.lowerBound; pages += 1
+        }
+        XCTAssertEqual(pages, 4)
+        var fill = HistoryWindowPolicy.PageFill(forward: true)
+        let admitted = (0..<1_000).prefix { fill.admit(4_000, startsTurn: $0.isMultiple(of: 100)) }.count
+        XCTAssertEqual(admitted, 1_000, "The byte budget must grow with the row budget")
+        XCTAssertEqual(HistoryWindowPolicy.residentRows, 3_000, "The resident window keeps three pages")
+        XCTAssertEqual(HistoryWindowPolicy.residentBytes, 24_000_000)
+    }
+
     func testReaderRebindsTheSameBoundaryAcrossRuntimeReplacement() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var rows: [ChatMessage] = []
@@ -344,6 +395,9 @@ final class HistoryWindowTests: HelperTestCase {
         let session = try AgentSession(id: "weights", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
                                        resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), seed: rows, autoCompaction: false)
         addTeardownBlock { await session.close() }
+        // Keep this byte-weight regression at its original small boundary.
+        let limits = HistoryWindowPolicy.PageLimits(rows: 250, bytes: 1024 * 1024, turnRows: 750, turnBytes: 6_000_000)
+        await session.limitHistoryPages(limits)
         let page = try await session.historyWindow([:])
         // As `TranscriptPaging.size` weighs a row.
         func resident(_ row: JSON) -> Int {
@@ -352,7 +406,7 @@ final class HistoryWindowTests: HelperTestCase {
             return (row["text"].text?.utf8.count ?? 0) + (row["thinking"].text?.utf8.count ?? 0) + tools + segments + 512
         }
         let bytes = page["messages"].list.reduce(0) { $0 + resident($1) }
-        XCTAssertLessThanOrEqual(bytes, HistoryWindowPolicy.residentBytes, "The page weighs \(bytes) bytes in the app's window")
+        XCTAssertLessThanOrEqual(bytes, limits.turnBytes, "The page weighs \(bytes) bytes in the app's window")
         XCTAssertEqual(page["partialTurnInput"].text, "q", "The turn is too heavy for the window: the page holds its newest rows")
     }
 
