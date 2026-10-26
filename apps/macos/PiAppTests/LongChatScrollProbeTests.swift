@@ -10,6 +10,16 @@ import AppKit
 final class LongChatScrollProbeTests: XCTestCase, SerialTestLane {
     override func setUpWithError() throws {
         try XCTSkipUnless(testEnvironment("PI_LONG_PROBE") == "1", "Set PI_LONG_PROBE=1 to measure long-chat scrolling")
+        // `PI_LONG_PAGE_ROWS`, `PI_LONG_RESIDENT_ROWS`: pages and a window of
+        // this many rows (bytes in proportion) in place of the app's.
+        if let rows = testEnvironment("PI_LONG_PAGE_ROWS").flatMap(Int.init) {
+            let limits = TranscriptPaging.pageLimits
+            TranscriptPaging.pageLimits = .init(rows: rows, bytes: HistoryWindowPolicy.pageBytes / HistoryWindowPolicy.pageRows * rows,
+                                                turnRows: HistoryWindowPolicy.residentRows, turnBytes: HistoryWindowPolicy.residentBytes)
+            addTeardownBlock { TranscriptPaging.pageLimits = limits }
+            print("LONGSCROLL pages of \(rows) rows")
+        }
+        usesProbeWindow(testEnvironment("PI_LONG_RESIDENT_ROWS"), label: "LONGSCROLL")
     }
     @MainActor private func chat() async throws -> LongChatScroll {
         let turns = Int(testEnvironment("PI_LONG_TURNS") ?? "") ?? 200

@@ -117,9 +117,10 @@ extension XCTestCase {
     /// `readme` is set; and a vault with that project and the connection
     /// "Fixture" (`ui-fixture`, a 2M context and 300k output), whose Codex home
     /// is inside the folder too. `miniModel` gives the connection the mini
-    /// model titles are asked of.
+    /// model titles are asked of. `chatBriefs: false` turns chat briefs off,
+    /// for a run whose numbers compare with releases before 0.1.131.
     @MainActor func gatewayWorkspace(_ name: String, projectID: String, readme: Bool = false, miniModel: String? = nil,
-                                     gatewayEnvironment: [String: String] = [:]) async throws -> GatewayWorkspace {
+                                     chatBriefs: Bool = true, gatewayEnvironment: [String: String] = [:]) async throws -> GatewayWorkspace {
         let root = scratchRoot(name)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -138,6 +139,7 @@ extension XCTestCase {
         configuration.workspaces = [workspace]
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
         configuration.automaticUpdateChecks = false
+        if !chatBriefs { configuration.chatBriefs = ChatBriefSettings(enabled: false) }
         configuration.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
         let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
         return GatewayWorkspace(root: root, state: root.appendingPathComponent("app-state"), base: gateway.base,

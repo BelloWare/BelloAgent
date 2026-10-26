@@ -47,6 +47,14 @@ final class LiveAccountingTests: XCTestCase {
     }
 
     @MainActor func testStreamingSnapshotsOnlyRefreshAccountingWhenVisibleOwnershipChanges() async throws {
+        try await checkStreamingAccounting(deltas: false)
+    }
+
+    @MainActor func testStreamingDeltasRefreshNewAndFinishedAttributionTargets() async throws {
+        try await checkStreamingAccounting(deltas: true)
+    }
+
+    @MainActor private func checkStreamingAccounting(deltas: Bool) async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
@@ -72,7 +80,14 @@ final class LiveAccountingTests: XCTestCase {
             sequence += 1
             var result: [String: WireValue] = ["seq": .number(Double(sequence)), "state": .string(state),
                 "runStatus": .string(state), "displayRevision": .string("projection-\(sequence)")]
-            if let messages { result["messages"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(messages)) }
+            if let messages {
+                let encoded = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(messages))
+                if deltas, !view.projectedRows.isEmpty {
+                    var patch: [String: WireValue] = ["rows": encoded]
+                    if view.projectedRows.map(\.id) != messages.map(\.id) { patch["order"] = .array(messages.map { .string($0.id) }) }
+                    result["messageDelta"] = .object(patch)
+                } else { result["messages"] = encoded }
+            }
             var answered = count
             for _ in 0..<2000 {
                 while answered < sent.count {
@@ -89,21 +104,42 @@ final class LiveAccountingTests: XCTestCase {
         let id = UUID().uuidString, value = metadata(id, session: chat.id)
         let begin: [String: WireValue] = ["type": .string("begin"), "metadata": .object(value)]
         view.messages = [.init(id: "turn", role: "user", text: "Question")]
+        if deltas { try await snapshot(view.messages) }
         try await model.traces.accept(begin, workspace: "w"); await model.captureDidPersist(begin, workspaceID: "w")
         await waitForAccounting(model)
         XCTAssertEqual(view.messageAccounting["turn"]?.requests, 1)
+        var releaseQuery: CheckedContinuation<Void, Never>?
+        var inFlight: Task<Void, Never>?
+        if deltas {
+            let stale = try await model.traces.gatewayAccounting(sessionID: chat.id, workspaceID: "w", messages: view.messages)
+            inFlight = Task { @MainActor in
+                await model.refreshAccounting(view, workspaceID: "w") {
+                    await withCheckedContinuation { releaseQuery = $0 }
+                    return stale
+                }
+            }
+            try await eventually("The held accounting query never began") { releaseQuery != nil }
+        }
         let beforeAnswer = view.accountingRevision
         var rows = view.messages + [TranscriptMessage(id: "stream:answer", role: "assistant", text: "First", state: "streaming")]
-        try await snapshot(rows); await waitForAccounting(model)
+        try await snapshot(rows)
+        releaseQuery?.resume(); await inFlight?.value
+        await waitForAccounting(model)
         XCTAssertEqual(view.accountingRevision, beforeAnswer + 1)
         XCTAssertEqual(view.messageAccounting["stream:answer"]?.requests, 1, "An answer appearing after dispatch metadata receives the request")
         XCTAssertNil(view.messageAccounting["turn"], "Its input no longer duplicates that request")
-        let streamingRevision = view.accountingRevision
+        var streamingRevision = view.accountingRevision
         // Cross the former polling interval without changing retained billing.
         try await Task.sleep(for: .milliseconds(300))
         for index in 0..<12 {
             rows[1].text += " delta-\(index)"; rows[1].thinking = "Thinking \(index)"
             try await snapshot(rows)
+        }
+        if deltas {
+            rows[1].state = "complete"
+            try await snapshot(rows); await waitForAccounting(model)
+            XCTAssertEqual(view.accountingRevision, streamingRevision + 1, "A changed streaming fallback refreshes attribution")
+            streamingRevision = view.accountingRevision
         }
         // Status-only completion must not run another historical query either.
         // The live footer throttle skips the figures on the read that sees the
@@ -283,7 +319,7 @@ final class LiveAccountingTests: XCTestCase {
                 return GatewayTotals(requests: 1, costSamples: 0)
             }
         }
-        while releaseQuery == nil { await Task.yield() }
+        try await eventually("The held accounting query never began") { releaseQuery != nil }
         let value = metadata(UUID().uuidString, session: "chat", cost: 0.0013875)
         try await model.traces.begin(value, workspace: "w"); try await model.traces.finish(value)
         await model.captureDidPersist(["type": .string("finish"), "metadata": .object(value)], workspaceID: "w")
@@ -317,7 +353,7 @@ final class LiveAccountingTests: XCTestCase {
                 return SessionGatewayAccounting(session: GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.004))
             }
         }
-        while releaseQuery == nil { await Task.yield() }
+        try await eventually("The held accounting query never began") { releaseQuery != nil }
         await model.select("chat-4")
         XCTAssertNil(model.displays[evicted.id], "Selecting another chat evicts the oldest idle display")
         releaseQuery?.resume(); await finalRead.value
@@ -326,6 +362,10 @@ final class LiveAccountingTests: XCTestCase {
         try await model.traces.close(); await model.store?.close()
     }
 
+    /// The request log is asked about a whole resident window's rows in one
+    /// read. In 0.1.131 the window grew past the read's old bound of 500
+    /// rows, and every read of a window longer than that failed whole: no
+    /// figures on any row and "metrics unavailable" in the footer.
     @MainActor func testFullNativePageKeepsAccountingPastTheOldHundredRowLimit() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -335,7 +375,8 @@ final class LiveAccountingTests: XCTestCase {
         let chat = ChatRecord(id: "long-chat", workspaceID: "w", title: "Long chat", path: nil, profileID: "p")
         model.chats = [chat]
         let view = SessionDisplay(id: chat.id)
-        view.messages = (0..<600).map { .init(id: "row-\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Row \($0)") }
+        let resident = HistoryWindowPolicy.residentRows
+        view.messages = (0..<(resident + 100)).map { .init(id: "row-\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Row \($0)") }
         // A page past the read's limit is a window a held row stretched: its
         // earliest rows were drawn with their figures already.
         var earlier = GatewayTotals(); earlier.requests = 1; earlier.costUSD = 0.004
@@ -349,8 +390,10 @@ final class LiveAccountingTests: XCTestCase {
             value["outputMessageIds"] = .array([.string("row-\(output)")])
             try await model.traces.begin(value, workspace: "w"); try await model.traces.finish(value)
         }
+        let started = ProcessInfo.processInfo.systemUptime
         await model.refreshAccounting(view, workspaceID: "w")
-        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).count, 500)
+        print(String(format: "PERF accounting read of a %d-row window: %.1f ms", resident, (ProcessInfo.processInfo.systemUptime - started) * 1000))
+        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).count, resident)
         XCTAssertEqual(TranscriptPage.accountingPage(view.messages).first?.id, "row-100", "The read asks about the newest rows")
         XCTAssertEqual(view.footer.gateway.requests, 3)
         XCTAssertEqual(try XCTUnwrap(view.footer.gateway.costUSD), 0.007, accuracy: 0.00000001)

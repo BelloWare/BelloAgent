@@ -1,8 +1,8 @@
 import Foundation
 
 // The requests the app asks of a connection's mini model on its own: a
-// chat's automatic title, the rename sheet's title suggestions and a
-// webhook's notification. Each runs in a chat of its own outside every
+// chat's automatic title, the rename sheet's title suggestions, a webhook's
+// notification and a chat's brief. Each runs in a chat of its own outside every
 // project, with its own journal, captured requests and billing, and is kept
 // once it ends: what it produced, how it ended and when. They are listed on
 // the Background requests page (`BackgroundRequestsPage`), never in the
@@ -10,10 +10,10 @@ import Foundation
 
 /// What a background request was for, from its chat's `backgroundTask`.
 enum BackgroundRequestKind: Hashable, Sendable {
-    case title, suggestions, webhook
+    case title, suggestions, webhook, brief
     /// A kind this build does not know, written by a newer one: still listed.
     case other(String)
-    init(_ raw: String) { self = [Self.title, .suggestions, .webhook].first { $0.raw == raw } ?? .other(raw) }
+    init(_ raw: String) { self = [Self.title, .suggestions, .webhook, .brief].first { $0.raw == raw } ?? .other(raw) }
     /// The kind as a chat record's `backgroundTask` says it, and as the
     /// helper names the utility request it opens (`WorkspaceHosts.open`).
     var raw: String {
@@ -21,6 +21,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .title: return "session-title"
         case .suggestions: return "title-suggestions"
         case .webhook: return "webhook"
+        case .brief: return "chat-brief"
         case .other(let raw): return raw
         }
     }
@@ -29,6 +30,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .title: return "Chat title"
         case .suggestions: return "Title suggestions"
         case .webhook: return "Webhook"
+        case .brief: return "Chat brief"
         case .other(let raw): return raw
         }
     }
@@ -37,6 +39,7 @@ enum BackgroundRequestKind: Hashable, Sendable {
         case .title: return "textformat"
         case .suggestions: return "text.badge.plus"
         case .webhook: return "bell"
+        case .brief: return "text.magnifyingglass"
         case .other: return "sparkles"
         }
     }
@@ -44,13 +47,14 @@ enum BackgroundRequestKind: Hashable, Sendable {
 
 /// The page's filter: every request, or one kind.
 enum BackgroundRequestFilter: String, CaseIterable, Hashable, Sendable {
-    case all, titles, suggestions, webhooks
+    case all, titles, suggestions, webhooks, briefs
     var title: String {
         switch self {
         case .all: return "All"
         case .titles: return "Chat titles"
         case .suggestions: return "Title suggestions"
         case .webhooks: return "Webhooks"
+        case .briefs: return "Chat briefs"
         }
     }
     func includes(_ kind: BackgroundRequestKind) -> Bool {
@@ -59,6 +63,7 @@ enum BackgroundRequestFilter: String, CaseIterable, Hashable, Sendable {
         case .titles: return kind == .title
         case .suggestions: return kind == .suggestions
         case .webhooks: return kind == .webhook
+        case .briefs: return kind == .brief
         }
     }
 }
@@ -115,13 +120,15 @@ enum BackgroundRequests {
     }
 
     /// What a finished request produced, read from its reply: the title, the
-    /// suggestions one per line, or the notification's parameters.
+    /// suggestions one per line, the notification's parameters, or the brief
+    /// with its keywords.
     static func result(kind: BackgroundRequestKind, messages: [TranscriptMessage]) -> String? {
         switch kind {
         case .title: return TitleGenerationPlan.title(from: messages)
         case .suggestions:
             let titles = TitleGenerationPlan.titles(from: messages, limit: 3)
             return titles.isEmpty ? nil : titles.joined(separator: "\n")
+        case .brief: return ChatBriefPlan.result(from: messages)
         case .webhook, .other:
             guard let reply = messages.last(where: { $0.role == "assistant" && $0.kind == nil })?.text else { return nil }
             return webhookResult(reply: reply, names: nil)

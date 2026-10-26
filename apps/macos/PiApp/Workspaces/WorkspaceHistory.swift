@@ -14,21 +14,28 @@ extension WorkspaceModel {
     /// read in place of `around` (a scroller dragged into rows not read yet).
     /// `validating`: for a position read, a boundary of the window it lands
     /// in, which a journal read checks the file against.
+    /// `followsNavigation`: a read for the reader ends when they navigate
+    /// anywhere; one a chat makes for itself out of sight
+    /// (`catchUpFinishedRows`) answers to that chat alone.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
-                                validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
-        let navigation = transcriptNavigation(item.id)
+                                validating: ConversationCursor? = nil, followsNavigation: Bool = true, opening: Bool = false) async throws -> ConversationHistoryPage {
+        let navigation = followsNavigation ? transcriptNavigation(item.id) : nil
         func checkNavigation() throws {
             try Task.checkCancellation()
-            guard navigation.isCurrent(in: self) else { throw CancellationError() }
+            if let navigation, !navigation.isCurrent(in: self) { throw CancellationError() }
+        }
+        func marked(_ page: ConversationHistoryPage) -> ConversationHistoryPage {
+            var page = page; page.opening = opening; page.openingAround = around; return page
         }
         try checkNavigation()
         if let historyWindowLoader {
             let page = try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around)
-            try checkNavigation(); return page
+            try checkNavigation(); return marked(page)
         }
         if !isOriginalSubagentReader(item.id), opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
+            if opening { params["opening"] = .bool(true) }
             // Source handoff uses a stable entry id. Numeric file positions are
             // never passed to a helper. The replacement source validates it.
             if let cursor {
@@ -54,7 +61,9 @@ extension WorkspaceModel {
             }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try checkNavigation()
-            return try ConversationHistoryPage(result)
+            let page = try await Task.detached { try ConversationHistoryPage(result) }.value
+            try checkNavigation()
+            return marked(page)
         }
         guard side(item.id)?.pending == true || !isEphemeral(item.id) else { throw HostError.failure("This side's owning helper is unavailable. Its retained history was not changed.") }
         if let path = item.path {
@@ -63,7 +72,7 @@ extension WorkspaceModel {
                                                   after: newer ? cursor.entry : nil, targetTurns: HistoryWindowPolicy.turns)
                 try checkNavigation()
                 guard page.lineage == cursor.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
-                return try ConversationHistoryPage(page)
+                return marked(try ConversationHistoryPage(page))
             }
             // A window the helper read hands over to the journal by a stable
             // entry: still in the journal's branch, on the same lineage.
@@ -75,39 +84,24 @@ extension WorkspaceModel {
             let display = displays[item.id], generation = display?.presentation.readGeneration
             let page = try await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
                                                                      position: around == nil && !start ? position : nil,
-                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
+                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, limits: opening ? TranscriptPaging.pageLimits.opening : nil, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
-                    guard navigation.isCurrent(in: self), let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
+                    guard navigation?.isCurrent(in: self) ?? true, let display, display.presentation.readGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
                 }
             })
             try checkNavigation()
-            return try ConversationHistoryPage(page)
+            return marked(try ConversationHistoryPage(page))
         }
         // A newly created in-memory chat is authoritatively empty.
-        return try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
-            "incarnation": .string("new:" + item.id), "lineage": .string("root"), "older": .null, "newer": .null]))
+        return marked(try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
+            "incarnation": .string("new:" + item.id), "lineage": .string("root"), "older": .null, "newer": .null])))
     }
 
     /// `landing`: how far below the viewport's top the `around` row lands.
     func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0) {
         view.beginTranscriptBatch()
-        if view.taskPresentation?.active == nil {
-            view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
-        }
-        view.presentation.identity = (page.incarnation, page.lineage)
-        view.historyProgress = nil
-        view.presentation.partialTurnInput = page.partialTurnInput
-        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
-        view.historyPositions.reset(page)
-        view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
-        if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
-        else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
-        view.browsingHistory = page.newer != nil
-        view.projectedRows = []; view.projectionRevision = nil
-        view.historyState = page.messages.isEmpty ? .empty : .preparing
-        view.messages = page.messages
-        view.adoptedPage = view.pageRows
+        adoptPage(page, into: view, around: around, landing: landing, presenting: true)
         if let count = page.assistantCount {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
@@ -132,6 +126,32 @@ extension WorkspaceModel {
         if page.messages.isEmpty { historyViewportReady(view.id, generation: view.presentationGeneration) }
     }
 
+    /// A page's rows on the chat's display, and where they stand in the chat:
+    /// what adopting a page read in changes besides its presentation.
+    /// `presenting`: the page the transcript shows next, which prepares for
+    /// it; else rows held for the chat's next opening (`catchUpFinishedRows`).
+    func adoptPage(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0, presenting: Bool) {
+        view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+        if view.taskPresentation?.active == nil {
+            view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
+        }
+        view.presentation.identity = (page.incarnation, page.lineage)
+        view.historyProgress = nil
+        view.presentation.partialTurnInput = page.partialTurnInput
+        view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer, endsTurn: page.endsTurn)
+        view.historyPositions.reset(page)
+        view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
+        if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
+        else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
+        view.browsingHistory = page.newer != nil
+        view.projectedRows = []; view.projectionRevision = nil
+        if presenting { view.historyState = page.messages.isEmpty ? .empty : .preparing; view.heldRowsRevision = nil }
+        view.messages = page.messages
+        view.adoptedPage = view.pageRows
+        view.presentation.openingPage = page.opening && page.messages.count < TranscriptPaging.pageLimits.rows
+        view.presentation.openingAround = page.openingAround
+    }
+
     /// A chat's rows shown again as they were, when its journal has not
     /// changed since they were read: placed where the reader left them, then
     /// ready, as a page read in is.
@@ -154,7 +174,9 @@ extension WorkspaceModel {
         view.refreshingCachedRows = false
         view.presentation.readyAt = PerformanceProbe.now
         view.contextSelectionReady = true
+        openSteps?(id, "viewport ready")
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
+        startOpeningFill(id)
         view.presentation.secondary?.cancel()
         let navigation = transcriptNavigation(id)
         view.presentation.secondary = Task { [weak self, weak view] in
@@ -251,6 +273,18 @@ extension WorkspaceModel {
     }
     @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
+        if automatic, let fill = view.presentation.openingFill {
+            let before = newer ? view.newerPage.cursor : view.olderPage.cursor
+            let waitingGeneration = view.presentation.readGeneration, waitingNavigation = transcriptNavigation(id)
+            await fill.value
+            guard !Task.isCancelled, displays[id] === view, !view.historyState.loading,
+                  view.presentation.readGeneration == waitingGeneration, waitingNavigation.isCurrent(in: self),
+                  (newer ? view.newerPage.cursor : view.olderPage.cursor) == before else { return false }
+        }
+        if !automatic {
+            view.presentation.openingPage = false
+            view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+        }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
         let generation = view.presentation.readGeneration, read = UUID()
@@ -304,6 +338,10 @@ extension WorkspaceModel {
                     return true
                 }
                 var joined = newer ? view.messages + added : added + view.messages
+                // Whether the window, once cut from `joined`, ends where a turn
+                // does: its last turn then reads as finished.
+                let unbounded = joined
+                func endsTurn(_ window: [TranscriptMessage]) -> Bool { TranscriptPaging.endsTurn(window, in: unbounded) }
                 // Keep the requested side, evict only the far opposite edge.
                 var bounded = TranscriptPaging.window(joined, keepingEarlier: !newer)
                 var evicted = bounded.count != joined.count
@@ -316,7 +354,14 @@ extension WorkspaceModel {
                 var trimmedFar = false
                 let onScreen = automatic ? (view.visibleMessageIDs?() ?? []).intersection(known) : []
                 if !onScreen.isSubset(of: Set(bounded.map(\.id))) {
-                    guard let kept = TranscriptPaging.window(joined, keeping: onScreen, keepingEarlier: !newer),
+                    // Whether `joined` begins or ends inside a turn that goes on
+                    // past it: a capped piece of a turn too long for the window,
+                    // which the page read or the window holds. Taken for a whole
+                    // turn that fits, it waited for room it would never have.
+                    let firstContinues = newer ? view.presentation.partialTurnInput != nil : page.partialTurnInput != nil
+                    let lastContinues = newer ? page.newer != nil && !page.endsTurn : view.newerPage.available && !view.newerPage.endsTurn
+                    guard let kept = TranscriptPaging.window(joined, keeping: onScreen, keepingEarlier: !newer,
+                                                             firstContinues: firstContinues, lastContinues: lastContinues),
                           added.contains(where: { row in kept.contains { $0.id == row.id } }) else { return false }
                     trimmedFar = newer ? kept.last?.id != joined.last?.id : kept.first?.id != joined.first?.id
                     evicted = newer ? kept.first?.id != joined.first?.id : kept.last?.id != joined.last?.id
@@ -349,14 +394,22 @@ extension WorkspaceModel {
                 for index in joined.indices { joined[index].accounting = view.messageAccounting[joined[index].id] }
                 view.historyPositions.record(page); view.historyPositions.prune(keeping: joined)
                 if newer {
-                    view.newerPage = .init(cursor: page.newer)
-                    if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
-                    if evicted, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
+                    view.newerPage = .init(cursor: page.newer, endsTurn: page.endsTurn)
+                    if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
+                    if evicted, let first = joined.first {
+                        var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge)
+                        // Where the window now starts: at a turn's question, or
+                        // inside a turn (one too long for the window), whose
+                        // question the earlier edge names.
+                        view.presentation.partialTurnInput = TranscriptPaging.partialTurnInput(of: joined, in: unbounded,
+                                                                                               fallback: view.presentation.partialTurnInput)
+                    }
                 } else {
                     view.olderPage = .init(cursor: page.older)
                     if trimmedFar, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
-                    view.presentation.partialTurnInput = trimmedFar ? nil : page.partialTurnInput
-                    if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
+                    view.presentation.partialTurnInput = trimmedFar
+                        ? TranscriptPaging.partialTurnInput(of: joined, in: unbounded, fallback: page.partialTurnInput) : page.partialTurnInput
+                    if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge, endsTurn: endsTurn(joined)) }
                 }
                 view.before = view.olderPage.cursor?.entry
                 // Reading earlier rows (including automatic viewport fills)

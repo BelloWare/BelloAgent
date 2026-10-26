@@ -12,6 +12,38 @@ import Foundation
 /// for a whole page again. That is the only recovery, and it is always allowed:
 /// the helper answers any unknown revision with the whole page.
 enum TranscriptRowUpdates {
+    /// The helper's page and its stable source positions. Applying a fragment
+    /// decodes only its sources; an explicit order takes the complete path.
+    struct Page: Sendable {
+        private(set) var rows: [TranscriptMessage]
+        private var positions: [String: Int]
+        init(_ rows: [TranscriptMessage]) {
+            self.rows = rows
+            positions = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        }
+        func applying(_ patch: WireValue) -> Self? {
+            guard let fields = patch.object else { return nil }
+            if fields["order"] != nil || positions.count != rows.count {
+                return TranscriptRowUpdates.apply(patch, to: rows).map(Self.init)
+            }
+            var ids = Set<String>()
+            for key in ["rows", "appends", "parts", "toolInputs"] {
+                for entry in fields[key]?.array ?? [] {
+                    guard let id = entry.object?["id"]?.string else { return nil }
+                    ids.insert(id)
+                }
+            }
+            let indices = ids.compactMap { positions[$0] }.sorted()
+            guard indices.count == ids.count else { return TranscriptRowUpdates.apply(patch, to: rows).map(Self.init) }
+            let sources = indices.map { rows[$0] }
+            guard let applied = TranscriptRowUpdates.apply(patch, to: sources), applied.count == sources.count,
+                  zip(applied, sources).allSatisfy({ $0.id == $1.id }) else { return nil }
+            var next = self
+            for (index, row) in zip(indices, applied) { next.rows[index] = row }
+            return next
+        }
+    }
+
     static func apply(_ patch: WireValue, to page: [TranscriptMessage]) -> [TranscriptMessage]? {
         guard let update = patch.object else { return nil }
         var rows: [String: TranscriptMessage] = [:], order: [String] = []

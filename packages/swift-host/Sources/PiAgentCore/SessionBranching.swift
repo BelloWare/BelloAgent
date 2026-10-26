@@ -10,7 +10,13 @@ extension AgentSession {
     /// The journal keeps every record; only the live context and the displayed
     /// timeline drop the abandoned tail. Nothing is written unless the new
     /// submission is itself acceptable.
-    public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil, admittedAt: Int? = nil) async throws -> JSON {
+    ///
+    /// `expectedPrefix`, when the reader's preparation gave it, is what the
+    /// edit is checked against: the conversation through the edited message
+    /// (`sourcePrefix`). Rows added after that message since, as a run adds
+    /// them, leave the edit valid. Without it (an older reader) the whole
+    /// timeline must be as it was (`expectedTimeline`).
+    public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil, expectedPrefix: String? = nil, admittedAt: Int? = nil) async throws -> JSON {
         try requireIndependentSession()
         let admittedAt = admittedAt ?? stopCount
         try checkSubmissionStop(admittedAt)
@@ -20,29 +26,40 @@ extension AgentSession {
         // an abandoned branch's work under the edited conversation.
         guard isIdle, !holdsCostPausedWork else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }
         guard !ephemeral else { throw AgentError("side_ephemeral", "Keep this side chat before editing its messages; a branch must be durable") }
-        // An edit keeps the rows before it on screen: all of them, not only
-        // the ones a chat opened from its metadata file loaded.
         let capturedHead = journal?.head
-        try await loadFullHistory()
+        // A family's historic tool owners also serve its receipt/recovery
+        // checks. Keep their existing full-history adoption; ordinary chats
+        // need only the validated replay inputs and latest display rows.
+        if partialHistory, subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { try await loadFullHistory() }
+        let prepared = try await editSource(messageID)
+        let adoption = try await editAdoption(prepared.plan)
         try checkSubmissionStop(admittedAt)
         guard !closed, isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         try validate(input,steer:false)
+        // Older and abandoned messages still reserve their IDs even when
+        // the checkpoint left them out of the resident history.
+        if partialHistory, editPreparationIndex?.replay.history.contains(where: { $0.id == input.turnID }) == true {
+            throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made")
+        }
         try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
         try checkSubmissionStop(admittedAt)
         guard isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         try validate(input,steer:false)
         guard let journal else { throw AgentError("session_closed", "Session runtime is unloaded") }
-        let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
+        let plan = prepared.plan
         let images = try loadImages(input.attachments)
         let effective = try profile.overriding(input)
         guard images.isEmpty || effective.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
-        guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
-        let target = history.first { $0.id == messageID }
-        let textDigest = sha256(Data((target?.displayText ?? target?.text ?? "").utf8))
+        if let expectedPrefix {
+            guard expectedPrefix == plan.sourcePrefix else { throw AgentError("edit_changed", "The conversation before the edited message changed. Select the message again.") }
+        } else {
+            guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
+        }
+        let target = prepared.message
+        let textDigest = sha256(Data((target.displayText ?? target.text).utf8))
         guard expectedTextDigest == nil || expectedTextDigest == textDigest else { throw AgentError("edit_changed", "The original message changed. Select it again.") }
-        let byID = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let targetDigest = try byID[messageID].map { sha256(try $0.pi.data()) }
+        let targetDigest = sha256(try target.pi.data())
         let branch = HistoricalBranch(fromMessageId: messageID, keptIds: plan.replay, selectedTimelinePrefix: plan.displayPrefix,
                                       sourceTimelineDigest: plan.sourceTimeline, sourceJournalHead: journal.head, targetDigest: targetDigest)
         var record = try JSON.parse(JSONEncoder().encode(branch)); record["type"] = "branch"
@@ -61,9 +78,12 @@ extension AgentSession {
             if journal.writeOutcomeUncertain { throw AgentError(AgentErrorCode.journalUncertain, "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
             throw error
         }
-        versions.hide(from: messageID, visible: visible, history: history)
-        Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
-        prunePresentedTasksAfterBranch()
+        if let adoption, partialHistory { adoptEdit(adoption, from: messageID, markerID: markerID) }
+        else {
+            versions.hide(from: messageID, visible: visible, history: history)
+            Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
+            prunePresentedTasksAfterBranch()
+        }
         invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null; requestExclusions = []
         boundary = context; currentContextCount = nil; clearRequestObservation()
         retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil

@@ -7,6 +7,36 @@ import AppKit
 /// helper and the synthetic gateway behind a chat and its side, the app's own
 /// quit between two launches, Raise limit and Resume.
 final class CostPauseFamilyTests: XCTestCase {
+    /// A root needed only for its budget has no transcript. Its raised limit
+    /// still reaches nested sides and sub-agents through the UI's save path.
+    @MainActor func testARaiseUpdatesNestedFamilyComposerLinesWithoutAnOwnerDisplay() async throws {
+        let setup = try await gatewayWorkspace("cost-pause-lines", projectID: "cost-pause-lines-project")
+        let model = await launch(setup)
+        let main = ChatRecord(id: "main", workspaceID: setup.workspace.id, title: "Main", profileID: setup.profile.id, costLimit: .usd(0.5))
+        let side = ChatRecord(id: "side", workspaceID: main.workspaceID, title: "Side", path: setup.state.appendingPathComponent("side_side.jsonl").path, profileID: main.profileID, parentSessionID: main.id)
+        let nested = ChatRecord(id: "nested", workspaceID: main.workspaceID, title: "Nested", path: setup.state.appendingPathComponent("side_nested.jsonl").path, profileID: main.profileID, parentSessionID: side.id)
+        var link = SubagentTranscriptTests.link; link.budgetOwnerSessionID = main.id; link.childSessionID = "child"
+        let child = ChatRecord(id: "child", workspaceID: main.workspaceID, title: "Child", profileID: main.profileID, parentSessionID: main.id, delegation: link)
+        model.chats = [main, side, nested, child]
+        for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+        model.observeCost(["cost": .object(["spentUSD": .number(0.6), "limitUSD": .number(0.5), "paused": .bool(true)])], sessionID: main.id)
+        for chat in [side, nested, child] {
+            let view = SessionDisplay(id: chat.id); view.isManagedSubagent = chat.isSubagent
+            view.observeRunState(["state": .string("paused"), "costPaused": .bool(true), "errorCode": .string("cost_limit"), "continuable": .bool(!chat.isSubagent)])
+            view.preflightNotice = "Paused at the shared cost limit. Raise the main chat’s limit above the spend, then choose Resume."
+            model.displays[chat.id] = view; model.refreshCostReading(chat.id)
+            XCTAssertTrue(view.costLimitHeld)
+        }
+        try await model.setCostLimit(.usd(100), for: main.id)
+        for chat in [side, nested, child] {
+            let view = try XCTUnwrap(model.displays[chat.id])
+            XCTAssertEqual(view.notice, "The main chat’s limit is now $100.00." + (chat.isSubagent ? " This sub-agent goes on when the main chat resumes." : " Choose Resume to continue."))
+            XCTAssertFalse(view.costLimitHeld); XCTAssertTrue(view.costPaused)
+            XCTAssertEqual(view.offersResume, !chat.isSubagent)
+        }
+        XCTAssertNil(model.displays[main.id]); XCTAssertTrue(model.hosts.isEmpty, "A raise starts no work or helper")
+    }
+
     private typealias Setup = GatewayWorkspace
 
     @MainActor private func launch(_ setup: Setup) async -> WorkspaceModel {
@@ -212,5 +242,62 @@ final class CostPauseFamilyTests: XCTestCase {
         XCTAssertEqual(after.filter { $0.sessionID == parent.id }.count, cutParent + 1, "The held read ran, then one request")
         XCTAssertTrue(reopened.messages.contains { $0.text.contains("Fixture read completed") })
         XCTAssertNil(second.error, second.error ?? "")
+    }
+
+    /// LIMIT-1, for a family: the chat's limit is raised to $100 but its
+    /// helper is still under the old one (a send that never reached it). The
+    /// side's Resume, which is the family's, gives the chat's helper the
+    /// chat's limit first: the chat and its side both go on, from where each
+    /// stopped. Before LIMIT-1 the helper refused both at the old limit.
+    @MainActor func testAFamilyResumeGivesTheChatsHelperItsRaisedLimitFirst() async throws {
+        let setup = try await gatewayWorkspace("cost-pause-limit", projectID: "cost-pause-limit-project", readme: true, gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "40"])
+        let model = await launch(setup)
+        model.selectedWorkspaceID = setup.workspace.id; model.profileChoice = setup.profile.id
+        let parent = ChatRecord(id: "parent-" + UUID().uuidString, workspaceID: setup.workspace.id, title: "Parent", path: nil, profileID: setup.profile.id)
+        model.chats = [parent]; try await model.store?.put(parent, kind: "chat", id: parent.id)
+        // Each synthetic request costs $0.00125: the second one crosses $0.002.
+        try await model.setCostLimit(.usd(0.002), for: parent.id)
+        await model.select(parent.id)
+        let parentView = try XCTUnwrap(model.displays[parent.id])
+        parentView.draft = "A question for the chat"; model.send(sessionID: parent.id)
+        await waitFor("The chat's first turn never finished") { !parentView.hasWork && !parentView.loading && parentView.messages.last?.role == "assistant" && parentView.messages.last?.isStreaming == false }
+        model.openSide(parentID: parent.id)
+        let side = try XCTUnwrap(model.sides[parent.id])
+        let sideView = try XCTUnwrap(model.displays[side.id])
+        sideView.draft = "A slow question for the side"; model.send(sessionID: side.id)
+        await waitFor("The side's reply never started streaming") { model.sides[parent.id]?.kept == true && sideView.messages.last?.isStreaming == true }
+        parentView.draft = "Please read fixture README.md"; model.send(sessionID: parent.id)
+        await waitFor("The family never paused") { parentView.costPaused && sideView.costPaused && !sideView.busy && !parentView.busy }
+        let host = try XCTUnwrap(model.hosts[setup.workspace.id])
+        func helperLimit() async throws -> Double? {
+            try await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object?["cost"]?.object?["limitUSD"]?.number
+        }
+        try await model.setCostLimit(.usd(100), for: parent.id)
+        XCTAssertEqual(parentView.notice, "The limit is now $100.00. Choose Resume to continue.")
+        XCTAssertEqual(sideView.notice, "The main chat’s limit is now $100.00. Choose Resume to continue.")
+        var limit = try await helperLimit()
+        XCTAssertEqual(limit, 100)
+        // Back under the old limit, as a send that never reached it left it.
+        _ = try await host.request("session.configure", sessionID: parent.id, params: ["costLimit": CostLimit.usd(0.002).wire])
+        limit = try await helperLimit()
+        XCTAssertEqual(limit, 0.002)
+        await waitFor("The side never offered Resume") { sideView.offersResume }
+        let sideSent = try await Self.captures(setup.base).filter { $0.sessionID == side.id }.count
+        let parentSent = try await Self.captures(setup.base).filter { $0.sessionID == parent.id }.count
+        model.resumeRun(sessionID: side.id)
+        var resumed = false
+        for _ in 0..<600 where !resumed {
+            let main = try? await host.request("session.status", sessionID: parent.id).object
+            let sideState = try? await host.request("session.status", sessionID: side.id).object
+            let captures = try await Self.captures(setup.base)
+            resumed = main?["state"]?.string == "idle" && main?["costPaused"] == nil && sideState?["state"]?.string == "idle" && sideState?["costPaused"] == nil
+                && captures.filter { $0.sessionID == side.id }.count > sideSent && captures.filter { $0.sessionID == parent.id }.count > parentSent
+            if !resumed { try await Task.sleep(for: .milliseconds(50)) }
+        }
+        XCTAssertTrue(resumed, "The chat and its side never both went on (notices: “\(parentView.notice)”, “\(sideView.notice)”)")
+        limit = try await helperLimit()
+        XCTAssertEqual(limit, 100, "The chat's helper runs under the chat's limit")
+        // (A title request may complain about the fixture's missing mini model.)
+        XCTAssertFalse((model.error ?? "").contains("cost limit"), model.error ?? "")
     }
 }

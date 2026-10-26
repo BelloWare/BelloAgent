@@ -85,6 +85,10 @@ final class UIScreenshotTests: XCTestCase {
                 "args": .array([.string(mcpFixturePath)])
             ])])])
             $0.automaticUpdateChecks = false
+            // Chat briefs (on by default since 0.1.131) would ask the mini
+            // model after every finished run here and add their requests to
+            // the scenes below; ChatBriefGalleryTests draws them.
+            $0.chatBriefs = ChatBriefSettings(enabled: false)
         }
         let model = WorkspaceModel(stateRoot: folder.appendingPathComponent("app-state"), vault: vault)
         defer { model.shutdown() }
@@ -855,7 +859,9 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// Combined Flat across configured, scratch and retained projects, and the
-    /// real header menu. Both normal and minimum sidebar widths, both themes.
+    /// real header menu (14f/14g); Flat narrowed to one project by its chip
+    /// (14h) and the "+N" menu of the projects whose chips do not fit (14i).
+    /// Both normal and minimum sidebar widths, both themes.
     @MainActor private func captureFlatTopicsScene(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                    appearances: [(String, NSAppearance.Name)], workspaceID: String,
                                                    profileID: String, topicID: String?) async throws {
@@ -880,6 +886,8 @@ final class UIScreenshotTests: XCTestCase {
         _ = try await add("Quick connection notes", project: WorkspaceRecord.scratchID, topic: nil, order: newest + 50)
         _ = try await add("Retained design discussion", project: "gallery-unavailable", topic: nil, order: newest + 45)
         _ = try await add("Compare queue backends", project: workspaceID, topic: research.id, order: newest + 40)
+        _ = try await add("Palette contrast pass", project: other.id, topic: nil, order: newest + 35)
+        _ = try await add("Icon set for onboarding", project: other.id, topic: nil, order: newest + 30)
         model.markSessionUnread(parent)
         model.runHolds[parent] = RunHoldRecord(id: parent, state: "paused")
         model.setSidebarShownRoots(SidebarSessionPresentation.combinedFlatGroupID, to: 100, in: "")
@@ -903,8 +911,32 @@ final class UIScreenshotTests: XCTestCase {
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sidebar.headerMenu.bounds.maxY + 4), in: sidebar.headerMenu)
                 timer.invalidate()
                 if let error = captureState.error { throw error }
+                // 14h · narrowed to the second project, by its chip (or, at
+                // the minimum width, from the "+N" menu it sits in).
+                let filter = sidebar.projectFilter
+                XCTAssertFalse(filter.isHidden, "Flat shows its project chips")
+                if let chip = filter.buttons[other.id], !chip.isHidden { chip.performClick(nil) }
+                else { filter.onChoose?(other.id) }
+                try await settle(1.0)
+                XCTAssertEqual(model.sidebarFlatProject, other.id)
+                try capture(window, to: gallery.appendingPathComponent("14h-sidebar-flat-project-\(widthName)-\(name).png"))
+                filter.all.performClick(nil); try await settle(0.8)
+                // 14i · the "+N" menu of the projects whose chips do not fit.
+                XCTAssertFalse(filter.more.isHidden, "Four projects overflow the chips at \(widthName) width")
+                let overflow = PiMenus.menu(filter.menuEntries())
+                let overflowState = SidebarMenuCapture(menu: overflow) {
+                    try self.capture(window, to: gallery.appendingPathComponent("14i-sidebar-flat-overflow-\(widthName)-\(name).png"), includingOwnedPanels: true)
+                }
+                let overflowTimer = Timer(timeInterval: 0.4, repeats: false) { _ in
+                    MainActor.assumeIsolated { overflowState.take() }
+                }
+                RunLoop.main.add(overflowTimer, forMode: .common)
+                overflow.popUp(positioning: nil, at: NSPoint(x: 0, y: filter.more.bounds.maxY + 4), in: filter.more)
+                overflowTimer.invalidate()
+                if let error = overflowState.error { throw error }
             }
         }
+        model.setSidebarProjectFilter(nil)
         model.setSidebarFlat(false); model.markSessionRead(parent)
         // Remove only this scene's synthetic history so later Topics scenes
         // keep their data as well as their layout.

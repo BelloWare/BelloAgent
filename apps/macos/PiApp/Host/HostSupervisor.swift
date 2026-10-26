@@ -188,6 +188,9 @@ final class HostSupervisor: ObservableObject {
         replies[request.id] = request.continuation
         if Self.cancellableReads.contains(request.method) { dispatchedReads[request.id] = (request.cancellation, request.frame) }
         if let commandSender { commandSender(request.frame) } else { transport?.send(request.frame) }
+        // Retained edit reads and rollback inputs grow with the journal.
+        // Wait for their reply or connection loss, not an arbitrary deadline.
+        if ["session.edit.prepare", "turn.edit"].contains(request.method) { return }
         // Queueing time is not an uncertain dispatched outcome. Start this
         // deadline only when the command has entered its transport slot.
         let timeout = acknowledgmentTimeout ?? .seconds(request.method.hasPrefix("mcp.") ? 315 : 30)

@@ -96,7 +96,16 @@ enum SessionPanelLayout {
         if chatID != chat.id {
             invalidateRepository()
             chatID = chat.id
-            scroll.documentView = nil; agents = nil
+            // The list on screen follows the chat from its top, keeping the
+            // rows that read the same (most chats have no sides or agents
+            // yet). One out of sight — the card hidden, or Diff or Files
+            // chosen — is built again when Agents shows.
+            if let agents, agents.model === model, presented, state.selection == .agents {
+                agents.show(sessionID: chat.id)
+                if scroll.contentView.bounds.origin != .zero {
+                    scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+                }
+            } else { scroll.documentView = nil; agents = nil }
         }
         if project?.id != next?.id || project?.roots != next?.roots {
             project = next; changeRoot(next?.roots.first)
@@ -170,7 +179,9 @@ enum SessionPanelLayout {
             }
         } else if !active { suspend() }
         let tab = selectedTab
-        tabs.items = availableTabs.map { ($0, $0.rawValue) }; tabs.selection = tab
+        let items = availableTabs.map { ($0, $0.rawValue) }
+        if tabs.items.map(\.0) != items.map(\.0) || tabs.items.map(\.1) != items.map(\.1) { tabs.items = items }
+        tabs.selection = tab
         collapse.isEnabled = enabled
         for item in availableTabs {
             guard let control = tabs.tab(item) else { continue }

@@ -46,16 +46,15 @@ extension AgentSession {
     public func prepareEdit(_ messageID: String, offset: Int = 0, expectedTimeline: String? = nil, expectedTextDigest: String? = nil) async throws -> JSON {
         guard !closed, !ephemeral else { throw AgentError("edit_unavailable", "Keep and reopen this conversation before editing.") }
         let capturedHead = journal?.head
-        try await loadFullHistory()
+        let (plan, message) = try await editSource(messageID)
         guard !closed, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed during edit preparation. Select the message again.") }
-        let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
-        guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("edit_target", "The message is not retained.") }
         let text = message.displayText ?? message.text
         guard text.utf8.count <= 262_144 else { throw AgentError("message_limit", "The original input exceeds the editor limit.") }
         let digest = sha256(Data(text.utf8))
         guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline, expectedTextDigest == nil || expectedTextDigest == digest else { throw AgentError("edit_changed", "The source changed during edit preparation. Select the message again.") }
         var page = try textPage(text, offset: offset)
         page["messageId"] = JSON(messageID); page["sourceTimeline"] = JSON(plan.sourceTimeline); page["sourceTextDigest"] = JSON(digest)
+        page["sourcePrefix"] = JSON(plan.sourcePrefix)
         if offset == 0 {
             page["input"] = message.userInput ?? .null
             page["legacyInputs"] = JSON(message.userInput == nil && (message.displayText != nil && message.displayText != message.text || message.content.contains { $0["type"].text == "image" }))

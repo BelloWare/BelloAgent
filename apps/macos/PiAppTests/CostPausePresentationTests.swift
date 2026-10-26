@@ -5,6 +5,65 @@ import XCTest
 /// the card with spend and limit, Raise limit… until the limit is above the
 /// spend, then Resume; sub-agent cards, picker rows and readers say Paused.
 final class CostPausePresentationTests: XCTestCase {
+    @MainActor func testTheComposerAndItsFooterFollowTheRaisedLimitForEveryFamilyMember() throws {
+        let root = scratchRoot("cost-pause-line")
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["main"])
+        registerWorkspaceFixtureTeardown(bench.model, root: root)
+        for (id, shared, child) in [("main", false, false), ("side", true, false), ("child", true, true)] {
+            let view = paused(id, child: child)
+            let original = shared ? "Paused at the shared cost limit. Raise the main chat’s limit above the spend, then choose Resume."
+                : "Paused at the cost limit: $0.60 spent of $0.50. Raise the limit above the spend, then choose Resume."
+            view.preflightNotice = original
+            var reading = SessionCostReading(limit: .usd(0.5), spentUSD: shared ? 0.1 : 0.6, reportedRequests: 3)
+            if shared { reading.budgetOwnerID = "main"; reading.budgetSpentUSD = 0.6 }
+            view.applyCostReading(reading)
+            XCTAssertEqual(view.notice, original)
+            let footer = MetricsFooter(model: bench.model, session: view, inspect: {})
+            let line = try XCTUnwrap(ConversationPaneTests.views(FooterNotice.self, in: footer).first)
+            for limit in [CostLimit.usd(5), .usd(6), .unlimited] {
+                reading.limit = limit; view.applyCostReading(reading)
+                let expected = (limit == .unlimited ? "There is no limit now." : "The \(shared ? "main chat’s " : "")limit is now \(limit.label).")
+                    + (child ? " This sub-agent goes on when the main chat resumes." : " Choose Resume to continue.")
+                XCTAssertEqual(view.notice, expected, id)
+                // applyToolNotice does this on each unchanged helper snapshot.
+                view.preflightNotice = original; view.updateComposedNotice()
+                footer.refresh()
+                XCTAssertEqual(line.text, expected, id); XCTAssertEqual(line.toolTip, expected)
+                XCTAssertEqual(line.accessibilityLabel(), expected)
+                view.queueEditNotice = "Keep the rewrite."
+                XCTAssertEqual(view.notice, "Keep the rewrite.\n" + expected)
+                view.queueEditNotice = ""
+                XCTAssertTrue(view.costPaused); XCTAssertEqual(view.offersResume, !child)
+                if !child {
+                    view.resuming = true
+                    XCTAssertTrue(view.notice.hasSuffix("Resuming…"))
+                    view.resuming = false
+                    XCTAssertEqual(view.notice, expected)
+                }
+            }
+            reading.limit = .usd(0.6); view.applyCostReading(reading)
+            XCTAssertEqual(view.notice, original, "At the spend, the instruction to raise still applies")
+            XCTAssertFalse(view.offersResume)
+        }
+    }
+
+    @MainActor func testARaisedLimitKeepsOtherPreflightReasonsAndTheMessageEditHold() {
+        let view = paused("main")
+        view.preflightNotice = "Paused at the cost limit. Raise the limit above the spend, then choose Resume."
+        view.applyCostReading(SessionCostReading(limit: .usd(5), spentUSD: 0.6, reportedRequests: 3))
+        view.observeRunState(["state": .string("paused"), "costPaused": .bool(true), "continuable": .bool(false), "errorCode": .string("cost_limit")])
+        XCTAssertEqual(view.notice, "The limit is now $5.00. Finish or cancel the message edit, then choose Resume.")
+        XCTAssertFalse(view.offersResume)
+        view.observeRunState(["state": .string("paused"), "costPaused": .bool(true), "continuable": .bool(false), "errorCode": .string("fixture_review")])
+        view.preflightNotice = "Review the interrupted tool before continuing."
+        view.applyCostReading(SessionCostReading(limit: .usd(6), spentUSD: 0.6, reportedRequests: 3))
+        XCTAssertEqual(view.notice, "Review the interrupted tool before continuing.")
+        let unknown = paused("unknown")
+        unknown.preflightNotice = "Paused at the cost limit. Raise the limit above the spend, then choose Resume."
+        unknown.applyCostReading(SessionCostReading(limit: .usd(100)))
+        XCTAssertTrue(unknown.notice.contains("Raise the limit"), "An unknown spend must not claim the raised limit is enough")
+    }
+
     @MainActor private func paused(_ id: String, child: Bool = false) -> SessionDisplay {
         let view = SessionDisplay(id: id); view.isManagedSubagent = child
         view.observeRunState(["state":.string("paused"), "runStatus":.string("cancelled"), "queuePaused":.bool(true),

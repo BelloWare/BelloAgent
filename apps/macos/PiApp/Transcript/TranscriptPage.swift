@@ -56,6 +56,9 @@ struct ContentGeometry: Equatable {
         /// The rows of the chat before and after these, which the document
         /// keeps room for.
         var extent: HistoryExtent? = nil
+        var changes: TranscriptChanges? = nil
+        var messageChanges: TranscriptChanges? = nil
+        var complete = true
     }
 
     @Published private(set) var snapshot: Snapshot?
@@ -69,6 +72,11 @@ struct ContentGeometry: Equatable {
     /// the same anchor again. Cosmetic streaming patches keep membership.
     private var messageRows: [String: MessageRows] = [:]
     private var drawingOwners: [String: String] = [:]
+    private var patchIndex: TranscriptActivity.PatchIndex?
+    private var itemChanges = TranscriptChanges()
+    private var tailPlan: TranscriptTailPlan?
+    private var liveRequestPositions: [String: Int] = [:]
+    private(set) var anchorScanVisits = 0
     @Published var projectionError: String?
     var liveTurn: TurnSummary? {
         if let turn = snapshot?.liveTurn { return turn }
@@ -307,6 +315,9 @@ struct ContentGeometry: Equatable {
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
         messageRows = [:]; drawingOwners = [:]
+        patchIndex = nil; itemChanges = TranscriptChanges()
+        tailPlan = nil
+        liveRequestPositions = [:]
         snapshot = nil; detached = false; earlierWaits = false; earlierWaitsForReader = false
         subscription = session.presentationChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] input, request in
             guard let self, let session else { return }
@@ -356,8 +367,10 @@ struct ContentGeometry: Equatable {
     }
 
     private func present(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
-        let textDelta = projectionError == nil && viewportRequest == request && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
-            TaskTranscriptPlan.cosmetic(from: snapshot?.messages ?? [], to: input.messages)
+        let changed = input.changes?.indices(since: snapshot?.messageChanges)
+        let textDelta = projectionError == nil && viewportRequest == request && snapshot?.messages.count == input.messages.count && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
+            TaskTranscriptPlan.cosmetic(from: changed.map { indices in indices.map { snapshot!.messages[$0] } } ?? snapshot?.messages ?? [],
+                                       to: changed.map { indices in indices.map { input.messages[$0] } } ?? input.messages)
         let now = ProcessInfo.processInfo.systemUptime
         let delay = presentationInterval - (now - lastPresentationAt)
         // The frames of a wheel gesture belong to the scroll. A reply that
@@ -447,25 +460,38 @@ struct ContentGeometry: Equatable {
             preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
+        let complete = page.count == messages.count && session.newerPage.lastTurnFinished
         let patch = snapshot.flatMap { current in
-            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patch(current.items, from: current.messages, to: page) : nil
+            Self.sameLifecycle(current.lifecycle, input.lifecycle) && current.complete == complete
+                ? patchIndex?.patch(current.items, from: current.messages, to: page,
+                                    changed: input.changes?.indices(since: current.messageChanges)) : nil
         }
         // A page short of the conversation's newest row — cut by the resident
         // window, or a history window with newer rows after it — may end in
         // the middle of a turn; that turn folds only on its task's receipt.
-        let items = patch?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
-                                                              complete: page.count == messages.count && !session.newerPage.available)
+        // Windows are cut where turns end (`HistoryWindowPolicy.page`), and
+        // one that ends where its last turn does says so: that turn is
+        // finished, and reads as it will once the next turn is read in.
+        let tail = patch == nil && initialized ? snapshot.flatMap { tailPlan?.replacing($0, with: input, complete: complete) } : nil
+        let prepared = patch == nil && tail == nil ? TranscriptOpeningPlans.take(for: session, input: input, complete: complete) : nil
+        let items = patch?.items ?? tail?.items ?? prepared ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle, complete: complete)
+        if let patch { itemChanges.record(patch.places) }
+        else if let tail, let current = snapshot {
+            patchIndex?.replaceTail(current.items[tail.item...], with: items[tail.item...], from: tail.item)
+            itemChanges.recordTail(from: tail.item)
+        }
         // A token keeps every row's identity and place (see `patch`), all of
         // them already proved unique and already seen by the page presented.
         // Hashing every id of a long chat again, twice for uniqueness and
         // twice for what is new, was most of what a token cost the page.
-        let sameIdentities = patch != nil && initialized
+        let sameIdentities = (patch != nil || tail != nil) && initialized
         if !sameIdentities {
             if TranscriptLayoutClock.recording { TranscriptLayoutClock.identityWalks += 1 }
             guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
                 projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
                 return
             }
+            patchIndex = TranscriptActivity.PatchIndex(items); itemChanges = TranscriptChanges()
         }
         if projectionError != nil { projectionError = nil }
         // Where the window stands in the whole chat, for the room the
@@ -473,22 +499,25 @@ struct ContentGeometry: Equatable {
         // the latest is not the timeline the history counted.
         let extent = session.versionView == nil
             ? session.historyPositions.extent(of: page, reachesStart: session.olderPage.cursor == nil,
-                                              reachesEnd: !session.newerPage.available && !session.browsingHistory) : nil
-        if let current = snapshot, current.lifecycle == input.lifecycle, initialized, current.extent == extent,
-           patch.map({ !$0.changed }) ?? (current.messages == page) { return }
+                                              reachesEnd: !session.newerPage.available && !session.browsingHistory,
+                                              membershipUnchanged: patch != nil && initialized, sourceTail: tail?.source) : nil
+        if let current = snapshot, current.lifecycle == input.lifecycle, current.complete == complete, initialized, current.extent == extent,
+           patch.map({ !$0.changed }) ?? (tail == nil && current.messages == page) { return }
         var fresh: Set<String> = []
-        if !sameIdentities {
-            for message in page {
+        if patch == nil {
+            for message in page.dropFirst(tail?.source ?? 0) {
                 if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
                 seen.insert(message.id)
             }
         }
+        var restoring: TranscriptAnchor?
         if !initialized {
             if let anchor = session.scrollAnchor {
                 // Restoring a saved position is an explicit destination too.
                 // Geometry from the initial top-of-page mount must not win.
                 explicitDestination = !anchor.followsBottom
                 followsBottom = anchor.followsBottom; pendingAnchor = anchor.followsBottom ? nil : anchor
+                if !anchor.followsBottom { restoring = anchor }
             } else { followsBottom = true; pendingAnchor = nil }
             // A chat the reader opens starts at the question of its last turn.
             // A jump they asked for — back to the latest reply, which reloads
@@ -497,7 +526,13 @@ struct ContentGeometry: Equatable {
             let askedForLatest = navigated || (session.scrollAnchor.map { $0.followsBottom && $0.id.isEmpty } ?? false)
             openingPlacementPending = followsBottom && !busy && !page.isEmpty && !askedForLatest
         }
-        let completed = TranscriptActivity.latestCompletedAssistant(page)
+        let completed: String?
+        if patch != nil { completed = completedAssistant }
+        else if let tail {
+            completed = TranscriptActivity.latestCompletedAssistant(Array(page.dropFirst(tail.source)))
+                ?? completedAssistant.flatMap { id in (tailPlan?.position(of: id)).map { $0 < tail.source } == true ? id : nil }
+                ?? (completedAssistant == nil ? nil : TranscriptActivity.latestCompletedAssistant(Array(page.prefix(tail.source))))
+        } else { completed = TranscriptActivity.latestCompletedAssistant(page) }
         if initialized, !session.browsingHistory, snapshot?.lifecycle?.epoch == input.lifecycle?.epoch,
            snapshot?.lifecycle?.timeline == input.lifecycle?.timeline {
             var old = Set((snapshot?.lifecycle?.recent ?? []).map(\.key))
@@ -509,14 +544,41 @@ struct ContentGeometry: Equatable {
         firstRow = page.first?.id ?? ""
         // A single bounded plan supplies stable identities for both initial
         // history and incremental updates; the native document reuses hosts.
-        if !sameIdentities {
+        if let tail, let current = snapshot {
+            let kept = Set(items[tail.item...].map(\.id))
+            for item in current.items[tail.item...] where !kept.contains(item.id) { frames[item.id] = nil }
+        } else if !sameIdentities {
             let ids = Set(items.map(\.id))
             frames = frames.filter { ids.contains($0.key) }
         }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
-        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages),
-                            sending: page.last(where: { $0.role == "user" })?.isSending == true, extent: extent)
+        let live: TurnSummary?
+        if patch != nil, let changed = input.changes?.indices(since: snapshot?.messageChanges) {
+            var updated = snapshot?.liveTurn
+            var filesChanged = false
+            for index in changed {
+                let row = page[index]
+                guard let place = liveRequestPositions[row.id] else { continue }
+                let old = updated!.requests[place]
+                filesChanged = filesChanged || zip(old.tools ?? [], row.tools ?? []).contains { before, after in
+                    before.state == "completed" && (before.input != after.input || before.output != after.output)
+                }
+                updated!.requests[place] = row
+            }
+            if filesChanged {
+                let files = TranscriptActivity.changedFiles(updated!.requests.flatMap { $0.tools ?? [] })
+                updated?.files = files
+            }
+            live = updated
+        } else {
+            live = TaskTranscriptPlan.live(input.lifecycle, messages: tail.map { Array(messages.dropFirst($0.source)) } ?? messages)
+            liveRequestPositions = Dictionary((live?.requests ?? []).enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        }
+        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle,
+                            liveTurn: live,
+                            sending: patch != nil ? snapshot?.sending == true : page.last(where: { $0.role == "user" })?.isSending == true,
+                            extent: extent, changes: itemChanges, messageChanges: input.changes, complete: complete)
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
         // position and races AppKit's exact anchor/bottom placement. Controls
@@ -524,7 +586,27 @@ struct ContentGeometry: Equatable {
         initialized = true
         // The rows changed, so which row holds the anchor may have changed too.
         pendingAnchorRow = nil
-        if !sameIdentities { indexMessageRows(items, messages: page) }
+        if let tail, let current = snapshot {
+            indexTail(items, messages: page, previous: current, source: tail.source, item: tail.item)
+            tailPlan?.replace(current, messages: page, replacement: tail)
+        } else if !sameIdentities {
+            indexMessageRows(items, messages: page)
+            tailPlan = TranscriptTailPlan(page, items: items)
+        }
+        // A place restored inside a finished turn's work opens that turn, as
+        // a reveal does (`unfoldTurn`), before the rows are drawn: read around
+        // the place, the page holds the whole turn from its question, and its
+        // fold closed over the row the reader left, which drew as nothing.
+        // Only a place the fold hides whole: a place at the answer, whose
+        // prose the fold leaves drawn, opens nothing. Taken from the answer's
+        // first row, its response's line, which the fold folds, it opened all
+        // of the turn's work, and a fold the reader had closed opened again
+        // when they came back to the chat.
+        if let restoring {
+            let drawing = drawingMessageID(for: restoring.id)
+            let holders = items.filter { $0.messageIDs.contains(drawing) }
+            if !holders.contains(where: { !isFoldedAway($0) }) { openFold(of: holders.first) }
+        }
         snapshot = next
         PerformanceProbe.shared.transcriptSnapshotApplied(session.id, deltaAt: session.displayObservedAt)
         scheduleSettle()
@@ -538,6 +620,7 @@ struct ContentGeometry: Equatable {
         guard var current = snapshot else { return }
         sequence += 1
         current.sequence = sequence
+        itemChanges = TranscriptChanges(); current.changes = itemChanges
         snapshot = current
     }
 
@@ -671,23 +754,35 @@ struct ContentGeometry: Equatable {
     /// detached reader at the same text when rows above grow or the pane narrows.
     func preserveReadingPositionForLayout() {
         scrollView?.transcriptReading.captureDocument()
-        guard initialized, !followsBottom, !jumping, pendingAnchor == nil, let snapshot else { return }
+        guard initialized, !followsBottom, !jumping, pendingAnchor == nil, snapshot != nil else { return }
         // Keep the chosen opening question fixed while offscreen estimates
         // settle. A preceding row visible only in its 12-point margin must
         // not steal that anchor and move the question when it remeasures.
-        if let openingReadingAnchor, snapshot.messages.contains(where: { $0.id == openingReadingAnchor.id }) {
+        if let openingReadingAnchor, messageRows[openingReadingAnchor.id] != nil || drawingOwners[openingReadingAnchor.id] != nil {
             pendingAnchor = openingReadingAnchor
             return
         }
         let offset = position.offset
-        for item in snapshot.items {
-            guard let frame = frames[item.id], frame.maxY > offset else { continue }
-            // A row below the screen is not where the reader is: they stand
-            // in room kept for rows not read, whose place the document keeps.
-            guard frame.minY < offset + max(1, position.viewport) else { return }
+        if let (item, frame) = firstPlacedRow(after: offset, withinViewport: true) {
             pendingAnchor = TranscriptAnchor(id: item.id, offset: frame.minY - offset, followsBottom: false)
-            return
         }
+    }
+    /// The document already indexes the placed frames for mounting. Reading
+    /// anchors use that same lookup instead of walking to the visible row
+    /// on each fragment arriving below a detached reader.
+    private func firstPlacedRow(after top: CGFloat, withinViewport: Bool) -> (item: TranscriptItem, frame: CGRect)? {
+        guard let snapshot else { return nil }
+        if let document = scrollView?.documentView as? TranscriptNativeDocument,
+           document.framesAreIndexed, document.isShowing(snapshot) {
+            return document.firstVisibleItem(top: top, height: withinViewport ? position.viewport : .greatestFiniteMagnitude)
+        }
+        for item in snapshot.items {
+            anchorScanVisits += 1
+            guard let frame = frames[item.id], frame.maxY > top else { continue }
+            if withinViewport, frame.minY >= top + max(1, position.viewport) { return nil }
+            return (item, frame)
+        }
+        return nil
     }
     var preferredOpeningRowID: String? {
         guard openingPlacementPending else { return nil }
@@ -783,6 +878,24 @@ struct ContentGeometry: Equatable {
             }
         }
     }
+    private func indexTail(_ items: [TranscriptItem], messages: [TranscriptMessage], previous: Snapshot, source: Int, item start: Int) {
+        for item in previous.items.dropFirst(start) { for id in item.messageIDs { messageRows[id] = nil } }
+        for message in previous.messages.dropFirst(source) { drawingOwners[message.id] = nil }
+        for item in items.dropFirst(start) {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.messageRowVisits += 1 }
+            for id in item.messageIDs {
+                if messageRows[id] == nil { messageRows[id] = MessageRows(first: item.id, last: item.id) }
+                else { messageRows[id]?.last = item.id }
+            }
+            if case .block(let block) = item, block.presentation == .body, let id = block.message?.id,
+               messageRows[id]?.body == nil { messageRows[id]?.body = item.id }
+        }
+        var issuers: [String: String] = [:]
+        for message in messages.dropFirst(source) {
+            if messageRows[message.id] == nil, let call = message.toolCallID, let issuer = issuers[call] { drawingOwners[message.id] = issuer }
+            if message.role == "assistant" { for tool in message.tools ?? [] { issuers[tool.id] = message.id } }
+        }
+    }
     /// Makes `needle` in message `messageID` something the page draws, as a
     /// browser's find reveals hidden text: the finished turn that folded the
     /// message away opens, and so do the work section and the card or the
@@ -856,15 +969,30 @@ struct ContentGeometry: Equatable {
     /// Opens the finished turn that has folded message `messageID` away, so
     /// a place in it can be shown. Returns whether the page holds the message.
     @discardableResult func unfoldTurn(containing messageID: String) -> Bool {
-        guard let snapshot, let disclosure else { return false }
-        guard let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        guard let snapshot, disclosure != nil, let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        openFold(of: item)
+        return true
+    }
+    /// Whether a closed turn fold hides `item`.
+    private func isFoldedAway(_ item: TranscriptItem) -> Bool {
+        let group: String?
+        switch item {
+        case .message(let message): group = message.foldGroup
+        case .block(let block): group = block.foldGroup
+        }
+        guard let group, let disclosure else { return false }
+        return !disclosure.isOpen(.turnFold(group))
+    }
+    /// Opens the finished turn whose fold hides `item`; a row no fold hides
+    /// opens nothing.
+    private func openFold(of item: TranscriptItem?) {
+        guard let disclosure, let item else { return }
         let group: String?
         switch item {
         case .message(let message): group = message.foldGroup
         case .block(let block): group = block.foldGroup
         }
         if let group, !disclosure.isOpen(.turnFold(group)) { disclosure.setOpen(true, .turnFold(group)) }
-        return true
     }
     /// Whether the page is still taking the reader somewhere: a destination
     /// asked for (a saved place, a reveal) or a first placement not yet
@@ -1298,10 +1426,8 @@ struct ContentGeometry: Equatable {
     /// said again.
     private var lastReportedAnchor: TranscriptAnchor?
     private func reportAnchor() {
-        guard let snapshot else { return }
         let scrollY = scrollY
-        for item in snapshot.items {
-            guard let frame = frames[item.id], frame.maxY - scrollY > 0 else { continue }
+        if let (item, frame) = firstPlacedRow(after: scrollY, withinViewport: false) {
             let id: String = { if case .block(let block) = item { return block.message?.id ?? block.activity.first?.id ?? item.id }; return item.id }()
             // The anchor names a message, and it is put back against the row
             // that message resolves to — for a response read in order, its

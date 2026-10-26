@@ -27,8 +27,10 @@ final class SoakTests: XCTestCase, SerialTestLane {
 
     @MainActor private func setup() async throws -> Setup {
         // Titles are asked of the mini model after each first message, as
-        // for a reader whose connection has one.
-        try await gatewayWorkspace("soak", projectID: "soak-project", readme: true, miniModel: "fixture-fast")
+        // for a reader whose connection has one. Chat briefs (on by default
+        // since 0.1.131) are off: the soak's numbers stay comparable with
+        // earlier releases, and briefs have tests of their own.
+        try await gatewayWorkspace("soak", projectID: "soak-project", readme: true, miniModel: "fixture-fast", chatBriefs: false)
     }
 
     @MainActor private final class Launched {
@@ -159,6 +161,8 @@ final class SoakTests: XCTestCase, SerialTestLane {
         /// test runner, which the app, with its one window, never sees.)
         var closed: [ClosedLaunch] = []
         var quitFailures: [Int] = []
+        /// The most chat-brief requests a launch listed: none, with briefs off.
+        var briefRequests = 0
         var recent: [String] = []
         func did(_ action: String, _ label: String) {
             actions[action, default: 0] += 1
@@ -225,6 +229,8 @@ final class SoakTests: XCTestCase, SerialTestLane {
             }
             chatIDs.append(chat.id)
         }
+        // Eighteen runs finished, and none asked the mini model for a brief.
+        log.briefRequests = first.model.chats.filter { $0.backgroundTask == BackgroundRequestKind.brief.raw }.count
         let seeded = await quit(first.model)
         XCTAssertTrue(seeded, "Seeding: the first launch never quit")
         await close(first)
@@ -369,6 +375,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
 
             watchdog.label("cycle \(cycle): quit")
             await restoring.value
+            log.briefRequests = max(log.briefRequests, model.chats.filter { $0.backgroundTask == BackgroundRequestKind.brief.raw }.count)
             if !(await quit(model)) { log.quitFailures.append(cycle) }
             await close(launched)
             log.closed.append(ClosedLaunch(model: launched.model, window: launched.window, view: launched.hosted))
@@ -387,6 +394,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(log.jumps.isEmpty, "Rows of an idle chat moved \(log.jumps.count) times (see the SOAK lines)")
         XCTAssertTrue(slow.isEmpty, "\(slow.count) launches took over \(launchLimit) s to list the chats")
         XCTAssertTrue(log.quitFailures.isEmpty, "Quitting failed in cycles \(log.quitFailures)")
+        XCTAssertEqual(log.briefRequests, 0, "The soak asked for chat briefs")
     }
 
     /// Whether a movement in this chat's rows would be a jump: the chat is

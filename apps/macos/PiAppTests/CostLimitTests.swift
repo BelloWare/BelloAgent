@@ -416,3 +416,340 @@ extension CostLimitTests {
         XCTAssertEqual(editor.meter.accessibilityLabel(), "$9.00 of $10.00, 90%")
     }
 }
+
+// LIMIT-1 (owner, 2026-10-22): at the limit, $100 "got switched to $100, but
+// I couldn't resume it. But if I switch it to like $50, it works." No amount
+// is special: every amount above the spend resumes. A limit the chat shows
+// but its helper never received was: the helper refused the Resume the card
+// offered, until another choice sent a limit again. The owner's pause: the
+// chat follows the $25 default, $24.99 is spent, then a reply crosses the
+// limit ($25.01) and its bash call is held.
+extension CostLimitTests {
+    // LIMIT-2: the composer follows the live limit before Resume, and a
+    // refused or timed-out setting stays pending until it is acknowledged.
+    @MainActor func testARaiseUpdatesTheComposerBeforeResumeAndSurvivesOldHelperNotices() async throws {
+        let chat = try await pausedAtTheDefaultLimit()
+        defer { Task { await chat.close() } }
+        XCTAssertTrue(chat.session.notice.contains("Raise the limit above the spend"), chat.session.notice)
+        try await chat.model.setCostLimit(.usd(100), for: chat.id)
+        let raised = "The limit is now $100.00. Choose Resume to continue."
+        XCTAssertEqual(chat.session.notice, raised, "The line changes with the card, before Resume")
+        chat.model.refresh(chat.id)
+        try await chat.waitUntil("the helper's old pause notice was read again") { !chat.session.snapshotInFlight }
+        XCTAssertEqual(chat.session.notice, raised)
+        try await chat.waitUntil("the composer draws the raised notice", seconds: 5) {
+            ConversationPaneTests.views(FooterNotice.self, in: chat.hosted).contains { $0.text == raised && $0.accessibilityLabel() == raised }
+        }
+        XCTAssertTrue(chat.session.costPaused); XCTAssertTrue(chat.session.offersResume)
+        XCTAssertNotEqual(chat.card("bash")?.state, "completed", "Raising the limit resumes nothing")
+    }
+
+    /// The editor's save succeeds but the helper refuses its first send.
+    /// Snapshot bursts must not duplicate a pending send, and a lower limit
+    /// must arrive without another choice or a Resume.
+    @MainActor func testAFailedLoweredLimitIsRetriedAndOnlyAcknowledgedAfterItReachesTheHelper() async throws {
+        let root = scratchRoot("cost-send-retry")
+        let bench = try await model(root: root, chats: ["Retry send"])
+        let model = bench.model, chat = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let view = SessionDisplay(id: chat.id); view.snapshotInFlight = true
+        model.displays[chat.id] = view
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
+        let save = Task { try await model.setCostLimit(.usd(1), for: chat.id) }
+        try await eventually("lowered limit sent") { frames.count == 1 }
+        XCTAssertNil(model.budgetStates[chat.id]?.limitSent, "A request is not an acknowledgement")
+        XCTAssertNil(view.costLimitSent)
+        func reply(_ frame: [String: WireValue], ok: Bool) throws {
+            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+                "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(ok),
+                "result": .object(ok ? [:] : ["code": .string("quiesced"), "message": .string("Workspace is quiesced for update")])]), connectionID: try XCTUnwrap(host.connectionID))
+        }
+        try reply(try XCTUnwrap(frames.first), ok: false)
+        try await save.value
+        XCTAssertEqual(model.record(chat.id)?.costLimit, .usd(1), "The lower limit stays saved")
+        try await eventually("failed lowered limit sent again") { frames.count >= 2 }
+        XCTAssertEqual(frames.count, 2)
+        for _ in 0..<100 {
+            model.observeCost(["cost": .object(["spentUSD": .number(0.4), "limitUSD": .number(25)])], view: view)
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(frames.count, 2, "Snapshots cannot flood a helper with the same pending limit")
+        XCTAssertEqual(frames.last?["params"]?.object?["costLimit"], CostLimit.usd(1).wire)
+        try reply(try XCTUnwrap(frames.last), ok: true)
+        try await eventually("retry acknowledged") { model.budgetStates[chat.id]?.limitSent == .usd(1) && view.costLimitSent == .usd(1) }
+        XCTAssertFalse(frames.contains { ["run.continue", "turn.retry", "queue.resume"].contains($0["method"]?.string) })
+        try await host.shutdownAndWait()
+    }
+
+    @MainActor func testARefusedLowerLimitReachesTheRealHelperWhenItsWorkspaceResumes() async throws {
+        for preparingUpdate in [false, true] {
+            let chat = try await WireChat()
+            do {
+                let host = try XCTUnwrap(chat.host)
+                try await chat.waitUntil("initial snapshot settled") { !chat.session.snapshotInFlight }
+                // Delivery must converge even without another app snapshot.
+                chat.session.snapshotInFlight = true
+                _ = try await host.request("workspace.quiesce")
+                chat.model.installPreparing = preparingUpdate
+                try await chat.model.setCostLimit(.usd(0.003), for: chat.id)
+                let refused = try await helperLimit(chat)
+                XCTAssertEqual(refused, .usd(25), "The quiesced helper refused the lower limit")
+                XCTAssertEqual(chat.model.costLimit(for: chat.id), .usd(0.003))
+                _ = try await host.request("workspace.resume")
+                chat.model.releaseUpdateBarrier()
+                try await eventually("the helper adopts the saved lower limit without a new choice or Resume (update: \(preparingUpdate))", poll: .milliseconds(100), until: {
+                    try await self.helperLimit(chat) == .usd(0.003)
+                })
+                XCTAssertTrue(chat.replies.filter { $0.method == "turn.submit" }.isEmpty, "Limit delivery starts no work")
+                chat.session.snapshotInFlight = false
+                chat.send("wire paid-tool")
+                try await chat.waitUntil("the helper enforces the retried lower limit") { chat.session.costPaused && !chat.session.busy }
+                XCTAssertNotEqual(chat.card("bash")?.state, "completed", "The lower limit holds the reply's tool")
+            } catch { await chat.close(); throw error }
+            await chat.close()
+        }
+    }
+
+    @MainActor func testATimedOutLimitWaitsForItsPhysicalReplyBeforeRetrying() async throws {
+        let root = scratchRoot("cost-send-timeout")
+        let bench = try await model(root: root, chats: ["Timeout"])
+        let model = bench.model, chat = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let view = SessionDisplay(id: chat.id); view.snapshotInFlight = true
+        model.displays[chat.id] = view
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) }, acknowledgmentTimeout: .milliseconds(200))
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
+        let state = model.budgetState(for: chat.id)
+        var waited = false
+        state.limitRetryWait = { _ in waited = true }
+        try await model.setCostLimit(.usd(1), for: chat.id)
+        try await eventually("retry backoff finished") { waited }
+        for _ in 0..<100 { model.observeCost(["cost": .object(["spentUSD": .number(0.4), "limitUSD": .number(25)])], view: view) }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(frames.count, 1, "A timeout leaves the original command in flight; no duplicate enters another helper slot")
+        XCTAssertNil(state.limitSent)
+        func reply(_ frame: [String: WireValue]) throws {
+            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+                "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true), "result": .object([:])]), connectionID: try XCTUnwrap(host.connectionID))
+        }
+        try reply(try XCTUnwrap(frames.first))
+        try await eventually("one retry after the late reply") { frames.count >= 2 }
+        XCTAssertEqual(frames.count, 2)
+        try reply(try XCTUnwrap(frames.last))
+        try await eventually("retried limit confirmed") { state.limitSent == .usd(1) }
+        try await host.shutdownAndWait()
+    }
+
+    @MainActor func testQuiescedRetriesBackOffAndNewChoicesAndUnloadRetireThem() async throws {
+        let root = scratchRoot("cost-send-backoff")
+        let bench = try await model(root: root, chats: ["Backoff"])
+        let model = bench.model, chat = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let view = SessionDisplay(id: chat.id); view.snapshotInFlight = true
+        model.displays[chat.id] = view
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
+        let state = model.budgetState(for: chat.id)
+        var delays: [Duration] = [], backoff: CheckedContinuation<Void, Never>?
+        state.limitRetryWait = { delay in
+            delays.append(delay)
+            await withCheckedContinuation { backoff = $0 }
+        }
+        defer { backoff?.resume(); state.limitRetryWait = nil }
+        func reply(_ frame: [String: WireValue], ok: Bool) throws {
+            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+                "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(ok),
+                "result": .object(ok ? [:] : ["code": .string("quiesced"), "message": .string("Workspace is quiesced for update")])]), connectionID: try XCTUnwrap(host.connectionID))
+        }
+        let first = Task { try await model.setCostLimit(.usd(1), for: chat.id) }
+        try await eventually("first send") { frames.count == 1 }
+        let expected: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30), .seconds(30)]
+        for (index, delay) in expected.enumerated() {
+            try reply(frames[index], ok: false)
+            try await eventually("backoff after refusal \(index)") { backoff != nil }
+            XCTAssertEqual(delays.last, delay)
+            for _ in 0..<100 {
+                model.observeCost(["cost": .object(["spentUSD": .number(0.4), "limitUSD": .number(25)])], view: view)
+            }
+            for _ in 0..<20 { await Task.yield() }
+            XCTAssertEqual(frames.count, index + 1, "A quiesced helper gets no burst from snapshots")
+            if index < expected.count - 1 {
+                let waiting = backoff; backoff = nil; waiting?.resume()
+                try await eventually("one retry after backoff") { frames.count > index + 1 }
+            }
+        }
+        try await first.value
+        let newer = Task { try await model.setCostLimit(.usd(2), for: chat.id) }
+        try await eventually("new choice bypasses the old backoff") { frames.count == expected.count + 1 }
+        XCTAssertEqual(frames.last?["params"]?.object?["costLimit"], CostLimit.usd(2).wire)
+        try reply(try XCTUnwrap(frames.last), ok: true); try await newer.value
+        let oldBackoff = backoff; backoff = nil; oldBackoff?.resume()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(frames.count, expected.count + 1, "The superseded retry sends nothing")
+        XCTAssertEqual(state.limitSent, .usd(2))
+
+        // An old acknowledgement cannot overwrite the latest choice's.
+        let count = frames.count
+        let old = Task { try await model.setCostLimit(.usd(3), for: chat.id) }
+        try await eventually("old choice sent") { frames.count == count + 1 }
+        let latest = Task { try await model.setCostLimit(.usd(4), for: chat.id) }
+        try await eventually("latest choice sent") { frames.count == count + 2 }
+        try reply(frames[count + 1], ok: true); try await latest.value
+        try reply(frames[count], ok: true); try await old.value
+        XCTAssertEqual(state.limitSent, .usd(4)); XCTAssertEqual(view.costLimitSent, .usd(4))
+
+        let lower = Task { try await model.setCostLimit(.usd(0.5), for: chat.id) }
+        try await eventually("another lower limit sent") { frames.count == count + 3 }
+        try reply(try XCTUnwrap(frames.last), ok: false); try await lower.value
+        try await eventually("lower limit waiting to retry") { backoff != nil }
+        model.helperSessionDidUnload(chat.id)
+        let retired = backoff; backoff = nil; retired?.resume()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(frames.count, count + 3, "An unloaded session is never reopened to retry a limit")
+        XCTAssertNil(state.limitSent); XCTAssertNil(state.limitRetryTask)
+        XCTAssertFalse(model.opened.contains(chat.id))
+        try await host.shutdownAndWait()
+    }
+
+    @MainActor private func pausedAtTheDefaultLimit() async throws -> WireChat {
+        let chat = try await WireChat()
+        do {
+            try await chat.sendAndWait("wire paid usd=24.99") { $0.contains { $0.text == "Wire reply." } }
+            try await chat.waitUntil("the first reply's spend is counted") {
+                abs((chat.session.footer.cost.spentUSD ?? 0) - 24.99) < 1e-9 && chat.session.state == "idle"
+            }
+            chat.send("wire paid-tool usd=0.02")
+            try await chat.waitUntil("the run paused at the default limit") { chat.session.costPaused && !chat.session.busy }
+            try await chat.waitUntil("the card read the spend") { chat.session.presentedMessages.last?.failureCode == SessionDisplay.costPausedCode }
+        } catch { await chat.close(); throw error }
+        XCTAssertEqual(chat.session.presentedMessages.last?.text, "$25.01 spent of the $25.00 limit.")
+        XCTAssertNil(chat.model.record(chat.id)?.costLimit, "The chat follows the default")
+        return chat
+    }
+    /// The chat's limit as its helper holds it.
+    @MainActor private func helperLimit(_ chat: WireChat) async throws -> CostLimit {
+        let status = try await XCTUnwrap(chat.host).request("session.status", sessionID: chat.id, params: ["budgetOnly": .bool(true)])
+        return status.object?["cost"]?.object?["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
+    }
+    /// The paused card's own Resume, pressed as the reader presses it.
+    @MainActor private func pressResume(_ chat: WireChat) async throws {
+        var pill: TranscriptPillButton?
+        try await chat.waitUntil("the card offers Resume") {
+            pill = ConversationPaneTests.views(TranscriptPillButton.self, in: chat.hosted).first { $0.accessibilityIdentifier() == "cost-paused-resume" }
+            return pill != nil
+        }
+        XCTAssertTrue(try XCTUnwrap(pill).accessibilityPerformPress())
+    }
+    @MainActor private func waitForTheHeldCallToGoOn(_ chat: WireChat, _ what: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await chat.waitUntil("\(what): the held call ran and the turn went on", seconds: 20, file: file, line: line) {
+            !chat.session.busy && !chat.session.costPaused && chat.replyRows.contains { $0.text.contains("Tool round finished") }
+        }
+        XCTAssertEqual(chat.card("bash")?.state, "completed", "\(what): the held call ran on Resume", file: file, line: line)
+        XCTAssertFalse(chat.session.notice.contains("Still at the cost limit"), "\(what): \(chat.session.notice)", file: file, line: line)
+    }
+
+    /// The owner's steps with each kind of amount: Raise limit…, a preset or
+    /// a typed amount in its editor, then the card's Resume. Every amount
+    /// above the spend resumes; one at or below it keeps the pause, with
+    /// Raise limit… and nothing resumed.
+    @MainActor func testEveryAmountAboveTheSpendResumesFromRaiseLimit() async throws {
+        for (amount, typed) in [("25", false), ("50", false), ("100", false), ("99.99", true), ("1000", true)] {
+            let chat = try await pausedAtTheDefaultLimit()
+            do { try await raiseAndResume(chat, amount: amount, typed: typed) } catch { await chat.close(); throw error }
+            await chat.close()
+        }
+    }
+    @MainActor private func raiseAndResume(_ chat: WireChat, amount: String, typed: Bool) async throws {
+        let raise = try await Self.waitForTrigger("cost-limit-raise", in: chat)
+        raise.performClick(nil)
+        try await chat.waitUntil("the limit editor opened") { CostLimitPopover.shared.presenter.isShown && CostLimitPopover.shared.sessionID == chat.id }
+        let content = try XCTUnwrap(CostLimitPopover.shared.presenter.popover?.contentViewController?.view)
+        if typed {
+            try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-custom", in: content)).performClick(nil)
+            let field = try XCTUnwrap(Self.view(PiKit.TextField.self, "cost-limit-custom-amount", in: content))
+            field.text = amount; field.onChange?(amount)
+            try XCTUnwrap(Self.view(PiKit.Button.self, "cost-limit-custom-set", in: content)).performClick(nil)
+        } else {
+            try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-" + amount, in: content)).performClick(nil)
+        }
+        let chosen = CostLimit.usd(try XCTUnwrap(Double(amount)))
+        try await chat.waitUntil("$\(amount) was saved and sent") {
+            chat.model.record(chat.id)?.costLimit == chosen && chat.model.costLimitWrites[chat.id] == nil && !CostLimitPopover.shared.presenter.isShown
+        }
+        let limit = try await helperLimit(chat)
+        XCTAssertEqual(limit, chosen, "$\(amount) reached the helper")
+        if chosen.usd! <= 25.01 {
+            XCTAssertEqual(chat.session.presentedMessages.last?.failureCode, SessionDisplay.costPausedCode, "$\(amount) is not above the spend")
+            chat.model.resumeRun(sessionID: chat.id)
+            try await chat.waitUntil("$\(amount): Resume is refused") { chat.session.notice.contains("Still at the cost limit") }
+            XCTAssertTrue(chat.session.costPaused); XCTAssertNotEqual(chat.card("bash")?.state, "completed", "Nothing resumed at $\(amount)")
+        } else {
+            try await pressResume(chat)
+            try await waitForTheHeldCallToGoOn(chat, "$\(amount)")
+        }
+    }
+
+    /// $100 is chosen in Raise limit…'s editor and the editor goes away
+    /// before its save is done: a click outside the popover (on the Resume
+    /// the card offers as soon as the limit is saved), Escape, or AppKit
+    /// closing the popover about half a second after its anchor, the Raise
+    /// limit… pill, leaves the window. The editor then cancels its save task
+    /// (`CostLimitEditor.deinit`), as this test cancels the one it runs. The
+    /// saved $100 still reaches the helper, and Resume goes on. Before
+    /// LIMIT-1 the cancelled task never sent it: the chat showed $100, the
+    /// helper kept $25 and refused the Resume the card offered.
+    @MainActor func testA100LimitWhoseEditorWentAwayMidSaveStillReachesTheHelper() async throws {
+        let chat = try await pausedAtTheDefaultLimit()
+        defer { Task { await chat.close() } }
+        // The chat record's write is held, as a busy store holds it.
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(chat.model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database)
+        XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        let save = Task { try await chat.model.setCostLimit(.usd(100), for: chat.id) }
+        try await chat.waitUntil("the choice's write began") { chat.model.costLimitWrites[chat.id] != nil }
+        save.cancel()
+        XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        _ = await save.result
+        XCTAssertEqual(chat.model.record(chat.id)?.costLimit, .usd(100), "The choice is saved")
+        try await chat.waitUntil("the card offers Resume") { chat.session.presentedMessages.last?.failureCode == SessionDisplay.costPausedRaisedCode }
+        var limit = CostLimit.unlimited
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            limit = try await helperLimit(chat)
+            if limit == .usd(100) { break }
+            try await Task.sleep(for: .milliseconds(20))
+        } while Date() < deadline
+        XCTAssertEqual(limit, .usd(100), "The saved limit reached the chat's helper before any Resume")
+        try await pressResume(chat)
+        try await waitForTheHeldCallToGoOn(chat, "$100")
+    }
+
+    /// However a chat's limit failed to reach its helper, Resume first gives
+    /// the helper the limit the chat shows, then goes on: the card never
+    /// offers a Resume the helper refuses at a limit already raised.
+    @MainActor func testResumeGivesAHelperStillUnderTheOldLimitTheChatsLimitFirst() async throws {
+        let chat = try await pausedAtTheDefaultLimit()
+        defer { Task { await chat.close() } }
+        try await chat.model.setCostLimit(.usd(100), for: chat.id)
+        var limit = try await helperLimit(chat)
+        XCTAssertEqual(limit, .usd(100))
+        // The helper is back under $25, as a send that never reached it left
+        // it; the chat, and the limit it last sent, say $100.
+        _ = try await XCTUnwrap(chat.host).request("session.configure", sessionID: chat.id, params: ["costLimit": CostLimit.usd(25).wire])
+        limit = try await helperLimit(chat)
+        XCTAssertEqual(limit, .usd(25))
+        try await pressResume(chat)
+        try await waitForTheHeldCallToGoOn(chat, "$100")
+        limit = try await helperLimit(chat)
+        XCTAssertEqual(limit, .usd(100), "The helper runs under the chat's limit")
+    }
+}

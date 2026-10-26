@@ -43,6 +43,9 @@ struct HistoryPage: Sendable {
     /// The notice is only that the last record was cut off mid-write: every
     /// record before it is complete and on this page.
     var incompleteTail = false
+    /// The page's last row ends its display turn: the row after it, if any,
+    /// opens the next (`HistoryWindowPolicy.page`).
+    var endsTurn = false
 }
 
 /// What a journal's last state record says was unfinished when its helper
@@ -78,6 +81,19 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    /// Generated fixtures append after indexing, as a live helper can.
+    private var imageReferenceIndexed: (@Sendable () throws -> Void)?
+    func observeImageReference(_ observer: (@Sendable () throws -> Void)?) { imageReferenceIndexed = observer }
+    /// Generated fixtures append after a chunk is read, while a cold scan is under way.
+    private var indexChunkRead: (@Sendable (UInt64) throws -> Void)?
+    func observeIndexChunks(_ observer: (@Sendable (UInt64) throws -> Void)?) { indexChunkRead = observer }
+    /// Test seam: hold an edit's index scan while another chat reads.
+    var editReadStarted: (@Sendable () -> Void)?
+    func observeEditRead(_ observer: (@Sendable () -> Void)?) { editReadStarted = observer }
+    /// Each chat's edit scan owns its indexes and executor. A cold scan must
+    /// not hold up another chat's page/read on this shared reader.
+    private var editReaders: [String: HistoryReader] = [:]
+    private var editRecency: [String] = []
     var agentCoordinationCache: [String: (fingerprint: String, value: AgentCoordination)] = [:]
     /// Complete plan scans only. Keep metadata for the same number of journals
     /// as transcript pages; a cached reopen must not rescan a large journal.
@@ -187,10 +203,15 @@ actor HistoryReader {
             struct Block: Decodable { var type: String?; var id: String? }
             var role: String?; var toolCallId: String?; var calls: [String]; var contentIndexed: Bool; var nativeReplayEligible: Bool?
             var nativeKind: String?; var nativeOperationID: String?; var nativeCompaction: Checkpoint?
-            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID }
+            /// An agent's delivery: a user row that is work of a turn, not its start.
+            var agentDelivery = false
+            /// The row opens a display turn (`HistoryWindowPolicy.startsTurn`).
+            var startsTurn: Bool { HistoryWindowPolicy.startsTurn(role: role, kind: nativeKind, agentDelivery: agentDelivery) }
+            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID, nativeAgentDelivery }
             init(from decoder: Decoder) throws {
                 let value = try decoder.container(keyedBy: CodingKeys.self)
                 role = try value.decodeIfPresent(String.self, forKey: .role)
+                agentDelivery = value.contains(.nativeAgentDelivery) && !((try? value.decodeNil(forKey: .nativeAgentDelivery)) ?? true)
                 toolCallId = try value.decodeIfPresent(String.self, forKey: .toolCallId)
                 nativeReplayEligible = try value.decodeIfPresent(Bool.self, forKey: .nativeReplayEligible)
                 nativeKind = try value.decodeIfPresent(String.self, forKey: .nativeKind)
@@ -267,6 +288,8 @@ actor HistoryReader {
         var versions = MessageVersionLedger(), olderRows = 0
     }
     private var indexes: [String: Index] = [:]
+    /// Test seam: the journals this reader holds an index for.
+    var indexedPaths: Set<String> { Set(indexes.keys) }
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
     // Offsets and parent links only; no history bodies.
@@ -370,6 +393,7 @@ actor HistoryReader {
         searchGeneration += 1; searchContinuation = nil
         indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll()
         subagentPlanCache.removeAll(); subagentPlanRecency.removeAll()
+        editReaders.removeAll(); editRecency.removeAll()
     }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
@@ -799,13 +823,25 @@ actor HistoryReader {
         }
         return ref.type == "branch" ? RetainedConversation.edit : ConversationContent.text(record, adopted: ref.adopted)
     }
-    func editTarget(path: String, id: String) throws -> [String: WireValue] {
-        let page = try read(path: path, around: id, targetTurns: 1, whole: true)
-        guard page.notice == nil, let index = indexes[path], try index.branch.index(of: id) != nil,
+    func editTarget(path: String, id: String) async throws -> [String: WireValue] {
+        let reader = editReaders[path] ?? HistoryReader(indexDirectory: indexDirectory)
+        editReaders[path] = reader
+        editRecency.removeAll { $0 == path }; editRecency.append(path)
+        while editRecency.count > Self.retainedIndexes { editReaders.removeValue(forKey: editRecency.removeFirst()) }
+        return try await reader.indexedEditTarget(path: path, id: id, started: editReadStarted)
+    }
+    private func indexedEditTarget(path: String, id: String, started: (@Sendable () -> Void)?) throws -> [String: WireValue] {
+        started?()
+        try Task.checkCancellation()
+        let file = try open(path); defer { try? file.close() }
+        let identity = try stamp(file), size = try file.seekToEnd()
+        try file.seek(toOffset: 0)
+        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: nil, around: id, after: nil,
+                                       targetTurns: 1, progress: nil, whole: true)
+        guard journal.notice == nil, let index = indexes[path], let position = try index.branch.index(of: id),
               let ref = try index.branch.ref(id), ref.type == "message", ref.role == "user" else {
             throw HostError.failure("The editable user message is unavailable, abandoned, or its history needs recovery.")
         }
-        let file = try open(path); defer { try? file.close() }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         try file.seek(toOffset: ref.offset)
         guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
@@ -814,7 +850,10 @@ actor HistoryReader {
         guard text.utf8.count <= SubmissionLimits.messageBytes, try stamp(file) == index.stamp else { throw HostError.failure("The original input is too large or changed during loading.") }
         let blocks = message["content"]?.array ?? []
         let expanded = message["content"]?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
-        return ["messageId": .string(id), "text": .string(text), "sourceTimeline": .string(EditReplayPlan.digest(try index.branch.timelineIDs())),
+        let timeline = try index.branch.timelineIDs()
+        guard timeline.indices.contains(position), timeline[position] == id else { throw StoreError.unreadableRecord }
+        return ["messageId": .string(id), "text": .string(text), "sourceTimeline": .string(EditReplayPlan.digest(timeline)),
+                "sourcePrefix": .string(EditReplayPlan.digest(Array(timeline.prefix(through: position)))),
                 "sourceTextDigest": .string(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()),
                 "input": message["nativeUserInput"] ?? .null,
                 "legacyInputs": .bool(message["nativeUserInput"] == nil && (expanded != text || blocks.contains { $0.object?["type"]?.string == "image" }))]
@@ -825,6 +864,23 @@ actor HistoryReader {
         let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
+    }
+    /// Resolve a live row to its retained record without decoding its images.
+    /// Reopened pages attach this reference as they read the row below.
+    func imageReference(path: String, id: String) throws -> TranscriptImageReference {
+        try Task.checkCancellation()
+        let file = try open(path); defer { try? file.close() }
+        let identity = try stamp(file), size = try file.seekToEnd()
+        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: nil, around: id, after: nil,
+                                       targetTurns: nil, progress: nil, whole: false, bounded: true)
+        try imageReferenceIndexed?()
+        // A helper can append while the index is read, or be halfway through
+        // its next record. The complete record this offset names still reads;
+        // the image decoder checks its own descriptor, id and bounds again.
+        let current = try stamp(file)
+        guard let ref = try journal.branch.ref(id), ref.type == "message", ref.role == "user",
+              current.device == identity.device, current.inode == identity.inode, current.size >= identity.size else { throw StoreError.unreadableRecord }
+        return TranscriptImageReference(path: path, id: id, offset: ref.offset, length: ref.length, device: identity.device, inode: identity.inode)
     }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, retained: Bool = false, knownRevision: String? = nil, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
@@ -1161,9 +1217,9 @@ actor HistoryReader {
     /// `validating`: a boundary of the window a read without a cursor (a
     /// position) lands in; the journal must still be the one it was read from.
     func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, start: Bool = false,
-                position: Int? = nil, validating: ConversationCursor? = nil, progress: Progress? = nil) throws -> HistoryPage {
+                position: Int? = nil, validating: ConversationCursor? = nil, limits: HistoryWindowPolicy.PageLimits? = nil, progress: Progress? = nil) throws -> HistoryPage {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
-                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor ?? validating, progress: progress)
+                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor ?? validating, progress: progress, limits: limits)
     }
     /// `whole` indexes every record: what reads the whole chat (search, copy,
     /// an edit's timeline, a record's role in any version) needs it.
@@ -1171,7 +1227,7 @@ actor HistoryReader {
     /// (0 is the chat's first), in place of `around` — where the reader has
     /// dragged the scroller to, in rows the transcript has not read.
     func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil, start atStart: Bool = false,
-              position: Int? = nil, targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
+              position: Int? = nil, targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false, limits: HistoryWindowPolicy.PageLimits? = nil) throws -> HistoryPage {
         try Task.checkCancellation()
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
@@ -1185,6 +1241,22 @@ actor HistoryReader {
         if let position, !whole, position < journal.olderRows {
             journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
                                        targetTurns: targetTurns, progress: progress, whole: true)
+            whole = true
+        }
+        func pageRange(_ journal: JournalFacts) throws -> (range: Range<Int>, forward: Bool, target: Int?) {
+            let at = position.map { min(max(0, $0 - journal.olderRows), max(0, journal.branch.count - 1)) }
+            return try Self.pageRange(in: journal.branch, before: before, around: around, after: after, start: atStart, at: at,
+                                      targetTurns: targetTurns, firstIsStart: journal.olderRows == 0, limits: limits)
+        }
+        var (range, forward, target) = try pageRange(journal)
+        // A transcript page whose first turn began before the rows an index
+        // built from the metadata file holds needs the whole journal indexed,
+        // as a row before them does: the page holds whole turns.
+        if targetTurns != nil, !whole, journal.olderRows > 0, range.lowerBound < journal.branch.count,
+           try journal.branch.at(range.lowerBound).turnStart != true, try journal.branch.latestTurnStart(before: range.lowerBound) == nil {
+            journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: true)
+            (range, forward, target) = try pageRange(journal)
         }
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage, failureCode = journal.failureCode
@@ -1216,10 +1288,13 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let at = position.map { min(max(0, $0 - olderRows), max(0, branch.count - 1)) }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, at: at, targetTurns: targetTurns)
-        let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
-                                                    branch: branch, versions: versions, retainedRun: retainedRun)
+        let (messages, start, end) = try decodePage(range, forward: forward, wholeTurns: targetTurns != nil, target: target, from: file, path: path, identity: identity,
+                                                    branch: branch, versions: versions, retainedRun: retainedRun, limits: limits)
+        // A page that starts inside a turn names the input that opened it;
+        // one that ends where its last turn does says so.
+        let startsTurn = start < branch.count ? try branch.at(start).turnStart == true : true
+        let partialTurnInput = startsTurn ? nil : try branch.latestTurnStart(before: start)
+        let endsTurn = end < branch.count ? try branch.at(end).turnStart == true : true
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, start: olderRows + start, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil, failureCode: notice == nil ? failureCode : nil,
@@ -1227,8 +1302,8 @@ actor HistoryReader {
                            incarnation: incarnation, lineage: lineage,
                            older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
-                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+                           partialTurnInput: partialTurnInput, taskRecords:taskRecords,
+                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail, endsTurn: endsTurn)
     }
     /// The journal's offset index and what it says about the chat: the one
     /// kept from an earlier read while the file is unchanged, else one built
@@ -1307,6 +1382,7 @@ actor HistoryReader {
             let count = bounded ? Int(min(65_536, size - min(size, readOffset))) : 65_536
             guard count > 0, let chunk = try file.read(upToCount: count), !chunk.isEmpty else { break }
             readOffset += UInt64(chunk.count)
+            try indexChunkRead?(readOffset)
             try Task.checkCancellation()
             var start = chunk.startIndex
             while let index = Self.newline(in: chunk, from: start) {
@@ -1338,7 +1414,8 @@ actor HistoryReader {
                         if value.id == nil || parent != leaf { linear = false }
                         if let parent, try branch.ref(parent) == nil { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
-                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
+                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) },
+                                       turnStart: value.type == "message" && value.message?.startsTurn == true ? true : nil))
                         if let target = value.presentationTarget {
                             guard var original = try branch.ref(target), original.presentation else { throw StoreError.unreadableRecord }
                             original.offset = offset; original.length = pending.count
@@ -1476,11 +1553,17 @@ actor HistoryReader {
     /// changed meanwhile. Each call's result shows in its call's card, and a
     /// call the stopped run never answered reads "unknown". Returns the rows
     /// and where they start and end in the branch.
-    private func decodePage(_ range: Range<Int>, forward: Bool, from file: FileHandle, path: String, identity: Stamp,
+    /// `wholeTurns`: a transcript page, filled within its own budget to
+    /// whole display turns (`HistoryWindowPolicy.PageFill`), as the helper
+    /// fills one; otherwise the rows fill one envelope. `target`: the row a
+    /// page read around it must hold. Read from the start of its turn, a
+    /// page whose rows before it are past the budget starts at it instead.
+    private func decodePage(_ range: Range<Int>, forward: Bool, wholeTurns: Bool, target: Int? = nil, from file: FileHandle, path: String, identity: Stamp,
                             branch: HistoryOffsetIndex, versions: MessageVersionLedger,
-                            retainedRun: RetainedRun?) throws -> (messages: [TranscriptMessage], start: Int, end: Int) {
+                            retainedRun: RetainedRun?, limits: HistoryWindowPolicy.PageLimits? = nil) throws -> (messages: [TranscriptMessage], start: Int, end: Int) {
+        // In the order they are read; a page read back is turned round below.
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
-        var start = forward ? range.lowerBound : range.upperBound, end = start
+        var fill = HistoryWindowPolicy.PageFill(forward: forward, limits: limits ?? TranscriptPaging.pageLimits)
         // What each call's result recorded, so the reply that made the call
         // can show it in that call's own card, exactly as a live snapshot
         // does. Collected while the window is decoded, keyed by the result's
@@ -1495,18 +1578,46 @@ actor HistoryReader {
             decodedRecords += 1
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
             var message = Self.displayedMessage(value, ref: ref)
-            if let result = ToolResultRecord.of(value["message"]?.object ?? [:]) { toolResults[ref.id] = result.record }
+            if (message.imageCount ?? 0) > 0 {
+                message.imageReference = TranscriptImageReference(path: path, id: ref.id, offset: ref.offset, length: ref.length,
+                                                                  device: identity.device, inode: identity.inode)
+            }
+            let result = ToolResultRecord.of(value["message"]?.object ?? [:])
+            if let result { toolResults[ref.id] = result.record }
             if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {
                 message.versions = MessageVersionMark(index: at + 1, count: ids.count, ids: ids.count <= 64 ? ids : nil)
             }
             let count = try JSONEncoder().encode(message).count
             // A page may hold one large complete row. Never shorten a source
             // just to fit the preferred window size; native layout is virtual.
-            guard messages.isEmpty || bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
-            bytes += count + 1
-            if forward { messages.append(message); end = index + 1 }
-            else { messages.insert(message, at: 0); start = index }
+            if wholeTurns {
+                // Weighed as encoded or as the window will hold it
+                // (`TranscriptPaging.size`), whichever is more, and a result's
+                // output once more for the card of the call it answers, which
+                // `resolvingToolResults` fills below. Weighed as read, a turn of
+                // a hundred 32 KiB results fit its 6 MB as 3.3 MB and held 6.7 MB
+                // once resolved: past the window's caps, the next update let go
+                // of its question and the turn, folded, unfolded.
+                let weight = max(count, TranscriptPaging.size(message)) + (result?.record.output.utf8.count ?? 0)
+                guard fill.admit(weight, startsTurn: ref.turnStart == true) else {
+                    if forward, let target, target > range.lowerBound, index <= target, target < range.upperBound {
+                        return try decodePage(target..<range.upperBound, forward: true, wholeTurns: true, from: file, path: path, identity: identity,
+                                              branch: branch, versions: versions, retainedRun: retainedRun, limits: limits)
+                    }
+                    break
+                }
+            }
+            else {
+                guard messages.isEmpty || bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
+                bytes += count + 1
+            }
+            messages.append(message)
         }
+        // A transcript page that ran out of room keeps the whole turns it read.
+        if wholeTurns { messages.removeLast(messages.count - fill.kept) }
+        if !forward { messages.reverse() }
+        let start = forward ? range.lowerBound : range.upperBound - messages.count
+        let end = forward ? range.lowerBound + messages.count : range.upperBound
         guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         guard range.isEmpty || !messages.isEmpty else { throw HostError.failure("This history record exceeds the display envelope. Its retained source is unchanged.") }
         messages = TranscriptMessage.resolvingToolResults(messages, results: toolResults)
@@ -1530,10 +1641,12 @@ actor HistoryReader {
         return (messages, start, end)
     }
     /// The rows a page holds, and whether it reads forward from its first:
-    /// the turns around, after or before a row, or sixty rows when no count
-    /// of turns is asked for. A boundary no longer in the branch throws.
+    /// whole display turns around, after or before a row (one turn when
+    /// `targetTurns` is 1), or sixty rows when no count of turns is asked
+    /// for. A boundary no longer in the branch throws. `firstIsStart`: the
+    /// branch's first row is the chat's (`HistoryWindowPolicy.page`).
     private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?, start: Bool = false,
-                                  at position: Int? = nil, targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
+                                  at position: Int? = nil, targetTurns: Int?, firstIsStart: Bool = true, limits: HistoryWindowPolicy.PageLimits? = nil) throws -> (range: Range<Int>, forward: Bool, target: Int?) {
         let found = try around.flatMap { try branch.index(of: $0) }
         let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : position.flatMap { branch.count > 0 ? $0 : nil } ?? found
         let beforeIndex = try before.flatMap { try branch.index(of: $0) }
@@ -1545,12 +1658,16 @@ actor HistoryReader {
         let range: Range<Int>
         if let targetTurns {
             let pivot = anchorIndex ?? afterIndex ?? beforeIndex ?? branch.count
-            let users = try branch.userPositions(in: max(0, pivot - HistoryWindowPolicy.rows)..<min(branch.count, pivot + HistoryWindowPolicy.rows + 1))
-            range = HistoryWindowPolicy.range(count: branch.count, before: beforeIndex, after: afterIndex,
-                                              around: anchorIndex, target: targetTurns, isUser: { users.contains($0) })
+            var limits = limits ?? TranscriptPaging.pageLimits
+            if targetTurns <= 1 { limits.rows = 1 }
+            // A page reaches at most a turn's longest back or forward from its pivot.
+            let reach = limits.turnRows + 1
+            let starts = try branch.turnStarts(in: max(0, pivot - reach)..<min(branch.count, pivot + reach + 1))
+            range = HistoryWindowPolicy.page(count: branch.count, before: beforeIndex, after: afterIndex, around: anchorIndex,
+                                             limits: limits, firstIsStart: firstIsStart, startsTurn: { starts.contains($0) })
         } else if let start = anchorIndex ?? afterIndex.map({ $0 + 1 }) { range = start..<min(branch.count, start + 60) }
         else { let end = beforeIndex ?? branch.count; range = max(0, end - 60)..<end }
-        return (range, forward)
+        return (range, forward, anchorIndex)
     }
 }
 
@@ -1581,7 +1698,7 @@ extension HistoryReader {
             switch row.kind {
             case .message, .update:
                 guard (row.kind == .message ? value.type == "message" && value.id == row.id : value.presentationTarget == row.id), let message = value.message else { return nil }
-                ref.type = "message"; ref.role = message.role
+                ref.type = "message"; ref.role = message.role; ref.turnStart = message.startsTurn ? true : nil
                 ref.presentation = ["execution", "requestLedger"].contains(message.nativeKind ?? "")
                 ref.calls = message.calls.isEmpty ? nil : message.calls; ref.resultCall = message.role == "toolResult" ? message.toolCallId : nil
                 ref.operationID = message.nativeKind == "execution" ? (message.nativeOperationID ?? message.nativeCompaction?.operationId) : nil

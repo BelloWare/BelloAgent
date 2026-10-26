@@ -328,7 +328,7 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             let text = String(decoding: bytes[0..<offset], as: UTF8.self)
             let row = TranscriptMessage(id: "stream:x", role: "assistant", text: text, state: "streaming", turn: last)
             let frame = pane.frame(reset: deltas == 0) {
-                if deltas > 0 { session.messages[session.messages.count - 1] = row } else { session.messages.append(row) }
+                if deltas > 0 { session.replaceMessage(at: session.messages.count - 1, with: row) } else { session.appendMessage(row) }
             }
             XCTAssertEqual(measuredPage.snapshot?.messages.last?.text, text,
                            "Every measured delta must reach the presented page")

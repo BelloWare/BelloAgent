@@ -33,6 +33,8 @@ import QuartzCore
     var removeTopic: ((String) -> Void)?
     var setShownRoots: ((String, Int, String) -> Void)?
     var setSideFolded: ((String, Bool) -> Void)?
+    /// A row's project tag was pressed: narrow Flat to that project.
+    var chooseProject: ((String) -> Void)?
     /// Where a drag over the list would drop, for the headers' highlight.
     var dropTargetChanged: (((project: String, topic: String?)?) -> Void)?
 
@@ -168,14 +170,26 @@ import QuartzCore
             return (makeView(entry) as? SidebarEntryView)?.entryHeight(width: width) ?? 0
         }
     }
-    private struct ReadingAnchor {
-        var id: String
-        var offset: CGFloat
+    private enum ReadingAnchor {
+        case top
+        case entry(id: String, offset: CGFloat, visibleSelection: String?)
+    }
+    private func isSelected(_ entry: SidebarEntry) -> Bool {
+        switch entry {
+        case .chat(_, let state, _): return state.selected
+        case .side(let state): return state.selected
+        default: return false
+        }
     }
     private func readingAnchor() -> ReadingAnchor? {
-        guard let clip = enclosingScrollView?.contentView,
-              let index = frames.firstIndex(where: { $0.maxY > clip.bounds.minY }) else { return nil }
-        return ReadingAnchor(id: contents.entries[index].id, offset: clip.bounds.minY - frames[index].minY)
+        guard let scroll = enclosingScrollView else { return nil }
+        let clip = scroll.contentView
+        // At the top, show new activity above the old first row. Allow one
+        // point of rounding; farther down, keep the row the reader was reading.
+        if clip.bounds.minY <= -scroll.contentInsets.top + 1 { return .top }
+        guard let index = frames.firstIndex(where: { $0.maxY > clip.bounds.minY }) else { return nil }
+        let selected = zip(contents.entries, frames).first { isSelected($0.0) && $0.1.intersects(clip.bounds) }?.0.id
+        return .entry(id: contents.entries[index].id, offset: clip.bounds.minY - frames[index].minY, visibleSelection: selected)
     }
     private var positioning = false
     private func layoutEntries(width: CGFloat) { layoutEntries(width: width, anchor: readingAnchor()) }
@@ -193,9 +207,25 @@ import QuartzCore
         }
         let total = y + Self.padding.bottom
         if frame.height != total || frame.width != width { setFrameSize(NSSize(width: width, height: total)) }
-        if let anchor, let index = contents.entries.firstIndex(where: { $0.id == anchor.id }), let scroll = enclosingScrollView {
+        if let anchor, let scroll = enclosingScrollView {
             let clip = scroll.contentView
-            let y = min(max(0, frames[index].minY + anchor.offset), max(0, total - clip.bounds.height))
+            let top = -scroll.contentInsets.top
+            let y: CGFloat
+            switch anchor {
+            case .top: y = top
+            case .entry(let id, let offset, let visibleSelection):
+                let bottom = max(top, total - clip.bounds.height + scroll.contentInsets.bottom)
+                let readingY = contents.entries.firstIndex(where: { $0.id == id }).map { frames[$0].minY + offset } ?? clip.bounds.minY
+                var restored = min(max(top, readingY), bottom)
+                // Only the primary selection that was on screen follows an
+                // update. If it disappeared past an edge, show it at that edge.
+                if let visibleSelection, let index = contents.entries.firstIndex(where: { $0.id == visibleSelection && isSelected($0) }) {
+                    let selected = frames[index]
+                    if selected.maxY <= restored { restored = max(selected.minY, selected.maxY - clip.bounds.height) }
+                    else if selected.minY >= restored + clip.bounds.height { restored = min(selected.minY, selected.maxY - clip.bounds.height) }
+                }
+                y = min(max(top, restored), bottom)
+            }
             if clip.bounds.minY != y {
                 clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
                 scroll.reflectScrolledClipView(clip)

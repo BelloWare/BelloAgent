@@ -26,6 +26,7 @@ import AppKit
     static let failedFont = NSFont.systemFont(ofSize: 12, weight: .medium)
     /// The skills the message used, leading its bubble.
     private var skills: TranscriptNativeSkillPills?
+    private var images: TranscriptNativeImages?
     /// Between the skills and the text.
     static let skillGap = TranscriptMessageRows.skillGap
     /// Under a saved fragment whose text was not kept whole.
@@ -85,9 +86,9 @@ import AppKit
         TranscriptAppearance.apply(inputs.environment, to: self)
         let message = message
         bubble.fill = TranscriptNSPalette.userBackground
-        text.update(text: message.text, face: .user, environment: inputs.environment,
-                    swiftUILines: !TranscriptPlainTextView.usesTextKit(message.text))
-        text.isHidden = message.text.isEmpty
+        text.update(text: message.userText, face: .user, environment: inputs.environment,
+                    swiftUILines: !TranscriptPlainTextView.usesTextKit(message.userText))
+        text.isHidden = message.userText.isEmpty
         clock.color = TranscriptNSPalette.faint
         if message.isSending {
             clock.text = "Sending…"
@@ -124,6 +125,12 @@ import AppKit
     /// Builds the parts this message has and lets go of the ones it has not.
     private func configureParts(_ message: TranscriptMessage) {
         let environment = inputs.environment, actions = inputs.actions, id = message.id
+        if (message.imageCount ?? 0) > 0 {
+            let view = images ?? { let view = TranscriptNativeImages(); addSubview(view); images = view; return view }()
+            view.update(message: message, actions: actions, environment: environment)
+        } else if let images {
+            images.removeFromSuperview(); self.images = nil
+        }
         if let failed = message.failedEnd {
             let label = failedLabel ?? { let label = TranscriptLabel(); label.font = Self.failedFont; addSubview(label); failedLabel = label; return label }()
             label.text = failed; label.color = TranscriptNSPalette.danger
@@ -158,7 +165,7 @@ import AppKit
         }
     }
     /// Whether the bubble shows the text: always, unless the message is only skills.
-    private var showsText: Bool { (message.skills ?? []).isEmpty || !message.text.isEmpty }
+    private var showsText: Bool { (message.skills ?? []).isEmpty || !message.userText.isEmpty }
 
     private func setHovering(_ inside: Bool) {
         hovering = inside
@@ -202,13 +209,15 @@ import AppKit
             y = plan.failed.maxY + Self.gap
         }
         let skillsHeight = skills?.height(width: textWidth) ?? 0
-        let textHeight = showsText && !message.text.isEmpty ? text.exactHeight(width: textWidth) : 0
+        let textHeight = showsText && !message.userText.isEmpty ? text.exactHeight(width: textWidth) : 0
+        let imagesHeight = images.map { TranscriptImageMetrics.height(count: $0.buttons.count, width: textWidth) } ?? 0
         var inner = skillsHeight
-        if skills != nil, showsText { inner += Self.skillGap }
+        if skills != nil, showsText || images != nil { inner += Self.skillGap }
         if showsText { inner += textHeight }
+        if images != nil { inner += imagesHeight + (textHeight > 0 ? Self.gap : 0) }
         plan.bubble = CGRect(x: width - bubbleWidth, y: y, width: bubbleWidth, height: inner + 2 * Self.padding.height)
         plan.skills = CGRect(x: plan.bubble.minX + Self.padding.width, y: plan.bubble.minY + Self.padding.height, width: textWidth, height: skillsHeight)
-        plan.text = CGRect(x: plan.skills.minX, y: plan.bubble.maxY - Self.padding.height - textHeight, width: textWidth, height: ceil(textHeight))
+        plan.text = CGRect(x: plan.skills.minX, y: plan.skills.maxY + (skills != nil && (showsText || images != nil) ? Self.skillGap : 0), width: textWidth, height: ceil(textHeight))
         y = plan.bubble.maxY + Self.gap
         if let truncatedText {
             let used = truncatedText.usedWidth(width: width), height = truncatedText.exactHeight(width: width)
@@ -238,8 +247,9 @@ import AppKit
         let plan = plan(width: bounds.width)
         let hidden = inputs.disclosure.foldedAway
         let message = message
-        bubble.isHidden = hidden; text.isHidden = hidden || !showsText || message.text.isEmpty; clock.isHidden = hidden
+        bubble.isHidden = hidden; text.isHidden = hidden || !showsText || message.userText.isEmpty; clock.isHidden = hidden
         for view in [failedLabel, skills, truncatedText, switcher, accounting] as [NSView?] { view?.isHidden = hidden }
+        images?.isHidden = hidden
         guard !hidden else { return }
         // Frames on the pixel grid, as SwiftUI places views.
         let width = bounds.width
@@ -249,6 +259,11 @@ import AppKit
         // The text keeps its exact place: SwiftUI does not round a text's origin.
         text.frame = mirrored(plan.text)
         skills?.frame = mirrored(plan.skills)
+        if let images {
+            let height = TranscriptImageMetrics.height(count: images.buttons.count, width: plan.text.width)
+            images.frame = mirrored(CGRect(x: plan.text.minX, y: plan.bubble.maxY - Self.padding.height - height,
+                                           width: plan.text.width, height: height))
+        }
         if let failedLabel { failedLabel.frame = TranscriptMotion.mirrored(plan.failed, of: failedLabel, width: width, rtl) }
         truncatedText?.frame = mirrored(CGRect(x: plan.truncated.minX, y: plan.truncated.minY, width: plan.truncated.width, height: ceil(plan.truncated.height)))
         // The band, as its `HStack` lays it out ten points apart: the versions,

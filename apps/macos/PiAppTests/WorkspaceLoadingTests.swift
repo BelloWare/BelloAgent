@@ -47,21 +47,29 @@ final class WorkspaceLoadingTests: XCTestCase {
         model.shutdown(); try await model.traces.close(); await model.store?.close()
     }
 
-    @MainActor func testFreshThreeTurnSelectionAndWarmRevisitStayBounded() async throws {
+    /// A chat opens on its newest page: whole turns, as many as a page's
+    /// rows hold. An earlier page joins it, and a warm revisit after the
+    /// reader moved up reads one page from the turn they were in. (Before
+    /// 0.1.131 a page was the newest three turns.)
+    @MainActor func testFreshSelectionAndWarmRevisitReadWholeTurnPages() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let path = root.appendingPathComponent("history.jsonl"); try journal(1_001, path: path)
+        // Turns of a question and a reply, and a last question on its own.
+        let rows = 2 * HistoryWindowPolicy.pageRows + 501, page = HistoryWindowPolicy.pageRows, first = HistoryWindowPolicy.PageLimits.standard.opening.rows
+        let path = root.appendingPathComponent("history.jsonl"); try journal(rows, path: path)
         let model = try await fixture(root: root, path: path)
         let started = ProcessInfo.processInfo.systemUptime
         await model.select("a")
         let view = try XCTUnwrap(model.selected)
-        XCTAssertEqual(view.messages.map(\.id), (996..<1001).map { "m\($0)" })
+        // A page back from the end, starting at a question: one row short of a page.
+        XCTAssertEqual(view.messages.map(\.id), ((rows - first + 1)..<rows).map { "m\($0)" })
         model.historyViewportReady("a", generation: view.presentationGeneration)
         let loaded = await model.loadEarlierPage(sessionID: "a")
-        XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, 11)
-        view.scrollAnchor = .init(id: "m990", offset: 17, followsBottom: false)
+        XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, first + page - 1)
+        XCTAssertEqual(view.messages.first?.id, "m\(rows - first - page + 1)", "The earlier page starts at a question too")
+        view.scrollAnchor = .init(id: "m600", offset: 17, followsBottom: false)
         await model.select("b"); await model.select("a")
-        // Still one bounded page, read from where the reader was.
-        XCTAssertEqual(view.messages.map(\.id), (990..<996).map { "m\($0)" }); XCTAssertEqual(view.scrollAnchor?.id, "m990")
+        // Still one bounded page, read from the turn the reader was in.
+        XCTAssertEqual(view.messages.map(\.id), (600..<(600 + first)).map { "m\($0)" }); XCTAssertEqual(view.scrollAnchor?.id, "m600")
         XCTAssertTrue(model.hosts.isEmpty)
         print("FRESH selection+revisit source ms \((ProcessInfo.processInfo.systemUptime-started)*1000)")
         try await close(model)
@@ -77,9 +85,11 @@ final class WorkspaceLoadingTests: XCTestCase {
         let coldStart = ProcessInfo.processInfo.systemUptime
         await model.select("a")
         let cold = (ProcessInfo.processInfo.systemUptime - coldStart) * 1_000
-        let display = try XCTUnwrap(model.selected), messages = display.messages.map(\.id)
+        let display = try XCTUnwrap(model.selected)
         model.historyViewportReady("a", generation: display.presentationGeneration)
         XCTAssertEqual(display.historyState, .ready)
+        try await eventually("The opening fill did not settle", timeout: .seconds(20)) { !display.presentation.openingPage }
+        let messages = display.messages.map(\.id)
         let scans = await model.history.subagentScannedBytes
         let indexed = await model.history.indexedBytes, decoded = await model.history.decodedRecords
         let acceptance = await model.history.acceptanceScannedBytes
@@ -120,11 +130,15 @@ final class WorkspaceLoadingTests: XCTestCase {
         try await close(model)
     }
 
+    /// A turn longer than the resident window, which no page holds whole,
+    /// continues across pages: the newest page holds its end and names the
+    /// question it answers, and earlier pages read back to that question.
     @MainActor func testOversizedTurnUsesExplicitContinuationInsteadOfRepairBackfill() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("tools.jsonl"), encoder = JSONEncoder()
+        let count = HistoryWindowPolicy.residentRows + 121
         var bytes = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("a")]); bytes.append(10)
-        for index in 0..<121 {
+        for index in 0..<count {
             let role = index == 0 || index == 20 ? "user" : index % 2 == 0 ? "toolResult" : "assistant"
             let value: [String: WireValue] = ["type": .string("message"), "id": .string("m\(index)"),
                 "parentId": index == 0 ? .null : .string("m\(index - 1)"),
@@ -135,10 +149,17 @@ final class WorkspaceLoadingTests: XCTestCase {
         let model = try await fixture(root: root, path: path)
         await model.select("a")
         let view = try XCTUnwrap(model.selected)
-        XCTAssertEqual(view.messages.count, 60); XCTAssertEqual(view.presentation.partialTurnInput, "m20")
+        XCTAssertEqual(view.messages.count, HistoryWindowPolicy.residentRows); XCTAssertEqual(view.presentation.partialTurnInput, "m20")
+        XCTAssertEqual(view.messages.last?.id, "m\(count - 1)")
         model.historyViewportReady("a", generation: view.presentationGeneration)
-        while view.olderPage.cursor != nil { let loaded = await model.loadEarlierPage(sessionID: "a"); XCTAssertTrue(loaded) }
-        XCTAssertEqual(view.messages.map(\.id), (0..<121).map { "m\($0)" })
+        var seen = Set(view.messages.map(\.id))
+        while view.olderPage.cursor != nil {
+            let loaded = await model.loadEarlierPage(sessionID: "a"); XCTAssertTrue(loaded)
+            seen.formUnion(view.messages.map(\.id))
+        }
+        XCTAssertEqual(view.messages.first?.id, "m0")
+        XCTAssertEqual(seen, Set((0..<count).map { "m\($0)" }), "Every row of the turn was read")
+        XCTAssertLessThanOrEqual(view.messages.count, HistoryWindowPolicy.residentRows)
         try await close(model)
     }
 

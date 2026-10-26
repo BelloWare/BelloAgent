@@ -61,8 +61,12 @@ final class HardeningTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("session.jsonl")
         var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
-        for index in 0..<100 {
-            let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": "user", "content": String(repeating: "x", count: 16_000)]]
+        // Questions of 16 KB each: more than a page's bytes hold.
+        let count = 300, textBytes = 16_000
+        let limits = HistoryWindowPolicy.PageLimits.standard
+        let rowBytes = HistoryWindowPolicy.residentWeight(text: textBytes, thinking: 0, toolBytes: 0, segmentBytes: 0, segments: 0) + 1
+        for index in 0..<count {
+            let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": "user", "content": String(repeating: "x", count: textBytes)]]
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
         try bytes.write(to: path)
@@ -72,27 +76,33 @@ final class HardeningTests: XCTestCase {
         await model.select("fixture")
         // An unloaded chat opens where the reader left it: the bounded turns
         // from their row on, detached from the newest turns. No host starts.
-        XCTAssertEqual(model.selected?.messages.first?.id, "m10"); XCTAssertEqual(model.selected?.messages.last?.id, "m12"); XCTAssertEqual(model.selected?.before, "m10")
+        let opened = model.selected?.messages ?? []
+        XCTAssertEqual(opened.first?.id, "m10"); XCTAssertEqual(model.selected?.before, "m10")
+        XCTAssertEqual(opened.count, min(count - 10, limits.opening.rows, (limits.opening.bytes - HistoryWindowPolicy.metadataAllowance) / rowBytes))
+        XCTAssertGreaterThan(opened.count, 3); XCTAssertLessThan(opened.count, count - 10, "One page's bytes, not the rest of the chat")
         XCTAssertTrue(model.selected?.browsingHistory == true); XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertEqual(model.selected?.scrollAnchor, TranscriptAnchor(id: "m10", offset: -12, followsBottom: false), "The reading position is kept with its offset")
-        XCTAssertLessThanOrEqual(model.selected?.messages.reduce(0) { $0 + $1.text.utf8.count } ?? 0, 300_000)
+        XCTAssertLessThanOrEqual(opened.reduce(0) { $0 + $1.text.utf8.count }, HistoryWindowPolicy.pageBytes)
         // Scrolling up prepends the page before the first row without starting a host.
         let view = try XCTUnwrap(model.selected)
         model.historyViewportReady("fixture", generation: view.presentationGeneration)
         let loaded = await model.loadEarlierPage(sessionID:"fixture")
         XCTAssertTrue(loaded)
-        XCTAssertEqual(view.messages.first?.id, "m7"); XCTAssertEqual(view.messages.last?.id, "m12"); XCTAssertEqual(view.before, "m7")
+        XCTAssertEqual(view.messages.first?.id, "m0"); XCTAssertEqual(view.messages.last?.id, opened.last?.id); XCTAssertNil(view.before)
         XCTAssertEqual(view.scrollAnchor?.id, "m10", "A model-only page read leaves the viewport and its anchor to the pane")
         XCTAssertTrue(model.hosts.isEmpty)
         model.latest(sessionID: "fixture")
-        for _ in 0..<500 where view.messages.first?.id == "m7" { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<500 where view.messages.first?.id == "m0" { try await Task.sleep(for: .milliseconds(10)) }
         await model.select("fixture")
-        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m97"); XCTAssertFalse(model.selected?.browsingHistory == true)
+        XCTAssertEqual(model.selected?.messages.last?.id, "m\(count - 1)")
+        // Latest reads a full page; opening the saved anchor used the smaller first page.
+        XCTAssertEqual(model.selected?.messages.count, min(count, limits.rows, (limits.bytes - HistoryWindowPolicy.metadataAllowance) / rowBytes), "One page's bytes")
+        XCTAssertFalse(model.selected?.browsingHistory == true)
         let earlier = try await model.history.read(path: path.path, before: "m10")
         XCTAssertEqual(earlier.messages.last?.id, "m9")
         do { _ = try await model.history.read(path:path.path,around:"missing"); XCTFail("A lost boundary must not silently jump to the latest page") } catch { }
         let found = try await model.history.searchContent(path: path.path, query: "", start: 0)
-        XCTAssertEqual(found.hits.count, 100); XCTAssertEqual(found.total, 100)
+        XCTAssertEqual(found.hits.count, 100, "One page of hits"); XCTAssertEqual(found.total, count)
         let copied = try await model.history.copyContentPage(path: path.path, first: 11, last: 11, cursor: .init(index: 11, offset: 0), revision: found.revision)
         XCTAssertTrue(copied.text.hasPrefix("## user")); XCTAssertNil(copied.next)
         let handle = try FileHandle(forWritingTo: path); try handle.seekToEnd(); try handle.write(contentsOf: Data("{changed".utf8)); try handle.close()
@@ -211,7 +221,9 @@ extension HardeningTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("session.jsonl")
         var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
-        for index in 0..<100 {
+        // Longer than two pages: the eleventh row is two earlier pages up.
+        let count = 2 * HistoryWindowPolicy.pageRows + 100
+        for index in 0..<count {
             let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": index % 2 == 0 ? "user" : "assistant", "content": "Row \(index)"]]
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
@@ -240,11 +252,11 @@ extension HardeningTests {
         await relaunched.select("fixture")
         XCTAssertTrue(relaunched.selected?.messages.contains { $0.id == "m10" } == true, "A relaunch opens on the turns the reader was in")
         XCTAssertEqual(relaunched.selected?.scrollAnchor, reading)
-        XCTAssertLessThanOrEqual(relaunched.selected?.messages.count ?? 0, 60, "Still one bounded page")
+        XCTAssertLessThanOrEqual(relaunched.selected?.messages.count ?? 0, HistoryWindowPolicy.pageRows, "Still one bounded page")
         // A row that is gone opens the newest turns, as before.
         relaunched.selected?.scrollAnchor = TranscriptAnchor(id: "gone", offset: 0, followsBottom: false)
         await relaunched.select("other"); await relaunched.select("fixture")
-        XCTAssertEqual(relaunched.selected?.messages.last?.id, "m99")
+        XCTAssertEqual(relaunched.selected?.messages.last?.id, "m\(count - 1)")
         XCTAssertNil(relaunched.selected?.scrollAnchor)
         relaunched.shutdown(); try await relaunched.traces.close(); await relaunched.store?.close()
     }

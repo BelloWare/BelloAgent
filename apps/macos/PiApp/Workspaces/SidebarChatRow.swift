@@ -38,10 +38,19 @@ struct SidebarChatRowState: Equatable {
     var recency: Int?
     /// The chat's saved draft holds something unsent (`WorkspaceDraftMarks.swift`).
     var hasDraft = false
+    /// The chat's brief, which its hover card shows; nil while briefs are
+    /// off (`WorkspaceChatBriefs.swift`).
+    var brief: ChatBrief?
+    /// The chat can have a brief and briefs are on: its hover card shows
+    /// the brief, or offers Write Brief, in place of the tooltip.
+    var offersBrief = false
     /// Tags are present only in the combined Flat list.
     var projectTag: String?
     /// Full group identity for help and VoiceOver when the caption is shorter.
     var projectTagFullName: String?
+    /// Pressing the project tag narrows Flat to the project: while Flat lists
+    /// every project and offers a choice between them, and no search is on.
+    var choosesProject = false
     var topicTag: String?
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
@@ -154,9 +163,11 @@ extension WorkspaceModel {
         // The fold is ignored while filtering, so a match cannot be stranded
         // under a folded parent; the chevron and the open side still follow it.
         let folded = collapsedSidebarSides
+        // Flat narrowed to one project lists only its chats; a search lists every project's.
+        let scope = flat ? sidebarFlatScope(query: filter) : nil
         func entries(archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
             if let project { return sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: collapsed) }
-            return sidebarFlatEntries(archived: archived, collapsed: collapsed)
+            return sidebarFlatEntries(archived: archived, collapsed: collapsed, project: scope)
         }
         let all = SidebarSessionPresentation.filtered(
             entries(archived: archived, collapsed: filtering ? [] : folded), by: filter,
@@ -164,8 +175,11 @@ extension WorkspaceModel {
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)
-        let hiddenRoots = filtering ? 0
-            : max(0, all.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) } - visible.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) })
+        let roots = all.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) }
+        let hiddenRoots = filtering ? 0 : max(0, roots - visible.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) })
+        // Flat narrowed to one project pages with every project's count; it
+        // offers "Show less" only when that would hide some of its chats.
+        let offersLess = shown > SidebarSessionPresentation.pageSize && (scope == nil || roots > SidebarSessionPresentation.pageSize)
         let anyMarked = hasMarkedSessions, projectDraggable = project?.isScratch == false
         let projectTags = flat ? Dictionary(sidebarProjects.map {
             ($0.id, (title: $0.available ? $0.name : "Retained chats",
@@ -177,6 +191,7 @@ extension WorkspaceModel {
             guard project != WorkspaceRecord.scratchID, let topic else { return nil }
             return topicTitles[project]?[topic]
         }
+        let choosesProject = flat && !filtering && scope == nil && sidebarProjectFilterOffersChoice
         var rows: [SidebarGroupRow] = []
         rows.reserveCapacity(visible.count)
         for entry in visible {
@@ -194,8 +209,11 @@ extension WorkspaceModel {
                 heldRun: chat.isSubagent || chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
                 hasDraft: showsDraftMark(chat.id),
+                brief: sidebarBrief(chat),
+                offersBrief: offersBrief(chat),
                 projectTag: projectTags[chat.workspaceID]?.title,
                 projectTagFullName: projectTags[chat.workspaceID]?.fullName,
+                choosesProject: choosesProject && projectTags[chat.workspaceID] != nil,
                 topicTag: topicTag(project: chat.workspaceID, topic: chat.topicID),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: false,
@@ -215,7 +233,7 @@ extension WorkspaceModel {
         }
         return SidebarGroupContents(groupID: groupID, indent: indent, archived: archived, total: all.count, rows: rows,
                                     hiddenRoots: hiddenRoots, shownRoots: shown,
-                                    paginates: !filtering && (hiddenRoots > 0 || shown > SidebarSessionPresentation.pageSize),
+                                    paginates: !filtering && (hiddenRoots > 0 || offersLess),
                                     emptyLabel: empty)
     }
 

@@ -171,7 +171,8 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         defer { NotificationCenter.default.removeObserver(resigning) }
         stage.document.quoteSelection.presentSelection()
         XCTAssertEqual(stage.document.quoteSelection.selectedQuote?.text, "result")
-        session.messages[0].text += "print(result)\n"; stage.refresh(); await stage.settle()
+        var source = session.messages[0]; source.text += "print(result)\n"
+        session.replaceMessage(at: 0, with: source); stage.refresh(); await stage.settle()
         XCTAssertEqual(code.selectedRange(), range)
         let clipboard = NSPasteboard(name: .init("quote-copy-" + UUID().uuidString))
         defer { clipboard.releaseGlobally() }

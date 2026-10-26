@@ -163,6 +163,8 @@ extension WorkspaceModel {
         // Background requests are on their own page, never in the sidebar.
         guard !item.isBackgroundTask else { return }
         if item.isArchived { showArchivedSessions = true }
+        // Flat narrowed to another project lists every project again.
+        listSidebarProject(of: item)
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
         forgetLaunchReveal(project: item.workspaceID)
         var value = projectSidebarStates[item.workspaceID] ?? ProjectSidebarState(id: item.workspaceID)

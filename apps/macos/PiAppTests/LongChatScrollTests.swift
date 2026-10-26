@@ -26,7 +26,13 @@ final class LongChatScrollTests: XCTestCase, SerialTestLane {
     /// and keeps p95 within three frames and p99 within six.
     static let p95Budget = 0.050, p99Budget = 0.100, maxBudget = 0.150, slowShareBudget = 0.05
 
-        @MainActor private func chat(turns: Int = 80) async throws -> LongChatScroll {
+    /// The chat pages three of its five-row turns at a time, as the 0.1.71
+    /// plan did (`usePlanPages`): an 80-turn chat is a page of whole turns
+    /// since 0.1.131, and these hold what reading pages in under the reader
+    /// does. `LongChatScrollProbeTests` and `LongTurnPagingProbeTests`
+    /// measure the pages the app reads.
+    @MainActor private func chat(turns: Int = 80) async throws -> LongChatScroll {
+        usePlanPages(rows: 15)
         let chat = try await LongChatScroll(turns: turns)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
         addTeardownBlock { @MainActor in chat.close() }

@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import PiApp
 
 /// The history index's temporary files. An index's file lives as long as the
@@ -212,5 +213,49 @@ final class HistoryIndexFilesTests: XCTestCase {
         let whole = await reader.retainedIndexBytes, wholeTook = Date().timeIntervalSince(started)
         print(String(format: "PERF history index: %.1f MB from the metadata file (%.0f ms), %.1f MB whole (%.0f ms); files held %d",
                      Double(partial) / 1_048_576, partialTook * 1000, Double(whole) / 1_048_576, wholeTook * 1000, files(folder).count))
+    }
+
+    @MainActor func testQuittingReleasesBothReadersIndexFilesBeforeAnswering() async throws {
+        let root = try scratch()
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()), tabDefaults: nil); defer { model.shutdown() }
+        let journal = try TranscriptImageLoadingTests.Journal(root: root.appendingPathComponent("journal"))
+        let directory = FileManager.default.temporaryDirectory
+        let prefix = HistoryOffsetIndex.filePrefix + "p\(getpid())-"
+        func ownedIndexes() throws -> Set<String> {
+            Set(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(prefix) })
+        }
+        let before = try ownedIndexes()
+        _ = try await model.history.read(path: journal.path.path)
+        model.chats = [ChatRecord(id: "chat", workspaceID: "fixture", title: "Images", path: journal.path.path, profileID: "fixture")]
+        let live = try TranscriptImageTests.message(id: "caption")
+        _ = try await model.transcriptImage(live, sessionID: "chat", index: 0, pixels: 128)
+        let imageReader = try XCTUnwrap(model.transcriptImageReader)
+        let historyCount = await model.history.retainedIndexCount
+        let imageCount = await imageReader.retainedIndexCount
+        XCTAssertEqual(historyCount, 1); XCTAssertEqual(imageCount, 1)
+        let created = try ownedIndexes().subtracting(before)
+        XCTAssertEqual(created.count, 2, "The model owns a real temporary database in each reader")
+        XCTAssertFalse(model.hasActiveWork)
+
+        let lifecycle = ApplicationLifecycle(); lifecycle.model = model
+        let answered = expectation(description: "Quit answers after index cleanup")
+        var answers: [Bool] = [], remainingAtAnswer: Set<String>?
+        lifecycle.answerTermination = { value in
+            answers.append(value)
+            remainingAtAnswer = (try? ownedIndexes()).map { $0.intersection(created) }
+            answered.fulfill()
+        }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await fulfillment(of: [answered], timeout: 10)
+        XCTAssertEqual(answers, [true]); XCTAssertTrue(model.isShutDown)
+        XCTAssertEqual(remainingAtAnswer, [], "Both readers' index files must be gone before termination is accepted")
+        let historyAfter = await model.history.retainedIndexCount
+        let imageAfter = await imageReader.retainedIndexCount
+        XCTAssertEqual(historyAfter, 0); XCTAssertEqual(imageAfter, 0, "The model stays alive here; cleanup cannot rely on deinit")
+
+        // Release test-held readers before fixture teardown, including when a
+        // regression leaves one open.
+        await model.history.releaseIndexes(); await imageReader.releaseIndexes()
+        try await model.traces.close(); await model.store?.close()
     }
 }

@@ -6,6 +6,36 @@ import AppKit
 /// whole chat, loaded or not, steps to each — reading in the page of one the
 /// window does not hold — marks them, and closes with Escape.
 final class TranscriptFindTests: XCTestCase {
+    @MainActor func testAStreamedFragmentKeepsTheFindMarksOnItsNativeStorage() async throws {
+        let session = SessionDisplay(id: "incremental-find")
+        session.messages = [TranscriptMessage(id: "reply", role: "assistant", text: "parser starting", state: "streaming")]
+        let stage = TranscriptStressTestCase.Stage(session); defer { stage.close() }
+        stage.page.presentationInterval = 0
+        await stage.settle()
+        let row = try XCTUnwrap(stage.document.row(drawing: "reply"))
+        let text = try XCTUnwrap(TranscriptNativeDocument.textViews(in: row).first { $0.string == "parser starting" })
+        let storage = try XCTUnwrap(text.textStorage), manager = try XCTUnwrap(text.layoutManager)
+        stage.document.highlights = TranscriptHighlights(query: "parser")
+        let cache = stage.document.matchCache(for: storage)
+        var source = session.messages[0]; source.text += " and parser continues"
+        session.replaceMessage(at: 0, with: source)
+        stage.refresh(); await stage.settle()
+        XCTAssertTrue(stage.document.row(drawing: "reply") === row)
+        XCTAssertTrue(text.textStorage === storage)
+        XCTAssertTrue(stage.document.matchCache(for: storage) === cache)
+        let marked = (0..<storage.length).filter {
+            manager.temporaryAttributes(atCharacterIndex: $0, effectiveRange: nil)[.backgroundColor] as? NSColor == TranscriptHighlights.matchColor
+        }
+        XCTAssertEqual(marked, Array(0..<6) + Array(20..<26))
+    }
+
+    /// Find reaches matches far above the window: these chats page three
+    /// five-row turns at a time, as the 0.1.71 plan did (`usePlanPages`), so
+    /// most of a chat is outside it.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        usePlanPages(rows: 15)
+    }
     @MainActor private func chat(turns: Int = 60) async throws -> LongChatScroll {
         let chat = try await LongChatScroll(turns: turns)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)

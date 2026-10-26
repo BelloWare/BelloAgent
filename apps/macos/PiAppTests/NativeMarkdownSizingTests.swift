@@ -28,6 +28,64 @@ final class NativeMarkdownSizingTests: XCTestCase {
         XCTAssertEqual(body.layoutPasses - passes, 2, "and a width it knows is not laid out again")
     }
 
+    /// Prose that wraps differently at the page's 840 points and at a
+    /// narrower reading column.
+    static let wrappingProse = (0..<24).map { index in
+        "Paragraph \(index): " + String(repeating: "Words that wrap differently in a narrower column. ", count: 9)
+    }.joined(separator: "\n\n")
+
+    /// PERF-1: a reply's text joining the page — a view tree, then a window —
+    /// is not laid out for it. Before, AppKit marking the new text view for
+    /// display laid its whole text out at the 840 points its container
+    /// started at, and the measurement laid it out again at the row's width.
+    @MainActor func testTextJoiningThePageIsLaidOutOnlyAtItsMeasuredWidth() {
+        let body = NativeMarkdownContainer()
+        body.update(blocks: TranscriptMarkdown.blocks(Self.wrappingProse, style: .prose), style: .prose, capsWidth: true, streaming: false,
+                    headings: [], environment: TranscriptRowEnvironment())
+        let holder = NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        holder.addSubview(body)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        window.contentView?.addSubview(holder)
+        XCTAssertEqual(body.textLayouts, 0, "joining a view tree and a window lays nothing out")
+        let size = body.measure(width: 600)
+        XCTAssertEqual(body.textLayouts, 1, "the measurement lays the text out once")
+        XCTAssertEqual(body.textLayoutWidth, 600)
+        body.frame = CGRect(origin: .zero, size: size)
+        holder.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertEqual(body.textLayouts, 1, "placing and drawing it at that width lays nothing out again")
+        // A new width is still one layout, there.
+        _ = body.measure(width: 500)
+        XCTAssertEqual(body.textLayouts, 2)
+        XCTAssertEqual(body.textLayoutWidth, 500)
+    }
+
+    /// PERF-1: a reply still arriving puts its caret after its last word as
+    /// soon as it has words, which lays them out: at the width its row will
+    /// show them at, which the row knows before it has placed them, so its
+    /// measurement there finds the layout done.
+    @MainActor func testAReplyIsLaidOutAtItsRowsWidthBeforeItIsPlaced() {
+        for streaming in [true, false] {
+            let message = TranscriptMessage(id: "reply", role: "assistant", text: Self.wrappingProse, state: streaming ? "streaming" : nil, turn: "question")
+            let inputs = TranscriptRowInputs(item: TranscriptNativePartView.wordsItem(message), fresh: false, actions: TranscriptActions(),
+                                             width: 600, environment: TranscriptRowEnvironment())
+            let row = TranscriptNativeReplyRow(inputs: inputs)
+            let holder = NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+            holder.addSubview(row)
+            func surfaces(_ view: NSView) -> [NativeMarkdownContainer] {
+                (view as? NativeMarkdownContainer).map { [$0] } ?? view.subviews.flatMap { surfaces($0) }
+            }
+            guard let surface = surfaces(row).first else { return XCTFail("the reply has no text surface") }
+            XCTAssertEqual(surface.textLayouts, streaming ? 1 : 0, "streaming \(streaming): only the caret lays the words out before they are measured")
+            if streaming { XCTAssertEqual(surface.textLayoutWidth, 600, "the caret laid the words out at the row's width") }
+            let height = row.height(width: 600)
+            row.frame = CGRect(x: 0, y: 0, width: 600, height: height); row.layoutSubtreeIfNeeded()
+            XCTAssertEqual(surface.textLayouts, 1, "streaming \(streaming): one layout, at the row's width")
+            XCTAssertEqual(surface.textLayoutWidth, 600)
+        }
+    }
+
     @MainActor func testManyBlockAnswerIsOneTextMeasuredOnceAndKeepsFullCopySource() throws {
         let source = (0..<160).map { index in
             """

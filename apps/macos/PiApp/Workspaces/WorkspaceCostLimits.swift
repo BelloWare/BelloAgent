@@ -6,6 +6,11 @@ import Combine
 @MainActor final class SessionBudgetState: ObservableObject {
     @Published var reading: SessionCostReading
     var limitSent: CostLimit?
+    var limitSending: CostLimit?
+    var limitDeliveryID = UUID()
+    var limitRetryTask: Task<Void,Never>?
+    /// Fixtures hold the backoff without depending on the machine's clock.
+    var limitRetryWait: ((Duration) async throws -> Void)?
     var readTask: Task<Void,Never>?
     var readID = UUID()
     var dirty = false
@@ -173,6 +178,9 @@ extension WorkspaceModel {
         budgetStates[id]?.readID = UUID()
         budgetStates[id]?.readTask?.cancel(); budgetStates[id]?.readTask = nil
         budgetStates[id]?.limitSent = nil
+        budgetStates[id]?.limitDeliveryID = UUID()
+        budgetStates[id]?.limitRetryTask?.cancel(); budgetStates[id]?.limitRetryTask = nil
+        budgetStates[id]?.limitSending = nil
     }
 
     /// Sets a chat's own limit, or with nil lets it follow the default. The
@@ -195,7 +203,12 @@ extension WorkspaceModel {
         try await task.value
         // Only persistence is serialized: a slow helper acknowledgement
         // must not hold up the next choice's save or publication.
-        await sendCostLimit(id)
+        // The saved choice reaches the helper whatever becomes of the
+        // caller: an editor that goes away mid-save (its popover closed by
+        // a click outside it, or by AppKit once the Raise limit… pill it
+        // points at leaves the window) cancels its own task, and a send
+        // from a cancelled task never left (LIMIT-1).
+        await Task { [weak self] in await self?.sendCostLimit(id) }.value
     }
     private func persistCostLimit(_ limit: CostLimit?, for id: String) async throws {
         if let index = chats.firstIndex(where: { $0.id == id }) {
@@ -234,16 +247,59 @@ extension WorkspaceModel {
     }
     /// Tells a chat's loaded helper session the limit it runs under. A chat
     /// with no session loaded is told when one opens (`costLimitParams`).
-    func sendCostLimit(_ id: String) async {
-        guard opened.contains(id), let item = record(id), budgetOwner(for: item).id == id, let host = hosts[item.workspaceID], host.isReady else { return }
-        let limit = costLimit(for: item)
-        budgetState(for:id).limitSent = limit
-        displays[id]?.costLimitSent = limit
-        // A failed send is not retried from here: the next change sends again,
-        // and a snapshot showing the old limit asks only for a limit not yet tried.
-        do { _ = try await host.request("session.configure", sessionID: id, params: ["costLimit": limit.wire]) }
-        catch { displays[id]?.notice = "The new cost limit did not reach this chat's helper: " + error.localizedDescription }
-        refresh(id)
+    /// A choice saved during update preparation stays pending: the helper
+    /// refuses it while quiesced, and retries recover an abandoned update.
+    func sendCostLimit(_ id: String, ifNeeded: Bool = false) async {
+        guard !isShutDown, opened.contains(id), let item = record(id), budgetOwner(for: item).id == id,
+              let host = hosts[item.workspaceID], host.isReady, let connection = host.connectionID else { return }
+        let limit = costLimit(for: item), state = budgetState(for:id)
+        if ifNeeded, state.limitSent == limit || state.limitSending == limit { return }
+        // A new choice or an explicit Resume supersedes the retry. Snapshots
+        // share the pending send; they cannot turn its backoff into a burst.
+        state.limitRetryTask?.cancel(); state.limitRetryTask = nil
+        let delivery = UUID(); state.limitDeliveryID = delivery; state.limitSending = limit
+        await deliverCostLimit(id, limit: limit, state: state, delivery: delivery, host: host, connection: connection, failures: 0)
+    }
+    private func deliverCostLimit(_ id: String, limit: CostLimit, state: SessionBudgetState, delivery: UUID,
+                                  host: HostSupervisor, connection: UUID, failures: Int) async {
+        func current() -> Bool {
+            !Task.isCancelled && !isShutDown && opened.contains(id) && budgetStates[id] === state &&
+            state.limitDeliveryID == delivery && host.isReady && host.connectionID == connection &&
+            record(id).map { hosts[$0.workspaceID] === host && budgetOwner(for: $0).id == id && costLimit(for: $0) == limit } == true
+        }
+        defer {
+            if state.limitDeliveryID == delivery, !current() { state.limitSending = nil; state.limitRetryTask = nil }
+        }
+        guard current() else { return }
+        let command = UUID().uuidString
+        do {
+            _ = try await host.request("session.configure", sessionID: id, params: ["costLimit": limit.wire], commandID: command)
+            guard current() else { return }
+            state.limitSent = limit; state.limitSending = nil
+            displays[id]?.costLimitSent = limit
+        } catch {
+            guard current() else { return }
+            displays[id]?.notice = "The new cost limit did not reach this chat's helper: " + error.localizedDescription
+            // Only this idempotent setting is retried: one pending send per
+            // limit, after 1, 2, 4, 8, 16, then 30 seconds between attempts.
+            // A quiesced helper can keep refusing without a snapshot flood.
+            let delay = Duration.seconds(min(30, pow(2, Double(min(failures, 5)))))
+            let wait = state.limitRetryWait
+            state.limitRetryTask = Task { [weak self, weak state, weak host] in
+                do {
+                    if let wait { try await wait(delay) }
+                    else { try await Task.sleep(for: delay) }
+                } catch { return }
+                guard let host, !Task.isCancelled else { return }
+                // A timed-out request can still occupy a helper slot. Wait
+                // for its physical reply or host loss before sending another.
+                await host.waitForCommandSettlement(command)
+                guard let self, let state, !Task.isCancelled, state.limitDeliveryID == delivery else { return }
+                state.limitRetryTask = nil
+                await self.deliverCostLimit(id, limit: limit, state: state, delivery: delivery, host: host, connection: connection, failures: min(failures + 1, 5))
+            }
+        }
+        if current() { refresh(id) }
     }
     /// What a session open carries: the chat's limit, and for a chat whose
     /// journal predates cost records, what the request log holds of its spend
@@ -269,7 +325,7 @@ extension WorkspaceModel {
     }
     /// A snapshot's `cost`: what the helper counted, and the limit it runs
     /// under. A helper that runs under another limit than the chat's (a
-    /// change it missed) is told the chat's once.
+    /// change it missed) is told the chat's, with failed sends retried.
     func observeCost(_ snapshot: [String: WireValue], view: SessionDisplay) {
         observeCost(snapshot,sessionID:view.id)
     }
@@ -303,10 +359,8 @@ extension WorkspaceModel {
         }
         guard let item = record(id), budgetOwner(for: item).id == item.id else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
-        if helper != reading.limit, state.limitSent != reading.limit {
-            state.limitSent = reading.limit
-            displays[id]?.costLimitSent = reading.limit
-            Task { await sendCostLimit(id) }
+        if helper != reading.limit, state.limitSent != reading.limit, state.limitSending != reading.limit {
+            Task { await sendCostLimit(id, ifNeeded: true) }
         }
     }
 

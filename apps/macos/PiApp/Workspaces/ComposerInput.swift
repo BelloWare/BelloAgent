@@ -315,8 +315,10 @@ import AppKit
                 cardContent.addSubview(banner); editingBanner = banner
                 return banner
             }()
-            banner.update(detail: state.editBlocker ?? state.editNotice, detailColor: state.editBlocker == nil ? .piInkSecondary : .piDanger,
-                          cancelEnabled: !state.editSubmitting && !state.disabled, offersReview: state.editReview, reviewEnabled: !state.disabled)
+            // Reading the original is not a refusal: the banner says so in its
+            // own colour, beside its spinner, with the question in the field.
+            banner.update(detail: state.editBlocker ?? state.editNotice, detailColor: state.editBlocker == nil || state.editPreparing ? .piInkSecondary : .piDanger,
+                          waiting: state.editPreparing, cancelEnabled: !state.editSubmitting && !state.disabled, offersReview: state.editReview, reviewEnabled: !state.disabled)
         } else { editingBanner?.removeFromSuperview(); editingBanner = nil }
         if state.queueEditing {
             let banner = queueBanner ?? {
@@ -328,7 +330,7 @@ import AppKit
             }()
             banner.update(title: state.queueSteering ? "Editing a steering message" : "Editing a queued message",
                           detail: state.queueNotice.isEmpty
-                            ? "Return or ⌘Return saves in the same place. Waiting messages are paused." + (state.queueKeepsInput ? " Original images and skills are kept." : "")
+                            ? "Return or ⌘Return saves in the same place. Waiting messages are paused." + (state.queueKeepsInput ? " Original images are kept." : "")
                             : state.queueNotice,
                           detailColor: state.queueNotice.isEmpty ? .piInkSecondary : .piDanger,
                           waiting: state.queueResolving, cancelEnabled: !state.queueResolving && !state.disabled,
@@ -339,7 +341,7 @@ import AppKit
             chipIDs = state.attachments.map(\.id)
             chips.subviews.forEach { $0.removeFromSuperview() }
             for attachment in state.attachments {
-                let chip = PiKit.Chip(text: attachment.name ?? URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
+                let chip = ComposerImageAttachmentChip(attachment: attachment,
                                       action: { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) },
                                       remove: { [weak self] in
                                           guard let self, let session = self.session, !session.recoveringDraft else { return }
@@ -354,7 +356,7 @@ import AppKit
         for control in PiKit.controls(in: chips) { control.isEnabled = !state.disabled }
         // The bar.
         attach.isEnabled = state.draftReady && !state.queueEditing && state.supportsImages && !state.disabled
-        skills.isEnabled = !state.queueEditing && !state.disabled
+        skills.isEnabled = !state.queueResolving && !state.disabled
         steer.isHidden = !(state.busy && !state.editing && !state.queueEditing)
         steer.title = state.form.runControls.steerIsCompact ? "" : "Steer run"
         steer.isEnabled = !state.loading && !state.disabled && !state.importingImages

@@ -69,15 +69,31 @@ import AppKit
         didSet { if topInset != oldValue { invalidateTextContainerOrigin(); setNeedsDisplay(bounds, avoidAdditionalLayout: true) } }
     }
     override var textContainerOrigin: NSPoint { NSPoint(x: 0, y: topInset) }
+    /// Marked for display without laying the text out for it, unless the
+    /// text could be drawn as it would be laid out: in a window, at its own
+    /// width. AppKit marks every view of a tree that joins another, and a
+    /// text view marked lays out what it would draw — for a reply just
+    /// built, its whole text at the page's width, before the measurement
+    /// that lays it out again at the narrower column beside the session
+    /// card. The visible glyphs are laid out just before drawing.
+    override func setNeedsDisplay(_ invalidRect: NSRect, avoidAdditionalLayout flag: Bool) {
+        let drawnAsLaidOut = window != nil && textContainer?.containerSize.width == frame.width
+        super.setNeedsDisplay(invalidRect, avoidAdditionalLayout: flag || !drawnAsLaidOut)
+    }
     var didDraw: (() -> Void)?
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        didDraw?()
+        // A cached height can place this text at a width whose glyphs are
+        // no longer laid out. Display invalidation avoided layout above;
+        // prepare the visible glyphs before AppKit draws, not after it.
+        var characters: NSRange?
         if let manager = layoutManager, let container = textContainer, (textStorage?.length ?? 0) > 0 {
             let rect = visibleRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
             let glyphs = manager.glyphRange(forBoundingRect: rect, in: container)
-            resolveFileLinks(in: manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+            characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         }
+        super.draw(dirtyRect)
+        didDraw?()
+        if let characters { resolveFileLinks(in: characters) }
     }
     convenience init() { self.init(frame: .zero, textContainer: nil) }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
@@ -226,6 +242,11 @@ import AppKit
     /// Evidence for regressions: how many full layouts the text has had, and
     /// how many characters the last update replaced.
     private(set) var layoutPasses = 0
+    /// How many times TextKit has laid the text out to its end, whoever
+    /// asked, and the width it last did: a reply joining the page is laid
+    /// out once, at the width it is shown at.
+    private(set) var textLayouts = 0
+    private(set) var textLayoutWidth: CGFloat = 0
     private(set) var lastReplacedLength = 0
     private(set) var lastReplacedLocation = 0
     private(set) var reconciledBlockVisits = 0
@@ -251,11 +272,22 @@ import AppKit
         super.init(frame: frameRect)
         textView.frame = bounds
         textView.copyTargets = { [weak self] in self?.lastInputs?.headings ?? [] }
+        textView.layoutManager?.delegate = self
         addSubview(textView)
         caret.isHidden = true
         addSubview(caret)
     }
     required init?(coder: NSCoder) { nil }
+
+    /// The width the row will show this text at, known before it has placed
+    /// the surface: whatever lays the text out first — a measurement, the
+    /// caret of a reply still arriving — does it there, not at the page's
+    /// width. A surface already placed keeps the width it was laid out at.
+    func prepare(width: CGFloat) {
+        guard width.isFinite, width > 0, bounds.width == 0, let container = textView.textContainer,
+              container.containerSize.width != width else { return }
+        container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+    }
 
     /// Whether what is on screen is drawn at its own measure.
     var visibleContentPrepared: Bool {
@@ -1010,6 +1042,19 @@ import AppKit
         caret.frame = NSRect(x: x, y: used.maxY + textView.topInset - size, width: 2, height: size)
         caret.isHidden = false
         caret.blink(!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+}
+
+extension NativeMarkdownContainer: NSLayoutManagerDelegate {
+    /// Counts the text laid out to its end (`textLayouts`).
+    nonisolated func layoutManager(_ layoutManager: NSLayoutManager, didCompleteLayoutFor textContainer: NSTextContainer?,
+                                   atEnd layoutFinishedFlag: Bool) {
+        guard layoutFinishedFlag, Thread.isMainThread else { return }
+        let width = textContainer?.containerSize.width ?? 0
+        MainActor.assumeIsolated {
+            textLayouts += 1; textLayoutWidth = width
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownTextLayouts += 1 }
+        }
     }
 }
 

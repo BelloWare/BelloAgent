@@ -116,6 +116,7 @@ struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; l
 @MainActor struct ComposerImageImport {
     var isCurrent: () -> Bool = { true }
     var finish: () -> Void = {}
+    var rejection = "The draft changed while its image was being prepared. Attach it again."
 }
 
 /// A file ready to attach. A private PNG converted from a file carries that
@@ -170,7 +171,11 @@ extension WorkspaceModel {
     /// recovery. An edit switch invalidates the destination; queue rewrites
     /// keep the original draft parked and continue to receive its images.
     func beginImageImport(sessionID: String) -> ComposerImageImport {
-        guard !installPreparing, !isShutDown, let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
+        guard !installPreparing, !isShutDown, let view = displays[sessionID] else {
+            return ComposerImageImport(isCurrent: { false }, rejection: installPreparing
+                ? "The app is preparing to close. Paste the image again when it is ready."
+                : "This draft is no longer available. Open the chat and paste the image again.")
+        }
         let target = view.editingMessageID, generation = view.editGeneration
         view.imageImports += 1; attachmentImports += 1
         var finished = false
@@ -243,6 +248,10 @@ extension WorkspaceModel {
                 defer { importing.finish() }
                 await recovery.value
                 if importing.isCurrent() { receiveAttachments(items, into: view) }
+                else {
+                    view.notice = importing.rejection
+                    error = view.notice
+                }
             }
             return true
         }
@@ -276,7 +285,12 @@ extension WorkspaceModel {
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
         let importing = beginImageImport(sessionID: id)
-        guard importing.isCurrent() else { importing.finish(); return }
+        guard importing.isCurrent() else {
+            importing.finish()
+            view.notice = importing.rejection
+            error = view.notice
+            return
+        }
         let inspect = attachmentInspect
         Task { defer { importing.finish() }; do {
             let items = try await Task.detached {

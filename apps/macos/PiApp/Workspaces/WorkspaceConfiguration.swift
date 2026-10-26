@@ -270,6 +270,7 @@ extension WorkspaceModel {
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
                 saved.completionSoundEnabled = preferences.completionSoundEnabled; saved.transcriptView = preferences.transcriptView
                 saved.chatCostLimit = preferences.chatCostLimit; saved.webhook = preferences.webhook; saved.retry = preferences.retry
+                saved.chatBriefs = preferences.chatBriefs
             }
         }
         // Configuration is durable before the helper hears about it. An idle
@@ -420,6 +421,7 @@ extension WorkspaceModel {
             $0.dashboard = preferences.dashboard; $0.automaticUpdateChecks = preferences.automaticUpdateChecks
             $0.completionSoundEnabled = preferences.completionSoundEnabled; $0.transcriptView = preferences.transcriptView
             $0.chatCostLimit = preferences.chatCostLimit; $0.webhook = preferences.webhook; $0.retry = preferences.retry
+            $0.chatBriefs = preferences.chatBriefs
         }
     }
     /// Why a project's MCP servers can't change now, or nil when they can.

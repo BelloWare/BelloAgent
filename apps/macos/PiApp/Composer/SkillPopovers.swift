@@ -105,7 +105,7 @@ import Combine
                                 },
                                 remove: { [weak self] in
                                     self?.close()
-                                    guard !session.recoveringDraft else { return }
+                                    guard !session.recoveringDraft, !session.queueEditResolving, !session.editSubmitting else { return }
                                     if let editor, editor.skillStrip.display === session { editor.removeSkillToken(current.id) }
                                     else { session.skills.removeAll { $0.id == current.id }; model?.draftChanged(session) }
                                 })

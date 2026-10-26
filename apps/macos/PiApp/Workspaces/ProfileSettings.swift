@@ -432,7 +432,16 @@ import Combine
         let webhook = WebhookSettingsCard(get: { controller.preferences.webhook ?? WebhookSettings() }, set: { controller.preferences.webhook = $0 },
                                           test: { try await model.sendTestWebhook($0) }, enabled: enabled)
         updaters.append { [weak webhook] in webhook?.update() }
-        return [transcript, notifications, webhook]
+        return [transcript, briefsCard(), notifications, webhook]
+    }
+    /// Chat briefs (`WorkspaceChatBriefs.swift`): on or off, what they cost,
+    /// and briefs for the chats without one.
+    private func briefsCard() -> ChatBriefSettingsCard {
+        let controller = controller
+        let card = ChatBriefSettingsCard(model: model, get: { controller.preferences.briefSettings }, set: { controller.preferences.briefSettings = $0 },
+                                         enabled: enabled)
+        updaters.append { [weak card] in card?.update() }
+        return card
     }
 
     // MARK: App

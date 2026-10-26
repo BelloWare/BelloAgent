@@ -30,6 +30,7 @@ message picks the reply:
   "wire paid"         a short reply whose usage reports cost 0.004 USD
   "wire paid-tool"    a bash call (echo) then a reply, each reporting cost
                       0.004 USD
+                      (either with "usd=X" in the message: each reports X)
   "wire partial"      four requests: a bash call; a stream cut mid-reply
                       (retried after a second); the retried bash call with
                       no usage; then a reply
@@ -138,7 +139,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         if scenario in ("route", "partial"):
             usage = {"input_tokens": 100 * (rounds + 1), "input_tokens_details": {"cached_tokens": 10 * rounds}, "output_tokens": 10 * (rounds + 1)}
         if scenario in ("paid", "paid-tool"):
-            usage["cost"] = 0.004
+            usage["cost"] = next((float(word[4:]) for word in words if word.startswith("usd=")), 0.004)
         try:
             emit({"type": "response.created", "response": response})
             if scenario in ("route", "partial") and rounds < 2:

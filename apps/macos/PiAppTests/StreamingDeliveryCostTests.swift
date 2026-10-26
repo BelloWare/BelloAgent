@@ -9,7 +9,9 @@ import Combine
 /// and publishing it. Printed as PERF lines; the asserts only pin the budget
 /// the main actor has, so a slow machine does not fail the suite on noise.
 final class StreamingDeliveryCostTests: XCTestCase {
-    static let rowCount = 300
+    /// The rows the window holds; `PI_DELTA_ROWS` measures another window
+    /// (the resident window holds up to `HistoryWindowPolicy.residentRows`).
+    static let rowCount = testEnvironment("PI_DELTA_ROWS").flatMap(Int.init) ?? 300
     /// A row shaped like the helper's display projection.
     private static func row(_ index: Int) -> WireValue {
         .object(["id": .string("m\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
@@ -42,12 +44,13 @@ final class StreamingDeliveryCostTests: XCTestCase {
             XCTAssertEqual(storage(windowed), storage(page), "a page that fits was copied (keepingEarlier: \(keepingEarlier))")
         }
         XCTAssertEqual(storage(TranscriptPage.displayPage(page)), storage(page), "the page's display page copied a page that fits")
-        // A page past the caps is still cut at the same edge as before.
+        // A page past the caps is cut where a turn starts: the window holds
+        // whole turns (a question and its reply, here).
         let caps = TranscriptPaging.residentCaps
         defer { TranscriptPaging.residentCaps = caps }
         TranscriptPaging.residentCaps = (rows: 10, bytes: caps.bytes)
         XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: true).map(\.id), page.prefix(10).map(\.id))
-        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(10).map(\.id))
+        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(9).map(\.id))
     }
 
     /// The stages a delta passes through, each timed on its own.
@@ -99,8 +102,14 @@ final class StreamingDeliveryCostTests: XCTestCase {
         let rounds = 60
         var text = ""
         var held = Self.decoded(Self.page(streaming: ""))
+        var sourcePage = TranscriptRowUpdates.Page(held)
         var previous = held
         var items = TranscriptActivity.blocks(of: previous)
+        var planIndex = TranscriptActivity.PatchIndex(items)
+        var changes = TranscriptChanges()
+        var planned = TranscriptPage.Snapshot(sessionID: "delivery-stage", messages: previous, items: items,
+                                              fresh: [], sequence: 0, messageChanges: changes)
+        var tailPlan = TranscriptTailPlan(previous, items: items)
         var encodeFrame = 0.0, decodeFrame = 0.0, applyUpdate = 0.0, merge = 0.0, group = 0.0
         var patchedCount = 0, frameBytes = 0
         for index in 0..<rounds {
@@ -121,26 +130,37 @@ final class StreamingDeliveryCostTests: XCTestCase {
             decodeFrame += ProcessInfo.processInfo.systemUptime - start
 
             start = ProcessInfo.processInfo.systemUptime
-            let applied = TranscriptRowUpdates.apply(update, to: held)
+            let applied = sourcePage.applying(update)
             applyUpdate += ProcessInfo.processInfo.systemUptime - start
-            held = try XCTUnwrap(applied)
+            sourcePage = try XCTUnwrap(applied)
+            held = sourcePage.rows
 
             start = ProcessInfo.processInfo.systemUptime
             let page = TranscriptPaging.merge(previous: previous, live: held)
-            let changed = previous != page
+            let changed = previous.last != page.last
             merge += ProcessInfo.processInfo.systemUptime - start
             XCTAssertTrue(changed)
 
+            changes.record([page.count - 1])
             start = ProcessInfo.processInfo.systemUptime
-            if let patch = TranscriptActivity.patched(items, from: previous, to: page) { items = patch; patchedCount += 1 }
-            else { items = TranscriptActivity.blocks(of: page) }
+            if let patch = planIndex.patch(items, from: previous, to: page, changed: [page.count - 1]) { items = patch.items; patchedCount += 1 }
+            else if let tail = tailPlan.replacing(planned, with: .init(messages: page, lifecycle: nil, changes: changes), complete: true) {
+                planIndex.replaceTail(planned.items[tail.item...], with: tail.items[tail.item...], from: tail.item)
+                tailPlan.replace(planned, messages: page, replacement: tail)
+                items = tail.items
+            } else {
+                items = TranscriptActivity.blocks(of: page); planIndex = TranscriptActivity.PatchIndex(items)
+                tailPlan = TranscriptTailPlan(page, items: items)
+            }
             group += ProcessInfo.processInfo.systemUptime - start
             previous = page
+            planned.messages = page; planned.items = items; planned.messageChanges = changes
         }
         let each = 1000.0 / Double(rounds)
         print(String(format: "PERF delta stages with row updates (%d rows): frame %d bytes, encode %.3f ms, decode %.3f ms, apply %.3f ms, merge+compare %.3f ms, regroup %.3f ms, patched %d/%d",
                      Self.rowCount, frameBytes / rounds, encodeFrame * each, decodeFrame * each, applyUpdate * each, merge * each, group * each, patchedCount, rounds))
         XCTAssertEqual(held.last?.text, text)
+        XCTAssertEqual(items, TranscriptActivity.blocks(of: held))
         XCTAssertLessThan((applyUpdate + merge + group) * each, releaseBudget(0.001) * 1_000,
                           "Decoding, applying and regrouping a token must stay under a millisecond in Release")
     }
@@ -148,6 +168,13 @@ final class StreamingDeliveryCostTests: XCTestCase {
     /// The real path: a reply lands on the transport and the conversation
     /// publishes its page. Measures the main actor's own occupancy.
     @MainActor func testRefreshRoundTripOccupancy() async throws {
+        // Hold the requested fixture whole. A deliberately larger probe must
+        // not measure trimming/reacquiring a smaller production window.
+        let caps = TranscriptPaging.residentCaps
+        defer { TranscriptPaging.residentCaps = caps }
+        if Self.rowCount + 1 > caps.rows {
+            TranscriptPaging.residentCaps = (rows: Self.rowCount + 1, bytes: max(caps.bytes, (Self.rowCount + 1) * 8_000))
+        }
         let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("delivery-cost-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -172,6 +199,7 @@ final class StreamingDeliveryCostTests: XCTestCase {
         let rest = 40
         let start = ProcessInfo.processInfo.systemUptime
         for index in 0..<rest {
+            let projectionVisits = view.presentedMessageVisits
             text += "token-\(index) "
             model.refresh(chat.id)
             for _ in 0..<4000 where commands.frames.count <= index { try await Task.sleep(for: .milliseconds(1)) }
@@ -192,6 +220,10 @@ final class StreamingDeliveryCostTests: XCTestCase {
                                  "commandId": try XCTUnwrap(commands.frames[index]["commandId"]), "ok": .bool(true), "result": .object(result)]),
                          connectionID: connection)
             for _ in 0..<4000 where published.count <= index { try await Task.sleep(for: .milliseconds(1)) }
+            if index > 0 {
+                XCTAssertLessThanOrEqual(view.presentedMessageVisits - projectionVisits, 1,
+                                         "A helper fragment reprojected the resident history")
+            }
             rounds += 1
         }
         let wall = (ProcessInfo.processInfo.systemUptime - start) * 1000

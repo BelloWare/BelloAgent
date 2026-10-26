@@ -21,6 +21,10 @@ struct HistoricalEditPlan: Equatable, Sendable {
     var replay: [String]
     var displayPrefix: [String]
     var sourceTimeline: String
+    /// The timeline through the target, as `sourceTimeline` digests the whole
+    /// of it: what the edit branches from and where the target stands. Rows
+    /// added after the target (a run going on) leave it as it was.
+    var sourcePrefix: String
 }
 struct HistoricalBranch: Codable, Sendable {
     var nativeBranchVersion = 2
@@ -97,7 +101,7 @@ enum EditReplayPlan {
         let replaySet = Set(replay)
         return HistoricalEditPlan(replay: replay, displayPrefix: prefix.filter { id in
             nodes[id]?.summary != true || replaySet.contains(id)
-        }, sourceTimeline: digest(visible))
+        }, sourceTimeline: digest(visible), sourcePrefix: digest(Array(visible.prefix(through: position))))
     }
     static func restore(_ branch: HistoricalBranch, nodes: [String: ReplayNode], visible: [String], context: [String]) throws -> HistoricalEditPlan {
         guard branch.nativeBranchVersion == 2 else { throw ReplayPlanError(reason: "Unsupported native branch version. Update Bello Agent to read this conversation.") }

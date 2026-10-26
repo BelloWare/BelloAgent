@@ -63,6 +63,53 @@ final class TitleTaskTests: HelperTestCase {
         await session.close()
     }
 
+    /// A chat's brief (0.1.131) is the same kind of utility request: the mini
+    /// model, no tools, no project instructions, no compaction, and its own
+    /// short instructions and purpose in the request log. A tool call in its
+    /// reply runs nothing and says which request it was.
+    func testHostChatBriefSessionAsksTheMiniModelWithItsOwnInstructionsAndPurpose() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        try Data("PRIVATE PROJECT INSTRUCTION".utf8).write(to: root.appendingPathComponent("AGENTS.md"))
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path), "mcp": ["servers": [:]]])
+        _ = try await host.command("session.open", sessionID: "brief-job", params: ["profile": try fixtureProfile().raw, "apiKey": "synthetic", "backgroundTask": "chat-brief", "toolMode": "editing"])
+        let preview = try await host.command("context.preview", sessionID: "brief-job", params: ["text": "Write the brief", "model": "mini-fixture", "thinkingLevel": "default", "contextWindow": 16000, "maxOutputTokens": 512])
+        let page = try await host.command("context.preview.read", sessionID: "brief-job", params: ["revision": preview["revision"], "section": "request"])
+        let body = try JSON.parse(Data(page["text"].text!.utf8))
+        XCTAssertEqual(body["model"].text, "mini-fixture"); XCTAssertEqual(body["max_output_tokens"].int, 512)
+        XCTAssertTrue(body["tools"].list.isEmpty); XCTAssertTrue(body["reasoning"].isNull)
+        XCTAssertFalse(body.encoded().contains("PRIVATE PROJECT INSTRUCTION"))
+        let system = RequestContextCounter.systemPrompt(body) ?? ""
+        XCTAssertTrue(system.hasPrefix("Write a short brief and a few keywords for an AI chat"), system)
+        XCTAssertTrue(system.contains("Return only the JSON object"), system)
+        XCTAssertFalse(system.contains("session title"))
+        let status = try await host.command("session.status", sessionID: "brief-job", params: [:])
+        XCTAssertEqual(status["toolMode"].text, "read-only")
+        let loaded = await host.loadedSession("brief-job"), opened = try XCTUnwrap(loaded)
+        let purpose = await opened.utilityPurpose, utility = await opened.titleTask, compacts = await opened.autoCompaction
+        XCTAssertEqual(purpose, "chat-brief"); XCTAssertTrue(utility); XCTAssertFalse(compacts)
+        await host.shutdown()
+
+        let reply = #"{"brief": "Fixing the parser.", "keywords": ["parser"]}"#
+        let client = ScriptClient([answer(reply)])
+        let session = try AgentSession(id: "brief", profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("brief-state"), readOnly: true, resources: Resources(cwd: root, titleTask: true, utility: "chat-brief"), client: client, tools: DisabledTools(), traces: TraceStore(), autoCompaction: false, titleTask: true, utilityPurpose: "chat-brief")
+        _ = try await session.submit(Submission(commandID: "brief-command", turnID: "brief-turn", text: "Write the brief", model: "mini-fixture", thinkingLevel: "default", contextWindow: 16000, maxOutputTokens: 512), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let purposes = await client.purposes, snapshot = await session.snapshot()
+        XCTAssertEqual(purposes, ["chat-brief"], "The request log names the brief's request")
+        XCTAssertEqual(snapshot["messages"].list.last?["text"].text, reply)
+        await session.close()
+
+        let toolClient = ScriptClient([toolReply(["read"]), answer("Must not be requested")]), tools = RecordingTools()
+        let tooled = try AgentSession(id: "bad-brief", profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("bad-brief-state"), readOnly: true, resources: Resources(cwd: root, titleTask: true, utility: "chat-brief"), client: toolClient, tools: tools, traces: TraceStore(), autoCompaction: false, titleTask: true, utilityPurpose: "chat-brief")
+        _ = try await tooled.submit(Submission(commandID: "bad", turnID: "bad", text: "Brief only"), steer: false)
+        try await eventually { !(await tooled.isRunning) }
+        let calls = await toolClient.count, effects = await tools.calls, failed = await tooled.snapshot()
+        XCTAssertEqual(calls, 1); XCTAssertTrue(effects.isEmpty)
+        XCTAssertTrue(failed["preflightError"].text?.contains("The chat brief's mini model request returned a tool call") == true, failed["preflightError"].text ?? "")
+        await tooled.close()
+    }
+
     /// The Rename sheet's title suggestions are the same kind of utility
     /// request as a title: the mini model at the output cap asked for, no
     /// tools, no project instructions, no compaction, and short instructions

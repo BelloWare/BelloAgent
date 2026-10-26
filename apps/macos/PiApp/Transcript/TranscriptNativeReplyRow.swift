@@ -96,6 +96,9 @@ import AppKit
         bodyHover = TranscriptHoverTracker(view: self) { [weak self] _ in self?.refreshCopy() }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
+        // The words fill the row's width: laid out there, once, beside the
+        // session card as well as without it.
+        markdown.prepare(width: inputs.width)
         apply(inputs)
     }
     required init?(coder: NSCoder) { nil }

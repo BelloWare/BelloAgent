@@ -180,9 +180,14 @@ extension PayloadArchive {
         }
         return ledgers
     }
+    /// `messages`: at most the rows one transcript window holds
+    /// (`TranscriptPage.accountingPage`, `HistoryWindowPolicy.residentRows`).
+    /// The bound was 500 rows while the window was; a window of whole turns
+    /// (0.1.131) holds more, and a read past the bound failed whole: no
+    /// figures on any row and "metrics unavailable" in the footer.
     func gatewayAccounting(sessionID: String, workspaceID: String, messages: [TranscriptMessage], includeTiming: Bool = false) throws -> SessionGatewayAccounting {
         guard !sessionID.isEmpty, sessionID.utf8.count <= 128, !workspaceID.isEmpty, workspaceID.utf8.count <= 128,
-              messages.count <= 500, Set(messages.map(\.id)).count == messages.count,
+              messages.count <= HistoryWindowPolicy.residentRows, Set(messages.map(\.id)).count == messages.count,
               messages.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 256 }) else { throw CaptureFailure.unavailable }
         try reconcile()
         let db = try dashboardDatabase()

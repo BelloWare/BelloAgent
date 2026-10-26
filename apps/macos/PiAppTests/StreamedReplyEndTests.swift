@@ -337,7 +337,8 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
             XCTAssertTrue(settled, "Turn \(index) never settled")
         }
         let view = try XCTUnwrap(model.displays[chat.id])
-        XCTAssertGreaterThanOrEqual(view.messages.count, 8, "The window is full")
+        // Full: the window keeps whole turns, and has let the first go.
+        XCTAssertNotNil(view.olderPage.cursor, "The window is full")
         // The reader selects some of the first reply's text, to copy it: that
         // row holds the selection. (The keyboard alone, a click with nothing
         // selected, holds nothing: `TranscriptNativeDocument.responderHoldsRow`.)

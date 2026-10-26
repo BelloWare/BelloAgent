@@ -9,10 +9,21 @@ struct ConversationPageBoundary: Equatable {
     var cursor: ConversationCursor?
     var loading = false
     var error: String?
+    /// At the newer edge: the window's last row ends its display turn, and
+    /// the row after it, not read, opens the next. The window's last turn is
+    /// then finished, as it reads once that row is read in.
+    var endsTurn = false
     var available: Bool { cursor != nil || error != nil }
+    /// Whether the window's last turn reads as finished, as far as this
+    /// newer edge says: no newer row follows, or the window ends where a
+    /// turn does. The transcript and its fold commands plan the page alike
+    /// from this, so a fold the reader sees is one the commands can reach.
+    var lastTurnFinished: Bool { !available || endsTurn && error == nil }
 }
 
 struct ConversationHistoryPage: Sendable {
+    var opening = false
+    var openingAround: String?
     var messages: [TranscriptMessage]
     var older: ConversationCursor?
     var newer: ConversationCursor?
@@ -27,6 +38,8 @@ struct ConversationHistoryPage: Sendable {
     /// The failure's code, from a journal (`HistoryPage.failureCode`).
     var failureCode: String?
     var taskRecords: [TaskPresentationRecord] = []
+    /// The page's last row ends its display turn (`HistoryPage.endsTurn`).
+    var endsTurn = false
     /// Read from the journal, not from a helper that has the chat open: only
     /// then is the journal's retained run what the chat's state is.
     var fromJournal = false
@@ -46,7 +59,8 @@ struct ConversationHistoryPage: Sendable {
             throw HostError.failure("Invalid history page. Retry loading this conversation.")
         }
         messages = try TranscriptMessage.page(rows)
-        guard messages.count <= HistoryWindowPolicy.rows, Set(messages.map(\.id)).count == messages.count else {
+        // Whole turns: a page, or a single turn up to the resident window.
+        guard messages.count <= HistoryWindowPolicy.PageLimits.standard.turnRows, Set(messages.map(\.id)).count == messages.count else {
             throw HostError.failure("History page exceeds its display budget or has conflicting identities.")
         }
         self.incarnation = incarnation; self.lineage = lineage
@@ -59,6 +73,7 @@ struct ConversationHistoryPage: Sendable {
                   messages.contains(where: { $0.id == boundary.entry }) else { throw HostError.failure("Invalid history boundary. Reload history.") }
         }
         partialTurnInput = value["partialTurnInput"]?.string
+        endsTurn = value["endsTurn"]?.bool ?? false
         if let start = value["start"]?.number, let total = value["total"]?.number, start >= 0, total >= start + Double(messages.count) {
             self.start = Int(start); self.total = Int(total)
         }
@@ -75,7 +90,7 @@ struct ConversationHistoryPage: Sendable {
         self.incarnation = incarnation; self.lineage = lineage; partialTurnInput = page.partialTurnInput
         notice = page.limitNotice; revision = page.revision; assistantCount = page.assistantMessageCount
         latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage; failureCode = page.failureCode
-        taskRecords = page.taskRecords
+        taskRecords = page.taskRecords; endsTurn = page.endsTurn
         fromJournal = true; retainedRun = page.retainedRun
         if let start = page.start, page.total >= start + messages.count { self.start = start; total = page.total }
         if page.incompleteTail {
@@ -110,6 +125,9 @@ struct ConversationHistoryPage: Sendable {
     var olderRead: UUID?
     var newerRead: UUID?
     var secondary: Task<Void, Never>?
+    var openingFill: Task<Void, Never>?
+    var openingPage = false
+    var openingAround: String?
     var identity: (incarnation: String, lineage: String)?
     var partialTurnInput: String?
     var automaticFills = 0
@@ -122,13 +140,14 @@ struct ConversationHistoryPage: Sendable {
         navigation?.cancel(); navigation = nil
         olderTask?.cancel(); olderTask = nil; newerTask?.cancel(); newerTask = nil
         secondary?.cancel(); secondary = nil
+        openingFill?.cancel(); openingFill = nil
     }
     func begin() {
         cancel(); generation = UUID(); readGeneration = generation; identity = nil; partialTurnInput = nil; reload = nil
         initializationPending = true
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
     }
-    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel() }
+    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel(); openingFill?.cancel() }
 }
 
 extension SessionDisplay {
@@ -145,7 +164,7 @@ extension SessionDisplay {
     @discardableResult func beginHistoryPresentation() -> HeldRows {
         let held = HeldRows(cached: hasPresentedRows, identity: presentation.identity, partialTurnInput: presentation.partialTurnInput)
         presentation.begin(); presentationGeneration = presentation.generation
-        olderPage = .init(cursor: olderPage.cursor); newerPage = .init(cursor: newerPage.cursor)
+        olderPage = .init(cursor: olderPage.cursor); newerPage = .init(cursor: newerPage.cursor, endsTurn: newerPage.endsTurn)
         historyProgress = nil; historyState = .loading; refreshingCachedRows = held.cached
         return held
     }

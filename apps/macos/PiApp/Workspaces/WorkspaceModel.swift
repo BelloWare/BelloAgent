@@ -217,6 +217,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `SidebarSearch.swift`: the filter's search inside chats,
     /// made when the sidebar first asks for it.
     var sidebarSearchStorage: SidebarSearch?
+    /// Owned by `WorkspaceChatBriefs.swift`: when chat briefs are written,
+    /// made when launch or a finished run first asks.
+    var chatBriefsStorage: ChatBriefs?
     /// Chats whose side chats are folded away. Owned here rather than by the
     /// group's own `@State`, which forgot the fold whenever the project was
     /// collapsed, the archive filter flipped or the sidebar was rebuilt. Both
@@ -252,6 +255,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var renameTarget: RenameTarget?
     @Published var projectSidebarStates: [String: ProjectSidebarState] = [:] { didSet { sidebarIndex.invalidate() } }
     @Published var sidebarViewState = SidebarViewState() { didSet { sidebarIndex.invalidate() } }
+    /// Owned by `SidebarProjectFilter.swift`: the project Flat is narrowed
+    /// to, nil for All. Kept while the app runs, never saved.
+    @Published var sidebarProjectFilter: String? { didSet { if sidebarProjectFilter != oldValue { sidebarIndex.invalidate() } } }
     var sidebarViewWrite: Task<Void, Never>?
     var dirtySidebarViewState = false
     var sidebarViewModeChanged = false
@@ -335,6 +341,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
+    /// Test seam: each step an Edit's preparation reaches (`editMessage`), so
+    /// a fixture can time what the composer waits on.
+    var messageEditStep: ((String) -> Void)?
     /// Suspends legacy cost accounting in opening-race fixtures.
     var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]
@@ -362,7 +371,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// owns settled failures. Deferred helper Keeps use SideRecord's flags.
     var sidePublications: Set<String> = []
     let vault: ConfigurationVault
-    @Published var configuration = VaultConfiguration()
+    /// Chat briefs going on or off change what sidebar search matches.
+    @Published var configuration = VaultConfiguration() { didSet { if configuration.briefSettings.enabled != oldValue.briefSettings.enabled { sidebarIndex.invalidate() } } }
     @Published var configurationLoaded = false
     /// Set while the vault could not be read at launch: each activation of
     /// the app tries again (`retryConfigurationWhenActive`).
@@ -372,6 +382,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// finds out without opening SQLite on the main actor at launch.
     private(set) var store: MetadataStore?
     let history = HistoryReader()
+    /// Image requests create these independently of normal history opening.
+    var transcriptImageReader: HistoryReader?
+    var transcriptImages: TranscriptImageCache?
     let modelCatalog: ModelCatalog
     let traces: PayloadArchive
     /// Owned by `WorkspaceChatLifecycle.swift`: the throwaway archive a
@@ -522,6 +535,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var sendSteps: ((String) -> Void)?
     /// Test seam: each step of a Resume (`WorkspaceResume.swift`). Nil in the app.
     var resumeSteps: ((String) -> Void)?
+    /// Test seam: each step of opening a chat (`WorkspaceSelection.swift`),
+    /// with the chat it is for. Nil in the app.
+    var openSteps: ((String, String) -> Void)?
+    /// Test seam: whether a chat out of sight reads its page as its run ends
+    /// (`catchUpFinishedRows`). Off, it is read as it opens, as before
+    /// 0.1.131, so a measurement can compare the two in one build.
+    var catchesUpFinishedRows = true
     /// Test seam: hold or fail the acceptance read while a draft is restored.
     var commandAcceptanceRead: (@MainActor (String, [CommandIntent], Bool) async throws -> Set<String>)?
     /// Owned by `WorkspaceHosts.swift`: chats whose helper `prewarm` is starting.
@@ -568,7 +588,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Work under way that a quit or an update must stop or wait for. Work
     /// held for Resume (follow-ups paused behind a stop) is not: it is in the
     /// chat's journal, and comes back paused after the relaunch.
-    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    var hasActiveWork: Bool { connectionProbeAdmissions > 0 || !resourceInvocations.isEmpty || !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } || chatBriefsStorage?.busy == true }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 

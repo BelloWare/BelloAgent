@@ -381,7 +381,9 @@ struct ComposerEditMeasurement {
         breakUndoCoalescing()
         undoManager?.disableUndoRegistration()
         insertText(text, replacementRange: NSRange(location: 0, length: textStorage?.length ?? 0))
-        setSelectedRange(selection); display.draft = text; display.skills = skills
+        // The skills as a step from `previous`, over what the composer holds
+        // now (`skills(_:steppedFrom:to:)`): Undo keeps a skill read in since.
+        setSelectedRange(selection); display.draft = text; display.skills = Self.skills(display.skills, steppedFrom: previous.1, to: skills)
         display.directCommand = false; display.completionVisible = false; changed()
         undoManager?.enableUndoRegistration()
         undoManager?.registerUndo(withTarget: self) { [weak display] editor in
@@ -450,14 +452,25 @@ struct ComposerEditMeasurement {
     /// rather than the clipboard the owner is using.
     func pasteAttachments(from pasteboard: NSPasteboard) -> Bool {
         guard isEditable else { return false }
-        let urls = Self.imageFiles(on: pasteboard)
         let types = pasteboard.types ?? [], hasImage = types.contains(where: Self.isImageType)
         let hasPromise = Self.hasFilePromise(on: pasteboard)
-        guard urls != nil || hasImage || hasPromise else { return false }
+        guard types.contains(.fileURL) || hasImage || hasPromise else { return false }
+        // A lazy provider can re-enter the app while delivering any flavor,
+        // including a file URL or the bytes needed to classify HTML. Reserve
+        // this draft before reading it, so Send cannot overtake the paste.
+        let resolved: AttachmentDestination?
+        if let attachmentDestination { resolved = attachmentDestination() }
+        else { resolved = attachFiles.map { AttachmentDestination(attach: $0, reject: imageRejected) } }
+        let importing = resolved?.beginImport() ?? ComposerImageImport()
+        var preparing = true
+        defer { if preparing { importing.finish() } }
+        let files = Self.fileURLs(on: pasteboard)
+        let images = files?.filter { UTType(filenameExtension: $0.pathExtension.lowercased())?.conforms(to: .image) == true } ?? []
+        let urls = images.isEmpty ? nil : images
         // Resolve cheap text/type signals before asking a provider to render
         // an image. Only an undecided HTML copy needs bytes during classification.
         var imageForHTML: PastedImage?
-        let imageWasCopied = urls == nil && Self.imageIsWhatWasCopied(on: pasteboard) {
+        let imageWasCopied = urls == nil && Self.imageIsWhatWasCopied(on: pasteboard, hasFileURLs: files != nil) {
             imageForHTML = Self.pastedImage(on: pasteboard)
             return imageForHTML != nil
         }
@@ -466,23 +479,23 @@ struct ComposerEditMeasurement {
         guard urls != nil || image || promise else { return false }
         // A resolver returning nil is an unavailable destination, not a reason
         // to fall back to an old callback or paste an image's caption as text.
-        let resolved: AttachmentDestination?
-        if let attachmentDestination { resolved = attachmentDestination() }
-        else { resolved = attachFiles.map { AttachmentDestination(attach: $0, reject: imageRejected) } }
         guard let destination = resolved else {
             imageRejected?("Images cannot be attached in this composer. Open an editable chat and try again."); return true
         }
         guard urls != nil || image else {
             destination.reject?("This clipboard item promises a file but has no image data. Save the image, then attach the file."); return true
         }
+        guard importing.isCurrent() else {
+            destination.reject?(importing.rejection)
+            return true
+        }
         let pasted = imageForHTML ?? (image ? Self.pastedImage(on: pasteboard) : nil)
         let storage = destination.storage
-        let importing = destination.beginImport()
-        guard importing.isCurrent() else { importing.finish(); return true }
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
         // milliseconds. Only the bytes are taken here; the rest happens off
         // the main thread and the chip appears when it lands.
+        preparing = false
         Task { @MainActor in
             defer { importing.finish() }
             do {
@@ -529,9 +542,11 @@ struct ComposerEditMeasurement {
     /// Files win over their icons. Rich text with a rendering stays text;
     /// an image's URL, image-only HTML or lower-fidelity caption does not
     /// replace the image. Ambiguous text-first copies remain text.
-    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard, hasImageBytes: () -> Bool) -> Bool {
+    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard, hasFileURLs: Bool? = nil, hasImageBytes: () -> Bool) -> Bool {
         let types = pasteboard.types ?? []
-        if types.contains(.fileURL) { return false }
+        // An advertised URL is not necessarily available. Only actual files
+        // take precedence over bitmap bytes (and keep non-image file icons out).
+        if hasFileURLs ?? (fileURLs(on: pasteboard) != nil) { return false }
         if types.contains(.URL) { return true }
         let imageFirst = types.first(where: { isImageType($0) || $0 == .string }).map(isImageType) ?? false
         if imageFirst, !types.contains(.rtf), !types.contains(.rtfd) { return true }
@@ -715,13 +730,13 @@ struct ComposerEditMeasurement {
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
         return try handle.read(upToCount: 12) ?? Data()
     }
-    /// File URLs are explicit input; TIFF/HEIC and oversized images are
-    /// converted in the same background import as clipboard bytes.
-    private static func imageFiles(on pasteboard: NSPasteboard) -> [URL]? {
+    /// Only readable file URLs displace clipboard bytes, never an unavailable
+    /// URL flavor. Image files take the background preparation above.
+    private static func fileURLs(on pasteboard: NSPasteboard) -> [URL]? {
         guard pasteboard.types?.contains(.fileURL) == true,
               let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return nil }
-        let images = urls.filter { UTType(filenameExtension: $0.pathExtension.lowercased())?.conforms(to: .image) == true }
-        return images.isEmpty ? nil : images
+        let files = urls.filter(\.isFileURL)
+        return files.isEmpty ? nil : files
     }
     override func didChangeText() { measurement.edited(); super.didChangeText(); reportContentHeight() }
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {

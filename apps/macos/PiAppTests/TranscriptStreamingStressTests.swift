@@ -232,6 +232,31 @@ class TranscriptStressTestCase: XCTestCase {
 /// chats swapped back and forth. Every check is on what the reader sees — row
 /// frames, the content each row actually holds, and where the page is parked.
 final class TranscriptStreamingStressTests: TranscriptStressTestCase {
+    @MainActor func testStreamingBelowADetachedReaderDoesNotWalkToTheirAnchor() async throws {
+        let session = SessionDisplay(id: "detached-stream-index")
+        var live = TranscriptMessage(id: "live", role: "assistant", text: "Token", state: "streaming", turn: "hu1499")
+        session.messages = Self.history(turns: 1_500) + [live]
+        let stage = Stage(session); defer { stage.close() }
+        stage.page.presentationInterval = 0; stage.page.state = "running"
+        await stage.settleUntilExact(seconds: 180)
+        let reader = stage.rows[stage.rows.count / 2]
+        stage.readerScroll(to: reader.frame.minY)
+        await stage.settle(turns: 4)
+        XCTAssertFalse(stage.page.followsBottom)
+        let frame = reader.frame, y = stage.scrollY, scans = stage.page.anchorScanVisits
+        for _ in 0..<30 {
+            live.text += " more"
+            if testEnvironment("PI_STREAM_MUTATION") == "anchor" { stage.document.framesAreIndexed = false }
+            session.replaceMessage(at: session.messages.count - 1, with: live)
+            stage.refresh()
+        }
+        session.appendMessage(.init(id: "next-part", role: "assistant", text: "A new reply part", state: "streaming", turn: live.turn))
+        stage.refresh()
+        XCTAssertEqual(stage.page.anchorScanVisits, scans, "A token below the reader walked the resident rows to find their anchor")
+        XCTAssertEqual(reader.frame, frame)
+        XCTAssertEqual(stage.scrollY, y, accuracy: 0.5)
+    }
+
 
     // MARK: 1 — A long turn arriving while the reader is higher up
 
@@ -277,7 +302,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
         assertFits("at the end")
         var source = session.messages[1].text + "\n\n- the first item of a list the reply has just begun"
         for step in 0..<6 {
-            session.messages[1].text = source
+            var sourceRow = session.messages[1]; sourceRow.text = source
+            session.replaceMessage(at: 1, with: sourceRow)
             stage.refresh()
             assertFits("the frame list token \(step) arrives in")
             await stage.settle(turns: 2)
@@ -290,7 +316,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
             stage.readerScroll(to: row.frame.minY + row.frame.height * fraction)
             await stage.settle(turns: 2)
             source += " and a few more words"
-            session.messages[1].text = source
+            var sourceRow = session.messages[1]; sourceRow.text = source
+            session.replaceMessage(at: 1, with: sourceRow)
             stage.refresh()
             await stage.settle(turns: 2)
             assertFits("scrolled back to \(Int(fraction * 100))% of the reply")
@@ -495,7 +522,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
         var text = "#"
         for step in 0..<30 {
             text += " token \(step) of a reply that keeps the page at the end of the conversation."
-            session.messages[session.messages.count - 1].text = text
+            var sourceRow = session.messages[session.messages.count - 1]; sourceRow.text = text
+            session.replaceMessage(at: session.messages.count - 1, with: sourceRow)
             stage.refresh()
             await stage.settle(turns: 2)
         }
@@ -556,7 +584,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
             defer { TranscriptLayoutClock.recording = false }
             for step in 0..<count {
                 text += " token \(step)"
-                session.messages[session.messages.count - 1].text = text
+                var sourceRow = session.messages[session.messages.count - 1]; sourceRow.text = text
+                session.replaceMessage(at: session.messages.count - 1, with: sourceRow)
                 stage.document.update(snapshot: stage.page.snapshot, actions: stage.actions, environment: stage.environment,
                                       disclosure: session.disclosure, toolInputs: session.toolInputs)
             }
@@ -607,7 +636,7 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
         }, "the call must be drawn as its card, at the position it was made")
         func token(_ step: Int, _ text: String? = nil) async {
             arguments += text ?? " --flag-\(step)"
-            session.messages[session.messages.count - 1] = Self.streamingCard(arguments, turn: "hu59")
+            session.replaceMessage(at: session.messages.count - 1, with: Self.streamingCard(arguments, turn: "hu59"))
             stage.refresh()
             await stage.settle(turns: 1)
         }
@@ -680,7 +709,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
             let row = try XCTUnwrap(stage.rows.last)
             for step in 0..<3 {
                 source += " and \(step) more words"
-                session.messages[1].text = source
+                var sourceRow = session.messages[1]; sourceRow.text = source
+                session.replaceMessage(at: 1, with: sourceRow)
                 stage.refresh()
             }
             let appendsBefore = row.streamingAppendCount
@@ -689,7 +719,8 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
             let tokens = 20
             for step in 0..<tokens {
                 source += step.isMultiple(of: 2) ? token : " and one more"
-                session.messages[1].text = source
+                var sourceRow = session.messages[1]; sourceRow.text = source
+                session.replaceMessage(at: 1, with: sourceRow)
                 stage.refresh()
             }
             let append = TranscriptLayoutClock.markdownAppendSeconds, reading = TranscriptLayoutClock.markdownReadingSeconds
@@ -1348,7 +1379,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         let rounds = 40
         for index in 0..<rounds {
             live.text += "Sentence \(index) of a reply arriving into a long page. "
-            session.messages[session.messages.count - 1] = live
+            session.replaceMessage(at: session.messages.count - 1, with: live)
             let started = ProcessInfo.processInfo.systemUptime
             stage.refresh()
             let cost = ProcessInfo.processInfo.systemUptime - started
@@ -1391,7 +1422,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         settled.id = "a9"
         settled.state = nil
         settled.text += "And the rest of it."
-        session.messages[session.messages.count - 1] = settled
+        session.replaceMessage(at: session.messages.count - 1, with: settled)
         stage.page.state = "idle"
         stage.refresh()
         await stage.settle()
@@ -1696,7 +1727,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
 
         for index in 0..<16 {
             live.text += "Paragraph \(index) of the report, long enough to wrap in this pane.\n\n"
-            session.messages[session.messages.count - 1] = live
+            session.replaceMessage(at: session.messages.count - 1, with: live)
             stage.refresh()
             let blocks = TranscriptMarkdown.streamingBlocks(live.text).count
             assertStacked(stage, "at \(blocks) blocks")
@@ -1705,7 +1736,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
                            "the reply moved the row the reader was reading at \(blocks) blocks")
         }
         live.state = nil
-        session.messages[session.messages.count - 1] = live
+        session.replaceMessage(at: session.messages.count - 1, with: live)
         stage.refresh()
         await stage.settle()
         assertStacked(stage, "after the long reply settled")

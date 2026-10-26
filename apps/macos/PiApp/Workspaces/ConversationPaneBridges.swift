@@ -61,6 +61,10 @@ extension NativeTranscriptPane {
                                                         openSubagent: { [weak model] target in Task { if target.isHistorical(in:session.id) { await model?.openOriginalSubagent(target, from:session.id) } else { await model?.openSubagent(target) } } },
                                                         inspectSubagent: { [weak model] target in if target.isHistorical(in:session.id) { model?.inspectOriginalSubagent(target, from:session.id) } else { model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) } },
                                                         stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) },
-                                                        openAgentSource: { [weak model] reference in Task { await model?.openAgentSource(reference, from: session.id) } }), environment: environment, reduceMotion: piReducesMotion)
+                                                        openAgentSource: { [weak model] reference in Task { await model?.openAgentSource(reference, from: session.id) } },
+                                                        loadImage: { [weak model, id = session.id] message, index, pixels in
+                                                            guard let model else { throw CancellationError() }
+                                                            return try await model.transcriptImage(message, sessionID: id, index: index, pixels: pixels)
+                                                        }), environment: environment, reduceMotion: piReducesMotion)
     }
 }
