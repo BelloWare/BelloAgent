@@ -164,6 +164,88 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         }
     }
 
+    func testLocalCatalogLocationsAcceptFileURLsAndExpandedPathsButRejectRelativePaths() throws {
+        let path = "/tmp/local catalog.json"
+        let file = URL(fileURLWithPath: path)
+        for value in [file.absoluteString, path] {
+            let url = try ModelCatalogEndpoint.url(value)
+            XCTAssertTrue(url.isFileURL)
+            XCTAssertEqual(url.path, path)
+            XCTAssertFalse(ModelCatalogEndpoint.usesGatewayCredential(url, base: "https://gateway.example", api: "openai-responses"))
+        }
+        let home = try ModelCatalogEndpoint.url("~/catalog.json")
+        XCTAssertTrue(home.isFileURL)
+        XCTAssertEqual(home.path, ("~/catalog.json" as NSString).expandingTildeInPath)
+        for invalid in ["catalog.json", "./catalog.json", "../catalog.json", "file:catalog.json"] {
+            XCTAssertThrowsError(try ModelCatalogEndpoint.url(invalid), invalid)
+        }
+    }
+
+    @MainActor func testLocalCatalogListsModelsAndRefreshesWithoutRequestingCredentials() async throws {
+        final class Clock: @unchecked Sendable { var date = Date(timeIntervalSince1970: 1_000) }
+        let file = URL(fileURLWithPath: scratchBase()).appendingPathComponent("catalog-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(#"{"version":1,"models":[{"id":"local","name":"Local model","contextWindow":64000,"maxOutputTokens":8192},{"id":"old","deprecated":true}]}"#.utf8).write(to: file)
+        let clock = Clock()
+        let catalog = ModelCatalog(now: { clock.date }, readBundled: { XCTFail("A local catalog replaces the bundle"); return [] })
+        var profile = ProfileRecord(); profile.baseUrl = "https://gateway.example"; profile.catalogUrl = file.absoluteString
+        let credential: @Sendable () async throws -> String = { XCTFail("A local catalog must never request a gateway key"); return "synthetic-secret" }
+        let listed = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(listed, ["local"])
+        XCTAssertEqual(catalog.entry(for: profile).descriptor(for: "local")?.contextWindow, 64_000)
+        XCTAssertEqual(catalog.entry(for: profile).descriptor(for: "local")?.maxOutputTokens, 8_192)
+        XCTAssertEqual(catalog.entry(for: profile).source, "catalog")
+        XCTAssertNil(catalog.entry(for: profile).error)
+
+        try Data(#"[{"id":"updated"}]"#.utf8).write(to: file)
+        let cached = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(cached, listed, "File edits follow the same five-minute cache as remote catalogs")
+        clock.date = clock.date.addingTimeInterval(301)
+        let refreshed = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(refreshed, ["updated"])
+        try Data(#"[{"id":"forced"}]"#.utf8).write(to: file)
+        let forced = await catalog.load(profile: profile, force: true, credential: credential)
+        XCTAssertEqual(forced, ["forced"])
+    }
+
+    @MainActor func testMissingAndInvalidLocalCatalogKeepTheLastGoodListBesideTheError() async throws {
+        let file = URL(fileURLWithPath: scratchBase()).appendingPathComponent("catalog-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(#"[{"id":"last-good"}]"#.utf8).write(to: file)
+        let catalog = ModelCatalog()
+        var profile = ProfileRecord(); profile.baseUrl = "https://gateway.example"; profile.catalogUrl = file.path
+        let credential: @Sendable () async throws -> String = { XCTFail("A file failure must not request a gateway key"); return "synthetic-secret" }
+        let initial = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(initial, ["last-good"])
+        try FileManager.default.removeItem(at: file)
+        let missing = await catalog.load(profile: profile, force: true, credential: credential)
+        XCTAssertEqual(missing, ["last-good"])
+        XCTAssertEqual(catalog.entry(for: profile).error, ModelCatalogEndpoint.Failure.unavailable.localizedDescription)
+        try Data("not JSON".utf8).write(to: file)
+        let invalid = await catalog.load(profile: profile, force: true, credential: credential)
+        XCTAssertEqual(invalid, ["last-good"])
+        XCTAssertEqual(catalog.entry(for: profile).error, ModelCatalogEndpoint.Failure.malformed("expected an object with a models array").localizedDescription)
+        try Data(#"[{"id":"recovered"}]"#.utf8).write(to: file)
+        let backedOff = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(backedOff, ["last-good"], "A file failure uses the same retry backoff")
+        let recovered = await catalog.load(profile: profile, force: true, credential: credential)
+        XCTAssertEqual(recovered, ["recovered"])
+        XCTAssertNil(catalog.entry(for: profile).error)
+    }
+
+    func testLocalCatalogReadUsesTheSameBodyLimitAndIgnoresTheGatewayKey() async throws {
+        let file = URL(fileURLWithPath: scratchBase()).appendingPathComponent("catalog-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let body = Data(#"[{"id":"local"}]"#.utf8)
+        try body.write(to: file)
+        let bounded = ModelCatalogEndpoint(limits: .init(bodyBytes: body.count))
+        let listed = try await bounded.fetch(url: file, key: "unused\nkey")
+        XCTAssertEqual(listed.map(\.id), ["local"])
+        try (body + Data(" ".utf8)).write(to: file)
+        do { _ = try await bounded.fetch(url: file, key: ""); XCTFail("An oversized file must fail") }
+        catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .oversized) }
+    }
+
     func testMalformedNumbersCannotCrashOrBecomeTokenLimits() throws {
         for body in [#"{"version":true,"models":[]}"#, #"{"version":2,"models":[]}"#, #"{"version":1.5,"models":[]}"#,
                      #"[{"id":"x","order":1e100}]"#, #"[{"id":"x","order":-1e100}]"#, #"[{"id":"x","order":true}]"#, #"[{"id":"x","order":0.5}]"#,

@@ -35,7 +35,7 @@ extension SubagentModelGrant {
 
     static func childModel(_ requested: String?, parent: Profile, grants: [Self]) throws -> Self {
         var (grant, _) = try resolve(requested,parent:parent,grants:grants)
-        if requested == nil { grant.reasoning = grants.first { $0.model == parent.model }?.reasoning }
+        if requested == nil || requested != grant.model { grant.reasoning = grants.first { $0.model == parent.model }?.reasoning }
         return grant
     }
 }

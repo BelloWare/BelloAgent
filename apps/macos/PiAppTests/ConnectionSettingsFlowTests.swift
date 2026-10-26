@@ -19,6 +19,31 @@ final class ConnectionSettingsFlowTests: XCTestCase {
         ModelListGateway.Reply(bytes: Data("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
     }
 
+    @MainActor func testEditingTheCatalogFieldListsLocalFilesBeforeSaving() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first catalog.json"), second = root.appendingPathComponent("second.json")
+        try Data(Self.catalog.utf8).write(to: first)
+        try Data(Self.secondCatalog.utf8).write(to: second)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let controller = ConnectionSettingsController(model: model)
+        await controller.load(discardingDrafts: false)
+        controller.draft.profile.baseUrl = "https://gateway.example"
+        controller.draft.profile.catalogUrl = first.path
+        let listed = await controller.listModels()
+        XCTAssertEqual(listed, ["gateway-router", "gateway-mini"], "A local catalog lists without a typed or saved key")
+        XCTAssertNil(controller.listingEntry.error)
+        controller.draft.profile.catalogUrl = second.absoluteString
+        let edited = await controller.listModels()
+        XCTAssertEqual(edited, ["second-router"], "Editing the field refreshes its list immediately")
+        XCTAssertNil(controller.listingEntry.error)
+        controller.choose(try XCTUnwrap(controller.listingEntry.descriptor(for: "second-router")))
+        controller.draft.key = "sk-synthetic"
+        let saved = await controller.save()
+        XCTAssertTrue(saved, controller.message)
+        XCTAssertEqual(model.profiles.first?.catalogUrl, second.absoluteString)
+        try await model.traces.close(); await model.store?.close()
+    }
+
     @MainActor func testANewConnectionListsModelsBeforeItIsSavedAndEveryEditSticks() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let gateway = try ModelListGateway { request in

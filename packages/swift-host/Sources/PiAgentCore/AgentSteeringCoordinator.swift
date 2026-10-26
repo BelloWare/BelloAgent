@@ -99,11 +99,14 @@ actor AgentSteeringCoordinator {
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
             turn?.effort = grant.thinkingLevel
             receipt["route"] = "start"
+            receipt["model"] = JSON(grant.model)
+            if let notice = grant.fallbackNotice(requested: spec.model) { receipt["model_notice"] = JSON(notice) }
             if call.arguments["mode"].text == "wait", let turn { targets = [turn.target] }
         case "subagent_send":
             let child = call.arguments["child_id"].text!
             guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) else { throw AgentError("subagent_scope", "Unknown child in this family") }
             let grant = try savedPlan.origin.model.selectingEffort(call.arguments["effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
+            receipt["model"] = JSON(grant.model)
             if state.latest(child) == nil { try await adoptLegacy(savedPlan,parent:parent,environment:env); state = await parent.agentState() }
             guard let latest = state.latest(child) else { throw SubagentRecovery.damaged() }
             if latest.status != .notExecuted, !FileManager.default.fileExists(atPath:env.directory.appendingPathComponent(child + ".jsonl").path) { throw AgentError("subagent_missing", "The saved child conversation is missing; it cannot be resumed") }

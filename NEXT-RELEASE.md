@@ -1,8 +1,10 @@
-# Next release: 0.1.132
+# Next release: 0.1.133
 
-**Released 2026-10-26:** 0.1.131 (build 135, tag `v0.1.131`) is the latest release, a helper-only hotfix of 0.1.130 that removes the family communication limit; record `docs/validation/Bello-Agent-0.1.131-2026-10-26.md`. The work planned as 0.1.131 on `dev/next` ships as 0.1.132.
+**Released 2026-10-27:** 0.1.132 (build 136, tag `v0.1.132`) is the latest release, a hotfix of 0.1.131: a sub-agent whose model is not offered runs on the parent's model, and a custom model catalog can be a local file; record `docs/validation/Bello-Agent-0.1.132-2026-10-27.md`. The work planned as 0.1.131 on `dev/next` ships as 0.1.133.
 
-## 0.1.132 (planned as 0.1.131)
+## 0.1.133 (planned as 0.1.131)
+
+- [x] Released separately as the 0.1.132 hotfix (owner, 2026-10-27): a sub-agent whose model is not offered runs on the parent's model; a custom model catalog can be a local file. [Record](docs/validation/Bello-Agent-0.1.132-2026-10-27.md).
 
 - [x] Release-gate fixtures: preserve the submission durability checks across EDIT-3's earlier intent saves, distinguish opening/full page budgets, keep Find's target unloaded, assert IMG-1's thumbnail/copy-text difference, and allow later clock captures. Product behavior unchanged. [Validation](docs/validation/a133-gatefix-0.1.131.md).
 

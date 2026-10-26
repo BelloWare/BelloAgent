@@ -46,8 +46,11 @@ extension SubagentModelGrant {
              input: profile.raw["input"].isNull ? nil : profile.raw["input"].list.compactMap(\.text))
     }
     static func resolve(_ requested: String?, parent: Profile, grants: [Self]) throws -> (Self, Profile) {
-        guard let requested else { return (inherited(parent), parent) }
-        guard let grant = grants.first(where: { $0.model == requested }) else { throw AgentError("subagent_model", "The model is not offered for the parent's saved connection") }
+        guard let requested, let grant = grants.first(where: { $0.model == requested }) else { return (inherited(parent), parent) }
         return (grant, try grant.applying(to: parent))
+    }
+    func fallbackNotice(requested: String?) -> String? {
+        guard let requested, requested != model else { return nil }
+        return "Requested model '\(requested)' is not offered for this connection; using the parent's model '\(model)' instead."
     }
 }

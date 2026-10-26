@@ -11,6 +11,7 @@ enum SubagentSteeringContract {
         let models = models.sorted { $0.model < $1.model }
         return (child ? ["subagent_report"] : parentNames).map { name in
             var schema = schemas[name]!
+            if name == "subagent_start" { schema["properties"]["model"]["description"] = JSON(SubagentSpec.modelDescription) }
             if name == "subagent_start", !models.isEmpty { schema["properties"]["model"]["enum"] = .array(models.map { JSON($0.model) }) }
             if let profile, name == "subagent_start" {
                 var inherited = SubagentModelGrant.inherited(profile)

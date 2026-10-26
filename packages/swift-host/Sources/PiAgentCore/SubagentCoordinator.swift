@@ -25,6 +25,7 @@ actor SubagentCoordinator {
     private struct Job: Sendable {
         let plan: SubagentPlan, generation: Int, runtimeID: String
         let completion: SubagentCompletion
+        let modelNotice: String?
         var runtime: Runtime?
         var status: SubagentStatus = .queued
         var allocated = false, cancelled = false, finishing = false
@@ -93,7 +94,7 @@ actor SubagentCoordinator {
                 let childGeneration = await child.stopCount
                 await child.installManagedCancellation(self, key: key)
                 try await register(child, profile, env.apiKey, env.parent)
-                jobs[key] = Job(plan: plan, generation: env.generation, runtimeID: env.runtimeID, completion: SubagentCompletion(), runtime: Runtime(environment: env, child: child, childGeneration: childGeneration))
+                jobs[key] = Job(plan: plan, generation: env.generation, runtimeID: env.runtimeID, completion: SubagentCompletion(), modelNotice: grant.fallbackNotice(requested: spec.model), runtime: Runtime(environment: env, child: child, childGeneration: childGeneration))
                 queues[plan.origin.link.budgetOwnerSessionID, default: []].append(key)
                 await publish(key)
             } catch {
@@ -146,6 +147,8 @@ actor SubagentCoordinator {
         guard var job = jobs[key], !job.status.terminal, !job.finishing, let runtime = job.runtime else { return }
         job.finishing = true; jobs[key] = job
         var result = result
+        result.envelope["model"] = JSON(job.plan.origin.model.model)
+        if let notice = job.modelNotice { result.envelope["model_notice"] = JSON(notice) }
         await runtime.child.endSubagentProgress()
         let progress = await runtime.child.subagentProgress(elapsed: nowMS() - job.startedAt)
         result.metadata["summary"] = (try? subagentJSON(SubagentSummary(link: job.plan.origin.link, description: job.plan.origin.description,
