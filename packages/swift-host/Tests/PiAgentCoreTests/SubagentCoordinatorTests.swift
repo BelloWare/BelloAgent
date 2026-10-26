@@ -348,17 +348,23 @@ final class SubagentCoordinatorTests: HelperTestCase {
         await parent.close()
     }
 
-    func testInvalidGrantsCreateNoChildrenOrDelegationPlans() async throws {
+    func testUnlistedModelFallsBackWhileInvalidToolsCreateNoChild() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 2, arguments: [["task":"0","model":"not-offered"], ["task":"1","tools":["forbidden"]]])
+        await client.releaseAll()
         let coordinator = SubagentCoordinator(), parent = try await makeParent(root, client: client, coordinator: coordinator)
         _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
         try await eventually { !(await parent.isRunning) }
         let listed = await coordinator.list(parent: parent), plans = await parent.subagents.plans, active = await client.active
-        XCTAssertTrue(listed["children"].list.isEmpty); XCTAssertTrue(plans.isEmpty); XCTAssertEqual(active, 0)
+        XCTAssertEqual(listed["children"].list.count, 1); XCTAssertEqual(plans.count, 1); XCTAssertEqual(active, 0)
+        XCTAssertEqual(plans.values.first?.origin.model.model, "fixture-model")
         let results = await parent.history.filter { $0.toolName == "subagent" }
         XCTAssertEqual(results.count, 2)
-        XCTAssertEqual(try results.map { try JSON.parse(Data($0.text.utf8))["error"]["code"].text }, ["subagent_model", "subagent_tools"])
+        let envelopes = try results.map { try JSON.parse(Data($0.text.utf8)) }
+        XCTAssertEqual(envelopes.first?["status"].text, "completed")
+        XCTAssertEqual(envelopes.first?["model"].text, "fixture-model")
+        XCTAssertEqual(envelopes.first?["model_notice"].text, "Requested model 'not-offered' is not offered for this connection; using the parent's model 'fixture-model' instead.")
+        XCTAssertEqual(envelopes.last?["error"]["code"].text, "subagent_tools")
         await parent.close()
     }
 

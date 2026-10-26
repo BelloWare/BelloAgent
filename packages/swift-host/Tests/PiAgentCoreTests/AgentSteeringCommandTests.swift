@@ -2,6 +2,41 @@ import XCTest
 @testable import PiAgentCore
 
 final class AgentSteeringCommandTests: HelperTestCase {
+    func testUnlistedModelStartReportsFallbackAndFollowUpKeepsIt() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = AccountedAgentScript([answer("First answer"), answer("Follow-up answer")])
+        let coordinator = AgentSteeringCoordinator()
+        let profile = try fixtureProfile()
+        let parent = try AgentSession(id:"parent",profile:profile,apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        let start = ToolCall(id:"start",name:"subagent_start",arguments:["task":"Original task","mode":"background","model":"not-offered"])
+        let key = try await parent.agentFixtureCall(start,newTask:true)
+        try await parent.runToolBatch([start])
+        let results = await parent.history.filter { $0.toolCallId == start.id }
+        let result = try XCTUnwrap(results.last)
+        XCTAssertFalse(result.isError)
+        let receipt = try JSON.parse(Data(result.text.utf8))
+        XCTAssertEqual(receipt["accepted"].flag, true)
+        XCTAssertEqual(receipt["model"].text, profile.model)
+        XCTAssertEqual(receipt["model_notice"].text, "Requested model 'not-offered' is not offered for this connection; using the parent's model 'fixture-model' instead.")
+        let child = try XCTUnwrap(receipt["child_id"].text)
+        let duplicate = try await coordinator.prepare(start,key:key,parent:parent)
+        XCTAssertEqual(duplicate, receipt)
+        try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+        let send = ToolCall(id:"follow",name:"subagent_send",arguments:["child_id":JSON(child),"message":"Follow up"])
+        let followKey = try await parent.agentFixtureCall(send,newTask:true)
+        let follow = try await coordinator.prepare(send,key:followKey,parent:parent)
+        XCTAssertEqual(follow["model"].text, profile.model)
+        try await eventually {
+            let latest = await parent.agentState().latest(child)
+            return latest?.turn == 2 && latest?.status.terminal == true
+        }
+        let profiles = await client.profiles
+        XCTAssertEqual(profiles.map(\.model), [profile.model, profile.model])
+        XCTAssertTrue(profiles.allSatisfy { $0.id == profile.id && $0.endpoint == profile.endpoint })
+        await coordinator.drain(); await parent.close()
+    }
+
     func testStartWithWaitIDListsItsAcceptedTurnBeforeAndAfterReopen() async throws {
         try await startWaitLookup(legacy: false)
     }
