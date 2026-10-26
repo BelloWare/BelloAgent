@@ -115,7 +115,7 @@ extension WorkspaceModel {
         for chip in sent {
             // A chip the reader took off, or chose again, since is theirs.
             guard let index = chips.firstIndex(where: { $0.id == chip.id }), chips[index] == chip else { continue }
-            guard let skill = current[chip.id], canSelectSkill(skill, view: view) else {
+            guard let skill = current[chip.id], skillIsAvailable(skill, view: view) else {
                 chips.remove(at: index); view.skillRepins[chip.id] = nil
                 result.removed.append(chip.name)
                 // A `/name request` keeps the request only in its chip: it

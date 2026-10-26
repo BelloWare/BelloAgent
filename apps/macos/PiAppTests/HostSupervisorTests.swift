@@ -3,6 +3,29 @@ import Darwin
 @testable import PiApp
 
 final class HostSupervisorTests: XCTestCase {
+    @MainActor func testEditPreparationHasNoAcknowledgementDeadline() async throws {
+        try await assertNoEditDeadline("session.edit.prepare")
+    }
+
+    @MainActor func testHistoricalEditHasNoAcknowledgementDeadline() async throws {
+        try await assertNoEditDeadline("turn.edit")
+    }
+
+    @MainActor private func assertNoEditDeadline(_ method: String) async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        var sent: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { sent.append($0) }, acknowledgmentTimeout: .milliseconds(5))
+        defer { host.shutdown() }
+        try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+        let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+        let read = Task { try await host.request(method, commandID: "edit-read") }
+        for _ in 0..<1000 where sent.isEmpty { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(40))
+        host.receive(reply("edit-read", epoch: epoch), connectionID: connection)
+        _ = try await read.value
+        try await host.shutdownAndWait()
+    }
+
     @MainActor func testTransportFailureAndProcessExitReportOneLossPerConnection() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let host = HostSupervisor(); defer { host.shutdown() }

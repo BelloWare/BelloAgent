@@ -150,8 +150,17 @@ extension WorkspaceModel {
     /// produced, and throws when it produced nothing usable; the request is
     /// kept with it, or with why it failed, on the Background requests page.
     /// Cancelling the calling task stops the request as well as the polling.
-    func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String,
+    /// With `sourceLease`, nothing is sent once the source chat has moved to
+    /// another connection (`connectionChanged`): what was read from it goes
+    /// only to the connection it was read on.
+    /// `onRecord` is told the request's own ID once its record is made.
+    func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String, sourceLease: ConnectionLease? = nil,
+                      onRecord: (@MainActor (String) -> Void)? = nil,
                       result: ([TranscriptMessage]) throws -> String) async throws -> [TranscriptMessage] {
+        // Once a quit or an update has begun (`installPreparing`), no helper
+        // is started and nothing is sent: the known helpers are stopping.
+        func closing() -> Bool { installPreparing || isShutDown }
+        guard !closing() else { throw CancellationError() }
         guard let store else { throw StoreError.unavailable }
         let taskID = UUID().uuidString
         var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: request.title, path: nil, profileID: profile.id, toolMode: ChatRecord.readOnlyTools, connectionTest: true,
@@ -161,6 +170,7 @@ extension WorkspaceModel {
         do { try await store.put(item, kind: "chat", id: taskID) }
         catch { backgroundRequestsRunning.remove(taskID); throw error }
         chats.append(item)
+        onRecord?(taskID)
         let display = SessionDisplay(id: taskID); displays[taskID] = display; display.loading = true
         var host: HostSupervisor?
         defer {
@@ -183,9 +193,12 @@ extension WorkspaceModel {
         }
         do {
             let lease = try connectionLease(for: item)
+            guard !closing() else { throw CancellationError() }
             let connected = try await open(item); host = connected
             let turn = UUID().uuidString
             try requireConnection(lease)
+            if let sourceLease { try requireConnection(sourceLease) }
+            guard !closing() else { throw CancellationError() }
             _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(request.prompt), "clientTurnId": .string(turn)]))
             let deadline = ProcessInfo.processInfo.systemUptime + request.timeout
             while ProcessInfo.processInfo.systemUptime < deadline {

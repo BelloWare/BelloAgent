@@ -110,7 +110,7 @@ extension WorkspaceModel {
                 guard let editID = intent.queueEditID else { continue }
                 if !confirmed.contains(intent.id) {
                     guard let status = try? await queueEditRequest("queue.edit.status", sessionID: item.id, params: ["editId": .string(editID)]),
-                          status["state"]?.string == "saved", status["textDigest"]?.string == QueuedEditDraft.digest(intent.text) else { continue }
+                          status["state"]?.string == "saved", (status["inputDigest"] ?? status["textDigest"])?.string == QueuedEditDraft.digest(intent.text, skills: intent.skills) else { continue }
                 }
                 // Positive evidence belongs to the command, even if its
                 // reader moved away while the reply was in flight.
@@ -245,6 +245,9 @@ extension WorkspaceModel {
                 try Task.checkCancellation()
                 try await prepareToolOutputUse(outputUse)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
+                // A recovered rewrite can be pinned as a separate draft.
+                // Preserve it before the normal write checks for instance conflicts.
+                try await store.preserveDraftConflicts(view.draftVersion)
                 try await store.put(draft, kind: "draft", id: draft.id, draftVersion: view.draftVersion, write: write); draftWrites.failed = false
             }
             catch is CancellationError { }

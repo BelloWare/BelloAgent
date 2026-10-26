@@ -3,6 +3,41 @@ import XCTest
 @testable import PiApp
 
 final class ComposerPasteGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testPastedImageThumbnail() async throws {
+        guard let path = testEnvironment("PI_APP_PASTE_GALLERY") else { throw XCTSkip("Set PI_APP_PASTE_GALLERY") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(1240)), ("dark", .darkAqua, 1240), ("narrow", .aqua, 920)] {
+            let fixture = try ComposerPasteRoutingTests.Fixture(kind: "main", width: width)
+            defer { fixture.close() }
+            fixture.model.prewarmsHelpers = false
+            fixture.model.automaticContextOperation = { _, _ in throw CancellationError() }
+            fixture.model.cancelAutomaticContext()
+            let root = WorkspaceRootView(model: fixture.model)
+            fixture.model.launching = false
+            fixture.window.contentView = root; fixture.window.appearance = NSAppearance(named: appearance)
+            root.refresh(); root.layoutSubtreeIfNeeded()
+            let menu = try ComposerPasteLifecycleTests.PasteMenu(model: fixture.model, window: fixture.window)
+            defer { menu.close() }
+            menu.board.setData(try ClipboardImageTests.image(width: 800, height: 500), forType: .png)
+            let editor = try XCTUnwrap(ConversationPaneTests.views(ComposerTextView.self, in: root).first)
+            try await menu.paste(into: editor, commandV: name != "dark")
+            try await eventually("pasted image attached") { fixture.session.imageImports == 0 && fixture.session.attachments.count == 1 }
+            root.refresh(); root.layoutSubtreeIfNeeded()
+            try await eventually("pasted image chip joins the composer") { !ConversationPaneTests.views(ComposerImageAttachmentChip.self, in: root).isEmpty }
+            let chip = try XCTUnwrap(ConversationPaneTests.views(ComposerImageAttachmentChip.self, in: root).first)
+            try await eventually("pasted image thumbnail drawn") { chip.main.thumbnail != nil }
+            for _ in 0..<8 {
+                root.refresh(); root.layoutSubtreeIfNeeded(); fixture.window.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(fixture.session.draft, "Keep this draft")
+            let image = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            root.cacheDisplay(in: root.bounds, to: image)
+            try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: folder.appendingPathComponent("pasted-image-\(name).png"))
+        }
+    }
+
     @MainActor func testPasteRefusalNotice() async throws {
         guard let path = testEnvironment("PI_APP_PASTE_GALLERY") else { throw XCTSkip("Set PI_APP_PASTE_GALLERY") }
         let folder = URL(fileURLWithPath: path)

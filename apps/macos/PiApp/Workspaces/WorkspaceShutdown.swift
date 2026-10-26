@@ -58,6 +58,7 @@ extension WorkspaceModel {
         pastedImageCleanup?.cancel()
         toolOutputCleanup?.cancel()
         sidebarSearchStorage?.shutdown()
+        chatBriefsStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
         isShutDown = true

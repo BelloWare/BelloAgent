@@ -99,6 +99,11 @@ final class DraftVersion: @unchecked Sendable {
             if !submissions.contains(where: { $0.id == intent.id }) { submissions.append(intent) }
         }
     }
+    func preservingDraft(_ draft: DraftRecord) -> SavedDraftConflict {
+        let copy = SavedDraftConflict(id: UUID().uuidString, draft: draft)
+        lock.withLock { conflicts.append(copy) }
+        return copy
+    }
     fileprivate func preservedSubmission(_ id: String) {
         lock.withLock {
             // Snapshot inventories read durable pending records. Publishing a
@@ -1445,6 +1450,16 @@ actor MetadataStore {
         try put(source, kind: "chat", id: source.id)
         return source
     }
+    /// A chat's new brief (`WorkspaceChatBriefs.swift`), written onto the
+    /// record the store holds now and nothing else of it. One older than the
+    /// brief already held is not written; a chat that is gone gets none.
+    func applyChatBrief(_ brief: ChatBrief, chatID: String) throws -> ChatRecord? {
+        guard var chat = try get(ChatRecord.self, kind: "chat", id: chatID), !chat.isBackgroundTask,
+              brief.at >= (chat.brief?.at ?? .distantPast) else { return nil }
+        chat.brief = brief
+        try put(chat, kind: "chat", id: chatID)
+        return chat
+    }
 }
 
 struct WorkspaceRecord: Codable, Sendable, Identifiable, Hashable {
@@ -1495,6 +1510,10 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var titleWasEdited: Bool?
     var titleWasGenerated: Bool?
     var titleTaskSessionID: String?
+    /// The mini model's brief of the chat and its keywords (`ChatBriefPlan.swift`):
+    /// app metadata for sidebar search and the row's hover card, never part
+    /// of the conversation. Only `MetadataStore.applyChatBrief` writes it.
+    var brief: ChatBrief?
     /// A retained utility job has its own journal, capture and billing scope.
     var backgroundTask: String?
     var sourceSessionID: String?
@@ -1613,6 +1632,8 @@ extension ChatRecord {
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt); archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
         titleWasEdited = try c.decodeIfPresent(Bool.self, forKey: .titleWasEdited); titleWasGenerated = try c.decodeIfPresent(Bool.self, forKey: .titleWasGenerated)
         titleTaskSessionID = try c.decodeIfPresent(String.self, forKey: .titleTaskSessionID)
+        // A brief this build cannot read is no brief, never an unreadable chat.
+        brief = (try? c.decodeIfPresent(ChatBrief.self, forKey: .brief)) ?? nil
         backgroundTask = try c.decodeIfPresent(String.self, forKey: .backgroundTask); sourceSessionID = try c.decodeIfPresent(String.self, forKey: .sourceSessionID)
         backgroundTaskNotice = try c.decodeIfPresent(String.self, forKey: .backgroundTaskNotice)
         backgroundTaskStartedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskStartedAt); backgroundTaskEndedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskEndedAt)
@@ -1731,14 +1752,28 @@ struct QueuedEditDraft: Codable, Sendable, Equatable {
     /// the text a Save sent: a reopen asks after it, and only it may be retried.
     var pending: String? = nil
     var sentDigest: String? = nil
+    var skills: [SkillChip]? = nil
+    var originalSkills: [SkillChip]? = nil
     init(editID: String, turnID: String, rewrite: String, original: String, beginOnly: Bool? = nil, pending: String? = nil, sent: String? = nil) {
         self.editID = editID; self.turnID = turnID; self.rewrite = rewrite
         originalDigest = QueuedEditDraft.digest(original.trimmingCharacters(in: .whitespacesAndNewlines))
         self.beginOnly = beginOnly; self.pending = pending; sentDigest = sent.map(QueuedEditDraft.digest)
     }
     static func digest(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+    static func digest(_ text: String, skills: [SkillChip]?) -> String {
+        guard let skills else { return digest(text) }
+        let fields = [text] + skills.flatMap { [$0.id, $0.contentHash, $0.metadataHash, $0.arguments] }
+        return digest("queue-edit-v2\n" + fields.map { "\($0.utf8.count):\($0)" }.joined())
+    }
+    /// Unchanged original selections keep their frozen bodies in the helper.
+    static func changedSkills(_ skills: [SkillChip], original: [SkillChip]?) -> [SkillChip]? {
+        skills.map(\.wire) == (original ?? []).map(\.wire) ? nil : skills
+    }
+    var saveSkills: [SkillChip]? { Self.changedSkills(skills ?? originalSkills ?? [], original: originalSkills) }
     /// Whether `text` is the message as it was when the edit began.
-    func isOriginal(_ text: String) -> Bool { Self.digest(text.trimmingCharacters(in: .whitespacesAndNewlines)) == originalDigest }
+    func isOriginal(_ text: String) -> Bool {
+        Self.digest(text.trimmingCharacters(in: .whitespacesAndNewlines)) == originalDigest && saveSkills == nil
+    }
 }
 struct MessageEditDraft: Codable, Sendable, Equatable {
     var messageID: String

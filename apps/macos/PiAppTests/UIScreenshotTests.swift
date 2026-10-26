@@ -85,6 +85,10 @@ final class UIScreenshotTests: XCTestCase {
                 "args": .array([.string(mcpFixturePath)])
             ])])])
             $0.automaticUpdateChecks = false
+            // Chat briefs (on by default since 0.1.131) would ask the mini
+            // model after every finished run here and add their requests to
+            // the scenes below; ChatBriefGalleryTests draws them.
+            $0.chatBriefs = ChatBriefSettings(enabled: false)
         }
         let model = WorkspaceModel(stateRoot: folder.appendingPathComponent("app-state"), vault: vault)
         defer { model.shutdown() }

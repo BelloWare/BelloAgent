@@ -734,40 +734,141 @@ expected failures, mutations and diagnostic attempts are reported separately.
 
 ## Round 3: live-tail catch-up, held-prefix release and integration (2026-10-26)
 
-Reviewed `a35fc7fc`; merge target `origin/dev/next` `1ef3a524`.
-Both regressions use `WorkspaceRefreshLifecycleTests`' generated, in-memory
-model and scripted helper, with no window or live provider needed.
+Reviewed `a35fc7fc`; fixes committed as `5af7c454`, then merged
+`origin/dev/next` `1ef3a524` without rewriting either history.
 
-- A saved-position opening reads a partial last reply; while that read is
-  held, an idle snapshot omits rows because history browsing is still on.
-  The fill closed its newer gap without another snapshot. Closing that gap
-  now clears the retained helper projection and requests fresh live rows,
-  as ordinary forward paging does. The regression checks the fresh request,
-  final reply text and a final response part absent from the stale read.
+- A saved-position opening could read a partial last reply while an idle
+  snapshot omitted rows because history browsing was still on. Closing its
+  newer gap now clears the retained projection and requests fresh live rows,
+  matching ordinary forward paging. The regression holds the stale read,
+  finishes the run, then checks a fresh full snapshot, the finished reply
+  and a final response part absent from the read.
 - The streaming shortcut treated any held ID as requiring the entire
   over-budget prefix. It now checks the earliest held row's turn through
-  the retained position index, off the main actor. A later held turn uses
-  the existing trimming path. With a fixture cap of eight, moving either
-  the reading anchor or selection keeps the required **12, then 10 rows**,
-  instead of retaining all **14**, and preserves the held row, live tokens
-  and earlier paging boundary.
+  the retained position index, off the main actor; a later held turn falls
+  back to canonical trimming. With an eight-row fixture cap, advancing
+  either the anchor or selection keeps **12, then 10 rows**, instead of all
+  **14**, preserving the held row, live tokens and earlier paging boundary.
 
-Failing first, Release (`r3-failing-build.log`, `r3-failing.log`): **2 tests
-failed / 10 failures** — eight prefix/boundary assertions plus the missing
-refresh timeout and its thrown XCTest error (one marked unexpected). These
-are correctness reproductions, not timing evidence. The run waited for
-IMG-1's perf lock before building/testing. Exact argv and load are in
-`runs.txt`; only the two new methods were selected.
+Both generated/scripted-helper regressions live in
+`WorkspaceRefreshLifecycleTests`. Release failing-first: **2 tests failed /
+10 failures** (eight prefix assertions, the missing-refresh timeout and its
+thrown XCTest error; one marked unexpected), `r3-failing.log`. Fixed and
+restored selections each pass **2/2** (`r3-fixed.log`, `r3-restored.log`).
+Physical mutations are caught separately: removing gap catch-up fails
+**1 test / 2 failures**; restoring the old held-prefix shortcut fails
+**1 test / 8 assertions** (`r3-mutant-opening.log`,
+`r3-mutant-held-prefix.log`). Both production files were restored and
+rebuilt before integration. These are correctness checks, not speed claims.
 
-Fixed selection: **2/2 passed** (`r3-fixed.log`). Physical mutations were
-rebuilt and run separately: removing gap catch-up fails **1 test / 2 failures**
-(the missing-request timeout and its thrown helper error); restoring the
-old held-prefix shortcut fails **1 test / 8 assertions**
-(`r3-mutant-opening.log`, `r3-mutant-held-prefix.log`). Each case exercises
-only its own changed path. Both source files are restored in `finally`.
-These focused correctness runs held the lane; their load is not used for
-performance claims.
+### Merge and focused validation
 
-Restored Release build and both regressions pass **2/2, no skips or failures**
-(`r3-restored-build.log`, `r3-restored.log`). The fixes are committed before
-merging the requested integration tree.
+Only `NEXT-RELEASE.md` and the generated project had textual conflicts
+(`r3-conflicts.txt`). The plan preserves every incoming line and owner
+decision, with checked FIND-1/STREAM-1 entries winning their unchecked
+alternatives; `xcodegen generate --quiet` produces the union of sources.
+The automatic code merges were checked explicitly: `SessionDisplay` keeps
+incremental projections, the brief run-end tracker and queued skills;
+native scrolling keeps prefix placement/measured-row invalidation and
+PERF-3's legacy gutter reservation; reasoning prepares its indented width
+before `read`. `HistoryReader` keeps EDIT-2's independent edit readers and
+direct target read alongside per-read opening limits. Completion is still
+observed before the snapshot row fast path. Incoming paste, edit/slash
+and brief hook paths remain intact.
+
+The merged Release native build, Release helper rebuild and bundle staging
+pass (`r3-merged-build.log`, `r3-helper-release.log`, `r3-helper-stage.log`).
+The entire Round 2 selection passes again: **156 unique tests / 167
+executions**, with the same per-class counts listed above. Additional
+merged app selections are:
+
+| Class | Passed | Skipped |
+| --- | ---: | ---: |
+| WorkspaceRefreshLifecycleTests (includes both regressions) | 40 | 0 |
+| TranscriptUpdateIsolationTests | 8 | 0 |
+| EditHistoryReaderTests | 1 | 0 |
+| HistoricalEditingTests | 5 | 0 |
+| ReasoningLayoutTests | 1 | 0 |
+| TranscriptScrollerSizingTests | 1 | 0 |
+| ChatBriefTests | 22 | 0 |
+| QueueEditInteractionTests | 18 | 0 |
+| EditSlashCommandTests | 12 | 1 |
+| ComposerPasteLifecycleTests | 7 | 0 |
+| TranscriptRowGalleryTests (capture method) | 1 | 0 |
+
+Merged app total: **273 unique tests: 272 passed / 1 skipped / 0 failed**;
+**284 executions: 283 passed / 1 skipped** (`r3-test-summary.json`). The
+skip is the existing opt-in edit-slash gallery. Helper:
+**23 registered / 22 passed / 1 skipped / 0 failed** — HistoryWindowTests
+14, HistoryReadCancellationTests 4, EditPreparationTests 5
+(`r3-helper-history.log`); the skip remains the opt-in rapid-supersession
+measurement. The two opening-history/large-transfer wire cases pass
+**2/2** against the merged Release helper (`r3-wire-history.log`).
+No full app/helper lanes or unrelated wire suites were run.
+
+Exact expanded argv, environment recipes and selectors are in `runs.txt`,
+`r3-test-manifest.json` and `r3-postmerge.py` under the same build root.
+App checks use `xcodebuild test-without-building -xctestrun
+$PI_BUILD_ROOT/native-tests/Build/Products/PiApp_macosx15.1-arm64.xctestrun
+-destination platform=macOS,arch=arm64 -parallel-testing-enabled NO
+-collect-test-diagnostics never -only-testing:PiAppTests/<selection>`, one
+class per invocation. Helper: `swift test --package-path packages/swift-host
+--scratch-path $PI_BUILD_ROOT/swift-host --jobs 2 --filter
+'PiAgentCoreTests\.(HistoryWindowTests|HistoryReadCancellationTests|EditPreparationTests)'`.
+
+### Merged Release measurements
+
+| Resident rows | Before STREAM-1 mean | Round 2 mean | Merged mean / worst | Apply + merge + activity |
+| --- | ---: | ---: | ---: | ---: |
+| 300 | 8.4 ms | 2.1 ms | 2.7 / 9.8 ms | 0.038 ms |
+| 750 | 17.0 ms | 2.0 ms | 3.0 / 7.5 ms | 0.045 ms |
+| 3,000 | 60.7 ms | 2.4 ms | 3.0 / 4.2 ms | 0.065 ms |
+
+The three-size FrameBudget and Delivery probes use `PI_PERF_ROWS` and
+`PI_DELTA_ROWS` via `TEST_RUNNER_`, as before (`r3-stream-*.log`,
+`r3-delta-*.log`). The 300-row Release **1 ms** delivery budget passes;
+per-token cost stays flat and the 3,000-row result meets the old **3 / 12
+ms** opening/full-window comparison. These new samples are slower than
+Round 2; no timing gain is claimed for the two correctness fixes.
+
+Three cold generated tool-heavy openings: first rows median **374.7 ms**
+(range 368.6–386.0), versus **579.0 ms** (551.9–583.4) for full-first controls;
+full 974-row page median **909.8 ms** (895.7–927.7). Round 2 medians were
+347.6 / 530.3 / 830.2 ms respectively. Whole turns yield 206 initial rows;
+reading all 30 turns still takes **two further pages**, ending at **2,880
+rows**. Footprint increases (MiB, median): **18.9 first / 57.2 full / 85.8
+read back**, versus Round 2's 16.1 / 51.4 / 87.5 (`r3-reading-*.log`).
+
+Opening-fill class: 22 tokens during fill cost **5.228 / 8.991 ms**
+(mean/max), versus 12 after at **3.599 / 8.251 ms** (Round 2:
+4.312 / 7.572 and 2.903 / 6.698). Its live fill finishes at **1,397.7 ms**.
+The 56 main-actor admissions take **5.542 / 8.479 / 9.318 ms**
+(p50/p95/max), with preparation off-main and a yield between admissions
+(`r3-fill-metrics.json`). Historical and stationary-reader checks report
+**0 jumps, 0 lost rows, 0 blank frames**, no interval over 50 ms (max
+35.5 / 34.6 ms). All six first/full light/dark/narrow PNGs and ten row,
+opened-reasoning/card, stopped-reply and fold PNGs were regenerated and
+inspected: no new clipping or overlap; existing folded-row spacing remains.
+
+Measurements waited for IMG-1, then held the shared lock as
+`a131-stream perf merged validation`, with start/end and five-second peak
+load samples. Every measured run stayed below 4; no measurement needed a
+load redo. One-minute loads, ordered 300/750/3,000 or repetitions 1/2/3:
+
+| Run | Start | End | Peak |
+| --- | --- | --- | --- |
+| Token | 2.18 / 2.39 / 2.51 | 2.25 / 2.51 / 2.45 | 2.25 / 2.51 / 2.51 |
+| Delivery | 2.25 / 2.51 / 2.45 | 2.39 / 2.51 / 3.13 | 2.39 / 2.51 / 3.13 |
+| Cold reading | 2.75 / 2.21 / 2.20 | 3.01 / 2.20 / 2.17 | 3.01 / 2.21 / 2.20 |
+| Full-first controls | 2.17 / 2.08 / 1.99 | 2.08 / 1.99 / 2.07 | 2.17 / 2.08 / 2.07 |
+| Streaming stress | 2.07 | 2.89 | 2.89 |
+| Native scroll | 2.53 | 2.48 | 2.57 |
+| Geometry cache | 2.48 | 2.48 | 2.48 |
+| Wire page | 2.48 | 2.52 | 2.52 |
+| Opening / live fill | 2.52 | 2.76 | 2.76 |
+
+Policy remains **250 initial / 1,000 following / 3,000 resident rows**,
+with **1 MiB / 4 MiB / 24,000,000 byte** caps and whole-turn allowances.
+Per the lead's evidence on `a9f34673`, the standalone disclosure-curve
+failure is pre-existing test isolation; it was left unchanged and not
+rerun here. Both review findings are resolved.

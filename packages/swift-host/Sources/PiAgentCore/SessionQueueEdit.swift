@@ -20,6 +20,8 @@ struct QueueEditOutcome: Codable, Sendable, Equatable {
     var editID: String, turnID: String, outcome: String, sequence: Int, textDigest: String?
     /// The hold revision this outcome was recorded at.
     var revision: Int?
+    /// A Save that replaced skills also checks their ordered selection/arguments.
+    var inputDigest: String? = nil
 }
 
 extension AgentSession {
@@ -64,6 +66,7 @@ extension AgentSession {
         for (key, field) in item.previewValue.map where !["text","textTruncated","turnId","commandId"].contains(key) { value[key] = field }
         value["commandId"]=JSON(item.commandID); value["text"]=JSON(item.text); value["textBytes"]=JSON(item.text.utf8.count)
         value["attachmentCount"]=JSON(item.attachments.count); value["skillCount"]=JSON(item.skills.count)
+        value["skills"] = .array(item.skills.map(\.recorded))
         value["revision"]=JSON(queueEditRevision); value["held"]=heldValue
         return value
     }
@@ -108,25 +111,44 @@ extension AgentSession {
     }
 
     /// Saves the rewrite in the message's place: its identity, lane,
-    /// position, images, skills and model choices stay. Repeating a Save
+    /// position, images and model choices stay. Omitted skills keep the
+    /// original frozen selections; supplied skills require fresh authorization.
+    /// Repeating a Save
     /// that took effect answers as it did; a late Save of an edit that was
     /// cancelled or removed is refused.
-    public func saveQueueEdit(editID: String, text: String) throws -> JSON {
+    public func saveQueueEdit(editID: String, text: String, skills: [JSON]? = nil) async throws -> JSON {
+        guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         try Self.validEditID(editID); try requireCertainJournal()
         let digest=sha256(Data(text.utf8))
+        let inputDigest = skills.map { Self.queueEditInputDigest(text, skills: $0) }
         if queueEdit?.editID != editID, let outcome=queueEditOutcome(editID) {
             guard outcome.outcome == "saved" else { throw Self.resolvedError(outcome) }
-            guard outcome.textDigest == digest else { throw AgentError("command_conflict", "That edit was saved with other text") }
+            guard outcome.textDigest == digest, outcome.inputDigest == inputDigest else { throw AgentError("command_conflict", "That edit was saved with other text or skills") }
             return ["accepted":true,"outcome":"saved","turnId":JSON(outcome.turnID),"repeated":true,"revision":JSON(queueEditRevision),"held":heldValue]
         }
-        guard let hold=queueEdit, hold.editID == editID, let position=pendingPosition(hold.turnID) else {
+        guard let hold=queueEdit, hold.editID == editID, var position=pendingPosition(hold.turnID) else {
             throw AgentError("queue_edit_missing", "That queued edit is no longer open")
         }
         var item = position.lane == "steering" ? steering[position.index] : queue[position.index]
         guard text.utf8.count <= 262144 else { throw AgentError("queue_limit", "Message or queue limit exceeded") }
+        if let skills {
+            let selected = try await resources.freeze(skills, text: text, tools: await tools.capabilityIDs(readOnly: readOnly))
+            // Freezing suspends: a Cancel, another Save or an unload may have won.
+            guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
+            try requireCertainJournal()
+            guard queueEdit == hold else { return try await saveQueueEdit(editID: editID, text: text, skills: skills) }
+            guard let current = pendingPosition(hold.turnID) else { throw AgentError("queue_edit_missing", "That queued edit is no longer open") }
+            position = current
+            item = current.lane == "steering" ? steering[current.index] : queue[current.index]
+            item.skills = selected
+        }
         guard !text.isEmpty || !item.skills.isEmpty || !item.attachments.isEmpty else { throw AgentError("empty_message", "Enter a message or select a skill") }
-        if item.text != text { item.text=text; item.textRevision=(item.textRevision ?? 0) + 1 }
-        return try resolveQueueEdit(hold, outcome:"saved", digest:digest, replacing:(position.lane, position.index, item))
+        if item.text != text || skills != nil { item.text=text; item.textRevision=(item.textRevision ?? 0) + 1 }
+        return try resolveQueueEdit(hold, outcome:"saved", digest:digest, inputDigest: inputDigest, replacing:(position.lane, position.index, item))
+    }
+    static func queueEditInputDigest(_ text: String, skills: [JSON]) -> String {
+        let fields = [text] + skills.flatMap { skill in ["id", "contentHash", "metadataHash", "arguments"].map { skill[$0].text ?? "" } }
+        return sha256(Data(("queue-edit-v2\n" + fields.map { "\($0.utf8.count):\($0)" }.joined()).utf8))
     }
     /// Leaves the message as it was and releases the hold.
     public func cancelQueueEdit(editID: String) throws -> JSON {
@@ -165,6 +187,7 @@ extension AgentSession {
         if let outcome=queueEditOutcome(editID) {
             var value: JSON=["editId":JSON(editID),"turnId":JSON(outcome.turnID),"state":JSON(outcome.outcome),"sequence":JSON(outcome.sequence),"revision":JSON(queueEditRevision),"held":heldValue]
             if let digest=outcome.textDigest { value["textDigest"]=JSON(digest) }
+            if let digest=outcome.inputDigest { value["inputDigest"]=JSON(digest) }
             return value
         }
         return ["editId":JSON(editID),"state":"unknown","revision":JSON(queueEditRevision),"held":heldValue]
@@ -175,7 +198,7 @@ extension AgentSession {
     /// claimed. A write that fails leaves everything as it was, the hold
     /// included; one that may or may not have reached the journal keeps
     /// the hold too, until a reopen reads which it was.
-    private func resolveQueueEdit(_ hold: QueueEditHold, outcome: String, digest: String?, replacing: (lane: String, index: Int, item: Submission)? = nil, removing: Bool = false) throws -> JSON {
+    private func resolveQueueEdit(_ hold: QueueEditHold, outcome: String, digest: String?, inputDigest: String? = nil, replacing: (lane: String, index: Int, item: Submission)? = nil, removing: Bool = false) throws -> JSON {
         let before=(queue: queue, steering: steering, commands: commands, outcomes: queueEditOutcomes, revision: queueEditRevision, state: state, paused: queuePaused)
         if let replacing { if replacing.lane == "steering" { steering[replacing.index]=replacing.item } else { queue[replacing.index]=replacing.item } }
         // Only the hold is released: a Stop, failure or reopen pause stays.
@@ -185,7 +208,7 @@ extension AgentSession {
         }
         let forgotten=queueEditForgottenRevision
         queueEdit=nil; queueEditRevision += 1
-        appendQueueEditOutcome(QueueEditOutcome(editID:hold.editID,turnID:hold.turnID,outcome:outcome,sequence:hold.sequence,textDigest:digest,revision:queueEditRevision))
+        appendQueueEditOutcome(QueueEditOutcome(editID:hold.editID,turnID:hold.turnID,outcome:outcome,sequence:hold.sequence,textDigest:digest,revision:queueEditRevision,inputDigest:inputDigest))
         do { try persistState(durable:true) }
         catch {
             queue=before.queue; steering=before.steering; commands=before.commands; queueEditOutcomes=before.outcomes; queueEditForgottenRevision=forgotten

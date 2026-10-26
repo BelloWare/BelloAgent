@@ -68,23 +68,35 @@ extension PiKit {
         func update(glyph: Glyph? = nil, label: String, warningTail: String? = nil, scope: AnyHashable?) {
             let sameScope = scope == self.scope
             let oldLabel = self.label, oldTail = self.warningTail
-            // Not before the pill has been laid out: the rolling layers take the reading's place.
-            let rolls = sameScope && (label != self.label || warningTail != self.warningTail) && window != nil && !Motion.reduced && !readingLayer.bounds.isEmpty
+            let readingChanged = label != oldLabel || warningTail != oldTail
+            let glyphChanged: Bool
             switch glyph {
-            case .symbol(let name)?: symbol = name; ring = nil; ringView.isHidden = true
-            case .ring(let value)?: ring = .some(value); ringView.isHidden = false; ringView.fraction = value ?? 0
-            case nil: break
+            case .symbol(let name)?: glyphChanged = ring != nil || symbol != name
+            case .ring(let value)?: glyphChanged = ring != .some(value)
+            case nil: glyphChanged = false
             }
-            self.label = label; self.warningTail = warningTail; self.scope = scope
-            if accessibilityName == nil { setAccessibilityLabel(label) }
-            invalidateIntrinsicContentSize(); needsLayout = true
             // Another chat's figures replace the old ones at once, a roll in
-            // progress included; a new change in the same chat starts from
-            // where the last one was going. An unchanged reading leaves a
-            // roll in progress alone.
-            if !sameScope || label != oldLabel || warningTail != oldTail { endRoll() }
+            // progress included. An unchanged reading in the same chat keeps it.
+            self.scope = scope
+            if !sameScope || readingChanged { endRoll() }
+            guard readingChanged || glyphChanged else { return }
+            // Not before the pill has been laid out: the rolling layers take the reading's place.
+            let rolls = sameScope && readingChanged && window != nil && !Motion.reduced && !readingLayer.bounds.isEmpty
+            if glyphChanged {
+                switch glyph {
+                case .symbol(let name)?: symbol = name; ring = nil; ringView.isHidden = true
+                case .ring(let value)?: ring = .some(value); ringView.isHidden = false; ringView.fraction = value ?? 0
+                case nil: break
+                }
+            }
+            self.label = label; self.warningTail = warningTail
+            if readingChanged {
+                if accessibilityName == nil { setAccessibilityLabel(label) }
+                invalidateIntrinsicContentSize(); needsLayout = true
+                readingLayer.setNeedsDisplay()
+            }
             if rolls { startRoll(from: Self.reading(oldLabel, oldTail), to: reading) }
-            redrawContent(); readingLayer.setNeedsDisplay()
+            if glyphChanged { redrawContent() }
         }
 
         // MARK: Rolling digits
@@ -185,11 +197,19 @@ extension PiKit {
             super.layout()
             ringView.frame = CGRect(x: 7 + 1, y: (bounds.height - 14) / 2, width: 14, height: 14)
             CATransaction.begin(); CATransaction.setDisableActions(true)
-            readingLayer.frame = face.bounds; readingLayer.contentsScale = piScale; readingLayer.appearance = effectiveAppearance
+            readingLayer.frame = face.bounds
+            updateReadingEnvironment()
             CATransaction.commit()
+        }
+        private func updateReadingEnvironment() {
+            let scale = piScale, appearance = effectiveAppearance
+            guard readingLayer.contentsScale != scale || readingLayer.appearance != appearance else { return }
+            readingLayer.contentsScale = scale; readingLayer.appearance = appearance
             readingLayer.setNeedsDisplay()
         }
-        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); readingLayer.appearance = effectiveAppearance; readingLayer.setNeedsDisplay() }
+        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateReadingEnvironment() }
+        override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); updateReadingEnvironment() }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateReadingEnvironment() }
         override func styleFace() {
             fill.backgroundColor = piCGColor(open || hovering ? .piFill : .clear)
             stroke.borderColor = CGColor.clear

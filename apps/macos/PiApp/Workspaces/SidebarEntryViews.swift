@@ -120,6 +120,11 @@ import Combine
             if let choose = (self?.superview as? SidebarListDocument)?.chooseProject { choose(project) }
             else { model.setSidebarProjectFilter(project) }
         }
+        // The hover card's Write Brief, and whether the brief is being written.
+        if state.offersBrief { SidebarBriefCard.watch(model.chatBriefs) }
+        body.writeBrief = token.guardAction { model.writeBriefNow(id) }
+        body.briefWriting = { [weak model] in model?.chatBriefsStorage?.isWriting(id) == true }
+        body.briefProblem = { [weak model] in model?.chatBriefsStorage?.lastProblem(id) }
         body.bindActions(to: actionBinding)
         actionBinding.install(in: self)
         let hold = dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument })
@@ -207,7 +212,7 @@ import Combine
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: model.subagentSearchTitle(chat), subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        familyActivity: state.familyActivity, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
-                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, brief: state.brief, offersBrief: state.offersBrief,
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, choosesProject: state.choosesProject,
                                        topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
@@ -230,6 +235,8 @@ import Combine
         let content = Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained)
         body.update(content)
         if row.accessibilityLabel() != content.accessibilityLabel { row.setAccessibilityLabel(content.accessibilityLabel) }
+        // VoiceOver reads the brief the hover card shows.
+        if row.accessibilityHelp() != content.brief?.text { row.setAccessibilityHelp(content.brief?.text) }
         // A line more or less under the title: the list lays out again.
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }
@@ -257,6 +264,17 @@ import Combine
         }
         SessionOrganizationActions.entries(model: model, chat: chat)
         PiMenuEntry.divider
+        // A chat without a brief can ask for one (`WorkspaceChatBriefs.swift`).
+        if state.offersBrief, chat.brief == nil {
+            if model.chatBriefsStorage?.isWriting(chat.id) == true {
+                PiMenuEntry.button("Writing Brief…", systemImage: "text.magnifyingglass", enabled: false, identifier: "writeBrief") {}
+            } else {
+                PiMenuEntry.button("Write Brief", systemImage: "text.magnifyingglass", identifier: "writeBrief",
+                                   help: "Ask this chat's connection's mini model for a sentence or two on what the chat is about, with a few keywords") {
+                    model.writeBriefNow(chat.id)
+                }
+            }
+        }
         SessionReferenceActions.entries(model: model, sessionID: chat.id)
         if state.offersMarkAsRead {
             PiMenuEntry.divider
@@ -435,7 +453,7 @@ import Combine
 /// A plain label button: a symbol and words in the caption font, no face,
 /// dimming when disabled (`Label` in `.buttonStyle(.plain)`).
 @MainActor final class SidebarLinkButton: PiKit.ButtonBase {
-    override var title: String { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+    override var title: String { didSet { if oldValue != title { invalidateIntrinsicContentSize(); redrawContent() } } }
     let symbol: String
     let ink: NSColor
     init(title: String, symbol: String, ink: NSColor, action: @escaping () -> Void) {

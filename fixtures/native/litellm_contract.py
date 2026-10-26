@@ -4,6 +4,8 @@ This describes the application wire contract, not a complete LiteLLM emulator.
 It deliberately rejects malformed requests instead of returning canned success.
 No real credentials, provider calls, or price estimates belong in this fixture.
 """
+import base64
+import binascii
 import json
 import re
 
@@ -224,6 +226,7 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
             require(not responses or role != "user" or "type" not in item, "pi sends a user message without an item type")
             require(isinstance(content, list) and content, "history content must be nonempty blocks")
             texts = []
+            has_images = False
             for block in content:
                 require(isinstance(block, dict), "history block must be an object")
                 block_type = block.get("type")
@@ -233,6 +236,17 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
                     if responses:
                         require(block_type == ("input_text" if role == "user" else "output_text"), "Responses text block does not match its role")
                     texts.append(block["text"])
+                elif responses and block_type == "input_image":
+                    has_images = True
+                    require(role == "user" and block.get("detail") in ("auto", "low", "high"), "image input role/detail is invalid")
+                    image_url = block.get("image_url")
+                    require(isinstance(image_url, str), "image input must contain a data URL")
+                    image = re.fullmatch(r"data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})", image_url)
+                    require(image is not None, "image input must contain encoded image bytes")
+                    try:
+                        require(bool(base64.b64decode(image.group(2), validate=True)), "image input must be nonempty")
+                    except binascii.Error:
+                        raise FixtureContractError("image input has invalid base64")
                 elif not responses and block_type == "tool_use":
                     require(role == "assistant", "Messages tool_use must be in an assistant message")
                     call(block.get("id"), block.get("name"), block.get("input"))
@@ -248,7 +262,7 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
                     opaque.append(block)
                 else:
                     raise FixtureContractError("unexpected history content block")
-            if role == "user" and texts:
+            if role == "user" and (texts or has_images):
                 user_texts.append("\n".join(texts))
     require(set(calls) == set(results), "request contains a tool call without its completed result")
     if native_items == "portable":
