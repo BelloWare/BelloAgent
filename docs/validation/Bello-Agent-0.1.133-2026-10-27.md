@@ -1,6 +1,6 @@
 # Bello Agent 0.1.133 — whole-turn long-chat paging and cheap streaming, fast message edits and finished-chat opening, Flat project filter, chat briefs, sent-image thumbnails
 
-Status: **packaged; publication pending.** Marketing version 0.1.133, build 137. Previous public release: 0.1.132/build 136. 0.1.131 and 0.1.132 were hotfixes of 0.1.130 cut from `main` (no family communication limit; sub-agents fall back to the parent's model; local model catalogs). This release is the work planned as 0.1.131.
+Status: **released and verified 2026-10-27.** Marketing version 0.1.133, build 137. Previous public release: 0.1.132/build 136. 0.1.131 and 0.1.132 were hotfixes of 0.1.130 cut from `main` (no family communication limit; sub-agents fall back to the parent's model; local model catalogs). This release is the work planned as 0.1.131.
 
 ## Owner request
 
@@ -177,4 +177,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1. Per-merge c
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `e68979cd` ("Release Bello Agent 0.1.133"), tag `v0.1.133`, on `main` and `dev/next` (`1a57b3e7` merges `dev/next` into `main`).
+- `BelloAgent-0.1.133.dmg`, sha256 `1a341952d334980c2c585e52e1e7f9da23701ce64300c65c44e7715c2eb69259`, 16,873,461 bytes; Developer ID signed and notarized (app submission `1d58987a-9296-4382-862d-7041d9b86b63`, DMG submission `b6e6068d-47a8-4ebd-a77c-388ae4f0d85e`, both Accepted), stapled.
+- `validate-release.py --previous-build 136`: passed (0.1.133 build 137, Ed25519 signature verified).
+- Website commit `607d9ae` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical (on the fourth try, after the site deployed).
