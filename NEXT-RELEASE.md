@@ -4,6 +4,8 @@
 
 ## 0.1.132 (planned as 0.1.131)
 
+- [x] Release-gate fixtures: preserve the submission durability checks across EDIT-3's earlier intent saves, distinguish opening/full page budgets, keep Find's target unloaded, assert IMG-1's thumbnail/copy-text difference, and allow later clock captures. Product behavior unchanged. [Validation](docs/validation/a133-gatefix-0.1.131.md).
+
 - [x] Released separately as the 0.1.131 hotfix (owner, 2026-10-26: "nah, remove that limit!"): no family communication limit for sub-agents. [Record](docs/validation/Bello-Agent-0.1.131-2026-10-26.md).
 
 - [x] PASTE-2: Owner, 2026-10-23: "when I paste an image, I see a flash, but not image thumbnail or anything". Send could overtake a lazy clipboard read and send text without its image (also on 0.1.130); unavailable URL metadata could discard bitmap data, some refusals were silent, and chips had no thumbnails. Paste now reserves the draft before data reads, keeps usable image data, explains refusals and draws thumbnails. Real menu/key regressions and the 120-paste matrix pass; seven mutations caught. [Validation](docs/validation/a131-paste2-0.1.131.md).

@@ -1387,12 +1387,14 @@ import Darwin
         view.selectionMetadataLoaded = false
         try await model.loadDraftBaseline(view)
         XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent])
+        // The debounce now preserves captured input before writing the draft.
+        // Keep storage unavailable from that first retry through the flush.
+        try RecoveredDraftTests.sql("CREATE TRIGGER fail_input BEFORE INSERT ON records WHEN NEW.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated flush failure'); END", root: model.root)
         view.draft = "Later typing"; model.draftChanged(view); await model.draftWrites.tasks[view.id]?.value
         XCTAssertTrue(view.draftConflicts.isEmpty)
         let reconciled = try await model.reconcileSubmissionDraft(try XCTUnwrap(model.record(view.id)), view: view, current: { true })
         XCTAssertTrue(reconciled); XCTAssertEqual(view.recovered, [intent], "An empty durable inventory cannot hide pinned input")
         XCTAssertFalse(view.uncertain, "Input that could not be persisted was never dispatched")
-        try RecoveredDraftTests.sql("CREATE TRIGGER fail_input BEFORE INSERT ON records WHEN NEW.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated flush failure'); END", root: model.root)
         do { try await model.flushDrafts(); XCTFail("Quit/update must not release undurable input") } catch {}
         XCTAssertEqual(view.draftVersion.unsavedSubmissions, [intent]); XCTAssertEqual(view.recovered, [intent])
         try RecoveredDraftTests.sql("DROP TRIGGER fail_input", root: model.root)
@@ -1572,7 +1574,12 @@ import Darwin
         XCTAssertFalse(wire.frames.contains { ["turn.submit", "turn.steer", "turn.edit", "queue.edit.save"].contains($0["method"]?.string ?? "") }, "\(method)/\(kind) must not dispatch")
         let retained = view.draftVersion.unsavedSubmissions.map(\.text) + view.recovered.map(\.text)
         XCTAssertTrue(retained.contains(captured), "\(method)/\(kind) lost captured input or hid its recovery")
-        XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.text == captured }, "Failed persistence needs an eviction/collector pin")
+        let capturedIntent = try XCTUnwrap(view.recovered.first { $0.text == captured })
+        let durable = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: capturedIntent.id)
+        if busy { XCTAssertNil(durable, "The transaction lock must leave the captured input undurable") }
+        // A restored-composer debounce may already have saved the independent
+        // intent even while draft writes still fail. Undurable input stays pinned.
+        XCTAssertTrue(durable == capturedIntent || view.draftVersion.unsavedSubmissions.contains(capturedIntent), "Undurable input needs an eviction/collector pin: \(method)/\(kind)")
         XCTAssertTrue(view.draftConflicts.isEmpty, "Storage failure must not invent a cross-instance conflict")
         if busy { XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK) }
         // Cancelling an editor and replacing all composer text must not consume
@@ -1600,7 +1607,8 @@ import Darwin
                 await model.draftWrites.recoveries[view.id]?.value
                 XCTAssertEqual(view.draft, "After cancellation")
                 XCTAssertTrue(view.recovered.contains { $0.id == intent.id })
-                XCTAssertTrue(view.draftVersion.unsavedSubmissions.contains { $0.id == intent.id })
+                let durable = try await store.get(CommandIntent.self, kind: "pending:" + view.id, id: intent.id)
+                XCTAssertTrue(durable == intent || view.draftVersion.unsavedSubmissions.contains(intent), "Failed recovery must keep the durable intent or its pin: \(method)/\(kind)")
                 XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_recovery", nil, nil, nil), SQLITE_OK)
                 try await store.preserveDraftConflicts(view.draftVersion)
                 XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_retirement BEFORE DELETE ON records WHEN OLD.kind LIKE 'pending:%' BEGIN SELECT RAISE(ABORT, 'generated retirement failure'); END", nil, nil, nil), SQLITE_OK)

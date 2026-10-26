@@ -62,9 +62,11 @@ final class HardeningTests: XCTestCase {
         let path = root.appendingPathComponent("session.jsonl")
         var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
         // Questions of 16 KB each: more than a page's bytes hold.
-        let count = 300
+        let count = 300, textBytes = 16_000
+        let limits = HistoryWindowPolicy.PageLimits.standard
+        let rowBytes = HistoryWindowPolicy.residentWeight(text: textBytes, thinking: 0, toolBytes: 0, segmentBytes: 0, segments: 0) + 1
         for index in 0..<count {
-            let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": "user", "content": String(repeating: "x", count: 16_000)]]
+            let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": "user", "content": String(repeating: "x", count: textBytes)]]
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
         try bytes.write(to: path)
@@ -76,6 +78,7 @@ final class HardeningTests: XCTestCase {
         // from their row on, detached from the newest turns. No host starts.
         let opened = model.selected?.messages ?? []
         XCTAssertEqual(opened.first?.id, "m10"); XCTAssertEqual(model.selected?.before, "m10")
+        XCTAssertEqual(opened.count, min(count - 10, limits.opening.rows, (limits.opening.bytes - HistoryWindowPolicy.metadataAllowance) / rowBytes))
         XCTAssertGreaterThan(opened.count, 3); XCTAssertLessThan(opened.count, count - 10, "One page's bytes, not the rest of the chat")
         XCTAssertTrue(model.selected?.browsingHistory == true); XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertEqual(model.selected?.scrollAnchor, TranscriptAnchor(id: "m10", offset: -12, followsBottom: false), "The reading position is kept with its offset")
@@ -91,7 +94,9 @@ final class HardeningTests: XCTestCase {
         model.latest(sessionID: "fixture")
         for _ in 0..<500 where view.messages.first?.id == "m0" { try await Task.sleep(for: .milliseconds(10)) }
         await model.select("fixture")
-        XCTAssertEqual(model.selected?.messages.last?.id, "m\(count - 1)"); XCTAssertEqual(model.selected?.messages.count, opened.count, "One page's bytes")
+        XCTAssertEqual(model.selected?.messages.last?.id, "m\(count - 1)")
+        // Latest reads a full page; opening the saved anchor used the smaller first page.
+        XCTAssertEqual(model.selected?.messages.count, min(count, limits.rows, (limits.bytes - HistoryWindowPolicy.metadataAllowance) / rowBytes), "One page's bytes")
         XCTAssertFalse(model.selected?.browsingHistory == true)
         let earlier = try await model.history.read(path: path.path, before: "m10")
         XCTAssertEqual(earlier.messages.last?.id, "m9")
