@@ -17,16 +17,14 @@ final class AgentMailboxPolicyTests: HelperTestCase {
         XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(4,at:1000),state:restored)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_mailbox_full") }
         XCTAssertEqual(restored.messages.count,4,"No accepted message was dropped to make room")
     }
-    func testTwoWayMessagesShareFiniteEpochAllowance() throws {
+    func testTwoWayMessagesHaveNoEpochAllowance() throws {
         var state = AgentFamilyState(ownerID:"parent")
-        for i in 0..<32 {
+        for i in 0..<300 {
             var op = operation(i,author:i % 2 == 0 ? "parent" : "subagent",at:Double(100+i*10))
             op.message?.disposition = "delivered"
             try AgentMailboxPolicy.validate(op,state:state); try state.operation(op)
         }
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(33,author:"parent",at:1000),state:state)) { XCTAssertEqual(($0 as? AgentError)?.code,"coordination_limit") }
-        var next = operation(34,at:1000); next.epoch = "new-real-user-task"; next.message?.epoch = next.epoch
-        XCTAssertNoThrow(try AgentMailboxPolicy.validate(next,state:state))
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(operation(300,author:"parent",at:4000),state:state), "No cap on messages (owner, 2026-10-26)")
     }
     func testClockGoingBackwardsDoesNotRefillBucket() throws {
         let accepted = [operation(0,at:100),operation(1,at:100)]

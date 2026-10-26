@@ -111,7 +111,8 @@ def run(binary,recovery,mode):
                             # No reports/follow-ups: every renewal replaces the child.
                             latest = [e for e in events if e['kind'] == 'result']
                             prior = len([v for v in outputs if v and v.startswith('replacement-')])
-                            if len(latest) > prior: output = [call('subagent_start',f'replacement-{number}',dict(task='Replacement child',mode='background'))]
+                            # Past the old 32-continuation cap; then the loop ends itself.
+                            if len(latest) > prior and prior < 40: output = [call('subagent_start',f'replacement-{number}',dict(task='Replacement child',mode='background'))]
                             else: output = [answer('Wait for the child')]
                         elif mode == 'flow':
                             question = next((e for e in events if e['kind'] == 'question'),None)
@@ -269,11 +270,13 @@ def run(binary,recovery,mode):
                 wait(lambda:command(peer,'session.status')['state'] in ('paused','error'))
                 assert len(requests) == before
             elif mode == 'loop':
-                wait(lambda:command(peer,'session.status')['state'] in ('paused','error'))
-                snapshot = command(peer,'session.snapshot'); assert snapshot['errorCode'] == 'coordination_limit',snapshot
+                # No family communication cap (owner, 2026-10-26): the loop runs
+                # past the old 32 continuations and ends when the parent stops.
+                wait(lambda:command(peer,'session.status')['state'] in ('idle','paused','error'))
+                snapshot = command(peer,'session.snapshot'); assert snapshot.get('errorCode') != 'coordination_limit',snapshot
                 operations = [r['data'] for r in family_rows() if r.get('customType') == 'pi-app.agent-operation.v1']
                 turns = [op['turn'] for op in operations if op.get('turn')]
-                assert len(turns) == 32 and all(t['turn'] == 1 for t in turns),len(turns)
+                assert len(turns) == 41 and all(t['turn'] == 1 for t in turns),len(turns)
             else:
                 wait(lambda:command(peer,'session.status')['state'] == 'idle')
                 assert (root/'independent').read_text() == 'independent'
