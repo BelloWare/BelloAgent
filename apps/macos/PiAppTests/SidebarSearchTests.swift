@@ -56,6 +56,32 @@ final class SidebarSearchIndexTests: XCTestCase {
         return (ChatSearchIndex(url: url, indexDirectory: root), ChatSearchQuery(url: url))
     }
 
+    func testAskReusesOnlyACommittedIndexOfTheCurrentJournalAtTheCurrentPath() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let journal = try SearchJournal(root.appendingPathComponent("chat.jsonl"))
+        try journal.message("first", role: "user", "Tokenizer notes")
+        let source = ChatSearchSource(id: "chat", path: journal.url.path), (index, query) = index(root)
+        var current = try await query.indexed(source)
+        XCTAssertFalse(current, "A cold index needs a scoped journal check")
+        _ = await index.reconcile([source])
+        current = try await query.indexed(source)
+        XCTAssertTrue(current)
+        try journal.message("next", role: "assistant", "The retry checklist")
+        current = try await query.indexed(source)
+        XCTAssertFalse(current, "An older committed snapshot cannot confirm the changed journal")
+        _ = await index.reconcile([source])
+        current = try await query.indexed(source)
+        XCTAssertTrue(current)
+        let moved = root.appendingPathComponent("moved.jsonl")
+        try FileManager.default.copyItem(at: journal.url, to: moved)
+        current = try await query.indexed(ChatSearchSource(id: "chat", path: moved.path))
+        XCTAssertFalse(current, "A chat ID does not prove that its path still belongs to this snapshot")
+        await index.forget(["chat"])
+        current = try await query.indexed(source)
+        XCTAssertFalse(current)
+        await query.close(); await index.close()
+    }
+
     /// A long chat: a word said once near its start is found, and its row is
     /// where the chat opens. Where it says it twice, the newer one wins.
     func testTheIndexFindsTextInAnOldMessageOfALongChat() async throws {

@@ -213,7 +213,7 @@ final class SidebarSearchScopeTests: XCTestCase {
         }
         let view = WorkspaceSidebarView(model: model), search = model.sidebarSearch
         search.debounce = .zero
-        for scope in SidebarSearch.Scope.allCases {
+        for scope in [SidebarSearch.Scope.titlesAndDetails, .fullChats] {
             search.setScope(scope)
             for flat in [false, true] {
                 model.setSidebarFlat(flat)
@@ -272,7 +272,7 @@ final class SidebarSearchScopeTests: XCTestCase {
         model.chats[1].topicID = "side-only"; model.chats[2].topicID = "side-only"
         model.chats[2].archivedAt = Date(); model.setArchivedChatsShown(true)
         let view = WorkspaceSidebarView(model: model)
-        for scope in SidebarSearch.Scope.allCases {
+        for scope in [SidebarSearch.Scope.titlesAndDetails, .fullChats] {
             model.sidebarSearch.setScope(scope)
             for flat in [false, true] {
                 model.setSidebarFlat(flat); view.setFilter("gateway"); view.settle()

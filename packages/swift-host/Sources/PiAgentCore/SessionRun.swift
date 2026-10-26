@@ -357,7 +357,7 @@ extension AgentSession {
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()
-                    guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", (utilityPurpose == "webhook" ? "The webhook's mini model request" : utilityPurpose == "chat-brief" ? "The chat brief's mini model request" : "Title generation") + " returned a tool call. No tool ran and no extra model request was made.") }
+                    guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", (utilityPurpose == "webhook" ? "The webhook's mini model request" : utilityPurpose == "chat-brief" ? "The chat brief's mini model request" : utilityPurpose == "chat-ask" ? "The Ask mini model request" : "Title generation") + " returned a tool call. No tool ran and no extra model request was made.") }
                     if let stoppedEarly {
                         for call in reply.calls {
                             let reason = outputLimited ? "Tool call \"\(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."

@@ -304,6 +304,9 @@ actor ChatSearchIndex {
     /// A pass is running: it may be waiting on a page in the middle of a
     /// transaction, so `close()` leaves the database to the pass's end.
     private var passing = false
+    private var beforeSource: (@Sendable (String) async -> Void)?
+    /// Test seam: a journal whose next index read is slow.
+    func beforeReadingSource(_ action: (@Sendable (String) async -> Void)?) { beforeSource = action }
     func close() {
         stopping = true
         if !passing { removeForgotten(); closeNow() }
@@ -340,6 +343,8 @@ actor ChatSearchIndex {
         }
         ordered.sort { $0.2 > $1.2 }
         for (source, revision, _) in ordered where !forgotten.contains(source.id) {
+            if stopping || Task.isCancelled { break }
+            await beforeSource?(source.id)
             if stopping || Task.isCancelled { break }
             let state = known[source.id]
             guard let revision else {
@@ -616,14 +621,48 @@ final class ChatSearchQuery: @unchecked Sendable {
     func cancel() { lock.lock(); generation &+= 1; lock.unlock() }
     private var stale: Bool { lock.lock(); defer { lock.unlock() }; return generation != running }
 
-    /// Each listed chat's newest match for `query`, or throws
-    /// `CancellationError` when a newer query (or `cancel()`) stopped it.
-    func search(_ query: String) async throws -> [String: ChatSearchHit] {
+    /// A committed index at this path, optionally accepting an older revision. This reader never waits
+    /// on the library writer's actor or its in-flight journal reads.
+    func indexed(_ source: ChatSearchSource, acceptsOlder: Bool = false) async throws -> Bool {
         let mine = lock.withLock { generation }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in
-                    continuation.resume(with: Result { try self.run(query, generation: mine) })
+                    continuation.resume(with: Result { () throws -> Bool in
+                        lock.lock(); running = mine; let current = generation == mine; lock.unlock()
+                        guard current else { throw CancellationError() }
+                        guard let db = try connection(), let revision = HistoryReader.currentRevision(path: source.path) else { return false }
+                        var statement: OpaquePointer?
+                        guard sqlite3_prepare_v2(db, "SELECT path, revision, unreadable FROM chats WHERE chat=?", -1, &statement, nil) == SQLITE_OK else { return false }
+                        defer { sqlite3_finalize(statement) }
+                        ChatSearchDatabase.bind(statement, 1, source.id)
+                        return sqlite3_step(statement) == SQLITE_ROW && ChatSearchDatabase.text(statement!, 0) == source.path
+                            && (acceptsOlder || ChatSearchDatabase.text(statement!, 1) == revision.stamp) && sqlite3_column_int(statement, 2) == 0
+                    })
+                }
+            }
+        } onCancel: { [weak self] in self?.cancel() }
+    }
+
+    /// Close only after queued reads have finished.
+    func close() async {
+        cancel()
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                if let db { sqlite3_close_v2(db); self.db = nil }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Each listed chat's newest match for `query`, or throws
+    /// `CancellationError` when a newer query (or `cancel()`) stopped it.
+    func search(_ query: String, in chatIDs: Set<String>? = nil) async throws -> [String: ChatSearchHit] {
+        let mine = lock.withLock { generation }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { [self] in
+                    continuation.resume(with: Result { try self.run(query, chatIDs: chatIDs, generation: mine) })
                 }
             }
         } onCancel: { [weak self] in self?.cancel() }
@@ -642,7 +681,7 @@ final class ChatSearchQuery: @unchecked Sendable {
         return handle
     }
 
-    private func run(_ query: String, generation mine: Int) throws -> [String: ChatSearchHit] {
+    private func run(_ query: String, chatIDs: Set<String>?, generation mine: Int) throws -> [String: ChatSearchHit] {
         lock.lock(); running = mine; let current = generation == mine; lock.unlock()
         guard current else { throw CancellationError() }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
@@ -657,16 +696,20 @@ final class ChatSearchQuery: @unchecked Sendable {
         // text before its tool inputs, as they were written. Ranked by id
         // alone, and only the winners' text read: a common word in long
         // histories matches thousands of large pieces.
+        let ids = chatIDs.map { Array($0.sorted().prefix(SidebarAskPlan.candidateLimit)) }
+        if ids?.isEmpty == true { return [:] }
+        let scope = ids.map { " AND m.chat IN (" + Array(repeating: "?", count: $0.count).joined(separator: ",") + ")" } ?? ""
         var statement: OpaquePointer?
         let sql = """
             SELECT c.chat, c.msg, c.call, c.kind, c.pos, c.text FROM content c JOIN (
                 SELECT id FROM (SELECT m.id AS id, ROW_NUMBER() OVER (PARTITION BY m.chat ORDER BY m.pos DESC, m.id ASC) AS n
-                                FROM docs JOIN content m ON m.id = docs.rowid WHERE docs MATCH ?) WHERE n = 1
+                                FROM docs JOIN content m ON m.id = docs.rowid WHERE docs MATCH ?\(scope)) WHERE n = 1
             ) winner ON c.id = winner.id
             """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
         ChatSearchDatabase.bind(statement, 1, ChatSearchDatabase.phrase(needle))
+        for (offset, id) in (ids ?? []).enumerated() { ChatSearchDatabase.bind(statement, Int32(offset + 2), id) }
         var hits: [String: ChatSearchHit] = [:]
         while true {
             let status = sqlite3_step(statement)
