@@ -1,18 +1,24 @@
-# Model catalog endpoint
+# Model catalog
 
 Bello Agent includes the reviewed [six-model catalog](../catalogs/bello-agent.models.json)
 in its signed application bundle. It is the default for every connection without
-a custom catalog URL, including saved connections from earlier releases. Loading
+a custom catalog, including saved connections from earlier releases. Loading
 it is local and does not read the gateway key or call `/v1/models`.
 
-A connection can name an optional **custom model catalog URL**, which replaces
-the bundled list. The endpoint is yours: an HTTPS URL (or explicit loopback HTTP)
-that returns the JSON below. A catalog on the gateway's same origin (scheme, host and port) receives
+A connection can name an optional **custom model catalog**, which replaces
+the bundled list. Use an HTTPS URL (or explicit loopback HTTP) that returns the
+JSON below, or a local JSON file: `file:///Users/you/models.json`, an absolute
+path such as `/Users/you/models.json`, or `~/models.json` (expanded to your home
+folder). Relative paths such as `models.json` or `./models.json` are rejected.
+Local files are read and parsed off the main actor and never read or use the
+gateway key. They use the same format, validation and limits as remote catalogs.
+
+A catalog on the gateway's same origin (scheme, host and port) receives
 `Authorization: Bearer <key>`. External catalogs are fetched anonymously and do
 not read the saved gateway key. Separate catalog credentials are not supported.
 URLs cannot contain embedded credentials or fragments. Redirects are refused,
-requests time out after eight seconds, and responses are capped at 2 MiB and
-2048 models. Cookies and shared credential storage are disabled.
+network reads time out after eight seconds, and catalogs are capped at 2 MiB and
+2048 models. Cookies and shared credential storage are disabled for remote catalogs.
 
 ## Response
 
@@ -136,19 +142,22 @@ Existing connections and catalogs without either new field continue to load.
 ## Failure behaviour
 
 A configured catalog is the only model source: the gateway's `/v1/models` list
-is never consulted for that connection. If the catalog cannot be fetched or
-parsed, the picker shows the error, keeps the last list it loaded (if any) and
-lets you type an alias; a malformed catalog URL is reported the same way. A
-failed fetch is not retried for thirty seconds unless you choose Refresh.
+is never consulted for that connection. If the catalog cannot be fetched, read or
+parsed (including a missing or unreadable local file), the picker shows the error,
+keeps the last list it loaded (if any) and lets you type an alias; a malformed
+catalog URL or path is reported the same way. A failed load is not retried for
+thirty seconds unless you choose Refresh.
 
-Catalogs are cached for five minutes per connection and loaded lazily when that
-session's picker appears, without requiring a hover. Saved connection changes
+Remote and local catalogs are cached for five minutes per connection and loaded
+lazily when that session's picker appears, without requiring a hover. Saved connection changes
 reload its picker; other connections are not prefetched. Opening the live native
 picker checks that cache again, including keyboard opening after five minutes.
 Explicit Refresh reloads saved configuration and the connection’s catalog binding,
-then forces a fetch with HTTP cache revalidation. It displays the successful
-refresh time; the bundled source explains that its models change with app updates. It shows progress through configuration reload and network
-fetch, updates the open list, and reports configuration failures inline. It
+then forces a fetch with HTTP cache revalidation or rereads the local file. Editing
+a local file takes effect on Refresh or the next load after the cache expires.
+It displays the successful refresh time; the bundled source explains that its
+models change with app updates. It shows progress through configuration reload
+and network fetch or file read, updates the open list, and reports configuration failures inline. It
 never retargets a chat to a different connection. Passive catalog loading keeps
 its existing credential rules. The composer and Settings use the same searchable list;
 all catalog entries are accessible by scrolling or searching, without an
@@ -159,13 +168,13 @@ inserted into the catalog results.
 Connections without a custom URL load the bundled catalog once per saved
 connection revision, with explicit Refresh available. A missing/corrupt bundled
 resource shows an error rather than querying the gateway. Cache identity includes the saved connection revision and catalog
-URL; obsolete requests cannot replace newer results. Settings requires changed
-endpoint/catalog URLs to be saved before browsing.
+URL or path; obsolete requests cannot replace newer results. Editing the catalog
+field in Settings refreshes its list before saving.
 
 Existing chats retain their own saved connection. Changing a connection's API,
 gateway URL or default model creates a new connection to preserve those chats'
 route and credentials; it does not repoint old sessions to the new catalog.
-Editing only the catalog URL on the chat's connection refreshes its list.
+Editing only the catalog URL or path on the chat's connection refreshes its list.
 
 ## Catalog selection and preserved connections
 

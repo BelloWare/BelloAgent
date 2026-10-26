@@ -191,9 +191,9 @@ import Combine
             field("Connection name", textField(placeholder: "Team router", get: { setup.profile.name }, set: { setup.profile.name = $0 })),
             field("Gateway URL", textField(placeholder: "https://litellm.example.com", icon: "link", mono: true, get: { setup.profile.baseUrl }, set: { setup.profile.baseUrl = $0 })),
             field("API key", textField(placeholder: "sk-…", icon: "key", secure: true, get: { setup.key }, set: { setup.key = $0 })),
-            field("Custom model catalog URL · optional", textField(placeholder: "Blank uses the Bello model catalog", icon: "list.bullet.rectangle", mono: true,
+            field("Custom model catalog · optional", textField(placeholder: "HTTPS URL or local JSON file", icon: "list.bullet.rectangle", mono: true,
                                                                    get: { setup.profile.catalogUrl ?? "" }, set: { setup.profile.catalogUrl = $0.isEmpty ? nil : $0 })),
-            caption("The Bello model catalog is included. Set a URL to replace it with your own list, context sizes and reasoning levels. External catalogs are fetched anonymously."),
+            caption("The Bello model catalog is included. Set a URL or local JSON file to replace it with your own list, context sizes and reasoning levels. Only the gateway's origin receives its key."),
         ]
         let stored = PiKit.Note("Leave the key empty to keep its saved value. Re-enter it only to refresh a custom catalog on the gateway's origin.")
         updaters.append { [weak stored] in stored?.isHidden = !setup.hasStoredKey }
