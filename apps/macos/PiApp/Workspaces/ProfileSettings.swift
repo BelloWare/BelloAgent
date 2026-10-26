@@ -146,7 +146,7 @@ import Combine
         let draft = controller.draft
         let source = model.catalogProfile(for: draft.profile)
         let note = controller.isSaved && source.id != draft.profile.id
-            ? "Model list follows \(source.name) · \(CatalogModelPickerView.sourceLabel(source)). Editing the URL above saves a separate catalog for this connection." : nil
+            ? "Model list follows \(source.name) · \(CatalogModelPickerView.sourceLabel(source)). Editing the catalog above saves a separate list for this connection." : nil
         return StructureKey(section: model.settingsSection, isSaved: controller.isSaved, supportedAPI: controller.supportedAPI, catalogNote: note,
                             pinned: draft.replayPolicy == "pinned", quotaUnlimited: controller.preferences.capture.quotaUnlimited,
                             profiles: model.profiles.count, profileID: draft.profile.id)
@@ -276,8 +276,8 @@ import Combine
         rows.append(SettingsRow(label: "Custom headers JSON", detail: "Empty preserves saved headers; {} clears them.",
                               control: field(placeholder: "{\"X-Team\": \"payments\"}", icon: "curlybraces", secure: true,
                                              get: { controller.draft.headers }, set: { controller.draft.headers = $0 })))
-        rows.append(SettingsRow(label: "Custom model catalog URL", detail: "Blank uses the included Bello catalog. A custom URL replaces it; only the gateway's origin receives its key.",
-                              control: field(placeholder: "Blank uses the Bello model catalog", icon: "list.bullet.rectangle", mono: true, identifier: "settings-catalog-url",
+        rows.append(SettingsRow(label: "Custom model catalog", detail: "Blank uses the included Bello catalog. A URL or local JSON file replaces it; only the gateway's origin receives its key.",
+                              control: field(placeholder: "HTTPS URL or local JSON file", icon: "list.bullet.rectangle", mono: true, identifier: "settings-catalog-url",
                                              get: { controller.draft.profile.catalogUrl ?? "" }, set: { controller.draft.profile.catalogUrl = $0.isEmpty ? nil : $0 })))
         if let note = builtKey?.catalogNote { rows.append(insetText(note, color: .piInkSecondary)) }
         let alias = field(placeholder: "alias", mono: true, identifier: "settings-model-alias", get: { controller.draft.profile.modelId }, set: { controller.draft.profile.modelId = $0 })
