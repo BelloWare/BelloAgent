@@ -349,6 +349,8 @@ Retain the child's provider session/cache identity and initial model selection. 
 
 There is no lifetime follow-up-count limit across human-authorized parent turns. Within one authorization epoch, allow at most eight follow-up turns per child and 64 total child turns across the family (initial starts and follow-ups together), alongside the message limits in §6. An unfinished task can continue after explicit parent Resume; children never grant themselves more turns.
 
+**Removed in 0.1.131 (owner, 2026-10-26):** the per-epoch caps on child turns, follow-ups, two-way messages and parent continuations (this paragraph and the three `coordination_limit` rows in §6) no longer apply; a family is never paused for how much it communicates. Mailbox sizes, report rate and the chat's cost limit still apply.
+
 ## 5. Parent lifetime, ordering and result delivery
 
 ### 5.1 One owning run, including its final wait
