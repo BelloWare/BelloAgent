@@ -129,6 +129,7 @@ extension HistoryReader {
                 guard data["committed"]?.bool == true, let recipient = data["recipientID"]?.string, let rowID = data["rowID"]?.string else { break }
                 for id in data["eventIDs"]?.array?.compactMap(\.string) ?? [] {
                     guard var entry = entries[id], entry.recipientID == recipient else { continue }
+                    if let turn = data["eventTurns"]?.object?[id]?.nonnegativeInteger, turn > 0 { entry.turn = turn }
                     entry.recipientMessageID = rowID; entry.disposition = "delivered"; entries[id] = entry
                 }
             case "pi-app.family-run.v1": held = Set(data["heldChildren"]?.array?.compactMap(\.string) ?? [])

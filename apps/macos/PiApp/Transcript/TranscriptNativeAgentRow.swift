@@ -12,11 +12,12 @@ struct AgentMessagePresentation: Equatable {
         var taskName: String? = nil
         var sender: String? = nil
         var recipient: String? = nil
+        var initialTask = false
         var childName: String { SubagentLabel.name(number, taskName: taskName) }
         var title: String {
             if let sender, let recipient {
                 let from = SubagentLabel.task(sender) ?? sender, to = SubagentLabel.task(recipient) ?? recipient
-                let route = kind == "FINAL_ANSWER" && recipient == "/root" || kind == "NEW_TASK" && sender == "/root" && turn == 1 ? from : from + " → " + to
+                let route = kind == "FINAL_ANSWER" && recipient == "/root" || initialTask ? from : from + " → " + to
                 return route + " · " + label
             }
             let name = author == "parent" ? "Parent → " + childName : childName
@@ -54,7 +55,8 @@ struct AgentMessagePresentation: Equatable {
                 let childID = child ?? ""
                 return Event(childID: childID, turn: turn, author: sender == "/root" ? "parent" : "subagent", kind: kind,
                     task: "", text: text, eventID: row["event_id"]?.string, replyTo: nil,
-                    taskName: recipient == "/root" ? sender : recipient, sender: sender, recipient: recipient)
+                    taskName: recipient == "/root" ? sender : recipient, sender: sender, recipient: recipient,
+                    initialTask: kind == "NEW_TASK" && sender == "/root" && turn == 1 && row["event_id"]?.string == message.id)
             }
             return
         }

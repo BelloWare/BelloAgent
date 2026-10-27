@@ -37,6 +37,7 @@ import time
 import uuid
 from pathlib import Path
 from litellm_contract import FixtureContractError, require, validate_request
+from codex_ui import events as agent_events, response as codex_response, wait_for
 
 
 def encode(value):
@@ -162,6 +163,13 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         # A summary request's one message is the whole conversation: none of
         # the keywords below are asked of it.
         prompt = "" if summary else contract["latest_text"]
+        tasks = [event for event in agent_events(prompt) if event[0] == "NEW_TASK"]
+        if tasks:
+            prompt = tasks[-1][3]
+            if tasks[-1][1] == "/root/opening":
+                # A full fork prefixes its initial task with the hand-off.
+                # Route the old opening fixture by its final task paragraph.
+                prompt = prompt.rsplit("\n\n", 1)[-1]
         # A webhook's notification request quotes the chat it describes: its
         # words are data here, never a scenario keyword.
         webhook = prompt.startswith("Write the notification for a webhook:")
@@ -177,13 +185,14 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         call_tool = tool_name in contract["tool_names"] and ("read fixture" in prompt.lower() or secondary_read or stress_tool) and not tool_result
         tool_arguments = {"command": "/usr/bin/python3 -u stress-output.py", "timeout": 60} if stress_tool else {"path": "SECONDARY.md" if secondary_read else "README.md"}
         if "delegate opening fixture" in prompt.lower() and not tool_result:
-            tool_name = "subagent_start" if "subagent_start" in contract["tool_names"] else "subagent"
+            tool_name = "spawn_agent" if "spawn_agent" in contract["tool_names"] else "subagent_start" if "subagent_start" in contract["tool_names"] else "subagent"
             call_tool = tool_name in contract["tool_names"]
             tool_arguments = {"task": "managed child opening fixture", "description": "Opening regression"}
+            if tool_name == "spawn_agent": tool_arguments = {"task_name": "opening", "message": "managed child opening fixture"}
             if tool_name == "subagent_start": tool_arguments["mode"] = "background" if "in background" in prompt.lower() else "wait"
         if prompt.startswith("wire follow-up ") and not tool_result:
-            tool_name = "subagent_send"; call_tool = True
-            tool_arguments = {"child_id": prompt.split()[-1], "message": "managed child short followup"}
+            tool_name = "followup_task" if "followup_task" in contract["tool_names"] else "subagent_send"; call_tool = True
+            tool_arguments = ({"target": "/root/opening"} if tool_name == "followup_task" else {"child_id": prompt.split()[-1]}) | {"message": "managed child short followup"}
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
             if os.environ.get("PI_APP_UI_FIXTURE_PROBE_BARRIER") == "1":
@@ -234,7 +243,13 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             # about 20 s, by default) for a caller that must stop it first.
             words = int(os.environ.get("PI_APP_UI_FIXTURE_SLOW_WORDS", "80"))
             text += "\n\n" + " ".join(f"stream-{i:02d}" for i in range(1, words + 1))
+        if os.environ.get("PI_APP_UI_FIXTURE_CODEX_AGENTS") == "1":
+            choice = codex_response(body, contract)
+            if choice is not None:
+                tool_name, tool_arguments, text = choice
+                call_tool = tool_name is not None
         chunk_size = 1024 if stress_markdown else 8192 if bulk else 36
+        if os.environ.get("PI_APP_UI_FIXTURE_CODEX_AGENTS") == "1": chunk_size = 8192
         delay = float(os.environ.get("PI_APP_UI_FIXTURE_SUMMARY_DELAY", "0.03")) if summary else (
             0.03 if webhook else 0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
@@ -321,6 +336,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
                         emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
+                        if text == "CODEX-FOLLOWUP-STREAM":
+                            wait_for("release-codex-followup")
                         if prompt == "copy selection streaming fixture":
                             step = chunks.index(chunk) + 1
                             Path(f"copy-stream-{step}").touch()

@@ -1,6 +1,8 @@
 # AGENTS-1 app — 0.1.135
 
 Branch `dev/a135-agents-ui`, based on helper contract commit `114cd880`.
+App checkpoint `fa27a196`; merge `0f05f1ec` incorporates helper runtime
+`6d99dbd8` and validation `c743816a` without rewriting either commit.
 Build root `/Users/admin/Library/Caches/BelloSwiftWork/build-a135-agents-ui`;
 all commands export `PI_BUILD_ROOT` to that directory. Generated journals,
 loopback providers, and the isolated `com.belloware.PiAppTests.Host` only.
@@ -27,6 +29,8 @@ cursor, read-only message/turn detail modes, and locally derived descriptions.
 - Journal coordination joins a sibling's source call with its recipient delivery.
   A live sibling sender is not mislabeled as copied history. Copied cards retain
   original ownership; navigation still validates the family and reader token.
+  Committed delivery acknowledgements update the receiving turn when idle mail
+  moves to a later turn, preserving the exact sibling Source destination.
 - Queue-only mail to an idle child reads `Waiting for its next turn` and is not
   relabeled as parent Resume. V4 interrupts do not invent a final-answer message.
 - A single inherited-context fold uses the existing disclosure and paging stores.
@@ -56,38 +60,47 @@ Logs are under `$PI_BUILD_ROOT/logs`.
   and organization.
 - The first serial run caught changed legacy turn-fold classification. Restored
   legacy `subagent_*` handling and classify only spawn/followup as delegations.
+- `codex-task-caption-red.log`: eight tests, one assertion failed because a new
+  task during turn 1 was labeled as the initial hand-off. Only the initial
+  NEW_TASK whose event ID is its row ID now receives `main · New task`.
+- `codex-receiving-turn-red.log`: seven storage tests, one assertion failed on
+  turn-2 delivery of idle mail. `codex-real-helper-red-3.log`: one end-to-end
+  test, two failures on the stale turn and the resulting sibling Source route.
+  The app now reads `eventTurns` from committed delivery acknowledgements.
+  Preparation alone still leaves mail pending at its acceptance turn.
 
 ## Validation
 
-Final distinct class results: **296 passed, 1 optional gallery skipped, 1 existing
-failure**, 298 tests total. The 138-test parallel batch and all new tests pass.
+Final distinct class results: **297 passed, 1 optional gallery skipped, 1 existing
+failure**, 299 tests total. The 138-test parallel batch and all new tests pass.
 Serial classes ran alone. Galleries and focus/timing-sensitive runs held
 `/Users/admin/Library/Caches/BelloSwiftWork/full-lane.lock`, released on exit.
 
 | Class | Result | Log under `$PI_BUILD_ROOT/logs` |
 |---|---|---|
-| `ConversationFamilyTests` | 22 passed | `codex-final-parallel.log` |
-| `MetadataDurabilityTests` | 10 passed | `codex-final-parallel.log` |
-| `SubagentCodexPresentationTests` | 8 passed | `codex-final-parallel.log` |
-| `SubagentCodexStorageTests` | 7 passed | `codex-final-parallel.log` |
-| `SubagentDiscoveryTests` | 15 passed | `codex-final-parallel.log` |
-| `SubagentDisplayTests` | 8 passed | `codex-final-parallel.log` |
-| `SubagentInspectorTests` | 7 passed | `codex-final-parallel.log` |
-| `SubagentMetadataTests` | 9 passed | `codex-final-parallel.log` |
-| `SubagentOrganizationTests` | 13 passed | `codex-final-parallel.log` |
-| `SubagentPanelTests` | 8 passed | `codex-final-parallel.log` |
-| `SubagentSteeringInspectorTests` | 6 passed | `codex-final-parallel.log` |
-| `SubagentSteeringPresentationTests` | 10 passed | `codex-final-parallel.log` |
-| `SubagentSteeringWorkspaceTests` | 4 passed | `codex-final-parallel.log` |
-| `SubagentTranscriptTests` | 11 passed | `codex-final-parallel.log` |
-| `SubagentCodexGalleryTests` | 1 passed | `codex-final-gallery.log` |
-| `SubagentMarkdownTests` | 20 passed | `codex-final-SubagentMarkdownTests.log` |
-| `SubagentNavigationTests` | 7 passed | `codex-final-SubagentNavigationTests.log` |
+| `ConversationFamilyTests` | 22 passed | `codex-merged-final-parallel.log` |
+| `MetadataDurabilityTests` | 10 passed | `codex-merged-final-parallel.log` |
+| `SubagentCodexPresentationTests` | 8 passed | `codex-merged-final-parallel.log` |
+| `SubagentCodexStorageTests` | 7 passed | `codex-merged-final-parallel.log` |
+| `SubagentCodexIntegrationTests` | 1 passed | `codex-real-helper-green.log` |
+| `SubagentDiscoveryTests` | 15 passed | `codex-merged-final-parallel.log` |
+| `SubagentDisplayTests` | 8 passed | `codex-merged-final-parallel.log` |
+| `SubagentInspectorTests` | 7 passed | `codex-merged-final-parallel.log` |
+| `SubagentMetadataTests` | 9 passed | `codex-merged-final-parallel.log` |
+| `SubagentOrganizationTests` | 13 passed | `codex-merged-final-parallel.log` |
+| `SubagentPanelTests` | 8 passed | `codex-merged-final-parallel.log` |
+| `SubagentSteeringInspectorTests` | 6 passed | `codex-merged-final-parallel.log` |
+| `SubagentSteeringPresentationTests` | 10 passed | `codex-merged-final-parallel.log` |
+| `SubagentSteeringWorkspaceTests` | 4 passed | `codex-merged-final-parallel.log` |
+| `SubagentTranscriptTests` | 11 passed | `codex-merged-final-parallel.log` |
+| `SubagentCodexGalleryTests` | 1 passed | `codex-merged-final-gallery.log` |
+| `SubagentMarkdownTests` | 20 passed | `codex-merged-final-SubagentMarkdownTests.log` |
+| `SubagentNavigationTests` | 7 passed | `codex-merged-final-SubagentNavigationTests.log` |
 | `TranscriptTurnFoldTests` | 26 passed | `codex-final-TranscriptTurnFoldTests.log` |
 | `SubagentPerformanceTests` | 1 passed, 1 failed (baseline issue below) | `codex-final-SubagentPerformanceTests.log` |
 | `InheritedSubagentReaderTests` | 8 passed | `codex-InheritedSubagentReaderTests.log` |
-| `CostPauseFamilyTests` | 5 passed | `codex-CostPauseFamilyTests.log` |
-| `SubagentOpeningTests` | 15 passed | `codex-SubagentOpeningTests.log` |
+| `CostPauseFamilyTests` | 5 passed | `codex-merged-CostPauseFamilyTests.log` |
+| `SubagentOpeningTests` | 15 passed | `codex-merged-SubagentOpeningTests-2.log` |
 | `SubagentReaderTests` | 60 passed | `codex-SubagentReaderTests.log` |
 | `TranscriptOpeningFillTests` | 11 passed, 1 skipped | `codex-TranscriptOpeningFillTests.log` |
 | `TranscriptWirePageTests` | 4 passed | `codex-TranscriptWirePageTests.log` |
@@ -96,8 +109,9 @@ The skipped `TranscriptOpeningFillTests.testOpeningFillGallery` requires its
 separate `PI_OPENING_GALLERY` opt-in; the new agent gallery ran explicitly.
 `SubagentOpeningTests` uses the real bundled helper and generated loopback
 provider. Its 15 tests cover discovery, attachment, window/tab selection,
-Back to Parent and stale reader ownership. The v4 cases are contract fixtures
-until runtime activation is available.
+Back to Parent and stale reader ownership. It passes against the merged v4
+runtime; the new integration class additionally exercises all six tools,
+forked/fresh children, sibling delivery and turn-2 source navigation.
 
 Commands (all from this worktree):
 
@@ -114,9 +128,10 @@ TEST_RUNNER_PI_APP_CODEX_AGENTS_GALLERY="$PI_BUILD_ROOT/galleries/codex-v4" \
   -only-testing:PiAppTests/SubagentCodexGalleryTests
 ```
 
-The final parallel invocation supplies `-only-testing:PiAppTests/<Class>` for
-the first fourteen table rows together. Exact batch scripts are retained at
-`$PI_BUILD_ROOT/run-serial.sh` and `$PI_BUILD_ROOT/run-final.sh`. The baseline
+The parallel invocation supplies `-only-testing:PiAppTests/<Class>` for the
+fourteen classes sharing its log. Exact batch scripts are retained at
+`$PI_BUILD_ROOT/run-serial.sh`, `run-final.sh`, `run-merged-final.sh`,
+`run-helper-green.sh` and `run-opening-green.sh`. The baseline
 check uses `$PI_BUILD_ROOT/check-baseline.py`, rebuilding `114cd880` in this same
 root with two compiler workers before restoring the implementation. No named
 result bundles or extra DerivedData directories were created.
@@ -124,8 +139,8 @@ result bundles or extra DerivedData directories were created.
 ## Mutation checks
 
 Every temporary mutation was restored, followed by the final green functional
-runs above. Scripts are retained at `$PI_BUILD_ROOT/check-mutations.py` and
-`$PI_BUILD_ROOT/check-open-mutation.py`.
+runs above. Scripts are retained at `$PI_BUILD_ROOT/check-mutations.py`,
+`check-open-mutation.py` and `check-integration-mutation.py`.
 
 | Log | Deliberate break | Observed failures |
 |---|---|---|
@@ -134,6 +149,7 @@ runs above. Scripts are retained at `$PI_BUILD_ROOT/check-mutations.py` and
 | `codex-mutation-capability.log` | Accept new cards/rows without capability and force capability on at handshake | 2 presentation + 1 storage assertions across 15 tests |
 | `codex-open-red.log` | Original pending-message Open route; separately hide named sidebar descriptions when metrics exist | 1 pending-navigation failure before its fix, plus 1 independent subtitle mutation caught |
 | `codex-open-mutation.log` | Restore the old pending Open route and mislabel starting, unknown and rejected outcomes | 6 assertions across 8 presentation tests |
+| `codex-integration-mutation.log` | Ignore the committed receiving turn; treat every turn-1 New task as the initial hand-off | 2 assertions across 15 presentation/storage tests |
 
 Pending sibling mail now opens the recipient's transcript. Delivered mail opens
 its exact delivery row. This uses the existing actions, family validation and
@@ -143,9 +159,10 @@ calling the delivery action; the mutation reproduced that failure after the fix.
 ## Gallery review
 
 Folder: `/Users/admin/Library/Caches/BelloSwiftWork/build-a135-agents-ui/galleries/codex-v4`.
-All **62 PNGs** listed in `manifest.txt` were regenerated and visually inspected,
-including the 16 final contact sheets in `review-final/` and full-size checks of
-the narrow pending, sibling, fold and picker scenes. The initial review caught
+All **62 PNGs** listed in `manifest.txt` were regenerated after helper integration
+and visually inspected in all 16 final contact sheets in `review-final/`. The
+initial pass also checked full-size narrow pending, sibling, fold and picker
+scenes. The initial review caught
 the sibling provenance bug, collapsed Markdown list lines, empty utility bodies
 and stale picker capture; those are fixed in the final images.
 
@@ -157,18 +174,39 @@ Narrow fixtures use 820-point height so the child footer and body can be reviewe
 The named sidebar shows description and cost; the child has no composer.
 
 No intentional design deviations. No owner decision is pending on the three
-settled appendix items. No confirmed helper bug or appendix mismatch was found
-at the contract checkpoint; v4 real-helper integration remains outstanding.
+settled appendix items. No confirmed helper bug or appendix mismatch was found.
 
 
-## Integration status
+## Real-helper integration
 
-Repeated `git fetch origin dev/a135-agents` checks still resolve to `114cd880`.
-That commit publishes the contract and additive readers, not runtime activation.
-The capability list in `packages/swift-host/Sources/PiAgentCore/SubagentTypes.swift:12`
-still advertises v3. The existing real-helper/loopback opening tests pass; v4 end-to-end execution
-must be rerun after the helper runtime advances. No helper mismatch is claimed
-from an unimplemented path, and no helper code was changed.
+The runtime branch advanced during final validation and was merged in
+`0f05f1ec`. The final fetch still resolves to helper `c743816a`. The Release
+helper was rebuilt in this workstream's build root. No helper source was edited.
+
+`SubagentCodexIntegrationTests` uses the production helper, the isolated app host
+and `fixtures/native/codex_ui.py` through the existing strict loopback gateway.
+It checks the advertised capability, named fork/fresh discovery, inherited fold
+and hand-off, every new tool, full Markdown final answer beyond 8 KiB, idle
+queue-only mail without blocking family closure, delivery on turn 2, exact
+sibling Source navigation, read-only message details and interruption.
+Generated journals and request evidence are retained in
+`$PI_BUILD_ROOT/integration-fixture`; no real credentials or data are involved.
+
+Two fixture corrections are separate from the behavioral failures above:
+`codex-real-helper-red.log` and `codex-real-helper-red-2.log` inspected a hidden
+child after its reader had detached. Reopening through the existing navigation
+path showed that idle delivery state was already correct. The first merged
+opening run (`codex-merged-SubagentOpeningTests.log`) was stopped after three
+barrier failures: v4 includes the hand-off before the task paragraph. The
+gateway now recognizes advertised tools and that paragraph; all 15 opening
+tests then passed. V3/v1 history coverage remains in the saved-row tests.
+
+The helper's newly added interruption note raises one further **needs owner
+decision** item, separate from the three settled choices: retain the implemented
+root notice for an undelivered running task; notify its original sender instead;
+or rely on the terminal answer and inspectable pending record. The app renders
+the implemented typed MESSAGE without making a new policy choice. See
+`docs/design/subagents-codex-style.md:853`.
 
 ## Existing failure isolated from this change
 

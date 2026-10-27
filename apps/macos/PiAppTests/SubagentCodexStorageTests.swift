@@ -154,6 +154,18 @@ final class SubagentCodexStorageTests: XCTestCase {
         XCTAssertEqual(state.entries.first?.title, "audit → tests · Message")
         XCTAssertEqual(state.entries.first?.disposition, "waiting_next_turn")
         XCTAssertEqual(state.entries.last?.recipientID, parent.id)
+        var delivery: [String: WireValue] = ["rowID": .string("delivered-row"), "recipientID": .string("tests-child"),
+            "eventIDs": .array([.string("mail")]), "eventTurns": .object(["mail": .number(2)]), "committed": .bool(false)]
+        rows.append(Self.custom("pi-app.agent-delivery.v1", delivery)); try Self.write(rows, to: path)
+        let prepared = try await model.history.agentCoordination(path: path, ownerID: parent.id)
+        XCTAssertEqual(prepared.entries.first?.turn, 1)
+        XCTAssertEqual(prepared.entries.first?.disposition, "waiting_next_turn", "Preparation alone does not claim delivery")
+        delivery["committed"] = .bool(true)
+        rows.append(Self.custom("pi-app.agent-delivery.v1", delivery)); try Self.write(rows, to: path)
+        let committed = try await model.history.agentCoordination(path: path, ownerID: parent.id)
+        XCTAssertEqual(committed.entries.first?.turn, 2, "Queue-only mail navigates using its receiving turn")
+        XCTAssertEqual(committed.entries.first?.recipientMessageID, "delivered-row")
+        XCTAssertEqual(committed.entries.first?.disposition, "delivered")
     }
     static func custom(_ type: String, _ data: [String: WireValue]) -> [String: WireValue] {
         ["type": .string("custom"), "customType": .string(type), "data": .object(data)]

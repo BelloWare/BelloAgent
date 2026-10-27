@@ -1120,6 +1120,7 @@
 		C71C81025C804B1833CC6F67 /* GitStashList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49449B77EEDBCCDAE1B5F007 /* GitStashList.swift */; };
 		C7881AABC7F3C1487344402B /* TestIsolationGuard.m in Sources */ = {isa = PBXBuildFile; fileRef = 63E8D3E2A0B3467CB9BE5972 /* TestIsolationGuard.m */; };
 		C7E1AE1B5271B5B4AD5AB0A6 /* GitChangelistReadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1320E316307CA08F0108C392 /* GitChangelistReadTests.swift */; };
+		C7ECFE1075C532568B7E3C46 /* SubagentCodexIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA7CE42D5B26A141306DA62 /* SubagentCodexIntegrationTests.swift */; };
 		C823B6796F4CCABB7E232425 /* WorkspaceGitTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6E25E5D4C437A7418E55B06 /* WorkspaceGitTrust.swift */; };
 		C82DD33600F8E1DD6C260241 /* CostLimitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EFF7B421F32334EE9F3CB2A /* CostLimitTests.swift */; };
 		C83772D0AB1389B63AA82116 /* PiChoicePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 310ED9C2711536A29B3CF266 /* PiChoicePicker.swift */; };
@@ -2331,6 +2332,7 @@
 		CF0F338EB5D4DBBD312087CB /* SubagentPanelGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentPanelGalleryTests.swift; sourceTree = "<group>"; };
 		CF1E2878659E996871B3531E /* NativeTranscriptSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptSafetyTests.swift; sourceTree = "<group>"; };
 		CF4FF01008A5295635D99899 /* InheritedSubagentReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InheritedSubagentReaderTests.swift; sourceTree = "<group>"; };
+		CFA7CE42D5B26A141306DA62 /* SubagentCodexIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentCodexIntegrationTests.swift; sourceTree = "<group>"; };
 		CFE8BD3F4538702D8CE2AE0C /* KeychainVaultStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainVaultStorage.swift; sourceTree = "<group>"; };
 		D023291D8EA557C4E600C8FA /* TestHostIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHostIsolationTests.swift; sourceTree = "<group>"; };
 		D048060B351013ABF81133D9 /* ArchiveSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSwitchTests.swift; sourceTree = "<group>"; };
@@ -3605,6 +3607,7 @@
 				43782C74903D444E61FEA53D /* StreamingMarkdownStabilityTests.swift */,
 				8087FA0A6490A9F3269ECC4E /* SubagentCaptureTests.swift */,
 				FCBA963C0F6B7EBBB52CA0AD /* SubagentCodexGalleryTests.swift */,
+				CFA7CE42D5B26A141306DA62 /* SubagentCodexIntegrationTests.swift */,
 				71B1659DAC958ADE9F276A25 /* SubagentCodexPresentationTests.swift */,
 				9BC7D1F5A1BBB32BA4BFB718 /* SubagentCodexStorageTests.swift */,
 				7F138D9A5FD5DE9AF4BE05CB /* SubagentCostGalleryTests.swift */,
@@ -5283,6 +5286,7 @@
 				F5661CF23ED21E6AD885EBBD /* StreamingMarkdownStabilityTests.swift in Sources */,
 				7BAB74A26BAE7EAECF6B97BE /* SubagentCaptureTests.swift in Sources */,
 				415FB8458269B4000DBEC398 /* SubagentCodexGalleryTests.swift in Sources */,
+				C7ECFE1075C532568B7E3C46 /* SubagentCodexIntegrationTests.swift in Sources */,
 				D7C0A9C3E433695A042A1058 /* SubagentCodexPresentationTests.swift in Sources */,
 				7EF42787C7B32D22C3640464 /* SubagentCodexStorageTests.swift in Sources */,
 				5D13DC0D4B26BC222C4D600A /* SubagentCostGalleryTests.swift in Sources */,

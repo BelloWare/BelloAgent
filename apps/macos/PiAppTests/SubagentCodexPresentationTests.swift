@@ -25,7 +25,7 @@ final class SubagentCodexPresentationTests: XCTestCase {
         if sender != "/root" { fields["sender_child_id"] = .string((SubagentLabel.task(sender) ?? sender) + "-child") }
         if recipient != "/root" { fields["recipient_child_id"] = .string((SubagentLabel.task(recipient) ?? recipient) + "-child") }
         let event = WireValue.object(fields)
-        var row = TranscriptMessage(id: "delivery", role: "user", text: "Untrusted frame text", kind: "agent_message",
+        var row = TranscriptMessage(id: type == "NEW_TASK" ? "event" : "delivery", role: "user", text: "Untrusted frame text", kind: "agent_message",
             nativeAgentDelivery: .object(["version": .number(2), "eventIds": .array([.string("event")]), "events": .array([event])]))
         row.codexAgents = true
         return row
@@ -112,6 +112,8 @@ final class SubagentCodexPresentationTests: XCTestCase {
         XCTAssertFalse(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).isEmpty)
         let task = Self.delivery("NEW_TASK", sender: "/root", recipient: "/root/audit")
         XCTAssertEqual(AgentMessagePresentation(task).events.first?.title, "main · New task")
+        var steering = task; steering.id = "later-delivery"
+        XCTAssertEqual(AgentMessagePresentation(steering).events.first?.title, "main → audit · New task", "A new task sent during turn 1 is not the initial hand-off")
         var followup = task
         var metadata = followup.nativeAgentDelivery!.object!, eventFields = metadata["events"]!.array![0].object!
         eventFields["turn"] = .number(2); metadata["events"] = .array([.object(eventFields)])
