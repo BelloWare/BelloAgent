@@ -13,7 +13,7 @@
   - Only the main chat starts sub-agents.
   - The automatic family wait, crash safety and shared cost limit stay.
   - Codex's mid-reply cut-in is deferred.
-  - [Design](docs/design/subagents-codex-style.md). Helper v4 implemented: contract checkpoint `114cd880`, stable app wire examples, full forks, sibling mail, whole answers, durable recovery/promotion and uncapped fitting delivery. Focused helper and Release wire validation are in the [record](docs/validation/a135-agents-0.1.135.md); app integration and the merged gate remain with their workstream and lead.
+  - [Design](docs/design/subagents-codex-style.md). Helper v4 complete (`114cd880` contract, `6d99dbd8` runtime): stable app wire examples, full forks, sibling mail, whole answers, durable recovery/promotion and uncapped fitting delivery. Validation: 306 focused helper tests, 4 streaming modes, 39 v4 + 21 v2 crash edges, 41/4/3 Release wire/concurrent/acceptance tests and 40 mutations ([record](docs/validation/a135-agents-0.1.135.md)). App integration and the merged gate remain with their workstream and lead.
 
 ## 0.1.134
 

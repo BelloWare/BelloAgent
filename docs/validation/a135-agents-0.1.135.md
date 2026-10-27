@@ -40,6 +40,10 @@ change. Contract commit **114cd880** was pushed immediately to
 
 ## Runtime implementation
 
+Runtime checkpoint **6d99dbd8** was pushed for app integration while the final
+crash matrices were completing. The fixture correction and completed evidence
+are in the following validation commit.
+
 The existing steering coordinator, admission gates, operation receipts, family
 mailbox, delivery preparation/acknowledgement records, recovery and family wait
 now carry the v4 contract. There is no second coordinator. Production advertises
@@ -206,7 +210,7 @@ allowed to finish; it was never removed by this workstream.
 
 ```sh
 python3 scripts/test-subagent-streaming.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --modes flow loop speakers rate
-python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --skip-build --older-helper "$PI_BUILD_ROOT/older-0134-build/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --older-helper "$PI_BUILD_ROOT/older-0134-build/arm64-apple-macosx/release/pi-native-host"
 python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --skip-build
 ```
 
@@ -250,7 +254,25 @@ to v3 in a disposable copied journal makes that same older binary open it. This
 **additional downgrade-marker mutation is caught**, with no model request.
 Together with the 39 XCTest mutations, this is **40 guard mutations**.
 
-Final matrix counts are recorded after completion below.
+`crash-v4-final.log`: **39/39 edges passed**. This includes the six new
+fork-seed, sibling-delivery and name-adoption edges; legacy snapshot and v4
+promotion; durable acceptance, mirrors, recipient rows, acknowledgements,
+terminals and closure; and Stop/shutdown/update with **16 active + 2 queued**
+agents. Cold recovery made no model request, explicit Resume did not re-execute
+accepted child work, effects and deliveries were not duplicated, and repeated
+reopen did not double-charge.
+
+`crash-v2-final.log`: **21/21 edges passed** with the original v2 matrix.
+The final runner exited successfully and released its own full-lane lock.
+
+The first full v4 attempt (`crash-v4-attempt-1.log`) passed 19 edges, then timed
+out waiting for `report-receipt-synced`: the fixture observed only the last row
+of a sync, although a v4 message receipt can share that sync with later rows.
+The fixture now retains every unsynced row and observes all of them after sync.
+The first correction covered only copied-row appends (attempt 2 passed 3 edges
+before the ordinary append hook was found missing). Both append paths are now
+instrumented and asserted during fixture generation. These were fixture hook
+failures; production durability code did not change.
 
 ## Decisions and deviations
 
@@ -267,4 +289,7 @@ fail closed on conflicting evidence or missing publication after possible
 execution; retain a paused v3 contract until a fresh task; preserve human Stop
 intent before cancellation. These use the existing durable paths.
 
-The lead owns app integration and the full merged release gate.
+The helper work is complete. The lead owns app integration and the full merged
+release gate. No full helper suite, app suite, installed app or live provider
+was used. `git diff --check`, Python compilation of the changed scripts, and
+`xcodegen generate --quiet` passed; XcodeGen produced no project-file change.

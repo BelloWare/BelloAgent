@@ -84,7 +84,9 @@ def fixture_binary():
     # every row covered by that sync, not just the last appended row.
     text = text.replace('    private var unsynced = false','    private var unsynced = false\n    private var fixturePendingRecords: [JSON] = []')
     text = text.replace('        try beforeAppend(v)','        FixtureSteeringBarrier.record(v,url:url,edge:"before")\n        try beforeAppend(v)')
+    text = text.replace('        lastAppend=(bytes, data.count - 1); lastAppendLine=data.dropLast()','        lastAppend=(bytes, data.count - 1); lastAppendLine=data.dropLast()\n        fixturePendingRecords.append(v)')
     text = text.replace('        lastAppend=(bytes, line.count); lastAppendLine=line','        lastAppend=(bytes, line.count); lastAppendLine=line\n        fixturePendingRecords.append(try JSON.parse(line))')
+    assert text.count('fixturePendingRecords.append(') == 2, 'Both journal append paths need the synced barrier'
     text = text.replace('        unsynced=false; synchronizations += 1','        unsynced=false; synchronizations += 1\n        let pending = fixturePendingRecords; fixturePendingRecords.removeAll()\n        for record in pending { FixtureSteeringBarrier.record(record,url:url,edge:"synced") }')
     text = text.replace('        try copy.synchronize()','        try copy.synchronize()\n        if url.lastPathComponent == "parent.jsonl" { FixtureSteeringBarrier.hit("promotion-copy-synced") }')
     text = text.replace('            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()','            if url.lastPathComponent == "parent.jsonl" { FixtureSteeringBarrier.hit("promotion-replaced") }\n            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()')
