@@ -2,6 +2,19 @@
 
 **Released 2026-10-27:** 0.1.134 (build 138, tag `v0.1.134`) is the latest release, Ask in sidebar search; record `docs/validation/Bello-Agent-0.1.134-2026-10-27.md`. 0.1.133 (build 137) was the work planned as 0.1.131.
 
+## 0.1.135
+
+- [ ] AGENTS-1: sub-agents, Codex style. Owner, 2026-10-27: "I like codex style of how sub and main communities, and sub agent can talk to each other if that's how Codex is implemented, but sub agents cannot spawn sub agent directly, only main agent can. And sub agent can start with full context with handoff. Let's try to follow codex style more".
+  - Codex V2 tools: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`.
+  - `/root/<name>` names.
+  - By default a sub-agent starts with the main chat's context plus a hand-off note.
+  - Any agents in the family can message each other.
+  - Whole final answers, sent in Codex's text format (lines indented so they can't be forged), with waits of up to an hour.
+  - Only the main chat starts sub-agents.
+  - The automatic family wait, crash safety and shared cost limit stay.
+  - Codex's mid-reply cut-in is deferred.
+  - [Design](docs/design/subagents-codex-style.md).
+
 ## 0.1.134
 
 - [x] FIND-2: Ask beside Titles & details and Full chats: typing stays local, Return ranks a bounded shortlist of briefs/details through the chosen connection's own mini model. Owner, 2026-10-25: "Pick a connection" — a PiKit chooser in Settings order, kept until quit; known connections without a mini model are disabled; uncached catalog defaults resolve when asked. An empty or removed choice falls back without asking and explains why a submitted Ask stopped. Changing the choice after asking cancels and asks the same question there. Validated IDs and one-line reasons publish immediately; the top eight get local snippets independently of library-wide indexing, in reserved space, using an existing index or a bounded in-memory journal tail (no temporary text files). Fenced rankings are accepted and long reasons shortened while preserving emoji. Progress, Cancel and errors stay in the result area. One Ask chats background request (`chat-ask`) counted in Usage, without a spending cap. Main chats and saved sides; briefs off uses details only. [Validation](docs/validation/a131-ask-0.1.134.md).
