@@ -97,7 +97,7 @@ extension SubagentSteeringContract {
     }
     private static func invalid() -> AgentError { AgentError("subagent_arguments", "Arguments do not match the sub-agent tool contract") }
     // Only the schema vocabulary used above; no permissive fallback for unknown types.
-    private static func matches(_ v: JSON, _ s: JSON) -> Bool {
+    static func matches(_ v: JSON, _ s: JSON) -> Bool {
         if !s["oneOf"].isNull { return s["oneOf"].list.filter { matches(v,$0) }.count == 1 }
         if !s["enum"].isNull, !s["enum"].list.contains(v) { return false }
         if !s["const"].isNull, s["const"] != v { return false }

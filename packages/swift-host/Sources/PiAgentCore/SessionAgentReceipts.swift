@@ -19,7 +19,12 @@ extension AgentSession {
         return agentToolWire(receipt,key:key)
     }
     func agentToolWire(_ receipt: JSON, key: SubagentCallKey) -> JSON {
-        var wire = resultText(receipt.encoded())
+        var wire = resultText(receipt["version"].int == 4 ? receipt["output"].text ?? "" : receipt.encoded())
+        if receipt["version"].int == 4 {
+            wire["nativeResultMessageId"] = JSON("agent-receipt:" + AgentOperation.id(key))
+            if !receipt["nativeSubagent"].isNull { wire["nativeSubagent"] = receipt["nativeSubagent"] }
+            return wire
+        }
         wire["nativeResultMessageId"] = JSON("agent-receipt:" + AgentOperation.id(key))
         if let child = receipt["child_id"].text,
            let origin = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child })?.origin ?? (subagents.origin?.link.childSessionID == child ? subagents.origin : nil) {

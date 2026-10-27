@@ -39,6 +39,11 @@ struct AgentChildTurn: Codable, Sendable, Equatable {
     /// Resumes after a cost-limit pause, oldest first. The fields above stay
     /// the turn's immutable acceptance identity; admission uses the latest.
     var continuations: [AgentTurnContinuation]? = nil
+    var taskName: String? = nil
+    var forkTurns: String? = nil
+    var sender: String? = nil
+    var interruptedBy: String? = nil
+    var interruptNote: String? = nil
     var currentParentExecutionID: String { continuations?.last?.parentExecutionID ?? parentExecutionID }
     var currentGeneration: Int { continuations?.last?.generation ?? generation }
     var currentRuntimeID: String { continuations?.last?.runtimeID ?? runtimeID }
@@ -57,6 +62,16 @@ struct AgentFamilyMessage: Codable, Sendable, Equatable {
     var disposition: String = "pending"
     var rowID: String?
     var result: JSON? = nil
+    var type: String? = nil
+    var sender: String? = nil
+    var recipient: String? = nil
+    var senderChildID: String? = nil
+    var recipientChildID: String? = nil
+    var queueOnly: Bool? = nil
+    var deliveryEvent: AgentDeliveryEvent? {
+        guard let type, let sender, let recipient else { return nil }
+        return AgentDeliveryEvent(id:id,sequence:sequence,type:type,sender:sender,recipient:recipient,senderChildID:senderChildID,recipientChildID:recipientChildID,turn:turn,status:type == "FINAL_ANSWER" ? result?["status"].text : nil,text:text)
+    }
     var event: JSON {
         var v: JSON = ["event_id":JSON(id),"family_sequence":JSON(sequence),"child_id":JSON(childID),"turn":JSON(turn),"author":JSON(author),"kind":JSON(kind),"text":JSON(text),"task":JSON(task)]
         if let replyTo { v["reply_to"] = JSON(replyTo) }; if let result { v["result"] = result }; return v

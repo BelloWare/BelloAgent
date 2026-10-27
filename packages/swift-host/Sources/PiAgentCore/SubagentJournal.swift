@@ -9,6 +9,8 @@ struct SubagentOrigin: Codable, Sendable, Equatable {
     var resourceRevision: String
     var mcpPolicy: JSON? = nil
     var frozenResources: ResourceSnapshot? = nil
+    var taskName: String? = nil
+    var forkTurns: String? = nil
 
     /// Older v3 recovery can finish a marker-only child's origin without the
     /// new capability list. Only absence inherits the owner's accepted list;

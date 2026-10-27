@@ -13,7 +13,7 @@
   - Only the main chat starts sub-agents.
   - The automatic family wait, crash safety and shared cost limit stay.
   - Codex's mid-reply cut-in is deferred.
-  - [Design](docs/design/subagents-codex-style.md).
+  - [Design](docs/design/subagents-codex-style.md). Helper contract checkpoint: v4 schemas, prompts, names and wire examples published first; runtime and validation in progress ([record](docs/validation/a135-agents-0.1.135.md)).
 
 ## 0.1.134
 
