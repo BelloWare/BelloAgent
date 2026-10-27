@@ -9,13 +9,24 @@ struct AgentMessagePresentation: Equatable {
         var eventID: String?, replyTo: String?
         var number: Int? = nil
         var note: String? = nil
-        var childName: String { SubagentLabel.name(number) }
+        var taskName: String? = nil
+        var sender: String? = nil
+        var recipient: String? = nil
+        var childName: String { SubagentLabel.name(number, taskName: taskName) }
         var title: String {
+            if let sender, let recipient {
+                let from = SubagentLabel.task(sender) ?? sender, to = SubagentLabel.task(recipient) ?? recipient
+                let route = kind == "FINAL_ANSWER" && recipient == "/root" || kind == "NEW_TASK" && sender == "/root" && turn == 1 ? from : from + " → " + to
+                return route + " · " + label
+            }
             let name = author == "parent" ? "Parent → " + childName : childName
             return name + (task.isEmpty ? "" : " · " + task) + " · turn \(turn)"
         }
         var label: String {
             switch kind {
+            case "NEW_TASK": "New task"
+            case "MESSAGE": "Message"
+            case "FINAL_ANSWER": "Final answer"
             case "task": "Task"
             case "follow_up": "Follow-up"
             case "steer": "Steering"
@@ -30,6 +41,23 @@ struct AgentMessagePresentation: Equatable {
     var events: [Event]
     init(_ message: TranscriptMessage) {
         let metadata = message.nativeAgentDelivery?.object ?? [:]
+        if metadata["version"]?.number == 2 {
+            guard message.codexAgents == true else { events = []; return }
+            events = (metadata["events"]?.array ?? []).compactMap { raw in
+                guard let row = raw.object, let kind = row["type"]?.string,
+                      ["NEW_TASK", "MESSAGE", "FINAL_ANSWER"].contains(kind),
+                      let sender = row["sender"]?.string, SubagentLabel.task(sender) != nil,
+                      let recipient = row["recipient"]?.string, SubagentLabel.task(recipient) != nil,
+                      let turn = row["turn"]?.nonnegativeInteger, turn > 0,
+                      let text = row["text"]?.string else { return nil }
+                let child = recipient == "/root" ? row["sender_child_id"]?.string : row["recipient_child_id"]?.string
+                let childID = child ?? ""
+                return Event(childID: childID, turn: turn, author: sender == "/root" ? "parent" : "subagent", kind: kind,
+                    task: "", text: text, eventID: row["event_id"]?.string, replyTo: nil,
+                    taskName: recipient == "/root" ? sender : recipient, sender: sender, recipient: recipient)
+            }
+            return
+        }
         let envelope = message.text.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object
         let batch = metadata["events"]?.array ?? envelope?["events"]?.array
         let fallbackKind = (metadata["turn"]?.nonnegativeInteger ?? 1) > 1 ? "follow_up" : "task"
@@ -47,7 +75,7 @@ struct AgentMessagePresentation: Equatable {
                          task: row["task"]?.string ?? metadata["task"]?.string ?? "", text: text,
                          eventID: row["event_id"]?.string ?? metadata["eventIds"]?.array?.first?.string,
                          replyTo: row["reply_to"]?.string ?? metadata["replyTo"]?.string, number: message.agentNumbers?[child],
-                         note: notes.isEmpty ? nil : notes.joined(separator: "\n\n"))
+                         note: notes.isEmpty ? nil : notes.joined(separator: "\n\n"), taskName: message.agentNames?[child])
         }
     }
 }
@@ -80,15 +108,19 @@ struct AgentMessagePresentation: Equatable {
             retained[key] = words
             let badge = PiKit.Badge(text: event.label, tone: event.kind == "blocker" ? .danger : .neutral)
             let inspect = PiKit.Button("Inspect delivery", style: .ghost, compact: true) { actions.inspect(id) }
-            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in " + event.childName, symbol: "arrow.up.right", style: .ghost, compact: true) {
+            let sourceName = event.sender.flatMap(SubagentLabel.task) ?? (event.author == "parent" ? "parent" : event.childName)
+            let source = PiKit.Button("Source in " + sourceName, symbol: "arrow.up.right", style: .ghost, compact: true) {
                 actions.openAgentSource?(.init(childID: event.childID, turn: event.turn, eventID: event.eventID))
             }
+            source.isEnabled = !event.childID.isEmpty && inputs.environment.isEnabled
             source.setAccessibilityIdentifier("agent-message-source")
             source.toolTip = "Source of " + event.title; source.setAccessibilityLabel(source.toolTip)
             inspect.toolTip = "Inspect delivery for " + event.title; inspect.setAccessibilityLabel(inspect.toolTip)
             let buttons = PiKit.FlowView(); buttons.spacing = 8
             buttons.addSubview(source); buttons.addSubview(inspect)
-            var content: [ShellItem] = [.view(heading, .fill), .view(badge), .view(words, .fill)]
+            var content: [ShellItem] = [.view(heading, .fill)]
+            if event.sender == nil { content.append(.view(badge)) }
+            content.append(.view(words, .fill))
             if let note = event.note { content.append(.view(PiKit.Note(note, tone: .neutral), .fill)) }
             content.append(.view(buttons, .fill))
             let body = ShellStack(.vertical, spacing: 8, content)
@@ -97,7 +129,7 @@ struct AgentMessagePresentation: Equatable {
         if items.isEmpty { items = [.view(PiKit.Note(AgentMessagePresentation.unavailable, tone: .neutral), .fill)] }
         column.items = items
         prose = retained
-        setAccessibilityLabel(presentation.events.map { $0.title + " · " + $0.label }.joined(separator: "; "))
+        setAccessibilityLabel(presentation.events.map { $0.sender == nil ? $0.title + " · " + $0.label : $0.title }.joined(separator: "; "))
         toolTip = accessibilityLabel()
     }
     override func contentHeight(width: CGFloat) -> CGFloat { column.height(forWidth: max(1, width - 16)) }

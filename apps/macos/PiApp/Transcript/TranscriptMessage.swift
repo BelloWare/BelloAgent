@@ -29,6 +29,9 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var subagentCost: SubagentCostPresentation? = nil
     var subagentNumber: Int? = nil
     var subagentEffort: String? = nil
+    var codexAgents = false
+    var subagentTaskName: String? = nil
+    var agentEvent: AgentCoordinationEntry? = nil
 }
 /// Copies of a message share immutable fields until one is edited. Snapshot
 /// arrays can then retain history without copying every row's payload per token.
@@ -45,8 +48,12 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         /// its human-readable caption. History projection leaves both nil.
         var kind: String? = nil
         var nativeAgentDelivery: WireValue? = nil
+        var nativeInherited: WireValue? = nil
+        var codexAgents: Bool? = nil
         /// Only the children named by this delivery batch, not the whole family.
         var agentNumbers: [String: Int]? = nil
+        var agentNames: [String: String]? = nil
+        var inheritedCount: Int? = nil
         var detail: String? = nil
         /// Milliseconds since 1970 when the host appended the message.
         var at: Double? = nil
@@ -219,6 +226,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
         result.nativeAgentDelivery = message["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        result.nativeInherited = message["nativeInherited"].flatMap { $0 == .null ? nil : $0 }
         if result.nativeAgentDelivery != nil { result.kind = "agent_message" }
         if role == "toolResult" {
             // With how the call ended, as the helper describes the row.
@@ -444,6 +452,7 @@ extension TranscriptMessage {
         row.stopReason = try optionalString(fields["stopReason"])
         row.kind = try optionalString(fields["kind"])
         row.nativeAgentDelivery = fields["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        row.nativeInherited = fields["nativeInherited"].flatMap { $0 == .null ? nil : $0 }
         if row.nativeAgentDelivery != nil { row.kind = "agent_message" }
         row.detail = try optionalString(fields["detail"])
         row.at = try optionalDouble(fields["at"])

@@ -42,6 +42,7 @@ extension ChatRecord {
         if let delegation = previous.delegation {
             chat.delegation = delegation
             if chat.subagentNumber == nil { chat.subagentNumber = previous.subagentNumber }
+            if chat.subagentTaskName == nil { chat.subagentTaskName = previous.subagentTaskName }
             if chat.delegationTask == nil { chat.delegationTask = previous.delegationTask }
             if chat.delegationIssue == nil { chat.delegationIssue = previous.delegationIssue }
             chat.parentSessionID = chat.delegationIssue == nil ? delegation.call.parentSessionID : nil

@@ -256,6 +256,7 @@ extension WorkspaceModel {
     private func applySnapshotState(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord,
                                     wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]]? {
         view.isManagedSubagent = item.isSubagent
+        view.supportsCodexAgents = hosts[item.workspaceID]?.supportsCodexAgents == true
         if item.isSubagent { view.subagentStatus = result["subagentStatus"]?.string.flatMap(SubagentStatus.init(rawValue:)) }
         observeAssistantOutputs(sessionID: id, snapshot: result)
         observeSessionCompletion(sessionID: id, snapshot: result)

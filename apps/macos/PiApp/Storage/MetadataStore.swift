@@ -1381,6 +1381,7 @@ actor MetadataStore {
         // conflicting identity or a different file still fails above.
         child.delegation = link
         if let number = found.number, number > 0 { child.subagentNumber = number }
+        if SubagentLabel.task(header.taskName) != nil { child.subagentTaskName = header.taskName }
         child.path = path
         // Small metadata preview; the complete task remains in the owner's
         // journal and the ordinary child's user message once it starts.
@@ -1543,6 +1544,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// A cache of the unique accepted start's position in the parent journal.
     /// Never an execution identity; old records rebuild it during discovery.
     var subagentNumber: Int?
+    var subagentTaskName: String?
     var delegationTask: String?
     var delegationIssue: String?
     var isSubagent: Bool { delegation != nil }
@@ -1642,6 +1644,7 @@ extension ChatRecord {
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
         delegation = try c.decodeIfPresent(SubagentLink.self, forKey: .delegation)
         subagentNumber = try c.decodeIfPresent(Int.self, forKey: .subagentNumber).flatMap { $0 > 0 ? $0 : nil }
+        subagentTaskName = try c.decodeIfPresent(String.self, forKey: .subagentTaskName)
         delegationTask = try c.decodeIfPresent(String.self, forKey: .delegationTask)
         delegationIssue = try c.decodeIfPresent(String.self, forKey: .delegationIssue)
         costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)

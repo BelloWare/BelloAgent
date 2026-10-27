@@ -161,7 +161,7 @@ enum ConversationContent {
         if message.nativeAgentDelivery != nil || message.kind == "agent_message" {
             let events = AgentMessagePresentation(message).events
             guard !events.isEmpty else { return AgentMessagePresentation.unavailable }
-            return events.map { joined([$0.title, $0.label, prose($0.text), $0.note ?? ""]) }.joined(separator: "\n\n")
+            return events.map { joined([$0.title, $0.sender == nil ? $0.label : "", prose($0.text), $0.note ?? ""]) }.joined(separator: "\n\n")
         }
         if message.kind == "toolResult" || message.role == "tool" { return prose(message.text) }
         if message.kind == "compaction" { return TranscriptMarkdown.renderedText(message.text, style: .summary) }

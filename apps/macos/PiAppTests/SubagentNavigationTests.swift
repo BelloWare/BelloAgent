@@ -19,6 +19,10 @@ final class SubagentNavigationTests: XCTestCase, SerialTestLane {
         defer { window.contentView = nil; window.close() }
         view.refresh()
         XCTAssertEqual(window.title, child.displayTitle + " — Bello Agent")
+        bench.model.chats[1].subagentTaskName = "audit"; view.refresh()
+        XCTAssertEqual(window.title, "audit — Bello Agent")
+        let tab = SubagentTab(childID: child.id); tab.configure(bench.model)
+        XCTAssertEqual(tab.title, "audit"); XCTAssertEqual(tab.stripTitle, "audit")
         let parent = SessionDisplay(id: bench.chats[0].id); parent.historyState = .ready
         bench.model.displays[parent.id] = parent; bench.model.selectedID = parent.id; bench.model.selected = parent
         view.refresh()

@@ -37,9 +37,10 @@ import AppKit
         open.setAccessibilityIdentifier("open-subagent")
         inspect.setAccessibilityIdentifier("inspect-subagent")
         stop.setAccessibilityIdentifier("stop-subagent")
-        open.onPress = { [weak self] in guard let self, self.open.isEnabled else { return }
-            if self.value?.operation == "subagent_report", let reference = self.value?.messageReference { self.actions.openAgentSource?(reference) }
-            else if let target = self.value?.target { self.actions.openSubagent?(target) } }
+        open.onPress = { [weak self] in guard let self, self.open.isEnabled, let value = self.value else { return }
+            if value.operation == "subagent_report" || value.operation == "send_message" && (value.messageState == "delivered" || value.target == nil),
+               let reference = value.messageReference { self.actions.openAgentSource?(reference) }
+            else if let target = value.target { self.actions.openSubagent?(target) } }
         inspect.onPress = { [weak self] in guard let self, self.inspect.isEnabled, let target = self.value?.target else { return }; self.actions.inspectSubagent?(target) }
         stop.onPress = { [weak self] in guard let self, !self.historical, !self.stop.isHidden, self.stop.isEnabled, let target = self.value?.target else { return }; self.actions.stopSubagent?(target) }
     }
@@ -49,21 +50,22 @@ import AppKit
         self.value = value
         setAccessibilityLabel(value.title + " · " + value.label)
         toolTip = value.title + " · " + value.label
-        open.toolTip = value.operation == "subagent_report" ? "Open parent of " + value.title : "Open " + value.title
+        let name = value.codex ? value.name : value.title
+        open.toolTip = value.operation == "subagent_report" ? "Open parent of " + name : "Open " + name
         open.setAccessibilityLabel(open.toolTip)
-        inspect.toolTip = "Inspect requests for " + value.title; inspect.setAccessibilityLabel(inspect.toolTip)
-        stop.toolTip = "Stop " + value.title; stop.setAccessibilityLabel(stop.toolTip)
+        inspect.toolTip = "Inspect requests for " + name; inspect.setAccessibilityLabel(inspect.toolTip)
+        stop.toolTip = "Stop " + name; stop.setAccessibilityLabel(stop.toolTip)
         historical = value.target?.isHistorical(in:environment.sessionID) == true
         var lines: [String] = []
         if historical { lines.append(value.originalAvailability?.label ?? SubagentToolView.historicalNotice); if let reason = value.originalAvailability?.reason { lines.append(reason) } }
         if value.heldByUser, !historical { lines.append("Held until a new parent task or explicit Resume.") }
         var fields: [Detail] = []
-        if let summary = value.summary {
+        if let summary = value.summary, value.showsTurnDetails {
             if let count = summary.pendingMessages, count > 0, !historical { lines.append("\(count) pending " + (count == 1 ? "message" : "messages")) }
             fields.append(.init(label: "Model", value: summary.model))
         }
-        if let effort = value.effort { fields.append(.init(label: "Effort", value: effort)) }
-        if let summary = value.summary {
+        if let effort = value.effort, value.showsTurnDetails { fields.append(.init(label: "Effort", value: effort)) }
+        if let summary = value.summary, value.showsTurnDetails {
             var tools = summary.tools.map { $0.isEmpty ? "None" : $0.joined(separator: ", ") }
             if let progress = summary.progress { tools = [tools, "\(progress.tools) completed"].compactMap { $0 }.joined(separator: " · ") }
             if let tools { fields.append(.init(label: "Tools", value: tools)) }
@@ -77,13 +79,14 @@ import AppKit
                 if !progress.preview.isEmpty, !value.status.terminal, !historical { lines.append(progress.preview) }
             }
         }
-        if value.summary?.progress == nil, let cost = value.cost, let spent = cost.spentUSD {
+        if value.showsTurnDetails, value.summary?.progress == nil, let cost = value.cost, let spent = cost.spentUSD {
             fields.append(.init(label:"Cost",value:compactGatewayUSD(spent),note:[cost.unreportedNote,cost.costAttribution ?? "Counts toward parent chat"].compactMap { $0 }.joined(separator:" · ")))
         }
         updateDetails(fields)
         hasInformation = !lines.isEmpty; information.isHidden = !hasInformation
         information.update(text: lines.joined(separator: "\n"), face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
-        task.title = value.operation == "subagent_report" ? value.messageKind?.capitalized ?? "Message" : value.operation == "subagent_send" ? "Message" : "Task"
+        task.isHidden = value.task.isEmpty
+        task.title = value.operation == "subagent_report" ? value.messageKind?.capitalized ?? "Message" : ["subagent_send", "send_message"].contains(value.operation) ? "Message" : "Task"
         task.update(value.task, environment: environment, actions: actions)
         hasResult = !value.result.isEmpty; result.isHidden = !hasResult
         result.update(value.result, environment: environment, actions: actions)
@@ -92,12 +95,14 @@ import AppKit
         hasResultNote = !note.isEmpty; resultNote.isHidden = !hasResultNote
         resultNote.update(text: note, face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         open.title = value.operation == "subagent_report" ? "Parent" : "Open"
+        buttons.isHidden = value.codex && value.target == nil && value.messageReference == nil
+        inspect.isHidden = value.codex && !value.showsTurnDetails
         if historical { open.toolTip = value.originalAvailability?.reason ?? value.originalAvailability?.label ?? SubagentToolView.historicalNotice; open.setAccessibilityLabel(open.toolTip) }
         let available = !historical || (value.originalAvailability != nil && value.originalAvailability?.reason == nil)
-        open.isEnabled = available && environment.isEnabled && (value.target != nil || value.operation == "subagent_report" && value.messageReference != nil)
+        open.isEnabled = available && environment.isEnabled && (value.target != nil || value.messageReference != nil)
         inspect.isEnabled = available && environment.isEnabled && value.target != nil
         // A turn held at the cost limit is not running: nothing to stop until Resume.
-        stop.isHidden = value.status.terminal || value.heldByUser || value.summary?.pausedAtCostLimit == true || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
+        stop.isHidden = !value.showsTurnDetails || value.status.terminal || value.heldByUser || value.summary?.pausedAtCostLimit == true || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
         stop.isEnabled = environment.isEnabled && value.status != .stopping
         buttons.invalidateIntrinsicContentSize(); buttons.needsLayout = true
     }
@@ -120,10 +125,10 @@ import AppKit
         }
         if hasInformation { place(information, information.exactHeight(width: inner)) }
         if !detailValues.isEmpty { place(details, details.height(forWidth: inner)) }
-        place(task, task.height(width: inner))
+        if !task.isHidden { place(task, task.height(width: inner)) }
         if hasResult { place(result, result.height(width: inner)) }
         if hasResultNote { place(resultNote, resultNote.exactHeight(width: inner)) }
-        place(buttons, buttons.height(forWidth: inner))
+        if !buttons.isHidden { place(buttons, buttons.height(forWidth: inner)) }
         return Plan(frames: frames, height: y + 2)
     }
 }

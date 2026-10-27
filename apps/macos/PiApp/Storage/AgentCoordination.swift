@@ -9,9 +9,18 @@ struct AgentCoordinationEntry: Equatable, Sendable, Identifiable {
     var disposition: String
     var sourceAttemptID: String? = nil, consumingAttemptID: String? = nil
     var subagentNumber: Int? = nil
-    var title: String { SubagentLabel.name(subagentNumber) + " · " + kind.replacingOccurrences(of: "_", with: " ").capitalized + " · turn \(turn)" }
+    var sender: String? = nil, recipient: String? = nil
+    var queueOnly = false
+    var title: String {
+        if let sender, let recipient {
+            let kind = ["NEW_TASK": "New task", "MESSAGE": "Message", "FINAL_ANSWER": "Final answer"][kind] ?? kind
+            return (SubagentLabel.task(sender) ?? sender) + " → " + (SubagentLabel.task(recipient) ?? recipient) + " · " + kind
+        }
+        return SubagentLabel.name(subagentNumber) + " · " + kind.replacingOccurrences(of: "_", with: " ").capitalized + " · turn \(turn)"
+    }
     var deliveryLabel: String {
         switch disposition {
+        case "waiting_next_turn": "Waiting for its next turn"
         case "delivered": "Delivered"
         case "not_delivered_interrupted": "Not delivered · interrupted"
         case "held": "Pending for parent Resume"
@@ -45,6 +54,7 @@ extension HistoryReader {
     nonisolated static func scanCoordination(path: URL, ownerID: String, scanned: inout Int) throws -> AgentCoordination {
         var entries: [String: AgentCoordinationEntry] = [:], order: [String] = [], children: Set<String> = [], held: Set<String> = []
         var numbers: [String: Int] = [:]
+        var active: Set<String> = [], codex: Set<String> = []
         func add(_ entry: AgentCoordinationEntry) {
             if entries[entry.id] == nil { order.append(entry.id) }
             entries[entry.id] = entry
@@ -57,33 +67,64 @@ extension HistoryReader {
                 // Copied starts reserve their number without granting this
                 // fork ownership of the original child's messages or holds.
                 if numbers[id] == nil { numbers[id] = numbers.count + 1 }
-                if origin.link.budgetOwnerSessionID == ownerID { children.insert(id) }
+                if origin.link.budgetOwnerSessionID == ownerID {
+                    children.insert(id)
+                    if origin.taskName != nil { codex.insert(id) }
+                }
             }
             let data = row["data"]?.object ?? [:]
             switch row["customType"]?.string {
             case "pi-app.agent-operation.v1":
                 guard let key = data["key"]?.object, let source = key["parentSessionID"]?.string else { break }
-                if let turn = data["turn"]?.object, let child = turn["childID"]?.string, children.contains(child), source == ownerID,
+                if let turn = data["turn"]?.object, let child = turn["childID"]?.string, children.contains(child), source == ownerID || children.contains(source),
                    let number = turn["turn"]?.nonnegativeInteger, number > 0, let input = turn["inputID"]?.string {
-                    add(.init(id: input, childID: child, turn: number, kind: number == 1 ? "task" : "follow_up", author: "parent",
+                    active.insert(child)
+                    if turn["taskName"] != nil { codex.insert(child) }
+                    add(.init(id: input, childID: child, turn: number, kind: turn["taskName"] == nil ? (number == 1 ? "task" : "follow_up") : "NEW_TASK", author: source == ownerID ? "parent" : "subagent",
                               sourceSessionID: source, sourceMessageID: key["assistantMessageID"]?.string, sourceToolCallID: key["toolCallID"]?.string,
-                              recipientID: child, recipientMessageID: input, disposition: "pending"))
+                              recipientID: child, recipientMessageID: input, disposition: "pending", sender: turn["sender"]?.string, recipient: turn["taskName"]?.string))
                 }
                 if let message = data["message"]?.object, let id = message["id"]?.string, let child = message["childID"]?.string,
                    children.contains(child), let turn = message["turn"]?.nonnegativeInteger, turn > 0,
-                   let author = message["author"]?.string, (author == "parent" && source == ownerID || author == "subagent" && source == child) {
-                    add(.init(id: id, childID: child, turn: turn, kind: message["kind"]?.string ?? "note", author: author,
+                   let author = message["author"]?.string, (author == "parent" && source == ownerID || author == "subagent" && (source == child || message["senderChildID"]?.string == source && children.contains(source))) {
+                    let recipient = message["recipientChildID"]?.string ?? (message["recipient"]?.string == "/root" ? ownerID : author == "parent" ? child : ownerID)
+                    guard recipient == ownerID || children.contains(recipient) else { break }
+                    add(.init(id: id, childID: child, turn: turn, kind: message["type"]?.string ?? message["kind"]?.string ?? "note", author: author,
                               sourceSessionID: source, sourceMessageID: key["assistantMessageID"]?.string, sourceToolCallID: key["toolCallID"]?.string,
-                              recipientID: author == "parent" ? child : ownerID, disposition: message["disposition"]?.string ?? "pending"))
+                              recipientID: recipient, disposition: message["disposition"]?.string ?? "pending",
+                              sender: message["sender"]?.string, recipient: message["recipient"]?.string, queueOnly: message["queueOnly"]?.bool == true))
                 }
             case "pi-app.subagent-turn-terminal.v1":
                 guard let child = data["childID"]?.string, children.contains(child), let number = data["turn"]?.nonnegativeInteger else { break }
+                active.remove(child)
+                // V4 journals queue an explicit typed final answer. An
+                // interrupt without one must never invent pending mail.
+                guard !codex.contains(child) else { break }
                 let id = "result:" + child + ":" + String(number)
                 add(.init(id: id, childID: child, turn: number, kind: "result", author: "subagent", sourceSessionID: child,
                           sourceMessageID: data["result"]?.object?["metadata"]?.object?["resultRef"]?.object?["messageIds"]?.array?.first?.string,
                           recipientID: ownerID, disposition: "pending"))
             case "pi-app.agent-message.v1":
-                if let id = data["id"]?.string, var entry = entries[id] { entry.disposition = data["disposition"]?.string ?? entry.disposition; entries[id] = entry }
+                if let id = data["id"]?.string, entries[id] == nil,
+                   let child = data["childID"]?.string, children.contains(child),
+                   let kind = data["type"]?.string, ["NEW_TASK", "MESSAGE", "FINAL_ANSWER"].contains(kind),
+                   let turn = data["turn"]?.nonnegativeInteger, turn > 0,
+                   let sender = data["sender"]?.string, let recipient = data["recipient"]?.string {
+                    let sourceID = sender == "/root" ? ownerID : data["senderChildID"]?.string ?? child
+                    let recipientID = recipient == "/root" ? ownerID : data["recipientChildID"]?.string ?? child
+                    if (sourceID == ownerID || children.contains(sourceID)), (recipientID == ownerID || children.contains(recipientID)) {
+                        add(.init(id: id, childID: child, turn: turn, kind: kind, author: sender == "/root" ? "parent" : "subagent",
+                            sourceSessionID: sourceID, sourceMessageID: data["result"]?.object?["metadata"]?.object?["resultRef"]?.object?["messageIds"]?.array?.first?.string,
+                            recipientID: recipientID, disposition: data["disposition"]?.string ?? "pending",
+                            sender: sender, recipient: recipient, queueOnly: data["queueOnly"]?.bool == true))
+                    }
+                }
+                if let id = data["id"]?.string, var entry = entries[id] {
+                    entry.disposition = data["disposition"]?.string ?? entry.disposition
+                    entry.sender = data["sender"]?.string ?? entry.sender; entry.recipient = data["recipient"]?.string ?? entry.recipient
+                    entry.kind = data["type"]?.string ?? entry.kind; entry.queueOnly = data["queueOnly"]?.bool ?? entry.queueOnly
+                    entries[id] = entry
+                }
             case "pi-app.agent-delivery.v1":
                 guard data["committed"]?.bool == true, let recipient = data["recipientID"]?.string, let rowID = data["rowID"]?.string else { break }
                 for id in data["eventIDs"]?.array?.compactMap(\.string) ?? [] {
@@ -96,7 +137,11 @@ extension HistoryReader {
             return true
         }
         return AgentCoordination(entries: order.compactMap { id in
-            entries[id].map { value in var entry = value; entry.subagentNumber = numbers[entry.childID]; return entry }
+            entries[id].map { value in
+                var entry = value; entry.subagentNumber = numbers[entry.childID]
+                if entry.queueOnly, entry.disposition == "pending", entry.recipientID != ownerID, !active.contains(entry.recipientID) { entry.disposition = "waiting_next_turn" }
+                return entry
+            }
         }, heldChildren: held.intersection(children), subagentNumbers: numbers)
     }
     /// A scan's coordination, kept for the journal it read. A scan made off

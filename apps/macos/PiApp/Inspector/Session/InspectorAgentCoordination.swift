@@ -4,7 +4,7 @@ extension SessionInspectorModel {
     func coordination(for row: InspectorRequestRow) -> [AgentCoordinationEntry] {
         coordination.filter {
             $0.sourceAttemptID == row.id || $0.consumingAttemptID == row.id || row.agentDeliveryIDs?.contains($0.id) == true ||
-                ($0.childID == row.sessionID && $0.turn == row.childTurn && ["task", "follow_up"].contains($0.kind))
+                ($0.childID == row.sessionID && $0.turn == row.childTurn && ["task", "follow_up", "NEW_TASK"].contains($0.kind))
         }
     }
     func readAgentCoordination() async {
