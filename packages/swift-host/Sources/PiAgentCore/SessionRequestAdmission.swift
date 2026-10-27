@@ -22,7 +22,7 @@ extension AgentSession {
                                  turnID: turnID, executionID: activeTaskPresentation?.executionID ?? displayEpoch, purpose: purpose,
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
         scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.currentParentExecutionID
-        if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
+        if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.filter { $0.nativeInherited == nil }.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
         scope = await owner.sharedRequestScope(scope)
         let admittedScope = scope
         return RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in

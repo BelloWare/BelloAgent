@@ -5,8 +5,14 @@ extension AgentSteeringCoordinator {
         let origin = plan.origin, url = env.directory.appendingPathComponent(origin.link.childSessionID + ".jsonl")
         let (_, profile) = try SubagentModelGrant.resolve(origin.model.model,parent:env.profile,grants:[origin.model])
         let journal = try SessionJournal(url:url,id:origin.link.childSessionID,cwd:env.cwd,binding:profile.binding,create:true,managedChild:true)
-        try journal.promoteToSteering(managedChild:true)
+        if turn.taskName != nil { try journal.promoteToCodex(managedChild:true) }
+        else { try journal.promoteToSteering(managedChild:true) }
         try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
+        if let seed = plan.forkSeed {
+            for message in seed.messages { try journal.append(["type":"message","message":message.pi],id:message.id,flush:false) }
+            try journal.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(seed.messages.map { JSON($0.id) })]],flush:false)
+            try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentForkSeed),"data":seed.reference],flush:true)
+        }
         try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentTurn),"ownerID":JSON(env.ownerID),"data":subagentJSON(turn)])
     }
     /// Historical v2 turn 1 was already returned synchronously. Adoption never

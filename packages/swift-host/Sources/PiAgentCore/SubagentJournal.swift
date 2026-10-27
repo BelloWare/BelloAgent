@@ -11,6 +11,7 @@ struct SubagentOrigin: Codable, Sendable, Equatable {
     var frozenResources: ResourceSnapshot? = nil
     var taskName: String? = nil
     var forkTurns: String? = nil
+    var codexContext: AgentCodexContext? = nil
 
     /// Older v3 recovery can finish a marker-only child's origin without the
     /// new capability list. Only absence inherits the owner's accepted list;
@@ -27,6 +28,7 @@ struct SubagentPlan: Codable, Sendable, Equatable {
     var task: String
     var resultMessageID: String
     var adoptionSeed: JSON? = nil
+    var forkSeed: AgentForkSeed? = nil
 }
 
 func subagentJSON<T: Encodable>(_ value: T) throws -> JSON { try JSON.parse(JSONEncoder().encode(value)) }
@@ -43,7 +45,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     var family: AgentFamilyState?
 
     mutating func consume(_ record: JSON, sessionID: String) throws {
-        if record["type"].text == "message", !record["message"]["nativeAgentDelivery"].isNull,
+        if record["type"].text == "message", !record["message"]["nativeAgentDelivery"].isNull, record["message"]["nativeInherited"].isNull,
            let id = record["id"].text {
             if family == nil { family = AgentFamilyState(ownerID:origin?.link.budgetOwnerSessionID ?? sessionID) }
             let digest = sha256(Data(record["message"]["content"].encoded().utf8))
@@ -59,12 +61,12 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
             }
         }
         let data = record["data"]
-        let kinds = [JournalRecordKind.agentOperation, JournalRecordKind.agentTurn, JournalRecordKind.agentTurnState, JournalRecordKind.agentTerminal, JournalRecordKind.agentMessage, JournalRecordKind.agentDelivery, JournalRecordKind.familyRun]
+        let kinds = [JournalRecordKind.agentOperation, JournalRecordKind.agentTurn, JournalRecordKind.agentTurnState, JournalRecordKind.agentTerminal, JournalRecordKind.agentMessage, JournalRecordKind.agentDelivery, JournalRecordKind.familyRun, JournalRecordKind.agentNames]
         if kinds.contains(record["customType"].text ?? "") {
             let owner = record["ownerID"].text ?? origin?.link.budgetOwnerSessionID ?? sessionID
             guard owner == sessionID || origin?.link.budgetOwnerSessionID == owner else { return }
             if family == nil { family = AgentFamilyState(ownerID:owner) }
-            try family?.consume(record)
+            try family?.consume(record,mirror:owner != sessionID)
             if record["customType"].text == JournalRecordKind.agentOperation,
                let plan = try JSONDecoder().decode(AgentOperation.self,from:data.data()).plan {
                 try consume(["type":"custom","customType":JSON(JournalRecordKind.subagentCall),"data":try subagentJSON(plan)],sessionID:sessionID)

@@ -11,7 +11,7 @@ final class SubagentPolicyEffortTests: HelperTestCase {
         let disabled = try await parent.prepareRequest(snapshot)
         XCTAssertEqual(disabled.instructions, AgentSession.requestInstructions(snapshot.prompt))
         for steering in [false, true] {
-            await parent.enableSubagents(SubagentCoordinator(),steering:steering)
+            await parent.enableSubagents(SubagentCoordinator(),steering:steering,codex:false)
             let request = try await parent.prepareRequest(snapshot)
             XCTAssertEqual(request.instructions, disabled.instructions + "\n" + Self.policy)
             XCTAssertTrue(request.definitions.first { $0.name == (steering ? "subagent_start" : "subagent") }?.description.contains(Self.policy) == true)
@@ -28,7 +28,7 @@ final class SubagentPolicyEffortTests: HelperTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let profile = try fixtureProfile().overriding(model:nil,thinkingLevel:"high")
         let parent = try effortFixture(root:root,profile:profile)
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         let grant = try JSONDecoder().decode(SubagentModelGrant.self,from:JSON.object(["model":JSON(profile.model),"reasoning":["low","high"]]).data())
         try await parent.configureSubagentModels([grant])
         let definitions = await parent.sessionDefinitions()
@@ -44,7 +44,7 @@ final class SubagentPolicyEffortTests: HelperTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([answer("done")]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,profile:fixtureProfile().overriding(model:nil,thinkingLevel:"high"),client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let call = ToolCall(id:"start",name:"subagent_start",arguments:["task":"Task","mode":"background","effort":"low"])
         let key = try await parent.agentFixtureCall(call,newTask:true)
         let receipt = try await coordinator.prepare(call,key:key,parent:parent)
@@ -65,7 +65,7 @@ final class SubagentPolicyEffortTests: HelperTestCase {
         var raw = try fixtureProfile().raw; raw["thinkingLevelMap"] = ["max":.null]
         let client = AccountedAgentScript([answer("must not run")]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,profile:Profile(raw),client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let call = ToolCall(id:"invalid",name:"subagent_start",arguments:["task":"Task","mode":"background","effort":"max"])
         let key = try await parent.agentFixtureCall(call,newTask:true)
         do { _ = try await coordinator.prepare(call,key:key,parent:parent); XCTFail("Unsupported effort accepted") }
@@ -110,7 +110,7 @@ extension SubagentPolicyEffortTests {
         let client = AccountedAgentScript([answer("done")]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,profile:Profile(raw),client:client)
         await parent.effortFixtureTurn(level:"minimal")
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let receipt = try await accept("subagent_start",["task":"Task","mode":"background"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(receipt["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
@@ -125,7 +125,7 @@ extension SubagentPolicyEffortTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         for (index,value) in [JSON("ultra"),"HIGH"," high ","",.null,1,true].enumerated() {
             let call = ToolCall(id:"invalid-\(index)",name:"subagent_start",arguments:["task":"Task","mode":"background","effort":value])
             _ = try await parent.agentFixtureCall(call,newTask:index == 0)
@@ -146,7 +146,7 @@ extension SubagentPolicyEffortTests {
         let parent = try effortFixture(root:root,profile:fixtureProfile().overriding(model:nil,thinkingLevel:"high"),client:client)
         let models = [SubagentModelGrant(model:"other",reasoning:["low"]),SubagentModelGrant(model:"plain",reasoning:[])]
         await parent.effortFixtureTurn(models:models)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         for (model,effort) in [("other","high"),("plain","low"),("plain","default")] {
             do { _ = try await accept("subagent_start",["task":"Bad","mode":"background","model":JSON(model),"effort":JSON(effort)],parent:parent,coordinator:coordinator); XCTFail("Unsupported model effort accepted") }
             catch { XCTAssertEqual((error as? AgentError)?.code,"subagent_effort") }
@@ -169,7 +169,7 @@ extension SubagentPolicyEffortTests {
         let client = AccountedAgentScript([answer("first"),answer("second"),answer("third")]), coordinator = AgentSteeringCoordinator()
         let profile = try fixtureProfile().overriding(model:nil,thinkingLevel:"high")
         let parent = try effortFixture(root:root,profile:profile,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let start = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(start["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
@@ -194,7 +194,7 @@ extension SubagentPolicyEffortTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([answer("before steer"),answer("after steer")],held:true), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let start = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(start["child_id"].text)
         try await eventually { await client.requests.count == 1 }
@@ -215,7 +215,7 @@ extension SubagentPolicyEffortTests {
         let client = AccountedAgentScript([answer("first"),answer("second")]), coordinator = AgentSteeringCoordinator()
         let profile = try fixtureProfile().overriding(model:nil,thinkingLevel:"high")
         let parent = try effortFixture(root:root,profile:profile,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let start = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(start["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
@@ -224,7 +224,7 @@ extension SubagentPolicyEffortTests {
         await coordinator.drain(); await parent.close()
         let reopenedClient = AccountedAgentScript([answer("third")]), reopenedCoordinator = AgentSteeringCoordinator()
         let reopened = try effortFixture(root:root,profile:profile,client:reopenedClient,resume:true)
-        await reopened.enableSubagents(SubagentCoordinator()); await reopened.enableAgentSteering(reopenedCoordinator)
+        await reopened.enableSubagents(SubagentCoordinator(),codex:false); await reopened.enableAgentSteering(reopenedCoordinator)
         let before = await reopened.agentState(), requestsBefore = await reopenedClient.requests
         XCTAssertEqual(before.latest(child)?.effort,"max"); XCTAssertTrue(requestsBefore.isEmpty)
         XCTAssertEqual(before.operations.values.first { $0.receipt["operation_id"] == next["operation_id"] }?.receipt,next)
@@ -245,7 +245,7 @@ extension SubagentPolicyEffortTests {
         let client = AccountedAgentScript([answer("old answer")]), coordinator = AgentSteeringCoordinator()
         let profile = try fixtureProfile().overriding(model:nil,thinkingLevel:"high")
         let parent = try effortFixture(root:root,profile:profile,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let start = try await accept("subagent_start",["task":"Old task","mode":"background"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(start["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
@@ -264,7 +264,7 @@ extension SubagentPolicyEffortTests {
         }
         let reopenedClient = AccountedAgentScript([answer("new answer")]), nextCoordinator = AgentSteeringCoordinator()
         let reopened = try effortFixture(root:root,profile:profile,client:reopenedClient,resume:true)
-        await reopened.enableSubagents(SubagentCoordinator()); await reopened.enableAgentSteering(nextCoordinator)
+        await reopened.enableSubagents(SubagentCoordinator(),codex:false); await reopened.enableAgentSteering(nextCoordinator)
         let oldState = await reopened.agentState()
         XCTAssertNil(oldState.latest(child)?.effort)
         let summary = await nextCoordinator.list(parent:reopened,cursor:0,limit:10)
@@ -302,7 +302,7 @@ extension SubagentPolicyEffortTests {
     func testPreviewUsesPolicyAndDraftModelsEffortCapabilities() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let parent = try effortFixture(root:root)
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         let models: JSON = [["model":"other","reasoning":["high"]]]
         _ = try await parent.prepareContext(["model":"other","thinkingLevel":"high","subagentModels":models])
         let prepared = await parent.effortPreviewBody()
@@ -341,7 +341,7 @@ extension SubagentPolicyEffortTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var raw = try fixtureProfile().raw; raw["contextWindow"] = 16_384
         let parent = try effortFixture(root:root,profile:Profile(raw))
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         var baseline: String?, previewBaseline: String?
         for count in [0, 1, 3, 2_048] {
             await parent.effortFixtureRetainedChildren(count)
@@ -371,7 +371,7 @@ extension SubagentPolicyEffortTests {
         let parent = try effortFixture(root:root,client:client)
         let models = [SubagentModelGrant(model:"low-model",reasoning:["low"]),SubagentModelGrant(model:"high-model",reasoning:["high"]),SubagentModelGrant(model:"plain-model",reasoning:[])]
         await parent.effortFixtureTurn(models:models)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         var children: [String] = []
         for model in models {
             let receipt = try await accept("subagent_start",["task":"Task","mode":"background","model":JSON(model.model)],parent:parent,coordinator:coordinator)
@@ -403,7 +403,7 @@ extension SubagentPolicyEffortTests {
     func testModelDefaultKeepsUncataloguedEffortSchemaAndPreview() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let profile = try fixtureProfile(), parent = try effortFixture(root:root,profile:profile)
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         for models in [[], [SubagentModelGrant(model:profile.model)], [SubagentModelGrant(model:"custom-alias")]] {
             await parent.effortFixtureTurn(level:"default",models:models)
             let effective = await parent.turnProfile
@@ -425,7 +425,7 @@ extension SubagentPolicyEffortTests {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
             let client = AccountedAgentScript([answer("done")]), coordinator = AgentSteeringCoordinator()
             let parent = try effortFixture(root:root,client:client)
-            await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+            await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
             await parent.effortFixtureTurn(level:"default",models:model.map { [SubagentModelGrant(model:$0)] } ?? [])
             var arguments: JSON = ["task":"Task","mode":"background","effort":"low"]
             if let model { arguments["model"] = JSON(model) }
@@ -446,7 +446,7 @@ extension SubagentPolicyEffortTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([answer("first")]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         await parent.effortFixtureTurn(level:"default")
         let receipt = try await accept("subagent_start",["task":"Task","mode":"background"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(receipt["child_id"].text)
@@ -459,7 +459,7 @@ extension SubagentPolicyEffortTests {
         JournalCheckpoint.remove(for:root.appendingPathComponent("parent.jsonl"))
         let nextClient = AccountedAgentScript([answer("second")]), nextCoordinator = AgentSteeringCoordinator()
         let reopened = try effortFixture(root:root,client:nextClient,resume:true)
-        await reopened.enableSubagents(SubagentCoordinator()); await reopened.enableAgentSteering(nextCoordinator)
+        await reopened.enableSubagents(SubagentCoordinator(),codex:false); await reopened.enableAgentSteering(nextCoordinator)
         await reopened.effortFixtureTurn(level:"default")
         let definitions = await reopened.sessionDefinitions()
         XCTAssertEqual(definitions.first { $0.name == "subagent_send" }?.schema["properties"]["effort"]["enum"].list.compactMap(\.text),Profile.thinkingLevels)
@@ -477,7 +477,7 @@ extension SubagentPolicyEffortTests {
         var raw = try fixtureProfile().raw; raw["reasoning"] = false
         let client = AccountedAgentScript([]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,profile:Profile(raw),client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         await parent.effortFixtureTurn(level:"high")
         let definitions = await parent.sessionDefinitions()
         XCTAssertNil(definitions.first { $0.name == "subagent_start" }?.schema["properties"].map["effort"])
@@ -589,7 +589,7 @@ extension SubagentPolicyEffortTests {
                 continue
             }
             let parent = try effortFixture(root:root,client:client,resume:true)
-            await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+            await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
             let before = await client.requests; XCTAssertTrue(before.isEmpty)
             _ = try await accept("subagent_send",["child_id":"child","message":"Continue","effort":"high"],parent:parent,coordinator:coordinator)
             try await eventually { await parent.agentState().latest("child")?.status.terminal == true }
@@ -605,7 +605,7 @@ extension SubagentPolicyEffortTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AccountedAgentScript([answer("first")]), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,client:client)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let receipt = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(receipt["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
@@ -646,7 +646,7 @@ extension SubagentPolicyEffortTests {
         raw["thinkingLevelMap"] = ["low":"wire-low"]
         let traces = TraceStore(), coordinator = AgentSteeringCoordinator()
         let parent = try effortFixture(root:root,profile:Profile(raw),client:ProviderClient(traces:traces),traces:traces)
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         let receipt = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
         let child = try XCTUnwrap(receipt["child_id"].text)
         try await eventually { await parent.agentState().latest(child)?.status.terminal == true }

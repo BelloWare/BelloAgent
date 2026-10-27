@@ -31,7 +31,7 @@ CONTRACT_SPEC = importlib.util.spec_from_file_location('litellm_contract', ROOT 
 CONTRACT = importlib.util.module_from_spec(CONTRACT_SPEC)
 CONTRACT_SPEC.loader.exec_module(CONTRACT)
 NATIVE_TOOL_NAMES = ['read','ls','find','grep','write','edit','bash','mcp',
-                     'subagent_start','subagent_send','subagent_wait','subagent_status','subagent_stop']
+                     'spawn_agent','send_message','followup_task','wait_agent','interrupt_agent','list_agents']
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()

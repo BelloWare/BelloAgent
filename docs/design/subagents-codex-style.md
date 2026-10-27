@@ -836,3 +836,34 @@ Each copied message stores and exposes `nativeInherited:{from,cutoffEntryId}`; `
 - **List paging:** §2 requires bounded/paged results but specifies only `path_prefix`. Conservative implementation adds optional `cursor` and returns `next_cursor:null` on the last page. Options: keep this additive argument; use only prefix narrowing with an explicit overflow error; or add a separate paging tool. Cursor membership is frozen and bound to the family/prefix.
 - **Detail transport:** v3 has no helper message/turn detail endpoint despite its design text. Conservative implementation adds read-only `detail:"messages"|"turns"` modes to `subagent.list`; the default response is unchanged. Options: keep these modes; introduce separate read methods; or retain app-only journal scanning.
 - **Spawn description:** v4 omits the v3 `description` argument. The UI's secondary description is derived locally from `message` using the existing v2 label rule. Options: keep derivation; use the task name as the description; or add an explicit description argument later.
+
+### Recovery and interruption implementation notes
+
+A crash during fork publication still seals that accepted turn as `not_executed`.
+Recovery finishes only missing inherited rows and their seed reference from the
+original durable acceptance, after checking any existing rows. It never starts
+the accepted turn. This leaves a complete history for a later explicit
+`followup_task`; that follow-up does not seed again. Conflicting seed evidence,
+or a missing seed after possible execution, fails closed.
+
+A whole-chat human Stop records the intent on the family run before cancelling
+work. Sealing applies that intent to interrupted turns, without changing a
+previously sealed answer. Individual child Stop retains its existing human hold.
+
+**Needs owner decision — undelivered running tasks.** The v3 path records and
+reports a task that was accepted but interrupted before delivery. V4 keeps that
+notice as a typed `MESSAGE` from the target agent to `/root`, saying “A task for
+/root/audit was retained but not delivered before the turn ended.” It contains
+no internal IDs. Options: retain this root notice (implemented); notify the
+original sender instead; or rely only on the terminal `FINAL_ANSWER` and the
+inspectable pending record. Queue-only `send_message` mail is retained for the
+next turn and does not produce this notice. The exact JSON examples above are
+unchanged.
+
+A cost-paused v3 execution keeps its frozen v3 tools while Resume consumes its
+held calls and parked turns. A fresh parent task selects v4 and adopts names.
+The live publication fence also refuses a child request until its accepted fork
+seed is complete; reopening reconciles missing or partial publication without
+executing the interrupted turn. Delivery acknowledgements retain the receiving
+turn, so message-detail paging agrees with the delivered row after idle mail
+moves to a later turn.

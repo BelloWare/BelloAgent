@@ -42,7 +42,7 @@ extension AgentSteeringCoordinator {
         var rows: [JSON] = [], end = start
         for turn in turns[start..<high].prefix(args["limit"].int ?? 32) {
             let model = plans.plans.values.first { $0.origin.link.childSessionID == turn.childID }?.origin.model
-            let row: JSON = ["child_id":JSON(turn.childID),"turn":JSON(turn.turn),"status":JSON(turn.status.rawValue),"effort":JSON(turn.effort ?? model?.thinkingLevel ?? "default"),"delivery_state":JSON(state.messages["result:" + turn.id]?.disposition ?? "pending"),"pending_messages":JSON(state.messages.values.filter { $0.childID == turn.childID && $0.disposition == "pending" }.count)]
+            let row: JSON = ["child_id":JSON(turn.childID),"turn":JSON(turn.turn),"status":JSON(turn.status.rawValue),"effort":JSON(turn.effort ?? model?.thinkingLevel ?? "default"),"delivery_state":JSON(state.messages["result:" + turn.id]?.disposition ?? "pending"),"pending_messages":JSON(state.messages.values.filter { ($0.childID == turn.childID || $0.senderChildID == turn.childID || $0.recipientChildID == turn.childID) && $0.disposition == "pending" }.count)]
             if JSON.array(rows + [row]).encoded().utf8.count > 15000 { break }; rows.append(row); end += 1
         }
         let cursor: JSON = ["owner":JSON(parent.id),"filter":JSON(filter),"start":JSON(end),"high":JSON(high)]
@@ -56,15 +56,26 @@ extension AgentSteeringCoordinator {
         // Unsealed turns without a job wait for the owner's cost-limit Resume.
         let paused = await parent.costPaused
         return ["revision":JSON(state.revision),"total":JSON(plans.count),"active":JSON(active[parent.id,default:0]),"cursor":end < plans.count ? JSON(end) : .null,"children":.array(page.compactMap { plan in
-            guard let turn = state.latest(plan.origin.link.childSessionID) else { return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:saved.outcomes?[plan.origin.link.delegationID] ?? .interrupted,revision:state.revision,effort:plan.origin.model.thinkingLevel,taskName:plan.origin.taskName,forkTurns:plan.origin.forkTurns)) }
-            return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:turn.status,revision:state.revision,tools:plan.origin.tools,progress:turn.status.terminal ? nil : jobs[turn.id]?.progress,turn:turn.turn,executionID:turn.executionID,deliveryState:state.messages["result:" + turn.id]?.disposition ?? "pending",pendingMessages:state.messages.values.filter { $0.childID == turn.childID && $0.disposition == "pending" }.count,followUpsRemaining:max(0,8-state.turns.values.filter { $0.childID == turn.childID && $0.epoch == state.run?.epoch && $0.turn > 1 }.count),parentWaiting:waiting,progressEpoch:turn.status.terminal ? nil : progressEpoch,effort:turn.effort ?? plan.origin.model.thinkingLevel,taskName:plan.origin.taskName,forkTurns:plan.origin.forkTurns,
-                costPaused:Self.listsPaused(owner:paused,status:turn.status,running:jobs[turn.id] != nil) ? true : nil))
+            guard let turn = state.latest(plan.origin.link.childSessionID) else { return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:saved.outcomes?[plan.origin.link.delegationID] ?? .interrupted,revision:state.revision,effort:plan.origin.model.thinkingLevel,taskName:state.names?[plan.origin.link.childSessionID] ?? plan.origin.taskName,forkTurns:plan.origin.forkTurns ?? (state.names?[plan.origin.link.childSessionID] != nil ? "none" : nil))) }
+            return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:turn.status,revision:state.revision,tools:plan.origin.tools,progress:turn.status.terminal ? nil : jobs[turn.id]?.progress,turn:turn.turn,executionID:turn.executionID,deliveryState:turn.status.terminal && state.messages.values.contains { $0.disposition == "pending" && $0.queueOnly == true && $0.recipientChildID == turn.childID } ? "waiting_next_turn" : state.messages["result:" + turn.id]?.disposition ?? "pending",pendingMessages:state.messages.values.filter { ($0.childID == turn.childID || $0.senderChildID == turn.childID || $0.recipientChildID == turn.childID) && $0.disposition == "pending" }.count,parentWaiting:waiting,progressEpoch:turn.status.terminal ? nil : progressEpoch,effort:turn.effort ?? plan.origin.model.thinkingLevel,taskName:state.names?[plan.origin.link.childSessionID] ?? plan.origin.taskName,forkTurns:plan.origin.forkTurns ?? (state.names?[plan.origin.link.childSessionID] != nil ? "none" : nil),
+                pendingQueueOnlyMessages:state.messages.values.filter { $0.disposition == "pending" && $0.queueOnly == true && $0.recipientChildID == turn.childID }.count,costPaused:Self.listsPaused(owner:paused,status:turn.status,running:jobs[turn.id] != nil) ? true : nil))
         })]
     }
 }
 
 extension AgentSteeringCoordinator {
     func stop(parent: AgentSession, target: AgentTurnTarget, human: Bool) async throws {
+        if human {
+            let lock = gate(parent.id); try await lock.acquire()
+            do {
+                if var turn = await parent.agentState().turns[target.id], !turn.status.terminal, turn.taskName != nil {
+                    turn.interruptedBy = "the user"
+                    try await parent.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                    jobs[target.id]?.turn.interruptedBy = "the user"
+                }
+                await lock.release()
+            } catch { await lock.release(); throw error }
+        }
         // Signal live work first; parked/queued turns and terminal writes
         // still use the gate. Provider compaction never holds that gate.
         if let job = jobs[target.id], job.owner === parent, job.allocated, !job.parking {

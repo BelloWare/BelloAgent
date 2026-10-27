@@ -511,6 +511,7 @@ extension FamilyLimitPauseTests {
         return owner
     }
     private func startChild(_ owner: AgentSession, _ coordinator: AgentSteeringCoordinator, _ id: String, newTask: Bool = true) async throws -> String {
+        await owner.enableAgentSteering(coordinator,codex:false) // Historical v3 pause/recovery matrix.
         let call = ToolCall(id:id,name:"subagent_start",arguments:["task":JSON("Worker \(id)"),"mode":"background"])
         let key = try await owner.agentFixtureCall(call,newTask:newTask)
         let receipt = try await coordinator.prepare(call,key:key,parent:owner)

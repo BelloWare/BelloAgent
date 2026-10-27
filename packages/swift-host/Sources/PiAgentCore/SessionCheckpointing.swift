@@ -43,7 +43,7 @@ extension AgentSession {
                                  compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int, subagents: SubagentJournalState = SubagentJournalState(), accounting: AttemptAccounting = AttemptAccounting()) -> JSON {
         var helper: JSON = ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
          "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
-        if subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { helper["subagentEffortVersion"] = 1 }
+        if subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { helper["subagentEffortVersion"] = 1; helper["subagentCodexVersion"] = 4 }
         return helper
     }
     /// A compaction's progress row once the compaction's record is in the
@@ -67,7 +67,7 @@ extension AgentSession {
         // An older helper's cache decodes away effort/capabilities even when
         // their original journal rows survive. Replay those families in full;
         // ordinary chats and current caches retain the checkpoint shortcut.
-        guard saved["subagentEffortVersion"].int == 1 || (subagents.family == nil && subagents.origin == nil && subagents.plans.isEmpty) else { return nil }
+        guard (saved["subagentEffortVersion"].int == 1 && saved["subagentCodexVersion"].int == 4) || (subagents.family == nil && subagents.origin == nil && subagents.plans.isEmpty) else { return nil }
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
         for row in checkpoint.rows {
