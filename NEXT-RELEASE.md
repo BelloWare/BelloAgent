@@ -6,7 +6,7 @@
 
 - [x] The first context count after launch is no longer discarded when the connection's model catalog loads; Inspector previews use the loaded tool schema too. [Validation](docs/validation/a135-gatefix-0.1.135.md).
 
-- [ ] AGENTS-1: sub-agents, Codex style. Owner, 2026-10-27: "I like codex style of how sub and main communities, and sub agent can talk to each other if that's how Codex is implemented, but sub agents cannot spawn sub agent directly, only main agent can. And sub agent can start with full context with handoff. Let's try to follow codex style more".
+- [x] AGENTS-1: sub-agents, Codex style. Owner, 2026-10-27: "I like codex style of how sub and main communities, and sub agent can talk to each other if that's how Codex is implemented, but sub agents cannot spawn sub agent directly, only main agent can. And sub agent can start with full context with handoff. Let's try to follow codex style more".
   - Codex V2 tools: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`.
   - `/root/<name>` names.
   - By default a sub-agent starts with the main chat's context plus a hand-off note.
@@ -18,6 +18,7 @@
   - [Design](docs/design/subagents-codex-style.md). Helper v4 and lead-review fixes complete: seed bodies stay out of parent records/checkpoints, recovery verifies references/digests, version-2 caches retain the family gate, child senders fail closed, all newline framing is safe, and v4 pause/Resume retains task identity and human Stop provenance. All twelve app-wire JSON examples unchanged. Review validation: 315 focused helper tests, 2 streaming modes, 44 v4 + 21 v2 crash edges, 41/4/3 Release wire/concurrent/acceptance tests and 60 mutations ([record](docs/validation/a135-agents-0.1.135.md)). App integration and the merged gate remain with their workstream and lead.
 
   - **App:** §9 UI implemented on `dev/a135-agents-ui`: named agents, six gated cards, typed sibling/final-answer rows, idle queue mail and a paged inherited fold; v3/v1 history retained. Helper runtime merged and v4 end-to-end flow verified, including turn-2 sibling Source navigation. 297 passed, 1 optional skip, 1 reproduced baseline failure; 62 gallery images reviewed: [record](docs/validation/a135-agents-ui-0.1.135.md). The undelivered-task notice (a typed MESSAGE to `/root`) and the three appendix decisions are settled by the lead.
+  - **Gate** (`scripts/verify-release.sh` on `1eb7be60`, 2026-10-27; logs under `build-lead/verify-logs`, `rerun-135`, `affected-135`): wire 41, concurrent 4, acceptance 3, python 150, helper-cost 5 and views passed. Of the other failures, six classes passed alone (load). Five context-preview classes were a regression from 0.1.132, fixed above; two test premises from AGENTS-1 (the helper lookup of `subagent_start`, gallery scene 11i) were fixed in `de387346`. SubagentPerformance, PayloadNativeParity, LongChatScroll, HistoryEdit and the wide-issuer yield tests also failed on `6dbaa1d4`, which passed them in the 0.1.133 gate, while the Mac had an active screen capture (replayd at about 85% CPU); they are machine conditions, not this release. Affected reruns on `de387346`: app 257/0 in 20 classes, helper ContextPreview 8/0; Astra's whole gallery passed with 238 captures.
 
 ## 0.1.134
 
