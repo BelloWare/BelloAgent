@@ -183,8 +183,9 @@ final class SidebarAskConnectionTests: XCTestCase {
         XCTAssertEqual(ask.connectionID, "other"); XCTAssertTrue(fixture.other?.requests.isEmpty == true)
         // Session opening can start this catalog load too (0.1.132). Ask must
         // join it without losing the chosen connection or asking twice.
-        _ = model.subagentModels(for: try XCTUnwrap(model.record("b")))
-        search.submit(); await ask.settle()
+        let chat = try XCTUnwrap(model.record("b"))
+        let listing = Task { await model.loadSubagentModels(for: chat) }
+        search.submit(); await ask.settle(); await listing.value
         XCTAssertEqual(fixture.other?.requests.count, 1, ask.status.text)
         XCTAssertEqual(fixture.other?.requests.first?.body["model"]?.string, "catalog-mini")
         XCTAssertEqual(ask.matches.map(\.id), ["b"]); XCTAssertTrue(fixture.gateway.requests.isEmpty)

@@ -272,6 +272,7 @@ extension WorkspaceModel {
                   sideBudgetParent(owner).flatMap({ record($0) }) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
             _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
+        Task { [weak self] in await self?.loadSubagentModels(for: item) }
         if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
             let connection = host.connectionID
             if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }

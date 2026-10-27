@@ -4,6 +4,8 @@
 
 ## 0.1.135
 
+- [x] The first context count after launch is no longer discarded when the connection's model catalog loads; Inspector previews use the loaded tool schema too. [Validation](docs/validation/a135-gatefix-0.1.135.md).
+
 - [ ] AGENTS-1: sub-agents, Codex style. Owner, 2026-10-27: "I like codex style of how sub and main communities, and sub agent can talk to each other if that's how Codex is implemented, but sub agents cannot spawn sub agent directly, only main agent can. And sub agent can start with full context with handoff. Let's try to follow codex style more".
   - Codex V2 tools: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`.
   - `/root/<name>` names.

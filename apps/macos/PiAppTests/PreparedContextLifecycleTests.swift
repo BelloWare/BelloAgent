@@ -2,6 +2,35 @@ import XCTest
 @testable import PiApp
 
 final class PreparedContextLifecycleTests: XCTestCase {
+    @MainActor func testFirstInspectorPreviewWaitsForCatalogAndShowsLoadedModelEnum() async throws {
+        let gate = PreviewGate(), started = expectation(description: "First catalog load started")
+        let catalog = ModelCatalog(fetchCatalog: { _, _ in
+            started.fulfill(); await gate.wait()
+            return [ModelDescriptor(id: "offered", name: "Offered")]
+        })
+        try await withModel(catalog: catalog, delegation: true) { model, id in
+            let preview = Task { try await model.preparedContext(id) }
+            await fulfillment(of: [started], timeout: 3)
+            gate.release()
+            let result = try await preview.value
+            let revision = try XCTUnwrap(result["revision"]?.string)
+            var text = "", offset = 0
+            while true {
+                let page = try await model.readPreparedContext(id, revision: revision, section: "tools", offset: offset)
+                text += try XCTUnwrap(page["text"]?.string)
+                guard let next = page["next"]?.number else { break }
+                offset = Int(next)
+            }
+            let definitions = try JSONDecoder().decode(WireValue.self, from: Data(text.utf8))
+            let spawn = try XCTUnwrap(definitions.array?.first { $0.object?["name"]?.string == "spawn_agent" }?.object)
+            XCTAssertEqual(spawn["parameters"]?.object?["properties"]?.object?["model"]?.object?["enum"], .array([.string("offered")]))
+            XCTAssertNotNil(ContextMeterPresentation(context: model.displayedContext(try XCTUnwrap(model.displays[id]))).fraction)
+            XCTAssertEqual(result["dispatched"], .bool(false))
+            let attempts = try await model.traces.list(sessionID: id)
+            XCTAssertTrue(attempts.isEmpty)
+        }
+    }
+
     @MainActor func testExplicitAndAutomaticPreviewsShareOneReadableSnapshotDuringHostStartup() async throws {
         try await withModel { model, id in
             XCTAssertTrue(model.hosts.isEmpty)
@@ -143,15 +172,19 @@ final class PreparedContextLifecycleTests: XCTestCase {
         return AutomaticContextSignature(binding: ContextPreviewBinding(record), params: ["text": .string(draft)], configurationRevision: 0, directCommand: false)
     }
 
-    @MainActor private func withModel(_ body: (WorkspaceModel, String) async throws -> Void) async throws {
+    @MainActor private func withModel(catalog: ModelCatalog? = nil, delegation: Bool = false,
+                                     _ body: (WorkspaceModel, String) async throws -> Void) async throws {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("prepared-context-lifecycle-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var profile = ProfileRecord(); profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "preview-only"
+        if catalog != nil { profile.catalogUrl = "http://127.0.0.1:1/catalog" }
         var configuration = VaultConfiguration()
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-preview-key")]
-        configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        let workspaceID = delegation ? "preview-project" : WorkspaceRecord.scratchID
+        if delegation { configuration.workspaces = [WorkspaceRecord(id: workspaceID, path: root.path, trusted: true)] }
+        configuration.resources[workspaceID] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))), modelCatalog: catalog)
         func close() async {
             model.cancelAutomaticContext()
             for host in model.hosts.values { try? await host.shutdownAndWait() }
@@ -160,7 +193,7 @@ final class PreparedContextLifecycleTests: XCTestCase {
         }
         do {
             try await model.reloadConfiguration()
-            let record = ChatRecord(id: "preview-chat", workspaceID: WorkspaceRecord.scratchID, title: "Preview", path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true)
+            let record = ChatRecord(id: "preview-chat", workspaceID: workspaceID, title: "Preview", path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: !delegation)
             try await model.store?.put(record, kind: "chat", id: record.id)
             let display = SessionDisplay(id: record.id); display.draft = "Inspect this unsent draft"; display.contextSelectionReady = true
             model.chats = [record]; model.displays[record.id] = display

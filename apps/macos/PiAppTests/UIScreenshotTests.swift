@@ -2067,7 +2067,9 @@ final class UIScreenshotTests: XCTestCase {
             coordinator.showWhole(.section(.system))
             coordinator.showWhole(.section(.tools))
             try await until("the whole system prompt and every tool's schema in place") {
-                [RequestDocument.Section.Kind.system, .tools].allSatisfy { coordinator.expansion(for: .section($0))?.textView?.window != nil }
+                // A long system prompt puts the loaded tools below the viewport.
+                [RequestDocument.Section.Kind.system, .tools].allSatisfy { coordinator.expansion(for: .section($0))?.phase == .shown }
+                    && coordinator.expansion(for: .section(.system))?.textView?.window != nil
             }
             try await settle(0.4)
             let system = try XCTUnwrap(coordinator.expansion(for: .section(.system))?.textView)
@@ -2085,6 +2087,11 @@ final class UIScreenshotTests: XCTestCase {
             let end = try XCTUnwrap(less, "The schema ends with Show less")
             clip.scroll(to: NSPoint(x: 0, y: max(0, outline.rect(ofRow: end).minY - clip.bounds.height * 0.55)))
             outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await until("the schema's end and Show less on screen") {
+                coordinator.expansion(for: .section(.tools))?.textView?.window != nil && outline.rect(ofRow: end).intersects(outline.visibleRect)
+            }
+            XCTAssertEqual(coordinator.expansion(for: .section(.tools))?.textView?.string,
+                           coordinator.expansion(for: .section(.tools))?.text, "Every tool's schema is in place")
             try await shoot("11j-inspector-expanded-end", hold: 0.8)
             coordinator.showLess(.section(.tools)); coordinator.showLess(.section(.system))
             clip.scroll(to: .zero); outline.enclosingScrollView?.reflectScrolledClipView(clip)

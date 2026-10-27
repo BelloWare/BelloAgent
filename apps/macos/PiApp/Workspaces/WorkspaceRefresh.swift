@@ -51,9 +51,10 @@ extension WorkspaceModel {
         sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
         // A side can pin its owner after the owner's display is evicted, as
-        // well as when it opened only for the budget. Both read authoritative
-        // numeric state without recreating a transcript on accounting events.
-        if displays[id] == nil, budgetDependencySessions.contains(id) || releasedHelperSessions.contains(id) {
+        // well as when it opened only for the budget. An unshown saved side
+        // also receives changes when its catalog grants are installed. Read
+        // numeric state without creating a transcript for any of these.
+        if displays[id] == nil, budgetDependencySessions.contains(id) || releasedHelperSessions.contains(id) || sideBudgetParent(item) != nil {
             refreshBudgetState(id); releaseUnusedBudgetSessions(); return
         }
         // Written only when new: every write runs `displays`' observers, which

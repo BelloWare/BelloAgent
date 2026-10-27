@@ -3,7 +3,7 @@ import Foundation
 extension WorkspaceModel {
     func preparedContext(_ id: String, automatic: Bool = false) async throws -> [String: WireValue] {
         if !automatic, let pending = automaticContextTask, pending.id == id,
-           let item = record(id), let view = displays[id], pending.signature == automaticContextSignature(item, view: view) {
+           let item = record(id), let view = displays[id], pending.matches(automaticContextSignature(item, view: view)) {
             // Opening the inspector while the selection preview is underway
             // joins that calculation rather than replacing its helper snapshot.
             await pending.task.value
@@ -19,6 +19,8 @@ extension WorkspaceModel {
             throw HostError.failure("Choose /\(command.name) from the skill suggestions first, then preview its structured selection and arguments.")
         }
         try await ensureConfiguration()
+        await loadSubagentModels(for: item)
+        try Task.checkCancellation()
         if automatic { try requireAutomaticContext(id) }
         if automatic, let cached = matchingPreparedContext(view), opened.contains(id), hosts[item.workspaceID]?.isReady == true {
             return cached.summary
@@ -120,7 +122,7 @@ extension WorkspaceModel {
         // already open for the chat counts at no such cost.
         if !opened.contains(id), servingContextReading(view, forScheduling: true) != nil { cancelAutomaticContext(id); return }
         let signature = automaticContextSignature(item, view: view)
-        if let pending = automaticContextTask, pending.id == id, pending.signature == signature { return }
+        if let pending = automaticContextTask, pending.id == id, pending.matches(signature) { return }
         // A keystroke restarts this chat's own estimate, which stays
         // "calculating" throughout: clearing the flag and setting it again
         // published the footer twice per key, redrawing the context pill,
@@ -137,7 +139,7 @@ extension WorkspaceModel {
             }
             do {
                 try requireAutomaticContext(id)
-                guard automaticContextTask?.token == token, automaticContextSignature(record(id) ?? item, view: view) == signature else { return }
+                guard automaticContextTask?.token == token, signature.matchesBeforeCatalogLoad(automaticContextSignature(record(id) ?? item, view: view)) else { return }
                 if !opened.contains(id) {
                     // Creating/resuming a runtime is allowed only when no
                     // interrupted work would be repaired or adopted on open.
@@ -146,15 +148,22 @@ extension WorkspaceModel {
                     if try await store?.get(WireValue.self, kind: "handoff", id: id) != nil { return }
                 }
                 try requireAutomaticContext(id)
-                guard automaticContextTask?.token == token, let current = record(id), automaticContextSignature(current, view: view) == signature else { return }
+                guard automaticContextTask?.token == token, let candidate = record(id), signature.matchesBeforeCatalogLoad(automaticContextSignature(candidate, view: view)) else { return }
+                await loadSubagentModels(for: candidate)
+                try requireAutomaticContext(id)
+                guard automaticContextTask?.token == token, displays[id] === view, let current = record(id),
+                      signature.matchesBeforeCatalogLoad(automaticContextSignature(current, view: view)) else { return }
+                let preparedSignature = automaticContextSignature(current, view: view)
+                automaticContextTask?.signature = preparedSignature
+                automaticContextTask?.waitingForCatalog = false
                 if let operation {
-                    let result = try await operation(current, signature.params)
+                    let result = try await operation(current, preparedSignature.params)
                     try requireAutomaticContext(id)
                     guard automaticContextTask?.token == token, displays[id] === view,
-                          let latest = record(id), automaticContextSignature(latest, view: view) == signature,
+                          let latest = record(id), automaticContextSignature(latest, view: view) == preparedSignature,
                           previewMatchesInput(result,view:view) else { return }
-                    view.footer.preparedContext = PreparedContextMetrics(summary: result, binding: signature.binding,
-                        params: signature.params, configurationRevision: signature.configurationRevision, directCommand: signature.directCommand)
+                    view.footer.preparedContext = PreparedContextMetrics(summary: result, binding: preparedSignature.binding,
+                        params: preparedSignature.params, configurationRevision: preparedSignature.configurationRevision, directCommand: preparedSignature.directCommand)
                     view.footer.preparingContext = false
                     retainContextReading(view)
                 } else {
@@ -282,6 +291,15 @@ struct AutomaticContextSignature: Equatable {
     let configurationRevision: Int64
     let directCommand: Bool
     var inputIdentity: ContextInputIdentity? = nil
+
+    /// A catalog can finish during the debounce or its first load. Only its
+    /// derived fields may move before the actual request signature is taken.
+    func matchesBeforeCatalogLoad(_ other: Self) -> Bool {
+        var left = params, right = other.params
+        for key in ["subagentModels", "input"] { left.removeValue(forKey: key); right.removeValue(forKey: key) }
+        return binding == other.binding && configurationRevision == other.configurationRevision && directCommand == other.directCommand
+            && inputIdentity == other.inputIdentity && left == right
+    }
 }
 struct AutomaticContextActivation: Equatable {
     let eligible: Bool
@@ -291,9 +309,14 @@ struct AutomaticContextActivation: Equatable {
 }
 struct AutomaticContextTask {
     let id: String
-    let signature: AutomaticContextSignature
+    var signature: AutomaticContextSignature
     let token: UUID
     let task: Task<Void, Never>
+    var waitingForCatalog = true
+
+    func matches(_ current: AutomaticContextSignature) -> Bool {
+        waitingForCatalog ? signature.matchesBeforeCatalogLoad(current) : signature == current
+    }
 }
 
 /// Journal allocation, title edits and sidebar organization do not change a
