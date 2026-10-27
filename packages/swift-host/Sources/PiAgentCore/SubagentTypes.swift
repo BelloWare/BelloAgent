@@ -7,9 +7,10 @@ public enum SubagentPolicy {
     public static let enabled = true
     /// Background runs, steering and follow-ups ship together in 0.1.126.
     public static let steeringEnabled = true
+    public static let codexEnabled = true
     public static let maximumActiveChildren = 16
     public static let maximumDepth = 1
-    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] : []) : [] }
+    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] + (codexEnabled ? ["subagents-codex-v4"] : []) : []) : [] }
 }
 
 /// A provider may reuse a call ID in another response or another session.

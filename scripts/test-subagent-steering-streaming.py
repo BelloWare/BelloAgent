@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Whole-family v3 acceptance, generated helpers and loopback only.
+"""Whole-family v4 acceptance, generated helpers and loopback only.
 
-The speakers fixture advances only the generated helper's acceptance clock to
-exercise pending caps without a minute of waiting. The separate rate case uses
-real time. No production switch, installed app or user directory is touched.
+The speakers and rate cases assert that the retired communication caps stay
+removed. No production switch, installed app or user directory is touched.
 """
 import http.server
 import importlib.util
@@ -36,15 +35,7 @@ def records(path):
     return [json.loads(line) for line in data[:data.rfind(b'\n')+1].splitlines()]
 
 
-def agent_events(body):
-    events = []
-    for item in body['input']:
-        for block in item.get('content',[]) if isinstance(item.get('content'),list) else []:
-            try:
-                value = json.loads(block.get('text',''))
-                if isinstance(value,dict) and value.get('kind') == 'agent_events': events.extend(value['events'])
-            except (ValueError,TypeError): pass
-    return events
+from subagent_codex_fixture import agent_events
 
 
 def call(name,identity,arguments):
@@ -103,7 +94,7 @@ def run(binary,recovery,mode):
                         if resumed.is_set(): output = [answer('Resumed parent collected retained events')]
                         elif number == 1:
                             tasks = ['ASK-QUESTION REMEMBER-CONTEXT-29','WORK-IN-PARALLEL'] if mode == 'flow' else [f'SPEAKER-{i:02d}' for i in range(count)]
-                            output = [call('subagent_start',f'start-{i}',dict(task=task,mode='background')) for i,task in enumerate(tasks)]
+                            output = [call('spawn_agent',f'start-{i}',dict(task_name=f'agent_{i}',message=task)) for i,task in enumerate(tasks)]
                             if mode in ('speakers','rate','stop','shutdown','update','budget'):
                                 output.append(call('bash','hold',dict(command='touch parent-tool-running; '+hold)))
                             elif mode == 'flow': output.append(call('bash','independent',dict(command='printf independent > independent')))
@@ -112,24 +103,25 @@ def run(binary,recovery,mode):
                             latest = [e for e in events if e['kind'] == 'result']
                             prior = len([v for v in outputs if v and v.startswith('replacement-')])
                             # Past the old 32-continuation cap; then the loop ends itself.
-                            if len(latest) > prior and prior < 40: output = [call('subagent_start',f'replacement-{number}',dict(task='Replacement child',mode='background'))]
+                            if len(latest) > prior and prior < 40: output = [call('spawn_agent',f'replacement-{number}',dict(task_name=f'replacement_{number}',message='Replacement child'))]
                             else: output = [answer('Wait for the child')]
                         elif mode == 'flow':
                             question = next((e for e in events if e['kind'] == 'question'),None)
-                            final = next((e for e in events if e['kind'] == 'result' and roles.get(e['child_id']) == 'ask' and e['turn'] == 1),None)
+                            final = next((e for e in events if e['kind'] == 'result' and e['sender'] == '/root/agent_0' and e['turn'] == 1),None)
                             if question and 'answer' not in outputs:
-                                output = [call('subagent_send','answer',dict(child_id=question['child_id'],message='Answer is ORCHID-73',reply_to=question['event_id']))]
+                                output = [call('send_message','answer',dict(target=question['sender'],message='Answer is ORCHID-73'))]
                                 answered.set()
                             elif final and 'follow' not in outputs:
-                                output = [call('subagent_send','follow',dict(child_id=final['child_id'],message='Follow up using the original sentinel and answer',expected_turn=1))]
+                                output = [call('followup_task','follow',dict(target=final['sender'],message='Follow up using the original sentinel and answer'))]
                             else: output = [answer('Parent synthesis')]
                         else: output = [answer('Parent collected the next bounded batch')]
                     else:
-                        assert not any(t.get('name') in ('subagent','subagent_start','subagent_send') for t in body['tools']), 'Depth-one contract widened'
+                        assert {'spawn_agent','send_message','followup_task','wait_agent','interrupt_agent','list_agents'}.issubset({t.get('name') for t in body['tools']}), 'V4 child contract missing'
+                        assert body['prompt_cache_key'] == 'parent', 'Child did not share parent cache identity'
                         if number == 1 and mode != 'loop': assert transport_ready.wait(20), 'Children did not overlap'
                         if mode == 'flow':
                             if roles[session] == 'ask':
-                                if number == 1: output = [call('subagent_report','question',dict(kind='question',message='Which answer should I use?'))]
+                                if number == 1: output = [call('send_message','question',dict(target='/root',message='Which answer should I use?'))]
                                 elif number == 2:
                                     assert answered.wait(20)
                                     output = [call('bash','boundary',dict(command='sleep 0.05'))]
@@ -147,13 +139,13 @@ def run(binary,recovery,mode):
                             late = mode == 'speakers' and roles[session] >= 8
                             report_number = number-1 if late else number
                             if late and number == 1: output = [call('bash','early-hold',dict(command='while [ ! -f early-done ]; do sleep 0.02; done'))]
-                            elif report_number <= maximum: output = [call('subagent_report',f'report-{report_number}',dict(kind='note',message=f"Speaker {roles[session]} note {report_number}: "+'x'*180))]
+                            elif report_number <= maximum: output = [call('send_message',f'report-{report_number}',dict(target='/root',message=f"Speaker {roles[session]} note {report_number}: "+'x'*180))]
                             elif mode == 'speakers' and report_number == maximum+1:
                                 output = [call('bash','speaker-hold',dict(command='while [ ! -f release-child ]; do sleep 0.02; done'))]
                             else:
                                 output = [answer(f"Speaker {roles[session]} final, retaining important findings even if rate-limited")]
                         elif mode in ('stop','shutdown','update'):
-                            if number == 1: output = [call('subagent_report','question',dict(kind='question',message='Retain this pending discovery'))]
+                            if number == 1: output = [call('send_message','question',dict(target='/root',message='Retain this pending discovery'))]
                             else:
                                 assert release_children.wait(20)
                                 output = [answer('Child done')]
@@ -204,8 +196,11 @@ def run(binary,recovery,mode):
             peer.close(); peers.remove(peer)
         def family_rows(): return records(parent_path)
         def accepted_reports(): return [r['data'] for r in family_rows() if r.get('customType') == 'pi-app.agent-operation.v1' and r['data'].get('message',{}).get('author') == 'subagent']
-        def deliveries(): return [r for r in family_rows() if r.get('message',{}).get('nativeAgentDelivery',{}).get('author') == 'subagent']
-        def decoded(row): return json.loads(row['message']['content'][0]['text'])
+        def deliveries(): return [r for r in family_rows() if r.get('message',{}).get('nativeAgentDelivery',{}).get('version') == 2]
+        def decoded(row):
+            if 'nativeAgentDelivery' in row['message']: return row['message']['nativeAgentDelivery']
+            try: return json.loads(row['message']['content'][0]['text'])
+            except ValueError: return dict(accepted=not row['message'].get('isError',False))
         began = time.monotonic(); admission_ms = rss_mib = 0; settlement_ms = None
         try:
             peer = opened()
@@ -229,7 +224,7 @@ def run(binary,recovery,mode):
                 assert len([r for r in family_rows() if r.get('customType') == 'pi-app.subagent-turn-terminal.v1']) == 4
                 for path in sessions.glob('*.jsonl'):
                     if path == parent_path: continue
-                    receipts = [r for r in records(path) if r.get('message',{}).get('toolName') == 'subagent_report']
+                    receipts = [r for r in records(path) if r.get('message',{}).get('toolName') == 'send_message']
                     assert len(receipts) == 1 and decoded(receipts[0])['accepted'], 'Stop contradicted accepted report'
                 before = len(requests); cold = opened(parent_path,recovery)
                 assert len(requests) == before, 'Cold open launched work'
@@ -243,23 +238,23 @@ def run(binary,recovery,mode):
             elif mode == 'speakers':
                 wait(lambda:sum(n >= (7 if roles[s] >= 8 else 6) for s,n in counts.items() if s != 'parent') == 16)
                 assert command(peer,'subagent.list')['active'] == 16
-                assert len(accepted_reports()) == 64
-                rejected = [decoded(r) for path in sessions.glob('*.jsonl') if path != parent_path for r in records(path) if r.get('message',{}).get('toolName') == 'subagent_report' and not decoded(r).get('accepted')]
-                assert len(rejected) == 16 and all(r['error']['code'] == 'subagent_mailbox_full' for r in rejected)
+                assert len(accepted_reports()) == 80
+                rejected = [decoded(r) for path in sessions.glob('*.jsonl') if path != parent_path for r in records(path) if r.get('message',{}).get('toolName') == 'send_message' and not decoded(r).get('accepted')]
+                assert not rejected, rejected
                 assert not deliveries()
                 (root/'release-parent').touch()
-                wait(lambda:sum(len(decoded(r)['events']) for r in deliveries()) >= 64)
+                wait(lambda:sum(len(decoded(r)['events']) for r in deliveries()) >= 80)
                 batches = [decoded(r)['events'] for r in deliveries()]
-                assert all(len(batch) <= 8 and sum(len(e['text'].encode()) for e in batch) <= 16384 for batch in batches)
-                assert len({e['child_id'] for batch in batches[:2] for e in batch}) == 16, 'Rotation starved later speakers across boundaries'
+                assert any(len(batch) > 8 for batch in batches), 'The retired delivery event cap returned'
+                assert len({e['sender'] for batch in batches for e in batch[:16]}) == 16, 'Rotation starved later speakers across boundaries'
                 release_children.set(); (root/'release-child').touch()
                 wait(lambda:command(peer,'session.status')['state'] == 'idle')
             elif mode == 'rate':
                 wait(lambda:len([r for r in family_rows() if r.get('customType') == 'pi-app.subagent-turn-terminal.v1']) == 16)
                 accepted = accepted_reports(); times = [op['acceptedAt'] for op in accepted]
-                assert len(accepted) <= 16+(max(times)-min(times)), 'Family real-time rate cap was bypassed'
-                errors_seen = [decoded(r).get('error',{}).get('code') for p in sessions.glob('*.jsonl') if p != parent_path for r in records(p) if r.get('message',{}).get('toolName') == 'subagent_report']
-                assert 'subagent_rate_limited' in errors_seen
+                assert len(accepted) == 48, 'The retired report rate cap returned'
+                errors_seen = [decoded(r).get('error',{}).get('code') for p in sessions.glob('*.jsonl') if p != parent_path for r in records(p) if r.get('message',{}).get('toolName') == 'send_message']
+                assert not any(errors_seen), errors_seen
                 (root/'release-parent').touch(); wait(lambda:command(peer,'session.status')['state'] == 'idle')
             elif mode == 'budget':
                 wait(lambda:command(peer,'session.status')['state'] in ('paused','error'))
@@ -272,7 +267,7 @@ def run(binary,recovery,mode):
             elif mode == 'loop':
                 # No family communication cap (owner, 2026-10-26): the loop runs
                 # past the old 32 continuations and ends when the parent stops.
-                wait(lambda:command(peer,'session.status')['state'] in ('idle','paused','error'))
+                wait(lambda:command(peer,'session.status')['state'] in ('idle','paused','error'),timeout=120)
                 snapshot = command(peer,'session.snapshot'); assert snapshot.get('errorCode') != 'coordination_limit',snapshot
                 operations = [r['data'] for r in family_rows() if r.get('customType') == 'pi-app.agent-operation.v1']
                 turns = [op['turn'] for op in operations if op.get('turn')]
@@ -285,11 +280,23 @@ def run(binary,recovery,mode):
                 asker = next(c for c in family['children'] if roles[c['link']['childSessionID']] == 'ask')
                 assert asker['turn'] == 2 and asker['status'] == 'completed',asker
                 sends = [r['data']['receipt']['route'] for r in family_rows() if r.get('customType') == 'pi-app.agent-operation.v1' and r['data']['key']['toolCallID'] in ('answer','follow')]
-                assert sends == ['steer','follow_up'],sends
+                assert sends == ['message','follow_up'],sends
                 parents = [r for r in requests if r['session'] == 'parent']
                 for earlier,later in zip(parents,parents[1:]):
                     assert later['body']['input'][:len(earlier['body']['input'])] == earlier['body']['input'], 'Boundary delivery rewrote the cached prefix'
             family = command(peer,'subagent.list'); assert family['active'] == 0
+            assert all(c['taskName'].startswith('/root/') and c['forkTurns'] == 'all' for c in family['children']), family
+            if mode == 'flow':
+                details = command(peer,'subagent.list',dict(detail='messages',childId=asker['link']['childSessionID']))
+                assert {'NEW_TASK','MESSAGE','FINAL_ANSWER'}.issubset({m['type'] for m in details['messages']}), details
+                turns = command(peer,'subagent.list',dict(detail='turns',childId=asker['link']['childSessionID']))['turns']
+                assert [t['turn'] for t in turns] == [1,2] and all(t['taskName'] == '/root/agent_0' for t in turns), turns
+                child = asker['link']['childSessionID']
+                command(peer,'session.open',dict(profile=profile,apiKey='synthetic-loopback-key',path=str(sessions/(child+'.jsonl'))),child)
+                history = command(peer,'session.history',dict(version=2),child)['messages']
+                inherited = [row for row in history if 'nativeInherited' in row]
+                assert inherited and all(row['nativeInherited']['from'] == 'parent' and not row.get('userInput') for row in inherited), history
+                assert any(row.get('nativeAgentDelivery',{}).get('events',[{}])[0].get('type') == 'NEW_TASK' for row in history)
             state = command(peer,'session.snapshot')
             began_close = time.monotonic(); shutdown(peer)
             if settlement_ms is None: settlement_ms = (time.monotonic()-began_close)*1000
@@ -308,7 +315,7 @@ def run(binary,recovery,mode):
             delivery_times = []
             if mode == 'flow':
                 for op in accepted_reports():
-                    first = next(r['at'] for r in requests if r['session'] == 'parent' and any(e['event_id'] == op['message']['id'] for e in agent_events(r['body'])))
+                    first = next(r['at'] for r in requests if r['session'] == 'parent' and any(e['text'] == op['message']['text'] and e['sender'] == op['message']['sender'] for e in agent_events(r['body'])))
                     delivery_times.append(round((first-op['acceptedAt'])*1000,2))
             report = dict(mode=mode,child_conversations=len(roles),simultaneous_child_turns=16 if mode == 'speakers' else peak,peak_child_http=peak,requests=len(requests),accepted_reports=len(accepted_reports()),parent_delivery_batches=len(deliveries()),parent_events=len(ids),elapsed_ms=round((time.monotonic()-began)*1000,2),admission_ms=round(admission_ms,2),shutdown_ms=round(settlement_ms,2),sampled_rss_mib=round(rss_mib,2),reported_cost=state['cost']['spentUSD'],report_to_parent_request_ms=delivery_times,captured_attempts=len(begins))
             print(json.dumps(report),flush=True)
@@ -322,8 +329,6 @@ def run(binary,recovery,mode):
 def main(recovery,fixture=False,modes=None):
     modes = modes or MODES
     assert set(modes).issubset(MODES),modes
-    # Only the pending-mailbox stress needs the generated acceptance clock.
-    # Normal enabled-build validation exercises the supplied bundled helper.
-    generated = load_crashes().fixture_binary() if fixture or 'speakers' in modes else None
-    reports = [run(generated if fixture or mode == 'speakers' else recovery,recovery,mode) for mode in modes]
+    generated = load_crashes().fixture_binary() if fixture else None
+    reports = [run(generated if fixture else recovery,recovery,mode) for mode in modes]
     (BUILD/'logs/subagent-steering-streaming.json').write_text(json.dumps(reports,indent=2)+'\n')

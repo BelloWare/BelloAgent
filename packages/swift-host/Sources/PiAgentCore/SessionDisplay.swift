@@ -226,7 +226,7 @@ extension AgentSession {
         if let family = subagents.family {
             if let turn = family.latest(id) { value["subagentTurn"] = JSON(turn.turn); value["subagentDeliveryState"] = JSON(family.messages["result:" + turn.id]?.disposition ?? "pending") }
             value["familyWaiting"] = JSON(familyWaiting)
-            value["agentInboxPending"] = JSON(family.messages.values.filter { $0.disposition == "pending" && $0.author == (isSubagent ? "parent" : "subagent") }.count)
+            value["agentInboxPending"] = JSON(family.messages.values.filter { $0.disposition == "pending" && ($0.type != nil ? ($0.recipientChildID ?? family.ownerID) == id : $0.author == (isSubagent ? "parent" : "subagent")) }.count)
         }
         if !subagents.plans.isEmpty {
             // The change count also covers what the family's journal does not

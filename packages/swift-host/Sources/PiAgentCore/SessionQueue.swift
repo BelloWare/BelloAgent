@@ -200,15 +200,20 @@ extension AgentSession {
         message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
         if let lease = agentLease {
             message.userInput = nil
-            message.nativeAgentDelivery = ["version":1,"author":"parent","childId":JSON(id),"turn":JSON(lease.turn),"eventIds":[JSON(lease.inputID)],"task":JSON(subagents.origin?.description ?? "")]
+            if let event = lease.inputEvent {
+                message.content = [textBlock(event.envelope)]; message.displayText = nil
+                message.nativeAgentDelivery = AgentDeliveryEvent.metadata([event]); message.kind = "agent_message"
+                try await agentCoordinator?.prepareTaskDelivery(lease,child:self)
+            } else { message.nativeAgentDelivery = ["version":1,"author":"parent","childId":JSON(id),"turn":JSON(lease.turn),"eventIds":[JSON(lease.inputID)],"task":JSON(subagents.origin?.description ?? "")] }
         }
         message.taskRootID=newTask ? submission.turnID : taskRootID
         message.taskExecutionID=activeTaskPresentation?.executionID
-        message.inputLane=lane
+        message.inputLane=agentLease?.inputEvent != nil ? "agent" : lane
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
         try append(message,record:overrides)
-        if newTask { try startAgentEpoch() }
+        if let lease = agentLease, lease.inputEvent != nil { try journal?.synchronize(); try await agentCoordinator?.commitTaskDelivery(lease,child:self) }
+        if newTask { try startAgentEpoch(startingFresh:true) }
         // The conversation holds it now; the saved state no longer needs to.
         if delivering?.submission.turnID == submission.turnID { delivering=nil }
         taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")

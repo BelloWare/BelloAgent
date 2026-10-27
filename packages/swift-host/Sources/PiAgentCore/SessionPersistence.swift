@@ -261,7 +261,8 @@ extension AgentSession {
             // Keep the source's reader requirement, but write exactly one
             // marker belonging to this independent chat. V3 history must not
             // become writable by a helper that predates agent deliveries.
-            if journal.markerKind == JournalRecordKind.steeringMarker { try prepared.promoteToSteering(managedChild:false) }
+            if journal.markerKind == JournalRecordKind.codexMarker { try prepared.promoteToCodex(managedChild:false) }
+            else if journal.markerKind == JournalRecordKind.steeringMarker { try prepared.promoteToSteering(managedChild:false) }
             // Each record the fork's journal gets, from its marker on, is
             // replayed as it is written, as the fork's first open would.
             var consumer=JournalReplayConsumer(id:newID,header:prepared.headerCheck,marker:prepared.markerCheck,spendTracked:false)

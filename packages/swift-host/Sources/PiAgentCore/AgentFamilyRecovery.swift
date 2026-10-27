@@ -33,11 +33,22 @@ enum AgentFamilyRecovery {
             guard within(canonical(url.path),canonical(directory.path)) else { throw SubagentRecovery.damaged() }
             var childState = SubagentJournalState(), childAccounting = AttemptAccounting(), childSpend = SessionSpend()
             var childRows: [String:ChatMessage] = [:], child: SessionJournal?, bytes: UInt64 = 0, markerOnly = true
-            let exists = FileManager.default.fileExists(atPath:url.path)
+            var seedReference: JSON?
+            var exists = FileManager.default.fileExists(atPath:url.path)
             let completed = state.family!.turns.values.contains { $0.childID == childID && ($0.status == .completed || $0.status == .outputLimited) }
             let dispatched = accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == childID && $0.admission?["state"].text == "dispatched" }
             guard exists || !completed && !dispatched else {
                 throw AgentError("subagent_recovery", "A child journal is missing after possible execution. Restore it before continuing; no accepted work was restarted.")
+            }
+            if !exists, plan.origin.taskName != nil {
+                // A v4 publication cut off before file creation can publish
+                // its accepted history on reopen. It still never executes.
+                guard var binding = parent.binding else { throw SubagentRecovery.damaged() }
+                binding["model"] = JSON(plan.origin.model.model)
+                child = try SessionJournal(url:url,id:childID,cwd:directory,binding:binding,create:true,managedChild:true)
+                try child!.promoteToCodex(managedChild:true)
+                try child!.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(plan.origin)])
+                exists = true
             }
             if exists {
                 try SessionJournal.verifyManagedChild(url:url,id:childID)
@@ -47,21 +58,45 @@ enum AgentFamilyRecovery {
                     try childState.consume(row,sessionID:childID)
                     if let kind = row["customType"].text { try childAccounting.consume(kind:kind,data:row["data"],spend:&childSpend) }
                     if row["type"].text == "message", let id = row["id"].text { childRows[id] = try ChatMessage(id:id,pi:row["message"]) }
+                    if row["customType"].text == JournalRecordKind.agentForkSeed { seedReference = row["data"] }
                 }
                 bytes = reader.size
                 guard childState.origin?.matchesAccepted(plan.origin) == true || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
             }
-            func childWrite<T: Encodable>(_ kind: String, _ data: T) throws {
+            let seedComplete = plan.forkSeed.map { seed in
+                seedReference == seed.reference && seed.messages.allSatisfy { original in
+                    guard let saved = childRows[original.id] else { return false }
+                    return saved.content == original.content && saved.userInput == nil && saved.nativeInherited == original.nativeInherited
+                }
+            } ?? true
+            guard seedComplete || !completed && !dispatched else { throw SubagentRecovery.damaged() }
+            func childAppend(_ row: JSON, id: String? = nil) throws {
                 guard exists else { return }
                 if child == nil {
                     child = try SessionJournal(url:url,id:childID,cwd:directory,binding:nil,create:false)
                     guard child?.size == bytes else { throw SubagentRecovery.damaged() }
-                    try child!.promoteToSteering(managedChild:true)
+                    if plan.origin.taskName != nil { try child!.promoteToCodex(managedChild:true) }
+                    else { try child!.promoteToSteering(managedChild:true) }
                 }
-                let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner),"data":try subagentJSON(data)]
-                try childState.consume(row,sessionID:childID); try child!.append(row,flush:true)
+                try childState.consume(row,sessionID:childID); try child!.append(row,id:id ?? UUID().uuidString,flush:true)
+            }
+            func childWrite<T: Encodable>(_ kind: String, _ data: T) throws {
+                try childAppend(["type":"custom","customType":JSON(kind),"ownerID":JSON(owner),"data":try subagentJSON(data)])
             }
             if exists, childState.origin == nil { try childWrite(JournalRecordKind.subagentOrigin,plan.origin) }
+            // Finish a partial publication, never its accepted execution. The
+            // original turn below still seals not-executed (also during a cost
+            // pause); later explicit follow-ups can use the complete history.
+            if exists, !seedComplete, let seed = plan.forkSeed {
+                guard seedReference == nil || seedReference == seed.reference else { throw SubagentRecovery.damaged() }
+                for message in seed.messages {
+                    if let saved = childRows[message.id] {
+                        guard saved.content == message.content, saved.userInput == nil, saved.nativeInherited == message.nativeInherited else { throw SubagentRecovery.damaged() }
+                    } else { try childAppend(["type":"message","message":message.pi],id:message.id) }
+                }
+                try childWrite(JournalRecordKind.context,["ids":JSON.array(seed.messages.map { JSON($0.id) })])
+                try childWrite(JournalRecordKind.agentForkSeed,seed.reference)
+            }
             // Validate every mirror against its immutable owning attempt/turn.
             for (id, entry) in childAccounting.attempts {
                 guard let cost = entry.contribution else { continue }
@@ -101,7 +136,7 @@ enum AgentFamilyRecovery {
             }
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
-                if costPaused, !(state.family!.run?.heldChildren.contains(childID) ?? false),
+                if costPaused, seedComplete, !(state.family!.run?.heldChildren.contains(childID) ?? false),
                    !original.status.terminal, !(childState.family?.turns[original.id]?.status.terminal ?? false) {
                     // Paused at the family's cost limit: the turn is held for
                     // Resume, not interrupted. A run cut off mid-pause keeps
@@ -137,6 +172,7 @@ enum AgentFamilyRecovery {
                 } else if !original.status.terminal {
                     let dispatched = accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == childID && $0.admission?["scope"]["childTurn"].int == original.turn && $0.admission?["state"].text == "dispatched" }
                     terminal.status = dispatched || original.status == .running || original.status == .stopping ? .interrupted : .notExecuted
+                    if terminal.taskName != nil, state.family!.run?.stoppedByUser == true || state.family!.run?.heldChildren.contains(childID) == true { terminal.interruptedBy = "the user" }
                     terminal.result = SubagentToolResult(plan:plan,status:terminal.status,error:AgentError("subagent_interrupted", "The helper stopped before a sealed result. Accepted work was not replayed; inspect effects before following up."),accountingRevision:accounting.revision,began:dispatched)
                     terminal.normalizeResult()
                     try childWrite(JournalRecordKind.agentTerminal,terminal)
@@ -154,13 +190,14 @@ enum AgentFamilyRecovery {
                 }
             }
             // Steering for a held turn stays pending; it is delivered after Resume.
-            for var message in state.family!.messages.values.sorted(by: { $0.sequence < $1.sequence }) where message.author == "parent" && message.childID == childID &&
+            for var message in state.family!.messages.values.sorted(by: { $0.sequence < $1.sequence }) where (message.recipientChildID ?? (message.author == "parent" ? message.childID : "")) == childID && message.queueOnly != true &&
                 (message.disposition == "pending" || message.disposition == "not_delivered_interrupted") {
                 if message.disposition == "pending" {
                     if costPaused, state.family!.turns[AgentTurnTarget(childID:childID,turn:message.turn).id]?.status.terminal == false { continue }
                     message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
                 }
-                let notice = AgentFamilyMessage(id:"undelivered:" + message.id,sequence:state.family!.sequence + 1,childID:childID,turn:message.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(message.id) is retained but was not delivered before interruption.",task:message.task,epoch:message.epoch,replyTo:message.id)
+                if message.type != nil, state.family!.turns[AgentTurnTarget(childID:childID,turn:message.turn).id]?.inputID == message.id { continue }
+                let notice = AgentFamilyMessage.undelivered(message,sequence:state.family!.sequence + 1,legacyText:"Parent message \(message.id) is retained but was not delivered before interruption.")
                 if state.family!.messages[notice.id] == nil { try write(JournalRecordKind.agentMessage,notice) }
             }
             // Migration copies contain private bodies too; remove only this
@@ -187,7 +224,8 @@ enum AgentFamilyRecovery {
         var state = SubagentJournalState()
         while let row = try reader.next() { try state.consume(row,sessionID:id) }
         guard state.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
-        try journal.promoteToSteering(managedChild:true)
+        if turn.taskName != nil { try journal.promoteToCodex(managedChild:true) }
+        else { try journal.promoteToSteering(managedChild:true) }
         func write(_ kind: String, _ value: AgentChildTurn) throws {
             let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(plan.origin.link.budgetOwnerSessionID),"data":try subagentJSON(value)]
             try state.consume(row,sessionID:id); try journal.append(row,flush:true)
@@ -198,7 +236,7 @@ enum AgentFamilyRecovery {
         }
         if state.family?.turns[turn.id] != turn { try write(JournalRecordKind.agentTerminal,turn) }
     }
-    static func deliveryDigest(_ delivery: AgentDelivery) -> String { sha256(Data(JSON.array([textBlock(delivery.payload.encoded())]).encoded().utf8)) }
+    static func deliveryDigest(_ delivery: AgentDelivery) -> String { sha256(Data(JSON.array([textBlock(delivery.text)]).encoded().utf8)) }
 }
 
 extension AgentChildTurn {
@@ -216,7 +254,7 @@ extension AgentChildTurn {
     }
     mutating func normalizeResult() {
         guard result != nil else { return }
-        result?.envelope["version"] = 3; result?.envelope["child_id"] = JSON(childID); result?.envelope["turn"] = JSON(turn)
+        result?.envelope["version"] = JSON(taskName == nil ? 3 : 4); result?.envelope["child_id"] = JSON(childID); result?.envelope["turn"] = JSON(turn)
         result?.metadata["version"] = 2; result?.metadata["turn"] = JSON(turn); result?.metadata["executionID"] = JSON(executionID)
         result?.metadata["parentAssistantMessageId"] = JSON(call.assistantMessageID); result?.metadata["toolCallId"] = JSON(call.toolCallID)
         if let effort { result?.envelope["effort"] = JSON(effort); result?.metadata["effort"] = JSON(effort) }
@@ -224,7 +262,34 @@ extension AgentChildTurn {
     }
 }
 extension AgentFamilyMessage {
+    static func undelivered(_ message: Self, sequence: Int, legacyText: String) -> Self {
+        var notice = Self(id:"undelivered:" + message.id,sequence:sequence,childID:message.childID,turn:message.turn,author:"subagent",kind:"not_delivered_interrupted",text:legacyText,task:message.task,epoch:message.epoch,replyTo:message.id)
+        if message.type != nil {
+            notice.type = "MESSAGE"; notice.sender = message.recipient; notice.recipient = "/root"; notice.senderChildID = message.recipientChildID
+            notice.text = "A task for " + (message.recipient ?? "this agent") + " was retained but not delivered before the turn ended."
+        }
+        return notice
+    }
     static func resultEvent(_ turn: AgentChildTurn, task: String, sequence: Int) -> Self {
+        if let name = turn.taskName {
+            let full = turn.result?.envelope["text"].text ?? "", reason = turn.result?.envelope["error"]["message"].text ?? "The turn ended before a complete answer."
+            let text: String
+            switch turn.status {
+            case .completed: text = full
+            case .outputLimited: text = full + "\n\n(The answer stopped at the model's output limit.)"
+            case .notExecuted: text = turn.interruptedBy == "the user" ? "Agent stopped by the user." : "Agent did not start: " + reason
+            case .failed: text = "Agent errored: " + reason + "\n\nThis agent's turn failed. If you still need this agent, use followup_task to give it another task."
+            default:
+                if turn.interruptedBy == "the user" { text = "Agent stopped by the user." }
+                else if let who = turn.interruptedBy { text = "Agent interrupted by " + who + "." }
+                else { text = "Agent errored: " + reason + "\n\nThis agent's turn failed. If you still need this agent, use followup_task to give it another task." }
+            }
+            var event = Self(id:"result:" + turn.id,sequence:sequence,childID:turn.childID,turn:turn.turn,author:"subagent",kind:"result",text:text,task:task,epoch:turn.epoch)
+            event.type = "FINAL_ANSWER"; event.sender = name; event.recipient = "/root"; event.senderChildID = turn.childID
+            event.result = turn.result?.envelope.removing(["text"])
+            if turn.interruptedBy == "/root", [.interrupted,.cancelled,.notExecuted].contains(turn.status) { event.disposition = "suppressed" }
+            return event
+        }
         let full = turn.result?.envelope["text"].text ?? "", text = SubagentToolResult.bounded(full,bytes:8192)
         var event = Self(id:"result:" + turn.id,sequence:sequence,childID:turn.childID,turn:turn.turn,author:"subagent",kind:"result",text:text,task:task,epoch:turn.epoch)
         event.result = turn.result?.envelope.removing(["text"]); event.result?["text_truncated"] = JSON(text.utf8.count < full.utf8.count)

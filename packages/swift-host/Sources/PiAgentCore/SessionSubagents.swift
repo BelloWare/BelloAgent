@@ -12,6 +12,7 @@ struct SubagentEnvironment: Sendable {
     let mcpPolicy: JSON?
     let tools: any ToolExecuting, client: any ModelClient
     var resources: ResourceSnapshot
+    var codexContext: AgentCodexContext? = nil
     let cwd: URL, directory: URL
     let readOnly: Bool, traces: TraceStore
     let retry: PiProviderRules.RetrySettings
@@ -21,11 +22,11 @@ struct SubagentEnvironment: Sendable {
 extension AgentSession {
     func subagentListingSnapshot() -> (SubagentJournalState, Int) { (subagents, sequence) }
 
-    func enableSubagents(_ coordinator: SubagentCoordinator, steering: Bool = SubagentPolicy.steeringEnabled) async {
+    func enableSubagents(_ coordinator: SubagentCoordinator, steering: Bool = SubagentPolicy.steeringEnabled, codex: Bool = SubagentPolicy.codexEnabled) async {
         subagentCoordinator = coordinator
         let ownerID = id, runtimeID = displayEpoch
         familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, runtimeID: runtimeID, through: generation) } }
-        if steering, !isSubagent { await enableAgentSteering(await coordinator.steering) }
+        if steering, !isSubagent { await enableAgentSteering(await coordinator.steering,codex:codex) }
     }
     func installManagedCancellation(_ coordinator: SubagentCoordinator, key: SubagentCallKey) {
         managedCancellation = { Task { await coordinator.cancel(key) } }
@@ -84,7 +85,11 @@ extension AgentSession {
         accounting = nextAccounting; spend = total; familyBudgetEnabled = true
         return plan
     }
-    func subagentChanged(_ summary: SubagentSummary, discovery: Bool = true) {
+    func subagentChanged(_ proposed: SubagentSummary, discovery: Bool = true) {
+        var summary = proposed
+        let origin = subagents.plans[summary.link.delegationID]?.origin
+        summary.taskName = subagents.family?.names?[summary.link.childSessionID] ?? origin?.taskName
+        summary.forkTurns = origin?.forkTurns ?? (summary.taskName != nil ? "none" : nil)
         if discovery { subagentChangeRevision += 1 }
         if toolStateOwners[summary.link.call.toolCallID] == summary.link.call.assistantMessageID,
            var card = toolStates[summary.link.call.toolCallID] {

@@ -12,13 +12,13 @@ final class SubagentForkTests: HelperTestCase {
     private func family(_ root: URL) async throws -> AgentSession {
         let parent = try session(root,sourceID,client:AccountedAgentScript([answer("First child result"),answer("Second child result")]))
         let coordinator = AgentSteeringCoordinator()
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         try await parent.forkFixtureReply("before")
         for point in ["between", "after"] {
             let call = ToolCall(id:point,name:"subagent_start",arguments:["task":JSON(point),"mode":"background"])
             _ = try await parent.agentFixtureCall(call,newTask:true)
             try await parent.runToolBatch([call])
-            try await eventually { await parent.agentState().turns.values.allSatisfy { $0.status.terminal } }
+            try await eventually { let family = await parent.agentState(); return family.turns.values.allSatisfy { $0.status.terminal } && family.messages.values.filter { $0.kind == "result" }.count == (point == "between" ? 1 : 2) }
             _ = try await coordinator.deliver(owner:parent,recipient:parent,childTurn:nil)
             try await parent.forkFixtureReply(point)
             if point == "between" { try await parent.forkFixtureCheckpoint() }
@@ -165,7 +165,7 @@ final class SubagentForkTests: HelperTestCase {
     func testRunningAndStoppedParentsForkWithoutAdoptingPendingChildren() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(starts:2), parent = try session(root,"parent",client:client)
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         _ = try await parent.submit(Submission(commandID:"start",turnID:"task",text:"Delegate"),steer:false)
         try await eventually { await parent.familyWaiting }
         for stopped in [false,true] {
@@ -196,7 +196,7 @@ final class SubagentForkTests: HelperTestCase {
         for id in ["receipt","a-longer-identity-for-copying-the-start-receipt-boundary"] {
             let made = try await parent.forked(to:id,at:point), client = AccountedAgentScript([answer("Independent synthesis")])
             let fork = try session(root,id,path:made.result["path"].text,prepared:made.replay,client:client)
-            await fork.enableSubagents(SubagentCoordinator())
+            await fork.enableSubagents(SubagentCoordinator(),codex:false)
             let context = await fork.context, continuable = await fork.canContinue
             XCTAssertEqual(context.last?.role,"toolResult"); XCTAssertTrue(continuable)
             _ = try await fork.continueRun(commandID:"resume")
@@ -222,7 +222,7 @@ final class SubagentForkTests: HelperTestCase {
         let id = copy ? "a-long-identity-to-force-copying-before-new-subagent-work" : "fork"
         let made = try await source.forked(to:id), client = ForkRunClient(parentID:id)
         let fork = try session(root,id,path:made.result["path"].text,prepared:made.replay,client:client)
-        await fork.enableSubagents(SubagentCoordinator())
+        await fork.enableSubagents(SubagentCoordinator(),codex:false)
         _ = try await fork.submit(Submission(commandID:"new",turnID:"new",text:"Start independent work"),steer:false)
         try await eventually { await client.parentCalls == 1 }
         await fork.stop(); try await eventually { !(await fork.isRunning) }
@@ -245,7 +245,7 @@ final class SubagentForkTests: HelperTestCase {
         await fork.close()
         JournalCheckpoint.remove(for:URL(fileURLWithPath:made.result["path"].text!))
         let reopened = try session(root,id,path:made.result["path"].text,client:client)
-        await reopened.enableSubagents(SubagentCoordinator())
+        await reopened.enableSubagents(SubagentCoordinator(),codex:false)
         let saved = await reopened.agentState(), cost = await reopened.spend
         XCTAssertEqual(saved,second); XCTAssertEqual(cost,spend)
         _ = try await reopened.submit(Submission(commandID:"after-relaunch",turnID:"after-relaunch",text:"Continue"),steer:false)

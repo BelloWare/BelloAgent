@@ -7,12 +7,13 @@ extension AgentSession {
     /// operation is durable, its control receipt cannot become "not executed".
     /// Reports consult the owner too, since their local mirror can be missing.
     func acceptedAgentToolResult(_ call: ToolCall, stopped: Bool) async -> JSON? {
-        guard SubagentSteeringContract.names.contains(call.name), let assistant = toolHistory.owners[call.id] else { return nil }
+        guard SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name), let assistant = toolHistory.owners[call.id] else { return nil }
         let key = SubagentCallKey(parentSessionID:id,assistantMessageID:assistant,toolCallID:call.id)
         var saved = savedAgentOperation(key)
         if saved == nil, let owner = budgetOwner { saved = await owner.savedAgentOperation(key) }
         guard let saved, saved.digest == sha256(Data((call.name + call.arguments.encoded()).utf8)) else { return nil }
         var receipt = saved.receipt
+        if stopped, call.name == "wait_agent" { receipt["output"] = "Wait interrupted by Stop." }
         if stopped, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait" {
             receipt["wait"] = ["version":3,"wait_id":JSON(saved.id),"wake_reason":"stopped"]
         }

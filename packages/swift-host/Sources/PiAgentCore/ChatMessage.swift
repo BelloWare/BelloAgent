@@ -123,7 +123,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         guard let role = pi["role"].text, ["user","assistant","toolResult","system"].contains(role) else { throw AgentError("invalid_session", "Unsupported message role") }
         self.id=id; self.role=role
         nativeSubagent = pi["nativeSubagent"].isNull ? nil : pi["nativeSubagent"]
-        nativeInherited = pi["nativeInherited"].isNull ? nil : pi["nativeInherited"]
+        nativeInherited = pi["nativeInherited"].isNull ? Optional<JSON>.none : pi["nativeInherited"]
         nativeAgentDelivery = pi["nativeAgentDelivery"].isNull ? Optional<JSON>.none : pi["nativeAgentDelivery"]
         content = pi["content"].text.map { [textBlock($0)] } ?? pi["content"].list
         providerItems = pi["nativeProviderItems"].isNull ? nil : pi["nativeProviderItems"].list
