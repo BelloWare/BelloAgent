@@ -21,7 +21,7 @@ extension AgentSession {
         var releaseQueue = false
         if runTask != nil {
             let wasPaused = queuePaused
-            stop(); let stops = stopCount
+            stop(userInitiated:false); let stops = stopCount
             await runTask?.value
             guard stopCount == stops else { throw AgentError("compaction_cancelled", "Compaction was cancelled because the chat was stopped") }
             releaseQueue = !wasPaused

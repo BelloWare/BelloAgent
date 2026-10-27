@@ -148,6 +148,7 @@ extension AgentSession {
     /// only when parent delegation tools are offered. Skill selections travel
     /// in their own user message instead (`userMessageText`).
     static func requestInstructions(_ prompt: String, tools: [ToolDefinition] = []) -> String {
+        if tools.contains(where: { $0.name == "spawn_agent" }) { return prompt + "\n" + selectionPolicy + "\n" + SubagentCodexContract.rootPrompt }
         let delegation = tools.contains { $0.name == "subagent_start" || $0.name == "subagent" }
         return prompt + "\n" + selectionPolicy + (delegation ? "\n" + SubagentSteeringContract.delegationPolicy : "")
     }

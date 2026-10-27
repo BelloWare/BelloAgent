@@ -13,7 +13,7 @@ final class SubagentSteeringContractTests: HelperTestCase {
         XCTAssertNoThrow(try SubagentSteeringContract.validate("subagent_start", ["task":"x","mode":"background","tools":[]]))
         XCTAssertNoThrow(try SubagentSteeringContract.validate("subagent_report", ["kind":"question","message":"Which file?"]))
     }
-    func testProductionInstallationOffersV3WithoutFixtureEnablement() async throws {
+    func testProductionInstallationOffersV4WithoutFixtureEnablement() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
                                       readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
@@ -21,7 +21,7 @@ final class SubagentSteeringContractTests: HelperTestCase {
         XCTAssertTrue(Set(before.map(\.name)).isDisjoint(with: SubagentSteeringContract.parentNames))
         await parent.enableSubagents(SubagentCoordinator())
         let after = await parent.sessionDefinitions()
-        XCTAssertTrue(Set(SubagentSteeringContract.parentNames).isSubset(of: Set(after.map(\.name))))
+        XCTAssertTrue(SubagentCodexContract.names.isSubset(of: Set(after.map(\.name))))
         XCTAssertFalse(after.contains { $0.name == "subagent" })
         await parent.close()
     }

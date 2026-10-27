@@ -13,7 +13,7 @@
   - Only the main chat starts sub-agents.
   - The automatic family wait, crash safety and shared cost limit stay.
   - Codex's mid-reply cut-in is deferred.
-  - [Design](docs/design/subagents-codex-style.md).
+  - [Design](docs/design/subagents-codex-style.md). Helper v4 and lead-review fixes complete: seed bodies stay out of parent records/checkpoints, recovery verifies references/digests, version-2 caches retain the family gate, child senders fail closed, all newline framing is safe, and v4 pause/Resume retains task identity and human Stop provenance. All twelve app-wire JSON examples unchanged. Review validation: 315 focused helper tests, 2 streaming modes, 44 v4 + 21 v2 crash edges, 41/4/3 Release wire/concurrent/acceptance tests and 60 mutations ([record](docs/validation/a135-agents-0.1.135.md)). App integration and the merged gate remain with their workstream and lead.
 
 ## 0.1.134
 

@@ -7,15 +7,14 @@ final class AgentMailboxPolicyTests: HelperTestCase {
         var op = AgentOperation(key:.init(parentSessionID:author == "parent" ? "parent" : "child",assistantMessageID:"a\(index)",toolCallID:"c\(index)"),digest:"d",receipt:["accepted":true],message:message,epoch:"epoch")
         op.acceptedAt = at; return op
     }
-    func testDurableBurstRateAndPendingReportBounds() throws {
+    func testPendingReportsAndRateHaveNoSmallLimits() throws {
         var state = AgentFamilyState(ownerID:"parent")
-        for i in 0..<2 { let op = operation(i); try AgentMailboxPolicy.validate(op,state:state); try state.operation(op) }
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(2,at:109),state:state)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_rate_limited") }
-        let third = operation(2,at:110); try AgentMailboxPolicy.validate(third,state:state); try state.operation(third)
-        let fourth = operation(3,at:120); try AgentMailboxPolicy.validate(fourth,state:state); try state.operation(fourth)
+        for i in 0..<300 { let op = operation(i,at:100); try AgentMailboxPolicy.validate(op,state:state); try state.operation(op) }
         let restored = try JSONDecoder().decode(AgentFamilyState.self,from:subagentJSON(state).data())
-        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(4,at:1000),state:restored)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_mailbox_full") }
-        XCTAssertEqual(restored.messages.count,4,"No accepted message was dropped to make room")
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(operation(301,at:99),state:restored))
+        XCTAssertEqual(restored.messages.count,300)
+        var oversized = operation(302); oversized.message?.text = String(repeating:"x",count:262145)
+        XCTAssertThrowsError(try AgentMailboxPolicy.validate(oversized,state:state))
     }
     func testTwoWayMessagesHaveNoEpochAllowance() throws {
         var state = AgentFamilyState(ownerID:"parent")

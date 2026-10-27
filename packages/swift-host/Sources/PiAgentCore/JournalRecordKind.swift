@@ -12,6 +12,9 @@ enum JournalRecordKind {
     static let marker = "pi-app.native.v1"
     static let childMarker = "pi-app.native.v2"
     static let steeringMarker = "pi-app.native.v3"
+    static let codexMarker = "pi-app.native.v4"
+    static let agentNames = "pi-app.agent-names.v1"
+    static let agentForkSeed = "pi-app.agent-fork-seed.v1"
     static let agentOperation = "pi-app.agent-operation.v1"
     static let agentTurn = "pi-app.subagent-turn.v1"
     static let agentTurnState = "pi-app.subagent-turn-state.v1"
@@ -19,7 +22,7 @@ enum JournalRecordKind {
     static let agentMessage = "pi-app.agent-message.v1"
     static let agentDelivery = "pi-app.agent-delivery.v1"
     static let familyRun = "pi-app.family-run.v1"
-    static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker || value == steeringMarker }
+    static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker || value == steeringMarker || value == codexMarker }
     static let budgetAttempt = "pi-app.budget-attempt.v1"
     static let costUpdate = "pi-app.cost-update.v1"
     static let subagentCall = "pi-app.subagent-call.v1"

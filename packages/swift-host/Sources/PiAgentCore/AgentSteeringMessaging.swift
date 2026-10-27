@@ -33,7 +33,8 @@ extension AgentSteeringCoordinator {
                 guard let job = jobs[lease.id], job.child === session else { throw SubagentRecovery.damaged() }
                 let lock = gate(job.owner.id); try await lock.acquire()
                 do {
-                    let delivery = try await deliver(owner:job.owner,recipient:session,childTurn:lease,canCompact:!compacted)
+                    if final, jobs[lease.id]?.sealed == true { await lock.release(); return false }
+                    let delivery = try await deliver(owner:job.owner,recipient:session,childTurn:lease,canCompact:!compacted,deferMail:final && lease.taskName != nil)
                     if delivery != .compact {
                         if final, delivery == .none {
                             // A cost-limit pause defers the seal: the runner parks the
@@ -87,14 +88,21 @@ extension AgentSteeringCoordinator {
         }
     }
     func seal(job original: Job, child: AgentSession?) async throws {
-        var job = original; job.turn.normalizeResult()
+        var job = original
+        if let current = await job.owner.agentState().turns[job.turn.id] { job.turn.interruptedBy = current.interruptedBy }
+        job.turn.normalizeResult()
         if jobs[job.turn.id]?.sealed == true { return }
         try await seal(turn:job.turn,parent:job.owner,task:job.plan.origin.description,child:child)
         jobs[job.turn.id]?.turn = job.turn; jobs[job.turn.id]?.sealed = true
     }
     /// A parked turn has no job. Its accepted Stop seals and reports through
     /// the same path; recovery catches up a closed child's mirror.
-    func seal(turn: AgentChildTurn, parent: AgentSession, task: String, child: AgentSession?) async throws {
+    func seal(turn proposed: AgentChildTurn, parent: AgentSession, task: String, child: AgentSession?) async throws {
+        var turn = proposed
+        if let current = await parent.agentState().turns[turn.id] { turn.interruptedBy = current.interruptedBy }
+        let current = await parent.agentState()
+        if turn.taskName != nil, current.turns[turn.id]?.status.terminal != true,
+           current.run?.heldChildren.contains(turn.childID) == true || current.run?.stoppedByUser == true && [.cancelled,.interrupted,.notExecuted].contains(turn.status) { turn.interruptedBy = "the user" }
         if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(turn) }
         if await parent.agentState().turns[turn.id] != turn { try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,turn) }
         let state = await parent.agentState()
@@ -103,55 +111,65 @@ extension AgentSteeringCoordinator {
             let message = AgentFamilyMessage.resultEvent(turn,task:task,sequence:state.sequence + 1)
             try await parent.appendAgentRecord(JournalRecordKind.agentMessage,message)
         }
-        for var pending in state.messages.values.sorted(by: { $0.sequence < $1.sequence }) where pending.author == "parent" && pending.childID == turn.childID && pending.turn == turn.turn &&
+        for var pending in state.messages.values.sorted(by: { $0.sequence < $1.sequence }) where (pending.recipientChildID ?? (pending.author == "parent" ? pending.childID : "")) == turn.childID && pending.queueOnly != true && pending.turn == turn.turn &&
             (pending.disposition == "pending" || pending.disposition == "not_delivered_interrupted") {
             if pending.disposition == "pending" {
                 pending.disposition = "not_delivered_interrupted"
                 try await parent.appendAgentRecord(JournalRecordKind.agentMessage,pending)
             }
+            if pending.type != nil, pending.id == turn.inputID { continue }
             let current = await parent.agentState()
-            let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
+            let notice = AgentFamilyMessage.undelivered(pending,sequence:current.sequence + 1,legacyText:"Parent message \(pending.id) was retained but not delivered before the child stopped.")
             if current.messages[notice.id] == nil { try await parent.appendAgentRecord(JournalRecordKind.agentMessage,notice) }
         }
         await signal(parent.id).pulse()
     }
     enum AgentDeliveryResult { case none, delivered, compact }
-    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?, canCompact: Bool = true) async throws -> AgentDeliveryResult {
+    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?, canCompact: Bool = true, deferMail: Bool = false) async throws -> AgentDeliveryResult {
         guard !(await recipient.agentDeliveryHeld) else { return .none }
-        let state = await owner.agentState(), author = childTurn == nil ? "subagent" : "parent"
-        let pending = state.pending(author:author).filter { childTurn == nil || ($0.childID == recipient.id && $0.turn == childTurn?.turn) }
-        guard !pending.isEmpty else { return .none }
-        var selected: [AgentFamilyMessage] = []
-        if childTurn != nil { selected = Array(pending.prefix(1)) }
-        else {
-            // Round robin between child heads; sequence order within each child.
-            var buckets = Dictionary(grouping:pending,by: \.childID)
-            let keys = buckets.keys.sorted()
-            let position = state.run?.deliveryCursor.flatMap { cursor in keys.firstIndex(where: { $0 > cursor }) } ?? 0
-            var ordered = Array(keys[position...]) + Array(keys[..<position])
-            var bytes = 0
-            while selected.count < 8, !ordered.isEmpty {
-                let key = ordered.removeFirst(), head = buckets[key]!.first!
-                // If a head cannot fit, do not pass it with a smaller later
-                // message from that child. It keeps its FIFO place next time.
-                guard bytes + head.text.utf8.count <= 16384 else { continue }
-                buckets[key]!.removeFirst(); selected.append(head); bytes += head.text.utf8.count
-                if !buckets[key]!.isEmpty { ordered.append(key) }
+        let state = await owner.agentState()
+        let pending = state.messages.values.filter { message in
+            guard message.disposition == "pending" else { return false }
+            if message.type != nil {
+                let addressed = message.recipientChildID ?? owner.id
+                guard addressed == recipient.id, !deferMail || message.queueOnly != true else { return false }
+                // The task has its own durable Submission/row identity.
+                if message.id == childTurn?.inputID { return false }
+                return childTurn == nil || message.queueOnly == true || message.turn == childTurn?.turn
             }
+            return childTurn == nil ? message.author == "subagent" : message.author == "parent" && message.childID == recipient.id && message.turn == childTurn?.turn
+        }.sorted { $0.sequence < $1.sequence }
+        guard !pending.isEmpty else { return .none }
+        func author(_ message: AgentFamilyMessage) -> String { message.sender ?? message.childID }
+        var buckets = Dictionary(grouping:pending,by:author), selected: [AgentFamilyMessage] = []
+        let keys = buckets.keys.sorted(), cursor = state.deliveryCursors?[recipient.id] ?? state.run?.deliveryCursor
+        let position = cursor.flatMap { value in keys.firstIndex(where: { $0 > value }) } ?? 0
+        var ordered = Array(keys[position...]) + Array(keys[..<position])
+        while !ordered.isEmpty {
+            let key = ordered.removeFirst(); var head = buckets[key]!.removeFirst()
+            if head.type != nil, head.queueOnly == true, let childTurn { head.turn = childTurn.turn }
+            selected.append(head)
+            if !buckets[key]!.isEmpty { ordered.append(key) }
         }
-        guard !selected.isEmpty else { throw AgentError("subagent_delivery_limit", "Pending input cannot fit the agent lane") }
-        var payload: JSON = ["kind":"agent_events","version":3,"events":.array(selected.map(\.event))]
-        while !(try await recipient.agentPayloadFits(payload,parentLane:childTurn == nil)) {
-            if selected.count > 1 { selected.removeLast(); payload["events"] = .array(selected.map(\.event)); continue }
+        func payload(_ events: [AgentFamilyMessage]) -> JSON {
+            if events.allSatisfy({ $0.deliveryEvent != nil }) { return JSON(events.compactMap(\.deliveryEvent).map(\.envelope).joined(separator:"\n\n")) }
+            // Already accepted v3 events keep their historic shape.
+            return ["kind":"agent_events","version":3,"events":.array(events.map(\.event))]
+        }
+        // Do not mix envelope formats in a single row during v3 adoption.
+        if let first = selected.first { selected = Array(selected.prefix { ($0.type != nil) == (first.type != nil) }) }
+        var body = payload(selected)
+        while !(try await recipient.agentPayloadFits(body,parentLane:childTurn == nil)) {
+            if selected.count > 1 { selected.removeLast(); body = payload(selected); continue }
             if canCompact, await recipient.canCompact { return .compact }
             throw AgentError("coordination_limit", "Accepted agent input is held because it cannot fit this request budget; adjust context or Resume")
         }
         let ids = selected.map(\.id)
-        let existing = state.deliveries.values.first { !$0.committed && $0.recipientID == recipient.id && $0.eventIDs == ids }
-        var delivery = existing ?? AgentDelivery(rowID:UUID().uuidString,recipientID:recipient.id,eventIDs:ids,payload:payload)
+        let turns: [String:Int]? = selected.first?.type == nil ? nil : Dictionary(uniqueKeysWithValues:selected.map { ($0.id,$0.turn) })
+        let existing = state.deliveries.values.first { !$0.committed && $0.recipientID == recipient.id && $0.eventIDs == ids && $0.eventTurns == turns }
+        var delivery = existing ?? AgentDelivery(rowID:UUID().uuidString,recipientID:recipient.id,eventIDs:ids,payload:body,eventTurns:turns)
         if existing == nil, childTurn == nil, state.run != nil { delivery.continuation = true }
-        if existing == nil, childTurn == nil, state.run != nil { delivery.cursor = selected.last?.childID }
-        if existing == nil { try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery) }
+        if existing == nil { delivery.cursor = selected.last.map(author); try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery) }
         try await recipient.appendAgentDelivery(delivery,selected:selected)
         delivery.committed = true
         try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery)

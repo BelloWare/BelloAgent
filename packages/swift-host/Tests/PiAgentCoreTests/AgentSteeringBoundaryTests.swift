@@ -6,7 +6,7 @@ final class AgentSteeringBoundaryTests: HelperTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(failParent:true)
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(),codex:false)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Delegate then fail"),steer:false)
         try await eventually { !(await parent.isRunning) }
         let state = await parent.state, code = await parent.errorCode, family = await parent.agentState()
@@ -20,7 +20,7 @@ final class AgentSteeringBoundaryTests: HelperTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(), coordinator = AgentSteeringCoordinator()
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Delegate then synthesize"),steer:false)
         try await eventually { await client.parentCount >= 2 }
         try await eventually { let waiting = await parent.familyWaiting, running = await parent.isRunning; return waiting || !running }
@@ -40,7 +40,7 @@ final class AgentSteeringBoundaryTests: HelperTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(reports:true), coordinator = AgentSteeringCoordinator()
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Work together"),steer:false)
         try await eventually { let p = await client.parentCount, c = await client.childCount; return p >= 3 && c >= 2 }
         let before = await client.childRequests
@@ -142,7 +142,7 @@ extension AgentSteeringBoundaryTests {
         let tools = AgentBudgetHoldTools(), client = AgentBudgetClient(), coordinator = AgentSteeringCoordinator()
         await client.bind(tools)
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         await parent.setCostLimit(0.015)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
         try await eventually { await parent.costPaused }
@@ -217,7 +217,7 @@ extension AgentSteeringBoundaryTests {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(starts:18), coordinator = AgentSteeringCoordinator()
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.enableSubagents(SubagentCoordinator(),codex:false); await parent.enableAgentSteering(coordinator)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
         try await eventually { await client.childCount == 16 }
         try await eventually { await parent.familyWaiting }

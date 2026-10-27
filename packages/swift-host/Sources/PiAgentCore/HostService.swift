@@ -714,6 +714,7 @@ public actor NativeHostService {
         case "subagent.list":
             let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
             let coordinator = subagentCoordinator ?? SubagentCoordinator()
+            if !params["detail"].isNull { return try await coordinator.steering.codexDetails(params,parent:session,cursor:cursor,limit:limit) }
             var page = await coordinator.list(parent: session, cursor: cursor, limit: limit)
             // Opt-in desktop projection. The coordinator's model-facing
             // list/progress/result contract is unchanged.
@@ -1045,7 +1046,7 @@ public actor NativeHostService {
                 guard branch.extend(rid, parent: item["parentId"].text) else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
                 count += 1
                 let kind = item["customType"].text
-                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker { native=true }
+                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker || kind == JournalRecordKind.codexMarker { native=true }
                 if kind == JournalRecordKind.subagentOrigin { throw AgentError("subagent_managed", "A managed child cannot be recovered as an independent chat") }
                 if kind == JournalRecordKind.sideOrigin || kind == JournalRecordKind.forkOrigin { parentInfo = item["data"] }
             }
@@ -1164,7 +1165,7 @@ public actor NativeHostService {
             }
         }
         flushTask?.cancel(); for t in tasks.values { t.cancel() }
-        for s in sessions.values { await s.stop() }
+        for s in sessions.values { await s.stop(userInitiated:false) }
         await subagentCoordinator?.drain()
         for s in sessions.values { await s.close() }
         await mcp?.close(); sessions.removeAll(); profiles.removeAll(); subagentReaders.removeAll(); flush()

@@ -1,13 +1,38 @@
 import Foundation
 
 extension AgentSession {
+    func recordAgentUserStop() {
+        guard !isSubagent, agentContractVersion == 4 else { return }
+        let family = agentState()
+        guard var run = family.run, family.turns.values.contains(where: { !$0.status.terminal && $0.taskName != nil }) else { return }
+        // Record intent without racing a child's terminal mirror. Sealing
+        // applies it to cancelled turns, never to an already sealed answer.
+        do {
+            run.stoppedByUser = true
+            try appendAgentRecord(JournalRecordKind.familyRun,run)
+            // Paused turns have no live runner to carry the human initiator.
+            // Keep their Resume state, but persist who halted them now.
+            if costPaused || costResumePending {
+                for var turn in family.turns.values where !turn.status.terminal && turn.taskName != nil {
+                    turn.interruptedBy = "the user"
+                    try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                }
+            }
+        } catch {
+            accountingFailure = (error as? AgentError) ?? SubagentRecovery.damaged()
+            familyStopReason = accountingFailure
+        }
+    }
     func requireAgentExecution() throws {
         guard subagents.family == nil || agentCoordinator != nil else {
             throw AgentError("subagent_steering_disabled", "This family requires v3 execution; viewing and export remain available")
         }
     }
     // Internal fixture entry as well as the sole production switch's target.
-    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) async {
+    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator, codex: Bool = false) async {
+        agentNextContractVersion = codex ? 4 : 3
+        let legacyPause = costPaused && (journal?.markerKind == JournalRecordKind.steeringMarker || heldToolCalls().0.contains { SubagentSteeringContract.names.contains($0.name) })
+        agentContractVersion = codex && !legacyPause ? 4 : 3
         agentCoordinator = coordinator
         if !isSubagent {
             let owner = id, runtime = displayEpoch
@@ -17,9 +42,11 @@ extension AgentSession {
             if !costPaused { await coordinator.releaseStaleHold(owner:self,generation:pauseGeneration) }
         }
     }
-    func startAgentEpoch() throws {
+    func startAgentEpoch(startingFresh: Bool = false) throws {
+        if startingFresh, !isSubagent { agentContractVersion = agentNextContractVersion }
         guard agentCoordinator != nil, !isSubagent, subagents.family != nil, let execution = activeTaskPresentation?.executionID,
               subagents.family?.run?.epoch != execution else { return }
+        if agentContractVersion == 4 { try adoptCodexNames() }
         try appendAgentRecord(JournalRecordKind.familyRun,AgentFamilyRun(epoch:execution))
     }
     func agentState() -> AgentFamilyState { subagents.family ?? AgentFamilyState(ownerID:subagents.origin?.link.budgetOwnerSessionID ?? id) }
@@ -30,8 +57,9 @@ extension AgentSession {
     }
     func appendAgentRecord<T: Encodable>(_ kind: String, _ data: T, owner: String? = nil) throws {
         guard let journal else { throw AgentError("subagent_persistence", "The family journal is closed") }
-        try journal.promoteToSteering(managedChild:isSubagent)
-        guard journal.markerKind == JournalRecordKind.steeringMarker else { throw AgentError("subagent_promotion", "V3 commands require a promoted journal") }
+        if agentContractVersion == 4 { try journal.promoteToCodex(managedChild:isSubagent) }
+        else { try journal.promoteToSteering(managedChild:isSubagent) }
+        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker].contains(journal.markerKind) else { throw AgentError("subagent_promotion", "V3 commands require a promoted journal") }
         let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner ?? subagents.origin?.link.budgetOwnerSessionID ?? id),"data":try subagentJSON(data)]
         var next = subagents; try next.consume(row,sessionID:id)
         try journal.append(row,flush:true); subagents = next
@@ -47,14 +75,21 @@ extension AgentSession {
         if proposed.key.parentSessionID == id {
             guard toolHistory.owners[proposed.key.toolCallID] == proposed.key.assistantMessageID else { throw SubagentRecovery.damaged() }
         } else {
-            guard let message = proposed.message, message.author == "subagent", message.childID == proposed.key.parentSessionID,
-                  subagents.family?.latest(message.childID)?.turn == message.turn,
-                  subagents.family?.latest(message.childID)?.status.terminal == false else { throw SubagentRecovery.damaged() }
+            if proposed.receipt["version"].int == 4 {
+                guard let source = proposed.sourceTurn, source.childID == proposed.key.parentSessionID,
+                      subagents.family?.latest(source.childID)?.target == source,
+                      subagents.family?.latest(source.childID)?.status.terminal == false else { throw SubagentRecovery.damaged() }
+            } else {
+                guard let message = proposed.message, message.author == "subagent", message.childID == proposed.key.parentSessionID,
+                      subagents.family?.latest(message.childID)?.turn == message.turn,
+                      subagents.family?.latest(message.childID)?.status.terminal == false else { throw SubagentRecovery.damaged() }
+            }
         }
         do { try AgentMailboxPolicy.validate(proposed,state:agentState()) }
-        catch { if (error as? AgentError)?.code == "coordination_limit" { familyStopReason = error as? AgentError; stop() }; throw error }
+        catch { if (error as? AgentError)?.code == "coordination_limit" { familyStopReason = error as? AgentError; stop(userInitiated:false) }; throw error }
         try journal?.synchronize() // issuing assistant is durable before acceptance
-        try journal?.promoteToSteering(managedChild:false)
+        if proposed.receipt["version"].int == 4 { try journal?.promoteToCodex(managedChild:false) }
+        else { try journal?.promoteToSteering(managedChild:false) }
         var op = proposed, nextAccounting = accounting, total = spend
         if !familyBudgetEnabled, op.plan != nil {
             var seed = spend.record; seed["reset"] = true; seed["source"] = "family-adoption"
@@ -77,7 +112,10 @@ extension AgentSession {
         for call in held { try recordTool(call,result:resultText("Not executed: the child turn was stopped.",error:true),started:nil,state:.cancelled) }
         costPendingCalls = []
         _ = endCostPause()
-        try journal?.promoteToSteering(managedChild:true)
+        agentContractVersion = turn.taskName == nil ? 3 : 4
+        codexContext = turn.codexContext ?? subagents.origin?.codexContext
+        if agentContractVersion == 4 { try journal?.promoteToCodex(managedChild:true) }
+        else { try journal?.promoteToSteering(managedChild:true) }
         try appendAgentRecord(JournalRecordKind.agentTurn,turn)
         budgetOwner = owner; budgetOwnerGeneration = turn.currentGeneration
         agentLease = turn; agentTurnClosed = false; agentCoordinator = coordinator
@@ -101,7 +139,10 @@ extension AgentSession {
         guard isSubagent, !closed, subagents.origin?.link.budgetOwnerSessionID == owner.id else { throw SubagentRecovery.damaged() }
         if agentLease?.id == turn.id, agentLease?.continuations == turn.continuations, !costPaused { return }
         guard runTask == nil, let continuation = turn.continuations?.last else { throw SubagentRecovery.damaged() }
-        try journal?.promoteToSteering(managedChild:true)
+        agentContractVersion = turn.taskName == nil ? 3 : 4
+        codexContext = turn.codexContext ?? subagents.origin?.codexContext
+        if agentContractVersion == 4 { try journal?.promoteToCodex(managedChild:true) }
+        else { try journal?.promoteToSteering(managedChild:true) }
         // A mirror that missed earlier Resumes catches up one continuation at
         // a time, as the owner recorded them.
         var queued = turn; queued.status = .queued; queued.result = nil
@@ -172,15 +213,16 @@ extension AgentSession {
         guard generation.clock === costPauseClock, generation.isCurrentPause else { return }
         subagentChanged(summary)
     }
-    func startAgentTurn(_ turn: AgentChildTurn) throws {
+    func startAgentTurn(_ turn: AgentChildTurn) async throws {
         guard agentLease?.executionID == turn.executionID, !closed else { throw SubagentRecovery.damaged() }
+        if turn.taskName != nil, let coordinator = agentCoordinator { _ = try await coordinator.boundary(self,final:false) }
         _ = try submitManaged(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task,thinkingLevel:turn.effort),steer:false)
     }
     func agentResult(_ turn: AgentChildTurn, plan: SubagentPlan, cancelled: Bool) -> SubagentToolResult {
         let final = visible.last { $0.role == "assistant" && $0.taskRootID == turn.inputID && !$0.content.contains { $0["type"].text == "toolCall" } }
         let status: SubagentStatus = cancelled || state == .paused || state == .stopping ? .interrupted : state == .error ? .failed : final?.stopReason == "length" ? .outputLimited : .completed
-        var result = SubagentToolResult(plan:plan,status:status,text:final?.text ?? "",error:state == .error ? AgentError(errorCode ?? "subagent_failed",errorMessage ?? "Child failed") : nil,messageIDs:final.map { [$0.id] } ?? [],accountingRevision:accounting.revision,began:true)
-        result.envelope["version"] = 3; result.envelope["child_id"] = JSON(id); result.envelope["turn"] = JSON(turn.turn)
+        var result = SubagentToolResult(plan:plan,status:status,text:final?.text ?? "",error:state == .error ? AgentError(errorCode ?? "subagent_failed",errorMessage ?? "Child failed") : nil,messageIDs:final.map { [$0.id] } ?? [],accountingRevision:accounting.revision,began:true,textLimit:turn.taskName == nil ? 65_536 : 1_048_576)
+        result.envelope["version"] = JSON(turn.taskName == nil ? 3 : 4); result.envelope["child_id"] = JSON(id); result.envelope["turn"] = JSON(turn.turn)
         result.envelope["effort"] = JSON(turn.effort ?? plan.origin.model.thinkingLevel ?? "default")
         result.metadata["effort"] = result.envelope["effort"]
         result.metadata["version"] = 2; result.metadata["turn"] = JSON(turn.turn); result.metadata["executionID"] = JSON(turn.executionID)

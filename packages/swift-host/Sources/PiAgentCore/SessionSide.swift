@@ -17,6 +17,7 @@ extension AgentSession {
     /// The prompt cache this session's requests join: a side joins the cache
     /// its parent's requests went to, any other chat its own (pi's session id).
     var promptCacheSessionID: String {
+        if let cache = codexContext?.cacheSessionID ?? subagents.origin?.codexContext?.cacheSessionID { return cache }
         guard isSideChat else { return id }
         return parentInfo["cacheSessionId"].text ?? parentInfo["parentSessionId"].text ?? id
     }
@@ -39,7 +40,7 @@ extension AgentSession {
     /// depth never delegate. The offered tools stay the parent's, for its
     /// prompt cache; the call is refused before anything is accepted.
     /// Waiting, status and Stop of children a 0.1.128 side already owns stay.
-    static let sideDelegationTools: Set<String> = ["subagent", "subagent_start", "subagent_send"]
+    static let sideDelegationTools: Set<String> = ["subagent", "subagent_start", "subagent_send", "spawn_agent", "send_message", "followup_task"]
     func sideDelegationRefusal(_ call: ToolCall) -> AgentError? {
         guard isSideChat, Self.sideDelegationTools.contains(call.name) else { return nil }
         return AgentError("read_only", "Side chats cannot start or message sub-agents: \(call.name) is not available here. Ask in the main chat to delegate this work.")

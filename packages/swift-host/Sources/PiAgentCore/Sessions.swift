@@ -171,6 +171,9 @@ public actor AgentSession {
     var agentCoordinator: AgentSteeringCoordinator?
     var agentLease: AgentChildTurn?
     var agentTurnClosed = false
+    var agentContractVersion = 3
+    var agentNextContractVersion = 3
+    var codexContext: AgentCodexContext?
     var agentPreparedResults: [String:JSON] = [:]
     var familyWaiting = false
     var managedCancellation: (@Sendable () -> Void)?
@@ -427,7 +430,7 @@ public actor AgentSession {
         familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
             $0.admission != nil || $0.contribution?["sideParents"].isNull == false
         }
-        guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
+        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker].contains(opened.markerKind) || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
@@ -581,7 +584,7 @@ public actor AgentSession {
         // unknown outcomes so future requests remain protocol-valid.
         let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
                                                              directory: directory, accounting: &accounting, spend: &spend)
-        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused,context:context)
         let recoveredTools=ToolHistoryIndex(context)
         // Calls the pause held before they started are still pending: they
         // run on Resume. Only calls that may have begun get unknown outcomes.
@@ -601,16 +604,17 @@ public actor AgentSession {
                 result.nativeSubagent = saved.metadata.isNull ? nil : saved.metadata; result.isError = saved.wire["isError"].flag == true
                 result.toolStats?["outcome"] = saved.metadata["effects"].isNull ? "not_executed" : saved.metadata["effects"]
             }
-            if let name = call["name"].text, SubagentSteeringContract.names.contains(name), let callID = call["id"].text {
+            if let name = call["name"].text, SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(name), let callID = call["id"].text {
                 let key = SubagentCallKey(parentSessionID:id,assistantMessageID:pending.assistant,toolCallID:callID)
                 if let op = subagents.family?.operations[AgentOperation.id(key)] {
                     var receipt = op.receipt
                     if name == "subagent_wait" || name == "subagent_start" && call["arguments"]["mode"].text == "wait" {
                         receipt["wait"] = ["version":3,"wake_reason":"stopped","wait_id":JSON(op.id),"target_count":JSON(op.waitTargets?.count ?? (op.turn == nil ? 0 : 1)),"inbox_pending":JSON(!(subagents.family?.pending(author:"subagent").isEmpty ?? true))]
                     }
-                    result.id = "agent-receipt:" + op.id; result.content = [textBlock(receipt.encoded())]; result.isError = false
+                    result.id = "agent-receipt:" + op.id; result.content = [textBlock(receipt["version"].int == 4 ? receipt["output"].text ?? "" : receipt.encoded())]; result.isError = false
+                    if receipt["version"].int == 4, !receipt["nativeSubagent"].isNull { result.nativeSubagent = receipt["nativeSubagent"] }
                     result.toolStats?["outcome"] = "completed"
-                    if let child = op.receipt["child_id"].text,
+                    if receipt["version"].int != 4, let child = op.receipt["child_id"].text,
                        let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
                         result.nativeSubagent = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(callID),"turn":op.receipt["turn"],"route":op.receipt["route"],"status":"accepted","effects":"completed"]
                         if let effort = receipt["effort"].text { result.nativeSubagent?["effort"] = JSON(effort) }
@@ -704,8 +708,9 @@ public actor AgentSession {
     var retrySubmission: Submission?
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
-    public func stop() {
+    public func stop(userInitiated: Bool = true) {
         let cancelledGeneration = stopCount
+        if userInitiated { recordAgentUserStop() }
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
         // A cost-limit pause parks this owner's sub-agent turns for Resume
@@ -746,7 +751,7 @@ public actor AgentSession {
     }
     public func close() async {
         withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
-        cancelHistoryLoads(); stop(); await runTask?.value
+        cancelHistoryLoads(); stop(userInitiated:false); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
