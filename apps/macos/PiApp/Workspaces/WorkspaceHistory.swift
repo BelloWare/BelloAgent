@@ -273,6 +273,7 @@ extension WorkspaceModel {
     }
     @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
+        if automatic, view.inheritedContextFolded { return false }
         if automatic, let fill = view.presentation.openingFill {
             let before = newer ? view.newerPage.cursor : view.olderPage.cursor
             let waitingGeneration = view.presentation.readGeneration, waitingNavigation = transcriptNavigation(id)

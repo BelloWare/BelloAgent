@@ -14,8 +14,9 @@ import AppKit
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     func update(chat: ChatRecord, parent: ChatRecord?, effort level: String? = nil, original: String? = nil, backTitle: String? = nil, back action: @escaping () -> Void) {
-        provenance.line.text = original ?? ""; provenance.isHidden = original == nil
-        provenance.setAccessibilityIdentifier("original-chat-provenance"); provenance.setAccessibilityLabel(original); provenance.toolTip = original
+        provenance.line.text = [chat.subagentTaskName == nil ? nil : chat.title, original].compactMap { $0 }.joined(separator: " · ")
+        provenance.isHidden = provenance.line.text.isEmpty
+        provenance.setAccessibilityIdentifier("original-chat-provenance"); provenance.setAccessibilityLabel(provenance.line.text); provenance.toolTip = provenance.line.text
         back.isEnabled = parent != nil || original != nil; back.onPress = action
         // Bound the compact button; its tooltip and VoiceOver keep the full
         // destination even when the fork has a long title.

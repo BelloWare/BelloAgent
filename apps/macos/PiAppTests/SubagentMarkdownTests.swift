@@ -66,6 +66,25 @@ final class SubagentMarkdownTests: XCTestCase {
         pane.showTranscript(model: model, session: session, state: "idle", canFork: false, canQuote: false, enabled: true)
         return (model, pane, window)
     }
+    @MainActor func testCodexFinalAnswerCopiesAndFindsTheFullPayloadBeyondItsPreview() async throws {
+        let source = Self.rich + "\n\n" + String(repeating: "An **additional** finding.\n\n", count: 100) + "Unique **final** conclusion"
+        let delivery = SubagentCodexPresentationTests.delivery("FINAL_ANSWER", sender: "/root/audit", recipient: "/root", text: source)
+        let row = TranscriptNativeAgentRow(inputs: .init(item: .message(delivery), fresh: false, actions: .init(), width: 620, environment: .init()))
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).first)
+        XCTAssertFalse(body.isComplete); XCTAssertLessThan(body.markdown.textView.string.count, source.count)
+        let copy = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: row).first { $0.accessibilityIdentifier() == "agent-markdown-copy-event" })
+        copy.onPress?(); XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
+        let (model, pane, window) = try await findFixture([("delivery", ["role": .string("user"), "content": .string("Frame text is not the payload"), "nativeAgentDelivery": delivery.nativeAgentDelivery!])])
+        model.selected?.supportsCodexAgents = true
+        pane.showFind(); pane.find.setQuery("Unique final conclusion")
+        try await eventually("Full v2 final answer is searchable") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["delivery"])
+        try await eventually("Final answer match is revealed beyond the preview") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard !pane.document.focusPending, let text = pane.document.focusText else { return false }
+            return (text.string as NSString).substring(with: pane.document.focusRange) == "Unique final conclusion"
+        }
+    }
     @MainActor func testFindQuerySearchesRenderedAgentProseInSavedUnloadedRows() async throws {
         // Keep the agent turn outside the first page, independent of production page sizes.
         let limits = TranscriptPaging.pageLimits

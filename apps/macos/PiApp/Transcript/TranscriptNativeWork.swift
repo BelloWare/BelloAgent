@@ -414,7 +414,7 @@ import AppKit
                 toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?, actions: TranscriptActions = .init(),
                 expanded: Bool? = nil, setExpanded: ((Bool) -> Void)? = nil) {
         let model = TranscriptToolRow.model(of: tool)
-        let subagent = SubagentToolView.isControl(tool.name) ? SubagentToolView(tool) : nil
+        let subagent = SubagentToolView.isPresented(tool) ? SubagentToolView(tool) : nil
         let historical = subagent?.target?.isHistorical(in:environment.sessionID) == true
         let link: (() -> Void)? = {
             if let target = subagent?.target, !historical || (subagent?.originalAvailability != nil && subagent?.originalAvailability?.reason == nil) { return { actions.openSubagent?(target) } }

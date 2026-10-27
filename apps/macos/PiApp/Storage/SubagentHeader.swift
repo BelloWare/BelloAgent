@@ -7,6 +7,8 @@ struct SubagentHeader: Codable, Sendable {
     var description: String
     var model: SubagentModelGrant
     var readOnly: Bool
+    var taskName: String? = nil
+    var forkTurns: String? = nil
 }
 
 extension HistoryReader {
@@ -55,7 +57,7 @@ extension HistoryReader {
                 pending.removeAll(keepingCapacity: true)
                 if rows.count == 3 {
                     guard rows[0]["type"]?.string == "session", rows[0]["version"]?.number == 3, rows[0]["id"]?.string == expected.sessionID,
-                          ["pi-app.native.v2", "pi-app.native.v3"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2,
+                          ["pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2,
                           rows[2]["customType"]?.string == "pi-app.subagent-origin.v1",
                           let markerID = rows[1]["id"]?.string, rows[2]["parentId"]?.string == markerID,
                           let data = rows[2]["data"] else { throw StoreError.invalidRecord }
@@ -86,10 +88,19 @@ extension HistoryReader {
                 guard data.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 guard data.range(of: Data("nativeAgentDelivery".utf8)) != nil,
                       let row = try? JSONDecoder().decode([String: WireValue].self, from: data),
-                      let id = row["id"]?.string, let author = row["message"]?.object?["nativeAgentDelivery"]?.object,
-                      author["childId"]?.string == childID,
-                      turn == nil || author["turn"]?.nonnegativeInteger == turn,
-                      messageID == nil || id == messageID || author["eventIds"]?.array?.contains(.string(messageID!)) == true else { continue }
+                      let id = row["id"]?.string, let author = row["message"]?.object?["nativeAgentDelivery"]?.object else { continue }
+                let matching: Bool
+                if author["version"]?.number == 2 {
+                    matching = author["events"]?.array?.contains { event in
+                        event.object?["recipient_child_id"]?.string == childID &&
+                        (turn == nil || event.object?["turn"]?.nonnegativeInteger == turn) &&
+                        (messageID == nil || id == messageID || event.object?["event_id"]?.string == messageID)
+                    } == true
+                } else {
+                    matching = author["childId"]?.string == childID && (turn == nil || author["turn"]?.nonnegativeInteger == turn) &&
+                        (messageID == nil || id == messageID || author["eventIds"]?.array?.contains(.string(messageID!)) == true)
+                }
+                guard matching else { continue }
                 return id
             }
             guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }

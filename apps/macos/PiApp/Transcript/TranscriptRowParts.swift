@@ -83,10 +83,11 @@ enum TranscriptToolRow {
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
         let summary = summary(of: tool, object: description.object)
-        if SubagentToolView.isControl(tool.name) {
+        if SubagentToolView.isPresented(tool) {
             let child = SubagentToolView(tool)
-            return Model(icon: "person.2", title: child.name, summary: child.description, suffix: child.label,
-                         state: child.summary.map { $0.status.terminal ? state(of: tool) : .running } ?? state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
+            return Model(icon: "person.2", title: child.heading, summary: child.preview, suffix: child.label,
+                         state: child.showsTurnDetails ? child.summary.map { $0.status.terminal ? state(of: tool) : .running } ?? state(of: tool) : state(of: tool),
+                         trailing: child.showsTurnDetails ? child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool) : elapsed(of: tool),
                          help: child.title + "\n" + child.task, linksSummary: true, description: description, outcome: outcome, file: nil)
         }
         return Model(icon: actionSymbol(description.kind), title: title(parts, outcome: outcome), summary: summary,
@@ -109,7 +110,7 @@ enum TranscriptToolRow {
     /// card is never a fragment of JSON. `linked`: whether the row opens a file.
     nonisolated static func card(of tool: ToolView, fetched: ToolInputDocument?, model: Model, linked: Bool) -> Card {
         let shown = requested(tool, fetched: fetched)
-        if SubagentToolView.isControl(tool.name) { return .subagent(SubagentToolView(shown)) }
+        if SubagentToolView.isPresented(tool) { return .subagent(SubagentToolView(shown)) }
         let description = model.description, outcome = model.outcome
         let notes = [truncationNote(shown), tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
             .compactMap { $0 }.joined(separator: " · ")

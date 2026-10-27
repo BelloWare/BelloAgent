@@ -73,6 +73,7 @@ import AppKit
     }
     override var stripTitle: String {
         if let originalLabel {
+            if let child = model?.record(key), child.subagentTaskName != nil { return child.subagentName + " · " + originalLabel }
             return (model?.record(key)?.subagentNumber.map { "#\($0) · " } ?? "") + originalLabel
         }
         return model?.record(key)?.subagentShortTitle ?? title

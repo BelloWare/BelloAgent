@@ -6,6 +6,7 @@ struct InheritedSubagent: Equatable, Sendable {
     var title: String
     var number: Int
     var forkID: String
+    var taskName: String? = nil
 }
 struct OriginalSubagentAvailability: Equatable, Sendable {
     var title: String
@@ -45,10 +46,13 @@ extension WorkspaceModel {
         let plans = (try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id, includeInherited: true)) ?? []
         guard current(), record(item.id)?.path == path else { return }
         let entries = plans.filter { $0.header.link.budgetOwnerSessionID != item.id }.map {
-            InheritedSubagent(target: SubagentTarget($0.header.link), title: $0.header.description, number: $0.number ?? 1, forkID: item.id)
+            InheritedSubagent(target: SubagentTarget($0.header.link), title: $0.header.description, number: $0.number ?? 1, forkID: item.id, taskName: $0.header.taskName)
         }
         inheritedSubagents[item.id] = entries
-        for entry in entries { displays[item.id]?.subagentNumbers[entry.target.sessionID] = entry.number }
+        for entry in entries {
+            displays[item.id]?.subagentNumbers[entry.target.sessionID] = entry.number
+            if let name = entry.taskName { displays[item.id]?.subagentNames[entry.target.sessionID] = name }
+        }
         refreshOriginalAvailability()
     }
     func isOriginalSubagentReader(_ id: String) -> Bool { subagentTab(id)?.originalForkID != nil }

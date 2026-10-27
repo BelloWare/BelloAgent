@@ -84,9 +84,26 @@ struct TranscriptVersionView: Equatable, Sendable {
 @MainActor final class SessionDisplay: ObservableObject {
     var subagentsRevision: String?
     var isManagedSubagent = false
+    var supportsCodexAgents = false { didSet { if supportsCodexAgents != oldValue { publishTranscript() } } }
+    var inheritedContextMessages: Int?
+    var inheritedContextFolded: Bool {
+        guard supportsCodexAgents, let first = messages.first, let group = TaskTranscriptPlan.inheritedGroup(first) else { return false }
+        return !disclosure.isOpen(.turnFold(group))
+    }
+    var subagentNames: [String: String] = [:] { didSet { if subagentNames != oldValue { publishTranscript() } } }
     @Published var subagentStatus: SubagentStatus?
     @Published var subagentTurn: Int?
-    var agentCoordination: [String: AgentCoordinationEntry] = [:] { didSet { if agentCoordination != oldValue { publishTranscript() } } }
+    var agentSourceEvents: [String: AgentCoordinationEntry] = [:]
+    var agentCoordination: [String: AgentCoordinationEntry] = [:] {
+        didSet {
+            guard agentCoordination != oldValue else { return }
+            agentSourceEvents = Dictionary(agentCoordination.values.compactMap { entry in
+                guard entry.sourceSessionID == id, let message = entry.sourceMessageID, let call = entry.sourceToolCallID else { return nil }
+                return (ToolOccurrence.key(message, call), entry)
+            }, uniquingKeysWith: { first, _ in first })
+            publishTranscript()
+        }
+    }
     @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
     var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
     var subagentCosts: [String: SubagentCostPresentation] = [:] { didSet { if subagentCosts != oldValue { publishTranscript() } } }
@@ -308,8 +325,14 @@ struct TranscriptVersionView: Equatable, Sendable {
         if isManagedSubagent, messages.isEmpty, let delegatedTask, !delegatedTask.isEmpty {
             rows.append(parentAuthoredTask(TranscriptMessage(id: "subagent-task:" + id, role: "user", text: delegatedTask)))
         }
-        if isManagedSubagent, let index = rows.firstIndex(where: { $0.role == "user" }), rows[index].nativeAgentDelivery == nil {
+        if isManagedSubagent, let index = rows.firstIndex(where: { $0.role == "user" && $0.nativeInherited == nil }), rows[index].nativeAgentDelivery == nil {
             rows[index] = parentAuthoredTask(rows[index])
+        }
+        if supportsCodexAgents, let first = rows.first, first.nativeInherited != nil {
+            let count = rows.prefix { $0.nativeInherited != nil }.count
+            let known = (historyPositions.position(of: first.id) ?? 0) + count
+            if count < rows.count { inheritedContextMessages = known }
+            rows[0].inheritedCount = first.inheritedCount ?? inheritedContextMessages ?? known
         }
         if familyWaiting && busy { rows.append(TranscriptMessage(id: "family-wait:" + id, role: "system", text: "Waiting for sub-agents", kind: "notice")) }
         else if agentInboxPending > 0 && !busy { rows.append(TranscriptMessage(id: "family-pending:" + id, role: "system", text: "Pending for parent Resume · \(agentInboxPending) agent message\(agentInboxPending == 1 ? "" : "s")", kind: "notice")) }

@@ -14,6 +14,7 @@ final class HostSupervisor: ObservableObject {
     @Published var isBusy = false
     private(set) var epoch: String?
     private(set) var supportsReadCancellation = false
+    private(set) var supportsCodexAgents = false
     private static let cancellableReads: Set<String> = ["session.history", "session.version.page"]
     private var dispatchedReads: [String: (cancellation: HostCommandCancellation, frame: [String: WireValue])] = [:]
     var onEvent: (([String: WireValue]) -> Void)?
@@ -253,6 +254,7 @@ final class HostSupervisor: ObservableObject {
         for waiter in readyWaiters { waiter.resume(throwing: error) }; readyWaiters.removeAll()
         for reply in replies.values { reply.resume(throwing: error) }; replies.removeAll()
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
+        supportsCodexAgents = false
         let settlements = commandSettlements; commandSettlements.removeAll()
         for waiters in settlements.values { for waiter in waiters { waiter.resume() } }
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
@@ -284,6 +286,7 @@ final class HostSupervisor: ObservableObject {
                       let hostEpoch = frame["hostEpoch"]?.string else { fail("Packaged native runtime version or capability mismatch"); shutdown(); return }
                 epoch = hostEpoch; isReady = true; status = "Ready · Swift"
                 supportsReadCancellation = capabilities.contains("read-cancel")
+                supportsCodexAgents = capabilities.contains("subagents-codex-v4")
                 handshakeWatchdog?.cancel(); handshakeWatchdog = nil
                 for waiter in readyWaiters { waiter.resume() }; readyWaiters.removeAll(); return
             }

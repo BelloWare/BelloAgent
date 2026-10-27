@@ -73,6 +73,7 @@ extension WorkspaceModel {
         return totals.flatMap { $0.costSamples > 0 ? $0.costUSD : nil }
     }
     func subagentSearchTitle(_ chat: ChatRecord) -> String {
+        if chat.isSubagent, SubagentLabel.task(chat.subagentTaskName) != nil { return chat.displayTitle }
         guard let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) else { return chat.displayTitle }
         return (chat.isSubagent ? chat.subagentShortTitle : chat.title) + " — in " + (record(owner)?.title ?? "Unavailable parent")
     }
@@ -261,5 +262,5 @@ extension WorkspaceModel {
 }
 
 extension ChatRecord {
-    var subagentShortTitle: String { (subagentNumber.map { "#\($0)" } ?? "Sub-agent") + " · " + title }
+    var subagentShortTitle: String { SubagentLabel.task(subagentTaskName) ?? (subagentNumber.map { "#\($0)" } ?? "Sub-agent") + " · " + title }
 }

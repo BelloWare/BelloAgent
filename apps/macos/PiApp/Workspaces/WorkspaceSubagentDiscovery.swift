@@ -10,6 +10,8 @@ extension WorkspaceModel {
         for display in added.values {
             display.subagentNumbers.merge(numbers, uniquingKeysWith: { _, saved in saved })
             display.subagentEfforts = subagentEfforts
+            display.subagentNames = Dictionary(chats.compactMap { chat in chat.subagentTaskName.map { (chat.id, $0) } }, uniquingKeysWith: { first, _ in first })
+            if let item = record(display.id) { display.supportsCodexAgents = hosts[item.workspaceID]?.supportsCodexAgents == true }
             display.subagentCosts = budgetStates.reduce(into: [:]) { result, entry in
                 if record(entry.key)?.delegation?.budgetOwnerSessionID == display.id, entry.value.reading.spentUSD != nil {
                     result[entry.key] = SubagentCostPresentation(costReading(for:entry.key))
@@ -52,7 +54,7 @@ extension WorkspaceModel {
             value.link == found.header.link && value.revision > 0 &&
                 ((value.turn ?? 1) > (found.turn ?? 1) || ((value.turn ?? 1) == (found.turn ?? 1) && (!found.hasTerminalRecord || value.status == found.status))) ? value : nil
         }
-        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel, costPaused: found.costPaused ? true : nil)
+        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel, taskName: found.header.taskName, forkTurns: found.header.forkTurns, costPaused: found.costPaused ? true : nil)
         if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
         if live != nil { observeSubagentCost(summary) }
@@ -75,6 +77,9 @@ extension WorkspaceModel {
             for display in displays.values where display.subagentNumbers[child.id] != number {
                 display.subagentNumbers[child.id] = number
             }
+        }
+        if let name = child.subagentTaskName {
+            for display in displays.values where display.subagentNames[child.id] != name { display.subagentNames[child.id] = name }
         }
     }
 

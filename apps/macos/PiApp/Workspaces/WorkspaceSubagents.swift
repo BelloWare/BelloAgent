@@ -214,8 +214,9 @@ extension WorkspaceModel {
         // copied provenance from other families already known to the display.
         displays[parentID]?.subagentNumbers.merge(projection.subagentNumbers, uniquingKeysWith: { _, current in current })
         for child in subagentChildren(of: parentID) where displays[child.id] != nil {
-            displays[child.id]?.agentCoordination = entries.filter { $0.value.childID == child.id }
+            displays[child.id]?.agentCoordination = entries.filter { $0.value.childID == child.id || $0.value.sourceSessionID == child.id || $0.value.recipientID == child.id }
             displays[child.id]?.heldAgentChildren = projection.heldChildren
+            if displays[child.id]?.supportsCodexAgents == true { displays[child.id]?.childSummaries = displays[parentID]?.childSummaries ?? [:] }
             displays[child.id]?.subagentNumbers.merge(projection.subagentNumbers, uniquingKeysWith: { _, current in current })
         }
     }
@@ -224,7 +225,7 @@ extension WorkspaceModel {
         try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
         let directory = try subagentDirectory(parent.workspaceID)
         let path = directory.appendingPathComponent(summary.link.childSessionID + ".jsonl")
-        let header: SubagentHeader
+        var header: SubagentHeader
         do { header = try await history.subagentHeader(path: path, directory: directory, expected: SubagentTarget(summary.link)) }
         catch is CancellationError { throw CancellationError() }
         catch {
@@ -237,6 +238,7 @@ extension WorkspaceModel {
         if ordinal == nil, let path = parent.path {
             ordinal = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id, childID: summary.link.childSessionID).first?.number
         }
+        header.taskName = summary.taskName ?? header.taskName; header.forkTurns = summary.forkTurns ?? header.forkTurns
         let found = DiscoveredSubagent(header: header, path: path.path, task: task, status: summary.status, number: ordinal)
         try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary, connection: connection)
     }

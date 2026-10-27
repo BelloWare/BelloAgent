@@ -236,8 +236,9 @@ import Combine
                     reachedMainAgents = true; newSide(); rows.append(heading("Sub-agents"))
                 }
                 let ownerTitle = model.record(ownerID)?.title ?? "Unavailable parent"
-                let detail = [ownerID == value.ownerID ? nil : "in " + ownerTitle, member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-                let compactDetail = [member.statusLabel, member.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
+                let description = member.chat.subagentTaskName == nil ? nil : member.chat.title
+                let detail = [description, ownerID == value.ownerID ? nil : "in " + ownerTitle, member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let compactDetail = [description, member.statusLabel, member.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
                 let attribution = model.costReading(for:member.chat.id).costAttribution.map { ". " + $0 } ?? ""
                 let row = row(member.label, detail: embedded ? compactDetail : detail, id: "open-agent-" + member.chat.id,
                     label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail + attribution, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
@@ -253,9 +254,9 @@ import Combine
             case .inherited(let original, let availability):
                 if inheritedGroups.insert(original.forkID).inserted { rows.append(heading("From the original chat")) }
                 let detail = availability.reason ?? availability.title + " · Read-only"
-                let action = row("#\(original.number) · " + original.title, detail: detail,
+                let action = row(SubagentLabel.task(original.taskName) ?? "#\(original.number) · " + original.title, detail: (original.taskName == nil ? "" : original.title + " · ") + detail,
                     id: "open-original-" + original.forkID + "-" + original.target.sessionID,
-                    label: "Open original " + SubagentLabel.title(original.number, original.title) + ", " + detail,
+                    label: "Open original " + SubagentLabel.title(original.number, original.title, taskName: original.taskName) + ", " + detail,
                     current: original.target.sessionID == sessionID, depth: entry.depth) { [weak model, close] in
                     guard availability.reason == nil else { return }
                     close(); Task { await model?.openOriginalSubagent(original.target, from: original.forkID) }

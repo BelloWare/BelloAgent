@@ -44,7 +44,7 @@ extension HistoryReader {
         var rows: [[String: WireValue]] = []
         try subagentRecords(path) { row, line in rows.append(row); return line < 3 }
         guard rows.count >= 2, rows[0]["type"]?.string == "session", rows[0]["version"]?.number == 3, rows[0]["id"]?.string == expected.sessionID,
-              ["pi-app.native.v2", "pi-app.native.v3"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2 else { throw StoreError.invalidRecord }
+              ["pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2 else { throw StoreError.invalidRecord }
         if rows.count > 2 { _ = try subagentHeader(path: path, directory: directory, expected: expected) }
     }
     /// The owning journal is the authority even before a child file exists.
@@ -183,7 +183,7 @@ extension HistoryReader {
             do {
                 try subagentRecords(path) { row, line in
                     if line <= 3 { prefix.append(row) }
-                    if line == 2, !["pi-app.native.v2", "pi-app.native.v3"].contains(row["customType"]?.string ?? "") { return false }
+                    if line == 2, !["pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(row["customType"]?.string ?? "") { return false }
                     if row["customType"]?.string == "pi-app.subagent-terminal.v1", prefix.count == 3,
                        let data = row["data"]?.object,
                        data["delegationID"] == prefix[2]["data"]?.object?["link"]?.object?["delegationID"],

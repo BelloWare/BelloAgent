@@ -9,7 +9,7 @@ struct AgentMessageReference: Sendable, Equatable {
 extension WorkspaceModel {
     func openAgentSource(_ reference: AgentMessageReference, from sessionID: String) async {
         guard let child = record(reference.childID), let link = child.delegation, link.valid,
-              [link.budgetOwnerSessionID, child.id].contains(sessionID), let parent = record(link.budgetOwnerSessionID),
+              (sessionID == link.budgetOwnerSessionID || record(sessionID)?.delegation?.budgetOwnerSessionID == link.budgetOwnerSessionID), let parent = record(link.budgetOwnerSessionID),
               parent.workspaceID == child.workspaceID, let path = parent.path else { return }
         let navigation = transcriptNavigation(sessionID, advancing: true)
         func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) }
@@ -18,7 +18,7 @@ extension WorkspaceModel {
             if let agentCoordinationLoader { state = try await agentCoordinationLoader(URL(fileURLWithPath: path), parent.id) }
             else { state = try await history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: parent.id) }
             guard current() else { return }
-            if let entry = state.entries.first(where: { $0.id == reference.eventID && $0.childID == child.id && $0.turn == reference.turn }) {
+            if let entry = state.entries.first(where: { $0.id == reference.eventID && $0.childID == child.id && $0.turn == reference.turn && [parent.id, $0.sourceSessionID, $0.recipientID].contains(sessionID) }) {
                 if reference.recipient {
                     if let row = entry.recipientMessageID, entry.disposition == "delivered" { _ = await revealMessage(sessionID: entry.recipientID, messageID: row, origin: navigation.reader) }
                     else { await openSubagentParent(link, origin: navigation.reader) }
@@ -37,8 +37,9 @@ extension WorkspaceModel {
             var target = SubagentTarget(link); target.receiptSource = true; target.turn = entry.turn
             target.assistantID = entry.sourceMessageID ?? target.assistantID; target.toolCallID = entry.sourceToolCallID ?? target.toolCallID
             await openSubagentParent(link, returningTo: target, origin: origin)
-        } else if entry.sourceSessionID == child.id {
-            var target = SubagentTarget(link); target.turn = entry.turn
+        } else if let source = record(entry.sourceSessionID), let sourceLink = source.delegation,
+                  source.workspaceID == child.workspaceID, sourceLink.budgetOwnerSessionID == parent.id {
+            var target = SubagentTarget(sourceLink); if source.id == child.id { target.turn = entry.turn }
             _ = await openSubagent(target, sourceMessage: entry.sourceMessageID, sourceToolCall: entry.sourceToolCallID)
         }
     }
