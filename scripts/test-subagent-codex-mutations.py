@@ -29,7 +29,7 @@ case('name_unique', CONTRACT+'testNamesAndAddressing', ('SubagentCodexContract.s
 case('root_spawn', MESSAGES+'testSiblingMessagesTasksAndRootOnlySpawn',
      ('AgentCodexCommands.swift','guard call.name != "spawn_agent" else','guard '+enabled('root_spawn')+' || call.name != "spawn_agent" else'),
      ('AgentCodexCommands.swift','guard source == nil else','guard '+enabled('root_spawn')+' || source == nil else'))
-case('fork_boundary',RUNTIME,('AgentCodexContext.swift','messages:seed.messages.map','messages:('+enabled('fork_boundary')+' ? context : seed.messages).map'))
+case('fork_boundary',RUNTIME,('AgentCodexContext.swift','let messages = seed.messages.map','let messages = ('+enabled('fork_boundary')+' ? context : seed.messages).map'))
 case('fork_consent', CONTRACT+'testInheritedRowsStripConsentAndKeepContent',('SubagentCodexContract.swift','row.userInput = nil','if !'+enabled('fork_consent')+' { row.userInput = nil }'))
 case('fork_cache', RUNTIME,('SessionSide.swift','{ return cache }','{ return '+enabled('fork_cache')+' ? id : cache }'))
 case('fork_prompt', RUNTIME,('AgentSteeringCoordinator.swift','if codex == nil {','if codex == nil || '+enabled('fork_prompt')+' {'))
@@ -49,12 +49,12 @@ case('interrupt_note',MESSAGES+'testRootInterruptSuppressesResultAndNextTaskCarr
 case('name_adoption',PERSIST+'testV3NamesAdoptOnceWithLifetimeUniquenessAndCheckpointReplay',('AgentCodexContext.swift','if changed { try journal?.promoteToCodex','if changed && !'+enabled('name_adoption')+' { try journal?.promoteToCodex'))
 case('marker_promotion', 'AgentCodexRuntimeTests/testNewRunAdvertisesV4AndPromotesMarker',('SessionJournal.swift','marker:JournalRecordKind.codexMarker)','marker:'+enabled('marker_promotion')+' ? JournalRecordKind.steeringMarker : JournalRecordKind.codexMarker)'))
 case('fork_publication_repair',PERSIST+'testPartialForkPublicationRecoversNotExecutedAndNoConsent',('AgentFamilyRecovery.swift','if exists, !seedComplete, let seed = plan.forkSeed {','if exists, !seedComplete, let seed = plan.forkSeed, !'+enabled('fork_publication_repair')+' {'))
-case('parent_stop',MESSAGES+'testParentHumanStopRecordsTheInitiator',('Sessions.swift','        recordAgentUserStop()','        if !'+enabled('parent_stop')+' { recordAgentUserStop() }'))
+case('parent_stop',MESSAGES+'testParentHumanStopRecordsTheInitiator',('Sessions.swift','if userInitiated { recordAgentUserStop() }','if userInitiated && !'+enabled('parent_stop')+' { recordAgentUserStop() }'))
 case('late_interrupt_note',PERSIST+'testLateMirrorsKeepInterruptNotesAndUndeliveredTasksStayTyped',('AgentFamilyJournal.swift','if turn.interruptedBy == nil { turn.interruptedBy = old.interruptedBy }','if turn.interruptedBy == nil && !'+enabled('late_interrupt_note')+' { turn.interruptedBy = old.interruptedBy }'))
 case('undelivered_envelope',PERSIST+'testLateMirrorsKeepInterruptNotesAndUndeliveredTasksStayTyped',('AgentFamilyRecovery.swift','if message.type != nil {','if message.type != nil && !'+enabled('undelivered_envelope')+' {'))
 case('idle_v2_interrupt',PERSIST+'testInterruptOfNamedIdleV2AgentSucceedsWithoutAdoptingATurn',('AgentCodexCommands.swift','guard let latest = state.latest(target) else {','guard let latest = state.latest(target) else {\n                if '+enabled('idle_v2_interrupt')+' { throw AgentError("agent_not_found","Old rejection") }'))
 case('publication_closure','AgentCodexRuntimeTests/testFailedChildPublicationDisposesItsTaskAndLetsFamilyClose',('AgentSteeringCoordinator.swift','try await seal(turn:failed,parent:parent,task:plan.origin.description,child:nil)','if '+enabled('publication_closure')+' { try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,failed) } else { try await seal(turn:failed,parent:parent,task:plan.origin.description,child:nil) }'))
-case('publication_request_fence',PERSIST+'testPartialForkPublicationRecoversNotExecutedAndNoConsent',('AgentCodexContext.swift','guard referenceFound, found.count == messages.count else','guard '+enabled('publication_request_fence')+' || referenceFound, found.count == messages.count else'))
+case('publication_request_fence',PERSIST+'testPartialForkPublicationRecoversNotExecutedAndNoConsent',('AgentCodexContext.swift','guard complete(rows:rows,reference:saved) else','guard '+enabled('publication_request_fence')+' || complete(rows:rows,reference:saved) else'))
 for mutation, limit in [('eight_events',8),('one_message',1)]:
     case(mutation,'AgentCodexDeliveryTests/testAllFittingMessagesDeliverInOneFairRowWithoutOldCaps',('AgentSteeringMessaging.swift','        var body = payload(selected)','        if '+enabled(mutation)+' { selected = Array(selected.prefix('+str(limit)+')) }\n        var body = payload(selected)'))
 case('byte_cap','AgentCodexDeliveryTests/testAllFittingMessagesDeliverInOneFairRowWithoutOldCaps',('AgentSteeringMessaging.swift','        var body = payload(selected)','        if '+enabled('byte_cap')+' { while selected.count > 1 && payload(selected).encoded().utf8.count > 16384 { selected.removeLast() } }\n        var body = payload(selected)'))
@@ -63,6 +63,35 @@ case('context_fit','AgentCodexDeliveryTests/testContextCapacityStillRejectsWhole
 case('delivered_turn',RUNTIME,('AgentFamilyJournal.swift','if let deliveredTurn = delivery.eventTurns?[id] {','if let deliveredTurn = delivery.eventTurns?[id], !'+enabled('delivered_turn')+' {'))
 case('frozen_v3_pause','AgentCodexRuntimeTests/testPausedV3RunKeepsItsContractUntilAFreshTask',('SessionAgentCommands.swift','agentContractVersion = codex && !legacyPause ? 4 : 3','agentContractVersion = codex && (!legacyPause || '+enabled('frozen_v3_pause')+') ? 4 : 3'))
 case('report_caps'     ,'AgentMailboxPolicyTests/testPendingReportsAndRateHaveNoSmallLimits',('AgentMailboxPolicy.swift','static func validate(_ op: AgentOperation, state: AgentFamilyState) throws {','static func validate(_ op: AgentOperation, state: AgentFamilyState) throws {\n        if '+enabled('report_caps')+', state.messages.count >= 4 { throw AgentError("fixture_mutation","Old pending cap") }'))
+
+FORK = PERSIST+'testForkPublicationChecksReferenceOrderAndRoundTripDigest'
+RECOVERY = PERSIST+'testForkRecoveryUsesReopenedParentContextAndFailsClosedOnChangedOrMissingRows'
+PAUSE = 'FamilyLimitPauseTests/testV4ForkResumeKeepsTurnSeedAndTaskAndDeliversWholeFinal'
+case('fork_body_transport',RUNTIME,('AgentCodexCommands.swift','parent:owner,seedMessages:seedMessages)','parent:owner,seedMessages:'+enabled('fork_body_transport')+' ? [] : seedMessages)'))
+case('fork_reference',FORK,
+     ('AgentCodexContext.swift','saved == reference && matches','('+enabled('fork_reference')+' || saved == reference) && matches'),
+     ('AgentCodexContext.swift','guard row["data"] == reference else','guard '+enabled('fork_reference')+' || row["data"] == reference else'))
+case('fork_digest',FORK,('AgentCodexContext.swift','Self.contentDigest(messages) == digest','('+enabled('fork_digest')+' || Self.contentDigest(messages) == digest)'))
+case('fork_order',FORK,('AgentCodexContext.swift','matches(Array(rows.prefix(ids.count)))','matches('+enabled('fork_order')+' ? Array(rows.prefix(ids.count)).sorted { ids.firstIndex(of:$0.id)! < ids.firstIndex(of:$1.id)! } : Array(rows.prefix(ids.count)))'))
+case('fork_body_exclusion',PERSIST+'testForkReferenceExcludesBodiesFromOperationsAndCheckpoint',
+     ('AgentCodexContext.swift','    var digest: String\n','    var digest: String\n    var fixtureBodies: [ChatMessage]?\n'),
+     ('AgentCodexContext.swift','case from, cutoffEntryID = "cutoffEntryId", ids, digest','case from, cutoffEntryID = "cutoffEntryId", ids, digest, fixtureBodies'),
+     ('AgentCodexContext.swift','ids = messages.map(\\.id); digest = Self.contentDigest(messages)','ids = messages.map(\\.id); digest = Self.contentDigest(messages); fixtureBodies = '+enabled('fork_body_exclusion')+' ? messages : nil'))
+case('fork_parent_digest',RECOVERY,('AgentCodexContext.swift','guard matches(messages) else','guard '+enabled('fork_parent_digest')+' || matches(messages) else'))
+case('fork_parent_missing',RECOVERY,('AgentCodexContext.swift','guard '+enabled('fork_parent_digest')+' || matches(messages) else','guard '+enabled('fork_parent_digest')+' || '+enabled('fork_parent_missing')+' && messages.count < ids.count || matches(messages) else'))
+case('fork_followup_fence',RECOVERY,('AgentCodexCommands.swift','if let seed = saved.forkSeed {','if let seed = saved.forkSeed, !'+enabled('fork_followup_fence')+' {'))
+case('checkpoint_v2','JournalCheckpointTests/testAChatOpensFromItsMetadataFileAsAFullReplayWould',('JournalCheckpoint.swift','static let currentVersion = 2','static let currentVersion = '+enabled('checkpoint_v2')+' ? 3 : 2'))
+case('checkpoint_family_gate','JournalCheckpointTests/testFamilyScopedMarkersRejectOldDerivedStateOnlyForFamilies',('SessionCheckpointing.swift','guard (saved["subagentEffortVersion"].int == 1','guard '+enabled('checkpoint_family_gate')+' || (saved["subagentEffortVersion"].int == 1'))
+case('child_sender',MESSAGES+'testMissingChildSenderNameFailsClosed',('AgentCodexCommands.swift','guard let name = names[source.childID] else','guard let name = names[source.childID] ?? ('+enabled('child_sender')+' ? "/root" : nil) else'))
+for key, scalar in [('envelope_vtab','000B'),('envelope_formfeed','000C')]:
+    case(key,CONTRACT+'testEnvelopeIndentsEveryCharacterSetNewline',('SubagentCodexContract.swift','.replacingOccurrences(of:"\\u{'+scalar+'}",with:"\\n")','.replacingOccurrences(of:'+enabled(key)+' ? "never-fixture-newline" : "\\u{'+scalar+'}",with:"\\n")'))
+case('v4_resume_task',PAUSE,('SessionAgentCommands.swift','if history.contains(where: { $0.id == turn.inputID }) { return .delivered }','if '+enabled('v4_resume_task')+' { return .fresh }; if history.contains(where: { $0.id == turn.inputID }) { return .delivered }'))
+case('v4_pause_final',PAUSE,('AgentFamilyRecovery.swift','case .completed: text = '+enabled('whole_final')+' ? String(full.prefix(8192)) : full','case .completed: text = ('+enabled('whole_final')+' || '+enabled('v4_pause_final')+') ? String(full.prefix(8192)) : full'))
+case('v4_pause_idle_mail',PAUSE,('SessionAgentDelivery.swift','('+enabled('idle_closure')+' || !($0.queueOnly == true && $0.recipientChildID != nil))','('+enabled('idle_closure')+' || '+enabled('v4_pause_idle_mail')+' || !($0.queueOnly == true && $0.recipientChildID != nil))'))
+case('v4_resume_seed',PAUSE,('AgentSteeringCoordinator.swift','            if job.resuming {','            if job.resuming {\n                if '+enabled('v4_resume_seed')+', let seed = job.plan.forkSeed { try await child.appendAgentRecord(JournalRecordKind.agentForkSeed,seed.reference) }'))
+case('fork_recovery_completeness',PERSIST+'testPartialForkPublicationRecoversNotExecutedAndNoConsent',('AgentFamilyRecovery.swift','let seedComplete = plan.forkSeed.map { $0.complete(rows:orderedRows,reference:seedReference) } ?? true','let seedComplete = '+enabled('fork_recovery_completeness')+' || (plan.forkSeed.map { $0.complete(rows:orderedRows,reference:seedReference) } ?? true)'))
+case('fork_recovery_inherited',RECOVERY,('AgentCodexContext.swift','let messages = context[..<boundary].map { SubagentCodexContract.inherited($0,from:from,cutoff:cutoffEntryID) }','let messages = '+enabled('fork_recovery_inherited')+' ? Array(context[..<boundary]) : context[..<boundary].map { SubagentCodexContract.inherited($0,from:from,cutoff:cutoffEntryID) }'))
+case('v4_pause_stop','FamilyLimitPauseTests/testV4WholeChatStopDuringPauseRecordsTheUser',('SessionAgentCommands.swift','if costPaused || costResumePending {\n                for var turn','if (costPaused || costResumePending) && !'+enabled('v4_pause_stop')+' {\n                for var turn'))
 
 
 def main():
@@ -86,7 +115,7 @@ def main():
         if args.prepare_only:
             print(f'Prepared {len(CASES)} fixture-only mutations'); return
         with (logs/'baseline.log').open('w') as log:
-            subprocess.run(base+['--filter','AgentCodex|SubagentCodexContract|AgentMailboxPolicy'],stdout=log,stderr=subprocess.STDOUT,check=True)
+            subprocess.run(base+['--filter','AgentCodex|SubagentCodexContract|AgentMailboxPolicy|FamilyLimitPauseTests/testV4'],stdout=log,stderr=subprocess.STDOUT,check=True)
     selected = [x for x in CASES if not args.cases or x[0] in args.cases]
     for name, test, _ in selected:
         path = logs/(name+'.log')

@@ -29,9 +29,15 @@ extension AgentSteeringCoordinator {
         }
         try await owner.adoptCodexNames()
         var state = await owner.agentState()
-        let names = state.names ?? [:], sender = source.flatMap { names[$0.childID] } ?? "/root"
+        let names = state.names ?? [:]
+        let sender: String
+        if let source {
+            guard let name = names[source.childID] else { throw SubagentRecovery.damaged() }
+            sender = name
+        } else { sender = "/root" }
         if call.name == "list_agents" { return ["version":4,"output":JSON(try await codexList(call.arguments,owner:owner).encoded())] }
         var plan: SubagentPlan?, turn: AgentChildTurn?, message: AgentFamilyMessage?
+        var seedMessages: [ChatMessage] = []
         var target: String?, interrupt: AgentTurnTarget?, interruptBy: String?
         var receipt: JSON = ["version":4,"accepted":true,"operation_id":JSON(AgentOperation.id(key)),"tool":JSON(call.name)]
         if let addressed = call.arguments["target"].text {
@@ -56,7 +62,7 @@ extension AgentSteeringCoordinator {
             let prefix = AgentCodexContext(cacheSessionID:await owner.promptCacheSessionID,resources:env.resources,tools:offered.filter { selected.contains($0.name) || SubagentCodexContract.names.contains($0.name) })
             let link = SubagentLink(delegationID:UUID().uuidString,childSessionID:UUID().uuidString,budgetOwnerSessionID:owner.id,call:key,parentTurnID:env.turnID,parentExecutionID:env.executionID,parentAttemptID:env.parentAttemptID)
             plan = SubagentPlan(origin:.init(link:link,description:spec.description,model:grant,tools:selected.sorted(),readOnly:env.readOnly,resourceRevision:env.resources.revision,mcpPolicy:env.mcpPolicy,frozenResources:env.resources,taskName:name,forkTurns:fork,codexContext:prefix),task:spec.task,resultMessageID:UUID().uuidString)
-            if fork == "all" { plan?.forkSeed = await owner.codexSeed() }
+            if fork == "all" { let seed = await owner.codexSeed(); plan?.forkSeed = seed.reference; seedMessages = seed.messages }
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
             turn?.effort = grant.thinkingLevel; turn?.taskName = name; turn?.forkTurns = fork; turn?.sender = sender
             let payload = SubagentCodexContract.handoff(name:name,fork:fork) + "\n\n" + spec.task
@@ -87,6 +93,7 @@ extension AgentSteeringCoordinator {
                 guard !(state.run?.heldChildren.contains(target) ?? false), latest.status != .stopping else { throw AgentError("subagent_stopped","Child is stopping or held by user Stop") }
                 let grant = try saved.origin.model.selectingEffort(call.arguments["reasoning_effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
                 if latest.status.terminal {
+                    if let seed = saved.forkSeed { try seed.requirePublished(at:env.directory.appendingPathComponent(target + ".jsonl")) }
                     if latest.status != .notExecuted, !FileManager.default.fileExists(atPath:env.directory.appendingPathComponent(target + ".jsonl").path) { throw AgentError("subagent_missing","The saved child conversation is missing; it cannot be resumed") }
                     turn = newTurn(child:target,number:latest.turn + 1,text:call.arguments["message"].text!,key:key,env:env)
                     turn?.taskName = name; turn?.forkTurns = saved.origin.forkTurns ?? "none"; turn?.sender = sender; turn?.effort = grant.thinkingLevel
@@ -128,7 +135,7 @@ extension AgentSteeringCoordinator {
         }
         let op = try await owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,plan:plan,turn:turn,message:message,epoch:env.executionID,sourceTurn:source,interruptTarget:interrupt,interruptBy:interruptBy),generation:env.generation)
         if source != nil { try await caller.appendAgentRecord(JournalRecordKind.agentOperation,op,owner:owner.id) }
-        try await enqueue(op,env:env,state:state,parent:owner)
+        try await enqueue(op,env:env,state:state,parent:owner,seedMessages:seedMessages)
         if let interrupt {
             jobs[interrupt.id]?.turn.interruptedBy = sender
             await stop(owner:owner.id,target:interrupt,human:false)

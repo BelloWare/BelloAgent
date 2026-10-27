@@ -6,6 +6,7 @@ Only the generated source copy contains fault hooks. No installed app/data.
 """
 import argparse
 import http.server
+import hashlib
 import importlib.util
 import json
 import os
@@ -25,7 +26,7 @@ ROOT, BUILD = v2.ROOT, v2.BUILD
 POINTS = ['promotion-copy-synced', 'promotion-replaced'] + [kind+'-'+edge for kind in
     ['start', 'follow-up', 'steer', 'report', 'report-mirror', 'parent-row', 'child-row',
      'delivery-prepared', 'report-receipt', 'delivery-commit', 'child-terminal', 'owner-terminal', 'family-fence',
-     'legacy-snapshot', 'fork-seed', 'sibling-delivery', 'name-adoption'] for edge in ['before', 'synced']] + ['stop', 'shutdown', 'update']
+     'legacy-snapshot', 'fork-seed', 'fork-body', 'sibling-delivery', 'name-adoption'] for edge in ['before', 'synced']] + ['fork-body-written', 'fork-parent-changed', 'fork-parent-missing', 'stop', 'shutdown', 'update']
 BARRIER = r'''
 import Foundation
 import Darwin
@@ -59,6 +60,7 @@ enum FixtureSteeringBarrier {
         if !parent && value["message"]["toolName"].text == "send_message" { hit("report-receipt-" + edge) }
         if parent && kind == JournalRecordKind.agentTurn && data["epoch"].text == "legacy" { hit("legacy-snapshot-" + edge) }
         if kind == JournalRecordKind.agentForkSeed { hit("fork-seed-" + edge) }
+        if !parent && !value["message"]["nativeInherited"].isNull { hit("fork-body-" + edge) }
         if parent && kind == JournalRecordKind.agentNames { hit("name-adoption-" + edge) }
         if value["message"]["nativeAgentDelivery"]["events"].list.contains(where: { $0["type"].text == "MESSAGE" && $0["sender"].text == "/root/agent_0" && $0["recipient"].text == "/root/agent_1" }) { hit("sibling-delivery-" + edge) }
         if kind == JournalRecordKind.agentTerminal { hit((parent ? "owner-terminal-" : "child-terminal-") + edge) }
@@ -91,6 +93,16 @@ def fixture_binary():
     text = text.replace('        try copy.synchronize()','        try copy.synchronize()\n        if url.lastPathComponent == "parent.jsonl" { FixtureSteeringBarrier.hit("promotion-copy-synced") }')
     text = text.replace('            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()','            if url.lastPathComponent == "parent.jsonl" { FixtureSteeringBarrier.hit("promotion-replaced") }\n            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()')
     journal.write_text(text)
+    publication = core/'AgentLegacyAdoption.swift'
+    text = publication.read_text()
+    needle = 'id:message.id,flush:false) }'
+    assert text.count(needle) == 1
+    publication.write_text(text.replace(needle,'id:message.id,flush:false); FixtureSteeringBarrier.hit("fork-body-written") }'))
+    session = core/'Sessions.swift'
+    text = session.read_text()
+    needle = '        cancelHistoryLoads(); stop(userInitiated:false); await runTask?.value'
+    assert text.count(needle) == 1
+    session.write_text(text.replace(needle,needle + '\n        if ProcessInfo.processInfo.environment["PI_STEERING_CHECKPOINT"] == "1" { spansScannedTo = 0; refreshCheckpoint() }'))
     with (BUILD/'logs/phase4-crash-build.log').open('w') as log:
         subprocess.run(['swift','build','--package-path',str(source),'--scratch-path',str(BUILD/'steering-crash-build'),'--product','pi-native-host'],stdout=log,stderr=subprocess.STDOUT,check=True)
     return BUILD/'steering-crash-build/debug/pi-native-host'
@@ -107,6 +119,7 @@ def run(point, fixture, recovery, older=None):
         requests = []; resumed = threading.Event(); steer_seen = threading.Event(); release = threading.Event()
         controlled = point in ('stop','shutdown','update'); legacy = point.startswith('legacy-snapshot')
         adoption = point.startswith('name-adoption'); sibling = point.startswith('sibling-delivery')
+        damaged_parent = point in ('fork-parent-changed','fork-parent-missing')
         legacy_ready = threading.Event()
         def call(name, identity, arguments):
             return dict(type='function_call',id='item-'+identity,call_id=identity,name=name,arguments=json.dumps(arguments))
@@ -125,7 +138,8 @@ def run(point, fixture, recovery, older=None):
                     original_child = next(s for s,_ in requests if s != 'parent')
                     output = [call('followup_task','legacy-follow',dict(target='legacy_conversation',message='Parent follow-up'))] if 'legacy-follow' not in outputs else []
                 elif session == 'parent':
-                    if resumed.is_set(): output = []
+                    if resumed.is_set():
+                        output = [call('followup_task','damaged-follow',dict(target='agent_0',message='Explicit follow-up'))] if damaged_parent and 'damaged-follow' not in outputs else []
                     elif not outputs: output = [call('spawn_agent','start-'+str(i),dict(task_name=f'agent_{i}',message='Child first task')) for i in range(18 if controlled else 2 if sibling else 1)]
                     elif any(e['kind'] == 'question' for e in events) and 'steer' not in outputs:
                         question = next(e for e in events if e['kind'] == 'question')
@@ -180,7 +194,7 @@ def run(point, fixture, recovery, older=None):
                 v2.command(peer,'turn.submit',dict(clientTurnId='legacy-user',text='Complete the v2 task'),'parent')
                 v2.wait_for(lambda:v2.command(peer,'session.status',{},'parent')['state'] == 'idle')
                 peer.close(); peer = None; legacy_ready.set()
-            peer = opened(fixture,dict(os.environ,PI_STEERING_CRASH_POINT=point,PI_STEERING_BARRIER_FILE=str(root/'barrier')),resume=legacy or adoption)
+            peer = opened(fixture,dict(os.environ,PI_STEERING_CRASH_POINT='fork-seed-before' if damaged_parent else point,PI_STEERING_BARRIER_FILE=str(root/'barrier')),resume=legacy or adoption)
             v2.command(peer,'turn.submit',dict(clientTurnId='user',text='Do the synthetic parallel task'),'parent')
             if controlled:
                 v2.wait_for(lambda:v2.command(peer,'subagent.list',{},'parent')['total'] == 18)
@@ -214,6 +228,21 @@ def run(point, fixture, recovery, older=None):
             peer.process.kill(); peer.process.wait(); peer.close(); peer = None
             steer_seen.set(); resumed.set()
             count = len(requests); child_count = sum(s != 'parent' for s,_ in requests)
+            if damaged_parent:
+                path = sessions/'parent.jsonl'
+                ledger = rows(path)
+                seed = next(r['data']['plan']['forkSeed'] for r in ledger if r.get('customType') == 'pi-app.agent-operation.v1')
+                identity = seed['ids'][0]
+                if point == 'fork-parent-missing':
+                    removed = next(r for r in ledger if r.get('id') == identity)
+                    ledger = [r for r in ledger if r.get('id') != identity]
+                    # Keep a valid single branch so this tests missing model
+                    # context, rather than the independent branch-chain guard.
+                    for row in ledger:
+                        if row.get('parentId') == identity: row['parentId'] = removed.get('parentId')
+                else:
+                    next(r for r in ledger if r.get('id') == identity)['message']['content'] = [dict(type='text',text='Changed parent seed body')]
+                path.write_text(''.join(json.dumps(r,separators=(',',':'))+'\n' for r in ledger))
             effect = (root/'effects').read_bytes() if (root/'effects').exists() else b''
             assert effect in (b'',b'x',b'xy'), effect
             peer = opened(recovery)
@@ -223,12 +252,22 @@ def run(point, fixture, recovery, older=None):
             if older and any(r.get('customType') == 'pi-app.native.v4' for r in rows(sessions/'parent.jsonl')):
                 for path in sessions.glob('*.jsonl'):
                     if not any(r.get('customType') == 'pi-app.native.v4' for r in rows(path)): continue
+                    # Generate the child's own cache too, then verify every
+                    # checkpoint fence against its actual journal bytes.
+                    current = opened(fixture,dict(os.environ,PI_STEERING_CHECKPOINT="1"),identity=path.stem); current.close()
+                    meta_path = path.with_suffix('.jsonl.meta')
+                    meta_bytes = meta_path.read_bytes(); meta = json.loads(meta_bytes)
+                    assert meta['version'] == 2, (point,path,meta['version'])
                     before = path.read_bytes()
+                    for check in [meta['header'],meta['marker'],meta['last']] + ([meta['state']] if meta.get('state') else []) + meta.get('rebinds',[]):
+                        chunk = before[check['offset']:check['offset']+check['length']]
+                        assert hashlib.sha256(chunk).hexdigest() == check['sha256']
                     try:
                         old = opened(older,identity=path.stem); old.close(); raise AssertionError('Older helper accepted v4')
                     except AssertionError as error:
                         assert 'legacy_session' in str(error), str(error)
                     assert path.read_bytes() == before
+                    assert meta_path.read_bytes() == meta_bytes, 'Older helper changed valid v2 checkpoint'
                 if point == 'promotion-replaced':
                     # Break the marker only in a disposable copy. The actual
                     # old helper must then open it, proving the refusal above
@@ -245,7 +284,10 @@ def run(point, fixture, recovery, older=None):
                     print('CAUGHT actual 0.1.134 downgrade-marker mutation: removing the v4 fence permits opening',flush=True)
             peer = opened(recovery)
             ready = v2.command(peer,'session.snapshot',{},'parent')
-            if ready.get('continuable'):
+            if damaged_parent:
+                v2.command(peer,'turn.submit',dict(clientTurnId='explicit-follow',text='Follow up explicitly'),'parent')
+                v2.wait_for(lambda:v2.command(peer,'session.status',{},'parent')['state'] in ['idle','error'])
+            elif ready.get('continuable'):
                 v2.command(peer,'run.continue',{},'parent')
                 v2.wait_for(lambda:v2.command(peer,'session.status',{},'parent')['state'] in ['idle','error'])
             assert sum(s != 'parent' for s,_ in requests) == child_count, 'Resume re-executed accepted child work'
@@ -253,6 +295,23 @@ def run(point, fixture, recovery, older=None):
             ledger = rows(sessions/'parent.jsonl')
             accepted = [r['data'] for r in ledger if r.get('customType') == 'pi-app.agent-operation.v1']
             assert len({json.dumps(op['key'],sort_keys=True) for op in accepted}) == len(accepted)
+            for op in accepted:
+                seed = op.get('plan',{}).get('forkSeed')
+                if not seed: continue
+                assert set(seed) <= {'from','cutoffEntryId','ids','digest'}, seed.keys()
+                child_rows = rows(sessions/(op['plan']['origin']['link']['childSessionID']+'.jsonl'))
+                references = [r['data'] for r in child_rows if r.get('customType') == 'pi-app.agent-fork-seed.v1']
+                if damaged_parent:
+                    assert not references
+                    assert any(r.get('customType') == 'pi-app.subagent-turn-terminal.v1' and r['data']['status'] == 'not_executed' for r in child_rows)
+                    assert any(r.get('message',{}).get('toolName') == 'followup_task' and 'subagent_fork_publication' in json.dumps(r) for r in ledger)
+                else:
+                    assert references == [seed], (point,references,seed)
+                    inherited = [r for r in child_rows if r.get('id') in seed['ids']]
+                    assert [r['id'] for r in inherited] == seed['ids']
+                    values = [[r['id'],r['message']['content'],r['message']['nativeInherited']] for r in inherited]
+                    digest = hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+                    assert digest == seed['digest'], (point,digest,seed['digest'])
             delivered = [e for r in ledger for e in r.get('message',{}).get('nativeAgentDelivery',{}).get('eventIds',[])]
             assert len(delivered) == len(set(delivered)), 'Automatic event delivered twice'
             messages = {op['message']['id']:op['message'] for op in accepted if op.get('message')}

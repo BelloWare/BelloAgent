@@ -118,7 +118,7 @@ struct AgentDeliveryEvent: Codable, Sendable, Equatable {
     var envelope: String {
         // Normalize all line separators before framing; even CR-only and
         // Unicode separator payloads cannot create an unindented frame line.
-        let normalized = text.replacingOccurrences(of:"\r\n",with:"\n").replacingOccurrences(of:"\r",with:"\n").replacingOccurrences(of:"\u{0085}",with:"\n").replacingOccurrences(of:"\u{2028}",with:"\n").replacingOccurrences(of:"\u{2029}",with:"\n")
+        let normalized = text.replacingOccurrences(of:"\r\n",with:"\n").replacingOccurrences(of:"\r",with:"\n").replacingOccurrences(of:"\u{000B}",with:"\n").replacingOccurrences(of:"\u{000C}",with:"\n").replacingOccurrences(of:"\u{0085}",with:"\n").replacingOccurrences(of:"\u{2028}",with:"\n").replacingOccurrences(of:"\u{2029}",with:"\n")
         return "Message Type: \(type)\nTask name: \(recipient)\nSender: \(sender)\nPayload:\n" + normalized.components(separatedBy:"\n").map { "  " + $0 }.joined(separator:"\n")
     }
     static func metadata(_ events: [Self]) -> JSON { ["version":2,"eventIds":.array(events.map { JSON($0.id) }),"events":.array(events.map(\.json))] }

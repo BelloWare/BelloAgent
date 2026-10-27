@@ -265,7 +265,7 @@ Payload:
   - Message `type`, `sender` and `recipient` on accepted messages.
   - The fork seed reference.
   - The interrupt note.
-- Extend the v3 records rather than adding a second coordinator. Replay, checkpoints and slimming must carry the new fields (bump the derived checkpoint schema).
+- Extend the v3 records rather than adding a second coordinator. Replay, checkpoints and slimming must carry the new fields (retain checkpoint version 2; require the family-scoped `subagentEffortVersion == 1` and `subagentCodexVersion == 4` markers for a family, origin or plans, otherwise replay that chat).
 - **Format marker.** The first v4 mutation promotes a journal to `pi-app.native.v4` in the same way v3 promotion works: same-length marker, synced copy and rename, done during preflight. Older helpers (0.1.126–0.1.134) then refuse to write it; viewing and export still work. The owner approved this one-way approach for v3 in 0.1.126. Prove it with the actual-binary downgrade fixture against a 0.1.134 helper.
 - **Capability.** Advertise `subagents-codex-v4`. The app only offers v4 UI states when the helper advertises it, and always renders v3 and v2 history.
 - Existing v3 families in a new run: their children are renamed once (§2) and addressed by name. Their v3 history rows stay as they were.
@@ -831,17 +831,23 @@ Each copied message stores and exposes `nativeInherited:{from,cutoffEntryId}`; `
 }
 ```
 
-### Needs owner decision
+### Settled contract decisions
 
-- **List paging:** §2 requires bounded/paged results but specifies only `path_prefix`. Conservative implementation adds optional `cursor` and returns `next_cursor:null` on the last page. Options: keep this additive argument; use only prefix narrowing with an explicit overflow error; or add a separate paging tool. Cursor membership is frozen and bound to the family/prefix.
-- **Detail transport:** v3 has no helper message/turn detail endpoint despite its design text. Conservative implementation adds read-only `detail:"messages"|"turns"` modes to `subagent.list`; the default response is unchanged. Options: keep these modes; introduce separate read methods; or retain app-only journal scanning.
-- **Spawn description:** v4 omits the v3 `description` argument. The UI's secondary description is derived locally from `message` using the existing v2 label rule. Options: keep derivation; use the task name as the description; or add an explicit description argument later.
+- **List paging:** keep the additive optional `cursor` argument and `next_cursor:null` on the last page. Cursor membership is frozen and bound to the family/prefix.
+- **Detail transport:** keep the read-only `detail:"messages"|"turns"` modes on `subagent.list`; the default response is unchanged. Neither mode starts a turn or acknowledges mail.
+- **Spawn description:** derive the UI's secondary description locally from `message` using the existing v2 label rule.
 
 ### Recovery and interruption implementation notes
 
 A crash during fork publication still seals that accepted turn as `not_executed`.
-Recovery finishes only missing inherited rows and their seed reference from the
-original durable acceptance, after checking any existing rows. It never starts
+Recovery reconstructs the inherited bodies from the reopened parent model context
+before the spawning assistant row, by the ordered IDs in the acceptance reference.
+The reference holds only `from`, `cutoffEntryId`, ordered IDs and a SHA-256 digest
+over the ordered `[id, content, nativeInherited]` tuples that round-trip through
+the child journal. Bodies never enter parent operation records, plans or checkpoints.
+Recovery re-applies inheritance, verifies the digest and any existing prefix,
+then writes only missing rows and their reference. A missing or changed parent
+row leaves publication incomplete and a later follow-up refused. It never starts
 the accepted turn. This leaves a complete history for a later explicit
 `followup_task`; that follow-up does not seed again. Conflicting seed evidence,
 or a missing seed after possible execution, fails closed.
@@ -850,13 +856,12 @@ A whole-chat human Stop records the intent on the family run before cancelling
 work. Sealing applies that intent to interrupted turns, without changing a
 previously sealed answer. Individual child Stop retains its existing human hold.
 
-**Needs owner decision — undelivered running tasks.** The v3 path records and
+**Decided by the lead: keep the root notice — undelivered running tasks.** The v3 path records and
 reports a task that was accepted but interrupted before delivery. V4 keeps that
 notice as a typed `MESSAGE` from the target agent to `/root`, saying “A task for
 /root/audit was retained but not delivered before the turn ended.” It contains
-no internal IDs. Options: retain this root notice (implemented); notify the
-original sender instead; or rely only on the terminal `FINAL_ANSWER` and the
-inspectable pending record. Queue-only `send_message` mail is retained for the
+no internal IDs. The lead settled this behavior: retain the implemented root
+notice alongside the terminal `FINAL_ANSWER` and inspectable pending record. Queue-only `send_message` mail is retained for the
 next turn and does not produce this notice. The exact JSON examples above are
 unchanged.
 

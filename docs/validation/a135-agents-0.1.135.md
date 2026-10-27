@@ -293,3 +293,181 @@ The helper work is complete. The lead owns app integration and the full merged
 release gate. No full helper suite, app suite, installed app or live provider
 was used. `git diff --check`, Python compilation of the changed scripts, and
 `xcodegen generate --quiet` passed; XcodeGen produced no project-file change.
+
+
+## Lead review round 2 — F1–F5
+
+The parent plan now carries a small fork reference: `from`, `cutoffEntryId`,
+ordered `ids` and a SHA-256 digest of ordered `[id, content, nativeInherited]`
+tuples. Those fields round-trip through child message records. Acceptance keeps
+bodies in a local variable only until child publication; plans, operation state
+and checkpoint helper JSON contain no seed bodies. The live publication fence
+and recovery share reference/order/digest checks. Partial recovery re-applies
+inheritance to the reopened parent's context before the spawning assistant row,
+checks the digest and existing child prefix, then appends only missing rows.
+Missing or changed parent rows leave turn 1 `not_executed` and a later explicit
+follow-up refused with `subagent_fork_publication`, without a child request.
+
+Checkpoint version is back to **2**. The existing family-scoped effort/codex
+markers still require full replay for old derived family state, while ordinary
+chats retain their cache shortcut. A nameless child sender fails closed instead
+of acquiring `/root` authorship. Envelope framing now normalizes vertical tab
+and form feed as well as the other members of `CharacterSet.newlines`.
+
+The focused v4 pause tests cover a forked worker paused after its first tool
+round, same-turn Resume, one seed/reference and one NEW_TASK, delivery of the
+whole 30,000-byte final answer, and pending queue-only mail to an idle sibling that
+does not prevent closure. They also exposed a real Stop gap: the cost-pause
+guard suppressed human provenance. Explicit Stop now durably records “the user”
+on paused turns, including across reopen; internal pause, close, compaction and
+error stops are distinguished. Parked-turn Resume semantics are preserved.
+
+The lead's root-notice decision is recorded in the appendix, along with the
+three settled cursor/detail/description choices. All **12 JSON example blocks**
+are byte-for-byte unchanged; concatenated-block SHA-256:
+`5a20a763d1190cdc305619b4e54c2cda986a9c9e51896e00f5c748348acd8dac`.
+No app source, app suite, full helper suite, release tag or publication is part
+of this round.
+
+### Failing-first and sizes
+
+Logs for this round are under `$PI_BUILD_ROOT/logs/round2/`.
+
+- `red-behavior.log`: **5 tests, 23 assertion failures** against the pre-fix
+  implementation: body retention/size, order/digest definition, child sender,
+  version-2 cache and VT/FF framing.
+- `red-recovery-pause.log`: **3 tests, 9 assertion failures in 2 tests** against
+  the pre-fix implementation; the same-turn v4 Resume test already passed.
+  Changed/missing parent bodies incorrectly permitted follow-up, and paused
+  human Stop lost provenance before and after reopen. The old recovery entry
+  accepted an unused `context` argument solely to compile the current fixture;
+  its original behavior was otherwise unchanged. Source files were restored in
+  `finally` before green validation.
+- Initial compile attempts and pause-fixture iterations are retained but not
+  counted as regression evidence. The pause fixture was corrected to journal
+  actual tool receipts and to assert retained paused state rather than require
+  a paused turn to seal immediately. `green-new-2.log`: **39 passed, 0 failed**.
+
+The deterministic size fixture has one 4 MiB synthetic context row and four
+forked spawns, with identical small operation metadata. Values are encoded
+agent-operation envelope and checkpoint **helper JSON** bytes (not the whole
+checkpoint file):
+
+| Fixture | Operation before | Operation after | Helper JSON before | Helper JSON after |
+| --- | ---: | ---: | ---: | ---: |
+| 16-byte filler | 1,358 | 1,238 | 10,569 | 9,609 |
+| 4 MiB filler | 4,195,646 | 1,238 | 33,564,873 | 9,609 |
+
+The separate real acceptance test writes a multi-MiB fork through the live
+coordinator, verifies the physical journal operation row is **under 16 KiB**,
+checks the actual checkpoint helper excludes the body, and validates the
+published child. This also exercises the in-memory body transport.
+
+### Focused helper validation
+
+From the worktree, with the assigned build root exported:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a135-agents
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" --filter 'AgentCodex|SubagentCodexContract|JournalCheckpoint|FamilyLimitPauseTests/testV4'
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" --skip-build --filter 'Agent(Codex|Steering|FamilyRecovery|Mailbox)|Subagent|JournalCheckpoint|FamilyLimitPause|SideCache|SideDelegation|SideFork'
+```
+
+`focused-final.log`: **315 passed, 0 failed**. Per-class counts match the earlier
+306-test table except: AgentCodexMessaging **7**, AgentCodexPersistence **8**,
+AgentCodexRuntime **5**, FamilyLimitPause **112**, JournalCheckpoint **8**, and
+SubagentCodexContract **7**. The same one matching SideBudget test is included.
+Any fixture timing printed in this correctness lane is not performance evidence.
+
+
+### Release and mutation validation
+
+```sh
+python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-subagent-codex-mutations.py
+```
+
+`release-build.log`: Release build passed (existing Swift 6 isolation warnings).
+`wire.log`: **41 passed**; `concurrent.log`: **4 passed**; `acceptance.log`:
+**3 passed**, all zero failures. Generated loopback services and synthetic keys
+only. `mutations.log`: **59/59 caught and 59/59 restored**, with a **34-test**
+unmodified baseline. Each fault must cause an XCTest assertion/throw failure;
+zero selected tests and compilation failures do not count. Per-fault logs remain
+in `$PI_BUILD_ROOT/logs/codex-mutations/`; only generated source copies contain
+mutation switches.
+
+The prior 39 guards were rerun, with fork-boundary/publication hooks updated for
+the reference representation. Twenty additions:
+
+| Area | Mutations caught |
+| --- | --- |
+| Seed body transport and exclusion | `fork_body_transport`, `fork_body_exclusion` |
+| Reference, digest, order and completeness | `fork_reference`, `fork_digest`, `fork_order`, `fork_recovery_completeness` |
+| Parent reconstruction and fail-closed follow-up | `fork_parent_digest`, `fork_parent_missing`, `fork_recovery_inherited`, `fork_followup_fence` |
+| Checkpoint compatibility | `checkpoint_v2`, `checkpoint_family_gate` |
+| Child sender and newline framing | `child_sender`, `envelope_vtab`, `envelope_formfeed` |
+| V4 pause/Resume | `v4_resume_task`, `v4_resume_seed`, `v4_pause_final`, `v4_pause_idle_mail`, `v4_pause_stop` |
+
+### Streaming and crash validation
+
+The full-lane runner atomically acquired the shared lock, recorded its unique
+owner/PID and released only its own lock in `finally`, including failed attempts.
+It never removed another workstream's lock. Flow and loop ran serially before
+the crash matrices. Compilation of the mutation baseline had finished before
+this lane; independent fixture mutation checks continued separately.
+
+```sh
+python3 scripts/test-subagent-streaming.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --modes flow loop
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --older-helper "$PI_BUILD_ROOT/older-0134-build/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+```
+
+`streaming.log`: **2/2 modes passed**. Flow: **2 child conversations, 14 requests,
+4 parent events**. Loop: **41 child conversations, 124 requests, 41 parent
+events**. Printed elapsed times are incidental correctness-fixture observations,
+not isolated performance measurements.
+
+
+The v4 matrix passes **44/44 unique edges**, and v2 passes **21/21**. The v4
+result consists of the first **40** edges in `crashes-v4-2.log` plus the final
+**4** in `crashes-v4-remaining.log`; `crashes-v2.log` contains the complete v2 run.
+The targeted continuation after the fixture correction was:
+
+```sh
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --steering --older-helper "$PI_BUILD_ROOT/older-0134-build/arm64-apple-macosx/release/pi-native-host" --skip-build --points fork-parent-missing stop shutdown update
+```
+
+Five new v4 edges cover inherited-body before/synced/written boundaries and
+changed/missing parent rows. Every recovered fork checks the reference's fixed
+field set, child ID order and recomputed content digest. Both damaged-parent
+edges seal turn 1 `not_executed`, refuse an explicit follow-up with
+`subagent_fork_publication`, and dispatch **zero child requests**. The old
+interrupted-turn no-replay and exactly-once delivery assertions remain.
+
+Two harness corrections are retained as explicit failed attempts:
+`crashes-v4.log` stopped because an uncompacted early-promotion chat has no
+checkpoint automatically; the generated fixture now invokes the helper's real
+`refreshCheckpoint` on close, scanning from the start, only when its fixture
+checkpoint flag is set. No production flag was added. `crashes-v4-2.log` then
+reached the missing-parent edge but the synthetic row deletion also broke the
+journal's single-branch chain. The fixture now reconnects that one predecessor
+link so it exercises missing model context, rather than the independent branch
+integrity guard. The 40 unaffected passed edges were retained; the four remaining
+edges ran under a newly acquired full-lane lock. Neither failed invocation is
+reported as a clean complete matrix run.
+
+For every promoted v4 owner/child encountered, the downgrade fixture first
+writes a **version-2 `.meta` through current helper checkpoint code**, verifies
+its header/marker/last/state/rebind byte hashes against the journal, then opens
+it with the actual **v0.1.134** binary previously built from the release tag.
+It refuses with `legacy_session` and leaves **both journal and `.meta` bytes
+unchanged**. The `promotion-replaced` marker-removal mutation is caught again:
+the older binary opens the disposable copy when its v4 fence is removed, with
+no model request. Total round-2 mutations: **59 XCTest + 1 actual older-binary
+marker mutation = 60 caught**.
+
+No assigned helper finding remains unresolved. App integration and the merged
+release gate remain with the app workstream and lead.

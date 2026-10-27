@@ -2,6 +2,25 @@ import XCTest
 @testable import PiAgentCore
 
 final class AgentCodexMessagingTests: HelperTestCase {
+    func testMissingChildSenderNameFailsClosed() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = CodexFamilyClient(steps:["/root/a":[answer("done")]],held:["/root/a:1"])
+        let (parent,coordinator) = try await setup(root,client:client)
+        let id = try await spawn("a",parent,coordinator)
+        try await eventually { await client.requests.count == 1 }
+        let job = await coordinator.jobs[id + ":1"], child = try XCTUnwrap(job?.child)
+        let saved = await parent.subagents
+        await parent.codexFixtureForgetNamesAndPlans()
+        let call = ToolCall(id:"nameless",name:"send_message",arguments:["target":"/root","message":"Must not impersonate root"])
+        let key = try await child.agentFixtureCall(call)
+        do { _ = try await coordinator.prepareCodex(call,key:key,caller:child); XCTFail("Nameless child sent as /root") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"subagent_recovery") }
+        let messages = await parent.agentState().messages
+        XCTAssertFalse(messages.values.contains { $0.text == "Must not impersonate root" })
+        await parent.codexFixtureRestoreState(saved)
+        await coordinator.drain(); await parent.close()
+    }
+
     func testSiblingMessagesTasksAndRootOnlySpawn() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let calls = [agentCallReply("forbidden","spawn_agent",["task_name":"nested","message":"Forbidden"]),agentCallReply("mail","send_message",["target":"b","message":"Sibling information"]),agentCallReply("task","followup_task",["target":"/root/b","message":"Sibling task"])]
@@ -127,6 +146,9 @@ final class AgentCodexMessagingTests: HelperTestCase {
 }
 
 extension AgentSession {
+    func codexFixtureForgetNamesAndPlans() { subagents.plans = [:]; subagents.family?.names = [:] }
+    func codexFixtureRestoreState(_ state: SubagentJournalState) { subagents = state }
+
     func codexFixtureSteer() { steering = [Submission(commandID:"steer",turnID:"steer",text:"New input")] }
     func codexFixtureClearSteer() { steering = [] }
     func codexFixtureCostPause(_ paused: Bool) { costPaused = paused }

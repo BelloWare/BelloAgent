@@ -126,7 +126,7 @@ extension AgentSession {
     func failFamilyAccounting(_ error: Error) {
         accountingFailure = (error as? AgentError) ?? AttemptAccounting.damaged()
         familyStopReason = accountingFailure
-        stop()
+        stop(userInitiated:false)
     }
     /// The only budget-induced Stop: the family pauses at once. Admission
     /// and tool gates close, and every dispatched request, retry wait, tool

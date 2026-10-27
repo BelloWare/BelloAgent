@@ -7,34 +7,61 @@ struct AgentCodexContext: Codable, Sendable, Equatable {
     var resources: ResourceSnapshot
     var tools: [ToolDefinition]
 }
+/// Parent records retain only identities and a digest. Bodies live in the
+/// acceptance call until publication, then only in the child's journal.
 struct AgentForkSeed: Codable, Sendable, Equatable {
     var from: String
     var cutoffEntryID: String?
-    var messages: [ChatMessage]
-    var digest: String { sha256(Data((try! subagentJSON(messages)).encoded().utf8)) }
-    func requirePublished(at url: URL) throws {
-        let error = AgentError("subagent_fork_publication","The inherited history was not fully published. Reopen the main chat to reconcile it before following up; no child request was sent.")
-        guard FileManager.default.fileExists(atPath:url.path) else { throw error }
-        let reader = try JournalRecordReader(url)
-        var found: Set<String> = [], referenceFound = false
-        let expected = Dictionary(uniqueKeysWithValues:messages.map { ($0.id,$0) })
-        while let row = try reader.next() {
-            if row["customType"].text == JournalRecordKind.agentForkSeed { referenceFound = row["data"] == reference }
-            if row["type"].text == "message", let id = row["id"].text, let original = expected[id] {
-                let saved = try ChatMessage(id:id,pi:row["message"])
-                guard saved.content == original.content, saved.userInput == nil, saved.nativeInherited == original.nativeInherited else { throw SubagentRecovery.damaged() }
-                found.insert(id)
-            }
-        }
-        guard referenceFound, found.count == messages.count else { throw error }
+    var ids: [String]
+    var digest: String
+    enum CodingKeys: String, CodingKey { case from, cutoffEntryID = "cutoffEntryId", ids, digest }
+    init(from: String, cutoffEntryID: String?, messages: [ChatMessage]) {
+        self.from = from; self.cutoffEntryID = cutoffEntryID
+        ids = messages.map(\.id); digest = Self.contentDigest(messages)
     }
-    var reference: JSON { ["from":JSON(from),"cutoffEntryId":cutoffEntryID.map(JSON.string) ?? .null,"ids":.array(messages.map { JSON($0.id) }),"digest":JSON(digest)] }
+    /// These fields round-trip exactly through message.pi and ChatMessage(pi:).
+    static func contentDigest(_ messages: [ChatMessage]) -> String {
+        sha256(Data(JSON.array(messages.map { .array([JSON($0.id),.array($0.content),$0.nativeInherited ?? .null]) }).encoded().utf8))
+    }
+    static var publicationError: AgentError {
+        AgentError("subagent_fork_publication","The inherited history was not fully published. Reopen the main chat to reconcile it before following up; no child request was sent.")
+    }
+    func matches(_ messages: [ChatMessage]) -> Bool {
+        messages.map(\.id) == ids && Set(ids).count == ids.count &&
+            messages.allSatisfy { $0.userInput == nil && $0.nativeInherited == ["from":JSON(from),"cutoffEntryId":cutoffEntryID.map(JSON.string) ?? .null] } &&
+            Self.contentDigest(messages) == digest
+    }
+    func complete(rows: [ChatMessage], reference saved: JSON?) -> Bool {
+        saved == reference && matches(Array(rows.prefix(ids.count))) &&
+            rows.dropFirst(ids.count).allSatisfy { !ids.contains($0.id) }
+    }
+    func requirePublished(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath:url.path) else { throw Self.publicationError }
+        let reader = try JournalRecordReader(url)
+        var rows: [ChatMessage] = [], saved: JSON?
+        while let row = try reader.next() {
+            if row["customType"].text == JournalRecordKind.agentForkSeed {
+                guard row["data"] == reference else { throw Self.publicationError }
+                saved = row["data"]
+            }
+            if row["type"].text == "message", let id = row["id"].text { rows.append(try ChatMessage(id:id,pi:row["message"])) }
+        }
+        guard complete(rows:rows,reference:saved) else { throw Self.publicationError }
+    }
+    func rebuild(from context: [ChatMessage], before assistant: String) -> [ChatMessage]? {
+        guard let boundary = context.firstIndex(where: { $0.id == assistant }), ids.last == cutoffEntryID else { return nil }
+        let messages = context[..<boundary].map { SubagentCodexContract.inherited($0,from:from,cutoff:cutoffEntryID) }
+        guard matches(messages) else { return nil }
+        return messages
+    }
+    var reference: JSON { ["from":JSON(from),"cutoffEntryId":cutoffEntryID.map(JSON.string) ?? .null,"ids":.array(ids.map(JSON.string)),"digest":JSON(digest)] }
 }
 extension AgentSession {
-    func codexSeed() -> AgentForkSeed {
+    func codexSeed() -> (reference: AgentForkSeed, messages: [ChatMessage]) {
         let seed = sideSeed(), cutoff = seed.info["cutoffEntryId"].text
         // sideSeed is the last complete boundary, before the spawning reply.
-        return AgentForkSeed(from:id,cutoffEntryID:cutoff,messages:seed.messages.map { SubagentCodexContract.inherited($0,from:id,cutoff:cutoff) })
+        let messages = seed.messages.map { SubagentCodexContract.inherited($0,from:id,cutoff:cutoff) }
+        return (AgentForkSeed(from:id,cutoffEntryID:cutoff,messages:messages),messages)
     }
     func adoptCodexNames() throws {
         var names = subagents.family?.names ?? [:], changed = false

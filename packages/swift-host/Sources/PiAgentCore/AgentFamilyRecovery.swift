@@ -5,7 +5,7 @@ import Foundation
 /// terminals, receipt projections and context rows are evidence, not commands.
 enum AgentFamilyRecovery {
     static func recover(state: inout SubagentJournalState, parent: SessionJournal, owner: String, directory: URL,
-                        accounting: inout AttemptAccounting, spend: inout SessionSpend, costPaused: Bool = false) throws {
+                        accounting: inout AttemptAccounting, spend: inout SessionSpend, costPaused: Bool = false, context: [ChatMessage] = []) throws {
         guard state.origin == nil, state.family?.ownerID == owner else { return }
         func write<T: Encodable>(_ kind: String, _ data: T) throws {
             let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner),"data":try subagentJSON(data)]
@@ -33,7 +33,7 @@ enum AgentFamilyRecovery {
             guard within(canonical(url.path),canonical(directory.path)) else { throw SubagentRecovery.damaged() }
             var childState = SubagentJournalState(), childAccounting = AttemptAccounting(), childSpend = SessionSpend()
             var childRows: [String:ChatMessage] = [:], child: SessionJournal?, bytes: UInt64 = 0, markerOnly = true
-            var seedReference: JSON?
+            var seedReference: JSON?, orderedRows: [ChatMessage] = []
             var exists = FileManager.default.fileExists(atPath:url.path)
             let completed = state.family!.turns.values.contains { $0.childID == childID && ($0.status == .completed || $0.status == .outputLimited) }
             let dispatched = accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == childID && $0.admission?["state"].text == "dispatched" }
@@ -57,18 +57,16 @@ enum AgentFamilyRecovery {
                     if row["type"].text != "session", !JournalRecordKind.isMarker(row["customType"].text) { markerOnly = false }
                     try childState.consume(row,sessionID:childID)
                     if let kind = row["customType"].text { try childAccounting.consume(kind:kind,data:row["data"],spend:&childSpend) }
-                    if row["type"].text == "message", let id = row["id"].text { childRows[id] = try ChatMessage(id:id,pi:row["message"]) }
-                    if row["customType"].text == JournalRecordKind.agentForkSeed { seedReference = row["data"] }
+                    if row["type"].text == "message", let id = row["id"].text { let message = try ChatMessage(id:id,pi:row["message"]); childRows[id] = message; orderedRows.append(message) }
+                    if row["customType"].text == JournalRecordKind.agentForkSeed {
+                        guard plan.forkSeed?.reference == row["data"] else { throw SubagentRecovery.damaged() }
+                        seedReference = row["data"]
+                    }
                 }
                 bytes = reader.size
                 guard childState.origin?.matchesAccepted(plan.origin) == true || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
             }
-            let seedComplete = plan.forkSeed.map { seed in
-                seedReference == seed.reference && seed.messages.allSatisfy { original in
-                    guard let saved = childRows[original.id] else { return false }
-                    return saved.content == original.content && saved.userInput == nil && saved.nativeInherited == original.nativeInherited
-                }
-            } ?? true
+            let seedComplete = plan.forkSeed.map { $0.complete(rows:orderedRows,reference:seedReference) } ?? true
             guard seedComplete || !completed && !dispatched else { throw SubagentRecovery.damaged() }
             func childAppend(_ row: JSON, id: String? = nil) throws {
                 guard exists else { return }
@@ -89,13 +87,16 @@ enum AgentFamilyRecovery {
             // pause); later explicit follow-ups can use the complete history.
             if exists, !seedComplete, let seed = plan.forkSeed {
                 guard seedReference == nil || seedReference == seed.reference else { throw SubagentRecovery.damaged() }
-                for message in seed.messages {
-                    if let saved = childRows[message.id] {
-                        guard saved.content == message.content, saved.userInput == nil, saved.nativeInherited == message.nativeInherited else { throw SubagentRecovery.damaged() }
-                    } else { try childAppend(["type":"message","message":message.pi],id:message.id) }
+                // A missing/changed parent boundary cannot supply authority.
+                // Seal nonexecution below and leave the publication fence shut.
+                if let messages = seed.rebuild(from:context,before:plan.origin.link.call.assistantMessageID) {
+                    guard orderedRows.count <= messages.count,
+                          orderedRows.map(\.id) == Array(seed.ids.prefix(orderedRows.count)),
+                          zip(orderedRows,messages).allSatisfy({ saved, original in saved.content == original.content && saved.userInput == nil && saved.nativeInherited == original.nativeInherited }) else { throw SubagentRecovery.damaged() }
+                    for message in messages.dropFirst(orderedRows.count) { try childAppend(["type":"message","message":message.pi],id:message.id) }
+                    try childWrite(JournalRecordKind.context,["ids":JSON.array(seed.ids.map(JSON.string))])
+                    try childWrite(JournalRecordKind.agentForkSeed,seed.reference)
                 }
-                try childWrite(JournalRecordKind.context,["ids":JSON.array(seed.messages.map { JSON($0.id) })])
-                try childWrite(JournalRecordKind.agentForkSeed,seed.reference)
             }
             // Validate every mirror against its immutable owning attempt/turn.
             for (id, entry) in childAccounting.attempts {

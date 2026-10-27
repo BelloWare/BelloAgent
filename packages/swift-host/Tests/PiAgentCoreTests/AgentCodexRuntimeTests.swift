@@ -55,6 +55,34 @@ final class AgentCodexRuntimeTests: HelperTestCase {
         XCTAssertTrue(second.contains { $0.text.contains("Second task") })
         await coordinator.drain(); await parent.close()
     }
+    func testMultiMiBForkAcceptanceJournalAndCheckpointCarryOnlyReferences() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:CodexProbeClient([]),tools:RecordingTools(),traces:TraceStore())
+        let coordinator = AgentSteeringCoordinator(open:{ _,_ in throw AgentError("fixture","Publication only") })
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator,codex:true)
+        try await parent.codexFixtureSeed("LIVE_SEED_BODY_" + String(repeating:"x",count:4 * 1024 * 1024))
+        let call = ToolCall(id:"spawn",name:"spawn_agent",arguments:["task_name":"audit","message":"Task"])
+        let key = try await parent.agentFixtureCall(call,newTask:true)
+        _ = try await coordinator.prepare(call,key:key,parent:parent)
+        try await eventually { await parent.agentState().turns.values.first?.status.terminal == true }
+        await parent.refreshCheckpoint()
+        let url = root.appendingPathComponent("parent.jsonl"), reader = try JournalRecordReader(url)
+        var operations = 0
+        while let line = try reader.nextLine() {
+            let row = try JSON.parse(line)
+            if row["customType"].text == JournalRecordKind.agentOperation {
+                operations += 1; XCTAssertLessThan(line.count,16384)
+                XCTAssertFalse(String(decoding:line,as:UTF8.self).contains("LIVE_SEED_BODY_"))
+            }
+        }
+        XCTAssertEqual(operations,1)
+        let checkpoint = try XCTUnwrap(JournalCheckpoint.read(for:url))
+        XCTAssertFalse(checkpoint.helper.contains("LIVE_SEED_BODY_"))
+        let plan = await parent.subagents.plans.values.first!
+        XCTAssertNoThrow(try plan.forkSeed?.requirePublished(at:root.appendingPathComponent(plan.origin.link.childSessionID + ".jsonl")))
+        await coordinator.drain(); await parent.close()
+    }
+
     func testPausedV3RunKeepsItsContractUntilAFreshTask() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore())
@@ -110,8 +138,8 @@ final class AgentCodexRuntimeTests: HelperTestCase {
 }
 
 extension AgentSession {
-    func codexFixtureSeed() throws {
-        var row = ChatMessage(role:"user",content:[textBlock("Inherited context")]); row.userInput = ["skills":[["id":"explicit"]]]
+    func codexFixtureSeed(_ text: String = "Inherited context") throws {
+        var row = ChatMessage(role:"user",content:[textBlock(text)]); row.userInput = ["skills":[["id":"explicit"]]]
         try append(row); boundary = context
     }
 }

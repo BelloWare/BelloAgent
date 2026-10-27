@@ -2,7 +2,7 @@ import Foundation
 
 extension AgentSession {
     func recordAgentUserStop() {
-        guard !isSubagent, agentContractVersion == 4, !costPaused, !costResumePending, familyStopReason == nil else { return }
+        guard !isSubagent, agentContractVersion == 4 else { return }
         let family = agentState()
         guard var run = family.run, family.turns.values.contains(where: { !$0.status.terminal && $0.taskName != nil }) else { return }
         // Record intent without racing a child's terminal mirror. Sealing
@@ -10,6 +10,14 @@ extension AgentSession {
         do {
             run.stoppedByUser = true
             try appendAgentRecord(JournalRecordKind.familyRun,run)
+            // Paused turns have no live runner to carry the human initiator.
+            // Keep their Resume state, but persist who halted them now.
+            if costPaused || costResumePending {
+                for var turn in family.turns.values where !turn.status.terminal && turn.taskName != nil {
+                    turn.interruptedBy = "the user"
+                    try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                }
+            }
         } catch {
             accountingFailure = (error as? AgentError) ?? SubagentRecovery.damaged()
             familyStopReason = accountingFailure
@@ -78,7 +86,7 @@ extension AgentSession {
             }
         }
         do { try AgentMailboxPolicy.validate(proposed,state:agentState()) }
-        catch { if (error as? AgentError)?.code == "coordination_limit" { familyStopReason = error as? AgentError; stop() }; throw error }
+        catch { if (error as? AgentError)?.code == "coordination_limit" { familyStopReason = error as? AgentError; stop(userInitiated:false) }; throw error }
         try journal?.synchronize() // issuing assistant is durable before acceptance
         if proposed.receipt["version"].int == 4 { try journal?.promoteToCodex(managedChild:false) }
         else { try journal?.promoteToSteering(managedChild:false) }

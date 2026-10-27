@@ -1165,7 +1165,7 @@ public actor NativeHostService {
             }
         }
         flushTask?.cancel(); for t in tasks.values { t.cancel() }
-        for s in sessions.values { await s.stop() }
+        for s in sessions.values { await s.stop(userInitiated:false) }
         await subagentCoordinator?.drain()
         for s in sessions.values { await s.close() }
         await mcp?.close(); sessions.removeAll(); profiles.removeAll(); subagentReaders.removeAll(); flush()

@@ -584,7 +584,7 @@ public actor AgentSession {
         // unknown outcomes so future requests remain protocol-valid.
         let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
                                                              directory: directory, accounting: &accounting, spend: &spend)
-        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused,context:context)
         let recoveredTools=ToolHistoryIndex(context)
         // Calls the pause held before they started are still pending: they
         // run on Resume. Only calls that may have begun get unknown outcomes.
@@ -708,9 +708,9 @@ public actor AgentSession {
     var retrySubmission: Submission?
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
-    public func stop() {
+    public func stop(userInitiated: Bool = true) {
         let cancelledGeneration = stopCount
-        recordAgentUserStop()
+        if userInitiated { recordAgentUserStop() }
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
         // A cost-limit pause parks this owner's sub-agent turns for Resume
@@ -751,7 +751,7 @@ public actor AgentSession {
     }
     public func close() async {
         withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
-        cancelHistoryLoads(); stop(); await runTask?.value
+        cancelHistoryLoads(); stop(userInitiated:false); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }

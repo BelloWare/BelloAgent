@@ -147,12 +147,12 @@ actor AgentSteeringCoordinator {
         await signal(parent.id).pulse()
         return op.receipt
     }
-    func enqueue(_ op: AgentOperation, env: SubagentEnvironment, state: AgentFamilyState, parent: AgentSession) async throws {
+    func enqueue(_ op: AgentOperation, env: SubagentEnvironment, state: AgentFamilyState, parent: AgentSession, seedMessages: [ChatMessage] = []) async throws {
         if let turn = op.turn {
             let existingPlan = await parent.subagents.plans.values.first { $0.origin.link.childSessionID == turn.childID }
             guard let plan = op.plan ?? existingPlan else { throw SubagentRecovery.damaged() }
             if turn.turn == 1 {
-                do { try publishQueuedChild(env,plan:plan,turn:turn) }
+                do { try publishQueuedChild(env,plan:plan,turn:turn,seedMessages:seedMessages) }
                 catch {
                     var failed = turn; failed.status = .notExecuted
                     failed.result = SubagentToolResult(plan:plan,status:.notExecuted,error:AgentError("subagent_persistence", "Accepted task could not publish its child journal; it was not executed")); failed.normalizeResult()
