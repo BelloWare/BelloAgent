@@ -13,7 +13,7 @@ extension AgentSession {
     func requestLifecycle(turnID: String, purpose: String, requestMessages: [ChatMessage]? = nil) async throws -> RequestLifecycle? {
         guard familyBudgetEnabled || isSubagent else { return nil }
         guard let owner = isSubagent ? budgetOwner : self else { throw AgentError("managed_subagent", "The parent must own this child's requests") }
-        let sourceGeneration = stopCount
+        let sourceGeneration = stopCount, cutFence = mailboxCutFence
         // Manual compaction may summarize an idle, paused parent without
         // releasing its follow-ups. This permission belongs to this request;
         // a later Stop still revokes it through the generation and permit.
@@ -40,7 +40,7 @@ extension AgentSession {
         if purpose == "turn", agentContractVersion == 4, let coordinator = agentCoordinator {
             lifecycle.prepareMailboxCut = { [weak self] reply in
                 guard let self else { return nil }
-                return try await coordinator.cut(reply,recipient:self,scope:admittedScope)
+                return try await coordinator.cut(reply,recipient:self,scope:admittedScope,fence:cutFence)
             }
         }
         return lifecycle

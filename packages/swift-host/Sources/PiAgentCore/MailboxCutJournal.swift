@@ -49,7 +49,13 @@ struct MailboxCutJournal: Codable, Sendable, Equatable {
     }
 }
 
+struct MailboxCutFence: Sendable {
+    let generation: Int
+    let branch: JSON
+}
+
 extension AgentSession {
+    var mailboxCutFence: MailboxCutFence { .init(generation:stopCount,branch:context.last.map { JSON($0.id) } ?? .null) }
     func cancelMailboxDrains(source: String) {
         for commit in subagents.cuts?.commits.values.map({ $0 }) ?? [] where commit["recipientSessionId"].text == source {
             requestPermits[commit["attemptId"].text ?? ""]?.cancel()
@@ -64,7 +70,7 @@ extension AgentSession {
         let waiting = requestDrainWaiters; requestDrainWaiters.removeAll()
         for waiter in waiting { waiter.resume() }
     }
-    private var hasMailboxDrains: Bool {
+    var hasMailboxDrains: Bool {
         subagents.cuts?.commits.values.contains { requestPermits[$0["attemptId"].text ?? ""] != nil } ?? false
     }
     /// Called before partial-log recovery and before unfinished family turns
@@ -91,11 +97,14 @@ extension AgentSession {
             }
         }
     }
-    func prepareMailboxCut(_ candidate: ModelReply, events: [String], scope: RequestScope) throws -> JSON? {
-        guard let cut = candidate.mailboxCut, !events.isEmpty, let journal,
+    func prepareMailboxCut(_ candidate: ModelReply, events: [String], scope: RequestScope, fence: MailboxCutFence) throws -> JSON? {
+        guard let cut = candidate.mailboxCut, !events.isEmpty, journal != nil,
               !closed, !agentDeliveryHeld, !costPaused, agentContractVersion == 4,
-              scope.turnID == currentTurnID, requestPermits[cut.attemptId] != nil else { return nil }
-        try requestPermits[cut.attemptId]?.check()
+              scope.sourceSessionID == id, scope.turnID == currentTurnID,
+              scope.executionID == (activeTaskPresentation?.executionID ?? displayEpoch), scope.childTurn == agentLease?.turn,
+              fence.generation == stopCount, fence.branch == mailboxCutFence.branch,
+              let permit = requestPermits[cut.attemptId], (try? permit.check()) != nil,
+              (try? enforceCostLimit()) != nil else { return nil }
         var assistant = candidate.message
         assistant.id = partialID ?? assistant.id; assistant.timestamp = Date().timeIntervalSince1970 * 1000
         assistant.turn = currentTurnID; assistant.taskRootID = taskRootID; assistant.taskExecutionID = activeTaskPresentation?.executionID
@@ -117,26 +126,49 @@ extension AgentSession {
         data["digest"] = JSON(MailboxCutJournal.digest(data))
         // Leave room for the journal envelope; never truncate opaque state.
         guard data.encoded().utf8.count < 32 * 1024 * 1024 - 4096 else { return nil }
-        try appendAgentRecord(JournalRecordKind.agentCutPrepared,data)
-        try journal.synchronize()
-        receivingAgentMessage = true; event("subagents.changed")
         return data
     }
+    /// The family gate is held. All ordinary decline conditions precede the
+    /// first write; after this point holds/withdrawals affect delivery only.
+    func acceptsMailboxCut(_ preparation: JSON, scope: RequestScope) -> Bool {
+        let attempt = preparation["attemptId"].text ?? ""
+        guard !closed, !agentDeliveryHeld, !costPaused, scope.ownerGeneration == stopCount,
+              let permit = requestPermits[attempt], (try? permit.check()) != nil,
+              accounting.attempts[attempt]?.admission?["state"].text == "dispatched",
+              accounting.attempts[attempt]?.admission?["scope"] == (try? subagentJSON(scope)),
+              (try? validateRequestOwner(scope)) != nil,
+              preparation["eventIds"].list.allSatisfy({ event in agentState().messages[event.text ?? ""]?.disposition == "pending" }),
+              (try? enforceCostLimit()) != nil else { return false }
+        return true
+    }
+    private func checkMailboxCutStop(_ attempt: String, generation: Int) throws {
+        guard !closed, generation == stopCount, let permit = requestPermits[attempt] else { throw CancellationError() }
+        try permit.check()
+    }
+    private func checkMailboxCutRecipient(_ preparation: JSON) throws {
+        try checkMailboxCutStop(preparation["attemptId"].text ?? "",generation:preparation["generation"].int ?? -1)
+        guard preparation["branchId"] == mailboxCutFence.branch, preparation["turnId"].text == currentTurnID else { throw SubagentRecovery.damaged() }
+    }
+    func recordMailboxCutPreparation(_ preparation: JSON) throws {
+        try checkMailboxCutRecipient(preparation)
+        try appendAgentRecord(JournalRecordKind.agentCutPrepared,preparation)
+        try journal?.synchronize()
+        receivingAgentMessage = true; event("subagents.changed")
+    }
     func promoteMailboxCut(_ preparation: JSON) throws {
-        guard preparation["generation"].int == stopCount, preparation["branchId"] == (context.last.map { JSON($0.id) } ?? .null),
-              !closed, !agentDeliveryHeld else { throw CancellationError() }
-        try requestPermits[preparation["attemptId"].text ?? ""]?.check()
+        try checkMailboxCutRecipient(preparation)
         try journal?.promoteToMailboxCut(managedChild:isSubagent)
     }
     func commitMailboxCut(_ preparation: JSON, scope: RequestScope) throws -> JSON {
         let attempt = preparation["attemptId"].text ?? ""
+        try checkMailboxCutStop(attempt,generation:scope.ownerGeneration)
         try validateRequestOwner(scope)
-        guard !closed, !agentDeliveryHeld, scope.ownerGeneration == stopCount,
-              accounting.attempts[attempt]?.admission?["state"].text == "dispatched",
-              accounting.attempts[attempt]?.admission?["scope"] == (try subagentJSON(scope)),
-              let permit = requestPermits[attempt],
-              preparation["eventIds"].list.allSatisfy({ event in agentState().messages[event.text ?? ""]?.disposition == "pending" }) else { throw CancellationError() }
-        try permit.check(); try enforceCostLimit()
+        guard accounting.attempts[attempt]?.admission?["state"].text == "dispatched",
+              accounting.attempts[attempt]?.admission?["scope"] == (try subagentJSON(scope)) else { throw AttemptAccounting.damaged() }
+        do { try enforceCostLimit() }
+        catch let error as AgentError where error.code == Self.costLimitCode {
+            stopFamilyAtLimit(error); throw CancellationError()
+        }
         try journal?.promoteToMailboxCut(managedChild:false)
         let commit = preparation.removing(["turnId", "branchId", "generation", "eventIds", "rows"])
         try appendAgentRecord(JournalRecordKind.agentCutCommitted,commit)
@@ -170,7 +202,7 @@ extension MailboxCutJournal {
 }
 
 extension AgentSteeringCoordinator {
-    func cut(_ candidate: ModelReply, recipient: AgentSession, scope: RequestScope) async throws -> ModelReply? {
+    func cut(_ candidate: ModelReply, recipient: AgentSession, scope: RequestScope, fence: MailboxCutFence) async throws -> ModelReply? {
         let lease = await recipient.agentLease
         let owner: AgentSession
         if let lease {
@@ -185,12 +217,16 @@ extension AgentSteeringCoordinator {
                 $0.type != nil && $0.disposition == "pending" && ($0.recipientChildID ?? owner.id) == recipient.id &&
                 $0.id != lease?.inputID && (lease == nil || $0.queueOnly == true || $0.turn == lease?.turn)
             }.sorted { $0.sequence < $1.sequence }.map(\.id)
-            guard !events.isEmpty, let preparation = try await recipient.prepareMailboxCut(candidate,events:events,scope:scope) else { await lock.release(); return nil }
+            guard !events.isEmpty, let preparation = try await recipient.prepareMailboxCut(candidate,events:events,scope:scope,fence:fence),
+                  await owner.acceptsMailboxCut(preparation,scope:scope) else { await lock.release(); return nil }
+            try await recipient.recordMailboxCutPreparation(preparation)
+            await afterMailboxCutPrepared?()
             try await recipient.promoteMailboxCut(preparation)
             // A failed fsync can still leave a commit on disk. From this
             // point recovery must use the reserved rows, never a partial row
             // with the same ID and different content.
             await recipient.retireMailboxPartial()
+            await beforeMailboxCutCommit?()
             let commit = try await owner.commitMailboxCut(preparation,scope:scope)
             var result = candidate
             result.message = try await recipient.projectMailboxCut(preparation,commit:commit,owner:owner.id)

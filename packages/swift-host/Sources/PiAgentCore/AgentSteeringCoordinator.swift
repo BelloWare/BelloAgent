@@ -13,7 +13,7 @@ actor AgentSteeringCoordinator {
         var turn: AgentChildTurn
         var child: AgentSession?
         var task: Task<Void,Never>?
-        var cancelled = false, allocated = false, sealed = false
+        var cancelled = false, allocated = false, sealed = false, finishing = false
         /// Continues a turn parked at a cost-limit pause.
         var resuming = false
         var resumeGeneration: CostPauseGeneration?
@@ -25,6 +25,14 @@ actor AgentSteeringCoordinator {
         var progress: SubagentProgress?
     }
     var jobs: [String:Job] = [:]
+    /// Finished turns release their slot while their exact-cost reader lives.
+    /// Taking a parked writer and claiming it for close are isolated decisions.
+    struct DrainingChild {
+        let job: Job
+        let child: AgentSession
+    }
+    var drainingChildren: [String:DrainingChild] = [:]
+    var closingChildren: [String:(owner: String, task: Task<Void,Never>)] = [:]
     var queues: [String:[String]] = [:]
     var active: [String:Int] = [:]
     var gates: [String:AsyncGate] = [:]
@@ -44,6 +52,8 @@ actor AgentSteeringCoordinator {
     var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
+    var beforeMailboxCutCommit: (@Sendable () async -> Void)?
+    var afterMailboxCutPrepared: (@Sendable () async -> Void)?
     var beforeResumeInstall: (@Sendable () async -> Void)?
     var afterResumeInstall: (@Sendable () async -> Void)?
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() },
@@ -196,7 +206,7 @@ actor AgentSteeringCoordinator {
         while !paused.contains(owner), active[owner,default:0] < SubagentPolicy.maximumActiveChildren,
               let position = queues[owner]?.firstIndex(where: { candidate in
                   guard let pending = jobs[candidate] else { return true }
-                  return !jobs.values.contains { $0.allocated && $0.turn.childID == pending.turn.childID }
+                  return closingChildren[pending.turn.childID] == nil && !jobs.values.contains { $0.allocated && $0.turn.childID == pending.turn.childID }
               }), let id = queues[owner]?[position] {
             queues[owner]?.remove(at:position)
             guard var job = jobs[id] else { continue }
@@ -212,7 +222,9 @@ actor AgentSteeringCoordinator {
             guard job.turn.currentGeneration > cancelledThrough[job.turn.currentRuntimeID,default:-1], !job.cancelled else { throw CancellationError() }
             guard !paused.contains(job.owner.id) else { throw AgentSession.costHoldError }
             try await job.owner.enforceSharedCostLimit()
-            if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
+            if let existing = job.child { child = existing }
+            else if let parked = drainingChildren.removeValue(forKey:job.turn.childID) { child = parked.child }
+            else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
             guard await child.subagents.origin?.matchesAccepted(job.plan.origin) == true else { throw SubagentRecovery.damaged() }
@@ -415,6 +427,8 @@ actor AgentSteeringCoordinator {
         let wake = signal(owner.id); Task { await wake.pulse() }
     }
     func finishJob(_ job: Job, child: AgentSession?) async {
+        guard let current = jobs[job.turn.id], current.instance == job.instance, !current.finishing else { return }
+        jobs[job.turn.id]?.finishing = true
         let lock = gate(job.owner.id)
         do {
             try await lock.acquire()
@@ -422,12 +436,30 @@ actor AgentSteeringCoordinator {
             catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
         if let child {
-            let settled = settled
-            Task { await child.waitForRequestDrains(); await settled(child) }
+            if await child.hasMailboxDrains {
+                drainingChildren[job.turn.childID] = DrainingChild(job:job,child:child)
+                Task {
+                    await child.waitForRequestDrains()
+                    await self.closeDrainingChild(job.turn.childID,instance:job.instance)
+                }
+            } else { await settled(child) }
         }
         if jobs[job.turn.id]?.instance == job.instance { jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 } }
         pump(job.owner.id)
         await signal(job.owner.id).pulse()
+    }
+    private func closeDrainingChild(_ id: String, instance: UUID) async {
+        guard let parked = drainingChildren[id], parked.job.instance == instance else { return }
+        drainingChildren.removeValue(forKey:id)
+        // Block a new writer until close actually releases the journal. No
+        // await separates removing the parked writer and publishing this fence.
+        let settled = settled
+        let close = Task { await settled(parked.child) }
+        closingChildren[id] = (parked.job.owner.id,close)
+        await close.value
+        closingChildren.removeValue(forKey:id)
+        pump(parked.job.owner.id)
+        await signal(parked.job.owner.id).pulse()
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
         // A cost-limit pause stops runs itself and keeps the turns for Resume.
@@ -444,6 +476,9 @@ actor AgentSteeringCoordinator {
     }
     func cancel(owner: String, runtimeID: String, through: Int) async {
         cancelledThrough[runtimeID] = max(cancelledThrough[runtimeID,default:-1],through)
+        for parked in Array(drainingChildren.values) where parked.job.owner.id == owner && parked.job.turn.currentRuntimeID == runtimeID && parked.job.turn.currentGeneration <= through {
+            await parked.child.cancelMailboxDrains(source:parked.child.id)
+        }
         // Each job is read again after the awaits: a turn reinstalled since
         // (a Resume's new job) is judged by its own execution, not a snapshot.
         for snapshot in Array(jobs.values) where snapshot.owner.id == owner {
@@ -456,5 +491,10 @@ actor AgentSteeringCoordinator {
         let current = jobs.values.filter { owner == nil || $0.owner.id == owner }
         for job in current { await stop(owner:job.owner.id,target:job.turn.target,human:false) }
         for job in Array(jobs.values) where owner == nil || job.owner.id == owner { await job.task?.value }
+        for parked in Array(drainingChildren.values) where owner == nil || parked.job.owner.id == owner {
+            await parked.child.cancelMailboxDrains(source:parked.child.id)
+            await closeDrainingChild(parked.child.id,instance:parked.job.instance)
+        }
+        for close in Array(closingChildren.values) where owner == nil || close.owner == owner { await close.task.value }
     }
 }

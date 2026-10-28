@@ -15,7 +15,7 @@ import traceback
 from native_host_client import HostPeer
 
 BUILD = Path(os.environ['PI_BUILD_ROOT'])
-MODES = ('reasoning', 'commentary', 'partial_answer', 'root', 'overlap', 'error', 'stop', 'quit', 'crash', 'terminal_race', 'portable', 'ask', 'translated', 'unknown', 'json', 'no_usage', 'no_dollars', 'dollars_only', 'incomplete', 'duplicate_terminal', 'interrupt', 'reasoning_only', 'commentary_only')
+MODES = ('reasoning', 'commentary', 'partial_answer', 'root', 'overlap', 'error', 'stop', 'quit', 'crash', 'terminal_race', 'portable', 'ask', 'translated', 'unknown', 'json', 'no_usage', 'no_dollars', 'dollars_only', 'incomplete', 'duplicate_terminal', 'interrupt', 'reasoning_only', 'commentary_only', 'followup')
 
 
 def records(path):
@@ -107,6 +107,9 @@ def run(binary, mode, crash_point=None, recovery=None, failure_point=None):
                             assert ready.wait(30); output = [call('send_message','mail-1',dict(target='worker',message='MAIL-1'))]
                         elif mode == 'overlap' and n == 3:
                             assert second.wait(30); output = [call('send_message','mail-2',dict(target='worker',message='MAIL-2'))]
+                        elif mode == 'followup' and n == 3:
+                            wait(lambda:any(r.get('customType') == 'pi-app.subagent-turn-terminal.v1' and r.get('data',{}).get('turn') == 1 and r.get('data',{}).get('status') == 'completed' for r in records(parent_path)))
+                            output = [call('followup_task','followup',dict(target='worker',message='FOLLOWUP-WHILE-DRAINING'))]
                         elif mode == 'interrupt' and n == 3:
                             assert continuation.wait(30); output = [call('interrupt_agent','interrupt',dict(target='worker'))]
                         else: output = [answer('Parent synthesis')]
@@ -117,7 +120,11 @@ def run(binary, mode, crash_point=None, recovery=None, failure_point=None):
                         else:
                             self.check_continuation(body,2 if mode == 'overlap' else 1); continuation.set()
                             if mode in ('stop','quit','crash','interrupt'): assert release.wait(30)
-                            output = [answer('Worker continued and finished')]
+                            if mode == 'followup' and n == 3:
+                                assert 'FOLLOWUP-WHILE-DRAINING' in json.dumps(body), body
+                                assert not release.is_set(), 'follow-up waited for drain'
+                                output = [answer('Follow-up finished while draining')]
+                            else: output = [answer('Worker continued and finished')]
                     self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
                     self.frame(dict(type='response.completed',response=dict(id='resp-final',model=effective,status='completed',output=output,usage=dict(input_tokens=100,output_tokens=10,total_tokens=110,cost=.01))))
                 except (BrokenPipeError,ConnectionResetError): pass
@@ -208,6 +215,14 @@ def run(binary, mode, crash_point=None, recovery=None, failure_point=None):
                 assert not release.is_set(), 'continuation waited for drain'
                 attempts = {r['data']['attemptId']:r['data'] for r in records(parent_path) if r.get('customType') == 'pi-app.cost.v1' and 'attemptId' in r.get('data',{})}
                 assert all(r['data']['attemptId'] not in attempts for r in cut_rows), 'drain settled before terminal'
+            if mode == 'followup':
+                wait(lambda:any(r.get('customType') == 'pi-app.subagent-turn-terminal.v1' and r.get('data',{}).get('turn') == 2 for r in records(parent_path)))
+                terminal = [r['data'] for r in records(parent_path) if r.get('customType') == 'pi-app.subagent-turn-terminal.v1' and r.get('data',{}).get('turn') == 2]
+                assert terminal[-1]['status'] == 'completed', terminal[-1]
+                assert not release.is_set(), 'follow-up completion waited for drain'
+                assert counts[children[0]] == 3, counts
+                wait(lambda:command(peer,'session.snapshot')['state'] != 'running')
+                assert command(peer,'session.snapshot')['state'] == 'idle', 'family completion waited for drain or failed'
             if mode == 'stop': command(peer,'turn.stop')
             if mode == 'quit': shutdown(peer)
             if mode == 'crash':
@@ -238,6 +253,18 @@ def run(binary, mode, crash_point=None, recovery=None, failure_point=None):
                         assert rows[1]['customType'] == 'pi-app.native.v5'
                         assert len({m['nativeMailboxCut']['cutId'] for m in markers}) == len(markers)
             assert not (root/'forbidden').exists() and not (root/'suffix-forbidden').exists()
+            assert 'session_locked' not in json.dumps(packets), packets
+            if mode == 'followup':
+                shutdown(peer)
+                before = len(requests)
+                for path in sessions.glob('*.jsonl'):
+                    previous = None; seen = set()
+                    for row in records(path)[1:]:
+                        assert row['id'] not in seen and row.get('parentId') == previous, row
+                        seen.add(row['id']); previous = row['id']
+                peer = opened(parent_path); command(peer,'session.snapshot')
+                assert len(requests) == before, 'reopen replayed a request'
+                assert not (root/'forbidden').exists() and not (root/'suffix-forbidden').exists()
             assert not errors, errors
             if os.environ.get('PI_CUTIN_KEEP'):
                 for item in list(peers): shutdown(item)

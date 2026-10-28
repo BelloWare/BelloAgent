@@ -358,3 +358,81 @@ records before the lead's release sign-off.
 No product decision remains open. Live deployment acceptance is intentionally
 unverified until the owner performs this check; the lead owns branch review,
 integration with the other two workstreams, and the merged release gate.
+
+## Lead review, round 2
+
+Starting commit: `89f97b074254e7882157b318502205001c7fdeb6`.
+The scope is F1 writer lifetime, F2 cut declines and Stop ordering, and F3
+measured promotion cost. Evidence is under `$PI_BUILD_ROOT/logs/round2`.
+The PERF-1 lock was respected before every heavy build/test; the initial
+focused build waited while successive `a136-perf` measurement owners held it.
+
+### F1: a single child writer across turns
+
+A completed child with a committed-cut reader is retained in
+`AgentSteeringCoordinator.drainingChildren`, without a scheduler slot or an
+unfinished family job. A follow-up takes that exact `AgentSession` in the
+coordinator's isolation. `prepareAgentTurn` installs its new lease, owner
+budget generation, queue state, progress/cancellation callbacks and accepted
+turn; normal submission delivery installs the new presented task, and each request starts a new observation generation.
+The old reader has already stopped publishing deltas/observations and settles
+only through its captured original `RequestScope`. It cannot update the new
+turn's context or result. Reuse therefore does not wait for the natural end
+of the original response.
+
+When a reader finishes, deferred close claims only the still-parked job
+instance. Removing that entry and publishing the closing fence happen with
+no actor suspension. A claimed close blocks further opens of that child
+until `settled` returns. With no drain, `finishJob` awaits `settled` before
+removing the old job or releasing its slot, preserving the old ordering.
+Duplicate finishers cannot claim an instance twice. Owner Stop/close and
+`interrupt_agent` cancel parked readers and use ordinary once-only original
+attempt settlement; absent final evidence stays unknown.
+
+Failing-first loopback on round 1: `f1-loopback-red.log`, retained generated
+fixture `failed-cutin-followup`. The worker completed turn 1 with its original
+stream held; `/root` then issued `followup_task`. Turn 2 became `not_executed`
+with `session_busy: Child is still settling` in the hosted path, and made no
+third worker request. The direct coordinator's corresponding open can hit
+`session_locked`. Both are the same early slot-release/writer-lifetime bug.
+
+### F2: decline before preparation, Stop before ownership validation
+
+The recipient snapshots request generation and context tail at lifecycle
+creation. Under the family gate, recipient and owner pre-check holds, queue
+edits, closed state, turn/execution/branch/generation, request permit, exact
+dispatched admission scope, ownership, pending triggering events and cost.
+A declined check returns nil without writing a preparation or retiring the
+partial reply; later eligible items in the same stream can still cut.
+
+After preparation, a late hold, edit or tombstone only changes the next
+ordinary delivery boundary. Even an empty boundary continues from the
+retained prefix. Stop/generation, cancelled permit, close and permit-cancelling
+cost pause remain cancellation; I/O/consistency failures remain fail-closed.
+Stop/permit precede owner validation. Partial retirement still precedes the
+commit, including an ambiguous failed fsync. Recovery ignores an uncommitted
+preparation if the normal reply reused its reserved partial row ID.
+
+Round-2 focused evidence:
+
+- `f1-f2-round1-red.log`: the **four** new ordering/decline/Stop regression
+  tests against `89f97b07` source (generated copy, only barrier seams added)
+  failed with **15 recorded failures**, including `accounting_damaged` after
+  Stop and the refusal of a fresh turn. No production behavior fix was present
+  in that generated source.
+- `review-focused-2.log`: **13/13 passed** (new barrier tests, no-drain
+  ordering and cut persistence/recovery). The initial run passed 12/13;
+  its new-turn fixture needed to record the synthetic control-tool results
+  before issuing an ordinary root request. The fixture correction is included.
+- `f1-loopback-green.log`: **1/1 passed**, eight physical requests, both worker
+  turns and the parent family complete with the first stream still held;
+  one original settlement after release, valid journal chains and no replay
+  on reopen. This is rerun with every loopback mode in the final matrix.
+
+```sh
+NSUnbufferedIO=YES swift test --package-path packages/swift-host \
+  --scratch-path "$PI_BUILD_ROOT/swift-verify" -j 4 \
+  --filter 'MailboxCutReviewTests|AgentSteeringDrainTests|MailboxCutPersistenceTests'
+python3 scripts/test-subagent-cutin.py \
+  "$PI_BUILD_ROOT/swift-verify/debug/pi-native-host" --mode followup
+```

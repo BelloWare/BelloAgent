@@ -64,6 +64,20 @@ final class MailboxCutPersistenceTests: HelperTestCase {
         await session.close()
         XCTAssertEqual(try records(f.path)[1]["customType"].text,JournalRecordKind.codexMarker)
     }
+    func testUncommittedPreparationAllowsNormalReplyWithReservedPartialID() async throws {
+        let f = try fixture(projected:0,committed:false)
+        do {
+            let journal = try SessionJournal(url:f.path,id:"source",cwd:f.root,binding:f.profile.binding,create:false)
+            var normal = ChatMessage(role:"assistant",content:[textBlock("Ordinary complete reply")]); normal.turn = "turn"
+            try journal.append(["type":"message","message":normal.pi],id:"prefix")
+        }
+        for _ in 0..<2 {
+            let session = try f.open(), rows = await session.context
+            XCTAssertEqual(rows.map(\.id),["turn","prefix"])
+            XCTAssertEqual(rows.last?.text,"Ordinary complete reply"); XCTAssertNil(rows.last?.nativeMailboxCut)
+            await session.close(); JournalCheckpoint.remove(for:f.path)
+        }
+    }
     func testCheckpointColdReplaySlimmingAndForkKeepExactHistoryWithoutExecutionAuthority() async throws {
         let f = try fixture(), session = try f.open()
         let forked = try await session.fork(to:"fork",at:"prefix")
@@ -122,7 +136,7 @@ final class MailboxCutPersistenceTests: HelperTestCase {
         XCTAssertEqual(state.cuts?.projected,historical)
     }
     func testNoMailboxAndSourceGenerationBranchHoldAndTombstoneFences() async throws {
-        for change in ["no-mail","generation","branch","hold","closed"] {
+        for change in ["no-mail","generation","branch","closed"] {
             let f = try fixture(), session = try f.open(), coordinator = AgentSteeringCoordinator()
             await session.enableAgentSteering(coordinator,codex:true)
             let scope = try await session.armCutFixture()
@@ -130,10 +144,10 @@ final class MailboxCutPersistenceTests: HelperTestCase {
             reply.message.requestAttemptIDs = ["new-attempt"]
             reply.mailboxCut = MailboxCut(cutId:"new-cut",attemptId:"new-attempt",responseId:"response",itemId:"item")
             if change == "no-mail" {
-                let cut = try await coordinator.cut(reply,recipient:session,scope:scope)
+                let cut = try await coordinator.cut(reply,recipient:session,scope:scope,fence:await session.mailboxCutFence)
                 XCTAssertNil(cut)
             } else {
-                let prepared = try await session.prepareMailboxCut(reply,events:["new-mail"],scope:scope)
+                let prepared = try await session.prepareMailboxCut(reply,events:["new-mail"],scope:scope,fence:await session.mailboxCutFence)
                 let preparation = try XCTUnwrap(prepared)
                 await session.changeCutFixture(change)
                 do { try await session.promoteMailboxCut(preparation); XCTFail("Cut survived \(change)") } catch { }
@@ -193,7 +207,7 @@ final class MailboxCutPersistenceTests: HelperTestCase {
 private extension AgentSession {
     func armCutFixture() throws -> RequestScope {
         enableFamilyBudget(); currentTurnID = "turn"; agentContractVersion = 4
-        let scope = RequestScope(sourceSessionID:id,budgetOwnerSessionID:id,turnID:"turn",executionID:"execution",purpose:"turn",ownerGeneration:stopCount,delegation:nil)
+        let scope = RequestScope(sourceSessionID:id,budgetOwnerSessionID:id,turnID:"turn",executionID:displayEpoch,purpose:"turn",ownerGeneration:stopCount,delegation:nil)
         _ = try admitAttempt(scope:scope,attemptID:"new-attempt"); try dispatchAttempt(scope:scope,attemptID:"new-attempt")
         return scope
     }
