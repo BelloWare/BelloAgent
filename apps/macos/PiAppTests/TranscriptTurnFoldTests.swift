@@ -568,14 +568,132 @@ final class TranscriptTurnFoldTests: XCTestCase {
 
     // MARK: Geometry, in a window
 
+    /// The answer's header and each reasoning part are separate folded rows.
+    /// Use exact row counts so a one-point slot cannot hide in a tolerance.
+    private func gapTurn(hiddenRows: Int) -> [TranscriptMessage] {
+        var answer = reply(id: "answer", turn: "question", at: 2_000, text: "The answer stays beside its fold.")
+        if hiddenRows > 0 {
+            var timeline = ResponseTimeline()
+            for index in 0..<(hiddenRows - 1) {
+                timeline.consume(ResponsePartEvent(attemptID: "attempt", ordinal: index, itemID: "thought-\(index)",
+                    outputIndex: index, partIndex: 0, kind: "reasoningText", update: "replace", text: "Checking step \(index)."))
+            }
+            timeline.consume(ResponsePartEvent(attemptID: "attempt", ordinal: hiddenRows, itemID: "answer-text",
+                outputIndex: hiddenRows, partIndex: 0, kind: "text", update: "replace", text: answer.text))
+            timeline.finish("completed"); answer.responseTimeline = timeline
+        }
+        return [TranscriptMessage(id: "question", role: "user", text: "Check the result.", at: 1_000, turn: "question"), answer]
+    }
+
+    @MainActor func testFoldedRowsLeaveTheSameAnswerGapAsATurnWithoutWork() throws {
+        try withDisplay(.compact) {
+            var gaps: [CGFloat] = []
+            for count in [0, 10, 200] {
+                let fixture = Fixture(messages: gapTurn(hiddenRows: count)); defer { fixture.close() }
+                let answer = try XCTUnwrap(fixture.rows.first {
+                    if case .block(let block) = $0.item { return block.part?.part.kind == "text" }
+                    return false
+                })
+                let line = try XCTUnwrap(fixture.controlRow ?? fixture.rows.first {
+                    if case .block(let block) = $0.item { return block.presentation == .response }
+                    return false
+                })
+                XCTAssertEqual(fixture.memberRows.count, count)
+                let gap = answer.frame.minY - line.frame.maxY
+                print("FOLDGAP hidden=\(count) lineBottom=\(line.frame.maxY) answerTop=\(answer.frame.minY) gap=\(gap)")
+                gaps.append(gap)
+                if count > 0 {
+                    let foldedHeight = fixture.document.frame.height
+                    line.toggleDisclosure(.turnFold("question")); fixture.session.publishTranscript(); fixture.refresh()
+                    XCTAssertTrue(fixture.memberRows.allSatisfy { $0.frame.height > 0 })
+                    line.toggleDisclosure(.turnFold("question")); fixture.session.publishTranscript(); fixture.refresh()
+                    XCTAssertEqual(fixture.document.frame.height, foldedHeight, accuracy: 0.01)
+                    XCTAssertEqual(answer.frame.minY - line.frame.maxY, gaps[0], accuracy: 0.01)
+                }
+            }
+            XCTAssertEqual(gaps[1], gaps[0], accuracy: 0.01)
+            XCTAssertEqual(gaps[2], gaps[0], accuracy: 0.01)
+        }
+    }
+
+    @MainActor func testInheritedFoldTakesNoRoomAndVisibleRowsSkipItsHiddenContext() throws {
+        let marker: WireValue = .object(["from": .string("parent"), "cutoffEntryId": .string("cutoff")])
+        let inherited = (0..<200).map { index in
+            var message = TranscriptMessage(id: "seed-\(index)", role: "user", text: "Inherited question \(index)")
+            message.nativeInherited = marker; return message
+        }
+        let fixture = Fixture(messages: inherited + gapTurn(hiddenRows: 0), height: 160, inherited: true)
+        defer { fixture.close() }
+        let line = try XCTUnwrap(fixture.controlRow)
+        let question = try XCTUnwrap(fixture.rows.first { $0.itemID == "question" })
+        XCTAssertEqual(fixture.memberRows.count, 200)
+        XCTAssertEqual(question.frame.minY, line.frame.maxY, accuracy: 0.01)
+        XCTAssertTrue(fixture.memberRows.allSatisfy { $0.frame.height == 0 && $0.estimatedHeight(width: 400) == 0 })
+        let clip = fixture.scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: line.frame.minY + 20))
+        XCTAssertTrue(TranscriptReadingCoordinator.firstStartingOnScreen(fixture.document, clip: clip, after: line) === question)
+        XCTAssertEqual(fixture.document.firstVisibleItem(top: line.frame.maxY, height: 100)?.item.id, question.itemID)
+        fixture.page.viewportChanged(clip.bounds.size)
+        fixture.page.contentChanged(.init(top: -clip.bounds.minY, height: fixture.document.frame.height))
+        XCTAssertTrue(fixture.page.visibleMessageIDs().isDisjoint(with: Set(inherited.map(\.id))))
+        // Exercise the page's fallback lookup as well as the document index.
+        fixture.document.framesAreIndexed = false
+        fixture.page.preserveReadingPositionForLayout()
+        XCTAssertFalse(fixture.page.readingAnchorRow.map { $0.id.hasPrefix("seed-") } ?? false)
+        line.toggleDisclosure(.turnFold("inherited:parent:cutoff")); fixture.session.publishTranscript(); fixture.refresh()
+        XCTAssertTrue(fixture.memberRows.allSatisfy { $0.frame.height > 0 })
+        line.toggleDisclosure(.turnFold("inherited:parent:cutoff")); fixture.session.publishTranscript(); fixture.refresh()
+        XCTAssertEqual(question.frame.minY, line.frame.maxY, accuracy: 0.01)
+    }
+
+    @MainActor func testFoldedMessagesCountInHistoryAverageWithoutVisitsFromANewerToken() throws {
+        try withDisplay(.compact) {
+            let work = (0..<200).map {
+                reply(id: "work-\($0)", turn: "question", at: Double(1_001 + $0), text: "", call: (id: "call-\($0)", name: "read"))
+            }
+            let plain = gapTurn(hiddenRows: 0)
+            let messages = [plain[0]] + work + [plain[1]]
+            var history = try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
+                "incarnation": .string("fixture"), "lineage": .string("root"), "older": .null, "newer": .null]))
+            history.messages = messages; history.start = 500; history.total = 702
+            history.older = .init(incarnation: "fixture", lineage: "root", entry: plain[0].id)
+            let fixture = Fixture(messages: messages, history: history)
+            defer { fixture.close() }
+            XCTAssertGreaterThan(fixture.memberRows.count, 200)
+            let height = fixture.rows.reduce(CGFloat(0)) { $0 + $1.frame.height }
+            XCTAssertEqual(try XCTUnwrap(fixture.page.historyRowHeight), max(24, height / CGFloat(messages.count)), accuracy: 0.01,
+                           "Unread history has the same mix of hidden and visible messages as this window")
+            XCTAssertEqual(fixture.page.historyRowHeight, 24, "The per-message average keeps its 24-point floor")
+            XCTAssertEqual(fixture.page.historyRowHeightSample, 202, "Window membership still controls when to resample")
+            print("FOLDGAP history placed=\(height) average=\(fixture.page.historyRowHeight ?? 0) drawnMessages=2 membership=202")
+            fixture.page.presentationInterval = 0
+            fixture.session.appendMessage(.init(id: "new-question", role: "user", text: "Next", turn: "new-question"))
+            fixture.session.appendMessage(.init(id: "stream", role: "assistant", text: "Answer", state: "streaming", turn: "new-question"))
+            fixture.refresh()
+            print("FOLDGAP token setup hidden=\(fixture.rows.filter(\.foldedAway).count) zero=\(fixture.rows.filter { $0.frame.height == 0 }.count) hosted=\(fixture.document.hostedRowCount)")
+            let visits = fixture.document.visibilityRowVisitCount
+            let reconciled = fixture.document.rowReconciliationVisits
+            for _ in 0..<10 {
+                var message = try XCTUnwrap(fixture.session.messages.last); message.text += " word"
+                fixture.session.replaceMessage(at: fixture.session.messages.count - 1, with: message)
+                fixture.refresh()
+            }
+            print("FOLDGAP tokens visibility=\(fixture.document.visibilityRowVisitCount - visits) reconciliation=\(fixture.document.rowReconciliationVisits - reconciled) hidden=\(fixture.rows.filter(\.foldedAway).count)")
+            XCTAssertLessThan(fixture.document.visibilityRowVisitCount - visits, 200, "Tokens must not walk the folded turn")
+            XCTAssertLessThan(fixture.document.rowReconciliationVisits - reconciled, 100)
+        }
+    }
+
     @MainActor private final class Fixture {
         let session: SessionDisplay
         let page: TranscriptPage
         let scroll: TranscriptNativeScrollView
         let document: TranscriptNativeDocument
         let window: NSWindow
-        init(messages: [TranscriptMessage], width: CGFloat = 780, height: CGFloat = 560) {
+        init(messages: [TranscriptMessage], width: CGFloat = 780, height: CGFloat = 560, inherited: Bool = false, history: ConversationHistoryPage? = nil) {
             session = SessionDisplay(id: "fold")
+            session.isManagedSubagent = inherited; session.supportsCodexAgents = inherited
+            if let history { session.historyPositions.reset(history); session.olderPage = .init(cursor: history.older) }
             session.messages = messages
             page = TranscriptPage()
             page.state = "idle"
@@ -625,7 +743,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
             // around every message rather than leaving fourteen points of
             // blank where the fold swallowed the row.
             for row in members {
-                XCTAssertLessThan(row.frame.height, 2,
+                XCTAssertEqual(row.frame.height, 0,
                                   "A folded row draws nothing: \(row.itemID) is \(row.frame.height)")
             }
             let foldedDocument = fixture.document.frame.height
@@ -696,7 +814,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
                 }
                 document.finishDisclosureMotion()
             }
-            XCTAssertTrue(members().allSatisfy { $0.frame.height <= 2 }, "a finished turn opens folded")
+            XCTAssertTrue(members().allSatisfy { $0.frame.height == 0 }, "a finished turn opens folded")
 
             control.toggleDisclosure(.turnFold("u1"))
             XCTAssertTrue(snapped ? members().contains { $0.frame.height > 20 } : members().filter(\.isInDisclosureMotion).count > 2,
@@ -709,7 +827,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
             XCTAssertTrue(members().allSatisfy { $0.isInDisclosureMotion || $0.frame.height <= 2 },
                           "snapped \(snapped): folding the turn left its rows standing at \(members().map(\.frame.height)) until a later pass")
             await frames("folding, snapped \(snapped)")
-            XCTAssertTrue(members().allSatisfy { $0.frame.height <= 2 }, "the turn folds back to its one line")
+            XCTAssertTrue(members().allSatisfy { $0.frame.height == 0 }, "the turn folds back to its one line")
         }
     }
 

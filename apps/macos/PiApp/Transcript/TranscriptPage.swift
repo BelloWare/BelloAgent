@@ -784,7 +784,7 @@ struct ContentGeometry: Equatable {
         }
         for item in snapshot.items {
             anchorScanVisits += 1
-            guard let frame = frames[item.id], frame.maxY > top else { continue }
+            guard !isFoldedAway(item), let frame = frames[item.id], frame.height > 0, frame.maxY > top else { continue }
             if withinViewport, frame.minY >= top + max(1, position.viewport) { return nil }
             return (item, frame)
         }
@@ -809,7 +809,7 @@ struct ContentGeometry: Equatable {
         let top = position.offset, bottom = position.offset + viewport.height
         var ids: Set<String> = []
         for item in snapshot.items {
-            guard let frame = frames[item.id], frame.maxY > top, frame.minY < bottom else { continue }
+            guard !isFoldedAway(item), let frame = frames[item.id], frame.height > 0, frame.maxY > top, frame.minY < bottom else { continue }
             switch item {
             case .message(let message): ids.insert(message.id)
             case .block(let block): for reply in block.replies { ids.insert(reply.id) }
