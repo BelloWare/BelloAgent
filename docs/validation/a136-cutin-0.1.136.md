@@ -436,3 +436,45 @@ NSUnbufferedIO=YES swift test --package-path packages/swift-host \
 python3 scripts/test-subagent-cutin.py \
   "$PI_BUILD_ROOT/swift-verify/debug/pi-native-host" --mode followup
 ```
+
+### F1 allocation fence and F3 promotion
+
+A second review of the handoff found that claiming the parked writer inside
+`run`, after its awaited owner-budget check, was too late: deferred close could
+win after the new job was allocated. Allocation now claims the writer before
+any suspension. The new latch test holds turn 2 before the budget check and
+runs the old deferred-close callback; it must not close the assigned instance.
+Cost-held turns use the same writer-release path, so Resume cannot open a second
+writer while a cancelled drain is still settling. A claimed close awaits both
+owner settlement and the child's mirror before releasing the runtime.
+
+F3 was measured before changing promotion, in Release (`-Osize`, arm64) with
+50,000 generated message rows: **209,714,720 bytes** (200.0 MiB). All files and
+build products stayed under `PI_BUILD_ROOT`. The isolated benchmark target
+avoids an unrelated full-Release-test-target compile error: `SideOriginReadProbe`
+is available only in Debug. It uses the production sources and the same
+`swift-host` build root. `promotion-copy-200.log` records:
+
+| Promotion | Wall time | Family-gate hold |
+|---|---:|---:|
+| v3 | 763.262 ms | 763.167 ms |
+| v4 | 829.761 ms | 829.719 ms |
+| v5 | 743.885 ms | 743.857 ms |
+
+The 1-minute load was **2.02 at start, 2.18 at end**, with our full-lane lock
+held. The first trial used a larger 216,514,727-byte fixture; it is retained in
+`promotion-copy.log` but the table uses the corrected 200 MiB fixture. The
+measurement exceeds 250 ms, so all three promotions now use the existing
+`fclonefileat` helper, verify the original marker at its checked offset,
+rewrite only its same-length marker, verify the new digest, fsync, rename,
+and fsync the directory. A failed clone removes its partial temporary file
+and falls back to the existing line-copy implementation. The sidecar writer
+lock stays held throughout. Fault hooks exist only in generated test sources.
+
+`promotion-focused-2.log`: **51 executed, 48 passed, three opt-in skips, zero
+failures**. This includes the new allocation/close race, clone/fallback byte
+preservation and writer exclusion, bad marker/length rejection, F1/F2 barriers,
+existing cut recovery and fork clone checks. An earlier compile attempt exposed
+a throwing XCTest autoclosure in the nonthrowing clone seam; the fixture now
+uses explicit `do/catch`. One Release benchmark build was discarded because
+its source was edited during compilation; it supplied no measurement.

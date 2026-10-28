@@ -91,6 +91,40 @@ final class MailboxCutReviewTests: HelperTestCase {
             await f.close()
         }
     }
+    func testAllocatedFollowupOwnsWriterBeforeRunSuspends() async throws {
+        let f = try await fixture(holdDrain:true)
+        await f.client.candidate.release(); await f.client.continued.wait(); await f.client.finish.release()
+        await f.child.waitForSubagent()
+        let wake = await f.coordinator.signal(f.parent.id)
+        while await f.coordinator.hasReviewJob(f.child.id) {
+            let revision = await wake.revision
+            if await f.coordinator.hasReviewJob(f.child.id) { await wake.wait(after:revision) }
+        }
+        let retained = await f.coordinator.drainingChildren[f.child.id]
+        let parked = try XCTUnwrap(retained), starting = CutinLatch(), release = CutinLatch()
+        await f.coordinator.reviewRunBarrier { turn in
+            if turn.turn == 2 { await starting.release(); await release.wait() }
+        }
+        let follow = ToolCall(id:"follow",name:"followup_task",arguments:["target":"worker","message":"Again"])
+        let key = try await f.parent.agentFixtureCall(follow)
+        _ = try await f.coordinator.prepare(follow,key:key,parent:f.parent)
+        await starting.wait()
+        let assigned = await f.coordinator.jobs["\(f.child.id):2"]?.child
+        XCTAssertTrue(assigned === f.child,"Allocation must claim the writer before run can suspend")
+        await f.client.drain.release(); await f.client.settled.wait()
+        // Run the same deferred callback deterministically while turn 2 is
+        // allocated but suspended before its owner-budget check/open.
+        await f.coordinator.closeDrainingChild(f.child.id,instance:parked.job.instance)
+        let closed = await f.child.closed; XCTAssertFalse(closed)
+        await release.release()
+        while await f.parent.agentState().latest(f.child.id)?.status.terminal != true {
+            let revision = await wake.revision
+            if await f.parent.agentState().latest(f.child.id)?.status.terminal != true { await wake.wait(after:revision) }
+        }
+        let status = await f.parent.agentState().latest(f.child.id)?.status
+        XCTAssertEqual(status,.completed)
+        await f.close()
+    }
     func testOwnerCloseAndInterruptSettleParkedDrainExactlyOnce() async throws {
         for action in ["close","interrupt","stop"] {
             let f = try await fixture(holdDrain:true)
@@ -124,6 +158,7 @@ final class MailboxCutReviewTests: HelperTestCase {
 }
 
 extension AgentSteeringCoordinator {
+    func reviewRunBarrier(_ hook: @escaping @Sendable (AgentChildTurn) async -> Void) { beforeChildRun = hook }
     func reviewCommitBarrier(_ hook: @escaping @Sendable () async -> Void) { beforeMailboxCutCommit = hook }
     func reviewCutBarrier(_ hook: @escaping @Sendable () async -> Void) { afterMailboxCutPrepared = hook }
     func hasReviewJob(_ child: String) -> Bool { jobs.values.contains { $0.turn.childID == child } }

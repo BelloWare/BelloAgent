@@ -1,7 +1,7 @@
 import Foundation
 
 /// V3 orchestration shares real AgentSessions, admission, tools and provider loop
-/// with v2. Only runnable turns are retained here; journal state owns identity.
+/// with v2. Journal state owns identity; parked readers retain only their writer.
 actor AgentSteeringCoordinator {
     typealias Open = @Sendable (SubagentEnvironment, SubagentPlan) async throws -> AgentSession
     typealias Retire = @Sendable (AgentSession, SubagentPlan, AgentChildTurn) async throws -> Void
@@ -52,6 +52,7 @@ actor AgentSteeringCoordinator {
     var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
+    var beforeChildRun: (@Sendable (AgentChildTurn) async -> Void)?
     var beforeMailboxCutCommit: (@Sendable () async -> Void)?
     var afterMailboxCutPrepared: (@Sendable () async -> Void)?
     var beforeResumeInstall: (@Sendable () async -> Void)?
@@ -211,6 +212,7 @@ actor AgentSteeringCoordinator {
             queues[owner]?.remove(at:position)
             guard var job = jobs[id] else { continue }
             active[owner,default:0] += 1; job.allocated = true
+            if job.child == nil, let parked = drainingChildren.removeValue(forKey:job.turn.childID) { job.child = parked.child }
             job.task = Task { await self.run(id) }; jobs[id] = job
         }
     }
@@ -221,9 +223,9 @@ actor AgentSteeringCoordinator {
             try Task.checkCancellation()
             guard job.turn.currentGeneration > cancelledThrough[job.turn.currentRuntimeID,default:-1], !job.cancelled else { throw CancellationError() }
             guard !paused.contains(job.owner.id) else { throw AgentSession.costHoldError }
+            await beforeChildRun?(job.turn)
             try await job.owner.enforceSharedCostLimit()
             if let existing = job.child { child = existing }
-            else if let parked = drainingChildren.removeValue(forKey:job.turn.childID) { child = parked.child }
             else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
@@ -287,7 +289,8 @@ actor AgentSteeringCoordinator {
     }
     /// Keeps an unsealed turn for Resume: queued in the owner and child
     /// journals, with no result and its pending parent messages kept. The
-    /// runtime is released; Resume opens the child again from its journal.
+    /// runtime is released unless a drain still owns its writer; Resume can
+    /// take that writer through the same allocation path as a follow-up.
     func park(_ job: Job, child: AgentSession?, generation: CostPauseGeneration) async {
         guard generation.clock === job.owner.costPauseClock, generation.isCurrentPause else { return }
         // Only the job still installed, once: a stale snapshot (a pause's
@@ -318,7 +321,7 @@ actor AgentSteeringCoordinator {
                 await lock.release()
             } catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
-        if let child { await settled(child) }
+        if let child { await releaseChild(job,child:child) }
         guard jobs[turn.id]?.instance == job.instance else { return }
         jobs.removeValue(forKey:turn.id); queues[job.owner.id]?.removeAll { $0 == turn.id }
         if job.allocated { active[job.owner.id,default:0] -= 1 }
@@ -435,26 +438,27 @@ actor AgentSteeringCoordinator {
             do { if jobs[job.turn.id]?.sealed != true { try await seal(job:job,child:child) }; await lock.release() }
             catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
-        if let child {
-            if await child.hasMailboxDrains {
-                drainingChildren[job.turn.childID] = DrainingChild(job:job,child:child)
-                Task {
-                    await child.waitForRequestDrains()
-                    await self.closeDrainingChild(job.turn.childID,instance:job.instance)
-                }
-            } else { await settled(child) }
-        }
+        if let child { await releaseChild(job,child:child) }
         if jobs[job.turn.id]?.instance == job.instance { jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 } }
         pump(job.owner.id)
         await signal(job.owner.id).pulse()
     }
-    private func closeDrainingChild(_ id: String, instance: UUID) async {
+    private func releaseChild(_ job: Job, child: AgentSession) async {
+        if await child.hasMailboxDrains {
+            drainingChildren[job.turn.childID] = DrainingChild(job:job,child:child)
+            Task {
+                await child.waitForRequestDrains()
+                await self.closeDrainingChild(job.turn.childID,instance:job.instance)
+            }
+        } else { await settled(child) }
+    }
+    func closeDrainingChild(_ id: String, instance: UUID) async {
         guard let parked = drainingChildren[id], parked.job.instance == instance else { return }
         drainingChildren.removeValue(forKey:id)
         // Block a new writer until close actually releases the journal. No
         // await separates removing the parked writer and publishing this fence.
         let settled = settled
-        let close = Task { await settled(parked.child) }
+        let close = Task { await parked.child.waitForRequestDrains(); await settled(parked.child) }
         closingChildren[id] = (parked.job.owner.id,close)
         await close.value
         closingChildren.removeValue(forKey:id)

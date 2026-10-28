@@ -12,5 +12,6 @@ if __name__ == '__main__':
     args=parser.parse_args(); crash=module('crash','test-subagent-cutin-crashes.py'); cutin=module('cutin','test-subagent-cutin.py')
     binary=crash.BUILD/'cutin-crash-build/debug/pi-native-host' if args.skip_build else crash.build()
     points=[f'{name}-{edge}' for name in ('preparation','owner-commit','recipient-commit','prefix','call-result','delivery-prepare','delivery-row','delivery-ack','delivery-mirror','continuation-admit','continuation-dispatch','drain-cost') for edge in ('write','sync')]
+    points += [f'{who}-promotion-{stage}' for who in ('owner','recipient') for stage in ('cloned','marker','verified','copy','installed','renamed')]
     for point in args.points or points:
         cutin.run(str(binary),'terminal_race' if point.startswith('drain-cost') else 'reasoning',failure_point=point,recovery=args.recovery)

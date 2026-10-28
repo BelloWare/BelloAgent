@@ -10,7 +10,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = Path(os.environ['PI_BUILD_ROOT'])
 POINTS = [f'{name}-{edge}' for name in ('preparation','owner-commit','recipient-commit','prefix','call-result','delivery-prepare','delivery-row','delivery-ack','delivery-mirror','continuation-admit','continuation-dispatch','drain-cost') for edge in ('before','synced')]
-POINTS += [f'{who}-promotion-{edge}' for who in ('owner','recipient') for edge in ('copy','renamed')]
+POINTS += [f'{who}-promotion-{edge}' for who in ('owner','recipient') for edge in ('cloned','marker','verified','copy','installed','renamed')]
 POINTS += ['draining']
 HOOK = r'''
 import Foundation
@@ -21,7 +21,7 @@ enum CutinFixtureBarrier {
     static func hit(_ point: String) {
         guard ProcessInfo.processInfo.environment["PI_CUTIN_CRASH_POINT"] == point,
               let file = ProcessInfo.processInfo.environment["PI_CUTIN_BARRIER_FILE"] else { return }
-        try! Data(point.utf8).write(to:URL(fileURLWithPath:file),options:.atomic)
+        try! Data((point + "\n" + String(getpid())).utf8).write(to:URL(fileURLWithPath:file),options:.atomic)
         raise(SIGSTOP)
     }
     static func record(_ row: JSON, url: URL, edge: String, observe: (String) -> Void = { hit($0) }) {
@@ -43,6 +43,18 @@ enum CutinFixtureBarrier {
         }
         lock.lock(); let draining = attempts.contains(data["attemptId"].text ?? ""); lock.unlock()
         if owner, kind == JournalRecordKind.cost, draining { observe("drain-cost-" + edge) }
+    }
+    static func promotion(_ marker: String, child: Bool, stage: String) throws {
+        let short = (child ? "recipient" : "owner") + "-promotion-" + stage
+        let version = marker == JournalRecordKind.steeringMarker ? "v3" : marker == JournalRecordKind.codexMarker ? "v4" : "v5"
+        for point in [version + "-" + short] + (version == "v5" ? [short] : []) {
+            hit(point)
+            if ProcessInfo.processInfo.environment["PI_CUTIN_FAILURE"] == point,
+               let file = ProcessInfo.processInfo.environment["PI_CUTIN_BARRIER_FILE"] {
+                try Data(point.utf8).write(to:URL(fileURLWithPath:file),options:.atomic)
+                throw AgentError("fixture_write_failure","Generated promotion failure")
+            }
+        }
     }
     static func fail(_ row: JSON, url: URL, edge: String) throws {
         var failed = false
@@ -71,8 +83,21 @@ def prepare():
     text = text.replace('        lastAppend=(bytes, line.count); lastAppendLine=line','        lastAppend=(bytes, line.count); lastAppendLine=line\n        fixturePending.append(try JSON.parse(line))')
     text = text.replace('        unsynced=false; synchronizations += 1','        unsynced=false; synchronizations += 1\n        let pending = fixturePending; fixturePending.removeAll()\n        for row in pending { CutinFixtureBarrier.record(row,url:url,edge:"synced") }')
     text = text.replace('do { try beforeSynchronize(); try handle.synchronize() }','do { for row in fixturePending { try CutinFixtureBarrier.fail(row,url:url,edge:"sync") }; try beforeSynchronize(); try handle.synchronize() }')
-    text = text.replace('        try copy.synchronize()','        try copy.synchronize()\n        if marker == JournalRecordKind.cutinMarker { CutinFixtureBarrier.hit((managedChild ? "recipient" : "owner") + "-promotion-copy") }')
-    text = text.replace('            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()','            if marker == JournalRecordKind.cutinMarker { CutinFixtureBarrier.hit((managedChild ? "recipient" : "owner") + "-promotion-renamed") }\n            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()')
+    stages = {
+        '        let cloned = cloneFile(source,temporary.path) == 0': ('cloned', True),
+        '            try copy.seek(toOffset:check.offset); try copy.write(contentsOf:promotedLine)': ('marker', False),
+        '        guard JournalCheckpoint.verified(promotedCheck,in:copy) == promotedLine else { throw SubagentRecovery.damaged() }': ('verified', False),
+        '        try copy.synchronize()': ('copy', False),
+        '            guard fsync(directoryFD) == 0 else { throw SubagentRecovery.damaged() }': ('renamed', False),
+    }
+    for line, (stage, conditional) in stages.items():
+        assert text.count(line) == 1, (stage, text.count(line))
+        hook = f'try CutinFixtureBarrier.promotion(marker,child:managedChild,stage:"{stage}")'
+        if conditional: hook = 'if cloned { ' + hook + ' }'
+        text = text.replace(line, line + '\n        ' + hook)
+    installed = '        do {\n            let directoryFD = open(url.deletingLastPathComponent().path,O_RDONLY | O_CLOEXEC)'
+    assert text.count(installed) == 1
+    text = text.replace(installed, '        do {\n            try CutinFixtureBarrier.promotion(marker,child:managedChild,stage:"installed")\n            let directoryFD = open(url.deletingLastPathComponent().path,O_RDONLY | O_CLOEXEC)')
     p.write_text(text)
     p = core/'Providers.swift'; text = p.read_text().replace('delivery.resolve(.success(committed))','delivery.resolve(.success(committed))\n                                CutinFixtureBarrier.hit("draining")'); p.write_text(text)
     return source
