@@ -7,7 +7,7 @@
 - [ ] FOLD-GAP: a folded turn takes no room for its hidden rows. Each folded-away row still stands at one point (`TranscriptRowContainer` measure and estimate), so a sixty-call fold left about 200 pt of blank space between its line and its answer (0.1.135 Known). Follows the owner's 2026-10-28 "It should be collapsed by default."
 - [ ] AGENTS-1 P3s from the 0.1.135 reviews: a finished `wait_agent` card still says "Waiting for agents"; a final answer's bounded preview cut inside a code block shows an empty frame; `requirePublished` reads the whole child journal at each open or follow-up; `HostService.rebind` refuses only `childMarker` children.
 - [ ] TEST-FLAKE: `StreamingDeliveryCostTests.testRefreshRoundTripOccupancy` fails 2–4 times in 10 isolated runs (301 projection visits in one delta), with or without 0.1.135's turn-fold change.
-- Owner decision pending: Codex's mid-reply cut-in for sub-agent mail.
+- [x] AGENTS-2: Codex's mid-reply cut-in, with background drain and exact original-attempt accounting on qualified pinned native Responses routes. Owner, 2026-10-29: **"Match Codex"**, **"Drain in background"** — "Cut at the next thought or note like Codex, and the agent continues with the message at once. The cut request keeps running unseen to its end so its exact cost is recorded. You pay for the whole reply, including the discarded rest. No new pauses." — and **"Wait for cut-in"** for 0.1.136. Lazy v5 writer fence; typed retained-prefix and cancelled-call presentation. [Validation](docs/validation/a136-cutin-0.1.136.md). Owner-only live gateway probe remains to be run; lead reviews and merges.
 
 ## 0.1.135
 
