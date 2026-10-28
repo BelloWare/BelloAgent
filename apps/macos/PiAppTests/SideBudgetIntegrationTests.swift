@@ -5,6 +5,21 @@ import XCTest
 final class BudgetOwnerUnloadTests: XCTestCase {
     private enum Operation: CaseIterable { case connection, editing, folders, delete }
 
+    @MainActor func testCatalogGrantNotificationDoesNotCreateAnUnshownSideDisplay() async throws {
+        let model = try await sideBudgetFixture(), item = try XCTUnwrap(model.record("nested"))
+        await model.loadSubagentModels(for: item)
+        let host = try await model.open(item)
+        let events = try await host.request("session.events", sessionID: item.id, params: ["since": .number(0)])
+        XCTAssertTrue(events.object?["events"]?.array?.contains { $0.object?["type"]?.string == "context.inputs-changed" } == true,
+                      "Installing nonempty grants emits the opening's context change")
+        // Deliver that coalesced notification after the open has finished,
+        // with the saved side still unshown, regardless of transport timing.
+        model.displays.removeValue(forKey: item.id)
+        model.refresh(item.id)
+        XCTAssertNil(model.displays[item.id], "A grant notification must not materialize a hidden side transcript")
+        XCTAssertNotNil(model.budgetStates[item.id]?.readTask, "The side's accounting is still refreshed")
+    }
+
     @MainActor private func exercise(_ operation: Operation, model: WorkspaceModel) async throws {
         switch operation {
         case .connection:
@@ -38,11 +53,11 @@ final class BudgetOwnerUnloadTests: XCTestCase {
             model.chats[try XCTUnwrap(model.chats.firstIndex(where: { $0.id == main.id }))] = main
             _ = try await model.open(try XCTUnwrap(model.record("nested")))
             _ = try await model.open(try XCTUnwrap(model.record("sibling")))
-            XCTAssertTrue(model.displays.isEmpty)
+            XCTAssertTrue(model.displays.isEmpty, "\(operation), before: \(model.displays.keys.sorted())")
             do { try await exercise(operation,model:model) }
             catch { XCTFail("\(operation): idle side runtimes must not block the owner: \(error)") }
             XCTAssertTrue(model.opened.isEmpty,"\(operation): release descendants before their owner")
-            XCTAssertTrue(model.displays.isEmpty,"Owner changes must not create hidden transcripts")
+            XCTAssertTrue(model.displays.isEmpty,"\(operation): owner changes must not create hidden transcripts: \(model.displays.keys.sorted())")
         }
     }
 

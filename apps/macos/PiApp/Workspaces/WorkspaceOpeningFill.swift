@@ -44,7 +44,7 @@ extension WorkspaceModel {
     /// First rows have painted. Read ahead now, then admit whole turns on
     /// separate beats so the fill shares the main thread with input/tokens.
     func startOpeningFill(_ id: String) {
-        guard let view = displays[id], view.presentation.openingPage, view.presentation.openingFill == nil, view.versionView == nil else { return }
+        guard let view = displays[id], view.presentation.openingPage, view.presentation.openingFill == nil, view.versionView == nil, !view.inheritedContextFolded else { return }
         let newer = view.presentation.openingAround != nil
         guard view.presentation.partialTurnInput == nil, let item = record(id), let boundary = newer ? view.newerPage.cursor : view.olderPage.cursor else { view.presentation.openingPage = false; return }
         let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
@@ -53,7 +53,7 @@ extension WorkspaceModel {
             guard let self, let view else { return }
             @MainActor func current() -> Bool {
                 !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.versionView == nil
-                    && view.presentation.readGeneration == generation && self.transcriptShows(id)
+                    && view.presentation.readGeneration == generation && self.transcriptShows(id) && !view.inheritedContextFolded
                     && self.record(id)?.path == item.path && self.record(id)?.workspaceID == item.workspaceID
                     && view.newerPage.error != Self.branchChangedElsewhere
             }

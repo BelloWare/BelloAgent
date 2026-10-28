@@ -167,11 +167,13 @@ final class SessionJournal {
     /// One-way format promotion, under the existing writer lock. Only the marker
     /// name changes (same byte count); origin and historical record identities,
     /// offsets, hashes and provider context otherwise remain untouched.
-    func promoteToSteering(managedChild: Bool) throws {
+    func promoteToSteering(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.steeringMarker) }
+    func promoteToCodex(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.codexMarker) }
+    private func promoteAgentFormat(managedChild: Bool, marker: String) throws {
         guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw SubagentRecovery.damaged() }
-        if markerKind == JournalRecordKind.steeringMarker { return }
-        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker),
+        if markerKind == marker || markerKind == JournalRecordKind.codexMarker { return }
+        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker) || markerKind == JournalRecordKind.steeringMarker,
               let check = markerCheck else { throw SubagentRecovery.damaged() }
         // Synchronous under the owning actor: no await may split this span.
         // The explicit fence also rejects callbacks that try to append while
@@ -193,7 +195,7 @@ final class SessionJournal {
             if offset == check.offset {
                 guard JournalCheckpoint.digest(line) == check.sha256,
                       let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
-                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + JournalRecordKind.steeringMarker + "\"").utf8)
+                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + marker + "\"").utf8)
                 guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
                 line = promotedLine; replaced = true
             }
@@ -208,7 +210,7 @@ final class SessionJournal {
             defer { _ = close(directoryFD) }
             guard fsync(directoryFD) == 0 else { throw SubagentRecovery.damaged() }
             try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()
-            markerKind = JournalRecordKind.steeringMarker
+            markerKind = marker
             markerCheck = .init(offset:check.offset,length:check.length,sha256:JournalCheckpoint.digest(promotedLine))
             resumedFrom = nil; JournalCheckpoint.remove(for:url)
         } catch { poisoned = true; throw error }
@@ -218,7 +220,7 @@ final class SessionJournal {
     /// This also works when an idle child viewer already holds its writer.
     static func verifyManagedChild(url: URL, id: String) throws {
         let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
-        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
+        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker, JournalRecordKind.codexMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
     }
 
     /// The chain from a checkpoint on, when the records the checkpoint relies

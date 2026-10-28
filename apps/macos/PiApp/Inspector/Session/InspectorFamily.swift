@@ -12,10 +12,10 @@ struct InspectorSubagentGroup: Equatable {
     var number: Int? = nil
     var effort: String? = nil
     var id: String { summary.link.delegationID }
-    var title: String { SubagentLabel.title(number, summary.description) }
+    var title: String { SubagentLabel.title(number, summary.description, taskName: summary.taskName) }
     var detail: String {
         let coverage = costSamples < requests ? (costSamples == 0 ? " · cost unreported" : " · cost partly unreported") : ""
-        return summary.presentationLabel + (effort.map { " · " + $0 } ?? "") + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
+        return (SubagentLabel.task(summary.taskName) == nil ? "" : summary.description + " · ") + summary.presentationLabel + (effort.map { " · " + $0 } ?? "") + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
     }
 }
 
@@ -122,6 +122,7 @@ extension SubagentSummary {
         guard let turn else { return statusLabel }
         let state: String
         if pausedAtCostLimit { state = "Paused at cost limit" }
+        else if deliveryState == "waiting_next_turn" { state = "Waiting for its next turn" }
         else if deliveryState == "held" { state = "Pending for parent Resume" }
         else if parentWaiting == true && !status.terminal { state = "Waiting for sub-agent" }
         else if status == .running { state = "Running in background" }

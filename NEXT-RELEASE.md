@@ -2,6 +2,26 @@
 
 **Released 2026-10-27:** 0.1.134 (build 138, tag `v0.1.134`) is the latest release, Ask in sidebar search; record `docs/validation/Bello-Agent-0.1.134-2026-10-27.md`. 0.1.133 (build 137) was the work planned as 0.1.131.
 
+## 0.1.135
+
+- [x] Finished live turns now fold without scrolling, including fresh edit/resend branches. Owner: "It should be collapsed by default." Round 2: one automatic completion read per generation/cursor, errors wait for Retry, and short completed turns use the normal top inset; the 18-point footer hold and opened folds stay. The existing folded-row gap is deferred to 0.1.136. [Validation](docs/validation/a135-turnfold-0.1.135.md).
+
+- [x] The first context count after launch is no longer discarded when the connection's model catalog loads; Inspector previews use the loaded tool schema too. [Validation](docs/validation/a135-gatefix-0.1.135.md).
+
+- [x] AGENTS-1: sub-agents, Codex style. Owner, 2026-10-27: "I like codex style of how sub and main communities, and sub agent can talk to each other if that's how Codex is implemented, but sub agents cannot spawn sub agent directly, only main agent can. And sub agent can start with full context with handoff. Let's try to follow codex style more".
+  - Codex V2 tools: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`.
+  - `/root/<name>` names.
+  - By default a sub-agent starts with the main chat's context plus a hand-off note.
+  - Any agents in the family can message each other.
+  - Whole final answers, sent in Codex's text format (lines indented so they can't be forged), with waits of up to an hour.
+  - Only the main chat starts sub-agents.
+  - The automatic family wait, crash safety and shared cost limit stay.
+  - Codex's mid-reply cut-in is deferred.
+  - [Design](docs/design/subagents-codex-style.md). Helper v4 and lead-review fixes complete: seed bodies stay out of parent records/checkpoints, recovery verifies references/digests, version-2 caches retain the family gate, child senders fail closed, all newline framing is safe, and v4 pause/Resume retains task identity and human Stop provenance. All twelve app-wire JSON examples unchanged. Review validation: 315 focused helper tests, 2 streaming modes, 44 v4 + 21 v2 crash edges, 41/4/3 Release wire/concurrent/acceptance tests and 60 mutations ([record](docs/validation/a135-agents-0.1.135.md)). App integration and the merged gate remain with their workstream and lead.
+
+  - **App:** §9 UI implemented on `dev/a135-agents-ui`: named agents, six gated cards, typed sibling/final-answer rows, idle queue mail and a paged inherited fold; v3/v1 history retained. Helper runtime merged and v4 end-to-end flow verified, including turn-2 sibling Source navigation. 297 passed, 1 optional skip, 1 reproduced baseline failure; 62 gallery images reviewed: [record](docs/validation/a135-agents-ui-0.1.135.md). The undelivered-task notice (a typed MESSAGE to `/root`) and the three appendix decisions are settled by the lead.
+  - **Gate** (`scripts/verify-release.sh` on `1eb7be60`, 2026-10-27; logs under `build-lead/verify-logs`, `rerun-135`, `affected-135`): wire 41, concurrent 4, acceptance 3, python 150, helper-cost 5 and views passed. Of the other failures, six classes passed alone (load). Five context-preview classes were a regression from 0.1.132, fixed above; two test premises from AGENTS-1 (the helper lookup of `subagent_start`, gallery scene 11i) were fixed in `de387346`. SubagentPerformance, PayloadNativeParity, LongChatScroll, HistoryEdit and the wide-issuer yield tests also failed on `6dbaa1d4`, which passed them in the 0.1.133 gate, while the Mac had an active screen capture (replayd at about 85% CPU); they are machine conditions, not this release. Affected reruns on `de387346`: app 257/0 in 20 classes, helper ContextPreview 8/0; Astra's whole gallery passed with 238 captures.
+
 ## 0.1.134
 
 - [x] FIND-2: Ask beside Titles & details and Full chats: typing stays local, Return ranks a bounded shortlist of briefs/details through the chosen connection's own mini model. Owner, 2026-10-25: "Pick a connection" — a PiKit chooser in Settings order, kept until quit; known connections without a mini model are disabled; uncached catalog defaults resolve when asked. An empty or removed choice falls back without asking and explains why a submitted Ask stopped. Changing the choice after asking cancels and asks the same question there. Validated IDs and one-line reasons publish immediately; the top eight get local snippets independently of library-wide indexing, in reserved space, using an existing index or a bounded in-memory journal tail (no temporary text files). Fenced rankings are accepted and long reasons shortened while preserving emoji. Progress, Cancel and errors stay in the result area. One Ask chats background request (`chat-ask`) counted in Usage, without a spending cap. Main chats and saved sides; briefs off uses details only. [Validation](docs/validation/a131-ask-0.1.134.md).

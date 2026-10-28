@@ -45,8 +45,9 @@ struct SubagentToolResult: Codable, Sendable, Equatable {
          "nativeSubagent":metadata, "nativeResultMessageId":messageID.map { JSON($0) } ?? .null]
     }
     init(plan: SubagentPlan? = nil, status: SubagentStatus, text: String = "", error: AgentError? = nil,
-         messageIDs: [String] = [], accountingRevision: Int = 0, began: Bool = false) {
-        let kept = Self.bounded(text, bytes: 65_536)
+         messageIDs: [String] = [], accountingRevision: Int = 0, began: Bool = false, textLimit: Int = 65_536) {
+        let notice = "\n\n[Final answer truncated at 1 MiB.]"
+        let kept = textLimit == 1_048_576 && text.utf8.count > textLimit ? Self.bounded(text,bytes:textLimit-notice.utf8.count) + notice : Self.bounded(text,bytes:textLimit)
         envelope = ["status":JSON(status.rawValue),"text":JSON(kept),"truncated":JSON(kept.utf8.count < text.utf8.count)]
         if let error { envelope["error"] = ["code":JSON(Self.bounded(error.code, bytes:128)),"message":JSON(Self.bounded(error.message, bytes:2048))] }
         metadata = .null; messageID = plan?.resultMessageID

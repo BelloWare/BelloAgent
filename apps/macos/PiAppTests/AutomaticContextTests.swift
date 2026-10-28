@@ -3,6 +3,43 @@ import XCTest
 @testable import PiApp
 
 final class AutomaticContextTests: XCTestCase {
+    @MainActor func testPreviewParameterAndSignatureReadsDoNotLoadCatalog() async throws {
+        let loaded = expectation(description: "Reading preview inputs must not load the catalog"); loaded.isInverted = true
+        let catalog = ModelCatalog(readBundled: { loaded.fulfill(); return [ModelDescriptor(id: "offered", name: "Offered")] })
+        let model = try await fixture(catalog: catalog); defer { model.shutdown() }
+        let item = try XCTUnwrap(model.record("a")), display = SessionDisplay(id: "a")
+        model.displays[item.id] = display; model.selectedID = item.id; model.focusedSessionID = item.id
+        display.contextSelectionReady = true
+        let params = model.turnOverrides(for: item, base: ["text": .string(""), "skills": .array([]), "attachments": .array([])])
+        model.scheduleAutomaticContext(item.id, delay: .seconds(60))
+        let pending = try XCTUnwrap(model.automaticContextTask)
+        display.footer.preparedContext = PreparedContextMetrics(summary: Self.summary(tokens: 123), binding: ContextPreviewBinding(item),
+            params: params, configurationRevision: model.configuration.revision, directCommand: false)
+        _ = model.displayedContext(display)
+        await fulfillment(of: [loaded], timeout: 0.2)
+        XCTAssertNil(model.catalogEntry(for: try XCTUnwrap(model.profiles.first)).fetchedAt)
+        model.cancelAutomaticContext(); await pending.task.value
+        try await close(model)
+    }
+
+    @MainActor func testFirstAutomaticPreviewUsesLoadedCatalogWithoutAnotherActivation() async throws {
+        let catalog = ModelCatalog(readBundled: { [ModelDescriptor(id: "offered", name: "Offered")] })
+        let model = try await fixture(catalog: catalog); defer { model.shutdown() }
+        var calls = 0
+        model.automaticContextOperation = { _, params in
+            calls += 1
+            XCTAssertEqual(params["subagentModels"]?.array?.compactMap { $0.object?["model"]?.string }, ["offered"])
+            return Self.summary(tokens: 456)
+        }
+        await model.select("a"); await presentationReady(model)
+        let pending = try XCTUnwrap(model.automaticContextTask)
+        await pending.task.value
+        XCTAssertEqual(calls, 1, "The first activation must finish with the loaded grants")
+        XCTAssertEqual(model.displayedContext(try XCTUnwrap(model.selected))["tokens"], .number(456))
+        XCTAssertFalse(try XCTUnwrap(model.selected).footer.preparingContext)
+        try await close(model)
+    }
+
     @MainActor func testSelectingTabCalculatesSavedDraftAndReusesMatchingPreview() async throws {
         let model = try await fixture(); defer { model.shutdown() }
         var calls = 0
@@ -307,7 +344,7 @@ final class AutomaticContextTests: XCTestCase {
         await view.presentation.secondary?.value
     }
 
-    @MainActor private func fixture() async throws -> WorkspaceModel {
+    @MainActor private func fixture(catalog: ModelCatalog? = nil) async throws -> WorkspaceModel {
         let root = try scratch(), vault = ConfigurationVault(storage: MemoryVaultStorage())
         let workspace = WorkspaceRecord(id: "context-project", path: root.path, trusted: true)
         var profile = ProfileRecord(); profile.id = "connection"; profile.baseUrl = "http://127.0.0.1:1"
@@ -317,7 +354,7 @@ final class AutomaticContextTests: XCTestCase {
             $0.profiles = [connection]; $0.workspaces = [workspace]
             $0.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("empty-codex").path)])
         }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault, modelCatalog: catalog)
         // These tests answer for the helper's context preview themselves;
         // typing must not start a real helper behind them.
         model.prewarmsHelpers = false

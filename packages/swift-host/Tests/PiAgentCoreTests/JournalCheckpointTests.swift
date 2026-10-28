@@ -72,6 +72,25 @@ final class JournalCheckpointTests: HelperTestCase {
         XCTAssertGreaterThanOrEqual(ordinal, fullOrdinal, "New parts keep counting up", file: file, line: line)
     }
 
+    func testFamilyScopedMarkersRejectOldDerivedStateOnlyForFamilies() async throws {
+        let chat = try await chat(), url = URL(fileURLWithPath:chat.path)
+        let original = try XCTUnwrap(meta(chat))
+        for kind in ["ordinary","family","origin","plan"] {
+            var checkpoint = original, helper = try JSON.parse(Data(original.helper.utf8)), state = SubagentJournalState()
+            let origin = subagentFixtureOrigin()
+            if kind == "family" { state.family = AgentFamilyState(ownerID:"parent") }
+            if kind == "origin" { state.origin = origin }
+            if kind == "plan" { state.plans[origin.link.delegationID] = SubagentPlan(origin:origin,task:"Task",resultMessageID:"receipt") }
+            helper["subagents"] = try subagentJSON(state)
+            for markers in [false,true] {
+                helper["subagentEffortVersion"] = markers ? 1 : .null
+                helper["subagentCodexVersion"] = markers ? 4 : .null
+                checkpoint.helper = helper.encoded()
+                XCTAssertEqual(AgentSession.loadCheckpoint(checkpoint,url:url) != nil,markers || kind == "ordinary",kind)
+            }
+        }
+    }
+
     func testCheckpointTemporariesAreRemovedOnlyByTheirJournalWriter() async throws {
         let chat = try await chat(), journal = URL(fileURLWithPath: chat.path)
         let held = try session(chat), directory = journal.deletingLastPathComponent()
@@ -91,6 +110,7 @@ final class JournalCheckpointTests: HelperTestCase {
     func testAChatOpensFromItsMetadataFileAsAFullReplayWould() async throws {
         let chat = try await chat()
         let written = try XCTUnwrap(meta(chat), "The compaction wrote the file while the chat was open")
+        XCTAssertEqual(written.version, 2, "Ordinary chats retain the version-2 cache shortcut")
         XCTAssertEqual(written.sessionID, "checkpointed")
         let reference0 = try session(chat.copyWithoutMeta())
         let fullOlder = await reference0.olderRows

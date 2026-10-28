@@ -111,7 +111,7 @@ extension AgentSession {
         generation.clock.apply(generation) {
             if halt {
                 guard lastCostHalt != generation || lastCostHalt?.stops != generation.stops else { return }
-                lastCostHalt = generation; stop()
+                lastCostHalt = generation; stop(userInitiated:false)
             } else { abortModelRequests() }
         }
     }

@@ -201,7 +201,7 @@ extension MetadataDurabilityTests {
         chat.delegation = SubagentLink(delegationID: "d", childSessionID: chat.id, budgetOwnerSessionID: "pp",
                                       call: .init(parentSessionID: "pp", assistantMessageID: "reply", toolCallID: "call"),
                                       parentTurnID: "turn", parentExecutionID: "execution")
-        chat.delegationTask = "Delegated task"; chat.delegationIssue = "Saved recovery notice"; chat.subagentNumber = 2
+        chat.delegationTask = "Delegated task"; chat.delegationIssue = "Saved recovery notice"; chat.subagentNumber = 2; chat.subagentTaskName = "audit"
         for child in Mirror(reflecting: chat).children {
             let inner = Mirror(reflecting: child.value)
             if inner.displayStyle == .optional { XCTAssertFalse(inner.children.isEmpty, "fixture leaves \(child.label ?? "?") nil") }

@@ -319,10 +319,12 @@ struct ChatRowStats: Equatable {
         var archived = false
         var archivable = false
         var available: CGFloat = .infinity
+        var keepsSubtitle = false
         /// What VoiceOver says for the row: its title, then whether it is
         /// unread or failed.
         var accessibilityLabel: String {
             var words = [title]
+            if keepsSubtitle { words.append(subtitle) }
             if let project = projectTagFullName ?? projectTag { words.append("project " + project) }
             if let topicTag { words.append("topic " + topicTag) }
             let run = RunState(rawValue: stats.state)
@@ -486,12 +488,12 @@ struct ChatRowStats: Equatable {
         applyControls()
         // Under the title: the figures, or the state.
         if new.stats.hasActivity {
-            metrics.isHidden = false; subtitle.isHidden = true
+            metrics.isHidden = false; subtitle.isHidden = !new.keepsSubtitle
             metrics.update(stats: new.stats, available: new.available)
         } else {
             metrics.isHidden = true; subtitle.isHidden = false
-            subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
         }
+        subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
         // A chat offering a brief says it, and the rest, in its card instead.
         toolTip = new.offersBrief ? nil : new.help
         if before?.brief != new.brief || before?.offersBrief != new.offersBrief || before?.help != new.help { refreshBrief() }
@@ -597,7 +599,8 @@ struct ChatRowStats: Equatable {
         tags.relayoutAll()
         return tags.height(forWidth: room) + 3
     }
-    private var secondHeight: CGFloat { metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0) }
+    private var descriptionHeight: CGFloat { !metrics.isHidden && !subtitle.isHidden ? subtitle.intrinsicContentSize.height + 2 : 0 }
+    private var secondHeight: CGFloat { (metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0)) + descriptionHeight }
     func height(forWidth width: CGFloat) -> CGFloat {
         let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight + tagsHeight(width: max(0, width - 24))
         return max(16, text)
@@ -617,7 +620,8 @@ struct ChatRowStats: Equatable {
         spinner?.frame = CGRect(x: 2.5, y: iconY + 2.5, width: 11, height: 11)
         row1.frame = CGRect(x: 24, y: top, width: textWidth, height: r1)
         let second: NSView = metrics.isHidden ? subtitle : metrics
-        second.frame = CGRect(x: 24, y: top + r1 + 2, width: textWidth, height: r2)
+        if descriptionHeight > 0 { subtitle.frame = CGRect(x: 24, y: top + r1 + 2, width: textWidth, height: descriptionHeight - 2) }
+        second.frame = CGRect(x: 24, y: top + r1 + 2 + descriptionHeight, width: textWidth, height: r2 - descriptionHeight)
         if tagHeight > 0 { tags.frame = CGRect(x: 24, y: top + r1 + 2 + r2 + 3, width: textWidth, height: tagHeight - 3) }
     }
 }

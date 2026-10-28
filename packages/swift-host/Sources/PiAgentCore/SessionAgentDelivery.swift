@@ -9,19 +9,19 @@ extension AgentSession {
         let state = agentState()
         // Durable fence, not the coordinator's transient active counter.
         guard !state.turns.values.contains(where: { !$0.status.terminal }),
-              state.pending(author:"subagent").isEmpty,
-              state.pending(author:"parent").isEmpty else { return false }
+              !state.messages.values.contains(where: { $0.disposition == "pending" && !($0.queueOnly == true && $0.recipientChildID != nil) }) else { return false }
         if var run = state.run, !run.closed { run.closed = true; try appendAgentRecord(JournalRecordKind.familyRun,run) }
         setFamilyWaiting(false); return true
     }
     func appendAgentDelivery(_ delivery: AgentDelivery, selected: [AgentFamilyMessage]) async throws {
         if let digest = subagents.family?.contextRows[delivery.rowID] {
-            guard digest == sha256(Data(JSON.array([textBlock(delivery.payload.encoded())]).encoded().utf8)) else { throw SubagentRecovery.damaged() }
+            guard digest == sha256(Data(JSON.array([textBlock(delivery.text)]).encoded().utf8)) else { throw SubagentRecovery.damaged() }
             return
         }
         guard !agentDeliveryHeld, let first = selected.first else { throw AgentError("subagent_delivery_held", "Agent delivery is held") }
-        var row = ChatMessage(role:"user",content:[textBlock(delivery.payload.encoded())]); row.id = delivery.rowID
-        row.nativeAgentDelivery = ["version":1,"author":JSON(first.author),"childId":JSON(first.childID),"turn":JSON(first.turn),"eventIds":.array(delivery.eventIDs.map { JSON($0) }),"task":JSON(first.task),"events":.array(selected.map(\.event))]
+        var row = ChatMessage(role:"user",content:[textBlock(delivery.text)]); row.id = delivery.rowID
+        if selected.allSatisfy({ $0.deliveryEvent != nil }) { row.nativeAgentDelivery = AgentDeliveryEvent.metadata(selected.compactMap(\.deliveryEvent)) }
+        else { row.nativeAgentDelivery = ["version":1,"author":JSON(first.author),"childId":JSON(first.childID),"turn":JSON(first.turn),"eventIds":.array(delivery.eventIDs.map { JSON($0) }),"task":JSON(first.task),"events":.array(selected.map(\.event))] }
         row.inputLane = "agent"; row.kind = "agent_message"
         // Agent authorship cannot carry attachments, skill selections or user consent.
         row.userInput = nil
@@ -33,9 +33,9 @@ extension AgentSession {
     /// Use the same real input budget and counter as request admission. This
     /// check never appends a partial accepted message to make it fit.
     func agentPayloadFits(_ payload: JSON, parentLane: Bool) async throws -> Bool {
-        var row = ChatMessage(role:"user",content:[textBlock(payload.encoded())]); row.inputLane = "agent"
+        var row = ChatMessage(role:"user",content:[textBlock(payload.text ?? payload.encoded())]); row.inputLane = "agent"
         let own = try contextCounter.count(messages:[row],profile:turnProfile,reserveTokens:compactionSettings.reserveTokens)
-        if parentLane, own.requestTokens > own.inputBudget / 5 { return false }
+        if parentLane, payload.text == nil, own.requestTokens > own.inputBudget / 5 { return false }
         let snapshot: ResourceSnapshot
         if let appliedSnapshot { snapshot = appliedSnapshot } else { snapshot = try await resources.resolve() }
         let definitions = await sessionDefinitions(), messages = requestContext + [row]

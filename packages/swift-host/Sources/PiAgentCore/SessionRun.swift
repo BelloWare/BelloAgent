@@ -412,7 +412,7 @@ extension AgentSession {
                 stopFamilyAtLimit(budgetError)
             } else if budgetError == nil, !costPaused, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount
-                stop()
+                stop(userInitiated:false)
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
             }
             let error: Error = familyStopReason ?? error

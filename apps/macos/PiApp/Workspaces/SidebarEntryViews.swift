@@ -216,7 +216,8 @@ import Combine
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, choosesProject: state.choosesProject,
                                        topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
-                                       archivable: !chat.isSubagent && !chat.isUtilityChat, available: state.available)
+                                       archivable: !chat.isSubagent && !chat.isUtilityChat, available: state.available,
+                                       keepsSubtitle: chat.isSubagent && SubagentLabel.task(chat.subagentTaskName) != nil)
     }
     /// The live page a row in `state` reads its figures from, if any.
     static func liveDisplay(model: WorkspaceModel, chatID: String, state: SidebarChatRowState) -> SessionDisplay? {

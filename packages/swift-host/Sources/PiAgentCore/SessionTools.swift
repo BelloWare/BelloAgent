@@ -68,15 +68,26 @@ extension AgentSession {
         // A running turn keeps its grant. Idle previews describe the next
         // request, including after reopening before any turn has run.
         if agentCoordinator != nil, isSubagent || canDelegate {
-            definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants,
-                profile:profile ?? turnProfile,connectionSupportsReasoning:self.profile.raw["reasoning"].flag == true)
+            let version = !isSubagent && runTask == nil && !costPaused ? agentNextContractVersion : agentContractVersion
+            if version == 4 {
+                if isSubagent, let frozen = codexContext ?? subagents.origin?.codexContext { return frozen.tools }
+                definitions += SubagentCodexContract.definitions(models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants,profile:profile ?? turnProfile,connectionSupportsReasoning:self.profile.raw["reasoning"].flag == true)
+            } else {
+                definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants,
+                    profile:profile ?? turnProfile,connectionSupportsReasoning:self.profile.raw["reasoning"].flag == true)
+            }
         } else if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
         return definitions
     }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         if let refusal = sideDelegationRefusal(call) { throw refusal }
-        if SubagentSteeringContract.names.contains(call.name) {
+        if SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name) {
             guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
+            if result["isError"].flag != true, call.name == "wait_agent", let coordinator = agentCoordinator {
+                var wire = result
+                wire["content"] = [textBlock(await coordinator.codexWait(call.arguments,caller:self))]
+                return wire
+            }
             if result["isError"].flag != true, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait",
                let coordinator = agentCoordinator, let text = result["content"].list.first?["text"].text {
                 let receipt = try JSON.parse(Data(text.utf8))
@@ -147,7 +158,7 @@ extension AgentSession {
         // theirs and name the file that holds the rest. Ours do the same, so
         // this cut is for a tool that returns more (an MCP server): the text
         // is saved whole, and pi's note names the file the model can read.
-        if text.utf8.count > 65536 && !((call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil) && !result["nativeSubagent"].isNull) && call.name != "subagent_status" {
+        if text.utf8.count > 65536 && !((call.name == "subagent" && canDelegate || SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name) && agentCoordinator != nil) && !result["nativeSubagent"].isNull) && call.name != "subagent_status" {
             let folder = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: id, create: true)
             let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
             guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
@@ -159,8 +170,8 @@ extension AgentSession {
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
-        if SubagentSteeringContract.names.contains(call.name), let reserved = result["nativeResultMessageId"].text { message.id = reserved }
-        if (call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil), !result["nativeSubagent"].isNull {
+        if SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name), let reserved = result["nativeResultMessageId"].text { message.id = reserved }
+        if (call.name == "subagent" && canDelegate || SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name) && agentCoordinator != nil), !result["nativeSubagent"].isNull {
             message.nativeSubagent = result["nativeSubagent"]
             if let id = result["nativeResultMessageId"].text { message.id = id }
         }
@@ -230,20 +241,20 @@ extension AgentSession {
         }
         agentPreparedResults = [:]
         if let coordinator = agentCoordinator {
-            for call in calls where SubagentSteeringContract.names.contains(call.name) {
+            for call in calls where SubagentSteeringContract.names.union(SubagentCodexContract.names).contains(call.name) {
                 // A side refuses delegation before any acceptance or receipt.
                 if sideDelegationRefusal(call) != nil { continue }
                 do {
                     try await enforceToolBudget()
                     let key = try agentToolKey(call)
-                    let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
+                    let receipt = try await (SubagentCodexContract.names.contains(call.name) ? coordinator.prepare(call,key:key,parent:self) : isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
                     agentPreparedResults[call.id] = agentToolWire(receipt,key:key)
                 } catch {
                     if let accepted = await acceptedAgentToolResult(call,stopped:true) { agentPreparedResults[call.id] = accepted; continue }
                     // Not accepted, and the pause closed the gate: held for Resume.
                     if await failedByCostPause(error) { heldBatchCalls.insert(call.id); continue }
                     let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
-                    let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
+                    let envelope: JSON = ["version":JSON(SubagentCodexContract.names.contains(call.name) ? 4 : 3),"ok":false,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
                     agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
                 }
             }

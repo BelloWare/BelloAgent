@@ -55,16 +55,18 @@ struct TurnFoldSpec: Equatable, Sendable {
     var toolCalls = 0
     var messages = 0
     var subagents = 0
+    var inheritedMessages: Int? = nil
 
     /// Child work stays inside the disclosure, including its counts.
     var label: String {
+        if let inheritedMessages { return "Started with the main chat's context · \(inheritedMessages) messages" }
         var parts: [String] = []
         if toolCalls > 0 { parts.append("\(toolCalls) tool call\(toolCalls == 1 ? "" : "s")") }
         if messages > 0 { parts.append("\(messages) message\(messages == 1 ? "" : "s")") }
         return parts.isEmpty ? (subagents > 0 ? "Work details" : "Thought for a while") : parts.joined(separator: " · ")
     }
     /// A delegation call is a subagent, not a tool call, wherever its name says so.
-    static func isSubagent(_ name: String) -> Bool { name == "subagent" || name.hasPrefix("subagent_") }
+    static func isSubagent(_ name: String) -> Bool { name == "subagent" || name.hasPrefix("subagent_") || ["spawn_agent", "followup_task"].contains(name) }
 }
 
 /// Deciding, for a finished turn, what its fold hides and what its line says.

@@ -177,6 +177,7 @@ extension WorkspaceModel {
         openSteps?(id, "viewport ready")
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         startOpeningFill(id)
+        fillFinishedTurn(id)
         view.presentation.secondary?.cancel()
         let navigation = transcriptNavigation(id)
         view.presentation.secondary = Task { [weak self, weak view] in
@@ -271,8 +272,33 @@ extension WorkspaceModel {
         guard let id = sessionID ?? selectedID else { return false }
         return await loadHistoryPage(id, newer: false)
     }
-    @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false) async -> Bool {
+    /// A fresh live snapshot may begin inside a turn (sixty rows). Once that
+    /// turn ends, read its missing beginning without waiting for a scroll.
+    /// Reuse ordinary paging's source fences, resident caps and visible anchor.
+    func fillFinishedTurn(_ id: String) {
+        guard let view = displays[id], transcriptShows(id), !view.historyState.loading, view.versionView == nil,
+              !view.inheritedContextFolded, view.presentation.partialTurnInput == nil, view.newerPage.error != Self.branchChangedElsewhere,
+              let first = view.messages.first, !TranscriptPaging.startsTurn(first),
+              let cursor = view.olderPage.cursor, !view.olderPage.loading, view.olderPage.error == nil else { return }
+        let readKey = "\(view.presentation.readGeneration):\(cursor)"
+        guard view.presentation.finishedTurnRead != readKey else { return }
+        let running = view.taskPresentation?.active?.rootID
+        let check = "\(readKey):\(view.messages.count):\(view.messages.last?.id ?? ""):\(view.busy):\(running ?? "")"
+        guard view.presentation.finishedTurnCheck != check else { return }
+        view.presentation.finishedTurnCheck = check
+        if view.busy {
+            if let running, running == (first.taskRootID ?? first.turn) { return }
+            guard view.messages.dropFirst().contains(where: TranscriptPaging.startsTurn) else { return }
+        }
+        Task { [weak self, weak view] in
+            guard let self, let view, self.displays[id] === view, view.presentation.finishedTurnCheck == check,
+                  view.olderPage.cursor == cursor, view.messages.first?.id == first.id else { return }
+            await self.loadHistoryPage(id, newer: false, automatic: true, completingTurn: true)
+        }
+    }
+    @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false, completingTurn: Bool = false) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
+        if automatic, view.inheritedContextFolded { return false }
         if automatic, let fill = view.presentation.openingFill {
             let before = newer ? view.newerPage.cursor : view.olderPage.cursor
             let waitingGeneration = view.presentation.readGeneration, waitingNavigation = transcriptNavigation(id)
@@ -288,11 +314,14 @@ extension WorkspaceModel {
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
         let generation = view.presentation.readGeneration, read = UUID()
+        let readKey = "\(generation):\(cursor)"
+        if completingTurn, boundary.error != nil || view.presentation.finishedTurnRead == readKey { return false }
         let navigation = transcriptNavigation(id)
         if newer { view.newerPage.loading = true; view.newerPage.error = nil; view.presentation.newerRead = read }
         else { view.olderPage.loading = true; view.olderPage.error = nil; view.loadingEarlier = true; view.presentation.olderRead = read }
         let task = Task { [weak self, weak view] () -> Bool in
             guard let self, let view else { return false }
+            var receivedCompletion = false
             @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentation.readGeneration == generation }
             defer {
                 // Only the read the flag belongs to ends it. A read whose page
@@ -304,12 +333,31 @@ extension WorkspaceModel {
                         view.newerPage.loading = false; view.presentation.newerTask = nil; view.presentation.newerRead = nil
                     } else if !newer, view.presentation.olderRead == read {
                         view.olderPage.loading = false; view.loadingEarlier = false; view.presentation.olderTask = nil; view.presentation.olderRead = nil
+                        if completingTurn, !receivedCompletion { view.presentation.finishedTurnCheck = nil }
                     }
                 }
             }
             do {
                 var page = try await self.readConversationWindow(item, cursor: cursor, newer: newer)
                 guard current() else { return false }
+                if completingTurn {
+                    guard view.olderPage.cursor == cursor else { return false }
+                    view.presentation.finishedTurnRead = readKey; receivedCompletion = true
+                    // Only the missing part of the first turn, never an older
+                    // turn too. A turn past the resident caps stays as decided:
+                    // incomplete and unfolded, with ordinary paging available.
+                    guard let start = page.messages.lastIndex(where: TranscriptPaging.startsTurn) else { return false }
+                    let prefix = Array(page.messages[start...])
+                    let tail = view.messages.prefix { !TranscriptPaging.startsTurn($0) }
+                    let caps = TranscriptPaging.residentCaps
+                    guard prefix.count + tail.count <= caps.rows,
+                          (prefix + tail).reduce(0, { $0 + TranscriptPaging.size($1) }) <= caps.bytes else { return false }
+                    if start > 0 {
+                        var edge = page.older ?? page.newer ?? cursor; edge.entry = prefix[0].id
+                        page.older = edge; page.start = page.start.map { $0 + start }
+                    }
+                    page.messages = prefix; page.partialTurnInput = nil
+                }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID, adding: true)
                 guard current() else { return false }
                 // The window's edge row was let go of while this page was on
@@ -343,15 +391,15 @@ extension WorkspaceModel {
                 let unbounded = joined
                 func endsTurn(_ window: [TranscriptMessage]) -> Bool { TranscriptPaging.endsTurn(window, in: unbounded) }
                 // Keep the requested side, evict only the far opposite edge.
-                var bounded = TranscriptPaging.window(joined, keepingEarlier: !newer)
-                var evicted = bounded.count != joined.count
+                var bounded = TranscriptPaging.window(joined, keepingEarlier: completingTurn ? false : !newer)
+                var evicted = completingTurn ? bounded.last?.id != joined.last?.id : bounded.count != joined.count
                 // Read ahead on its own, a page never lets go of what the
                 // reader can see now, whatever the last reported anchor says
                 // (it is reported a moment after the reader moves): in a
                 // window too short for the page and the screen both, the
                 // page's farthest rows wait instead, and its cursor stays on
                 // them. A page none of whose rows fit waits whole.
-                var trimmedFar = false
+                var trimmedFar = completingTurn && bounded.first?.id != joined.first?.id
                 let onScreen = automatic ? (view.visibleMessageIDs?() ?? []).intersection(known) : []
                 if !onScreen.isSubset(of: Set(bounded.map(\.id))) {
                     // Whether `joined` begins or ends inside a turn that goes on
@@ -379,7 +427,7 @@ extension WorkspaceModel {
                     throw HostError.failure("The selected text is at the display boundary. Clear the selection to load more history.")
                 }
                 joined = bounded
-                guard added.contains(where: { row in joined.contains { $0.id == row.id } }) else {
+                guard added.contains(where: { row in joined.contains { $0.id == row.id } }) || completingTurn && trimmedFar else {
                     throw HostError.failure("The selected content fills the display budget. Open the full message or move the reading position before loading more.")
                 }
                 // Commit source ownership only after the complete candidate

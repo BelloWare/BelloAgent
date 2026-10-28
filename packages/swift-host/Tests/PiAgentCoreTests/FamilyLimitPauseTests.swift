@@ -511,6 +511,7 @@ extension FamilyLimitPauseTests {
         return owner
     }
     private func startChild(_ owner: AgentSession, _ coordinator: AgentSteeringCoordinator, _ id: String, newTask: Bool = true) async throws -> String {
+        await owner.enableAgentSteering(coordinator,codex:false) // Historical v3 pause/recovery matrix.
         let call = ToolCall(id:id,name:"subagent_start",arguments:["task":JSON("Worker \(id)"),"mode":"background"])
         let key = try await owner.agentFixtureCall(call,newTask:newTask)
         let receipt = try await coordinator.prepare(call,key:key,parent:owner)
@@ -3746,5 +3747,114 @@ extension FamilyLimitPauseTests {
             let afterLateTask = await owner.snapshot(); XCTAssertEqual(afterLateTask["costPaused"],snapshot["costPaused"])
             await owner.close()
         }
+    }
+}
+
+// V4 coverage complements the frozen v3 pause matrix above.
+extension FamilyLimitPauseTests {
+    func testV4ForkResumeKeepsTurnSeedAndTaskAndDeliversWholeFinal() async throws {
+        try await checkV4ForkPause(stop:false)
+    }
+    func testV4WholeChatStopDuringPauseRecordsTheUser() async throws {
+        try await checkV4ForkPause(stop:true)
+    }
+    private func checkV4ForkPause(stop: Bool) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = CodexPauseClient(), coordinator = AgentSteeringCoordinator()
+        let parent = try await steeringOwner(root,client:client,coordinator:coordinator)
+        await parent.enableAgentSteering(coordinator,codex:true); await parent.setCostLimit(10)
+        try await parent.codexFixtureSeed()
+        func command(_ name: String, _ arguments: JSON, fresh: Bool = false) async throws -> JSON {
+            let call = ToolCall(id:UUID().uuidString,name:name,arguments:arguments)
+            let key = try await parent.agentFixtureCall(call,newTask:fresh)
+            let receipt = try await coordinator.prepare(call,key:key,parent:parent)
+            try await parent.runToolBatch([call]); return receipt
+        }
+        let idle = try await command("spawn_agent",["task_name":"idle","message":"Finish now"],fresh:true)["child_id"].text!
+        try await eventually { await parent.agentState().messages["result:\(idle):1"] != nil }
+        _ = try await coordinator.boundary(parent,final:false)
+        _ = try await command("send_message",["target":"idle","message":"Waiting for another task"])
+        let initialClosure = try await parent.closeAgentFamilyFence(); XCTAssertTrue(initialClosure)
+        let worker = try await command("spawn_agent",["task_name":"worker","message":"Continue after Resume"],fresh:true)["child_id"].text!
+        try await eventually { let count = await client.workerRequests.count, terminal = await parent.agentState().latest(worker)?.status.terminal; return count == 2 || terminal == true }
+        let count = await client.workerRequests.count, current = await parent.agentState().latest(worker)
+        XCTAssertEqual(count,2,"Worker ended before pause: \(String(describing: current))")
+        guard count == 2 else { await parent.close(); return }
+        let original = await parent.agentState().latest(worker)!
+        await parent.setCostLimit(0.001)
+        try await eventually { let paused = await parent.costPaused, empty = await coordinator.jobs.isEmpty; return paused && empty }
+        let paused = await parent.agentState()
+        XCTAssertEqual(paused.latest(worker)?.status,.queued); XCTAssertEqual(paused.latest(worker)?.turn,1)
+        XCTAssertNil(paused.latest(worker)?.interruptedBy,"An automatic cost pause is not a user Stop")
+        XCTAssertNotEqual(paused.run?.stoppedByUser,true)
+        XCTAssertEqual(paused.latest(idle)?.status,.completed)
+        XCTAssertEqual(paused.messages.values.first { $0.text == "Waiting for another task" }?.disposition,"pending")
+        XCTAssertFalse(paused.messages.values.contains { $0.recipient == "/root" && $0.disposition == "pending" })
+        if stop {
+            await parent.stop()
+            let stopped = await parent.agentState()
+            XCTAssertEqual(stopped.run?.stoppedByUser,true)
+            XCTAssertEqual(stopped.latest(worker)?.interruptedBy,"the user")
+            await parent.close()
+            let reopened = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:root.appendingPathComponent("parent.jsonl").path)
+            let retained = await reopened.agentState()
+            XCTAssertEqual(retained.latest(worker)?.interruptedBy,"the user")
+            let count = await client.workerRequests.count; XCTAssertEqual(count,2,"Stop/reopen cannot dispatch a model request")
+            await reopened.close()
+        } else {
+            await parent.setCostLimit(10); await client.release()
+            _ = try await parent.continueRun(commandID:"resume-v4")
+            try await eventually(timeout:.seconds(10)) { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
+            let final = await parent.agentState(), requests = await client.workerRequests
+            XCTAssertEqual(final.latest(worker)?.status,.completed); XCTAssertEqual(final.latest(worker)?.turn,1)
+            XCTAssertEqual(final.latest(worker)?.executionID,original.executionID)
+            XCTAssertEqual(final.latest(worker)?.inputID,original.inputID)
+            XCTAssertEqual(final.messages["result:\(worker):1"]?.text,CodexPauseClient.wholeAnswer)
+            XCTAssertEqual(final.messages["result:\(worker):1"]?.disposition,"delivered")
+            XCTAssertEqual(requests.count,3)
+            XCTAssertEqual(requests.last?.filter { $0.nativeInherited != nil }.map(\.id),requests.first?.filter { $0.nativeInherited != nil }.map(\.id))
+            XCTAssertEqual(requests.last?.flatMap { $0.nativeAgentDelivery?["events"].list ?? [] }.filter { $0["type"].text == "NEW_TASK" }.count,1)
+            let history = await parent.history
+            XCTAssertTrue(history.contains { $0.nativeAgentDelivery?["events"].list.contains { $0["type"].text == "FINAL_ANSWER" && $0["text"].text == CodexPauseClient.wholeAnswer } == true })
+            XCTAssertEqual(final.messages.values.first { $0.text == "Waiting for another task" }?.disposition,"pending")
+            XCTAssertEqual(final.latest(idle)?.turn,1)
+            let closed = try await parent.closeAgentFamilyFence(); XCTAssertTrue(closed)
+        }
+        let path = root.appendingPathComponent(worker + ".jsonl"), reader = try JournalRecordReader(path)
+        var references = 0, tasks = 0
+        while let row = try reader.next() {
+            if row["customType"].text == JournalRecordKind.agentForkSeed { references += 1 }
+            tasks += row["message"]["nativeAgentDelivery"]["events"].list.filter { $0["type"].text == "NEW_TASK" }.count
+        }
+        XCTAssertEqual(references,1); XCTAssertEqual(tasks,1)
+        await coordinator.drain(); await parent.close()
+    }
+}
+private actor CodexPauseClient: ModelClient {
+    static let wholeAnswer = String(repeating:"Whole final after Resume 😀\n",count:1000)
+    var workerRequests: [[ChatMessage]] = [], released = false
+    func release() { released = true }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply { throw AgentError("fixture_unscoped","Expected admission") }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString, permit = try await hooks.admitAttempt(attempt)
+        defer { permit.finish() }; try await hooks.willDispatch(attempt)
+        let worker = sessionID != "parent" && messages.contains { $0.text.contains("You are now `/root/worker`") }
+        var reply = answer("Done")
+        if worker {
+            workerRequests.append(messages)
+            if workerRequests.count == 1 { reply = agentCallReply("read-once","read",["path":"fixture"]) }
+            else {
+                do { while !released { try permit.check(); try await Task.sleep(for:.milliseconds(5)) } }
+                catch {
+                    let observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
+                    try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true)); throw error
+                }
+                reply = answer(Self.wholeAnswer)
+            }
+        }
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.01]]]
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true)); await onObservation(observation)
+        reply.message.requestAttemptIDs = [attempt]; return reply
     }
 }

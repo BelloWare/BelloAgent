@@ -20,13 +20,16 @@ extension ModelCatalog.Entry {
 extension WorkspaceModel {
     func subagentModels(for chat: ChatRecord) -> WireValue? {
         guard SubagentPolicy.enabled, !chat.isSubagent, let profile = profiles.first(where: { $0.id == chat.profileID }) else { return nil }
+        return (try? JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(catalogEntry(for: profile).subagentGrants(chat: chat, profile: profile))))
+    }
+
+    /// Loading is an explicit operation, never a side effect of reading grants.
+    /// Previews await the shared, endpoint-bounded load before taking their inputs;
+    /// session opens start it in the background without delaying a send.
+    func loadSubagentModels(for chat: ChatRecord) async {
+        guard !isShutDown, SubagentPolicy.enabled, !chat.isSubagent,
+              let profile = profiles.first(where: { $0.id == chat.profileID }) else { return }
         let entry = catalogEntry(for: profile)
-        if entry.descriptors.isEmpty, entry.fetchedAt == nil, !entry.loading {
-            Task { [weak self] in
-                guard let self, !self.isShutDown else { return }
-                _ = await self.listModels(for: profile)
-            }
-        }
-        return (try? JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(entry.subagentGrants(chat: chat, profile: profile))))
+        if entry.fetchedAt == nil || entry.loading { _ = await listModels(for: profile) }
     }
 }

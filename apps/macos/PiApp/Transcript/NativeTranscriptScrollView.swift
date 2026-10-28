@@ -258,6 +258,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// the history says, at the height this chat's rows take on average.
     private(set) var leadingSpace: CGFloat = 0
     private(set) var trailingSpace: CGFloat = 0
+    /// Completing the first turn can remove its footer's partial-history
+    /// note. Keep that released space below it while this is still the tail,
+    /// so following the end does not move the answer down by the note's height.
+    private var completedFooter: (id: String, height: CGFloat)?
+    private(set) var completionBottomSpace: CGFloat = 0
     /// What a row is taken to be worth before any of the chat has been laid out.
     static let provisionalRowHeight: CGFloat = 200
     /// The most room a chat is given, in points. A drawn layer's place is
@@ -494,6 +499,16 @@ final class TranscriptNativeScrollView: NSScrollView {
         // still reach every affected row through their own paths.
         guard (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) || self.snapshot?.sequence != snapshot?.sequence || self.environment != environment else { return }
         let projected = snapshot?.items ?? []
+        if leaving?.sessionID != snapshot?.sessionID || leaving?.generation != snapshot?.generation || completedFooter?.id != projected.last?.id {
+            completedFooter = nil; completionBottomSpace = 0
+        }
+        if let leaving, let snapshot, leaving.sessionID == snapshot.sessionID, leaving.generation == snapshot.generation,
+           leaving.messages.first?.id != snapshot.messages.first?.id, page?.pinsNewestRow == true,
+           case .block(let before)? = leaving.items.last, case .block(let after)? = projected.last,
+           before.id == after.id, before.presentation == .summary, before.turn?.partial == true, after.turn?.partial == false,
+           let row = rows.last, row.itemID == before.id, row.frame.height > 1 {
+            completedFooter = (row.itemID, row.frame.height)
+        }
         if let snapshot, let leaving, leaving.sessionID == snapshot.sessionID, leaving.generation == snapshot.generation,
            self.environment == environment, !storesChanged,
            let start = snapshot.changes?.tailStart(since: leaving.changes), start >= 0, start <= min(projected.count, rows.count) {
@@ -1734,7 +1749,10 @@ final class TranscriptNativeScrollView: NSScrollView {
             y = Self.emptyPageHeight
         }
         if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace) }
-        let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset)
+        completionBottomSpace = completedFooter.flatMap { held in
+            rows.last.flatMap { $0.itemID == held.id ? max(0, held.height - $0.frame.height) : nil }
+        } ?? 0
+        let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset + completionBottomSpace)
         if frame.size != size { setFrameSize(size) }
         if abs(roomShift) > 0.5, let scroll = enclosingScrollView { scroll.transcriptReading.moveWithDocument(by: roomShift) }
         roomShift = 0

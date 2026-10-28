@@ -139,7 +139,7 @@ extension WorkspaceModel {
     /// A row's second line while it has no figures to show: its state, and the
     /// connection it runs on when there is more than one to tell apart.
     func sidebarRowSubtitle(_ chat: ChatRecord, namesConnection: Bool) -> String {
-        if let owner = chat.delegation?.budgetOwnerSessionID { return chat.subagentName + " · " + (record(owner)?.title ?? "Parent unavailable") }
+        if let owner = chat.delegation?.budgetOwnerSessionID { return (chat.subagentTaskName == nil ? chat.subagentName : chat.title) + " · " + (record(owner)?.title ?? "Parent unavailable") }
         let state = chat.isArchived ? "Archived" : chat.imported ? "Imported" : chat.toolMode == ChatRecord.readOnlyTools ? "Read-only" : "Ready"
         guard namesConnection, !chat.imported, let connection = profiles.first(where: { $0.id == chat.profileID }) else { return state }
         return state + " \u{b7} " + connection.name

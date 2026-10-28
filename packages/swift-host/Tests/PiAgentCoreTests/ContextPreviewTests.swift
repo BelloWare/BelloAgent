@@ -61,7 +61,7 @@ final class ContextPreviewTests: HelperTestCase {
         let preview = try await session.prepareContext(["subagentModels":try subagentJSON([selected])])
         let page = try await session.readPreparedContext(["revision":preview["revision"], "section":"tools"])
         let definitions = try JSON.parse(Data(page["text"].text!.utf8))
-        XCTAssertEqual(definitions.list.first { $0["name"].text == "subagent_start" }?["parameters"]["properties"]["model"]["enum"].list.compactMap(\.text), [selected.model])
+        XCTAssertEqual(definitions.list.first { $0["name"].text == "spawn_agent" }?["parameters"]["properties"]["model"]["enum"].list.compactMap(\.text), [selected.model])
         let grants = await session.subagentModelGrants
         XCTAssertEqual(grants, [current], "A read-only preview cannot grant a selected model to execution")
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), before)

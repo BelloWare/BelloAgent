@@ -595,7 +595,7 @@ actor HistoryReader {
         try add("agents"); try add(agents != nil)
         if let agents {
             try add(agents.id); try add([agents.isManagedSubagent, agents.busy, agents.familyWaiting]); try add(agents.subagentNumbers)
-            try add(agents.heldAgentChildren.sorted())
+            try add(agents.heldAgentChildren.sorted()); try add(agents.supportsCodexAgents); try add(agents.subagentNames)
             try add("subagentEfforts")
             for key in agents.subagentEfforts.keys.sorted() {
                 try add(key); try add(agents.subagentEfforts[key]?.initial); try add(agents.subagentEfforts[key]?.reasoning)
@@ -609,7 +609,7 @@ actor HistoryReader {
                 let value = agents.agentCoordination[key]!
                 try add(key); try add([value.id, value.childID, value.kind, value.author, value.sourceSessionID, value.sourceMessageID,
                     value.sourceToolCallID, value.recipientID, value.recipientMessageID, value.disposition, value.sourceAttemptID, value.consumingAttemptID])
-                try add(value.turn); try add(value.subagentNumber)
+                try add(value.turn); try add(value.subagentNumber); try add([value.sender, value.recipient]); try add(value.queueOnly)
             }
             try add("childSummaries")
             for key in agents.childSummaries.keys.sorted() {
@@ -689,7 +689,7 @@ actor HistoryReader {
     }
     private func searchText(_ message: TranscriptMessage, pass: SearchPass, toolInputs: [String: String] = [:]) throws -> String {
         if pass.captured[message.id] != nil { return pass.presented.text(message.id, rawReply: pass.rawReplies.contains(message.id), toolInputs: toolInputs) }
-        if pass.agents == nil, pass.managedTask == message.id, message.role == "user", message.nativeAgentDelivery == nil, message.kind != "agent_message" {
+        if pass.agents == nil, pass.managedTask == message.id, message.role == "user", message.nativeAgentDelivery == nil, message.nativeInherited == nil, message.kind != "agent_message" {
             return TranscriptMarkdown.renderedText(message.text)
         }
         let context = try searchContext([message], pass: pass).map { pass.agents?.present($0, firstTask: pass.managedTask) ?? $0 }
@@ -1288,8 +1288,12 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let (messages, start, end) = try decodePage(range, forward: forward, wholeTurns: targetTurns != nil, target: target, from: file, path: path, identity: identity,
+        var (messages, start, end) = try decodePage(range, forward: forward, wholeTurns: targetTurns != nil, target: target, from: file, path: path, identity: identity,
                                                     branch: branch, versions: versions, retainedRun: retainedRun, limits: limits)
+        // Count the seed using the body-free offset index. An early page can
+        // end inside it; reading the remaining inherited prose is unnecessary.
+        if let cutoff = messages.first?.nativeInherited?.object?["cutoffEntryId"]?.string,
+           let last = try branch.index(of: cutoff) { messages[0].inheritedCount = olderRows + last + 1 }
         // A page that starts inside a turn names the input that opened it;
         // one that ends where its last turn does says so.
         let startsTurn = start < branch.count ? try branch.at(start).turnStart == true : true
@@ -1398,7 +1402,7 @@ actor HistoryReader {
                     // An edit or a fork boundary after the checkpoint is replayed from the start.
                     if resume != nil, value.type == "branch" || value.customType == "pi-app.native.context.v1" { continue build }
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
-                    if ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3"].contains(value.customType ?? "") { native = true }
+                    if ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(value.customType ?? "") { native = true }
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
                     if let task = value.taskTerminal {
                         taskRecords.removeAll { $0.key == task.key }; taskRecords.append(task)
@@ -1687,7 +1691,7 @@ extension HistoryReader {
               let header = try? JSONDecoder().decode(IndexRecord.self, from: headerLine), header.type == "session", header.version == 3,
               header.id == checkpoint.sessionID,
               let markerLine = JournalCheckpoint.verified(checkpoint.marker, in: file),
-              let marker = try? JSONDecoder().decode(IndexRecord.self, from: markerLine), ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3"].contains(marker.customType ?? ""),
+              let marker = try? JSONDecoder().decode(IndexRecord.self, from: markerLine), ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(marker.customType ?? ""),
               let lastLine = JournalCheckpoint.verified(checkpoint.last, in: file),
               let last = try? JSONDecoder().decode(IndexRecord.self, from: lastLine), last.id == checkpoint.lastID else { return nil }
         var seed = Seed(); seed.sessionID = header.id

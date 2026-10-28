@@ -497,10 +497,11 @@ struct ContentGeometry: Equatable {
         // Where the window stands in the whole chat, for the room the
         // document keeps for the rest. An earlier version shown in place of
         // the latest is not the timeline the history counted.
-        let extent = session.versionView == nil
+        var extent = session.versionView == nil
             ? session.historyPositions.extent(of: page, reachesStart: session.olderPage.cursor == nil,
                                               reachesEnd: !session.newerPage.available && !session.browsingHistory,
                                               membershipUnchanged: patch != nil && initialized, sourceTail: tail?.source) : nil
+        if session.inheritedContextFolded, let before = extent?.before { extent?.before = 0; extent?.total -= before }
         if let current = snapshot, current.lifecycle == input.lifecycle, current.complete == complete, initialized, current.extent == extent,
            patch.map({ !$0.changed }) ?? (tail == nil && current.messages == page) { return }
         var fresh: Set<String> = []
@@ -618,6 +619,11 @@ struct ContentGeometry: Equatable {
     /// row draws without any message changing.
     private func republish() {
         guard var current = snapshot else { return }
+        if let session = presentationSession, session.messages.first?.nativeInherited != nil {
+            current.extent = session.historyPositions.extent(of: current.messages, reachesStart: session.olderPage.cursor == nil,
+                reachesEnd: !session.newerPage.available && !session.browsingHistory)
+            if session.inheritedContextFolded, let before = current.extent?.before { current.extent?.before = 0; current.extent?.total -= before }
+        }
         sequence += 1
         current.sequence = sequence
         itemChanges = TranscriptChanges(); current.changes = itemChanges
@@ -1355,6 +1361,7 @@ struct ContentGeometry: Equatable {
         onLoadNewer(sessionID)
     }
     private func requestEarlierIfNearTop(scrollY offset: CGFloat) {
+        guard presentationSession?.inheritedContextFolded != true else { return }
         // Measured from the window's first row: the room above it is rows not read.
         let scrollY = offset - content.leading
         let short = content.height - content.leading - content.trailing <= viewport.height + Self.earlierThreshold

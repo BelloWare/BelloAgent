@@ -180,7 +180,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('helper', type=Path)
     parser.add_argument('--fixture', action='store_true')
-    parser.add_argument('--steering', action='store_true', help='Whole-family v3 acceptance and performance')
+    parser.add_argument('--steering', action='store_true', help='Whole-family v4 acceptance and performance')
     parser.add_argument('--modes', nargs='+')
     options = parser.parse_args()
     binary = options.helper

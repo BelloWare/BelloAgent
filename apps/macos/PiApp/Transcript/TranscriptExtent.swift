@@ -26,6 +26,7 @@ struct HistoryExtent: Equatable {
 @MainActor final class HistoryPositions {
     private var positions: [String: Int] = [:]
     private(set) var total: Int?
+    func position(of id: String) -> Int? { positions[id] }
     private var adoptedWindow = false
     /// The height one row of the timeline takes in this chat, measured from
     /// the rows the transcript has laid out (`TranscriptNativeDocument`).

@@ -3,12 +3,31 @@ import Foundation
 /// One grouping rule for cold history and incremental presentation. Work never
 /// owns a prose host; immutable source IDs own bodies throughout a stream.
 enum TaskTranscriptPlan {
+    static func inheritedGroup(_ message: TranscriptMessage) -> String? {
+        guard let marker = message.nativeInherited?.object, let from = marker["from"]?.string else { return nil }
+        return "inherited:" + from + ":" + (marker["cutoffEntryId"]?.string ?? "")
+    }
     /// `complete` says whether the page reaches the conversation's newest row.
     /// A page cut short of it may end in the middle of a turn, and that turn
     /// folds only on its own receipt that it ended.
     static func items(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?,
                       display: TranscriptDisplayMode = TranscriptDisplay.mode, complete: Bool = true) -> [TranscriptItem] {
         runs.lock(); plannedPages += 1; runs.unlock()
+        if let first = messages.first, first.codexAgents == true, let marker = first.nativeInherited?.object, let group = inheritedGroup(first) {
+            let inherited = messages.prefix { $0.nativeInherited?.object?["from"] == marker["from"] && $0.nativeInherited != nil }
+            var control = TranscriptBlock(id: group, key: group, turnID: nil, message: nil, activity: [], tools: [],
+                accounting: TurnAccounting(), startedAt: nil, endedAt: nil, modelMs: 0, toolMs: 0, live: false, turn: nil)
+            control.presentation = .turnFold; control.foldControl = group
+            control.foldSummary = TurnFoldSpec(group: group, answerResponseID: "", inheritedMessages: first.inheritedCount ?? inherited.count)
+            let context = rows(Array(inherited), lifecycle: nil).map { item -> TranscriptItem in
+                switch item {
+                case .message(var row): row.foldGroup = group; row.earlierVersion = true; return .message(row)
+                case .block(var block): block.foldGroup = group; return .block(block)
+                }
+            }
+            return [.block(control)] + context + TranscriptTurnFold.apply(rows(Array(messages.dropFirst(inherited.count)), lifecycle: lifecycle),
+                display: display, running: lifecycle?.active?.rootID, complete: complete)
+        }
         return TranscriptTurnFold.apply(rows(messages, lifecycle: lifecycle), display: display,
                                         running: lifecycle?.active?.rootID, complete: complete)
     }

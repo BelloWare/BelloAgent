@@ -51,9 +51,10 @@ extension WorkspaceModel {
         sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
         // A side can pin its owner after the owner's display is evicted, as
-        // well as when it opened only for the budget. Both read authoritative
-        // numeric state without recreating a transcript on accounting events.
-        if displays[id] == nil, budgetDependencySessions.contains(id) || releasedHelperSessions.contains(id) {
+        // well as when it opened only for the budget. An unshown saved side
+        // also receives changes when its catalog grants are installed. Read
+        // numeric state without creating a transcript for any of these.
+        if displays[id] == nil, budgetDependencySessions.contains(id) || releasedHelperSessions.contains(id) || sideBudgetParent(item) != nil {
             refreshBudgetState(id); releaseUnusedBudgetSessions(); return
         }
         // Written only when new: every write runs `displays`' observers, which
@@ -176,6 +177,7 @@ extension WorkspaceModel {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
                     applyToolNotice(result, to: view, id: id, item: item)
+                    fillFinishedTurn(id)
                     // Out of sight now: the reader may have left the chat
                     // since this snapshot was asked for.
                     if !receivesRows(id) {
@@ -256,6 +258,7 @@ extension WorkspaceModel {
     private func applySnapshotState(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord,
                                     wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]]? {
         view.isManagedSubagent = item.isSubagent
+        view.supportsCodexAgents = hosts[item.workspaceID]?.supportsCodexAgents == true
         if item.isSubagent { view.subagentStatus = result["subagentStatus"]?.string.flatMap(SubagentStatus.init(rawValue:)) }
         observeAssistantOutputs(sessionID: id, snapshot: result)
         observeSessionCompletion(sessionID: id, snapshot: result)
