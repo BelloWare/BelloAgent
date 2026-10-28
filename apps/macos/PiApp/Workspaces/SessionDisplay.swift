@@ -84,6 +84,7 @@ struct TranscriptVersionView: Equatable, Sendable {
 @MainActor final class SessionDisplay: ObservableObject {
     var subagentsRevision: String?
     var isManagedSubagent = false
+    var supportsMailboxCutin = false { didSet { if supportsMailboxCutin != oldValue { publishTranscript() } } }
     var supportsCodexAgents = false { didSet { if supportsCodexAgents != oldValue { publishTranscript() } } }
     var inheritedContextMessages: Int?
     var inheritedContextFolded: Bool {
@@ -110,6 +111,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var originalSubagentAvailability: [String: OriginalSubagentAvailability] = [:] { didSet { if originalSubagentAvailability != oldValue { publishTranscript() } } }
     var subagentNumbers: [String: Int] = [:] { didSet { if subagentNumbers != oldValue { publishTranscript() } } }
     var subagentEfforts: [String: SubagentEffort] = [:] { didSet { if subagentEfforts != oldValue { publishTranscript() } } }
+    @Published var receivingAgentMessage = false
     @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
     @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }
     @Published var delegatedTask: String?
@@ -611,6 +613,8 @@ struct TranscriptVersionView: Equatable, Sendable {
             endTranscriptBatch()
             if costPaused, !preflightNotice.isEmpty { updateComposedNotice() }
         }
+        let receiving = supportsMailboxCutin && snapshot["receivingAgentMessage"]?.bool == true
+        if receivingAgentMessage != receiving { receivingAgentMessage = receiving }
         let waiting = snapshot["familyWaiting"]?.bool ?? false
         if familyWaiting != waiting { familyWaiting = waiting }
         let pending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0

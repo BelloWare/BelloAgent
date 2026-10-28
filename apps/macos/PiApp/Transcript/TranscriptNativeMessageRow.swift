@@ -113,12 +113,14 @@ import AppKit
     required init?(coder: NSCoder) { nil }
     override func configure() {
         label.text = message.text; label.color = TranscriptNSPalette.muted
-        setAccessibilityLabel("Status: \(message.text)")
+        setAccessibilityLabel(isCut ? message.text : "Status: \(message.text)")
     }
-    private let spacing: [CGFloat] = [8, 8, 8]
+    private var isCut: Bool { MailboxCutPresentation.marker(message) != nil }
+    override func hides(_ view: NSView) -> Bool { view === spinner && isCut }
+    private var spacing: [CGFloat] { isCut ? [8,0,8] : [8,8,8] }
     private func line(width: CGFloat) -> [CGSize] {
         let text = label.intrinsicSize
-        return TranscriptLineLayout.sizes([.flexible(height: 1), .fixed(CGSize(width: TranscriptSpinner.size, height: TranscriptSpinner.size)),
+        return TranscriptLineLayout.sizes([.flexible(height: 1), .fixed(isCut ? .zero : CGSize(width: TranscriptSpinner.size, height: TranscriptSpinner.size)),
                                            .fixed(text), .flexible(height: 1)], spacing: spacing, width: width)
     }
     /// The line, and six points of room above and below it.

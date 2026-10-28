@@ -4,7 +4,7 @@ struct TranscriptAnchor: Codable, Sendable, Equatable { var id: String; var offs
 struct ToolView: Codable, Sendable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, name, state, input, output, durationMs, truncated, path, added, removed, line, lastLine
-        case inputTruncated, inputBytes, subagent, nativeSubagent, agentDeliveryState, agentHeldByUser, subagentNumber, subagentEffort
+        case inputTruncated, inputBytes, subagent, nativeSubagent, nativeAgentCallCancellation, agentDeliveryState, agentHeldByUser, subagentNumber, subagentEffort
     }
     var id: String; var name: String; var state: String; var input: String; var output: String; var durationMs: Double?; var truncated: Bool
     /// File tools: resolved path and approximate line counts, from the host.
@@ -21,6 +21,7 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var inputBytes: Int? = nil
     var subagent: SubagentSummary? = nil
     var nativeSubagent: WireValue? = nil
+    var nativeAgentCallCancellation: WireValue? = nil
     var agentDeliveryState: String? = nil
     var agentHeldByUser: Bool? = nil
     /// App-only presentation cache, never sent to the helper or model.
@@ -30,6 +31,7 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var subagentNumber: Int? = nil
     var subagentEffort: String? = nil
     var codexAgents = false
+    var mailboxCutin = false
     var subagentTaskName: String? = nil
     var agentEvent: AgentCoordinationEntry? = nil
 }
@@ -48,6 +50,8 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         /// its human-readable caption. History projection leaves both nil.
         var kind: String? = nil
         var nativeAgentDelivery: WireValue? = nil
+        var nativeMailboxCut: WireValue? = nil
+        var mailboxCutin: Bool? = nil
         var nativeInherited: WireValue? = nil
         var codexAgents: Bool? = nil
         /// Only the children named by this delivery batch, not the whole family.
@@ -225,6 +229,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
+        result.nativeMailboxCut = message["nativeMailboxCut"].flatMap { $0 == .null ? nil : $0 }
         result.nativeAgentDelivery = message["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
         result.nativeInherited = message["nativeInherited"].flatMap { $0 == .null ? nil : $0 }
         if result.nativeAgentDelivery != nil { result.kind = "agent_message" }
@@ -340,6 +345,7 @@ struct ToolResultRecord: Sendable, Equatable {
     /// leave it nil.
     var outcome: String? = nil
     var nativeSubagent: WireValue? = nil
+    var nativeAgentCallCancellation: WireValue? = nil
     /// The card this record reads as — the helper's own reading of a saved
     /// result (`AgentSession.cardState`): the recorded outcome decides, and a
     /// journal without one keeps its isError reading. A call stopped while it
@@ -368,7 +374,7 @@ struct ToolResultRecord: Sendable, Equatable {
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
                                        durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
                                        added: whole(stats["added"]), removed: whole(stats["removed"]), line: whole(stats["line"]), lastLine: whole(stats["lastLine"]),
-                                       outcome: stats["outcome"]?.string, nativeSubagent: message["nativeSubagent"]))
+                                       outcome: stats["outcome"]?.string, nativeSubagent: message["nativeSubagent"], nativeAgentCallCancellation:message["nativeAgentCallCancellation"]))
     }
 }
 
@@ -402,6 +408,7 @@ extension TranscriptMessage {
                 card.path = result.path; card.added = result.added; card.removed = result.removed
                 card.line = result.line; card.lastLine = result.lastLine
                 card.nativeSubagent = result.nativeSubagent
+                card.nativeAgentCallCancellation = result.nativeAgentCallCancellation
                 return card
             }
         }
@@ -451,6 +458,7 @@ extension TranscriptMessage {
         row.truncated = try optionalBool(fields["truncated"])
         row.stopReason = try optionalString(fields["stopReason"])
         row.kind = try optionalString(fields["kind"])
+        row.nativeMailboxCut = fields["nativeMailboxCut"].flatMap { $0 == .null ? nil : $0 }
         row.nativeAgentDelivery = fields["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
         row.nativeInherited = fields["nativeInherited"].flatMap { $0 == .null ? nil : $0 }
         if row.nativeAgentDelivery != nil { row.kind = "agent_message" }
@@ -526,7 +534,8 @@ extension TranscriptMessage {
                         line: try optionalInt(fields["line"]), lastLine: try optionalInt(fields["lastLine"]),
                         inputTruncated: try optionalBool(fields["inputTruncated"]), inputBytes: try optionalInt(fields["inputBytes"]),
                         subagent: try fields["subagent"].flatMap { $0 == .null ? nil : try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode($0)) },
-                        nativeSubagent: fields["nativeSubagent"].flatMap { $0 == .null ? nil : $0 })
+                        nativeSubagent: fields["nativeSubagent"].flatMap { $0 == .null ? nil : $0 },
+                        nativeAgentCallCancellation: fields["nativeAgentCallCancellation"].flatMap { $0 == .null ? nil : $0 })
     }
     // A key that is absent and a key that is null both read as nothing, which
     // is what Codable's decodeIfPresent does; a key of another type declines.

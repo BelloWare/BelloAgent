@@ -119,6 +119,7 @@ extension SubagentSummary {
     /// `status.label`, or "Paused at cost limit" while the family is paused.
     var statusLabel: String { pausedAtCostLimit ? "Paused at cost limit" : status.label }
     var presentationLabel: String {
+        if status == .running, receivingAgentMessage == true || progress?.receivingAgentMessage == true { return "Running · Receiving agent message" }
         guard let turn else { return statusLabel }
         let state: String
         if pausedAtCostLimit { state = "Paused at cost limit" }

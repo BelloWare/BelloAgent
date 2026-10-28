@@ -222,6 +222,11 @@ enum TaskTranscriptPlan {
                         result.append(.message(info))
                     }
                 }
+                if let label = MailboxCutPresentation.marker(message) {
+                    var marker = TranscriptMessage(id:"mailbox-cut:" + message.id,role:"system",text:label,kind:"notice",turn:message.turn,taskRootID:message.taskRootID,taskExecutionID:message.taskExecutionID)
+                    marker.nativeMailboxCut = message.nativeMailboxCut; marker.mailboxCutin = true
+                    result.append(.message(marker))
+                }
             }
         }
         return result

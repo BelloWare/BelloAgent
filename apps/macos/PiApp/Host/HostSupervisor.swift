@@ -15,6 +15,7 @@ final class HostSupervisor: ObservableObject {
     private(set) var epoch: String?
     private(set) var supportsReadCancellation = false
     private(set) var supportsCodexAgents = false
+    private(set) var supportsMailboxCutin = false
     private static let cancellableReads: Set<String> = ["session.history", "session.version.page"]
     private var dispatchedReads: [String: (cancellation: HostCommandCancellation, frame: [String: WireValue])] = [:]
     var onEvent: (([String: WireValue]) -> Void)?
@@ -255,6 +256,7 @@ final class HostSupervisor: ObservableObject {
         for reply in replies.values { reply.resume(throwing: error) }; replies.removeAll()
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
         supportsCodexAgents = false
+        supportsMailboxCutin = false
         let settlements = commandSettlements; commandSettlements.removeAll()
         for waiters in settlements.values { for waiter in waiters { waiter.resume() } }
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
@@ -287,6 +289,7 @@ final class HostSupervisor: ObservableObject {
                 epoch = hostEpoch; isReady = true; status = "Ready · Swift"
                 supportsReadCancellation = capabilities.contains("read-cancel")
                 supportsCodexAgents = capabilities.contains("subagents-codex-v4")
+                supportsMailboxCutin = supportsCodexAgents && capabilities.contains("subagents-mailbox-cutin-v1")
                 handshakeWatchdog?.cancel(); handshakeWatchdog = nil
                 for waiter in readyWaiters { waiter.resume() }; readyWaiters.removeAll(); return
             }
