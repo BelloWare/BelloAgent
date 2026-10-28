@@ -1011,7 +1011,9 @@ public actor NativeHostService {
         let marker = try reader.next()
         // V3/v4 promotion changes the marker name, retaining version 2 for
         // children and version 1 for owners and sides that may still move.
-        guard journal.markerKind != JournalRecordKind.childMarker, marker?["data"]["version"].int != 2 else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
+        // An imported prefix may put another tool's metadata second.
+        let childMarker = JournalRecordKind.isMarker(marker?["customType"].text) && marker?["data"]["version"].int == 2
+        guard journal.markerKind != JournalRecordKind.childMarker, !childMarker else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
         let before=journal.binding ?? .null
         if check {
             var replies=0

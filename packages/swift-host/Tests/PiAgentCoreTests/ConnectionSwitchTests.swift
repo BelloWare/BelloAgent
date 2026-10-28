@@ -83,6 +83,46 @@ final class ConnectionSwitchTests: HelperTestCase {
             for side in [false,true] { try await checkRebind(generation:generation,managed:false,side:side) }
         }
     }
+    func testForeignVersionTwoRecordBeforeTheNativeMarkerStillAllowsAMove() async throws {
+        try await checkForeignRecordRebind(hasMarker:true)
+    }
+    func testMarkerlessLegacyJournalStillRequiresPortableHandoff() async throws {
+        try await checkForeignRecordRebind(hasMarker:false)
+    }
+    private func checkForeignRecordRebind(hasMarker: Bool) async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at:chat.root) }
+        let url = chat.state.appendingPathComponent(chatID + ".jsonl"), first = try fixtureProfile(), second = try second()
+        // An imported layout can retain another tool's record before the
+        // native binding. A journal with no native marker remains read-only.
+        var records: [JSON] = [
+            ["type":"session","version":3,"id":JSON(chatID),"cwd":JSON(chat.root.path)],
+            ["type":"custom","customType":"other-tool.metadata","id":"foreign","parentId":.null,"data":["version":2]]
+        ]
+        if hasMarker {
+            records.append(["type":"custom","customType":JSON(JournalRecordKind.marker),"id":"native","parentId":"foreign","data":["version":1,"binding":first.binding]])
+        }
+        try FileManager.default.createDirectory(at:chat.state,withIntermediateDirectories:true)
+        let before = Data((records.map { $0.encoded() }.joined(separator:"\n") + "\n").utf8)
+        try before.write(to:url)
+        let host = try await host(chat)
+        for check in [true,false] {
+            do {
+                let result = try await host.command("session.rebind",sessionID:chatID,params:["path":JSON(url.path),"profile":second.raw,"check":JSON(check)])
+                XCTAssertTrue(hasMarker,"A markerless legacy journal must stay read-only")
+                XCTAssertEqual(result[check ? "rebinds" : "rebound"].flag,true)
+            } catch let error as AgentError {
+                if hasMarker { XCTFail("Foreign metadata prevented the move (check=\(check)): \(error)") }
+                else { XCTAssertEqual(error.code,"legacy_session") }
+            }
+            if check || !hasMarker { XCTAssertEqual(try Data(contentsOf:url),before) }
+        }
+        if hasMarker {
+            let moved = try SessionJournal(url:url,id:chatID,cwd:chat.root,binding:nil,create:false)
+            XCTAssertEqual(moved.binding,second.binding)
+            XCTAssertEqual(try Data(contentsOf:url).prefix(before.count),before)
+        }
+        await host.shutdown()
+    }
     private func checkRebind(generation: Int, managed: Bool, side: Bool) async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at:chat.root) }
         let url = chat.state.appendingPathComponent(chatID + ".jsonl"), first = try fixtureProfile(), second = try second()
