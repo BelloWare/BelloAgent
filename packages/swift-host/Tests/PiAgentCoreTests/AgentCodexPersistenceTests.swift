@@ -56,6 +56,55 @@ final class AgentCodexPersistenceTests: HelperTestCase {
         }
     }
 
+    func testForkPublicationStopsAtTheSeedInALongLivedChild() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let inherited = (0..<24).map { index in
+            var row = ChatMessage(role:index.isMultiple(of:2) ? "user" : "assistant",content:[textBlock("Inherited \(index)")])
+            row.id = "seed-\(index)"
+            return SubagentCodexContract.inherited(row,from:"parent",cutoff:"seed-23")
+        }
+        let seed = AgentForkSeed(from:"parent",cutoffEntryID:"seed-23",messages:inherited)
+        for turns in [0,10_000] {
+            let url = root.appendingPathComponent("child-\(turns).jsonl")
+            let child = try SessionJournal(url:url,id:"child-\(turns)",cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
+            try child.promoteToCodex(managedChild:true)
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(subagentFixtureOrigin())],flush:false)
+            for row in inherited { try child.append(["type":"message","message":row.pi],id:row.id,flush:false) }
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(seed.ids.map(JSON.string))]],flush:false)
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.agentForkSeed),"data":seed.reference],flush:true)
+            let prefixBytes = child.size
+            for turn in 0..<turns {
+                for role in ["user","assistant"] {
+                    let row = ChatMessage(role:role,content:[textBlock("Turn \(turn). " + String(repeating:"Generated child history. ",count:12))])
+                    try child.append(["type":"message","message":row.pi],id:row.id,flush:false)
+                }
+            }
+            try child.synchronize()
+            var milliseconds: [Double] = []
+            for _ in 0..<5 {
+                let start = ProcessInfo.processInfo.systemUptime
+                try seed.requirePublished(at:url)
+                milliseconds.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
+            }
+            print("DEBUG fork publication turns=\(turns) prefixBytes=\(prefixBytes) journalBytes=\(child.size) medianMs=\(milliseconds.sorted()[2])")
+            // Replay owns validation of later turns. A publication check must
+            // stop at its intact prefix, even if the unrelated tail is torn.
+            let tail = try FileHandle(forWritingTo:url); defer { try? tail.close() }
+            try tail.seekToEnd(); try tail.write(contentsOf:Data("{torn later turn".utf8))
+            XCTAssertNoThrow(try seed.requirePublished(at:url))
+        }
+    }
+
+    func testForkRecoveryStillRejectsReusedInheritedIDsAfterTheSeed() {
+        var inherited = ChatMessage(role:"user",content:[textBlock("Inherited")]); inherited.id = "seed"
+        inherited = SubagentCodexContract.inherited(inherited,from:"parent",cutoff:inherited.id)
+        let seed = AgentForkSeed(from:"parent",cutoffEntryID:inherited.id,messages:[inherited])
+        var later = ChatMessage(role:"assistant",content:[textBlock("Later answer")])
+        XCTAssertTrue(seed.complete(rows:[inherited,later],reference:seed.reference))
+        later.id = inherited.id
+        XCTAssertFalse(seed.complete(rows:[inherited,later],reference:seed.reference))
+    }
+
     func testForkRecoveryUsesReopenedParentContextAndFailsClosedOnChangedOrMissingRows() async throws {
         for damage in ["none","changed","missing"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

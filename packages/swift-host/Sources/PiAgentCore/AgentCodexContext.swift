@@ -32,21 +32,31 @@ struct AgentForkSeed: Codable, Sendable, Equatable {
             Self.contentDigest(messages) == digest
     }
     func complete(rows: [ChatMessage], reference saved: JSON?) -> Bool {
+        // Recovery already reads every turn. Keep detecting damaged/reused
+        // identities there; new child rows and delivery rows use fresh UUIDs.
         saved == reference && matches(Array(rows.prefix(ids.count))) &&
             rows.dropFirst(ids.count).allSatisfy { !ids.contains($0.id) }
     }
     func requirePublished(at url: URL) throws {
         guard FileManager.default.fileExists(atPath:url.path) else { throw Self.publicationError }
         let reader = try JournalRecordReader(url)
-        var rows: [ChatMessage] = [], saved: JSON?
-        while let row = try reader.next() {
+        var rows: [ChatMessage] = []
+        // Publication writes the header, marker, origin, inherited messages,
+        // context and seed, before any child turn. Missing publication must
+        // also fail within that prefix, without searching the child's lifetime.
+        for _ in 0..<(ids.count + 5) {
+            guard let row = try reader.next() else { break }
             if row["customType"].text == JournalRecordKind.agentForkSeed {
-                guard row["data"] == reference else { throw Self.publicationError }
-                saved = row["data"]
+                guard row["data"] == reference, matches(rows) else { throw Self.publicationError }
+                try reader.checkUnchanged(at:url)
+                return
             }
-            if row["type"].text == "message", let id = row["id"].text { rows.append(try ChatMessage(id:id,pi:row["message"])) }
+            if row["type"].text == "message", let id = row["id"].text {
+                guard rows.count < ids.count, id == ids[rows.count] else { throw Self.publicationError }
+                rows.append(try ChatMessage(id:id,pi:row["message"]))
+            }
         }
-        guard complete(rows:rows,reference:saved) else { throw Self.publicationError }
+        throw Self.publicationError
     }
     func rebuild(from context: [ChatMessage], before assistant: String) -> [ChatMessage]? {
         guard let boundary = context.firstIndex(where: { $0.id == assistant }), ids.last == cutoffEntryID else { return nil }
