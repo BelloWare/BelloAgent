@@ -184,6 +184,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         tool_name = "bash" if stress_tool else "read"
         call_tool = tool_name in contract["tool_names"] and ("read fixture" in prompt.lower() or secondary_read or stress_tool) and not tool_result
         tool_arguments = {"command": "/usr/bin/python3 -u stress-output.py", "timeout": 60} if stress_tool else {"path": "SECONDARY.md" if secondary_read else "README.md"}
+        # A single long display turn, with an observable streaming finish.
+        long_turn = prompt == "turnfold sixty reads"
+        if long_turn:
+            call_tool = "read" in contract["tool_names"] and len(contract["results"]) < 60
         if "delegate opening fixture" in prompt.lower() and not tool_result:
             tool_name = "spawn_agent" if "spawn_agent" in contract["tool_names"] else "subagent_start" if "subagent_start" in contract["tool_names"] else "subagent"
             call_tool = tool_name in contract["tool_names"]
@@ -220,6 +224,12 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     else "Fixture bash completed. The native helper returned the synthetic tool output.")
             if secondary_read:
                 text = "Fixture read completed. SECONDARY-WORKSPACE-ROOT-VERIFIED: the file came from the added workspace folder."
+        if long_turn and not call_tool:
+            Path("turnfold-answer-ready").touch()
+            deadline = time.monotonic() + 30
+            while not Path("turnfold-answer-release").exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            text = "All sixty reads finished. " + "The generated README was checked. " * 30
         bulk = next((int(word) for previous, word in zip(prompt.lower().split(), prompt.lower().split()[1:])
                      if previous == "bulk" and word.isdigit()), None)
         if webhook:

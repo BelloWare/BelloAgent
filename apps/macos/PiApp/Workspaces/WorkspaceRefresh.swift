@@ -177,6 +177,7 @@ extension WorkspaceModel {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
                     applyToolNotice(result, to: view, id: id, item: item)
+                    fillFinishedTurn(id)
                     // Out of sight now: the reader may have left the chat
                     // since this snapshot was asked for.
                     if !receivesRows(id) {

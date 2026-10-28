@@ -573,4 +573,62 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(found.display, found.helper, "The chat holds the whole reply: \(found)")
         XCTAssertEqual(found.page, found.helper, "The page draws the whole reply: \(found)")
     }
+
+    /// Real send/edit, helper, loopback tools and streamed answer. The first
+    /// question is normally observed early; delay the first snapshot as well
+    /// to cover a suffix first observed after a burst of tool calls.
+    @MainActor private func sixtyReads(edit: Bool, late: Bool = false) async throws {
+        let previous = TranscriptDisplay.mode
+        defer { TranscriptDisplay.use(previous) }
+        let setup = try await setup(), launched = launch(setup), model = launched.model
+        let chat = try await chat(setup, model, title: edit ? "EditedFold" : "FreshFold")
+        TranscriptDisplay.use(.compact)
+        let view = try XCTUnwrap(model.displays[chat.id])
+        if edit {
+            await turn(model, chat: chat.id, "Original question", whole: { $0.hasSuffix("café.") })
+            let question = try XCTUnwrap(view.messages.first { $0.role == "user" })
+            model.editMessage(question.id, sessionID: chat.id)
+            let editing = await wait(15) { view.editingMessageID == question.id && !view.editPreparing && !view.editInputPending }
+            XCTAssertTrue(editing)
+        }
+        if late {
+            _ = await wait(10) { !view.snapshotInFlight }
+            // Coalesce the first observation until the helper is past sixty
+            // rows, as a fast tool burst or delayed edit acknowledgement can.
+            view.snapshotInFlight = true
+        }
+        defer { view.snapshotInFlight = false }
+        view.draft = "turnfold sixty reads"; model.send(sessionID: chat.id)
+        let ready = await wait(60) { FileManager.default.fileExists(atPath: setup.root.appendingPathComponent("turnfold-answer-ready").path) }
+        XCTAssertTrue(ready, "The helper made sixty local read calls")
+        if late {
+            view.snapshotInFlight = false; model.refresh(chat.id)
+            let observed = await wait(10) { !view.snapshotInFlight && view.messages.count >= 60 }
+            XCTAssertTrue(observed)
+            XCTAssertFalse(view.messages.contains { $0.role == "user" && $0.text == "turnfold sixty reads" },
+                           "The first live snapshot starts past the question")
+        }
+        launched.draw()
+        XCTAssertTrue(view.busy)
+        XCTAssertGreaterThanOrEqual(view.messages.count, 60)
+        func folds() -> [TranscriptBlock] {
+            (launched.page?.snapshot?.items ?? []).compactMap { if case .block(let b) = $0, b.presentation == .turnFold { return b }; return nil }
+        }
+        XCTAssertTrue(folds().isEmpty, "Running work stays visible")
+        try Data().write(to: setup.root.appendingPathComponent("turnfold-answer-release"))
+        let finished = await wait(30) { self.quiet(view) }
+        if !finished { XCTFail("The turn did not settle: \(await diagnose(model, chat: chat.id))") }
+        let folded = await wait(5) { launched.draw(); return folds().first?.foldSummary?.toolCalls == 60 }
+        print("TURNFOLD real edit=\(edit) late=\(late): \(view.messages.count) rows, \(folds().count) folds")
+        XCTAssertTrue(folded, "The finished turn folds without a scroll or load request")
+        XCTAssertTrue(view.messages.contains { $0.role == "user" && $0.text == "turnfold sixty reads" })
+        XCTAssertTrue((launched.page?.snapshot?.items ?? []).contains { TranscriptRowDisclosure.of($0, in: view.disclosure).foldedAway })
+        XCTAssertFalse(view.browsingHistory)
+    }
+
+    @MainActor func testNewChatSixtyReadTurnFoldsAtStreamEnd() async throws { try await sixtyReads(edit: false) }
+    @MainActor func testEditAndResendSixtyReadTurnFoldsAtStreamEnd() async throws { try await sixtyReads(edit: true) }
+    @MainActor func testNewChatLateSixtyReadTurnFoldsAtStreamEnd() async throws { try await sixtyReads(edit: false, late: true) }
+    @MainActor func testEditAndResendLateSixtyReadTurnFoldsAtStreamEnd() async throws { try await sixtyReads(edit: true, late: true) }
+
 }

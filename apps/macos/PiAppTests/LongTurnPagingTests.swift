@@ -329,6 +329,117 @@ final class LongTurnPagingTests: XCTestCase, SerialTestLane {
     }
 }
 
+private actor TurnFoldReadCount {
+    private(set) var value = 0
+    func record() { value += 1 }
+}
+
+extension LongTurnPagingTests {
+    /// A cut live suffix in the real pane, completed through the journal
+    /// reader, with both tall and short answers at the following reader's end.
+    @MainActor private func completeCutTurn(newer: Bool, opened: Bool = false, short: Bool = false) async throws {
+        let heavy = try await open(turns: newer ? 2 : 1, bigTurn: 0, bigCalls: 60)
+        let chat = heavy.chat, view = heavy.view, page = try XCTUnwrap(chat.page)
+        page.presentationInterval = 0
+        chat.scroll?.scrollerStyle = .overlay
+        if newer, short { chat.window.setContentSize(NSSize(width: 900, height: 1200)) }
+        var whole = view.messages
+        whole[whole.count - 1].text = (0..<(short ? 1 : 40)).map { "Paragraph \($0): the answer stays at the reader's place while the earlier work folds." }.joined(separator: "\n\n")
+        whole[whole.count - 1].responseTimeline = nil
+        let cut = try XCTUnwrap(whole.firstIndex { $0.id == "r0_30" })
+        let identity = try XCTUnwrap(view.presentation.identity)
+        view.presentation.openingPage = false
+        view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+        var readerLoads = 0
+        page.onLoadEarlier = { _ in readerLoads += 1 }
+        view.olderPage = .init(cursor: .init(incarnation: identity.incarnation, lineage: identity.lineage, entry: whole[cut].id))
+        view.before = whole[cut].id; view.presentation.partialTurnInput = nil
+        view.messages = Array(whole[cut...])
+        for _ in 0..<20 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        if opened { view.disclosure.setOpen(true, .turnFold("u0")) }
+        page.jumpToLatest()
+        // Jump to latest animates for 350 ms; measure after it has landed.
+        for _ in 0..<50 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        if newer, !short {
+            let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document)
+            let answer = try XCTUnwrap(document.row(drawing: "a1_z"))
+            chat.beginGesture()
+            chat.gestureStep(chat.clipY - (answer.frame.minY + 120))
+            chat.endGesture()
+            for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertFalse(page.followsBottom)
+            XCTAssertEqual(scroll.contentView.bounds.minY, answer.frame.minY + 120, accuracy: 1)
+        } else { XCTAssertTrue(page.followsBottom) }
+        let answerID = newer ? "block:a1_z" : "block:a0_z"
+        let reader = short ? (id: answerID, top: try XCTUnwrap(chat.screenTop(of: answerID))) : try XCTUnwrap(chat.readingRow())
+        let count = TurnFoldReadCount()
+        let path = try XCTUnwrap(chat.chat.path), history = chat.model.history
+        chat.model.historyWindowLoader = { _, cursor, forward, around in
+            await count.record()
+            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: forward, around: around))
+        }
+        // The viewport-ready path must fix a snapshot that finished before
+        // its first presentation. It receives no reader load request.
+        view.historyState = .preparing
+        chat.model.historyViewportReady(view.id, generation: view.presentationGeneration)
+        func tailGeometry() -> [String] {
+            (chat.document?.retainedRows ?? []).suffix(4).map { row in
+                var note = ""
+                if case .block(let block) = row.item, let turn = block.turn { note = TurnInfoPresentation.cardNote(turn) ?? "no note" }
+                return "\(row.itemID) \(row.frame.height) \(note)"
+            }
+        }
+        let beforeGeometry = tailGeometry()
+        var shifts: [CGFloat] = [], settled = 0
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while ProcessInfo.processInfo.systemUptime < deadline, settled < 20 {
+            chat.draw()
+            if let now = chat.screenTop(of: reader.id), abs(now - reader.top) > 1 { shifts.append(now - reader.top) }
+            if page.snapshot?.messages.first?.id == "u0", !view.olderPage.loading { settled += 1 }
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        print("TURNFOLD geometry newer=\(newer) opened=\(opened): reader \(reader.id), before \(reader.top), after \(chat.screenTop(of: reader.id) ?? .nan); tail before \(beforeGeometry); after \(tailGeometry())")
+        XCTAssertGreaterThan(settled, 0, "The question must arrive without a scroll")
+        XCTAssertTrue(heavy.shapes()[0]?.fold?.hasPrefix("60 tool calls") == true)
+        XCTAssertEqual(shifts, [], "No frame moves what the reader is reading")
+        XCTAssertEqual(try XCTUnwrap(chat.screenTop(of: reader.id)), reader.top, accuracy: 1, "The reading row stays put")
+        let reads = await count.value
+        XCTAssertEqual(reads, 1); XCTAssertEqual(readerLoads, 0)
+        XCTAssertEqual(view.disclosure.isOpen(.turnFold("u0")), opened)
+        XCTAssertEqual(view.messages.last?.text, whole.last?.text, "The prefix read preserves the live tail")
+        XCTAssertEqual(chat.document?.completionBottomSpace ?? -1, newer ? 0 : 18, accuracy: 1)
+        if !newer, !opened, !short, let folder = testEnvironment("PI_TURNFOLD_GALLERY") {
+            let directory = URL(fileURLWithPath: folder)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var answer = try XCTUnwrap(view.messages.last)
+            answer.text = "All sixty calls are complete. The callers now pass the end index explicitly, and the generated checks pass."
+            view.replaceMessage(at: view.messages.count - 1, with: answer)
+            for (name, width, appearance) in [("light", 900.0, NSAppearance.Name.aqua), ("dark", 900.0, .darkAqua),
+                                              ("narrow-light", 520.0, .aqua), ("narrow-dark", 520.0, .darkAqua)] {
+                chat.window.appearance = NSAppearance(named: appearance)
+                chat.window.setContentSize(NSSize(width: width, height: 760))
+                for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+                let bitmap = try XCTUnwrap(chat.pane.bitmapImageRepForCachingDisplay(in: chat.pane.bounds))
+                chat.pane.cacheDisplay(in: chat.pane.bounds, to: bitmap)
+                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                try png.write(to: directory.appendingPathComponent("finished-turn-\(name).png"))
+            }
+        }
+        view.appendMessage(.init(id: "next-question", role: "user", text: "The next turn"))
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(chat.document?.completionBottomSpace, 0, "A new tail releases the completion space")
+        XCTAssertEqual(try XCTUnwrap(chat.document?.retainedRows.first?.frame.minY),
+                       TranscriptMetrics.pageTopInset + (chat.document?.leadingSpace ?? 0), accuracy: 1,
+                       "A new tail also releases any room held above a short completed turn")
+    }
+
+    @MainActor func testFinishedTurnFillKeepsTheFollowingReaderAtTheEnd() async throws { try await completeCutTurn(newer: false) }
+    @MainActor func testFinishedTurnFillKeepsAShortAnswerAtTheEnd() async throws { try await completeCutTurn(newer: false, short: true) }
+    @MainActor func testFinishedTurnFillKeepsAShortNewerAnswerAtTheEnd() async throws { try await completeCutTurn(newer: true, short: true) }
+    @MainActor func testFinishedTurnFillKeepsAReaderInTheNewerTurnStill() async throws { try await completeCutTurn(newer: true) }
+    @MainActor func testFinishedTurnFillPreservesAnOpenedFold() async throws { try await completeCutTurn(newer: false, opened: true) }
+}
+
 extension XCTestCase {
     /// A resident window of `rows` rows (bytes in proportion) in place of the
     /// app's, for a probe choosing the window's size.
