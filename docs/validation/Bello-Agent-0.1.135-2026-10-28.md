@@ -1,6 +1,6 @@
 # Bello Agent 0.1.135 — Codex-style sub-agents, and finished turns that fold
 
-Status: **packaged; publication pending.** Marketing version 0.1.135, build 139. Previous public release: 0.1.134/build 138.
+Status: **released and verified 2026-10-28.** Marketing version 0.1.135, build 139. Previous public release: 0.1.134/build 138.
 
 ## Owner request
 
@@ -71,4 +71,8 @@ Toolchain: macOS 14.8 (Tart VM, Apple Silicon), Xcode 16.1, XcodeGen 2.44.1.
 
 ## Release
 
-RELEASE_IDENTITY
+- Release commit `78869fab` ("Release Bello Agent 0.1.135"), tag `v0.1.135`, on `main` and `dev/next` (`e7bc9790` merges `dev/next` into `main`).
+- `BelloAgent-0.1.135.dmg`, sha256 `b1a40adaca5f36fe5ae9220c4d90e69a68d5f800b2bb5f0abea11d0e7d50fb9b`, 17,315,814 bytes; Developer ID signed and notarized (app submission `9b916929-78d7-4e38-acd8-8a8f19fe493f`, DMG submission `fbe6be03-49d4-42ba-8844-953e3c73a7c3`, both Accepted), stapled.
+- `validate-release.py --previous-build 138`: passed (0.1.135 build 139, Ed25519 signature verified).
+- Website commit `e798de7` (belloware.com `main`).
+- `verify-published.py`: the public DMG matches, and the Bello Agent and legacy Pi App feeds are byte-identical. The site took about seven minutes to deploy this time; until then the feed still served 0.1.134.
