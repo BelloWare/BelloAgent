@@ -28,7 +28,7 @@ extension AgentSession {
             rows.append(span)
         }
         let stateCheck = state.map { JournalCheckpoint.Check(offset: $0.offset, length: $0.line.count, sha256: JournalCheckpoint.digest($0.line)) }
-        return JournalCheckpoint(sessionID: sessionID, header: header, marker: marker,
+        return JournalCheckpoint(version:helper["subagentCutinVersion"].int == 1 ? 3 : 2,sessionID: sessionID, header: header, marker: marker,
                                  last: .init(offset: lastOffset, length: lastLine.count, sha256: JournalCheckpoint.digest(lastLine)), lastID: lastID,
                                  rows: rows, rowsBefore: first, context: context.map(\.id), lineage: visible.last(where: { $0.kind == "branch" })?.id,
                                  state: stateCheck, stateKey: state?.key,
@@ -44,6 +44,7 @@ extension AgentSession {
         var helper: JSON = ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
          "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
         if subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { helper["subagentEffortVersion"] = 1; helper["subagentCodexVersion"] = 4 }
+        if subagents.cuts != nil { helper["subagentCutinVersion"] = 1 }
         return helper
     }
     /// A compaction's progress row once the compaction's record is in the
@@ -68,6 +69,8 @@ extension AgentSession {
         // their original journal rows survive. Replay those families in full;
         // ordinary chats and current caches retain the checkpoint shortcut.
         guard (saved["subagentEffortVersion"].int == 1 && saved["subagentCodexVersion"].int == 4) || (subagents.family == nil && subagents.origin == nil && subagents.plans.isEmpty) else { return nil }
+        if checkpoint.version == 3, saved["subagentCutinVersion"].int != 1 || subagents.cuts == nil { return nil }
+        if subagents.cuts != nil, checkpoint.version != 3 { return nil }
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
         for row in checkpoint.rows {

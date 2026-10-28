@@ -1053,7 +1053,7 @@ public actor NativeHostService {
                 guard branch.extend(rid, parent: item["parentId"].text) else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
                 count += 1
                 let kind = item["customType"].text
-                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker || kind == JournalRecordKind.codexMarker { native=true }
+                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker || kind == JournalRecordKind.codexMarker || kind == JournalRecordKind.cutinMarker { native=true }
                 if kind == JournalRecordKind.subagentOrigin { throw AgentError("subagent_managed", "A managed child cannot be recovered as an independent chat") }
                 if kind == JournalRecordKind.sideOrigin || kind == JournalRecordKind.forkOrigin { parentInfo = item["data"] }
             }

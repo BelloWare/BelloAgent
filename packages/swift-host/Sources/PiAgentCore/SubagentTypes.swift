@@ -10,7 +10,7 @@ public enum SubagentPolicy {
     public static let codexEnabled = true
     public static let maximumActiveChildren = 16
     public static let maximumDepth = 1
-    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] + (codexEnabled ? ["subagents-codex-v4"] : []) : []) : [] }
+    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] + (codexEnabled ? ["subagents-codex-v4", "subagents-mailbox-cutin-v1"] : []) : []) : [] }
 }
 
 /// A provider may reuse a call ID in another response or another session.
@@ -85,6 +85,7 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     /// The owner paused at its family's cost limit with this turn unsealed:
     /// it goes on (from where it stopped, or from the queue) on Resume.
     public var costPaused: Bool? = nil
+    public var receivingAgentMessage: Bool? = nil
 }
 
 /// Display-only progress, coalesced while running and saved once with the
@@ -97,4 +98,5 @@ public struct SubagentProgress: Codable, Sendable, Equatable {
     public var usd: Double
     public var reported: Int, unreported: Int
     public var inputTokens: Int?, outputTokens: Int?
+    public var receivingAgentMessage: Bool? = nil
 }

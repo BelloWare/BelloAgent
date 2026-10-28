@@ -261,7 +261,8 @@ extension AgentSession {
             // Keep the source's reader requirement, but write exactly one
             // marker belonging to this independent chat. V3 history must not
             // become writable by a helper that predates agent deliveries.
-            if journal.markerKind == JournalRecordKind.codexMarker { try prepared.promoteToCodex(managedChild:false) }
+            if journal.markerKind == JournalRecordKind.cutinMarker { try prepared.promoteToMailboxCut(managedChild:false) }
+            else if journal.markerKind == JournalRecordKind.codexMarker { try prepared.promoteToCodex(managedChild:false) }
             else if journal.markerKind == JournalRecordKind.steeringMarker { try prepared.promoteToSteering(managedChild:false) }
             // Each record the fork's journal gets, from its marker on, is
             // replayed as it is written, as the fork's first open would.
@@ -463,8 +464,10 @@ extension AgentSession {
         // Build a complete new journal first, then publish ownership in memory.
         // Failed writes leave the live side untouched; never overwrite another chat.
         let temporary=directory.appendingPathComponent(".side-\(UUID().uuidString).jsonl"), destination=directory.appendingPathComponent("side_"+id+".jsonl")
+        let inheritedCuts = history.contains { $0.nativeMailboxCut != nil || $0.nativeAgentCallCancellation != nil }
         do {
             let prepared=try SessionJournal(url:temporary,id:id,cwd:cwd,binding:profile.binding,create:true)
+            if inheritedCuts { try prepared.promoteToMailboxCut(managedChild:false) }
             // No record is forced to disk on its own: `publish` forces the whole
             // journal there before it takes the side's name. A side opened from
             // a long chat paid one fsync per message of its parent's context.
@@ -490,6 +493,7 @@ extension AgentSession {
             let state=try savedState()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":state],flush:false)
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false
+            if inheritedCuts, subagents.cuts == nil { subagents.cuts = MailboxCutJournal() }
             journaledWholeCommands(state)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         event("side.kept")

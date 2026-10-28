@@ -33,6 +33,7 @@ public struct AttemptSettlement: Sendable {
 
 public struct RequestLifecycle: Sendable {
     public let scope: RequestScope
+    public var prepareMailboxCut: (@Sendable (ModelReply) async throws -> ModelReply?)? = nil
     public let admitAttempt: @Sendable (String) async throws -> RequestPermit
     public let willDispatch: @Sendable (String) async throws -> Void
     public let settleAttempt: @Sendable (AttemptSettlement) async throws -> Void

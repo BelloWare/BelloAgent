@@ -83,7 +83,7 @@ extension AgentSession {
     }
     var agentFinalProduced: Bool {
         guard let lease = agentLease else { return false }
-        return context.last.map { $0.role == "assistant" && $0.taskRootID == lease.inputID && !$0.content.contains { $0["type"].text == "toolCall" } } ?? false
+        return context.last.map { $0.role == "assistant" && $0.nativeMailboxCut == nil && $0.taskRootID == lease.inputID && !$0.content.contains { $0["type"].text == "toolCall" } } ?? false
     }
 }
 

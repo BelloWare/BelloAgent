@@ -136,6 +136,7 @@ extension AgentSteeringCoordinator {
         let op = try await owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,plan:plan,turn:turn,message:message,epoch:env.executionID,sourceTurn:source,interruptTarget:interrupt,interruptBy:interruptBy),generation:env.generation)
         if source != nil { try await caller.appendAgentRecord(JournalRecordKind.agentOperation,op,owner:owner.id) }
         try await enqueue(op,env:env,state:state,parent:owner,seedMessages:seedMessages)
+        if call.name == "interrupt_agent", let target { await owner.cancelMailboxDrains(source:target) }
         if let interrupt {
             jobs[interrupt.id]?.turn.interruptedBy = sender
             await stop(owner:owner.id,target:interrupt,human:false)

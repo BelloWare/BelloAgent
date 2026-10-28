@@ -125,6 +125,8 @@ public actor AgentSession {
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
+    var receivingAgentMessage = false
+    var requestDrainWaiters: [CheckedContinuation<Void,Never>] = []
     var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
     var budgetStopIssued = false
@@ -421,16 +423,19 @@ public actor AgentSession {
         // A fork's journal comes with what it replays to, made as it was
         // written (`forked`): used when it is the whole of this journal as it
         // is now, and never a replay resumed from a checkpoint.
-        let consumer: JournalReplayConsumer
+        var consumer: JournalReplayConsumer
         if let prepared, resumePath != nil, !prepared.r.resumed, prepared.r.coveredBytes == opened.size { consumer=prepared }
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
+        // Repair committed cut rows in the replay before publishing actor
+        // state, and before partial-log recovery can restore an open suffix.
+        try Self.recoverMailboxCuts(in:opened,consumer:&consumer,id:id)
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
             $0.admission != nil || $0.contribution?["sideParents"].isNull == false
         }
-        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker].contains(opened.markerKind) || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
+        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker,JournalRecordKind.cutinMarker].contains(opened.markerKind) || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
@@ -752,6 +757,7 @@ public actor AgentSession {
     public func close() async {
         withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
         cancelHistoryLoads(); stop(userInitiated:false); await runTask?.value
+        await waitForRequestDrains()
         // A paused family keeps its turns for Resume after the next open.
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }

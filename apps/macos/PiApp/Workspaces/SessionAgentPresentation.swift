@@ -6,7 +6,7 @@ extension SessionDisplay {
             subagentNumbers: subagentNumbers, subagentEfforts: subagentEfforts, subagentCosts: subagentCosts,
             originalSubagentAvailability: originalSubagentAvailability, agentCoordination: agentCoordination,
             childSummaries: childSummaries, heldAgentChildren: heldAgentChildren,
-            supportsCodexAgents: supportsCodexAgents, subagentNames: subagentNames, agentSourceEvents: agentSourceEvents)
+            supportsCodexAgents: supportsCodexAgents, supportsMailboxCutin: supportsMailboxCutin, subagentNames: subagentNames, agentSourceEvents: agentSourceEvents)
     }
     func parentAuthoredTask(_ source: TranscriptMessage) -> TranscriptMessage { agentPresentation.parentAuthoredTask(source) }
     func presentAgentState(_ source: TranscriptMessage) -> TranscriptMessage {
@@ -30,6 +30,7 @@ struct AgentTranscriptPresentation: Sendable {
     var childSummaries: [String: SubagentSummary]
     var heldAgentChildren: Set<String>
     var supportsCodexAgents = false
+    var supportsMailboxCutin = false
     var subagentNames: [String: String] = [:]
     var agentSourceEvents: [String: AgentCoordinationEntry] = [:]
 
@@ -53,13 +54,15 @@ struct AgentTranscriptPresentation: Sendable {
     func presentAgentState(_ source: TranscriptMessage) -> TranscriptMessage {
         var row = source
         row.codexAgents = supportsCodexAgents
+        row.mailboxCutin = supportsMailboxCutin
+        row.tools = row.tools?.map { var tool = $0; tool.mailboxCutin = supportsMailboxCutin; return tool }
         if source.nativeInherited != nil { row.earlierVersion = true; row.skills = nil }
         if source.nativeAgentDelivery != nil || source.kind == "agent_message" {
             let ids = Set(AgentMessagePresentation(row).events.map(\.childID))
             row.agentNumbers = Dictionary(ids.compactMap { id in subagentNumbers[id].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
             row.agentNames = Dictionary(ids.compactMap { id in subagentNames[id].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
         }
-        guard let tools = source.tools, tools.contains(where: { SubagentToolView.isControl($0.name) }) else { return row }
+        guard let tools = row.tools, tools.contains(where: { SubagentToolView.isControl($0.name) }) else { return row }
         row.tools = tools.map { source in
             guard SubagentToolView.isControl(source.name) else { return source }
             var original = source
