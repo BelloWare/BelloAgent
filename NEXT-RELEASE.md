@@ -4,7 +4,7 @@
 
 ## 0.1.135
 
-- [x] Finished live turns now fold without scrolling, including fresh edit/resend branches. Owner: "It should be collapsed by default." One bounded whole-turn read restores a missing question while preserving the reading position and opened folds. [Validation](docs/validation/a135-turnfold-0.1.135.md).
+- [x] Finished live turns now fold without scrolling, including fresh edit/resend branches. Owner: "It should be collapsed by default." Round 2: one automatic completion read per generation/cursor, errors wait for Retry, and short completed turns use the normal top inset; the 18-point footer hold and opened folds stay. The existing folded-row gap is deferred to 0.1.136. [Validation](docs/validation/a135-turnfold-0.1.135.md).
 
 - [x] The first context count after launch is no longer discarded when the connection's model catalog loads; Inspector previews use the loaded tool schema too. [Validation](docs/validation/a135-gatefix-0.1.135.md).
 

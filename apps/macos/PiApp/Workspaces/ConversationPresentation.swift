@@ -129,6 +129,8 @@ struct ConversationHistoryPage: Sendable {
     /// Only membership/run changes can make a cut first turn finish. Tokens
     /// must not scan it again or start another read of the same boundary.
     var finishedTurnCheck: String?
+    /// A returned completion page counts even when its turn cannot fit.
+    var finishedTurnRead: String?
     var openingPage = false
     var openingAround: String?
     var identity: (incarnation: String, lineage: String)?
@@ -149,7 +151,7 @@ struct ConversationHistoryPage: Sendable {
         cancel(); generation = UUID(); readGeneration = generation; identity = nil; partialTurnInput = nil; reload = nil
         initializationPending = true
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
-        finishedTurnCheck = nil
+        finishedTurnCheck = nil; finishedTurnRead = nil
     }
     deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel(); openingFill?.cancel() }
 }

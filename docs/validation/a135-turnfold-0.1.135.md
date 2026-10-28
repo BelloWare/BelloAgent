@@ -1,6 +1,7 @@
 # A finished live turn folds without a scroll (0.1.135)
 
 Workstream `dev/a135-turnfold`, based on release candidate `a20a317f`.
+Round 1: `1a7e29e5`. Round 2 implements the lead's F1/F2 review of that commit.
 Build root: `/Users/admin/Library/Caches/BelloSwiftWork/build-a135-turnfold`.
 All app runs use the isolated `com.belloware.PiAppTests.Host`, generated journals,
 and loopback fixtures. No installed app, real chats, credentials, or paid requests.
@@ -65,21 +66,52 @@ unfolded, as previously decided (Known item 2).
 This is smaller than extending the helper projection: no helper, wire, page caps,
 fold rules, or disclosure state change. The helper's per-token projection remains
 bounded at sixty settled rows and still sends deltas. The app's completion check
-uses a cached membership/run key; repeated tokens do not scan the long turn or
-repeat its history read. A running turn retains its rows, and an opened fold
-keeps its existing disclosure choice.
+uses a cached membership/run key, so repeated tokens do not scan the long turn.
+Round 2 also remembers a returned completion page by **read generation and cursor**,
+before checking its turn start or resident caps. A page that cannot be adopted
+therefore still consumes that boundary's one automatic completion read. An
+existing older-boundary error blocks completion reads; the reader's Retry owns
+that boundary. The error and memo guards are checked again after an opening fill
+has been awaited. Cancellation before the page arrives, or a cursor already
+changed when it arrives, does not consume the attempt; its membership check is
+cleared so it can run again. A new cursor or read generation starts fresh, and
+presentation reset clears both completion keys. A running turn retains its rows,
+and an opened fold keeps its existing disclosure choice.
 
-The native no-jump test exposed a second part of the same completion: bringing
-back the question removes the footer's "Partial history" note. Its height falls
-from 124 to 106 points, which moved an answer being read at the end down by
-18 points. The document now holds that released height as space below the same
-footer. If folding makes the entire turn shorter than the viewport, the spare
-room stays above the turn, keeping the short answer at the same screen position.
-Both spaces are released on a new tail or presentation. No extra row is
-shown; the completed footer loses its obsolete note and the answer stays put.
-A reader inside the newer turn continues to use the existing visible anchor.
-Steady token updates add only constant checks; completion layout can reposition
-the rows once when the folded turn no longer fills the viewport.
+Bringing back the question removes the footer's "Partial history" note, reducing
+its height from 124 to 106 points. The document retains the released **18 points
+below the footer** (`completedFooter` / `completionBottomSpace`) so a following
+reader's answer stays still when the chat is taller than the viewport. That hold
+ends on a new tail or presentation. Round 2 removes `completionTopSpace` and its
+row shift: a short completed turn now starts at `pageTopInset + leadingSpace`,
+just as a turn whose question was already present does. Its answer moves up with
+the fold; no blank room above the question waits for the reader's next send.
+The newer-turn reader still uses the existing visible anchor.
+
+## Round 2 failing first on 1a7e29e5
+
+Production sources were unchanged. Both F1 tests extend the existing
+`longLiveTurn` fixture: a 122-row first turn exceeds a 90-row resident test cap;
+the loaded suffix has 60 rows, then a newer running turn adds two rows and gains
+ten more across **five row-membership deltas**. The older cursor stays `r30`, the
+window stays cut and unfolded, and only the newer rows are added (62 → 72 rows).
+Completion reads are counted separately from the existing extent read.
+
+| New test | Round 1 result | Round 2 result |
+| --- | --- | --- |
+| `testFinishedTurnPastTheResidentCapIsReadOnceWhileANewerTurnGrows` | **6** completion reads, expected 1 | **1** |
+| `testFinishedTurnBoundaryErrorWaitsForReaderRetry` | **6** completion reads, expected 0; boundary error erased | **0**; exact error preserved |
+
+`round2-failing-F1-2.log`: **2 failed tests / 3 assertions**.
+`round2-fixed-F1.log`: **2/2 passed**. The initial fixture-development log,
+`round2-failing-F1.log`, omitted the row-order field required for membership
+deltas and did not add rows; it is not the repeat-read reproduction evidence.
+
+The F2 replacement, `testFinishedTurnFillLaysOutAShortTurnFromTheTop`, also fails
+on round 1: first row **173 pt**, expected **12 pt**, and the document is stretched
+to the 681-pt viewport (`round2-failing-F2.log`: **1 failed test / 2 assertions**).
+It passes after removing the top hold. `testFinishedTurnFillKeepsAShortNewerAnswerAtTheEnd`
+remains and passes: its answer stays at **630.00 → 630.00 pt**.
 
 ## Validation
 
@@ -133,13 +165,12 @@ Before the footer fix, `final-LongTurnPagingTests.log` recorded **7 tests, 5 pas
 The newer-turn reader stayed put. With the spacing fix, `geometry-diagnostic.log`
 recorded **3/3**: following-end row -604.05 → -604.00 pt, opened fold -604.05 →
 -603.75 pt, newer-turn row -120.006 → -120.000 pt (one-point tolerance throughout).
-The short-answer check then reproduced a further clamp: the answer jumped
-487.87 → 327.00 pt when the folded page became shorter than the viewport
-(`short-answer-before.log`, **1 failed test / 2 assertions**). With spare room
-above the turn it stays at 488.00 pt. All four geometry cases pass in
-`geometry-final.log`. The tests also check that the footer space is 18 pt, is
-absent for the newer reader, and that both spaces are released when another
-question arrives.
+Round 2's `round2-LongTurnPagingTests.log` preserves these checks: following-end
+row **-604.05 → -604.00 pt**, opened fold **-604.05 → -603.75 pt**, newer-turn
+reader **-120.006 → -120.000 pt**. The short completed turn now lays out from
+the top, moving its answer **487.87 → 327.00 pt** with the fold. The tests retain
+the 18-pt footer assertion, its absence for the newer reader, and its release on
+a new question. They assert the normal first-row inset before that next question.
 
 ## Mutations
 
@@ -153,34 +184,54 @@ question arrives.
   assertions**, detecting the 18.05-point jump on every settled frame
   (`mutation-footer.log`).
 
-- Force the spare room above a short completed turn to zero: the native
-  `testFinishedTurnFillKeepsAShortAnswerAtTheEnd` fails **1 test / 2 assertions**,
-  detecting the 160.87-point jump (`mutation-short.log`).
+- Round 2: remove the assignment to `finishedTurnRead` after the page arrives.
+  `testFinishedTurnPastTheResidentCapIsReadOnceWhileANewerTurnGrows` fails with
+  **6 reads instead of 1**. The errored-boundary test still passes:
+  `round2-mutation-F1.log`, **2 tests, 1 passed / 1 failed, 1 assertion**.
 
-All three mutations were restored before the final run. The first mutation attempt was
-an unconditional `return`, rejected at compile time by warnings-as-errors;
-`mutation-scripted.log` is not counted as a caught mutation. The valid selectors
-above were rebuilt with the `xcodebuild test` command; the second native selector
-used those products with `test-without-building`. Scripts `mutation.py`,
-`footer-mutation.py`, and `short-mutation.py` in the build root preserve and restore
-the production files.
+All mutations were restored. The first round-1 attempt was an unconditional
+`return`, rejected at compile time by warnings-as-errors; `mutation-scripted.log`
+is not counted as a caught mutation. The valid round-1 scripts are `mutation.py`
+and `footer-mutation.py`; round 2's `round2-mutation.py` restores the source in
+`finally`, and the subsequent full WorkspaceRefreshLifecycleTests run rebuilds
+those restored products.
 
 ## Gallery
 
-The `LongTurnPagingTests` gallery run set
-`TEST_RUNNER_PI_TURNFOLD_GALLERY="$PI_BUILD_ROOT/turnfold-gallery"` and captured
-`finished-turn-{light,dark,narrow-light,narrow-dark}.png` from the actual pane
-at 900 and 520 pt widths. All four were opened and inspected: the sixty-call
+Round 2's `LongTurnPagingTests` run set
+`TEST_RUNNER_PI_TURNFOLD_GALLERY="$PI_BUILD_ROOT/turnfold-gallery-round2"` and
+regenerated `finished-turn-{light,dark,narrow-light,narrow-dark}.png` from the
+actual pane at 900 and 520 pt widths. All four were opened and inspected: the
+question is at the top inset with **no completion room above it**, the sixty-call
 fold is closed, the answer and completed footer are visible, and the partial
-history note is gone, with no clipping or overlap. This retains the existing
-one-point slots for folded rows (`TranscriptRowContainer.swift:695`), so the
-sixty-call scene still has space above its answer; this task does not change
-fold row layout. The fixture's retained-history project notice is expected.
+history note is gone. No clipping or overlap. The retained-history project
+notice is expected for the generated fixture.
 
-## Final focused runs
+Geometry logged at each capture (`round2-LongTurnPagingTests.log`, document
+coordinates in points):
 
-The class runs use this exact argument set, one class per test process (the
-Python runners add log capture and the shared focus lock):
+| Gallery | First row top | Fold row bottom | Answer row top | Gap | Folded rows |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Light / dark, 900 pt | 12 | 134 | 327 | 193 | 193 |
+| Narrow light / dark, 520 pt | 12 | 158 | 351 | 193 | 193 |
+
+The light PNGs also measure **205 pt of visible blank space** from the drawn
+divider's bottom to the answer's first glyph scanline: wide pixels 252 → 662,
+narrow pixels 300 → 710, both at 2× scale (`round2-gallery-pixels.txt`). The
+12-pt difference from the row-frame gap is existing internal padding. The
+existing gap below the fold is recorded under Known below.
+
+## Round 2 focused runs
+
+Every class runs alone, with parallel testing disabled; the shared focus lock is
+held per invocation and released in `finally`. All products and logs remain in
+the assigned build root. No machine-note suites, full lanes, or helper/wire
+reruns were run. Helper sources and the wire contract are unchanged.
+
+Exact invocation arguments are the first line of every `round2-*.log`, generated
+by `$PI_BUILD_ROOT/round2-run.py`. The baseline, fixed, and mutation F1 selections
+use `xcodebuild test`; F2 uses the built baseline products. The expanded common
+arguments and final class selections are:
 
 ```sh
 export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a135-turnfold
@@ -189,77 +240,55 @@ X=(-project PiApp.xcodeproj -scheme PiApp
    -derivedDataPath "$PI_BUILD_ROOT/native-tests"
    CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO
    -parallel-testing-enabled NO)
-TEST_RUNNER_PI_TURNFOLD_GALLERY="$PI_BUILD_ROOT/turnfold-gallery" \
-  xcodebuild test "${X[@]}" -only-testing:PiAppTests/LongTurnPagingTests
+# Fixed products, before mutation; source is identical to the restored result.
+TEST_RUNNER_PI_TURNFOLD_GALLERY="$PI_BUILD_ROOT/turnfold-gallery-round2" \
+  xcodebuild test-without-building "${X[@]}" -only-testing:PiAppTests/LongTurnPagingTests
+# Rebuild after restoring the mutation.
+xcodebuild test "${X[@]}" -only-testing:PiAppTests/WorkspaceRefreshLifecycleTests
 classes=(
-  TranscriptTurnFoldTests StreamedReplyEndTests TranscriptPagingTests
-  HistoryTurnPagingTests HistoryExtentTests FreshPresentationTests
-  TranscriptOpeningFillTests HistoryEditTests MessageVersionTranscriptTests
-  WorkspaceRefreshLifecycleTests WorkspaceLoadingTests HistoryEdgeTests
-  TranscriptRevealTests TranscriptFindTests StreamingDeliveryCostTests
-  TranscriptIncrementalTests InheritedSubagentReaderTests WorkspaceConcurrencyTests
-  WorkspaceRaceTests WorkspaceDisplayMemoryTests NativeTranscriptDocumentTests
-  NativeTranscriptScrollTests NativeTranscriptSafetyTests NativeTranscriptTests
-  TranscriptGeometryCacheTests TranscriptKeptRowsTests TranscriptStreamingScrollTests
-  TranscriptStreamingStressTests TranscriptUpdateIsolationTests TranscriptFrameBudgetTests
-  TranscriptWidthChangeTests TranscriptPageStressTests
+  StreamedReplyEndTests TranscriptTurnFoldTests HistoryTurnPagingTests
+  TranscriptPagingTests NativeTranscriptDocumentTests NativeTranscriptScrollTests
+  TranscriptStreamingScrollTests TranscriptKeptRowsTests TranscriptWidthChangeTests
+  TranscriptGeometryCacheTests
 )
 for cls in "${classes[@]}"; do
   xcodebuild test-without-building "${X[@]}" "-only-testing:PiAppTests/$cls"
 done
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_ui_gateway
+for round in 1 2 3; do
+  xcodebuild test-without-building "${X[@]}" -only-testing:PiAppTests/StreamingDeliveryCostTests
+done
 ```
 
-The final geometry change reran the ten requested classes, all twelve listed
-native document/layout classes, and StreamingDeliveryCostTests
-(`completion-<Class>.log`). The other workspace classes are recorded from
-`restored-<Class>.log`; their production sources did not change afterward.
-
-Final selected app coverage: **435 passed, 0 failed, 2 optional skips in 33 classes**; Python fixture coverage **27/27**.
+`round2-final.py` runs these final non-gallery classes and records each exit in
+`round2-summary.json`. **161 passed / 0 failed / 1 optional skip**, across
+13 classes (15 isolated invocations, counting the three delivery runs).
 
 | Suite | Passed | Failed | Skipped |
 | --- | ---: | ---: | ---: |
 | LongTurnPagingTests | 9 | 0 | 0 |
-| TranscriptTurnFoldTests | 26 | 0 | 0 |
+| WorkspaceRefreshLifecycleTests | 48 | 0 | 0 |
 | StreamedReplyEndTests | 8 | 0 | 1 |
-| TranscriptPagingTests | 11 | 0 | 0 |
+| TranscriptTurnFoldTests | 26 | 0 | 0 |
 | HistoryTurnPagingTests | 6 | 0 | 0 |
-| HistoryExtentTests | 26 | 0 | 0 |
-| FreshPresentationTests | 21 | 0 | 0 |
-| TranscriptOpeningFillTests | 11 | 0 | 1 |
-| HistoryEditTests | 3 | 0 | 0 |
-| MessageVersionTranscriptTests | 8 | 0 | 0 |
-| WorkspaceRefreshLifecycleTests | 46 | 0 | 0 |
-| WorkspaceLoadingTests | 13 | 0 | 0 |
-| HistoryEdgeTests | 16 | 0 | 0 |
-| TranscriptRevealTests | 12 | 0 | 0 |
-| TranscriptFindTests | 12 | 0 | 0 |
-| StreamingDeliveryCostTests | 4 | 0 | 0 |
-| TranscriptIncrementalTests | 12 | 0 | 0 |
-| InheritedSubagentReaderTests | 8 | 0 | 0 |
-| WorkspaceConcurrencyTests | 12 | 0 | 0 |
-| WorkspaceRaceTests | 65 | 0 | 0 |
-| WorkspaceDisplayMemoryTests | 2 | 0 | 0 |
+| TranscriptPagingTests | 11 | 0 | 0 |
 | NativeTranscriptDocumentTests | 10 | 0 | 0 |
 | NativeTranscriptScrollTests | 5 | 0 | 0 |
-| NativeTranscriptSafetyTests | 5 | 0 | 0 |
-| NativeTranscriptTests | 5 | 0 | 0 |
-| TranscriptGeometryCacheTests | 7 | 0 | 0 |
-| TranscriptKeptRowsTests | 10 | 0 | 0 |
 | TranscriptStreamingScrollTests | 3 | 0 | 0 |
-| TranscriptStreamingStressTests | 15 | 0 | 0 |
-| TranscriptUpdateIsolationTests | 8 | 0 | 0 |
-| TranscriptFrameBudgetTests | 6 | 0 | 0 |
+| TranscriptKeptRowsTests | 10 | 0 | 0 |
 | TranscriptWidthChangeTests | 6 | 0 | 0 |
-| TranscriptPageStressTests | 24 | 0 | 0 |
-| Python `scripts.tests.test_ui_gateway` | 27 | 0 | 0 |
+| TranscriptGeometryCacheTests | 7 | 0 | 0 |
+| StreamingDeliveryCostTests (run 1) | 4 | 0 | 0 |
+| StreamingDeliveryCostTests (run 2) | 4 | 0 | 0 |
+| StreamingDeliveryCostTests (run 3) | 4 | 0 | 0 |
 
-The two pre-existing opt-in skips are the timed streamed-reply interference
-stress (`PI_STREAM_STRESS_SECONDS`) and the opening-fill gallery
-(`PI_OPENING_GALLERY`). The turnfold gallery above was enabled and inspected.
-The final LongTurnPagingTests run is `longturn-final.log` (9/9), after adding a
-short-newer-answer control: it stays at 630.00 pt before and after completion,
-using the existing reader anchor; no additional production change was needed.
+The one expected skip is `testAStreamedReplyEndsWholeOnScreenUnderInterference`,
+which requires the opt-in `PI_STREAM_STRESS_SECONDS` setting. The turnfold
+gallery was enabled. No requested class has an outstanding failure.
+
+Round 1's selected coverage was **435 passed / 0 failed / 2 optional skips in
+33 classes**, plus **27/27** Python fixture checks; these are historical counts,
+not a claim that those broader classes were rerun in round 2. The earlier exact
+commands and 33-class table remain in this record at `1a7e29e5`.
 
 ## STREAM-1 and remaining observations
 
@@ -273,20 +302,32 @@ No snapshot-size change was made, so no new STREAM-1 snapshot benchmark is neede
 
 Two earlier focused runs (`final-StreamingDeliveryCostTests.log` and
 `restored-StreamingDeliveryCostTests.log`) each failed the projection-visit
-assertion once: 301 visits instead of at most 1 in the 40-delta refresh test.
-The other three tests passed. This was not ignored or patched: restoring all
-four production files to `a20a317f` and rebuilding gave **4/4 twice**
-(`baseline-delivery-{1,2}.log`), and the fixed code subsequently gave **4/4**
-both alone (`delivery-isolated-final.log`) and at the end of the final class run.
-`baseline-delivery.py` temporarily omitted only the new native-field assertions
-from the unselected geometry tests so the baseline app could compile, then
-restored all files. The initial count intermittency remains unclassified; these
-passing reruns do not establish its cause or prove it is a baseline failure.
-The active capture remained present (`replayd` observed at 88% CPU). None of the
-four machine-note suites was run, and this count assertion is not attributed
-to the known capture failures.
+assertion once: **301 visits instead of at most 1** in the 40-delta refresh test.
+In `testRefreshRoundTripOccupancy`, the first row `m0` is a user row that starts
+a turn and every reply has `before: null`, so `fillFinishedTurn` returns at its
+initial guard. There is no pane, so `NativeTranscriptScrollView` is not involved.
+**None of round 1's completion-read or native spacing behavior runs in that test.**
 
-Known item 2 is unchanged: a turn exceeding the resident 3,000-row / 24 MB budget
-may still be cut and unfolded. There is no outstanding failure in the selected
-final runs. Lead review and the merged release gate remain with the lead.
+The other three tests passed in each failing run. Restoring round-1 production
+files to `a20a317f` and rebuilding gave **4/4 twice** (`baseline-delivery-{1,2}.log`),
+and round 1 subsequently gave **4/4 twice** (`delivery-isolated-final.log` and
+`completion-StreamingDeliveryCostTests.log`). These passes do not establish the
+cause of the 301-visit intermittency or prove a baseline failure. It remains
+unclassified and is not attributed to the known screen-capture failures. Round 2
+ran the entire class three times alone: **4/4, 4/4, 4/4**, with **0 failures or
+skips** (`round2-StreamingDeliveryCostTests-{1,2,3}.log`). None reproduced the
+301-visit assertion. The lead reruns it too.
 
+## Known, not changed here
+
+- Folded-away rows retain **one-point slots** (`TranscriptRowContainer.swift:693`,
+  estimate at `:283`). The regenerated sixty-call gallery contains **193 folded
+  rows**, leaving **193 pt** between row frames (134 → 327 pt wide; 158 → 351 pt
+  narrow), or **205 pt** from the drawn fold divider's bottom to the answer text
+  in the light PNGs at both widths. This blank space below the fold predates this
+  change and is **deferred to 0.1.136**. This round removes
+  only the separate room above the question; it does not change folded-row layout.
+- As already decided in SCROLL-1 Known item 2, a turn exceeding the resident
+  **3,000-row / 24 MB** budget can remain cut and unfolded.
+
+Lead review and the merged release gate remain with the lead.

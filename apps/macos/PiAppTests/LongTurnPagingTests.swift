@@ -401,8 +401,16 @@ extension LongTurnPagingTests {
         print("TURNFOLD geometry newer=\(newer) opened=\(opened): reader \(reader.id), before \(reader.top), after \(chat.screenTop(of: reader.id) ?? .nan); tail before \(beforeGeometry); after \(tailGeometry())")
         XCTAssertGreaterThan(settled, 0, "The question must arrive without a scroll")
         XCTAssertTrue(heavy.shapes()[0]?.fold?.hasPrefix("60 tool calls") == true)
-        XCTAssertEqual(shifts, [], "No frame moves what the reader is reading")
-        XCTAssertEqual(try XCTUnwrap(chat.screenTop(of: reader.id)), reader.top, accuracy: 1, "The reading row stays put")
+        if short, !newer {
+            let document = try XCTUnwrap(chat.document)
+            XCTAssertLessThan(document.frame.height, try XCTUnwrap(chat.scroll).contentView.bounds.height)
+            XCTAssertEqual(try XCTUnwrap(document.retainedRows.first?.frame.minY),
+                           TranscriptMetrics.pageTopInset + document.leadingSpace, accuracy: 1,
+                           "A short completed turn starts where a freshly folded turn starts")
+        } else {
+            XCTAssertEqual(shifts, [], "No frame moves what the reader is reading")
+            XCTAssertEqual(try XCTUnwrap(chat.screenTop(of: reader.id)), reader.top, accuracy: 1, "The reading row stays put")
+        }
         let reads = await count.value
         XCTAssertEqual(reads, 1); XCTAssertEqual(readerLoads, 0)
         XCTAssertEqual(view.disclosure.isOpen(.turnFold("u0")), opened)
@@ -419,6 +427,12 @@ extension LongTurnPagingTests {
                 chat.window.appearance = NSAppearance(named: appearance)
                 chat.window.setContentSize(NSSize(width: width, height: 760))
                 for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+                let document = try XCTUnwrap(chat.document), rows = document.retainedRows
+                let fold = try XCTUnwrap(rows.first { if case .block(let block) = $0.item { return block.presentation == .turnFold }; return false })
+                let answer = try XCTUnwrap(document.row(drawing: "a0_z"))
+                let folded = rows.filter { TranscriptRowDisclosure.of($0.item, in: view.disclosure).foldedAway }.count
+                XCTAssertEqual(try XCTUnwrap(rows.first?.frame.minY), TranscriptMetrics.pageTopInset + document.leadingSpace, accuracy: 1)
+                print("TURNFOLD gallery \(name): first top \(rows.first?.frame.minY ?? .nan), fold bottom \(fold.frame.maxY), answer top \(answer.frame.minY), gap \(answer.frame.minY - fold.frame.maxY), folded rows \(folded)")
                 let bitmap = try XCTUnwrap(chat.pane.bitmapImageRepForCachingDisplay(in: chat.pane.bounds))
                 chat.pane.cacheDisplay(in: chat.pane.bounds, to: bitmap)
                 let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
@@ -430,11 +444,11 @@ extension LongTurnPagingTests {
         XCTAssertEqual(chat.document?.completionBottomSpace, 0, "A new tail releases the completion space")
         XCTAssertEqual(try XCTUnwrap(chat.document?.retainedRows.first?.frame.minY),
                        TranscriptMetrics.pageTopInset + (chat.document?.leadingSpace ?? 0), accuracy: 1,
-                       "A new tail also releases any room held above a short completed turn")
+                       "The first row stays at the normal page inset on a new tail")
     }
 
     @MainActor func testFinishedTurnFillKeepsTheFollowingReaderAtTheEnd() async throws { try await completeCutTurn(newer: false) }
-    @MainActor func testFinishedTurnFillKeepsAShortAnswerAtTheEnd() async throws { try await completeCutTurn(newer: false, short: true) }
+    @MainActor func testFinishedTurnFillLaysOutAShortTurnFromTheTop() async throws { try await completeCutTurn(newer: false, short: true) }
     @MainActor func testFinishedTurnFillKeepsAShortNewerAnswerAtTheEnd() async throws { try await completeCutTurn(newer: true, short: true) }
     @MainActor func testFinishedTurnFillKeepsAReaderInTheNewerTurnStill() async throws { try await completeCutTurn(newer: true) }
     @MainActor func testFinishedTurnFillPreservesAnOpenedFold() async throws { try await completeCutTurn(newer: false, opened: true) }

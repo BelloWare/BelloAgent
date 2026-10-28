@@ -279,9 +279,11 @@ extension WorkspaceModel {
         guard let view = displays[id], transcriptShows(id), !view.historyState.loading, view.versionView == nil,
               !view.inheritedContextFolded, view.presentation.partialTurnInput == nil, view.newerPage.error != Self.branchChangedElsewhere,
               let first = view.messages.first, !TranscriptPaging.startsTurn(first),
-              let cursor = view.olderPage.cursor, !view.olderPage.loading else { return }
+              let cursor = view.olderPage.cursor, !view.olderPage.loading, view.olderPage.error == nil else { return }
+        let readKey = "\(view.presentation.readGeneration):\(cursor)"
+        guard view.presentation.finishedTurnRead != readKey else { return }
         let running = view.taskPresentation?.active?.rootID
-        let check = "\(view.presentation.readGeneration):\(cursor):\(view.messages.count):\(view.messages.last?.id ?? ""):\(view.busy):\(running ?? "")"
+        let check = "\(readKey):\(view.messages.count):\(view.messages.last?.id ?? ""):\(view.busy):\(running ?? "")"
         guard view.presentation.finishedTurnCheck != check else { return }
         view.presentation.finishedTurnCheck = check
         if view.busy {
@@ -312,11 +314,14 @@ extension WorkspaceModel {
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
         let generation = view.presentation.readGeneration, read = UUID()
+        let readKey = "\(generation):\(cursor)"
+        if completingTurn, boundary.error != nil || view.presentation.finishedTurnRead == readKey { return false }
         let navigation = transcriptNavigation(id)
         if newer { view.newerPage.loading = true; view.newerPage.error = nil; view.presentation.newerRead = read }
         else { view.olderPage.loading = true; view.olderPage.error = nil; view.loadingEarlier = true; view.presentation.olderRead = read }
         let task = Task { [weak self, weak view] () -> Bool in
             guard let self, let view else { return false }
+            var receivedCompletion = false
             @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.presentation.readGeneration == generation }
             defer {
                 // Only the read the flag belongs to ends it. A read whose page
@@ -328,6 +333,7 @@ extension WorkspaceModel {
                         view.newerPage.loading = false; view.presentation.newerTask = nil; view.presentation.newerRead = nil
                     } else if !newer, view.presentation.olderRead == read {
                         view.olderPage.loading = false; view.loadingEarlier = false; view.presentation.olderTask = nil; view.presentation.olderRead = nil
+                        if completingTurn, !receivedCompletion { view.presentation.finishedTurnCheck = nil }
                     }
                 }
             }
@@ -335,6 +341,8 @@ extension WorkspaceModel {
                 var page = try await self.readConversationWindow(item, cursor: cursor, newer: newer)
                 guard current() else { return false }
                 if completingTurn {
+                    guard view.olderPage.cursor == cursor else { return false }
+                    view.presentation.finishedTurnRead = readKey; receivedCompletion = true
                     // Only the missing part of the first turn, never an older
                     // turn too. A turn past the resident caps stays as decided:
                     // incomplete and unfolded, with ordinary paging available.

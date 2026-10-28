@@ -1471,7 +1471,8 @@ extension WorkspaceRefreshLifecycleTests {
     /// Sixty calls, each with its result, followed by the answer: the live
     /// snapshot can first reach a new chat/branch after its question left
     /// the helper's sixty-row suffix. No scroll or reader load occurs here.
-    @MainActor private func longLiveTurn(branch: Bool = false, early: Bool = false, newer: Bool = false, cap: Int? = nil) async throws {
+    @MainActor private func longLiveTurn(branch: Bool = false, early: Bool = false, newer: Bool = false, cap: Int? = nil,
+                                        deltas: Int = 0, boundaryError: Bool = false) async throws {
         let f = try await fixture(), oldMode = TranscriptDisplay.mode
         let caps = TranscriptPaging.residentCaps
         if let cap { TranscriptPaging.residentCaps = (rows: cap, bytes: caps.bytes) }
@@ -1483,9 +1484,9 @@ extension WorkspaceRefreshLifecycleTests {
         if branch { f.view.pendingBranch = .init(from: "root", messageID: "question", turnID: "u0") }
         else { f.view.messages = [] }
         let lineage = branch ? "edited" : "root"
-        func row(_ id: String, _ role: String, _ text: String, tools: [WireValue] = []) -> WireValue {
-            .object(["id": .string(id), "role": .string(role), "text": .string(text), "turn": .string("u0"),
-                     "taskRootID": .string("u0"), "tools": .array(tools)])
+        func row(_ id: String, _ role: String, _ text: String, tools: [WireValue] = [], turn: String = "u0") -> WireValue {
+            .object(["id": .string(id), "role": .string(role), "text": .string(text), "turn": .string(turn),
+                     "taskRootID": .string(turn), "tools": .array(tools)])
         }
         var all = [row("u0", "user", "Find every caller")]
         for index in 0..<60 {
@@ -1496,10 +1497,11 @@ extension WorkspaceRefreshLifecycleTests {
         }
         all.append(row("answer", "assistant", "The callers are fixed."))
         @Sendable func cursor(_ id: String) -> WireValue { .object(["incarnation": .string("runtime"), "lineage": .string(lineage), "entry": .string(id)]) }
-        let source = all, gate = HistoryReadGate()
-        await gate.release()
+        let source = all, gate = HistoryReadGate(), completionReads = HistoryReadGate()
+        await gate.release(); await completionReads.release()
         f.model.historyWindowLoader = { _, boundary, forward, around in
             _ = await gate.readFirstOnly()
+            if boundary != nil, !forward, around == nil { _ = await completionReads.readFirstOnly() }
             let start = boundary.flatMap { edge in source.firstIndex { $0.object?["id"]?.string == edge.entry } }
             let page = start.map { Array(source[..<$0]) } ?? source
             return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string(lineage),
@@ -1531,6 +1533,10 @@ extension WorkspaceRefreshLifecycleTests {
                     .object(["id": .string("new-answer"), "role": .string("assistant"), "text": .string("Still writing"), "state": .string("streaming"), "turn": .string("u1")])]
             f.view.scrollAnchor = .init(id: "new-answer", offset: 17, followsBottom: false)
         }
+        let error = "History source changed. Retry this boundary."
+        if boundaryError { f.view.olderPage.error = error }
+        let boundary = f.view.olderPage.cursor
+        var expectedIDs = streamedIDs + (newer ? ["u1", "new-answer"] : [])
         try await exchange(f, value(4, Array(all.suffix(60)), running: newer))
         // Let an automatic whole-turn read finish, without asking for one.
         for _ in 0..<100 {
@@ -1543,7 +1549,7 @@ extension WorkspaceRefreshLifecycleTests {
         let reads = await gate.reads
         print("TURNFOLD branch=\(branch) early=\(early) newer=\(newer): first \(f.view.messages.first?.id ?? "-"), rows \(f.view.messages.count), folds \(folds.count), reads \(reads)")
         if let cap, cap < source.count {
-            XCTAssertEqual(f.view.messages.map(\.id), streamedIDs, "A turn larger than the resident window stays as decided")
+            XCTAssertEqual(f.view.messages.map(\.id), expectedIDs, "A turn larger than the resident window stays as decided")
             XCTAssertTrue(folds.isEmpty)
         } else if let cap, cap < all.count {
             XCTAssertEqual(f.view.messages.map(\.id), ["u1", "new-answer"], "Keep the newer turn and let the completed first turn go whole")
@@ -1557,8 +1563,31 @@ extension WorkspaceRefreshLifecycleTests {
         }
         XCTAssertFalse(f.view.browsingHistory)
         XCTAssertLessThanOrEqual(reads, early ? 0 : 2, "At most the existing extent read plus one whole-turn fill")
+        for index in 0..<deltas {
+            let added = [row("new-call-\(index)", "assistant", "Next call", turn: "u1"),
+                         row("new-result-\(index)", "toolResult", "Next result", turn: "u1")]
+            var delta = value(Double(5 + index), Array(all.suffix(60)), running: true)
+            delta["messages"] = nil
+            let order = f.view.projectedRows.map { WireValue.string($0.id) } + added.map { $0.object!["id"]! }
+            delta["messageDelta"] = .object(["base": .string("runtime:\(4 + index)"), "rows": .array(added),
+                                             "order": .array(order), "appends": .array([])])
+            try await exchange(f, delta)
+            // Give a wrongly repeated automatic read time to finish, too.
+            try await Task.sleep(for: .milliseconds(50))
+            try await wait { !f.view.olderPage.loading }
+            expectedIDs += added.map { $0.object!["id"]!.string! }
+            XCTAssertEqual(f.view.messages.map(\.id), expectedIDs, "Only the newer turn's delta joins the unchanged cut window")
+            XCTAssertEqual(f.view.olderPage.cursor, boundary)
+        }
+        if deltas > 0 {
+            let completions = await completionReads.reads
+            print("TURNFOLD retries error=\(boundaryError): deltas \(deltas), completion reads \(completions), rows \(f.view.messages.count), error \(f.view.olderPage.error ?? "none")")
+            XCTAssertEqual(completions, boundaryError ? 0 : 1, "One completion read per boundary; only Retry reads an errored boundary")
+            XCTAssertEqual(f.view.olderPage.error, boundaryError ? error : nil)
+            XCTAssertFalse(page.snapshot?.items.contains { if case .block(let block) = $0 { return block.presentation == .turnFold }; return false } ?? true)
+        }
         f.view.disclosure.setOpen(true, .turnFold("u0"))
-        try await exchange(f, value(5, Array(all.suffix(60)), running: newer))
+        if deltas == 0 { try await exchange(f, value(5, Array(all.suffix(60)), running: newer)) }
         XCTAssertTrue(f.view.disclosure.isOpen(.turnFold("u0")), "An opened fold stays open")
         try await f.host.shutdownAndWait()
     }
@@ -1569,4 +1598,10 @@ extension WorkspaceRefreshLifecycleTests {
     @MainActor func testLongTurnObservedFromItsQuestionFoldsWithoutReaderLoad() async throws { try await longLiveTurn(early: true) }
     @MainActor func testFinishedTurnPastTheResidentCapStaysUnfolded() async throws { try await longLiveTurn(cap: 90) }
     @MainActor func testFinishedTurnFillKeepsTheNewerTurnWhenBothDoNotFit() async throws { try await longLiveTurn(newer: true, cap: 123) }
+    @MainActor func testFinishedTurnPastTheResidentCapIsReadOnceWhileANewerTurnGrows() async throws {
+        try await longLiveTurn(newer: true, cap: 90, deltas: 5)
+    }
+    @MainActor func testFinishedTurnBoundaryErrorWaitsForReaderRetry() async throws {
+        try await longLiveTurn(newer: true, cap: 90, deltas: 5, boundaryError: true)
+    }
 }

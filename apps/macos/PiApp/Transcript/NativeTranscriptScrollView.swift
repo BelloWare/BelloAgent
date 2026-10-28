@@ -263,7 +263,6 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// so following the end does not move the answer down by the note's height.
     private var completedFooter: (id: String, height: CGFloat)?
     private(set) var completionBottomSpace: CGFloat = 0
-    private var completionTopSpace: CGFloat = 0
     /// What a row is taken to be worth before any of the chat has been laid out.
     static let provisionalRowHeight: CGFloat = 200
     /// The most room a chat is given, in points. A drawn layer's place is
@@ -1332,7 +1331,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard !rows.isEmpty else { return [] }
         let tops = Self.rowTops(rows.map { row in
             row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height))
-        }, from: TranscriptMetrics.pageTopInset + leadingSpace + completionTopSpace)
+        }, from: TranscriptMetrics.pageTopInset + leadingSpace)
         let total = tops[rows.count] + trailingSpace + TranscriptMetrics.pageBottomInset
         let buffer = Self.bufferMargin(viewportHeight)
         let bottom = max(0, total - viewportHeight)
@@ -1583,7 +1582,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let loopClock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         var standing: Set<String> = firstPlaced > 0 ? approximate : []
         var guesses: Set<String> = firstPlaced > 0 ? estimated : []
-        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : TranscriptMetrics.pageTopInset + leadingSpace + completionTopSpace
+        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : TranscriptMetrics.pageTopInset + leadingSpace
         partialPassCount += firstPlaced > 0 ? 1 : 0
         for index in firstPlaced..<rows.count {
             let row = rows[index]
@@ -1749,23 +1748,10 @@ final class TranscriptNativeScrollView: NSScrollView {
             emptyLabel.frame = CGRect(x: left, y: Self.emptyLabelTop, width: nextWidth, height: Self.emptyLabelHeight)
             y = Self.emptyPageHeight
         }
-        if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace - completionTopSpace) }
+        if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace) }
         completionBottomSpace = completedFooter.flatMap { held in
             rows.last.flatMap { $0.itemID == held.id ? max(0, held.height - $0.frame.height) : nil }
         } ?? 0
-        // A short answer can leave less than a screen after the work folds.
-        // Keep its end where it was, with the spare room above the turn.
-        let total = y - completionTopSpace + trailingSpace + TranscriptMetrics.pageBottomInset + completionBottomSpace
-        let top = completedFooter == nil ? 0 : max(0, (enclosingScrollView?.contentView.bounds.height ?? 0) - total)
-        let shift = top - completionTopSpace
-        if abs(shift) > 0.01 {
-            for row in rows {
-                row.frame.origin.y += shift
-                page?.rowFrame(row.itemID, row.frame)
-            }
-            y += shift
-        }
-        completionTopSpace = top
         let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset + completionBottomSpace)
         if frame.size != size { setFrameSize(size) }
         if abs(roomShift) > 0.5, let scroll = enclosingScrollView { scroll.transcriptReading.moveWithDocument(by: roomShift) }
