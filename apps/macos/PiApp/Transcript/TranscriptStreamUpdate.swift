@@ -1,7 +1,7 @@
 import Foundation
 
 /// A helper delta applied to the resident window off the main actor. The
-/// source revision and accounting read must still stand when it lands.
+/// source revision and accounting figures must still stand when it lands.
 struct TranscriptStreamUpdate: Sendable {
     var revision: UUID
     var accountingRevision: Int

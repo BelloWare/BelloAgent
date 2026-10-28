@@ -118,7 +118,7 @@ extension WorkspaceModel {
                 if rows.needed || presentation != nil {
                     let decoder = view.taskPresentationDecoder
                     let displayed = view.messages, positions = view.messagePositions, bytes = view.messageBytes, revision = view.messagesRevision
-                    let accounting = view.messageAccounting, accountingRevision = view.accountingRevision, caps = TranscriptPaging.residentCaps
+                    let accounting = view.messageAccounting, accountingRevision = view.messageAccountingRevision, caps = TranscriptPaging.residentCaps
                     let held = heldRows(view)
                     let decoded = try await Task.detached { () throws -> (rows: [TranscriptMessage]?, resync: Bool, lifecycle: TaskPresentationProjection?, decoder: TaskPresentationDecoder, stream: TranscriptStreamUpdate?, page: TranscriptRowUpdates.Page?) in
                         let applied = try rows.apply()
@@ -304,7 +304,7 @@ extension WorkspaceModel {
     /// A snapshot's rows, merged into the chat's window, and the window's
     /// edges. A branch this display did not make leaves the rows as they are
     /// and says the conversation changed elsewhere.
-    private func applySnapshotRows(_ projection: TranscriptRowUpdates.Page, stream: TranscriptStreamUpdate?, from result: [String: WireValue], to view: SessionDisplay,
+    func applySnapshotRows(_ projection: TranscriptRowUpdates.Page, stream: TranscriptStreamUpdate?, from result: [String: WireValue], to view: SessionDisplay,
                                    id: String, item: ChatRecord) throws {
         let projected = projection.rows
         let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
@@ -312,7 +312,7 @@ extension WorkspaceModel {
             view.newerPage.error = Self.branchChangedElsewhere
             view.browsingHistory = true
         } else {
-            if let stream, stream.revision == view.messagesRevision, stream.accountingRevision == view.accountingRevision,
+            if let stream, stream.revision == view.messagesRevision, stream.accountingRevision == view.messageAccountingRevision,
                incarnation == nil || view.presentation.identity?.incarnation == incarnation,
                lineage == nil || view.presentation.identity?.lineage == lineage,
                stream.held.map({ $0 == heldRows(view) }) ?? true {

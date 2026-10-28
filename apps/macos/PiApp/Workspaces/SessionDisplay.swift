@@ -1012,7 +1012,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// shown (`withAccounting`): its refresh after it is ready reads only the
     /// chat's totals and timing.
     var accountingReadFor: UUID?
-    var messageAccounting: [String: GatewayTotals] = [:]
+    var messageAccounting: [String: GatewayTotals] = [:] {
+        didSet { if messageAccounting != oldValue { messageAccountingRevision += 1 } }
+    }
+    /// Prepared deltas depend on the figures, not on a read starting or
+    /// superseding another read without changing any message's accounting.
+    var messageAccountingRevision = 0
     var lastSequence: Double = -1
     var snapshotEpoch: String?
     private var retiredSnapshotEpochs: Set<String> = []

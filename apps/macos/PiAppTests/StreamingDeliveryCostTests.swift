@@ -165,6 +165,44 @@ final class StreamingDeliveryCostTests: XCTestCase {
                           "Decoding, applying and regrouping a token must stay under a millisecond in Release")
     }
 
+    @MainActor func testAccountingReadOnlyInvalidatesPreparedDeltaWhenFiguresChange() async throws {
+        let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("delivery-accounting-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        let model = WorkspaceModel(stateRoot:root.appendingPathComponent("state"),vault:ConfigurationVault(storage:MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model,root:root)
+        let chat = ChatRecord(id:"chat",workspaceID:"project",title:"Chat",path:nil,profileID:"profile")
+        model.chats = [chat]
+        for changed in [false,true] {
+            let view = SessionDisplay(id:chat.id); view.historyState = .ready; view.runState = .running
+            model.displays[chat.id] = view
+            view.messages = Self.decoded(Self.page(streaming:"first "))
+            let delta: WireValue = .object(["rows":.array([]),"appends":.array([
+                .object(["id":.string("stream:live"),"text":.string("next"),"thinking":.string("")])])])
+            let page = try XCTUnwrap(TranscriptRowUpdates.Page(view.messages).applying(delta))
+            let stream = try XCTUnwrap(TranscriptStreamUpdate.prepare(delta:delta,projected:page.rows,displayed:view.messages,
+                positions:view.messagePositions,bytes:view.messageBytes,revision:view.messagesRevision,accounting:view.messageAccounting,
+                accountingRevision:view.messageAccountingRevision,caps:TranscriptPaging.residentCaps))
+            let figures = GatewayTotals(requests:1,costSamples:1,costUSD:0.004)
+            // The read crosses the same prepare/adopt boundary as the 100 ms
+            // scheduled read, without depending on task scheduling or sleeps.
+            await model.refreshAccounting(view,workspaceID:chat.workspaceID,query: {
+                var result = SessionGatewayAccounting(session:figures)
+                if changed { result.messages = ["m1":figures,"stream:live":figures] }
+                return result
+            })
+            let visits = view.presentedMessageVisits
+            try model.applySnapshotRows(page,stream:stream,from:["displayRevision":.string("r:1"),"before":.null],to:view,id:chat.id,item:chat)
+            XCTAssertEqual(view.messages.last?.text,"first next")
+            XCTAssertEqual(view.projectionRevision,"r:1")
+            if changed {
+                XCTAssertEqual(view.messages[1].accounting,figures)
+                XCTAssertEqual(view.messages.last?.accounting,figures,"New billing must survive an in-flight content delta")
+            } else {
+                XCTAssertLessThanOrEqual(view.presentedMessageVisits - visits,1,"Starting an unchanged accounting read must not reproject resident history")
+            }
+        }
+    }
+
     /// The real path: a reply lands on the transport and the conversation
     /// publishes its page. Measures the main actor's own occupancy.
     @MainActor func testRefreshRoundTripOccupancy() async throws {
