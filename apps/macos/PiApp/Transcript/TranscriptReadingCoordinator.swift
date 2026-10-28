@@ -53,7 +53,7 @@ extension NSScrollView {
     private func successor(in scroll: NSScrollView) -> (row: TranscriptRowContainer, ready: Bool)? {
         guard !heldMessages.isEmpty, let document = scroll.documentView as? TranscriptNativeDocument else { return nil }
         for id in heldMessages.reversed() {
-            if let found = document.retainedRows.first(where: { $0 !== row && $0.contentItem.messageIDs.contains(id) }) {
+            if let found = document.retainedRows.first(where: { $0 !== row && !$0.foldedAway && $0.contentItem.messageIDs.contains(id) }) {
                 return (found, found.frame.height > 0)
             }
         }
@@ -191,15 +191,13 @@ extension NSScrollView {
     /// everything they can see.
     static func firstStartingOnScreen(_ document: TranscriptNativeDocument, clip: NSClipView, after reading: TranscriptRowContainer) -> TranscriptRowContainer? {
         let screen = document.convert(clip.bounds, from: clip)
-        guard reading.frame.minY < screen.minY - 0.5, reading.frame.maxY - screen.minY < screen.height / 3,
-              document.retainedRows.indices.contains(reading.layoutIndex + 1) else { return nil }
-        let next = document.retainedRows[reading.layoutIndex + 1]
-        return next.frame.minY < screen.maxY && next.frame.height > 0 ? next : nil
+        guard reading.frame.minY < screen.minY - 0.5, reading.frame.maxY - screen.minY < screen.height / 3 else { return nil }
+        return document.firstVisibleRow(top: reading.frame.maxY, height: screen.maxY - reading.frame.maxY)
     }
     /// The row the reader's line is in, once it is on screen: a row the page
     /// has not mounted there yet has no place to be held from.
     private func readingRow(in document: TranscriptNativeDocument, clip: NSClipView) -> TranscriptRowContainer? {
-        guard let first = document.retainedRows.first(where: { $0.frame.maxY > clip.bounds.minY }),
+        guard let first = document.firstVisibleRow(top: clip.bounds.minY, height: .greatestFiniteMagnitude),
               first.superview === document else { return nil }
         return first
     }
@@ -210,6 +208,7 @@ extension NSScrollView {
     func hold(_ held: NSView) {
         catchUp()
         guard !following, let scroll, held.enclosingScrollView === scroll else { return }
+        if let row = held as? TranscriptRowContainer, row.foldedAway || row.frame.height <= 0 { return }
         source = nil; surface = nil; anchorSourceTop = nil; row = held
         rowDisplacement = held.convert(NSPoint.zero, to: scroll.contentView).y - scroll.contentView.bounds.minY
     }
@@ -242,7 +241,7 @@ extension NSScrollView {
         // mounted yet. It still has its place in the document, and that place
         // is held: a page read in above in this moment would otherwise move
         // everything on screen by its height.
-        guard let first = native.retainedRows.first(where: { $0.frame.maxY > clip.bounds.minY }), first.frame.height > 0 else { return }
+        guard let first = native.firstVisibleRow(top: clip.bounds.minY, height: .greatestFiniteMagnitude) else { return }
         let unmounted = Self.firstStartingOnScreen(native, clip: clip, after: first) ?? first
         row = unmounted
         rowDisplacement = native.convert(NSPoint(x: 0, y: native.isFlipped ? unmounted.frame.minY : unmounted.frame.maxY), to: clip).y - clip.bounds.minY
@@ -269,6 +268,9 @@ extension NSScrollView {
         guard !writing else { return false }
         catchUp()
         guard !following, let scroll else { return false }
+        if let held = row as? TranscriptRowContainer, held.foldedAway {
+            clear(reason: "row folded away"); captureDocument()
+        }
         let clip = scroll.contentView
         let scale = scroll.window?.backingScaleFactor ?? 1
         // Moving the clip can synchronously prepare newly visible blocks.
@@ -333,6 +335,7 @@ extension NSScrollView {
     /// run-loop turn later, and the frame in between showed the earlier page
     /// where the reader's row had been.
     private func heldRowTop(_ row: NSView, in scroll: NSScrollView) -> CGFloat? {
+        if let held = row as? TranscriptRowContainer, held.foldedAway || held.frame.height <= 0 { return nil }
         if row.enclosingScrollView === scroll { return row.convert(NSPoint.zero, to: scroll.contentView).y }
         guard let held = row as? TranscriptRowContainer, let document = scroll.documentView as? TranscriptNativeDocument,
               document.retainedRows.indices.contains(held.layoutIndex), document.retainedRows[held.layoutIndex] === held else { return nil }

@@ -125,11 +125,11 @@ struct TranscriptRowEnvironment: Equatable {
     var renderingEnvironment: TranscriptRowEnvironment { environment }
     /// What the hosted content actually needs at this width, for checks that a
     /// row never draws more than its own frame holds.
-    var hostedFittingHeight: CGFloat { host().confirmHeight() }
+    var hostedFittingHeight: CGFloat { foldedAway ? 0 : host().confirmHeight() }
     /// Whether this row is holding a SwiftUI tree right now.
     var isHosted: Bool { hosted != nil }
     /// A row its finished turn's fold hides (`TranscriptTurnFold`): it draws
-    /// nothing and stands at one point, so it needs no tree until the fold
+    /// nothing and takes no space, so it needs no tree until the fold
     /// opens. A page of whole turns holds hundreds of them, and a reader
     /// scrolling past folded turns brought a whole turn's worth of them into
     /// the buffered viewport at once, each built and measured to draw nothing.
@@ -276,11 +276,11 @@ struct TranscriptRowEnvironment: Equatable {
     /// answer is kept rather than counting the row's characters again.
     func estimatedHeight(width: CGFloat) -> CGFloat {
         if let estimate, estimate.width == width { return estimate.height }
-        // A row its finished turn's fold hides draws nothing, and measures a
-        // point. A page of whole turns holds hundreds of them; standing at
+        // A row its finished turn's fold hides draws nothing and takes no
+        // space. A page of whole turns holds hundreds of them; standing at
         // their open heights, they made a page many screens taller than it
         // draws, which then shrank under the reader as they were measured.
-        let height = disclosure.foldedAway ? 1 : TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
+        let height = disclosure.foldedAway ? 0 : TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
         estimate = (width, height)
         return height
     }
@@ -688,11 +688,11 @@ struct TranscriptRowEnvironment: Equatable {
         // width on every update. Keep both exact results; changing the root for
         // an already known speculative width would redo native text layout.
         if let cached = measurements.last(where: { $0.width == target }) { return cached }
-        // Folded away with no tree: the point such a row measures, without
-        // building a tree only to draw nothing (`foldedAway`).
-        if foldedAway, hosted == nil {
+        // Folding takes no room, including after an opened row kept its tree.
+        // The document can still animate that tree down to this zero height.
+        if foldedAway {
             width = target
-            let result = CGSize(width: target, height: 1)
+            let result = CGSize(width: target, height: 0)
             if measurements.count == 4 { measurements.removeFirst() }
             measurements.append(result); measurementCount += 1
             grewWithoutATree = false; streamingHeightKnown = false; tokensSinceMeasured = 0
@@ -830,7 +830,7 @@ struct TranscriptRowEnvironment: Equatable {
                 // One native pass, as in `measure`: laying the host out and
                 // then asking its fitting size runs SwiftUI's sizing twice.
                 let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
-                let height = hosted.confirmHeight()
+                let height = self.foldedAway ? 0 : hosted.confirmHeight()
                 if TranscriptLayoutClock.recording { TranscriptLayoutClock.validationSeconds += TranscriptLayoutClock.now - started }
                 self.intrinsicValidationCount += 1
                 self.measuring = false

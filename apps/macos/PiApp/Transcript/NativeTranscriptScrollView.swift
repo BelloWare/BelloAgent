@@ -197,6 +197,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     private let marker = TranscriptSurfaceMarker()
     private let emptyLabel = NSTextField(labelWithString: "Ready for a conversation.")
     private var rows: [TranscriptRowContainer] = []
+    /// Only rows occupying space, indexed with the suffix each layout places.
+    /// Visibility lookups must not visit a whole folded turn on every token.
+    private var placedRows: [TranscriptRowContainer] = []
     private var rowPositions: [String: Int] = [:]
     private var disclosureKeys: [String: Int] = [:], inputKeys: [String: Int] = [:]
     private var unknownDisclosureKeys = Set<String>(), unknownInputKeys = Set<String>()
@@ -263,6 +266,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// so following the end does not move the answer down by the note's height.
     private var completedFooter: (id: String, height: CGFloat)?
     private(set) var completionBottomSpace: CGFloat = 0
+    /// If completing an older turn makes the whole document shorter than the
+    /// viewport, scrolling alone cannot hold its newer turn. Keep only the
+    /// missing room above the page until this tail changes.
+    private var completedNewerTail: (id: String, bottom: CGFloat?)?
+    private var completionTopSpace: CGFloat = 0
     /// What a row is taken to be worth before any of the chat has been laid out.
     static let provisionalRowHeight: CGFloat = 200
     /// The most room a chat is given, in points. A drawn layer's place is
@@ -295,10 +303,10 @@ final class TranscriptNativeScrollView: NSScrollView {
     private var trailingPlace: CGFloat?
     /// The rooms for this pass, from the snapshot's extent.
     private func roomHeights() -> (leading: CGFloat, trailing: CGFloat) {
-        guard let extent = snapshot?.extent, !rows.isEmpty else { roomRowHeight = 0; return (0, 0) }
+        guard let extent = snapshot?.extent, !rows.isEmpty else { roomRowHeight = 0; return (completionTopSpace, 0) }
         let unread = CGFloat(extent.before + extent.after)
         roomRowHeight = min(page?.historyRowHeight ?? Self.provisionalRowHeight, Self.roomLimit / max(1, unread))
-        return (CGFloat(extent.before) * roomRowHeight, CGFloat(extent.after) * roomRowHeight)
+        return (CGFloat(extent.before) * roomRowHeight + completionTopSpace, CGFloat(extent.after) * roomRowHeight)
     }
     /// What the last idle unit spent placing the page. The next one measures
     /// rows for at least that long before placing it again.
@@ -417,7 +425,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     var visibleContentPrepared: Bool {
         guard let clip = enclosingScrollView?.contentView, !rows.isEmpty else { return rows.isEmpty }
         let viewport = convert(clip.bounds, from: clip)
-        let visible = rows.filter { $0.frame.intersects(viewport) }
+        let visible = rows(overlapping: viewport).filter { !$0.foldedAway }
         return !visible.isEmpty && visible.allSatisfy { !approximate.contains($0.itemID) && $0.visibleContentPrepared }
     }
     private var drawnGeneration: UUID?
@@ -502,6 +510,18 @@ final class TranscriptNativeScrollView: NSScrollView {
         if leaving?.sessionID != snapshot?.sessionID || leaving?.generation != snapshot?.generation || completedFooter?.id != projected.last?.id {
             completedFooter = nil; completionBottomSpace = 0
         }
+        if leaving?.sessionID != snapshot?.sessionID || leaving?.generation != snapshot?.generation || completedNewerTail?.id != projected.last?.id {
+            completedNewerTail = nil; completionTopSpace = 0
+        }
+        if let leaving, let snapshot, leaving.sessionID == snapshot.sessionID, leaving.generation == snapshot.generation,
+           leaving.messages.first?.id != snapshot.messages.first?.id,
+           let first = leaving.messages.first, first.role != "user",
+           let newer = leaving.messages.first(where: { $0.role == "user" && $0.kind == nil }),
+           let newerRow = messageRows[newer.id]?.first, let last = rows.last, last.itemID == projected.last?.id,
+           let clip = enclosingScrollView?.contentView,
+           page?.pinsNewestRow == true || clip.bounds.minY >= newerRow.frame.minY {
+            completedNewerTail = (last.itemID, last.frame.maxY - clip.bounds.minY)
+        }
         if let leaving, let snapshot, leaving.sessionID == snapshot.sessionID, leaving.generation == snapshot.generation,
            leaving.messages.first?.id != snapshot.messages.first?.id, page?.pinsNewestRow == true,
            case .block(let before)? = leaving.items.last, case .block(let after)? = projected.last,
@@ -578,7 +598,7 @@ final class TranscriptNativeScrollView: NSScrollView {
                 if keeping { row.forgetTextSelection() }
             }
             if keeping, let leaving { keptRows.keep(rows, sessionID: leaving.sessionID, disclosure: leavingDisclosure, toolInputs: leavingToolInputs) }
-            rows = []
+            rows = []; placedRows = []; visibilityRows = []
             // Coming back to a kept chat takes its rows back, with the
             // stores they were made with: they are reconciled below with the
             // chat's page as it is now, exactly as the rows on screen are.
@@ -603,7 +623,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // neither, and once anything was open every token used to walk every
         // row and every tool of the page to find that out.
         let sameRows = sameIdentities && projected.count == rows.count
-        if !sameRows { framesAreIndexed = false }
+        if !sameRows { framesAreIndexed = false; placedRows = [] }
         if !sameRows, let disclosure, disclosure.changedCount > 0 {
             if TranscriptLayoutClock.recording { TranscriptLayoutClock.disclosurePrunes += 1 }
         }
@@ -1016,7 +1036,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             var height = row.frame.height
             if next < motion.changes.count, motion.changes[next].index == offset {
                 let change = motion.changes[next]; next += 1
-                height = max(1, change.from + (change.to - change.from) * t)
+                height = max(0, change.from + (change.to - change.from) * t)
                 row.setDisclosureReveal(keeping: min(change.from, change.to), fade: fade)
             }
             let rect = CGRect(x: row.frame.minX, y: start + shift, width: row.frame.width, height: height)
@@ -1024,6 +1044,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             page?.rowFrame(row.itemID, rect)
             if next > 0, motion.changes[next - 1].index == offset { shift += height - motion.changes[next - 1].from }
         }
+        indexPlacedRows(from: motion.index)
         let documentHeight = motion.fromDocument + (motion.toDocument - motion.fromDocument) * t
         if abs(frame.height - documentHeight) > 0.5 { setFrameSize(CGSize(width: frame.width, height: documentHeight)) }
         // The scroll bar follows the document as it moves rather than
@@ -1180,26 +1201,46 @@ final class TranscriptNativeScrollView: NSScrollView {
 
     /// Frames are in document order. Input looks up the intersecting band
     /// without walking the resident window, including its estimated rows.
-    private func rows(overlapping rect: CGRect) -> ArraySlice<TranscriptRowContainer> {
-        var low = 0, high = rows.count
+    private func indexPlacedRows(from index: Int) {
+        var low = 0, high = placedRows.count
         while low < high {
             let middle = (low + high) / 2
-            if rows[middle].frame.maxY <= rect.minY { low = middle + 1 } else { high = middle }
+            if placedRows[middle].layoutIndex < index { low = middle + 1 } else { high = middle }
+        }
+        placedRows.removeSubrange(low...)
+        placedRows.append(contentsOf: rows[index...].filter { $0.frame.height > 0 })
+    }
+
+    private func rows(overlapping rect: CGRect) -> ArraySlice<TranscriptRowContainer> {
+        var low = 0, high = placedRows.count
+        while low < high {
+            let middle = (low + high) / 2
+            if placedRows[middle].frame.maxY <= rect.minY { low = middle + 1 } else { high = middle }
         }
         let first = low
-        high = rows.count
+        high = placedRows.count
         while low < high {
             let middle = (low + high) / 2
-            if rows[middle].frame.minY < rect.maxY { low = middle + 1 } else { high = middle }
+            if placedRows[middle].frame.minY < rect.maxY { low = middle + 1 } else { high = middle }
         }
-        return rows[first..<low]
+        return placedRows[first..<low]
     }
 
     func isShowing(_ snapshot: TranscriptPage.Snapshot) -> Bool {
         self.snapshot?.sessionID == snapshot.sessionID && self.snapshot?.generation == snapshot.generation
     }
+    func firstVisibleRow(top: CGFloat, height: CGFloat) -> TranscriptRowContainer? {
+        guard height > 0 else { return nil }
+        // Reconciliation can precede its queued layout and a reader gesture.
+        // Retained frames still own that interval, before the index is rebuilt.
+        if !framesAreIndexed {
+            return rows.first { !$0.foldedAway && $0.frame.height > 0 && $0.frame.maxY > top && $0.frame.minY < top + height }
+        }
+        return rows(overlapping: CGRect(x: 0, y: top, width: bounds.width, height: height))
+            .first { !$0.foldedAway && $0.frame.height > 0 }
+    }
     func firstVisibleItem(top: CGFloat, height: CGFloat) -> (item: TranscriptItem, frame: CGRect)? {
-        rows(overlapping: CGRect(x: 0, y: top, width: bounds.width, height: max(1, height))).first.map { ($0.contentItem, $0.frame) }
+        firstVisibleRow(top: top, height: height).map { ($0.contentItem, $0.frame) }
     }
 
     private func mountVisibleRows() {
@@ -1237,8 +1278,8 @@ final class TranscriptNativeScrollView: NSScrollView {
         var cold = rows(overlapping: retention).contains { !$0.isHosted && !$0.foldedAway }
         // Previously hosted rows include those leaving the viewport, and
         // selection/motion can keep one outside the normal retention band.
-        var candidates = visibilityRows
-        var included = Set(candidates.map(ObjectIdentifier.init))
+        var included = Set<ObjectIdentifier>()
+        var candidates = visibilityRows.filter { included.insert(ObjectIdentifier($0)).inserted }
         for row in rows(overlapping: buffered) where included.insert(ObjectIdentifier(row)).inserted { candidates.append(row) }
         if let selected, included.insert(ObjectIdentifier(selected)).inserted { candidates.append(selected) }
         for row in candidates {
@@ -1330,7 +1371,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     private func exactBand(width: CGFloat, viewportHeight: CGFloat, parking: Bool) -> Set<Int> {
         guard !rows.isEmpty else { return [] }
         let tops = Self.rowTops(rows.map { row in
-            row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height))
+            row.foldedAway ? 0 : (row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height)))
         }, from: TranscriptMetrics.pageTopInset + leadingSpace)
         let total = tops[rows.count] + trailingSpace + TranscriptMetrics.pageBottomInset
         let buffer = Self.bufferMargin(viewportHeight)
@@ -1440,9 +1481,6 @@ final class TranscriptNativeScrollView: NSScrollView {
             resumeMotion(moving, presentedHeights: presentedHeights, retarget: retarget)
             preparingMotion = wasPreparingMotion
             layingOut = false
-            // A layout can build any row; one pass reconciles those hosts.
-            // Subsequent scroll notifications only revisit retained hosts.
-            visibilityRows = rows
             if !placingCorrection { mountVisibleRows() }
             enclosingScrollView?.transcriptReading.restore()
         }
@@ -1455,7 +1493,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let rooms = roomHeights()
         // A reader whose whole screen is room below the window keeps their
         // row of the chat there too (`finishPass`), not the window's last row.
-        if let clip = enclosingScrollView?.contentView, let last = rows.last, last.frame.height > 0, previousRowHeight > 0,
+        if let clip = enclosingScrollView?.contentView, let last = placedRows.last, previousRowHeight > 0,
            abs(roomRowHeight - previousRowHeight) > 0.01, !(page?.followsBottom ?? true), (snapshot?.extent?.after ?? 0) > 0,
            clip.bounds.minY >= last.frame.maxY {
             trailingPlace = (clip.bounds.minY - last.frame.maxY) / previousRowHeight
@@ -1467,8 +1505,11 @@ final class TranscriptNativeScrollView: NSScrollView {
             if trailingPlace == nil, let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true) {
                 let top = TranscriptMetrics.pageTopInset
                 if clip.bounds.minY >= top + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
-                else if previousRowHeight > 0, clip.bounds.maxY <= top + leadingSpace {
-                    // A reader in the room above the window keeps their row
+                else if previousRowHeight > 0, clip.bounds.maxY + Self.bufferMargin(clip.bounds.height) < top + leadingSpace {
+                    // Beyond the same margin as noteReaderInRoom, the reader
+                    // holds a place in unread history. Near the window, keep
+                    // its row anchor while the approaching page lands.
+                    // A reader in that room keeps their row
                     // of the chat (the one the room put at the top of their
                     // screen), not a row of the window off their screen.
                     let place = (clip.bounds.minY - top) / previousRowHeight
@@ -1586,6 +1627,9 @@ final class TranscriptNativeScrollView: NSScrollView {
         partialPassCount += firstPlaced > 0 ? 1 : 0
         for index in firstPlaced..<rows.count {
             let row = rows[index]
+            // Reconcile hosts this suffix actually touched, including a tree
+            // just folded shut, without revisiting hidden history per token.
+            defer { if row.isHosted || row.superview != nil { visibilityRows.append(row) } }
             standing.remove(row.itemID); guesses.remove(row.itemID)
             // A row may stand at its old height only when it is out of sight
             // both where it is now and where this pass would put it, and holds
@@ -1601,9 +1645,9 @@ final class TranscriptNativeScrollView: NSScrollView {
                 // A row it leaves stands at the height it already had, or at
                 // an estimate if it has never had one — or, while it is
                 // growing unseen, at what its text is now worth.
-                let standingHeight = row.neverMeasured || row.grewWithoutATree
+                let standingHeight = row.foldedAway ? 0 : (row.neverMeasured || row.grewWithoutATree
                     ? max(row.grewWithoutATree ? row.frame.height : 1, row.estimatedHeight(width: nextWidth))
-                    : max(1, row.frame.height)
+                    : max(1, row.frame.height))
                 let rect = CGRect(x: left, y: y, width: nextWidth, height: standingHeight)
                 // Neither where it stands now nor where this pass would put it
                 // may be anywhere AppKit could draw it from.
@@ -1668,12 +1712,12 @@ final class TranscriptNativeScrollView: NSScrollView {
         if let sampleWidth, abs(width - sampleWidth) > 1 { return true }
         return count >= sample * 2 || count >= sample + 128
     }
+    private(set) var historySampleRowVisitCount = 0
     private func measureHistoryRowHeight(placedHeight: CGFloat) {
         // Only the chat's own timeline, with room to size: an earlier version
         // shown in its place (no extent) is not what the room stands for.
         guard let page, let snapshot, snapshot.extent != nil, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
         let count = snapshot.messages.count
-        let height = max(24, placedHeight / CGFloat(count))
         if let known = page.historyRowHeight, known > 0 {
             // A wheel AppKit is still applying lands on the old geometry.
             let scrolling = (enclosingScrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
@@ -1689,6 +1733,17 @@ final class TranscriptNativeScrollView: NSScrollView {
                 return
             }
         }
+        // Hidden messages are not height samples. A response may have both
+        // hidden work and visible prose; count its identity once if it draws.
+        // Keep the window's membership count for the resampling trigger above,
+        // so neither a token nor a closed fold walks the resident rows again.
+        var drawn = Set<String>()
+        for row in placedRows where !row.foldedAway {
+            historySampleRowVisitCount += 1
+            drawn.formUnion(row.contentItem.messageIDs)
+        }
+        guard !drawn.isEmpty else { return }
+        let height = max(24, placedHeight / CGFloat(drawn.count))
         let before = page.historyRowHeight
         page.measuredHistoryRowHeight(height, over: count, width: rowWidth)
         if snapshot.extent != nil, before.map({ abs($0 - height) > 0.5 }) ?? true { dirty = true; scheduleLayout() }
@@ -1702,7 +1757,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Whether the viewport shows none of the window's rows, only room kept
     /// for rows not read.
     var viewportInRoom: Bool {
-        guard snapshot?.extent != nil, let first = rows.first, let last = rows.last, first.frame.height > 0, last.frame.height > 0,
+        guard snapshot?.extent != nil, let first = placedRows.first, let last = placedRows.last,
               let clip = enclosingScrollView?.contentView else { return false }
         return clip.bounds.maxY <= first.frame.minY || clip.bounds.minY >= last.frame.maxY
     }
@@ -1713,8 +1768,8 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Only on placed rows: between an update and the pass that places
         // it, rows just read in stand nowhere yet.
         let height = roomRowHeight
-        guard !dirty, !layoutPending, let extent = snapshot?.extent, let first = rows.first, let last = rows.last,
-              first.frame.height > 0, last.frame.height > 0, page?.historyRowHeight != nil, height > 0 else { return }
+        guard !dirty, !layoutPending, let extent = snapshot?.extent, let first = placedRows.first, let last = placedRows.last,
+              page?.historyRowHeight != nil, height > 0 else { return }
         let view = clip.bounds, margin = Self.bufferMargin(view.height)
         if extent.before > 0, view.maxY + margin < first.frame.minY {
             let position = min(extent.before - 1, max(0, Int((view.minY - TranscriptMetrics.pageTopInset) / height)))
@@ -1733,9 +1788,23 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Records what the pass left, sizes the document to it, and lands the
     /// page where it belongs before anything is drawn.
     private func finishPass(_ pass: Pass, _ placement: Placement, width: CGFloat, left: CGFloat, deferring: Bool) {
+        indexPlacedRows(from: placedRows.isEmpty ? 0 : pass.firstPlaced)
         framesAreIndexed = true
         let nextWidth = pass.rowWidth, parking = pass.parking, standing = placement.standing, guesses = placement.guesses
         var y = placement.bottom
+        if let held = completedNewerTail, let bottom = held.bottom, rows.last?.itemID == held.id {
+            // This is the prefix-completion pass only, never an arriving token.
+            completedNewerTail?.bottom = nil
+            let wanted = max(0, bottom - (y - completionTopSpace))
+            let shift = wanted - completionTopSpace
+            if abs(shift) > 0.01 {
+                completionTopSpace = wanted; leadingSpace += shift; y += shift
+                for row in rows {
+                    row.frame.origin.y += shift
+                    page?.rowFrame(row.itemID, row.frame)
+                }
+            }
+        }
         dirtyFrom = rows.count
         placedWidth = nextWidth
         approximate = standing

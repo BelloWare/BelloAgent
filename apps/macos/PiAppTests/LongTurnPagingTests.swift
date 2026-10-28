@@ -433,6 +433,12 @@ extension LongTurnPagingTests {
                 let folded = rows.filter { TranscriptRowDisclosure.of($0.item, in: view.disclosure).foldedAway }.count
                 XCTAssertEqual(try XCTUnwrap(rows.first?.frame.minY), TranscriptMetrics.pageTopInset + document.leadingSpace, accuracy: 1)
                 print("TURNFOLD gallery \(name): first top \(rows.first?.frame.minY ?? .nan), fold bottom \(fold.frame.maxY), answer top \(answer.frame.minY), gap \(answer.frame.minY - fold.frame.maxY), folded rows \(folded)")
+                XCTAssertEqual(answer.frame.minY, fold.frame.maxY, accuracy: 0.01)
+                let control = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeTurnFoldControl.self, in: fold).first)
+                let prose = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: answer).first)
+                let drawnGap = prose.convert(prose.bounds, to: document).minY - control.convert(control.bounds, to: document).maxY
+                print("FOLDGAP gallery \(name): divider-to-prose-surface \(drawnGap)")
+                XCTAssertEqual(drawnGap, 8, accuracy: 0.01)
                 let bitmap = try XCTUnwrap(chat.pane.bitmapImageRepForCachingDisplay(in: chat.pane.bounds))
                 chat.pane.cacheDisplay(in: chat.pane.bounds, to: bitmap)
                 let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
