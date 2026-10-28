@@ -71,6 +71,47 @@ final class ConnectionSwitchTests: HelperTestCase {
         try await host.command("session.rebind", sessionID: chatID, params: ["path": JSON(path), "profile": profile.raw])
     }
 
+    func testV2ManagedChildCannotMoveConnections() async throws { try await checkManagedRebind(generation:2) }
+    func testV3ManagedChildCannotMoveConnections() async throws { try await checkManagedRebind(generation:3) }
+    func testV4ManagedChildCannotMoveConnections() async throws { try await checkManagedRebind(generation:4) }
+
+    private func checkManagedRebind(generation: Int) async throws {
+        try await checkRebind(generation:generation,managed:true,side:false)
+    }
+    func testMainChatsAndSidesStillMoveInEveryAgentGeneration() async throws {
+        for generation in [1,3,4] {
+            for side in [false,true] { try await checkRebind(generation:generation,managed:false,side:side) }
+        }
+    }
+    private func checkRebind(generation: Int, managed: Bool, side: Bool) async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at:chat.root) }
+        let url = chat.state.appendingPathComponent(chatID + ".jsonl"), first = try fixtureProfile(), second = try second()
+        try {
+            let journal = try SessionJournal(url:url,id:chatID,cwd:chat.root,binding:first.binding,create:true,managedChild:managed)
+            if generation == 3 { try journal.promoteToSteering(managedChild:managed) }
+            if generation == 4 { try journal.promoteToCodex(managedChild:managed) }
+            if managed {
+                var origin = subagentFixtureOrigin(); origin.link.childSessionID = chatID
+                if generation == 4 { origin.taskName = "/root/audit"; origin.forkTurns = "none" }
+                try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
+            }
+            if side { try journal.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":["parentSessionId":"parent","relationship":"side"]]) }
+        }()
+        let before = try Data(contentsOf:url), host = try await host(chat)
+        for check in [true,false] {
+            do {
+                let result = try await host.command("session.rebind",sessionID:chatID,params:["path":JSON(url.path),"profile":second.raw,"check":JSON(check)])
+                if managed { XCTFail("Managed v\(generation) child moved (check=\(check))") }
+                else { XCTAssertEqual(result[check ? "rebinds" : "rebound"].flag,true) }
+            } catch let error as AgentError {
+                if managed { XCTAssertEqual(error.code,"managed_subagent") }
+                else { XCTFail("Main/side v\(generation) refused: \(error)") }
+            }
+            if managed { XCTAssertEqual(try Data(contentsOf:url),before) }
+        }
+        await host.shutdown()
+    }
+
     func testAJournalMovedToAnotherConnectionOpensThereWithEverythingItHad() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat), url = URL(fileURLWithPath: path), first = try fixtureProfile(), second = try second()

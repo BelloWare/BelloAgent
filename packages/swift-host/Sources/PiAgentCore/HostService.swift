@@ -1006,7 +1006,12 @@ public actor NativeHostService {
     /// next open still resumes from it.
     private static func rebind(url: URL, id: String, directory: URL, to target: Profile, from previous: Profile?, check: Bool) throws -> JSON {
         let journal=try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false,checkpoint:JournalCheckpoint.read(for:url))
-        guard journal.markerKind != JournalRecordKind.childMarker else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
+        let reader = try JournalRecordReader(url)
+        _ = try reader.next() // Session header; the journal validated its chain.
+        let marker = try reader.next()
+        // V3/v4 promotion changes the marker name, retaining version 2 for
+        // children and version 1 for owners and sides that may still move.
+        guard journal.markerKind != JournalRecordKind.childMarker, marker?["data"]["version"].int != 2 else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
         let before=journal.binding ?? .null
         if check {
             var replies=0
