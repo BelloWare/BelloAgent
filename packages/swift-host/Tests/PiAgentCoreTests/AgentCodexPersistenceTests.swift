@@ -56,6 +56,58 @@ final class AgentCodexPersistenceTests: HelperTestCase {
         }
     }
 
+    func testForkPublicationAllowsAdditionalMetadataBeforeTheSeed() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        for count in [0,2] {
+            let messages = (0..<count).map { index in
+                var row = ChatMessage(role:"user",content:[textBlock("Inherited \(index)")]); row.id = "seed-\(index)"
+                return SubagentCodexContract.inherited(row,from:"parent",cutoff:count == 0 ? nil : "seed-1")
+            }
+            let seed = AgentForkSeed(from:"parent",cutoffEntryID:messages.last?.id,messages:messages)
+            let url = root.appendingPathComponent("child-\(count).jsonl")
+            let child = try SessionJournal(url:url,id:"child-\(count)",cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
+            try child.promoteToCodex(managedChild:true)
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(subagentFixtureOrigin())])
+            for row in messages { try child.append(["type":"message","message":row.pi],id:row.id) }
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(seed.ids.map(JSON.string))]])
+            // Publication may gain metadata without changing its boundary.
+            try child.append(["type":"custom","customType":"fixture.publication-metadata","data":["version":1]])
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.agentForkSeed),"data":seed.reference])
+            XCTAssertNoThrow(try seed.requirePublished(at:url),"Inherited rows: \(count)")
+        }
+    }
+
+    func testForkPublicationRejectsASeedAfterChildExecutionBegins() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var row = ChatMessage(role:"user",content:[textBlock("Inherited")]); row.id = "seed"
+        row = SubagentCodexContract.inherited(row,from:"parent",cutoff:row.id)
+        let seed = AgentForkSeed(from:"parent",cutoffEntryID:row.id,messages:[row])
+        for variant in ["early-turn","late-turn","extra-message","unpublished"] {
+            let url = root.appendingPathComponent(variant + ".jsonl")
+            let child = try SessionJournal(url:url,id:variant,cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
+            try child.promoteToCodex(managedChild:true)
+            let origin = subagentFixtureOrigin()
+            let turn = AgentChildTurn(childID:"child",turn:1,executionID:"run",parentExecutionID:"owner",generation:0,runtimeID:"runtime",epoch:"epoch",inputID:"input",task:"Task",call:origin.link.call)
+            let turnRecord: JSON = ["type":"custom","customType":JSON(JournalRecordKind.agentTurn),"data":try subagentJSON(turn)]
+            try child.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
+            if variant == "early-turn" { try child.append(turnRecord) }
+            try child.append(["type":"message","message":row.pi],id:row.id)
+            if variant == "extra-message" {
+                let extra = ChatMessage(role:"user",content:[textBlock("Child task")])
+                try child.append(["type":"message","message":extra.pi],id:extra.id)
+            } else if variant != "early-turn" { try child.append(turnRecord) }
+            if variant == "unpublished" {
+                let tail = try FileHandle(forWritingTo:url); defer { try? tail.close() }
+                try tail.seekToEnd(); try tail.write(contentsOf:Data("{torn later turn".utf8))
+            } else {
+                try child.append(["type":"custom","customType":JSON(JournalRecordKind.agentForkSeed),"data":seed.reference])
+            }
+            XCTAssertThrowsError(try seed.requirePublished(at:url),variant) {
+                XCTAssertEqual(($0 as? AgentError)?.code,"subagent_fork_publication",variant + ": stop before later records")
+            }
+        }
+    }
+
     func testForkPublicationStopsAtTheSeedInALongLivedChild() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let inherited = (0..<24).map { index in

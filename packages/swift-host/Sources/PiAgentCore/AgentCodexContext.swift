@@ -41,11 +41,11 @@ struct AgentForkSeed: Codable, Sendable, Equatable {
         guard FileManager.default.fileExists(atPath:url.path) else { throw Self.publicationError }
         let reader = try JournalRecordReader(url)
         var rows: [ChatMessage] = []
-        // Publication writes the header, marker, origin, inherited messages,
-        // context and seed, before any child turn. Missing publication must
-        // also fail within that prefix, without searching the child's lifetime.
-        for _ in 0..<(ids.count + 5) {
-            guard let row = try reader.next() else { break }
+        // publishQueuedChild and AgentFamilyRecovery finish the seed before
+        // any child turn or non-inherited message. Stop at that boundary even
+        // without a seed; extra publication metadata does not change it.
+        while let row = try reader.next() {
+            guard row["customType"].text != JournalRecordKind.agentTurn else { throw Self.publicationError }
             if row["customType"].text == JournalRecordKind.agentForkSeed {
                 guard row["data"] == reference, matches(rows) else { throw Self.publicationError }
                 try reader.checkUnchanged(at:url)

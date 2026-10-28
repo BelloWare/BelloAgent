@@ -8,6 +8,7 @@ extension AgentSteeringCoordinator {
         if turn.taskName != nil { try journal.promoteToCodex(managedChild:true) }
         else { try journal.promoteToSteering(managedChild:true) }
         try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
+        // requirePublished relies on the seed preceding child turns/messages.
         if let seed = plan.forkSeed {
             guard seed.matches(seedMessages) else { throw AgentForkSeed.publicationError }
             for message in seedMessages { try journal.append(["type":"message","message":message.pi],id:message.id,flush:false) }

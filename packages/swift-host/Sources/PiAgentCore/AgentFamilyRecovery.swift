@@ -85,6 +85,7 @@ enum AgentFamilyRecovery {
             // Finish a partial publication, never its accepted execution. The
             // original turn below still seals not-executed (also during a cost
             // pause); later explicit follow-ups can use the complete history.
+            // Keep the seed before child turns/messages, as requirePublished expects.
             if exists, !seedComplete, let seed = plan.forkSeed {
                 guard seedReference == nil || seedReference == seed.reference else { throw SubagentRecovery.damaged() }
                 // A missing/changed parent boundary cannot supply authority.
