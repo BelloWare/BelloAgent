@@ -146,7 +146,7 @@ extension AgentSession {
     /// summary (a compaction that summarized the whole tail, before the
     /// request it made room for) has a run to go on with.
     static func continues(from tail: ChatMessage) -> Bool {
-        tail.role == "user" || tail.role == "toolResult" || (tail.role == "system" && tail.kind == "compaction")
+        tail.nativeMailboxCut?["version"].int == 1 || tail.role == "user" || tail.role == "toolResult" || (tail.role == "system" && tail.kind == "compaction")
     }
     /// The turn a continuation belongs to: the newest user message's, or —
     /// when a compaction summarized it and kept its replies — the turn those

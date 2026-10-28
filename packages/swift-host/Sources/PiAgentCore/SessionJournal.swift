@@ -169,11 +169,12 @@ final class SessionJournal {
     /// offsets, hashes and provider context otherwise remain untouched.
     func promoteToSteering(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.steeringMarker) }
     func promoteToCodex(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.codexMarker) }
+    func promoteToMailboxCut(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.cutinMarker) }
     private func promoteAgentFormat(managedChild: Bool, marker: String) throws {
         guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw SubagentRecovery.damaged() }
-        if markerKind == marker || markerKind == JournalRecordKind.codexMarker { return }
-        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker) || markerKind == JournalRecordKind.steeringMarker,
+        if markerKind == marker || markerKind == JournalRecordKind.cutinMarker || markerKind == JournalRecordKind.codexMarker && marker != JournalRecordKind.cutinMarker { return }
+        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker) || markerKind == JournalRecordKind.steeringMarker || markerKind == JournalRecordKind.codexMarker,
               let check = markerCheck else { throw SubagentRecovery.damaged() }
         // Synchronous under the owning actor: no await may split this span.
         // The explicit fence also rejects callbacks that try to append while
@@ -220,7 +221,7 @@ final class SessionJournal {
     /// This also works when an idle child viewer already holds its writer.
     static func verifyManagedChild(url: URL, id: String) throws {
         let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
-        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker, JournalRecordKind.codexMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
+        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker, JournalRecordKind.codexMarker, JournalRecordKind.cutinMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
     }
 
     /// The chain from a checkpoint on, when the records the checkpoint relies
@@ -236,6 +237,7 @@ final class SessionJournal {
               JournalRecordKind.isMarker(marker["customType"].text),
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
+        if marker["customType"].text == JournalRecordKind.cutinMarker, checkpoint.version != 3 { return nil }
         // The connection changes the checkpoint names, each still as written;
         // one it does not name, met below, means reading the whole journal.
         var bindings=Bindings(marker: marker["data"]["binding"], markerKind: marker["customType"].text)

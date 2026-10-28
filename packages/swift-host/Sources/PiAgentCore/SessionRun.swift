@@ -250,6 +250,7 @@ extension AgentSession {
                     try await enforceCostHold(); try enforceCostLimit()
                     let humanDrained=resumingFailedRequest ? false : try await drainSteering()
                     let agentDrained=resumingFailedRequest || agentCoordinator == nil ? false : try await agentCoordinator!.boundary(self,final:false)
+                    endMailboxDelivery()
                     let drained = humanDrained || agentDrained
                     if drained { overflowRecoveryAttempted=false }
                     // A run started for pending input that delivered none (a
@@ -328,6 +329,15 @@ extension AgentSession {
                         }
                     }
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }
+                    if reply.mailboxCut != nil {
+                        // Preparation/commit already wrote the prefix and every
+                        // cancellation result. No tool or final-answer path sees it.
+                        modelActive = false; overflowRecoveryAttempted = false
+                        try Task.checkCancellation()
+                        await flushRequestLinks()
+                        try persistState(active:true)
+                        continue
+                    }
                     // Pi's mapStopReason: incomplete for any reason but max_output_tokens is an error.
                     if reply.truncated, let reason=reply.terminal?.incompleteReason, reason != "max_output_tokens" {
                         throw PiErrorText.incompleteFailure(JSON(reason))
@@ -397,6 +407,7 @@ extension AgentSession {
             // Settling a failed family cancels this task too. Preserve the
             // original outcome before that internal Stop, and leave ordinary
             // chats on their existing failure path until a family is accepted.
+            endMailboxDelivery()
             let cancelled = Task.isCancelled || error is CancellationError
             modelActive = false
             let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }

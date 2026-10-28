@@ -48,7 +48,7 @@ extension AgentSession {
         return SubagentProgress(phase: retryInfo.isNull ? activityPhase : "retry", elapsedMs: max(0, elapsed),
                                 requests: spend.reported + spend.unreported, tools: toolHistory.resultCount,
                                 preview: String(latest.suffix(256)), usd: spend.usd, reported: spend.reported, unreported: spend.unreported,
-                                inputTokens: cumulativeUsage.input, outputTokens: cumulativeUsage.output)
+                                inputTokens: cumulativeUsage.input, outputTokens: cumulativeUsage.output, receivingAgentMessage:receivingAgentMessage ? true : nil)
     }
     var canDelegate: Bool { subagentCoordinator != nil && journal != nil && !ephemeral && !titleTask && !isSubagent && !isConnectionTest }
 

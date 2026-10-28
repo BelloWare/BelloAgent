@@ -76,7 +76,9 @@ enum AgentFamilyRecovery {
                     if plan.origin.taskName != nil { try child!.promoteToCodex(managedChild:true) }
                     else { try child!.promoteToSteering(managedChild:true) }
                 }
-                try childState.consume(row,sessionID:childID); try child!.append(row,id:id ?? UUID().uuidString,flush:true)
+                let recordID = id ?? UUID().uuidString
+                var projection = row; projection["id"] = JSON(recordID)
+                try childState.consume(projection,sessionID:childID); try child!.append(row,id:recordID,flush:true)
             }
             func childWrite<T: Encodable>(_ kind: String, _ data: T) throws {
                 try childAppend(["type":"custom","customType":JSON(kind),"ownerID":JSON(owner),"data":try subagentJSON(data)])
@@ -93,9 +95,33 @@ enum AgentFamilyRecovery {
                     guard orderedRows.count <= messages.count,
                           orderedRows.map(\.id) == Array(seed.ids.prefix(orderedRows.count)),
                           zip(orderedRows,messages).allSatisfy({ saved, original in saved.content == original.content && saved.userInput == nil && saved.nativeInherited == original.nativeInherited }) else { throw SubagentRecovery.damaged() }
+                    if messages.contains(where: { $0.nativeMailboxCut != nil || $0.nativeAgentCallCancellation != nil }) {
+                        if child == nil { child = try SessionJournal(url:url,id:childID,cwd:directory,binding:nil,create:false) }
+                        try child!.promoteToMailboxCut(managedChild:true)
+                    }
                     for message in messages.dropFirst(orderedRows.count) { try childAppend(["type":"message","message":message.pi],id:message.id) }
                     try childWrite(JournalRecordKind.context,["ids":JSON.array(seed.ids.map(JSON.string))])
                     try childWrite(JournalRecordKind.agentForkSeed,seed.reference)
+                }
+            }
+            // An owner commit may precede the recipient mirror and any of
+            // its rows. Repair those before delivery reconciliation or sealing.
+            for commit in (state.cuts?.commits.values.map { $0 } ?? []).filter({ $0["recipientSessionId"].text == childID }) {
+                guard exists, let preparation = childState.cuts?.preparations[commit["cutId"].text ?? ""] else { throw SubagentRecovery.damaged() }
+                try MailboxCutJournal.validate(commit,preparation:preparation,accounting:accounting)
+                let rows = try MailboxCutJournal.rows(preparation,commit:commit)
+                if child == nil {
+                    child = try SessionJournal(url:url,id:childID,cwd:directory,binding:nil,create:false)
+                    guard child?.size == bytes else { throw SubagentRecovery.damaged() }
+                }
+                try child!.promoteToMailboxCut(managedChild:true)
+                if childState.cuts?.commits[commit["cutId"].text ?? ""] == nil { try childWrite(JournalRecordKind.agentCutCommitted,commit) }
+                for row in rows {
+                    if let saved = childRows[row.id] { guard saved.pi == row.pi else { throw SubagentRecovery.damaged() } }
+                    else {
+                        try childAppend(["type":"message","message":row.pi],id:row.id)
+                        childRows[row.id] = row; orderedRows.append(row)
+                    }
                 }
             }
             // Validate every mirror against its immutable owning attempt/turn.

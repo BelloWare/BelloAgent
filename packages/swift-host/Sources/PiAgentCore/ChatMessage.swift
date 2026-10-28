@@ -47,6 +47,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     /// For tool results: durationMs plus, for file tools, path/added/removed.
     public var toolStats: JSON? = nil
     public var nativeSubagent: JSON? = nil
+    public var nativeMailboxCut: JSON? = nil
+    public var nativeAgentCallCancellation: JSON? = nil
     /// Agent-authored input, never user consent or explicit skill selection.
     public var nativeAgentDelivery: JSON? = nil
     /// Copied family context, without human input/consent authority.
@@ -93,6 +95,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let toolStats { value["nativeToolStats"] = toolStats }
         if let nativeSubagent { value["nativeSubagent"] = nativeSubagent }
         if let nativeInherited { value["nativeInherited"] = nativeInherited }
+        if let nativeMailboxCut { value["nativeMailboxCut"] = nativeMailboxCut }
+        if let nativeAgentCallCancellation { value["nativeAgentCallCancellation"] = nativeAgentCallCancellation }
         if let nativeAgentDelivery { value["nativeAgentDelivery"] = nativeAgentDelivery }
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
@@ -123,6 +127,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         guard let role = pi["role"].text, ["user","assistant","toolResult","system"].contains(role) else { throw AgentError("invalid_session", "Unsupported message role") }
         self.id=id; self.role=role
         nativeSubagent = pi["nativeSubagent"].isNull ? nil : pi["nativeSubagent"]
+        nativeMailboxCut = pi["nativeMailboxCut"].isNull ? Optional<JSON>.none : pi["nativeMailboxCut"]
+        nativeAgentCallCancellation = pi["nativeAgentCallCancellation"].isNull ? Optional<JSON>.none : pi["nativeAgentCallCancellation"]
         nativeInherited = pi["nativeInherited"].isNull ? Optional<JSON>.none : pi["nativeInherited"]
         nativeAgentDelivery = pi["nativeAgentDelivery"].isNull ? Optional<JSON>.none : pi["nativeAgentDelivery"]
         content = pi["content"].text.map { [textBlock($0)] } ?? pi["content"].list
@@ -181,6 +187,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let kind { value["kind"] = JSON(kind) }
         if let nativeAgentDelivery { value["nativeAgentDelivery"] = nativeAgentDelivery; value["kind"] = "agent_message" }
         if let nativeInherited { value["nativeInherited"] = nativeInherited }
+        if let nativeMailboxCut { value["nativeMailboxCut"] = nativeMailboxCut }
+        if let nativeAgentCallCancellation { value["nativeAgentCallCancellation"] = nativeAgentCallCancellation }
         if let stopReason { value["stopReason"] = JSON(stopReason) }
         if let detail { value["detail"] = JSON(preview(detail, bytes: 1024)) }
         if let timestamp { value["at"] = JSON(timestamp) }

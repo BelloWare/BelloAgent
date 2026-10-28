@@ -127,6 +127,18 @@ public struct ProviderClient: ModelClient {
         try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:purpose,lifecycle:nil,onObservation:onObservation,onDelta:onDelta)
     }
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, lifecycle:RequestLifecycle?, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let delivery = MailboxReplyDelivery()
+        return try await withTaskCancellationHandler {
+            let worker = Task {
+                do { delivery.resolve(.success(try await readReply(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:purpose,lifecycle:lifecycle,delivery:delivery,onObservation:onObservation,onDelta:onDelta))) }
+                catch { delivery.resolve(.failure(error)) }
+                delivery.finished()
+            }
+            delivery.install(worker)
+            return try await delivery.wait()
+        } onCancel: { delivery.cancel() }
+    }
+    private func readReply(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, lifecycle:RequestLifecycle?, delivery:MailboxReplyDelivery, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
         let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:purpose == "compaction")
         let bytes=try body.data()
@@ -160,6 +172,7 @@ public struct ProviderClient: ModelClient {
         await onObservation(observation)
         let stream=HTTPStream(); permit?.installCancellation { stream.cancel() }; var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
         var displayEvents = ProviderDisplayEvents(api:profile.api,attempt:attempt)
+        var cutPrefix = MailboxCutPrefix(), cutReply: ModelReply?
         var status=0,jsonBody=false,nonSSE=Data(),receivedBytes=0
         var lastBodyAt:Double?
         var providerFailure:AgentError?
@@ -177,13 +190,13 @@ public struct ProviderClient: ModelClient {
             let dispatch = stream.observation()
             await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)
             observation.receivedAt = dispatch["dispatch"].double ?? nowMS()
-            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+            observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) }
             for try await part in parts {
                 try Task.checkCancellation()
                 switch part {
                 case .head(let code,let headers):
                     status=code;jsonBody=Self.isJSONMediaType(headers["content-type"]);await traces.head(attempt,status:code,headers:headers)
-                    observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+                    observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) }
                 case .bytes(let data, let receivedAt):
                     defer { stream.consumed(data.count) }
                     lastBodyAt=receivedAt
@@ -204,9 +217,21 @@ public struct ProviderClient: ModelClient {
                             providerFailure=ProviderAccumulator.failure(value).carrying(PiErrorText.stream(value))
                         }
                         if providerFailure != nil {
-                            if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
+                            if observed { observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) } }
                             continue
                         }
+                        // After a cut, only terminal/accounting evidence is interpreted.
+                        // Discarded tool arguments cannot fail or escape this reader.
+                        if cutReply != nil {
+                            if ["response.completed", "response.incomplete"].contains(value["type"].text ?? "") {
+                                try accumulator.acceptJSON(value["response"])
+                                await traces.usage(attempt, UsageObservation.normalized(value["response"]["usage"],api:profile.api))
+                                await traces.terminal(attempt,at:receivedAt)
+                            }
+                            if observed { observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) } }
+                            continue
+                        }
+                        let completedPrefix = cutPrefix.consume(value)
                         let deltas = try accumulator.consume(value)
                         if accumulator.terminal { await traces.usage(attempt, UsageObservation.normalized(accumulator.root["usage"], api: profile.api)) }
                         // The model starts generating when its first output
@@ -238,7 +263,22 @@ public struct ProviderClient: ModelClient {
                             }
                             await traces.terminal(attempt,at:receivedAt)
                         }
-                        if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
+                        if observed { observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) } }
+                        if let items = completedPrefix, purpose == "turn", let prepare = lifecycle?.prepareMailboxCut,
+                           Self.mailboxCutRoute(profile:profile,identity:await traces.identity(attempt),body:body) {
+                            var prefix = ProviderAccumulator(api:profile.api)
+                            try prefix.acceptJSON(["status":"completed","output":.array(items)])
+                            var candidate = try prefix.result()
+                            candidate.terminal = nil
+                            candidate.message.requestAttemptIDs = [attempt]
+                            candidate.message.providerIdentity = await traces.identity(attempt)
+                            candidate.message.providerBinding = try Self.replayBinding(profile)
+                            candidate.mailboxCut = MailboxCut(cutId:UUID().uuidString,attemptId:attempt,responseId:cutPrefix.responseID!,itemId:value["item"]["id"].text!)
+                            if let committed = try await prepare(candidate) {
+                                cutReply = committed
+                                delivery.resolve(.success(committed))
+                            }
+                        }
                     }
                 }
             }
@@ -262,7 +302,12 @@ public struct ProviderClient: ModelClient {
                     await traces.terminal(attempt,at:time)
                 }
             }
-            var result=try accumulator.result(); result.message.requestAttemptIDs=[attempt]
+            var result: ModelReply
+            if let cutReply {
+                guard accumulator.terminal else { throw AgentError("incomplete_stream","The drain ended without a terminal event") }
+                result = cutReply; result.usage = UsageObservation.normalized(accumulator.root["usage"],api:profile.api)
+            } else { result = try accumulator.result() }
+            result.message.requestAttemptIDs=[attempt]
             result.message.responseTimeline=displayEvents.timeline
             result.message.providerIdentity=await traces.identity(attempt)
             result.message.contextUsageBinding=try RequestContextCounter.usageBinding(body,profile:profile)
@@ -270,7 +315,7 @@ public struct ProviderClient: ModelClient {
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:result.truncated ? "truncated":"completed",modelOutcome:result.truncated ? "truncated":"completed")
             captureFinished = true
-            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+            observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) }
             settlementStarted = true
             if let lifecycle { try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch)) }
             return result
@@ -283,7 +328,7 @@ public struct ProviderClient: ModelClient {
             if !captureFinished {
                 await traces.transport(attempt,observation:await stream.endObservation())
                 await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
-                observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+                observation.monitoring = await traces.monitoring(attempt); if cutReply == nil { await onObservation(observation) }
             }
             if !settlementStarted, let lifecycle {
                 do { try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch)) }

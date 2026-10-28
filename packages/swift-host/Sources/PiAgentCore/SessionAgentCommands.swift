@@ -59,7 +59,7 @@ extension AgentSession {
         guard let journal else { throw AgentError("subagent_persistence", "The family journal is closed") }
         if agentContractVersion == 4 { try journal.promoteToCodex(managedChild:isSubagent) }
         else { try journal.promoteToSteering(managedChild:isSubagent) }
-        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker].contains(journal.markerKind) else { throw AgentError("subagent_promotion", "V3 commands require a promoted journal") }
+        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker,JournalRecordKind.cutinMarker].contains(journal.markerKind) else { throw AgentError("subagent_promotion", "V3 commands require a promoted journal") }
         let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner ?? subagents.origin?.link.budgetOwnerSessionID ?? id),"data":try subagentJSON(data)]
         var next = subagents; try next.consume(row,sessionID:id)
         try journal.append(row,flush:true); subagents = next
@@ -219,7 +219,7 @@ extension AgentSession {
         _ = try submitManaged(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task,thinkingLevel:turn.effort),steer:false)
     }
     func agentResult(_ turn: AgentChildTurn, plan: SubagentPlan, cancelled: Bool) -> SubagentToolResult {
-        let final = visible.last { $0.role == "assistant" && $0.taskRootID == turn.inputID && !$0.content.contains { $0["type"].text == "toolCall" } }
+        let final = visible.last { $0.role == "assistant" && $0.nativeMailboxCut == nil && $0.taskRootID == turn.inputID && !$0.content.contains { $0["type"].text == "toolCall" } }
         let status: SubagentStatus = cancelled || state == .paused || state == .stopping ? .interrupted : state == .error ? .failed : final?.stopReason == "length" ? .outputLimited : .completed
         var result = SubagentToolResult(plan:plan,status:status,text:final?.text ?? "",error:state == .error ? AgentError(errorCode ?? "subagent_failed",errorMessage ?? "Child failed") : nil,messageIDs:final.map { [$0.id] } ?? [],accountingRevision:accounting.revision,began:true,textLimit:turn.taskName == nil ? 65_536 : 1_048_576)
         result.envelope["version"] = JSON(turn.taskName == nil ? 3 : 4); result.envelope["child_id"] = JSON(id); result.envelope["turn"] = JSON(turn.turn)

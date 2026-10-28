@@ -74,7 +74,7 @@ struct JournalCheckpoint: Codable, Equatable, Sendable {
     /// The file for `journal`, if there is one that decodes as this version.
     static func read(for journal: URL) -> JournalCheckpoint? {
         guard let data = try? Data(contentsOf: url(for: journal)), data.count <= 64 * 1024 * 1024,
-              let value = try? JSONDecoder().decode(JournalCheckpoint.self, from: data), value.version == currentVersion else { return nil }
+              let value = try? JSONDecoder().decode(JournalCheckpoint.self, from: data), [2,3].contains(value.version) else { return nil }
         return value
     }
     /// Written whole, then moved over the old file: a reader sees one or the other.

@@ -10,6 +10,7 @@ extension AgentSteeringCoordinator {
         try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":subagentJSON(origin)])
         if let seed = plan.forkSeed {
             guard seed.matches(seedMessages) else { throw AgentForkSeed.publicationError }
+            if seedMessages.contains(where: { $0.nativeMailboxCut != nil || $0.nativeAgentCallCancellation != nil }) { try journal.promoteToMailboxCut(managedChild:true) }
             for message in seedMessages { try journal.append(["type":"message","message":message.pi],id:message.id,flush:false) }
             try journal.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(seed.ids.map(JSON.string))]],flush:false)
             try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentForkSeed),"data":seed.reference],flush:true)

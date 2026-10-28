@@ -125,6 +125,8 @@ public actor AgentSession {
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
+    var receivingAgentMessage = false
+    var requestDrainWaiters: [CheckedContinuation<Void,Never>] = []
     var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
     var budgetStopIssued = false
@@ -430,7 +432,7 @@ public actor AgentSession {
         familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
             $0.admission != nil || $0.contribution?["sideParents"].isNull == false
         }
-        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker].contains(opened.markerKind) || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
+        guard [JournalRecordKind.steeringMarker,JournalRecordKind.codexMarker,JournalRecordKind.cutinMarker].contains(opened.markerKind) || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
@@ -469,6 +471,7 @@ public actor AgentSession {
         // once the journal holds the row, or when there is nothing to keep.
         // Before the interrupted task is pieced together from the rows: the
         // reply is its last.
+        try recoverMailboxCuts()
         let streamLog=PartialReplyLog.url(for: url)
         var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
@@ -752,6 +755,7 @@ public actor AgentSession {
     public func close() async {
         withCostPauseFence { closed = true; costPauseClock.acceptMessages(false) }
         cancelHistoryLoads(); stop(userInitiated:false); await runTask?.value
+        await waitForRequestDrains()
         // A paused family keeps its turns for Resume after the next open.
         if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:pauseGeneration,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }

@@ -421,7 +421,10 @@ actor AgentSteeringCoordinator {
             do { if jobs[job.turn.id]?.sealed != true { try await seal(job:job,child:child) }; await lock.release() }
             catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
-        if let child { await settled(child) }
+        if let child {
+            let settled = settled
+            Task { await child.waitForRequestDrains(); await settled(child) }
+        }
         if jobs[job.turn.id]?.instance == job.instance { jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 } }
         pump(job.owner.id)
         await signal(job.owner.id).pulse()
