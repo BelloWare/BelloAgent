@@ -4,7 +4,7 @@
 
 ## 0.1.136
 
-- [x] FOLD-GAP: folded rows take zero room, including inherited context; anchors and history samples skip them, and newer tokens do not walk them. The sixty-call gallery's divider-to-answer gap is 12 pt (was 205 pt); following/newer readers and opened folds stay put. [Validation](docs/validation/a136-foldgap-0.1.136.md).
+- [x] FOLD-GAP: folded rows take zero room, including inherited context; anchors skip them and newer tokens do not walk them. The sixty-call gallery's divider-to-answer gap is 12 pt (was 205 pt). Lead review: history room uses the all-message average; short completed documents start at the top, while tall newer readers and the 18-pt footer hold stay stable. The room-resize paging margin remains, with a failing-first regression. [Validation](docs/validation/a136-foldgap-0.1.136.md).
 - [ ] AGENTS-1 P3s from the 0.1.135 reviews: a finished `wait_agent` card still says "Waiting for agents"; a final answer's bounded preview cut inside a code block shows an empty frame; `requirePublished` reads the whole child journal at each open or follow-up; `HostService.rebind` refuses only `childMarker` children.
 - [ ] TEST-FLAKE: `StreamingDeliveryCostTests.testRefreshRoundTripOccupancy` fails 2–4 times in 10 isolated runs (301 projection visits in one delta), with or without 0.1.135's turn-fold change.
 - Owner decision pending: Codex's mid-reply cut-in for sub-agent mail.

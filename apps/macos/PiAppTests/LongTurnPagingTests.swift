@@ -245,6 +245,38 @@ final class LongTurnPagingTests: XCTestCase, SerialTestLane {
         XCTAssertNotNil(folds()[turn] ?? nil, "The window's last turn keeps its fold line")
     }
 
+    /// Just above the loaded rows, paging still owns the reader's place.
+    /// Resizing unread room must not replace that row anchor with a logical
+    /// position in the room before the approaching page can land.
+    @MainActor func testRoomResizeKeepsTheRowAnchorJustAboveTheLoadedWindow() async throws {
+        let heavy = try await open()
+        let chat = heavy.chat, page = try XCTUnwrap(chat.page)
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document)
+        page.onLoadEarlier = { _ in }
+        let first = try XCTUnwrap(heavy.rows.first { !$0.foldedAway && $0.frame.height > 0 })
+        let clip = scroll.contentView, margin = TranscriptNativeDocument.bufferMargin(clip.bounds.height)
+        chat.beginGesture()
+        chat.gestureStep(chat.clipY - (first.frame.minY - clip.bounds.height - margin / 2))
+        chat.endGesture()
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(page.followsBottom)
+        XCTAssertEqual(document.roomRowHeight, 24, "Folded history uses the all-message sample")
+        let before = first.frame.minY - clip.bounds.minY
+        XCTAssertGreaterThan(before, clip.bounds.height)
+        XCTAssertLessThan(before, clip.bounds.height + margin)
+        scroll.transcriptReading.captureDocument()
+        XCTAssertTrue(scroll.transcriptReading.hasAnchor)
+        page.measuredHistoryRowHeight(document.roomRowHeight * 1.5, over: page.historyRowHeightSample,
+                                      width: try XCTUnwrap(page.historyRowHeightWidth))
+        document.layoutNow()
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        let after = first.frame.minY - clip.bounds.minY
+        print("FOLDGAP room resize: row \(first.itemID), before \(before), after \(after), row height \(document.roomRowHeight)")
+        XCTAssertEqual(document.roomRowHeight, 36, "The room resize actually landed")
+        XCTAssertEqual(after, before, accuracy: 1, "The approaching row keeps its screen position through the resize")
+        XCTAssertNil(heavy.view.jumpReading, "The paging buffer does not start a position read")
+    }
+
     /// Scrolling a long tool-heavy chat from its newest message to its first,
     /// a trackpad gesture frame by frame: how many pages it reads, whether
     /// each one lands at the start of a turn, and whether any turn changes
@@ -401,9 +433,10 @@ extension LongTurnPagingTests {
         print("TURNFOLD geometry newer=\(newer) opened=\(opened): reader \(reader.id), before \(reader.top), after \(chat.screenTop(of: reader.id) ?? .nan); tail before \(beforeGeometry); after \(tailGeometry())")
         XCTAssertGreaterThan(settled, 0, "The question must arrive without a scroll")
         XCTAssertTrue(heavy.shapes()[0]?.fold?.hasPrefix("60 tool calls") == true)
-        if short, !newer {
+        if short {
             let document = try XCTUnwrap(chat.document)
             XCTAssertLessThan(document.frame.height, try XCTUnwrap(chat.scroll).contentView.bounds.height)
+            XCTAssertEqual(document.leadingSpace, 0, "A fully loaded short document holds no room above its rows")
             XCTAssertEqual(try XCTUnwrap(document.retainedRows.first?.frame.minY),
                            TranscriptMetrics.pageTopInset + document.leadingSpace, accuracy: 1,
                            "A short completed turn starts where a freshly folded turn starts")
@@ -455,7 +488,7 @@ extension LongTurnPagingTests {
 
     @MainActor func testFinishedTurnFillKeepsTheFollowingReaderAtTheEnd() async throws { try await completeCutTurn(newer: false) }
     @MainActor func testFinishedTurnFillLaysOutAShortTurnFromTheTop() async throws { try await completeCutTurn(newer: false, short: true) }
-    @MainActor func testFinishedTurnFillKeepsAShortNewerAnswerAtTheEnd() async throws { try await completeCutTurn(newer: true, short: true) }
+    @MainActor func testFinishedTurnFillLaysOutAShortNewerTurnFromTheTop() async throws { try await completeCutTurn(newer: true, short: true) }
     @MainActor func testFinishedTurnFillKeepsAReaderInTheNewerTurnStill() async throws { try await completeCutTurn(newer: true) }
     @MainActor func testFinishedTurnFillPreservesAnOpenedFold() async throws { try await completeCutTurn(newer: false, opened: true) }
 }

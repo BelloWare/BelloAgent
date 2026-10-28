@@ -646,7 +646,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
         XCTAssertEqual(question.frame.minY, line.frame.maxY, accuracy: 0.01)
     }
 
-    @MainActor func testFoldedMessagesDoNotDiluteHistoryRoomOrGetVisitedByANewerToken() throws {
+    @MainActor func testFoldedMessagesCountInHistoryAverageWithoutVisitsFromANewerToken() throws {
         try withDisplay(.compact) {
             let work = (0..<200).map {
                 reply(id: "work-\($0)", turn: "question", at: Double(1_001 + $0), text: "", call: (id: "call-\($0)", name: "read"))
@@ -661,8 +661,9 @@ final class TranscriptTurnFoldTests: XCTestCase {
             defer { fixture.close() }
             XCTAssertGreaterThan(fixture.memberRows.count, 200)
             let height = fixture.rows.reduce(CGFloat(0)) { $0 + $1.frame.height }
-            XCTAssertEqual(try XCTUnwrap(fixture.page.historyRowHeight), height / 2, accuracy: 0.01,
-                           "Only the question and answer contribute messages to the sample")
+            XCTAssertEqual(try XCTUnwrap(fixture.page.historyRowHeight), max(24, height / CGFloat(messages.count)), accuracy: 0.01,
+                           "Unread history has the same mix of hidden and visible messages as this window")
+            XCTAssertEqual(fixture.page.historyRowHeight, 24, "The per-message average keeps its 24-point floor")
             XCTAssertEqual(fixture.page.historyRowHeightSample, 202, "Window membership still controls when to resample")
             print("FOLDGAP history placed=\(height) average=\(fixture.page.historyRowHeight ?? 0) drawnMessages=2 membership=202")
             fixture.page.presentationInterval = 0
@@ -672,16 +673,14 @@ final class TranscriptTurnFoldTests: XCTestCase {
             print("FOLDGAP token setup hidden=\(fixture.rows.filter(\.foldedAway).count) zero=\(fixture.rows.filter { $0.frame.height == 0 }.count) hosted=\(fixture.document.hostedRowCount)")
             let visits = fixture.document.visibilityRowVisitCount
             let reconciled = fixture.document.rowReconciliationVisits
-            let sampled = fixture.document.historySampleRowVisitCount
             for _ in 0..<10 {
                 var message = try XCTUnwrap(fixture.session.messages.last); message.text += " word"
                 fixture.session.replaceMessage(at: fixture.session.messages.count - 1, with: message)
                 fixture.refresh()
             }
-            print("FOLDGAP tokens visibility=\(fixture.document.visibilityRowVisitCount - visits) reconciliation=\(fixture.document.rowReconciliationVisits - reconciled) samples=\(fixture.document.historySampleRowVisitCount - sampled) hidden=\(fixture.rows.filter(\.foldedAway).count)")
+            print("FOLDGAP tokens visibility=\(fixture.document.visibilityRowVisitCount - visits) reconciliation=\(fixture.document.rowReconciliationVisits - reconciled) hidden=\(fixture.rows.filter(\.foldedAway).count)")
             XCTAssertLessThan(fixture.document.visibilityRowVisitCount - visits, 200, "Tokens must not walk the folded turn")
             XCTAssertLessThan(fixture.document.rowReconciliationVisits - reconciled, 100)
-            XCTAssertEqual(fixture.document.historySampleRowVisitCount, sampled, "Tokens do not resample the history")
         }
     }
 
