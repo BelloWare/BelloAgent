@@ -115,7 +115,24 @@ import AppKit
     private func plan(_ width: CGFloat) -> (text: CGFloat, shown: CGFloat, label: CGFloat, buttons: CGFloat) {
         let text = prepared ? markdown.measure(width: max(1, width)).height : 22
         let label = title.isEmpty ? 0 : self.label.intrinsicSize.height + 4
-        return (text, expanded ? text : min(Self.previewHeight, text), label, controls.height(forWidth: max(1, width)))
+        return (text, expanded ? text : previewHeight(text), label, controls.height(forWidth: max(1, width)))
+    }
+    /// If only a fence's top padding fits, stop before its panel. Otherwise
+    /// keep the code lines that fit within the ordinary bounded viewport.
+    private func previewHeight(_ textHeight: CGFloat) -> CGFloat {
+        var height = min(Self.previewHeight, textHeight)
+        let text = markdown.textView
+        guard prepared, let storage = text.textStorage, let manager = text.layoutManager as? MarkdownTextLayoutManager,
+              let container = text.textContainer else { return height }
+        storage.enumerateAttribute(.piCodeBlock, in:NSRange(location:0,length:storage.length)) { value, range, stop in
+            guard let mark = value as? MarkdownCodeMark,
+                  let panel = manager.panelRect(for:range,indent:mark.indent,container:container),
+                  panel.minY + text.topInset < height,
+                  let firstLine = manager.textBox(forCharacters:NSRange(location:range.location,length:1)),
+                  firstLine.maxY + text.topInset > height else { return }
+            height = max(0,floor(panel.minY + text.topInset)); stop.pointee = true
+        }
+        return height
     }
     func height(forWidth width: CGFloat) -> CGFloat {
         let p = plan(width); return p.label + p.shown + 4 + p.buttons

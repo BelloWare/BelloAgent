@@ -85,6 +85,32 @@ final class SubagentMarkdownTests: XCTestCase {
             return (text.string as NSString).substring(with: pane.document.focusRange) == "Unique final conclusion"
         }
     }
+    @MainActor func testFinalAnswerPreviewNeverShowsAnEmptyCodeFrameAtItsCut() throws {
+        let code = String(repeating: "let value = 123 // Keep the code that fits\n", count: 80)
+        for lines in 0...8 {
+            let source = String(repeating: "A finding.\n\n", count: lines) + "```swift\n" + code + "```"
+            let delivery = SubagentCodexPresentationTests.delivery("FINAL_ANSWER", sender: "/root/audit", recipient: "/root", text: source)
+            let row = TranscriptNativeAgentRow(inputs: .init(item: .message(delivery), fresh: false, actions: .init(), width: 620, environment: .init()))
+            let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).first)
+            body.frame = CGRect(x: 0, y: 0, width: 560, height: body.height(width: 560)); body.layoutSubtreeIfNeeded()
+            XCTAssertFalse(body.isComplete, "The character bound must cut inside the fence")
+            XCTAssertTrue(body.markdown.textView.string.contains("let value = 123"))
+            let text = body.markdown.textView, storage = try XCTUnwrap(text.textStorage)
+            let manager = try XCTUnwrap(text.layoutManager as? MarkdownTextLayoutManager), container = try XCTUnwrap(text.textContainer)
+            let shown = try XCTUnwrap(body.markdown.superview).bounds.height
+            storage.enumerateAttribute(.piCodeBlock, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+                guard let mark = value as? MarkdownCodeMark,
+                      let panel = manager.panelRect(for: range, indent: mark.indent, container: container),
+                      let firstLine = manager.textBox(forCharacters: NSRange(location: range.location, length: 1)) else { return }
+                stop.pointee = true
+                print("PREVIEW lines=\(lines) shown=\(shown) panel=\(panel.minY + text.topInset) firstLine=\(firstLine.maxY + text.topInset)")
+                if panel.minY + text.topInset < shown {
+                    XCTAssertLessThanOrEqual(firstLine.maxY + text.topInset, shown,
+                                             "A visible frame needs its first code line (\(lines) prose lines)")
+                }
+            }
+        }
+    }
     @MainActor func testFindQuerySearchesRenderedAgentProseInSavedUnloadedRows() async throws {
         // Keep the agent turn outside the first page, independent of production page sizes.
         let limits = TranscriptPaging.pageLimits

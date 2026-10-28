@@ -5,6 +5,47 @@ import XCTest
 
 /// Generated wire-contract scenes, without a helper, credentials or user data.
 final class SubagentCodexGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testP3WaitAndBoundedCodeScenes() async throws {
+        guard let path = testEnvironment("PI_APP_P3_GALLERY") else { throw XCTSkip("Set PI_APP_P3_GALLERY") }
+        let folder = URL(fileURLWithPath:path)
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let window = NSWindow(contentRect:.init(x:0,y:0,width:680,height:360),styleMask:[.titled],backing:.buffered,defer:false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        var written: [String] = []
+        for (appearance, theme) in [(NSAppearance.Name.aqua,"light"),(.darkAqua,"dark")] {
+            window.appearance = NSAppearance(named:appearance)
+            var environment = TranscriptRowEnvironment(); environment.colorScheme = appearance == .darkAqua ? .dark : .light
+            for width: CGFloat in [680,420] {
+                window.setContentSize(.init(width:width,height:360)); window.center()
+                for scene in ["wait-running","wait-delivered","wait-timeout","final-code-cut"] {
+                    let backdrop = PiKit.Box(fill:.piSurface,cornerRadius:0)
+                    window.contentView = backdrop
+                    let row: NSView
+                    let height: CGFloat
+                    if scene == "final-code-cut" {
+                        let source = String(repeating:"A finding.\n\n",count:5) + "```swift\n" + String(repeating:"let value = 123 // Keep the code that fits\n",count:80) + "```"
+                        let delivery = SubagentCodexPresentationTests.delivery("FINAL_ANSWER",sender:"/root/audit",recipient:"/root",text:source)
+                        let answer = TranscriptNativeAgentRow(inputs:.init(item:.message(delivery),fresh:false,actions:.init(),width:width - 40,environment:environment))
+                        row = answer; height = answer.confirmHeight()
+                    } else {
+                        var tool = SubagentCodexPresentationTests.tool("wait_agent",output:scene == "wait-delivered" ? "Wait completed: updates from /root/audit, /root/tests." : scene == "wait-timeout" ? "Wait timed out." : "")
+                        if scene == "wait-running" { tool.state = "running" }
+                        let card = TranscriptNativeActionRow()
+                        card.update(tool:tool,open:true,fetched:nil,environment:environment,toggle:{},openFile:nil)
+                        row = card; height = card.height(width:width - 40)
+                    }
+                    backdrop.addSubview(row); row.frame = .init(x:20,y:20,width:width - 40,height:height)
+                    window.makeKeyAndOrderFront(nil); backdrop.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    try await Task.sleep(for:.milliseconds(100))
+                    let name = "\(scene)-\(theme)-\(Int(width)).png"
+                    try capture(window,to:folder.appendingPathComponent(name)); written.append(name)
+                }
+            }
+        }
+        XCTAssertEqual(written.count,16)
+        try (written.joined(separator:"\n") + "\n").write(to:folder.appendingPathComponent("manifest.txt"),atomically:true,encoding:.utf8)
+    }
     @MainActor func testCodexAgentScenes() async throws {
         guard let path = testEnvironment("PI_APP_CODEX_AGENTS_GALLERY") else { throw XCTSkip("Set PI_APP_CODEX_AGENTS_GALLERY") }
         let folder = URL(fileURLWithPath: path)
