@@ -478,3 +478,110 @@ existing cut recovery and fork clone checks. An earlier compile attempt exposed
 a throwing XCTest autoclosure in the nonthrowing clone seam; the fixture now
 uses explicit `do/catch`. One Release benchmark build was discarded because
 its source was edited during compilation; it supplied no measurement.
+
+`promotion-clone-200.log`, on the final implementation (`d5f1d1ef`), measured
+50,000 rows / **209,714,621 bytes**. The small envelope-size difference from the
+baseline is generated IDs/timestamps; the message payload and row count match.
+The gate metric encloses the production promotion call in `AsyncGate`, not the
+rest of a cut transaction.
+
+| Promotion | Clone wall time | Clone family-gate hold |
+|---|---:|---:|
+| v3 | 30.482 ms | 30.366 ms |
+| v4 | 27.264 ms | 27.237 ms |
+| v5 | 18.140 ms | 18.106 ms |
+
+Load was **2.77 → 2.87** with the full-lane lock held. V5's gate-held promotion
+fell from **743.857 to 18.106 ms**; all three are below 250 ms. The lock logs
+also record waiting for PERF-1; its lock was never taken or removed while held.
+
+### Round-2 validation counts and final-commit repetition
+
+Production source is `d5f1d1ef` (following `b5f97fea`); the remaining commit
+changes only this record and the release checklist. The first complete set
+of source checks is below. Logs are under `$PI_BUILD_ROOT/logs/round2/`:
+`preliminary/` for the matrix and `steering-crashes-fixed.log` for the corrected
+older-suite invocation. Each matrix log records HEAD and start/end load.
+
+| Suite | Result |
+|---|---:|
+| Affected helper classes | **316 executed: 313 passed, 3 opt-in skips, 0 failures** |
+| App cut presentation + subagent steering presentation | **16/16 passed**, both before mutations and after source restoration |
+| Release wire / concurrent / acceptance | **41/41**, **4/4**, **3/3** |
+| Release cut-in loopback modes | **24/24**, including held-drain follow-up |
+| Cut-in crash points | **37/37** |
+| Cut-in write/fsync/promotion failures | **36/36** |
+| Shared v3/v4/v5 promotion crash/failure/reopen matrix | **120/120** |
+| Existing v4 steering crash matrix, with actual 0.1.134 refusal checks | **44/44** |
+| Actual 0.1.135 downgrade variants | **4/4**: checkpoint, cold, uncut v4, fence bypass control |
+| Mutation cases | **61 caught**: 52 helper (each restored), 7 app (sources restored), 0.1.135 fence bypass, 0.1.134 fence bypass |
+
+The helper skips are the existing opt-in shared fork-fixture writer and the
+two promotion fault-harness entry points. Those two entries run explicitly
+in separate processes in all 120 promotion cases; none of those cases skipped.
+The new helper mutation names are `promotion_clone_ignored`,
+`decline_cancellation`, `late_hold_cancellation`, `owner_before_stop`,
+`parked_reopen`, `close_order`, and `claim_after_suspension`. Each failed its
+specific assertion and passed with its switch removed. The allocation mutant
+recreates the gap found after the first F1 implementation.
+
+The initial older steering invocation passed 36 cases, then its name-adoption
+fixture guard rejected the missing `--older-helper` argument; this was not a
+production assertion failure. The genuine helper was built from local tag
+`v0.1.134` / `9b6c9486fda33e1f9714183f223e143ce56df0e6`, under
+`$PI_BUILD_ROOT/compat-134-{source,build}`, and the entire 44-case suite was
+rerun with it. Its SHA256 is
+`dd1199ce328568364e4d9810a827ae2637e231e3d92a6ae850ea65ac80d1c5c1`.
+The actual 0.1.135 helper remains
+`516fe2485b1c98496020b15dc2000f2746f4e71d4a3af1a7bb7b23a4f6253e73`.
+No release commit, tag or published history was changed.
+
+The matrix started at load **2.36** and ended at **4.90** (one-minute values).
+The corrected older steering run ended at **8.26** after the generated
+concurrency stress. These are correctness runs, not performance evidence.
+The Release F3 measurements above both stayed below 4. Process inventories
+show replayd idle at **0.0%** and no Codex Computer Use process. The full-lane
+lock was held for these runs; waits for PERF-1 are retained in the run logs.
+
+Exact main commands (with `PI_BUILD_ROOT` exported to the specified build root):
+
+```sh
+swift build --package-path packages/swift-host \
+  --scratch-path "$PI_BUILD_ROOT/swift-host" --configuration release \
+  --arch arm64 -Xswiftc -Osize -j 4 --product pi-native-host
+python3 scripts/build-bundle.py
+swift test --package-path packages/swift-host \
+  --scratch-path "$PI_BUILD_ROOT/swift-verify" --skip-build \
+  --filter 'MailboxCut|AgentCodex|AgentSteering|FamilyLimitPauseTests|Provider(MediaType|StreamError|Streaming)|RoutingTests|ResponsesSampleTests|ResponseOrderTests|JournalCheckpointTests|JournalSlimmingTests|JournalPromotionTests|ForkAtReplyTests|ForkCloneTests|ForkPointTests|ForkReplayHandoffTests|SubagentForkTests|SubagentRecoveryTests|PartialReplyLogTests|SubagentAccountingTests|SideChatTests'
+python3 scripts/test-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-subagent-cutin.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-subagent-cutin-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-subagent-cutin-write-failures.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" --skip-build
+python3 scripts/test-subagent-cutin-mutations.py --recovery "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+python3 scripts/test-journal-promotion-faults.py \
+  --fault-bundle "$PI_BUILD_ROOT/cutin-mutation-build/debug/PiNativeHostPackageTests.xctest" \
+  --recovery-bundle "$PI_BUILD_ROOT/swift-verify/debug/PiNativeHostPackageTests.xctest"
+python3 scripts/test-subagent-steering-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" \
+  --skip-build --older-helper "$PI_BUILD_ROOT/compat/pi-native-host-0.1.134"
+python3 scripts/test-cutin-app-mutations.py
+python3 scripts/test-subagent-cutin-downgrade.py \
+  "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host" "$PI_BUILD_ROOT/compat/pi-native-host-0.1.135"
+python3 scripts/measure-journal-promotion.py --label promotion-clone-200
+```
+
+The existing steering fixture was generated with its `fixture_binary()` helper,
+adding `-j 4` to its Swift build command, in the same build root. No fault or
+mutation switches were added to production sources. The generated fault helpers
+use Debug; their cut-in cold recovery uses the normal Release helper. The
+standalone promotion matrix reopens with the clean helper XCTest bundle.
+
+Before pushing, the documentation-only final commit must repeat every table
+suite using the already-built, unchanged implementation and generated helpers
+(`--skip-build` for crash and helper-mutation generation). Its logs go to
+`logs/round2/final/`, with HEAD in each log; the app mutation runner still
+rebuilds and restores its test host. `logs/round2/completion-run.log` records
+that final HEAD and the matrix outcome. The F3 number above is the separate
+quiet Release measurement of the same implementation. The owner-only live
+probe remains outside this offline review task.
