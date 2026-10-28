@@ -70,19 +70,22 @@ extension AgentSession {
     /// Called before partial-log recovery and before unfinished family turns
     /// seal. Branches/forks keep historical rows; only missing projections of
     /// this recipient's committed preparation can be repaired.
-    func recoverMailboxCuts() throws {
+    static func recoverMailboxCuts(in journal: SessionJournal, consumer: inout JournalReplayConsumer, id: String) throws {
+        let subagents = consumer.r.subagents
         guard let cuts = subagents.cuts else { return }
         for commit in cuts.commits.values.sorted(by: { $0["cutId"].text! < $1["cutId"].text! }) where commit["recipientSessionId"].text == id {
             guard let preparation = cuts.preparations[commit["cutId"].text ?? ""] else { throw SubagentRecovery.damaged() }
             let rows = try MailboxCutJournal.rows(preparation,commit:commit)
-            if !isSubagent { try MailboxCutJournal.validate(commit,preparation:preparation,accounting:accounting) }
+            if subagents.origin == nil { try MailboxCutJournal.validate(commit,preparation:preparation,accounting:consumer.r.accounting) }
             var previous = preparation["branchId"]
             for row in rows {
                 if let hash = cuts.projected[row.id] {
                     guard hash == sha256(Data(row.pi.encoded().utf8)) else { throw SubagentRecovery.damaged() }
                 } else {
-                    guard journal?.markerKind == JournalRecordKind.cutinMarker, previous == (context.last.map { JSON($0.id) } ?? .null) else { throw SubagentRecovery.damaged() }
-                    try append(row); try journal?.synchronize()
+                    guard journal.markerKind == JournalRecordKind.cutinMarker, previous == (consumer.r.context.last.map { JSON($0.id) } ?? .null) else { throw SubagentRecovery.damaged() }
+                    try journal.append(["type":"message","message":row.pi],id:row.id)
+                    guard let span = journal.lastAppend, let line = journal.lastAppendLine else { throw SubagentRecovery.damaged() }
+                    try consumer.consume(line,at:span.offset)
                 }
                 previous = JSON(row.id)
             }

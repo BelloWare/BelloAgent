@@ -423,9 +423,12 @@ public actor AgentSession {
         // A fork's journal comes with what it replays to, made as it was
         // written (`forked`): used when it is the whole of this journal as it
         // is now, and never a replay resumed from a checkpoint.
-        let consumer: JournalReplayConsumer
+        var consumer: JournalReplayConsumer
         if let prepared, resumePath != nil, !prepared.r.resumed, prepared.r.coveredBytes == opened.size { consumer=prepared }
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
+        // Repair committed cut rows in the replay before publishing actor
+        // state, and before partial-log recovery can restore an open suffix.
+        try Self.recoverMailboxCuts(in:opened,consumer:&consumer,id:id)
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
@@ -471,7 +474,6 @@ public actor AgentSession {
         // once the journal holds the row, or when there is nothing to keep.
         // Before the interrupted task is pieced together from the rows: the
         // reply is its last.
-        try recoverMailboxCuts()
         let streamLog=PartialReplyLog.url(for: url)
         var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
