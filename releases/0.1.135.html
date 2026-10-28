@@ -1,0 +1,10 @@
+<h2>Bello Agent 0.1.135</h2>
+<ul>
+<li><strong>Sub-agents work the way Codex's do.</strong> The main chat starts each sub-agent with a short name, such as <code>audit</code>. By default a sub-agent begins with the main chat's conversation so far, plus a note giving it its task. Sub-agents can message the main chat and each other, and give each other new tasks; only the main chat starts new sub-agents. After every turn, a sub-agent's whole final answer comes back to the main chat. A message sent to an idle sub-agent waits for its next turn.</li>
+<li><strong>Sub-agents go by their names.</strong> The Agents picker, cards, windows, tabs, the sidebar, search and the Inspector show each sub-agent's name, with its task underneath.</li>
+<li><strong>Clearer cards and messages.</strong> Starting, messaging, tasking, waiting for, interrupting and listing sub-agents each get their own card. A message between agents shows who sent it to whom, and whether it is a new task, a message or a final answer. A final answer is shown in full, with Copy and Find.</li>
+<li><strong>Inherited context stays out of the way.</strong> In a sub-agent's window, the conversation it started with is folded into one row, "Started with the main chat's context". It is read only when you open it.</li>
+<li>A long turn's tool calls fold behind its one line as soon as the turn finishes, also in a new chat and after you edit and resend a message. Before, a turn with many tool calls could keep showing every call until you scrolled up.</li>
+<li>The context count under the composer appears again the first time you open a chat after launch. Since 0.1.132, it could be thrown away when the connection's model list finished loading, and the Inspector's next-request view could ask you to refresh it.</li>
+<li>A chat whose sub-agents ran on 0.1.135 can still be viewed in an earlier version, but not continued there.</li>
+</ul>

@@ -1,10 +1,10 @@
-# Next release: 0.1.135
+# Next release: 0.1.136
 
-**Released 2026-10-27:** 0.1.134 (build 138, tag `v0.1.134`) is the latest release, Ask in sidebar search; record `docs/validation/Bello-Agent-0.1.134-2026-10-27.md`. 0.1.133 (build 137) was the work planned as 0.1.131.
+**Released 2026-10-28:** 0.1.135 (build 139, tag `v0.1.135`) is the latest release: Codex-style sub-agents, and finished turns that fold; record `docs/validation/Bello-Agent-0.1.135-2026-10-28.md`. 0.1.134 (build 138) was Ask in sidebar search.
 
 ## 0.1.135
 
-- [x] Finished live turns now fold without scrolling, including fresh edit/resend branches. Owner: "It should be collapsed by default." Round 2: one automatic completion read per generation/cursor, errors wait for Retry, and short completed turns use the normal top inset; the 18-point footer hold and opened folds stay. The existing folded-row gap is deferred to 0.1.136. [Validation](docs/validation/a135-turnfold-0.1.135.md).
+- [x] TURNFOLD: a finished turn folds without a scroll, also in a new chat and on a fresh edit/resend branch. Owner, 2026-10-28: "It should be collapsed by default." When the live window starts inside a finished turn, one automatic whole-turn read per boundary brings back its question; a following reader's answer and opened folds stay put, and a turn that cannot fit is not read again. Known: folded rows keep one-point slots (about 200 pt under a sixty-call fold line), to fix in 0.1.136. [Validation](docs/validation/a135-turnfold-0.1.135.md).
 
 - [x] The first context count after launch is no longer discarded when the connection's model catalog loads; Inspector previews use the loaded tool schema too. [Validation](docs/validation/a135-gatefix-0.1.135.md).
 

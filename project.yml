@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.134
-    CURRENT_PROJECT_VERSION: 138
+    MARKETING_VERSION: 0.1.135
+    CURRENT_PROJECT_VERSION: 139
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Ask about your chats in plain words from sidebar search."
+    RELEASE_MESSAGE: "Sub-agents work the way Codex's do, and a finished turn's tool calls fold right away."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
