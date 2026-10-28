@@ -2,6 +2,13 @@
 
 **Released 2026-10-28:** 0.1.135 (build 139, tag `v0.1.135`) is the latest release: Codex-style sub-agents, and finished turns that fold; record `docs/validation/Bello-Agent-0.1.135-2026-10-28.md`. 0.1.134 (build 138) was Ask in sidebar search.
 
+## 0.1.136
+
+- [ ] FOLD-GAP: a folded turn takes no room for its hidden rows. Each folded-away row still stands at one point (`TranscriptRowContainer` measure and estimate), so a sixty-call fold left about 200 pt of blank space between its line and its answer (0.1.135 Known). Follows the owner's 2026-10-28 "It should be collapsed by default."
+- [ ] AGENTS-1 P3s from the 0.1.135 reviews: a finished `wait_agent` card still says "Waiting for agents"; a final answer's bounded preview cut inside a code block shows an empty frame; `requirePublished` reads the whole child journal at each open or follow-up; `HostService.rebind` refuses only `childMarker` children.
+- [ ] TEST-FLAKE: `StreamingDeliveryCostTests.testRefreshRoundTripOccupancy` fails 2–4 times in 10 isolated runs (301 projection visits in one delta), with or without 0.1.135's turn-fold change.
+- Owner decision pending: Codex's mid-reply cut-in for sub-agent mail.
+
 ## 0.1.135
 
 - [x] TURNFOLD: a finished turn folds without a scroll, also in a new chat and on a fresh edit/resend branch. Owner, 2026-10-28: "It should be collapsed by default." When the live window starts inside a finished turn, one automatic whole-turn read per boundary brings back its question; a following reader's answer and opened folds stay put, and a turn that cannot fit is not read again. Known: folded rows keep one-point slots (about 200 pt under a sixty-call fold line), to fix in 0.1.136. [Validation](docs/validation/a135-turnfold-0.1.135.md).
