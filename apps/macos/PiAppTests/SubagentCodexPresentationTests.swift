@@ -42,7 +42,7 @@ final class SubagentCodexPresentationTests: XCTestCase {
     }
     func testEveryCodexCardHeadingAndWakeState() {
         let cases = [("spawn_agent", "Started audit"), ("send_message", "To audit"),
-            ("followup_task", "New task for audit · turn 2"), ("wait_agent", "Waiting for agents"),
+            ("followup_task", "New task for audit · turn 2"), ("wait_agent", "Wait ended"),
             ("interrupt_agent", "Interrupted audit"), ("list_agents", "Agents")]
         for (name, title) in cases {
             let tool = Self.tool(name)
@@ -61,6 +61,28 @@ final class SubagentCodexPresentationTests: XCTestCase {
         rejected.state = "failed"
         XCTAssertEqual(SubagentToolView(rejected).label, "Not accepted")
         XCTAssertFalse(TranscriptToolRow.model(of: rejected).title.hasPrefix("Started"))
+    }
+    func testWaitHeadingReportsTheFinishedOutcome() {
+        for (output, heading) in [("Wait completed: updates from /root/audit, /root/tests.", "Wait completed"),
+                                  ("Wait timed out.", "Wait timed out"),
+                                  ("Wait interrupted by new input.", "Wait interrupted"),
+                                  ("Wait interrupted by Stop.", "Wait interrupted"),
+                                  ("Wait interrupted by cost limit.", "Wait interrupted")] {
+            let tool = Self.tool("wait_agent", output: output)
+            XCTAssertEqual(TranscriptToolRow.model(of: tool).title, heading)
+            XCTAssertEqual(SubagentToolView(tool).label, output)
+        }
+        var pending = Self.tool("wait_agent")
+        for state in ["running", "recorded"] {
+            pending.state = state
+            XCTAssertEqual(SubagentToolView(pending).heading, "Waiting for agents")
+        }
+        pending.state = "unknown"
+        XCTAssertEqual(SubagentToolView(pending).heading, "Wait for agents")
+        XCTAssertEqual(SubagentToolView(pending).label, "Outcome unknown")
+        let finished = SubagentToolView(Self.tool("wait_agent"))
+        XCTAssertEqual(finished.heading, "Wait ended")
+        XCTAssertEqual(finished.label, "Wait ended")
     }
     @MainActor func testCapabilityGatesCodexCardsButKeepsV3History() {
         let view = SessionDisplay(id: "parent"); view.historyState = .ready

@@ -58,7 +58,13 @@ struct SubagentToolView: Equatable, Sendable {
         case "spawn_agent": return (accepted == false || error != nil || toolState == "unknown" ? "Start " : toolState == "running" || toolState == "recorded" ? "Starting " : "Started ") + name
         case "send_message": return "To " + name
         case "followup_task": return "New task for " + name + (receiptTurn.map { " · turn \($0)" } ?? "")
-        case "wait_agent": return "Waiting for agents"
+        case "wait_agent":
+            if accepted == false || error != nil || toolState == "unknown" { return "Wait for agents" }
+            if toolState == "running" || toolState == "recorded" { return "Waiting for agents" }
+            if resultText.hasPrefix("Wait completed:") { return "Wait completed" }
+            if resultText.hasPrefix("Wait timed out.") { return "Wait timed out" }
+            if resultText.hasPrefix("Wait interrupted") { return "Wait interrupted" }
+            return "Wait ended"
         case "interrupt_agent": return (accepted == false || error != nil || toolState == "unknown" ? "Interrupt " : toolState == "running" || toolState == "recorded" ? "Interrupting " : "Interrupted ") + name
         default: return "Agents"
         }
@@ -153,7 +159,7 @@ struct SubagentToolView: Equatable, Sendable {
             case "spawn_agent": return (forkTurns == "none" ? "fresh" : "with this chat's context") + (summary.map { " · " + $0.presentationLabel } ?? "")
             case "send_message": return toolState == "running" ? "Sending" : "Queued for delivery"
             case "followup_task": return summary?.presentationLabel ?? (route == "follow_up" ? "Task accepted" : "Queued for running agent")
-            case "wait_agent": return resultText.isEmpty ? "Waiting for agents" : resultText
+            case "wait_agent": return resultText.isEmpty ? heading : resultText
             case "interrupt_agent": return toolState == "running" ? "Interrupting" : "Agent remains available"
             default: return "Team status"
             }
