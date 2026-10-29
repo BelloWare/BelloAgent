@@ -57,6 +57,8 @@ final class CommittedHistoryTests: XCTestCase {
             try file.write(contentsOf: bytes); parent = try XCTUnwrap(record["id"] as? String)
         }
         try file.close()
+        // The parity journals are part of the index scanner's corpus.
+        try HistoryIndexScanTests.assertJournalMatchesFrozenDecoding(path)
         try await host.connect(cwd: root, state: state)
         _ = try await host.request("workspace.open", params: ["cwd": .string(root.path), "directory": .string(state.path)])
         _ = try await host.request("session.open", sessionID: "history", params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "path": .string(path)])

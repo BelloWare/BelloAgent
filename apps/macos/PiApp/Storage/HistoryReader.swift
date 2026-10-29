@@ -135,7 +135,10 @@ actor HistoryReader {
             return work.exists || work.pausedWithoutWork ? "paused" : nil
         }
     }
-    fileprivate struct IndexRecord: Decodable {
+    /// What indexing reads of one journal record: ids, links, kinds and
+    /// small metadata, never chat text. `HistoryIndexScan` reads most lines
+    /// without `JSONDecoder`; the rest are decoded here.
+    struct IndexRecord: Decodable {
         var type: String?; var id: String?; var parentId: String?
         var fromMessageId: String?; var keptIds: [String]?; var nativeKeptIDs: [String]?; var contextIDs: [String]?
         var version: Int?; var customType: String?; var pendingWork: PendingWork?
@@ -208,6 +211,14 @@ actor HistoryReader {
             var agentDelivery = false
             /// The row opens a display turn (`HistoryWindowPolicy.startsTurn`).
             var startsTurn: Bool { HistoryWindowPolicy.startsTurn(role: role, kind: nativeKind, agentDelivery: agentDelivery) }
+            /// The same fields as `HistoryIndexScan` reads them. It reads no
+            /// message with a compaction checkpoint, so that stays nil.
+            init(role: String?, toolCallId: String?, calls: [String], contentIndexed: Bool, nativeReplayEligible: Bool?,
+                 nativeKind: String?, nativeOperationID: String?, taskKey: String?, agentDelivery: Bool) {
+                self.role = role; self.toolCallId = toolCallId; self.calls = calls; self.contentIndexed = contentIndexed
+                self.nativeReplayEligible = nativeReplayEligible; self.nativeKind = nativeKind; self.nativeOperationID = nativeOperationID
+                self.taskKey = taskKey; self.agentDelivery = agentDelivery
+            }
             private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID, nativeAgentDelivery, nativeTaskRoot, nativeTaskExecution }
             init(from decoder: Decoder) throws {
                 let value = try decoder.container(keyedBy: CodingKeys.self)
@@ -237,6 +248,17 @@ actor HistoryReader {
         /// and parent. What it says about unfinished work is read from the
         /// newest one only.
         init(stateID: String, parentID: String?) { type = "custom"; id = stateID; parentId = parentID; customType = StateRecordTail.customType }
+        /// A record as `HistoryIndexScan` read it. It reads no edit, run-state
+        /// or fork-boundary record and no compaction checkpoint: those fields
+        /// stay nil.
+        init(type: String?, id: String?, parentId: String?, fromMessageId: String?, keptIds: [String]?, nativeKeptIDs: [String]?,
+             version: Int?, customType: String?, nativeCompactionVersion: Int?, message: MessageRole?,
+             presentationTarget: String?, taskTerminal: TaskPresentationRecord?) {
+            self.type = type; self.id = id; self.parentId = parentId; self.fromMessageId = fromMessageId
+            self.keptIds = keptIds; self.nativeKeptIDs = nativeKeptIDs; self.version = version; self.customType = customType
+            self.nativeCompactionVersion = nativeCompactionVersion; self.message = message
+            self.presentationTarget = presentationTarget; self.taskTerminal = taskTerminal
+        }
         init(from decoder: Decoder) throws {
             let value = try decoder.container(keyedBy: CodingKeys.self)
             type = try value.decodeIfPresent(String.self, forKey: .type); id = try value.decodeIfPresent(String.self, forKey: .id)
@@ -1494,6 +1516,8 @@ actor HistoryReader {
                     // join the index, and the newest is decoded after the loop.
                     let value: IndexRecord
                     if let tail = StateRecordTail.read(pending) { value = IndexRecord(stateID: tail.id, parentID: tail.parent); newestState = (offset, pending.count) }
+                    // The scanner reads no record with run state: those are decoded.
+                    else if let scanned = pending.withUnsafeBytes({ HistoryIndexScan.record($0) }) { value = scanned }
                     else { value = try JSONDecoder().decode(IndexRecord.self, from: pending); if value.pendingWork != nil { newestState = nil } }
                     // An edit or a fork boundary after the checkpoint is replayed from the start.
                     if resume != nil, value.type == "branch" || value.customType == "pi-app.native.context.v1" { continue build }
@@ -1506,13 +1530,14 @@ actor HistoryReader {
                     }
                     if value.type != "session" {
                         let id = value.id ?? "record-\(offset)"
-                        guard try branch.ref(id) == nil else { throw StoreError.unreadableRecord }
+                        guard try !branch.contains(id) else { throw StoreError.unreadableRecord }
                         // A work segment is a cancellation boundary, not EOF.
                         if branch.recordCount % indexRecordLimit == 0 { try Task.checkCancellation() }
                         indexedRecordCount = branch.recordCount; indexedBytes = offset
                         let parent = value.id == nil ? leaf : value.parentId
                         if value.id == nil || parent != leaf { linear = false }
-                        if let parent, try branch.ref(parent) == nil { throw StoreError.unreadableRecord }
+                        // The previous record, its usual parent, was inserted just now.
+                        if let parent, parent != leaf, try !branch.contains(parent) { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
                                        fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) },
                                        turnStart: value.type == "message" && value.message?.startsTurn == true ? true : nil, taskKey: value.message?.taskKey))
