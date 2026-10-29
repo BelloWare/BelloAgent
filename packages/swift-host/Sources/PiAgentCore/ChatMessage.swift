@@ -214,7 +214,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
             return ["name": JSON(name), "source": JSON(source)]
         }
         if !models.isEmpty { record["models"] = .array(Array(models.prefix(8))) }
-        if let usage { record["usage"] = usage }
+        if let usage, !usage.isNull { record["usage"] = usage }
         return record.isEmpty ? nil : .object(record)
     }
     /// The skills a user message was sent with, as its row shows them: the

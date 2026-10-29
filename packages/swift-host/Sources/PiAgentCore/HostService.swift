@@ -50,6 +50,7 @@ public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let output: @Sendable (HostOutput)->Void
     private var hello=false, closing=false, quiesced=false, opening=false
+    private var allowsCommittedHistory = false
     private var shutdownTask: Task<Void, Never>?
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
@@ -121,8 +122,10 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
+            allowsCommittedHistory = frame["committedHistory"].flag == true
             var ready: JSON = ["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue","read-cancel"]]
             ready["capabilities"] = .array(ready["capabilities"].list + SubagentPolicy.capabilities.map { JSON($0) })
+            if allowsCommittedHistory { ready["capabilities"] = .array(ready["capabilities"].list + [JSON(CommittedHistorySource.capability)]) }
             emit(ready); return
         }
         let id=frame["commandId"].text ?? ""
@@ -357,7 +360,7 @@ public actor NativeHostService {
     /// The read-only commands: a repeat runs one again, where a command that
     /// changes something is answered from the reply it was first sent
     /// (`receive`). Every `session.content.` command reads too.
-    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","budget.attempts","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.history.source","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","budget.attempts","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
     static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
     /// Runs one command. The host checks, in this order, that it is not
     /// closing, that a workspace is open, that the command names a session,
@@ -763,6 +766,10 @@ public actor NativeHostService {
         case "session.history":
             if params["version"].int == 2 { return try await session.historyWindow(params) }
             return await session.historyPage(before:params["before"].int)
+        case "session.history.source":
+            guard allowsCommittedHistory, params["version"].int == 1 else { throw AgentError("invalid_params", "Unsupported history source version") }
+            guard let source = try await session.committedHistorySource() else { return .null }
+            return try JSON.parse(JSONEncoder().encode(source))
         case "session.message.read": return try await session.messageRead(id:required(params["messageId"],"message id"),field:params["field"].text ?? "text",offset:boundedInt(params["offset"],maximum:128*1024*1024))
         case "session.tool.input": return try await session.toolInput(messageID:required(params["messageId"],"message id"),callID:required(params["callId"],"tool call id",maximum:256))
         case "session.content.search": return try await session.contentSearch(params)

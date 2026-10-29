@@ -56,6 +56,8 @@ public actor AgentSession {
     var history: [ChatMessage] = [] { didSet { contentGeneration &+= 1 } }
     var visible: [ChatMessage] = [] { didSet { contentGeneration &+= 1 } }
     var contentGeneration: UInt64 = 0
+    var historyPresentationRevision: UInt64 = 0
+    var historyNonDurablePresentations = Set<String>()
     var contentCache: RetainedContent?
     var contentLoad: (key: RetainedContent.Key, load: SharedHistoryLoad)?
     /// Edited messages' versions, and the rows the versions an edit hid read

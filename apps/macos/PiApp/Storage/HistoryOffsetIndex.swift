@@ -11,6 +11,7 @@ struct HistoryOffset: Codable {
     /// The row opens a display turn (`HistoryWindowPolicy.startsTurn`):
     /// where a transcript page may start or end.
     var turnStart: Bool? = nil
+    var taskKey: String? = nil
 }
 
 /// Rebuildable read-only source index. Offset/branch tables spill to a private

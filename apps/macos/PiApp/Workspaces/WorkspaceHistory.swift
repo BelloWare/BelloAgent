@@ -42,6 +42,11 @@ extension WorkspaceModel {
             try checkNavigation(); return marked(page)
         }
         if !isOriginalSubagentReader(item.id), opened.contains(item.id), let host = hosts[item.workspaceID] {
+            var handoff: ConversationCursor?
+            if let page = try await readCommittedHistory(item, host: host, cursor: cursor, newer: newer, around: around,
+                                                        start: start, position: position, validating: validating, opening: opening, handoff: &handoff) {
+                try checkNavigation(); return marked(page)
+            }
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
             if opening { params["opening"] = .bool(true) }
             // Source handoff uses a stable entry id. Numeric file positions are
@@ -60,7 +65,11 @@ extension WorkspaceModel {
             if let around { params["around"] = .string(around) }
             if start { params["edge"] = .string("start") }
             if let position, !start, around == nil {
-                params["position"] = .number(Double(position))
+                if let handoff {
+                    params["around"] = .string(handoff.entry); params["lineage"] = .string(handoff.lineage)
+                } else if let held = cursor ?? validating, held.incarnation.hasPrefix("file:") {
+                    params["around"] = .string(held.entry)
+                } else { params["position"] = .number(Double(position)) }
             }
             // Reveals, Home and position reads all validate the held window
             // when handing its file boundary to the helper.

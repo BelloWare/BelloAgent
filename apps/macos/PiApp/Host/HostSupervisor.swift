@@ -16,6 +16,7 @@ final class HostSupervisor: ObservableObject {
     private(set) var supportsReadCancellation = false
     private(set) var supportsCodexAgents = false
     private(set) var supportsMailboxCutin = false
+    private(set) var supportsCommittedHistory = false
     private static let cancellableReads: Set<String> = ["session.history", "session.version.page"]
     private var dispatchedReads: [String: (cancellation: HostCommandCancellation, frame: [String: WireValue])] = [:]
     var onEvent: (([String: WireValue]) -> Void)?
@@ -129,7 +130,7 @@ final class HostSupervisor: ObservableObject {
             // as "unknown" (TranscriptActivity.outcome). Without it the helper
             // sends such a call as "cancelled" live and "failed" once saved.
             connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true),
-                             "unknownToolOutcomes": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
+                             "unknownToolOutcomes": .bool(true), "committedHistory": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
         }
         let attempt = transport
         try await withCheckedThrowingContinuation { continuation in
@@ -260,6 +261,7 @@ final class HostSupervisor: ObservableObject {
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
         supportsCodexAgents = false
         supportsMailboxCutin = false
+        supportsCommittedHistory = false
         let settlements = commandSettlements; commandSettlements.removeAll()
         for waiters in settlements.values { for waiter in waiters { waiter.resume() } }
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
@@ -293,6 +295,7 @@ final class HostSupervisor: ObservableObject {
                 supportsReadCancellation = capabilities.contains("read-cancel")
                 supportsCodexAgents = capabilities.contains("subagents-codex-v4")
                 supportsMailboxCutin = supportsCodexAgents && capabilities.contains("subagents-mailbox-cutin-v1")
+                supportsCommittedHistory = capabilities.contains(CommittedHistorySource.capability)
                 handshakeWatchdog?.cancel(); handshakeWatchdog = nil
                 for waiter in readyWaiters { waiter.resume() }; readyWaiters.removeAll(); return
             }

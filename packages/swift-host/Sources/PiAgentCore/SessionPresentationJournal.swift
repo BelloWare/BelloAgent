@@ -20,6 +20,10 @@ extension AgentSession {
         let oldAttempts = Set(history[index].requestAttemptIDs ?? [])
         for attempt in message.requestAttemptIDs ?? [] where !oldAttempts.contains(attempt) { pendingRequestLinks[attempt, default: []].append(message.id) }
         history[index] = message
+        if persist {
+            historyPresentationRevision &+= 1
+            historyNonDurablePresentations.remove(message.id)
+        } else { historyNonDurablePresentations.insert(message.id) }
         if let index = visible.lastIndex(where: { $0.id == message.id }) { visible[index] = message }
         invalidateDisplay(message.id)
     }

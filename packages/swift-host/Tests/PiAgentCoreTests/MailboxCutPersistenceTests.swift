@@ -78,6 +78,21 @@ final class MailboxCutPersistenceTests: HelperTestCase {
             await session.close(); JournalCheckpoint.remove(for:f.path)
         }
     }
+    func testCommittedHistoryDescriptionRequiresEveryCutProjection() async throws {
+        for count in 0...2 {
+            let f = try fixture(projected: count), session = try f.open()
+            let complete = try await session.committedHistorySource()
+            XCTAssertNotNil(complete, "Opening must finish crash recovery before offering the file source")
+            await session.removeCutProjectionFixture()
+            let incomplete = try await session.committedHistorySource()
+            XCTAssertNil(incomplete, "A committed cut with one missing projection must stay on the helper path")
+            await session.close()
+        }
+        let f = try fixture(projected: 0, committed: false), session = try f.open()
+        let source = try await session.committedHistorySource()
+        XCTAssertNotNil(source); XCTAssertEqual(source?.total, 1, "A preparation alone adds no displayed row")
+        await session.close()
+    }
     func testCheckpointColdReplaySlimmingAndForkKeepExactHistoryWithoutExecutionAuthority() async throws {
         let f = try fixture(), session = try f.open()
         let forked = try await session.fork(to:"fork",at:"prefix")
@@ -205,6 +220,7 @@ final class MailboxCutPersistenceTests: HelperTestCase {
 }
 
 private extension AgentSession {
+    func removeCutProjectionFixture() { subagents.cuts?.projected.removeValue(forKey: "cancelled") }
     func armCutFixture() throws -> RequestScope {
         enableFamilyBudget(); currentTurnID = "turn"; agentContractVersion = 4
         let scope = RequestScope(sourceSessionID:id,budgetOwnerSessionID:id,turnID:"turn",executionID:displayEpoch,purpose:"turn",ownerGeneration:stopCount,delegation:nil)

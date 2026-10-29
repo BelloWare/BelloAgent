@@ -10,6 +10,9 @@ final class CommittedHistoryTests: XCTestCase {
         XCTAssertEqual(source.object?["version"]?.number, 1)
         XCTAssertEqual(source.object?["sessionID"]?.string, "history")
         XCTAssertNil(source.object?["messages"], "The source contract carries metadata, never chat bodies")
+        XCTAssertTrue(fixture.host.supportsCommittedHistory)
+        try await fixture.host.shutdownAndWait()
+        XCTAssertFalse(fixture.host.supportsCommittedHistory, "A retired connection cannot lend its capability to the next helper")
     }
 
     func testToolReceiptAcrossPageBoundaryMatchesRealHelper() async throws {
@@ -22,25 +25,30 @@ final class CommittedHistoryTests: XCTestCase {
         rows.append(row("next", "user", "Next question"))
         let fixture = try await fixture(rows: rows)
         let helper = try ConversationHistoryPage(await fixture.host.request("session.history", sessionID: "history", params: ["version": .number(2), "edge": .string("start")]))
-        let file = try await HistoryReader().window(path: fixture.path, start: true)
+        let file = try await HistoryReader(indexDirectory: fixture.root).window(path: fixture.path, start: true)
         XCTAssertEqual(file.messages.map(\.id), helper.messages.map(\.id))
         XCTAssertFalse(helper.messages.contains { $0.id == "result" })
         XCTAssertEqual(file.messages.first { $0.id == "issuer" }?.tools, helper.messages.first { $0.id == "issuer" }?.tools)
     }
 
-    struct Fixture { var root: URL; var host: HostSupervisor; var path: String }
-    func fixture(rows: [[String: Any]]) async throws -> Fixture {
+    struct Fixture { var root: URL; var host: HostSupervisor; var path: String; var profile: ProfileRecord }
+    func fixture(rows: [[String: Any]], marker: String = "pi-app.native.v1", profile supplied: ProfileRecord? = nil) async throws -> Fixture {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("committed-history-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let state = root.appendingPathComponent("state"), host = HostSupervisor()
         addTeardownBlock { try? await host.shutdownAndWait(); try? FileManager.default.removeItem(at: root) }
-        var profile = ProfileRecord(); profile.modelId = "fixture"; profile.baseUrl = "http://127.0.0.1:1/v1"
+        var profile = supplied ?? ProfileRecord()
+        if supplied == nil { profile.modelId = "fixture"; profile.baseUrl = "http://127.0.0.1:1/v1" }
         try await host.connect(cwd: root, state: state)
         _ = try await host.request("workspace.open", params: ["cwd": .string(root.path), "directory": .string(state.path), "mcp": .object(["servers": .object([:])])])
         let opened = try await host.request("session.open", sessionID: "history", params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "connectionTest": .bool(true)])
         let path = try XCTUnwrap(opened.object?["path"]?.string)
         try await host.shutdownAndWait()
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        var data = try Data(contentsOf: URL(fileURLWithPath: path))
+        if marker != "pi-app.native.v1" {
+            data = Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: "pi-app.native.v1", with: marker).utf8)
+            try data.write(to: URL(fileURLWithPath: path))
+        }
         var parent = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(data.split(separator: 10).last))) as? [String: Any])?["id"] as? String)
         let file = try FileHandle(forWritingTo: URL(fileURLWithPath: path)); try file.seekToEnd()
         for source in rows {
@@ -52,7 +60,7 @@ final class CommittedHistoryTests: XCTestCase {
         try await host.connect(cwd: root, state: state)
         _ = try await host.request("workspace.open", params: ["cwd": .string(root.path), "directory": .string(state.path)])
         _ = try await host.request("session.open", sessionID: "history", params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "path": .string(path)])
-        return Fixture(root: root, host: host, path: path)
+        return Fixture(root: root, host: host, path: path, profile: profile)
     }
 
     func row(_ id: String, _ role: String, _ text: String) -> [String: Any] {
@@ -68,9 +76,7 @@ import Darwin.libproc
 final class CommittedHistoryPerformanceTests: XCTestCase, SerialTestLane {
     @MainActor func testHelperOwnedOlderPages() async throws {
         try XCTSkipUnless(testEnvironment("PI_PERF_JOURNAL") != nil, "Requires a generated PERF-1 fixture")
-        #if !PI_RELEASE_TESTS
-        throw XCTSkip("H1 measurements require Release")
-        #endif
+        #if PI_RELEASE_TESTS
         let build = URL(fileURLWithPath: try XCTUnwrap(testEnvironment("PI_PERF_ROOT"))).resolvingSymlinksInPath()
         let source = URL(fileURLWithPath: try XCTUnwrap(testEnvironment("PI_PERF_JOURNAL"))).resolvingSymlinksInPath()
         guard source.path.hasPrefix(build.path + "/") else { XCTFail("Fixture must be in this build root"); return }
@@ -106,6 +112,9 @@ final class CommittedHistoryPerformanceTests: XCTestCase, SerialTestLane {
             XCTAssertFalse(page.messages.isEmpty)
         }
         try await host.shutdownAndWait()
+        #else
+        throw XCTSkip("H1 measurements require Release")
+        #endif
     }
     private func usage(_ pid: Int32) -> (cpu: Double, peak: Double) {
         var value = rusage_info_v4(), timebase = mach_timebase_info_data_t()

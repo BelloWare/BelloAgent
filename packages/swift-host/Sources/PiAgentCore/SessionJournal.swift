@@ -39,6 +39,49 @@ final class SessionJournal {
     var writeOutcomeUncertain: Bool { poisoned }
     private var tail: String?, bytes: UInt64
     var head: String? { tail }
+    /// Metadata for the app's bounded reader, checked against both our writer
+    /// and the current pathname so a replaced file is never described.
+    func historySource(sessionID: String, lineage: String, runtime: String, presentationRevision: UInt64,
+                       total: Int, liveTail: CommittedHistorySource.Tail?, availableFrom: Int) throws -> CommittedHistorySource? {
+        guard !poisoned, !promoting, let headerCheck, let markerCheck, let tail else { return nil }
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? file.close() }
+        var current = stat(), writer = stat()
+        guard fstat(fd, &current) == 0, fstat(handle.fileDescriptor, &writer) == 0,
+              current.st_mode & S_IFMT == S_IFREG, current.st_dev == writer.st_dev, current.st_ino == writer.st_ino,
+              current.st_size >= 0, UInt64(current.st_size) == bytes else { return nil }
+        let last: JournalCheckpoint.Check
+        if markerCheck.offset + UInt64(markerCheck.length) + 1 == bytes { last = markerCheck }
+        else if let span = lastAppend, let line = lastAppendLine, span.offset + UInt64(span.length) + 1 == bytes {
+            last = .init(offset: span.offset, length: span.length, sha256: JournalCheckpoint.digest(line))
+        } else if let checkpoint = resumedFrom, checkpoint.start == bytes { last = checkpoint.last }
+        else {
+            // Cold opens and clones may have no last-append span. Read only
+            // the last record, in bounded backwards chunks, never the journal.
+            guard bytes > 0 else { return nil }
+            try file.seek(toOffset: bytes - 1)
+            guard try file.read(upToCount: 1) == Data([10]) else { return nil }
+            var start = bytes - 1, line = Data()
+            while start > 0 {
+                let count = Int(min(65_536, start)); start -= UInt64(count)
+                try file.seek(toOffset: start)
+                guard let chunk = try file.read(upToCount: count), chunk.count == count else { return nil }
+                if let newline = chunk.lastIndex(of: 10) {
+                    line.insert(contentsOf: chunk[chunk.index(after: newline)...], at: 0)
+                    start += UInt64(newline + 1); break
+                }
+                line.insert(contentsOf: chunk, at: 0)
+                guard line.count <= JournalRecordReader.maximumRecordBytes else { return nil }
+            }
+            guard (try JSON.parse(line))["id"].text == tail else { return nil }
+            last = .init(offset: start, length: line.count, sha256: JournalCheckpoint.digest(line))
+        }
+        let source = CommittedHistorySource(sessionID: sessionID, path: url.path, device: UInt64(current.st_dev), inode: UInt64(current.st_ino),
+            header: headerCheck, marker: markerCheck, last: last, lastID: tail, lineage: lineage, runtime: runtime,
+            presentationRevision: presentationRevision, total: total, liveTail: liveTail, availableFrom: availableFrom)
+        return source.valid ? source : nil
+    }
     private var unsynced = false
     /// Test seams: how many records were written and how many times they were
     /// forced to stable storage, so the batching contract is assertable

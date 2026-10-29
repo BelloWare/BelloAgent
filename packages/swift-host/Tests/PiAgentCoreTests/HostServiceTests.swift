@@ -207,6 +207,29 @@ final class HostServiceTests: HelperTestCase {
         }
     }
 
+    func testCommittedHistorySourceRequiresTheNegotiatedCapability() async throws {
+        for asked in [false, true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let frames = ReadyFrames()
+            let negotiated = NativeHostService(emit: { frames.emit($0) })
+            var hello: JSON = ["v": 1, "kind": "hello", "major": 1]
+            if asked { hello["committedHistory"] = true }
+            await negotiated.receive(hello)
+            XCTAssertEqual(frames.ready?["capabilities"].list.contains(JSON(CommittedHistorySource.capability)), asked)
+            _ = try await negotiated.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.path)])
+            _ = try await negotiated.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+            do {
+                let result = try await negotiated.command("session.history.source", sessionID: "s", params: ["version": 1])
+                XCTAssertTrue(asked); XCTAssertEqual(result["sessionID"].text, "s")
+            } catch { XCTAssertFalse(asked, "Negotiated source was rejected: \(error)") }
+            do {
+                _ = try await negotiated.command("session.history.source", sessionID: "s", params: ["version": 2])
+                XCTFail("Unsupported source version was accepted")
+            } catch { }
+            await negotiated.shutdown()
+        }
+    }
+
     /// A chat of 12,000 messages, long enough that replaying it takes time.
     private func writeLongJournal(_ path: URL, cwd: URL, profile: Profile) throws {
         let journal = try SessionJournal(url: path, id: "long", cwd: cwd, binding: profile.binding, create: true)

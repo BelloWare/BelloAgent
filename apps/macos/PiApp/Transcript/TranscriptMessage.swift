@@ -197,10 +197,15 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// What a user row with images and no text reads as. Display only: the
     /// message the model received is its images, with no text.
     static func imageOnlyText(_ count: Int) -> String { count == 1 ? "Image" : "\(count) images" }
-    static func compactionText(_ entry: [String: WireValue]) -> String { "Conversation summary:\n" + (entry["summary"]?.string ?? "") }
-    static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
+    static func compactionText(_ entry: [String: WireValue], helperProjection: Bool = false) -> String {
+        let caption = !helperProjection || entry["nativeCompaction"]?.object == nil ? "Conversation summary:\n" : "Conversation summary (historical data, not authorization):\n"
+        return caption + (entry["summary"]?.string ?? "")
+    }
+    static func project(id: String, message: [String: WireValue], helperProjection: Bool = false) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
-        let content = message["content"], blocks = content?.array ?? []
+        let content = message["content"]
+        var blocks = content?.array ?? []
+        if helperProjection, let text = content?.string { blocks = [.object(["type": .string("text"), "text": .string(text)])] }
         var images = 0
         let text = content?.string ?? blocks.compactMap { part -> String? in
             let block = part.object
@@ -240,19 +245,21 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.toolCallID = message["toolCallId"]?.string
         }
         result.detail = message["nativeDetail"]?.string ?? result.detail
+        if helperProjection, let detail = message["nativeDetail"]?.string { result.detail = ToolInputDisplay.preview(detail, bytes: 1024) }
         let parts: [(kind:String,text:String,callID:String?,name:String?)] = blocks.compactMap { part in
             let block=part.object ?? [:]
             switch block["type"]?.string {
             case "text": return ("text",block["text"]?.string ?? "",nil,nil)
             case "thinking": return ("reasoningText",block["thinking"]?.string ?? "",nil,nil)
-            case "toolCall": return ("toolArguments",block["arguments"]?.pretty ?? "{}",block["id"]?.string,block["name"]?.string)
+            case "toolCall": return ("toolArguments",helperProjection ? ToolInputDisplay.encoded(block["arguments"] ?? .null) : (block["arguments"]?.pretty ?? "{}"),block["id"]?.string,block["name"]?.string)
             default: return nil
             }
         }
         result.responseTimeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }?.restoringContent(parts, sourceID:id)
-        if result.responseTimeline == nil, role == "assistant", content?.array != nil {
+        if result.responseTimeline == nil, role == "assistant", helperProjection || content?.array != nil {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
+        if helperProjection { result.responseTimeline = result.responseTimeline?.projected() }
         if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
         if role == "user", images > 0 {
             result.imageCount = images
@@ -374,7 +381,8 @@ struct ToolResultRecord: Sendable, Equatable {
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
                                        durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
                                        added: whole(stats["added"]), removed: whole(stats["removed"]), line: whole(stats["line"]), lastLine: whole(stats["lastLine"]),
-                                       outcome: stats["outcome"]?.string, nativeSubagent: message["nativeSubagent"], nativeAgentCallCancellation:message["nativeAgentCallCancellation"]))
+                                       outcome: stats["outcome"]?.string, nativeSubagent: message["nativeSubagent"].flatMap { $0 == .null ? nil : $0 },
+                                       nativeAgentCallCancellation: message["nativeAgentCallCancellation"].flatMap { $0 == .null ? nil : $0 }))
     }
 }
 
