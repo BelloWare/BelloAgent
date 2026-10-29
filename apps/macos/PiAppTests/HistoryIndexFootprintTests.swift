@@ -80,7 +80,8 @@ final class HistoryIndexFootprintTests: XCTestCase {
         let reader = HistoryReader(indexDirectory: journal.directory)
         let rose = try await growth { _ = try await reader.window(path: journal.path, start: true) }
         print("HISTFOOTPRINT records bytes=\(journal.bytes) growth=\(rose)")
-        XCTAssertLessThan(rose, 16 << 20, "Indexing must not keep a table of every record in memory: \(rose) bytes for 160,000 records")
+        // A build's page cache is bounded (32 MiB), whatever the journal's size.
+        XCTAssertLessThan(rose, 64 << 20, "Indexing must not keep a table of every record in memory: \(rose) bytes for 160,000 records")
         await reader.releaseIndexes()
     }
 }

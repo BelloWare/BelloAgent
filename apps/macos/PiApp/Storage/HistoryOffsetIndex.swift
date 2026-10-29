@@ -121,7 +121,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         path = directory.appendingPathComponent(Self.filePrefix + "p\(getpid())-" + UUID().uuidString + ".sqlite")
         guard sqlite3_open(path.path, &db) == SQLITE_OK else { throw StoreError.unreadableRecord }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA cache_spill=128; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, kind INTEGER NOT NULL, role TEXT, turn INTEGER, payload BLOB NOT NULL, replay BLOB); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT, turn INTEGER); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, n INTEGER, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value,n); CREATE TABLE selected(n INTEGER PRIMARY KEY, id TEXT NOT NULL); BEGIN")
+        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-32768; PRAGMA cache_spill=8192; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, kind INTEGER NOT NULL, role TEXT, turn INTEGER, payload BLOB NOT NULL, replay BLOB); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT, turn INTEGER); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, n INTEGER, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value,n); CREATE TABLE selected(n INTEGER PRIMARY KEY, id TEXT NOT NULL); BEGIN")
     }
     deinit { releaseStatements(); sqlite3_close(db); try? FileManager.default.removeItem(at: path) }
     private func releaseStatements() { for statement in statements.values { sqlite3_finalize(statement) }; statements.removeAll() }
@@ -231,7 +231,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     /// What a row is to the selected timeline and the shown one: a message
     /// (1), a compaction (2), an edit marker (3), or anything else (0).
     static func kind(_ ref: HistoryOffset) -> Int { ref.type == "message" ? 1 : ref.type == "compaction" ? 2 : ref.type == "branch" ? 3 : 0 }
-    private var lastRowid: Int64 = 0
+    private var lastRowid: Int64 = 0, editsTimeline = false
     func insert(_ ref: HistoryOffset, kind: Int? = nil) throws {
         try run("INSERT INTO refs(id,kind,role,turn,payload) VALUES(?1,?2,?3,?4,?5)") { statement in
             bind(statement, 1, ref.id); bind(statement, 2, kind ?? Self.kind(ref)); bind(statement, 3, ref.role ?? ""); bind(statement, 4, ref.turnStart == true ? 1 : 0)
@@ -240,6 +240,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
             try step(statement)
         }
         lastRowid = sqlite3_last_insert_rowid(db)
+        if ref.type == "branch" || ref.contextSelection != nil { editsTimeline = true }
         // A new row has no links yet and no position: it joins the timeline
         // only when it is appended.
         if ref.calls?.isEmpty == false || ref.resultCall != nil || ref.operationID != nil { try insertLinks(ref, position: nil) }
@@ -398,9 +399,13 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     func finish() throws {
         // The renamed tables invalidate statements prepared against them.
         releaseStatements()
-        // Compact branch holes into a dense position table once. Reads now do
-        // primary-key lookups rather than OFFSET walks over a long journal.
-        try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT, turn INTEGER); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role,turn FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; UPDATE links SET n=(SELECT n FROM visible WHERE visible.id=links.id); COMMIT")
+        // Compact branch holes into a dense position table once, or take every
+        // message and compaction of a chain in insertion order. Reads now do
+        // primary-key lookups rather than OFFSET walks over a long journal;
+        // the id index is built once, by sorting, not row by row.
+        let rows = bulkTimeline ? "SELECT ROW_NUMBER() OVER(ORDER BY rowid)-1,id,role,turn FROM refs WHERE kind IN (1,2) ORDER BY rowid"
+                                 : "SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role,turn FROM visible"
+        try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT NOT NULL, role TEXT, turn INTEGER); INSERT INTO ordered \(rows); DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; CREATE UNIQUE INDEX visible_id ON visible(id); DROP TABLE chain; UPDATE links SET n=(SELECT n FROM visible WHERE visible.id=links.id); COMMIT; PRAGMA cache_size=-512; PRAGMA cache_spill=128; PRAGMA shrink_memory")
         count = try scalar("SELECT count(*) FROM visible")
         nextOrdinal = count
     }
@@ -542,6 +547,17 @@ final class HistoryOffsetIndex: @unchecked Sendable {
             try run("INSERT INTO selected VALUES(?1,?2)") { statement in bind(statement, 1, n); bind(statement, 2, id); try step(statement) }
         }
         selectedFrom = lastRowid
+    }
+    /// Whether the chain is every row in insertion order and holds no edit
+    /// marker or fork boundary: then its shown timeline is every message
+    /// and compaction in that order (`replayInBulk`).
+    var replaysInBulk: Bool { chainInInsertionOrder && !editsTimeline }
+    private var bulkTimeline = false
+    /// The shown timeline is every message and compaction inserted, in
+    /// order: `finish` builds it in one statement instead of row by row.
+    func replayInBulk() throws {
+        guard replaysInBulk, count == 0 else { throw StoreError.unreadableRecord }
+        bulkTimeline = true
     }
     /// Test seam: the database's size, on disk or held.
     var bytes: Int { ((try? scalar("PRAGMA page_count")) ?? 0) * ((try? scalar("PRAGMA page_size")) ?? 0) }

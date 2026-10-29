@@ -1658,8 +1658,11 @@ actor HistoryReader {
         if targetTurns != nil && sessionID == nil && notice == nil { notice = "History has no valid session header. Its source was left untouched." }
         try branch.constructChain(leaf: leaf)
         // Native edits keep the append-only source, while the disk-backed
-        // visible position table follows their explicit branch records.
-        try branch.replayChain { ref in
+        // visible position table follows their explicit branch records. A
+        // whole chain of rows in insertion order without edits or fork
+        // boundaries shows every message and compaction, in order.
+        if seeded.isEmpty, seededTail == nil, branch.replaysInBulk { try branch.replayInBulk() }
+        else { try branch.replayChain { ref in
             if seeded.contains(ref.id) { try branch.append(ref); return }
             if ref.id == seededTail { return }
             if ref.type == "branch" {
@@ -1671,7 +1674,7 @@ actor HistoryReader {
                 try branch.append(ref)
             } else if let selected = ref.contextSelection { try branch.selectTimeline(selected)
             } else if ref.type == "message" || ref.type == "compaction" { try branch.append(ref) }
-        }
+        } }
         try branch.finish()
         taskRecords = try taskRecords.filter { task in
             guard let last = task.lastSourceID else { return false }
