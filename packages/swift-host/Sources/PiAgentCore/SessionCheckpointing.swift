@@ -246,7 +246,7 @@ extension AgentSession {
         // Rows a chat opened from its metadata file never loaded still count.
         checkpoint.rowsBefore += olderRows
         if checkpoint.lineage == nil { checkpoint.lineage = checkpointLineage }
-        try? checkpoint.write(for: journal.url)
+        do { try checkpoint.write(for: journal.url); checkpointPublishedThrough = checkpoint.start } catch {}
     }
 
     /// The highest presentation ordinal a row carries.

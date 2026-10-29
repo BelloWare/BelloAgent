@@ -369,6 +369,15 @@ public actor AgentSession {
     /// state a run keeps: where the open's replay stopped, taken on to the
     /// journal's end when asked for (`durableReplay`).
     var durable: JournalReplayConsumer?
+    var checkpointRefreshPolicy = CheckpointRefreshPolicy()
+    var checkpointRefreshTask: Task<Void, Never>?
+    var checkpointRefreshToken = UUID()
+    var checkpointPublishedThrough: UInt64 = 0
+    var checkpointRefreshAttemptedThrough: UInt64 = 0
+    var checkpointRefreshAttemptedAt = ProcessInfo.processInfo.systemUptime
+    var checkpointRefreshClock: @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
+    /// Failure injection at the atomic rename, after the durable turn settled.
+    var beforeCheckpointReplacement: (@Sendable () throws -> Void)?
     /// A background load of the rows a fork opened without (`startHistoryFill`).
     var historyFill: HistoryFill?
     var historyFillTokens = 0
@@ -431,6 +440,7 @@ public actor AgentSession {
         // state, and before partial-log recovery can restore an open suffix.
         try Self.recoverMailboxCuts(in:opened,consumer:&consumer,id:id)
         let replayed=try consumer.finished(); durable=consumer
+        checkpointPublishedThrough = opened.resumedFrom?.start ?? 0
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
@@ -648,7 +658,9 @@ public actor AgentSession {
         try dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
-        if let captured=replayed.captured { try? captured.write(for: url) }
+        if let captured=replayed.captured {
+            do { try captured.write(for: url); checkpointPublishedThrough = captured.start } catch {}
+        }
         else if stored != nil, !replayed.resumed { JournalCheckpoint.remove(for: url) }
     }
     /// Held calls stay in the parent's context for Resume, but a new side
@@ -748,7 +760,7 @@ public actor AgentSession {
         guard await drainSidePauseChanges() else {
             withCostPauseFence { closed = false; costPauseClock.acceptMessages(true) }; return false
         }
-        cancelHistoryLoads(); costPauseClock.retire(); journal=nil
+        cancelHistoryLoads(); await stopCheckpointRefresh(); costPauseClock.retire(); journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch
             Task { await coordinator.release(owner: owner, runtimeID: runtimeID) }
@@ -777,6 +789,7 @@ public actor AgentSession {
         // Shutdown may encounter an unavailable root writer. The sender's
         // durable intent remains for cold recovery; no clock revives on open.
         if !ephemeral { _ = await drainSidePauseChanges() }
+        await stopCheckpointRefresh()
         costPauseClock.retire(); journal=nil
     }
 }

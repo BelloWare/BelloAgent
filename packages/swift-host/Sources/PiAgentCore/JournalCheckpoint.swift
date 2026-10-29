@@ -78,11 +78,26 @@ struct JournalCheckpoint: Codable, Equatable, Sendable {
         return value
     }
     /// Written whole, then moved over the old file: a reader sees one or the other.
-    func write(for journal: URL) throws {
+    func write(for journal: URL, maximumBytes: Int? = nil) throws {
+        try Self.publish(staged: stage(for: journal, maximumBytes: maximumBytes), for: journal)
+    }
+    /// Preparing the bytes may run off the session actor. Publication stays
+    /// with its writer, which checks that this still describes its journal.
+    struct SizeLimit: Error {}
+    func stage(for journal: URL, maximumBytes: Int? = nil) throws -> URL {
         let target = Self.url(for: journal), temporary = target.deletingLastPathComponent()
             .appendingPathComponent("." + target.lastPathComponent + "." + UUID().uuidString)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(self).write(to: temporary)
+        do {
+            let bytes = try encoder.encode(self)
+            if let maximumBytes, bytes.count > maximumBytes { throw SizeLimit() }
+            try bytes.write(to: temporary)
+        }
+        catch { try? FileManager.default.removeItem(at: temporary); throw error }
+        return temporary
+    }
+    static func publish(staged temporary: URL, for journal: URL) throws {
+        let target = Self.url(for: journal)
         guard rename(temporary.path, target.path) == 0 else {
             try? FileManager.default.removeItem(at: temporary)
             throw CocoaError(.fileWriteUnknown)

@@ -737,3 +737,334 @@ Wire commands above execute inside the lock/load wrapper. The temporary
 baseline worktree and baseline bundle from the missing round-1 cell were
 removed. Item 4 has no unresolved functional failure. The optional replay/
 encoding optimizations are not included in this item.
+
+## Round 2 — bounded checkpoint refresh (item 10)
+
+### Measure-first decision
+
+Before item-10 implementation, the unchanged round-1 parser helper opened
+real helper-created checkpoints followed by generated ordinary durable turns.
+Each turn contains user text, an assistant tool call, a 32 KiB tool result,
+assistant final text, and a settled state record. The crossing case compacts
+halfway through 50 MiB and retains two turns. The journals and metadata are
+APFS clones below this stream's build root; no phase-A fixture is modified.
+
+| Base fixture | Suffix MiB | Crosses compaction | Open ms | CPU s | Peak MiB |
+|---|---:|---|---:|---:|---:|
+| 50k | 10.03 | no | 106.7 | 0.104 | 48.8 |
+| 50k | 50.03 | no | 630.7 | 0.629 | 224.4 |
+| 50k | 200.03 | no | 1962.3 | 1.970 | 858.1 |
+| 50k | 50.03 | yes | 501.2 | 0.482 | 219.5 |
+| 50k exchanges | 10.03 | no | 221.2 | 0.213 | 52.0 |
+| 50k exchanges | 50.03 | no | 511.4 | 0.512 | 221.3 |
+| 50k exchanges | 200.03 | no | 2099.5 | 2.107 | 867.5 |
+| 50k exchanges | 50.03 | yes | 567.3 | 0.562 | 213.2 |
+
+All eight trials exited zero with accepted load (maximum 2.31). Raw evidence:
+`round2/suffix-probe.py`, `round2/run-suffix-matrix.py`,
+`round2/item10-baseline-summary.json`, and `perf/json-round1-suffix-*`.
+The 200 MiB suffix takes about two seconds, so the requested implementation
+condition is met. The 10 MiB case alone would not justify it.
+
+### Change and bounds
+
+After a settled state is durably flushed, a session schedules one utility
+worker after 8 MiB or 60 seconds of new journal data. Scheduling captures a
+fixed flushed prefix and the kept replay's value; it does not serialize live
+state on the session actor. A later settled turn coalesces into the next
+worker. Replay yields between 32 MiB batches and checks cancellation at each
+record. Close/unload cancel and join the worker before releasing the journal.
+
+The checkpoint is derived only from journal replay. Its final record must
+be the exact settled state at the captured prefix, with no delivering input,
+unresolved command receipts or unresolved accounted request. Incomplete cut
+preparations/projections are refused. Complete receipts, cuts, family state,
+accounting, context and edit lineage are retained without truncation. The
+context must fit within the last 32,768 visible rows; otherwise refresh is
+skipped. A conservative counting Encoder bounds metadata work before JSON
+construction; the final encoded metadata is independently capped at 8 MiB.
+Oversized/unsafe prefixes keep the previous checkpoint.
+
+Encoding and temporary-file writes happen off the session actor. The actor
+checks journal identity, marker, generation and prefix ordering before the
+existing atomic rename. A newer compaction/edit checkpoint cannot be replaced
+by an older background result. The checkpoint format and canonical JSON
+encoder are unchanged. Long opening replays also publish validated settled
+prefixes at 64 MiB/60-second intervals, and a remaining eligible suffix at
+EOF. Full history-reader replays do not write metadata.
+
+### Tests and mutations
+
+The first test failed before implementation: a settled suffix did not advance
+the checkpoint before close (one test, two recorded failures including the
+poll timeout; `round2/item10-failing-first.log`). The crash-copy test copies
+the journal and cache while the writer is still alive, then verifies that the
+copy reopens from the newer checkpoint with the completed command and a
+journal-only row absent from the live projection.
+
+Eight new tests passed (`round2/item10-new-tests.log`). They cover crash-copy reopen, failed replacement and
+temporary cleanup, exact settled-prefix eligibility, complete and partial
+cuts with family/accounting/receipt parity, metadata/context limits, long
+replay publication, inherited edit lineage, and the time threshold.
+The affected helper run executed 120 tests: 118 passed, two optional cases
+skipped, no failures (`round2/item10-helper-affected.log`).
+
+Both required mutations failed their targeted test: removing turn-end
+scheduling produced the missing-refresh timeout (one test, two failures),
+and dropping exact durable-prefix coverage accepted an unsettled tail (one
+test, one assertion). Sources were restored before the affected run.
+Raw scripts/results: `round2/item10-mutations.py`, `item10-mutations.json`,
+and `item10-mutation-{scheduling,durable-prefix}.log`.
+
+An intermediate compile was discarded because a test source changed while
+Swift was still building it. The subsequent complete build and eight-test
+run passed (`item10-new-tests.log`); no result from the interrupted build is
+counted as validation.
+
+### Release suffix comparison
+
+Three accepted trials per cell, interleaved before/after by round. Both
+helpers use the round-1 parser. “Before” is `d8d0ad32`; “after” includes
+items 4 and 10. Each trial starts from a fresh APFS clone of the same warm
+checkpoint and generated suffix. The first helper exits; a second, fresh
+helper measures the checkpoint actually left by that open. CPU and peak
+footprint therefore belong to each process separately.
+
+The initial open includes replay and checkpoint publication:
+
+| Base | Suffix MiB | Crosses compaction | Wall ms before → after | CPU s before → after | Peak MiB before → after | Max 1-min load before → after |
+|---|---:|---|---:|---:|---:|---:|
+| 50k | 10 | no | 148.5 → 145.4 | 0.134 → 0.141 | 50.1 → 50.9 | 2.79 → 2.71 |
+| 50k | 50 | no | 559.8 → 573.0 | 0.558 → 0.570 | 218.7 → 223.0 | 2.88 → 2.71 |
+| 50k | 200 | no | 2125.8 → 2533.0 | 2.130 → 2.522 | 859.9 → 864.4 | 2.88 → 2.89 |
+| 50k | 50 | yes | 468.1 → 502.2 | 0.465 → 0.498 | 210.8 → 212.4 | 2.81 → 2.98 |
+| 50k-exchanges | 10 | no | 142.2 → 168.0 | 0.140 → 0.161 | 49.3 → 50.5 | 2.67 → 2.98 |
+| 50k-exchanges | 50 | no | 585.0 → 562.6 | 0.579 → 0.562 | 225.2 → 222.2 | 2.67 → 2.98 |
+| 50k-exchanges | 200 | no | 2055.5 → 2583.3 | 2.062 → 2.581 | 877.3 → 859.1 | 2.69 → 3.06 |
+| 50k-exchanges | 50 | yes | 439.0 → 562.0 | 0.432 → 0.561 | 210.7 → 214.9 | 2.71 → 2.80 |
+
+A fresh-process reopen using the resulting checkpoint:
+
+| Base | Suffix MiB | Crosses compaction | Wall ms before → after | CPU s before → after | Peak MiB before → after | Max 1-min load before → after |
+|---|---:|---|---:|---:|---:|---:|
+| 50k | 10 | no | 132.0 → 110.7 | 0.130 → 0.109 | 49.6 → 46.4 | 2.79 → 2.71 |
+| 50k | 50 | no | 507.1 → 427.2 | 0.506 → 0.426 | 218.9 → 197.5 | 2.88 → 2.71 |
+| 50k | 200 | no | 2135.6 → 1767.3 | 2.145 → 1.773 | 858.0 → 725.5 | 2.88 → 2.89 |
+| 50k | 50 | yes | 250.3 → 223.1 | 0.249 → 0.221 | 113.6 → 102.2 | 2.81 → 2.98 |
+| 50k-exchanges | 10 | no | 137.6 → 116.2 | 0.136 → 0.114 | 49.6 → 46.1 | 2.67 → 2.98 |
+| 50k-exchanges | 50 | no | 481.8 → 426.0 | 0.482 → 0.425 | 220.5 → 198.3 | 2.67 → 2.98 |
+| 50k-exchanges | 200 | no | 2175.2 → 1730.6 | 2.181 → 1.741 | 846.2 → 724.4 | 2.69 → 3.06 |
+| 50k-exchanges | 50 | yes | 258.3 → 238.4 | 0.258 → 0.237 | 115.1 → 103.3 | 2.71 → 2.80 |
+
+These 48 trial pairs (96 opens) all passed at load ≤3.06. The 200 MiB
+subsequent reopen improves by 17–20%, with peak footprint lower by 14–15%.
+Its first replay pays 19–26% to build the newer caches. The crossing case
+already publishes an ordinary compaction checkpoint before this change;
+its additional refresh benefit is correspondingly smaller. The 10 MiB
+initial-open difference is small in absolute terms and varies across trials.
+
+Refresh cannot make an un-compacted 200 MiB model context cheap: the existing
+checkpoint format still names journal-backed rows that must be read and
+decoded (`SessionCheckpointing.swift`, `loadCheckpoint`). The remaining
+~1.7 seconds includes loading this context and its metadata; those two costs
+have not been isolated here. Context is never discarded
+to meet a presentation budget. One 200 MiB case leaves about 8 MiB after its
+last 64 MiB replay publication, because the remaining suffix falls just below
+the 8 MiB refresh threshold. Metadata is 1.81 MiB for 21,187 rows in that case.
+No journal format, history source selection, or `SessionReads.swift` change
+is included.
+
+Raw medians, ranges, every start/end/peak load and helper hash are retained in
+`round2/item10-release-summary.json`, backed by
+`perf/json-item10-{before,after}-*.{log,json}`. Before helper SHA-256:
+`719e68a5320f2c420aeaaa3ac3f0bfff5ef02dd25823375a107932e537d71146`;
+after production helper:
+`185036cde8f344fcb901709f49202a3c7ff7309396eb6a265a34744708027693`.
+
+### Item-10 commands
+
+The shared `perf` lane and two-second load sampler wrap every timing command;
+`--start-load 3 --attempts 5` rejects and retries any run above load 4. Build
+and focused-test commands use `run-when-quiet.py` before starting. The
+mutation driver also holds the shared lane while changing sources.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json
+xcodegen generate --quiet
+python3 "$PI_BUILD_ROOT/round2/run-suffix-matrix.py"
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
+  --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" \
+  -j 2 --filter CheckpointRefreshTests
+python3 "$PI_BUILD_ROOT/round2/item10-mutations.py"
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
+  --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" \
+  -j 2 --filter 'CheckpointRefreshTests|JournalCheckpointTests|DurableReplayTests|ReplayParityTests|MailboxCutPersistenceTests|JournalSlimmingTests|JournalPromotionTests|ForkAtReplyTests|EditRecoveryTests|SessionSettlementTests|SubagentAccountingTests|SubagentRecoveryTests|SubagentCoordinatorTests|OpeningProgressTests'
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" python3 scripts/build-bundle.py
+python3 "$PI_BUILD_ROOT/round2/item10-release-measure.py"
+python3 "$PI_BUILD_ROOT/round2/summarize-item10.py"
+```
+
+The matrix driver selects the appropriate helper in this stream's bundle,
+runs three rounds of each fixture/suffix combination, and restores the final
+helper even on failure. Each measurement uses:
+
+```sh
+PYTHONPATH="$PWD/scripts" python3 scripts/perf-longchat-run.py \
+  --label json-item10-<variant>-<fixture>-<MiB>-<cross>-r<N> \
+  --start-load 3 --attempts 5 -- \
+  python3 "$PI_BUILD_ROOT/round2/suffix-refresh-probe.py" <fixture> <MiB> [cross]
+```
+
+The matrix finished all 48 accepted trials before its first turn-end harness
+failed. An initial standalone-driver compile needed `-parse-as-library`;
+a later executable used disabled access control against non-testable whole
+module objects and hit a compiler-deleted internal accessor. Neither attempt
+is a product failure or accepted timing. The corrected driver uses an
+optimized Release core built with `-enable-testing` and `@testable import`;
+it copies the measurement body in `CheckpointRefreshPerformanceTests`.
+The standalone driver links only the Release core, avoiding unrelated
+test classes that reference DEBUG-only probes (`SideOriginIndexTests` /
+`SideOriginReadProbe`). Production suffix/cold measurements use the normal bundle
+without test visibility.
+
+```sh
+python3 "$PI_BUILD_ROOT/round2/item10-cost-build-testable.py"
+```
+
+That script builds the core with `swift build --configuration release
+--arch arm64 --product pi-native-host -j 2 -Xswiftc -Osize
+-Xswiftc -enable-testing --scratch-path "$PI_BUILD_ROOT/swift-refresh-benchmark"`,
+links `round2/refresh-cost-driver.swift` with those core objects, then runs the
+turn-end probe under `perf-longchat-run.py`. It next invokes
+`round2/item10-final-cold.py`, which stages the final production helper into
+the same isolated item-4 Release test app, checks the test-host manifest,
+and repeats the production-default 30-second cold/cancel probes three times
+per cell with `round2/opening-run.py`. No app implementation changed in item 10.
+The exact executable arguments and environment are retained in those scripts
+and each measurement JSON file.
+
+### Turn-end cost
+
+The synchronous work added immediately after the durable state flush was
+measured over 2 × 500 disabled and 2 × 500 eligible scheduling calls. The
+same flushed 12 MiB journal suffix is eligible each time; worker cancellation
+and joining occur outside the timed interval. This isolates the work on the
+session actor, rather than measuring the asynchronous replay as a turn stall.
+The crash-copy test separately verifies that the worker completes and
+publishes real durable state.
+
+| Scheduling | Samples per block | Median ms, blocks 1 / 2 | p95 ms, blocks 1 / 2 | Max ms, blocks 1 / 2 |
+|---|---:|---:|---:|---:|
+| below threshold | 500 | 0.001250 / 0.001417 | 0.001500 / 0.001709 | 0.056500 / 0.005041 |
+| eligible refresh | 500 | 0.011583 / 0.013250 | 0.041958 / 0.040000 | 0.174292 / 0.092375 |
+
+Added median scheduling work is about 0.010–0.012 ms; the background task
+performs replay, encoding and file staging. Start/end/peak one-minute load
+was 2.05 / 2.05 / 2.05. Raw result:
+`perf/json-item10-turn-end-testable-1.{log,json}`. The wrapper's helper hash
+identifies the bundle present during the run; the actual command is the
+standalone optimized testable-core driver, whose artifact/build details are
+in `round2/item10-cost-artifacts.json`.
+
+### Cold-open follow-up
+
+The first non-interleaved comparison against the earlier item-4 medians
+appeared to add 2.2 seconds (200k) / 7.5 seconds (50k exchanges). It was not
+used to attribute an implementation regression: a fresh item-4 control also
+slowed to 13.0 seconds at 200k, versus its earlier 10.2-second median. The
+final comparison therefore alternates item-4 and item-10 helpers on the same
+Release app, three rounds per fixture. Earlier accepted observations remain
+in `perf/json-item10-{200k,50k-exchanges}-*`; a load-4.95 observation was
+rejected. The remaining old sequence was stopped while waiting for a quiet
+window and replaced by the paired sequence.
+
+A separate accepted Release profile of the final helper's cold 50k-exchange
+open recorded 24,140 ms wall / 23.173 CPU s at maximum load 3.22. In its first
+10 seconds, checkpoint publication appeared in 9 of 728 active opening
+observations (5 capture, 3 encode/stage, 1 rename). This is sampling evidence,
+not an isolated duration or a substitute for the paired timing comparison.
+Raw evidence: `perf/json-item10-publish-profile-1-helper.sample.txt` and
+`perf/json-item10-publish-profile-1.{log,json}`. The exact profile command was:
+
+```sh
+python3 scripts/perf-longchat-run.py --label json-item10-publish-profile \
+  --profile --start-load 3 --attempts 5 -- \
+  python3 scripts/perf-longchat-helper.py "$PI_BUILD_ROOT/fixtures/50k-exchanges" --cold
+python3 "$PI_BUILD_ROOT/round2/item10-cold-paired.py"
+```
+
+No cadence or correctness rule was relaxed to improve a timing result.
+
+Final paired comparison, production 30-second inactivity deadline, negotiated
+progress enabled, three accepted trials per cell:
+
+| Fixture | Wall ms item 4 → item 10 | CPU s item 4 → item 10 | Peak MiB item 4 → item 10 | Max 1-min load item 4 → item 10 |
+|---|---:|---:|---:|---:|
+| 200k | 10730.5 → 10283.0 | 10.659 → 10.194 | 2859.3 → 2838.2 | 2.73 → 2.99 |
+| 50k-exchanges | 19774.0 → 20376.6 | 19.524 → 20.114 | 5373.8 → 5380.3 | 2.93 → 2.85 |
+
+The median changes are −4.2% at 200k and +3.0% at 50k exchanges.
+The 200k change lies inside the control run range; the 50k-exchange result
+shows a modest cost for checkpoint publication, rather than the earlier
+apparent 7.5-second regression. No further tuning was made on noisy data.
+
+Final-helper progress observations:
+
+| Fixture | Frames per trial | Cadence median / p95 / max ms |
+|---|---|---:|
+| 200k | 43 / 40 / 40 | 250.43 / 260.30 / 282.09 |
+| 50k-exchanges | 78 / 78 / 77 | 250.47 / 256.43 / 294.95 |
+
+Final-helper mid-replay cancellation at 50k exchanges: **116.76 ms median**, 114.93–122.65 ms range, from app Cancel to worker settlement and successful writer-lock acquisition. Peak one-minute load 2.73. The three cancellation trials all passed; cancellation still reaches the detached replay after adding checkpoint publication.
+
+Accepted final timing ledger (start / end / peak one-minute load):
+
+| Raw trial | Load |
+|---|---:|
+| json-item10-cold-after-200k-progress-r1-2 | 2.98 / 2.83 / 2.99 |
+| json-item10-cold-after-200k-progress-r2-1 | 2.56 / 2.39 / 2.56 |
+| json-item10-cold-after-200k-progress-r3-1 | 2.17 / 2.54 / 2.64 |
+| json-item10-cold-after-50k-exchanges-cancel-r1-1 | 2.73 / 2.56 / 2.73 |
+| json-item10-cold-after-50k-exchanges-cancel-r2-1 | 2.32 / 2.34 / 2.45 |
+| json-item10-cold-after-50k-exchanges-cancel-r3-1 | 2.62 / 2.67 / 2.73 |
+| json-item10-cold-after-50k-exchanges-progress-r1-1 | 2.83 / 2.73 / 2.85 |
+| json-item10-cold-after-50k-exchanges-progress-r2-1 | 2.39 / 2.34 / 2.39 |
+| json-item10-cold-after-50k-exchanges-progress-r3-1 | 2.54 / 2.62 / 2.64 |
+| json-item10-cold-before-200k-progress-r1-1 | 2.70 / 2.73 / 2.73 |
+| json-item10-cold-before-200k-progress-r2-1 | 2.34 / 2.34 / 2.37 |
+| json-item10-cold-before-200k-progress-r3-1 | 2.34 / 2.35 / 2.35 |
+| json-item10-cold-before-50k-exchanges-progress-r1-1 | 2.73 / 2.93 / 2.93 |
+| json-item10-cold-before-50k-exchanges-progress-r2-1 | 2.34 / 2.26 / 2.34 |
+| json-item10-cold-before-50k-exchanges-progress-r3-1 | 2.35 / 2.17 / 2.41 |
+
+Rejected paired trials: `json-item10-cold-after-200k-progress-r1-1.json` (peak load 27.71). They are excluded from the medians. Raw observations, ranges, load samples and artifact hashes are in `round2/item10-cold-summary.json` and `perf/json-item10-cold-*`.
+
+The item-4 comparison helper SHA-256 is
+`9f64dc2bc0d55b97f2b34a389556e086716d05f34d5a1dd3fe11c7775efd0030`;
+the final helper is the `185036cd…` production bundle listed above. Both
+use the same checked isolated Release app and test bundle. The paired
+comparison is the evidence for item-10 cold-opening cost; the earlier
+non-interleaved observations are retained only as the investigation trail.
+
+### Handoff
+
+Item 10 changes helper checkpoint/replay files only. `JournalCheckpoint.swift`
+is also compiled into the app; its existing encoding and atomic replacement
+contract are preserved. No other stream's files were edited for this item.
+The new focused tests and both mutations pass, and the final Release helper
+passes the actual-supervisor opening/cancellation probes. Item-4 wire gates
+remain 41 / 4 / 3 plus four new cases; item 10 adds no wire contract change.
+
+The remaining limitation is the cost of loading a large retained model
+context: a 200 MiB suffix still reopens in about 1.7 seconds after refresh.
+The metadata/row limits deliberately skip oversized snapshots and retain
+the previous checkpoint. The measure-first results exceeded the requested
+0.5-second cutoff, so the implementation branch of item 10 was taken; no
+owner product decision is needed. The optional task/reply encoding changes
+were deferred because their fixture-wide equality proof is additional work.
+
+Per-trial APFS clones were removed by the measurement runners. Superseded
+round-1/item-4/item-10 comparison bundles and the temporary testable-core
+scratch directory were removed after the final trials; the final bundle,
+raw evidence, benchmark driver, fixture sources and all 20 gallery PNGs
+remain under `PI_BUILD_ROOT`.

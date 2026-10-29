@@ -475,7 +475,7 @@ extension AgentSession {
         // A reply the journal refused has its log set aside before the run
         // is saved as settled: a reopen of a settled run removes the log.
         if partialReplyUnsaved { removeStreamedLog() }
-        do { try persistState(active:false); removeStreamedLog() } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
+        do { try persistState(active:false); removeStreamedLog(); scheduleCheckpointRefresh() } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links
         // are being flushed above. It sees a runTask and queues instead of
