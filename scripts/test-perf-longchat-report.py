@@ -35,5 +35,20 @@ class ArchiveLocationTests(unittest.TestCase):
             report.archive_path(Path(__file__).resolve().parent.parent / 'docs/validation/evidence.json.gz')
 
 
+class DirectionalReadTests(unittest.TestCase):
+    def test_directional_cancellation_excludes_opposite_and_maintenance_reads(self):
+        calls = [dict(cursor='older', newer='false', cancelled='true'),
+                 dict(cursor='newer', newer='true', cancelled='false'),
+                 dict(position='125', newer='false', cancelled='false'),
+                 dict(cursor='', position='', newer='false', cancelled='true'),
+                 dict(cursor='opening', newer='false', opening='true', cancelled='true')]
+        for newer in [False, True]:
+            value = report.directional_reads(calls, newer=newer)
+            self.assertEqual(value, dict(requests=2, cancelled=0 if newer else 1))
+
+    def test_empty_direction_has_no_cancellation_denominator(self):
+        self.assertEqual(report.directional_reads([], newer=False), dict(requests=0, cancelled=0))
+
+
 if __name__ == "__main__":
     unittest.main()

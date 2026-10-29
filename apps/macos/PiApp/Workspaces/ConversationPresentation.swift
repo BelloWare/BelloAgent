@@ -126,6 +126,9 @@ struct ConversationHistoryPage: Sendable {
     var newerRead: UUID?
     var secondary: Task<Void, Never>?
     var openingFill: Task<Void, Never>?
+    var openingFillID: UUID?
+    var inheritedPlanRead: Task<Void, Never>?
+    var inheritedPlanReadID: UUID?
     /// Only membership/run changes can make a cut first turn finish. Tokens
     /// must not scan it again or start another read of the same boundary.
     var finishedTurnCheck: String?
@@ -141,11 +144,19 @@ struct ConversationHistoryPage: Sendable {
     var drawOpportunityAt: Double?
     var initializationPending = false
     var readyAt: Double?
+    func finishOpeningFill(_ id: UUID) {
+        guard openingFillID == id else { return }
+        openingFill = nil; openingFillID = nil; openingPage = false
+    }
+    func cancelOpeningFill() {
+        openingFill?.cancel(); openingFill = nil; openingFillID = nil; openingPage = false
+    }
     func cancel() {
         navigation?.cancel(); navigation = nil
         olderTask?.cancel(); olderTask = nil; newerTask?.cancel(); newerTask = nil
         secondary?.cancel(); secondary = nil
-        openingFill?.cancel(); openingFill = nil
+        cancelOpeningFill()
+        inheritedPlanRead?.cancel(); inheritedPlanRead = nil; inheritedPlanReadID = nil
     }
     func begin() {
         cancel(); generation = UUID(); readGeneration = generation; identity = nil; partialTurnInput = nil; reload = nil
@@ -153,7 +164,7 @@ struct ConversationHistoryPage: Sendable {
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
         finishedTurnCheck = nil; finishedTurnRead = nil
     }
-    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel(); openingFill?.cancel() }
+    deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel(); openingFill?.cancel(); inheritedPlanRead?.cancel() }
 }
 
 extension SessionDisplay {

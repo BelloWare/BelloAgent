@@ -1333,11 +1333,14 @@ trial, another chat already open, and the real 30-second acknowledgement:
 ```sh
 python3 scripts/perf-longchat-round.py b1-base --suite open \
   --products "$PI_BUILD_ROOT/baseline-b-products" --resume
-# Item 2, then item 3 use the same commands with their current Release products:
-python3 scripts/perf-longchat-round.py b2-first-paint --suite open
-python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll
+# Item 2 uses its preserved, pristine Release products:
+python3 scripts/perf-longchat-round.py b2-first-paint --suite open \
+  --products "$PI_BUILD_ROOT/b2-products" --resume
+python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll \
+  --products "$PI_BUILD_ROOT/b2-products" --start-load 3 --resume
+# Item 3 uses the current, restored Release products:
 python3 scripts/perf-longchat-round.py b3-scheduling --suite open
-python3 scripts/perf-longchat-round.py b3-scheduling --suite scroll
+python3 scripts/perf-longchat-round.py b3-scheduling --suite scroll --start-load 3
 ```
 
 Each wheel cell is a bounded 60-second up/down probe with real phased wheel
@@ -1371,3 +1374,281 @@ It retains the accepted and rejected A/B runs, raw opening events, frame
 observations, exact commands, binary hashes and raw start/end load strings.
 The relocated phase-A archive remains unchanged. No chat data format changes
 or migration are introduced by item 1.
+
+### Item 2 — useful first paint and owned opening cleanup
+
+The initial main/side/original-reader opening no longer scans the complete
+journal for inherited sub-agent labels. `historyViewportReady` starts that
+optional enrichment after the useful native viewport. A separate
+`HistoryReader` actor prevents that scan from queueing foreground page reads
+behind it. Finished-chat prewarming supplies both readers' validated plan
+cache; its scan byte counter is charged once. The enrichment retains its
+visit, display, path, workspace and lineage fences. Moving within the same
+chat does not discard valid labels; replacing its lineage does.
+
+Historical cards reserve two fixed single-line label slots from their first
+expanded draw. Late original-chat titles and validation reasons fill those
+slots, with full text in accessibility/hover text. Collapsed geometry remains
+fixed. Opening/inspection actions retain the existing validation gate; optional
+labels confer no permission to use an original chat. The gated gallery test
+covers light/dark at 700 pt and narrow at 320 pt, collapsed and expanded, and
+checks card height and the reader's anchor before/after enrichment.
+
+Opening fills now own a UUID. A token-checked `defer` ends `openingPage`, the
+fill task and ownership on failure, cancellation, stale batches and early
+exit. Explicit cancellation clears its state immediately; an old completion
+cannot clear a replacement fill. Existing projection, row/window budgets and
+accounting reconciliation are unchanged. A failed 30-second helper fill
+therefore permits ordinary paging again; it does not make the helper's index
+ready or cure the helper replay latency.
+
+The added demand metric is test-host-only (`PI_TEST_HOST`) and enabled with
+`TEST_RUNNER_PI_PERF_TRACE=1`: unread room reaching the viewport begins a
+demand; a prepared, nonblank draw containing newly loaded visible rows ends
+it. It is distinct from request-to-new-rows-visible, which includes travel
+toward a prefetched page. An unfinished demand is reported as censored,
+never as a fast completion. All original frame and scroll budgets remain.
+
+No journal/schema change or migration is required. `HistoryReader.swift`,
+`HistoryOffsetIndex.swift`, `TranscriptFind.swift`, `JSONParser.swift`,
+`HostSupervisor.swift` and helper `HostService.swift` are unchanged in item 2;
+`WorkspaceHistory.swift` changes only the readiness/cancellation call sites.
+
+Failing-first on B's preserved binary: `b2-labels-failing-first-1` executed
+2 cases, with the first-viewport case failing its explicit gate; the fill
+run `b2-fill-failing-first-1` executed 3 cases, all failing (4 assertions:
+failure, cancellation and exhausted retry cleanup). Start/end/peak 1-minute
+load was 2.49/2.53/2.53 and 2.22/2.19/2.22 respectively. B's preserved
+product copy was then deleted; exact binary hashes remain in the run metadata.
+
+Test refinement: the first geometry fixture could retain an offscreen card
+inside a folded turn. Its baseline pass and initial six captures are **not**
+geometry evidence. A second version still used `.work("reply")` instead of
+the planner's `.work("legacy:reply")`: the enclosing work group was collapsed,
+so its hidden card correctly deferred updates. Both its attempted baseline
+and control failed on missing labels rather than geometry; neither is counted
+as a mutation result. The final fixture opens and asserts both enclosing
+folds, keeps the card on screen, verifies the published projection, page and
+native tool, and checks rendered late labels before comparing geometry. It
+also paints the normal canvas into its PNG. The existing original-reader
+test used the same incorrect work key (`b2-inherited-1`: 7 pass / 1 fail,
+load peak 2.46); it now opens the actual group and awaits deferred enrichment.
+`b2-visible-control-1` passes all six style/disclosure combinations (one case,
+load 2.44/3.22/3.22). The original variable-height card layout is restored
+temporarily for the strengthened failing-first check.
+
+That check, `b2-verified-original-label-geometry-1`, fails only on the intended
+height differences: 267 → 295 pt (light and dark) and 300 → 412 pt (narrow),
+load 2.70/2.73/2.73. Eight mutation modes then fail as intended, ten targeted
+case executions in total:
+
+| Mutation (`b2-verified-…-1`) | Observed failure | 1-minute load start / end / peak |
+|---|---|---|
+| `plan-prewarm` | Deferred labels rescan 207,206 bytes instead of zero | 2.73 / 2.67 / 2.73 |
+| `enrichment-lineage` | Replaced lineage publishes stale labels | 2.67 / 2.67 / 2.67 |
+| `enrichment-intent` | Moving within the same chat discards valid labels | 2.67 / 2.61 / 2.67 |
+| `first-paint` | Gated plan scan holds the initial page | 2.61 / 2.56 / 2.61 |
+| `foreground-reader` | Optional scan blocks the foreground reader | 2.56 / 2.48 / 2.56 |
+| `fill-cleanup` | Cancellation, failure and retry exhaustion retain fill ownership/state (3 cases) | 2.48 / 2.38 / 2.48 |
+| `fill-ownership` | An old completion clears the replacement fill | 2.38 / 2.59 / 2.59 |
+| `label-geometry` | Late labels add 14 pt in each expanded style | 2.59 / 2.78 / 2.78 |
+
+Temporary mutants live only in the detached build source and are removed
+before performance measurements. An earlier environment-only mutation flag
+did not reach the app under its prefixed name (`b2-mutation-plan-prewarm-1`
+passed); it is not counted. Verified runs set the same prefixed knob explicitly
+in the isolated `.xctestrun` environment. Functional/mutation runs allow a
+start load of 3; the peak rejection threshold remains 4. Opening cells
+retain the 2.5 start headroom. Wheel cells use a start threshold of 3 after
+prolonged waits at the shared host’s 2.5–3 background load; both before and
+after use that setting. The mandatory start/sampled/end peak ceiling remains
+4, with every excursion rejected. The external archive also saves the temporary
+orchestration/mutation scripts under `procedures` for reproduction.
+After repeated load excursions in the large helper wheel cells, their
+remaining attempts return to 2.5 start headroom. Idle runner waits were
+stopped to apply that change and the preflight below; no stop interrupted a measurement. A
+480-pt attempt already dispatched by the matrix driver still used 3 and was
+rejected at peak 4.08. Per-trial metadata records the actual start threshold.
+The rejected large-helper attempts also exposed an existing-test race: a
+different workstream's test host could be quiet at admission and later use a
+full core (recorded as 99.5–100% in the abort snapshots). The runner now waits
+for existing `xcodebuild`/Swift build or test processes before taking the lane;
+the ordinary load and lock checks still apply. This prevents starting beside
+work that began before our lock. `test-perf-longchat-run.py` fails first in
+4 cases (6 missing-function errors including subtests), passes 4/4 with the
+guard, and catches its removal in 2 methods / 4 assertions. The in-memory
+mutation never changes the app or the runner used by an active measurement.
+The large-helper 480-pt attempts also exceeded the ceiling after that race
+was removed. Attempt 5's abort snapshot is dominated by the test host
+(189% CPU), WindowServer (80.4%) and the helper (27.7%); external activity
+alone does not explain every rejected trial. That final cell returns to 2.0
+start headroom. Its workload and the mandatory peak limit remain unchanged.
+
+To use a busy build window, item 2's restored products were preserved under
+`$PI_BUILD_ROOT/b2-products` before compiling item 3 in the same DerivedData.
+The item-2 source tree was staged first and its hashes checked against the
+scheduler's recorded base. Its remaining controls and measurements run from
+that pristine product copy only after the item-3 build ends; no own build
+overlaps them. The copy also contains the 16 prospective scheduler regression
+methods, selected only for their failing-first run against item 2. It is a
+product copy, not another DerivedData.
+
+The report separates same-direction source calls from opposite-edge and
+maintenance reads. Cursor direction is explicit; numeric-position requests
+belong to the uninterrupted wheel phase in which they start. Two new Python
+checks fail first, reversing the direction filter fails one, and the restored
+report passes 6/6 (`logs/b2-report-{failing-first,mutation,pass}.log`).
+
+The pristine rerun passes 2/2 `InheritedPlanOpeningTests`, 12/12
+`TranscriptOpeningFillTests` (the separate optional gallery case excluded),
+and the prewarm-cache regression 1/1. Accepted trials are
+`b2-restored-labels-1`, `b2-restored-fill-1`, `b2-restored-cache-1`;
+1-minute load start/end/peak respectively 2.84/3.22/3.41,
+2.66/2.65/2.76 and 2.65/2.67/2.67. All six regenerated PNGs under
+`$PI_BUILD_ROOT/gallery-b2/inherited-{light,dark,narrow}-{collapsed,expanded}.png`
+were visually inspected: reserved label lines, clean narrow truncation,
+disabled unavailable-original actions, no overlap, and the same card/anchor
+geometry. Image sizes/digests are in `logs/b2-gallery-reviewed.json`; images
+remain external to git.
+
+The remaining item-2 controls pass: `InheritedSubagentReaderTests` 8/8
+(`b2-inherited-2`, load 2.46/2.42/2.46), `SubagentOpeningTests` 15/15
+(`b2-subagent-opening-1`, 2.27/2.74/2.74), `FinishedRowsCatchUpTests` 12/12
+and `SubagentTranscriptTests` 11/11 (`b2-projection-1`, 2.19/2.17/2.19).
+Together these restored runs execute 61 cases, covering 60 distinct methods
+(the prewarm method is repeated in its class); Python report checks pass 6/6.
+
+The six reviewed PNGs are also preserved in
+`/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-b2-gallery/`;
+its `manifest.json` SHA-256 is
+`25f3c115281fe8a87b40857bc9baf328253b75e9a9f734a22ecae6891b3e98f4`.
+
+Item-2 measurement commands (each runner takes/releases the full-lane lock,
+sets the prefixed test knobs, clones the generated fixture, and retains the
+exact expanded command and binary hashes in its trial metadata):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-perf
+python3 scripts/perf-longchat-round.py b2-first-paint --suite open \
+  --products "$PI_BUILD_ROOT/b2-products" --start-load 2.5 --resume
+python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll \
+  --products "$PI_BUILD_ROOT/b2-products" --start-load 3 --resume
+# Resume only cells still missing an accepted trial, with more headroom:
+python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll \
+  --products "$PI_BUILD_ROOT/b2-products" --start-load 2.5 --resume
+# Final large-helper 480-pt cell needs additional headroom:
+python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll \
+  --products "$PI_BUILD_ROOT/b2-products" --start-load 2 --resume
+```
+
+These are checkpoint-backed fresh selections while another chat is open,
+followed by a cached switch and paced 120/480-pt wheel input, up and down.
+Each direction has a 60-second ceiling, momentum and 180-frame dwell.
+Coverage is reported, not assumed: a slow source need not complete ten pages
+within that ceiling. All helper cells use the normal 30-second acknowledgement
+path, without the phase-A long-timeout or hot-index overrides. The helper's
+request-to-draw interval also contains the harness's intervening other-chat
+setup; the target's **selection-to-useful-draw** clock starts at the actual
+long-chat selection. Both intervals are retained, rather than subtracting
+setup time and presenting a synthetic open-request result.
+
+| Fresh selection, Release | Item 1 ms | Item 2 ms | Selection target ≤500 ms |
+|---|---:|---:|---|
+| Journal, 50k messages | 2650.21 | 249.34 | Pass |
+| Helper-owned, 50k messages | 2469.48 | 235.87 | Pass |
+| Journal, 50k exchanges | 16944.77 | 196.97 | Pass |
+| Helper-owned, 50k exchanges | 19090.24 | 211.39 | Pass |
+
+The large journal's fill still takes 64.18 seconds. The large helper's opening
+fill still times out after 30 seconds; the cleanup now leaves the drawn tail
+usable. `wholeChatReady.ready` in this case describes the end of opening
+ownership, **not** a ready older-history index. This round does not claim the
+first-older-page target has been met. The following wheel numbers establish
+the before-scheduling baseline. Demand p95 uses the nearest rank
+`ceil(0.95 × n)`; for these small samples it is the maximum. No completed
+demand means “not observed,” not zero latency. Unfinished demands and blank
+episodes are shown separately and remain in the raw evidence.
+
+
+Item-2 accepted Release trials (the failure column covers only the initial
+opening fill; a later cached-switch cancellation is not an initial failure):
+
+| Trial | Selection → useful draw ms | Helper request → draw ms | Fill ended ms / failure | Start / end / peak 1-minute load |
+|---|---:|---:|---|---|
+| `b2-first-paint-open-helper-50k-1` | 235.87 | 603.85 | 9405.32 / False | 2.22 / 2.59 / 2.59 |
+| `b2-first-paint-open-helper-50k-exchanges-1` | 211.39 | 546.23 | 30200.29 / True | 2.42 / 3.39 / 3.42 |
+| `b2-first-paint-open-journal-50k-1` | 249.34 | — | 7858.13 / False | 2.07 / 2.22 / 2.22 |
+| `b2-first-paint-open-journal-50k-exchanges-2` | 196.97 | — | 64182.49 / False | 2.11 / 3.39 / 3.46 |
+| `b2-first-paint-scroll-helper-50k-120-1` | 300.54 | 591.88 | 9735.05 / False | 2.87 / 3.64 / 3.64 |
+| `b2-first-paint-scroll-helper-50k-480-2` | 280.09 | 596.24 | 10821.48 / False | 2.82 / 2.96 / 3.44 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-5` | 192.19 | 480.82 | 30183.68 / True | 2.34 / 3.43 / 3.62 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-6` | 169.89 | 523.10 | 30181.51 / True | 1.83 / 2.88 / 3.84 |
+| `b2-first-paint-scroll-journal-50k-120-2` | 350.01 | — | 9984.64 / False | 2.84 / 2.71 / 3.99 |
+| `b2-first-paint-scroll-journal-50k-480-1` | 231.81 | — | 8389.29 / False | 2.71 / 2.87 / 3.05 |
+| `b2-first-paint-scroll-journal-50k-exchanges-120-1` | 215.07 | — | 64338.65 / False | 2.96 / 2.53 / 3.55 |
+| `b2-first-paint-scroll-journal-50k-exchanges-480-2` | 269.38 | — | 67057.28 / False | 2.59 / 3.93 / 3.97 |
+
+| Wheel trial | Blank input observations | Longest observed blank ms | Same-direction cancels | Demand → draw p95 ms (n) | Unfinished demand ms | Visible jumps |
+|---|---:|---:|---:|---:|---|---:|
+| `b2-first-paint-scroll-helper-50k-120-1` | 59/2421 (2.44%) | 1526.07 | 22/26 (84.62%) | 1572.17 (1) | — | 0 |
+| `b2-first-paint-scroll-helper-50k-480-2` | 136/2200 (6.18%) | 2002.31 | 71/81 (87.65%) | 2040.68 (2) | — | 0 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-5` | 92/2500 (3.68%) | 2375.14 | 55/58 (94.83%) | 2413.34 (1) | — | 0 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-6` | 422/2358 (17.90%) | 7250.88 | 253/261 (96.93%) | 7258.67 (4) | — | 0 |
+| `b2-first-paint-scroll-journal-50k-120-2` | 0/2416 (0.00%) | 0.00 | 0/3 (0.00%) | — (0) | — | 0 |
+| `b2-first-paint-scroll-journal-50k-480-1` | 221/1602 (13.80%) | 1476.35 | 173/182 (95.05%) | 1498.58 (3) | 1608.91 | 0 |
+| `b2-first-paint-scroll-journal-50k-exchanges-120-1` | 0/2600 (0.00%) | 0.00 | 0/1 (0.00%) | — (0) | — | 0 |
+| `b2-first-paint-scroll-journal-50k-exchanges-480-2` | 214/2050 (10.44%) | 2503.36 | 168/177 (94.92%) | 2511.36 (5) | — | 0 |
+
+| Wheel trial | Input observations | Intervals >16.7 / 33 / 50 / 100 ms |
+|---|---:|---|
+| `b2-first-paint-scroll-helper-50k-120-1` | 2421 | 1246 / 131 / 20 / 5 |
+| `b2-first-paint-scroll-helper-50k-480-2` | 2200 | 1235 / 467 / 136 / 11 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-5` | 2500 | 1257 / 93 / 16 / 3 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-6` | 2358 | 1267 / 276 / 81 / 6 |
+| `b2-first-paint-scroll-journal-50k-120-2` | 2416 | 1210 / 91 / 25 / 5 |
+| `b2-first-paint-scroll-journal-50k-480-1` | 1602 | 838 / 233 / 54 / 8 |
+| `b2-first-paint-scroll-journal-50k-exchanges-120-1` | 2600 | 1289 / 39 / 8 / 2 |
+| `b2-first-paint-scroll-journal-50k-exchanges-480-2` | 2050 | 1168 / 392 / 112 / 11 |
+
+All 12 fresh selections in these accepted trials draw useful rows within
+500 ms. At 120 pt/frame the journal cells meet the zero-blank target; both
+helper cells miss it. All four 480-pt cells miss the blank share, longest
+blank, cancellation share and completed-demand p95 targets. Every cell has
+zero verified visible-row jumps. These are the baseline for scheduling,
+not a claim that first-paint cleanup fixes scrolling. The largest helper
+cell is particularly poor: 17.90% input blanks, a 7.25-second longest blank,
+253/261 same-direction source calls cancelled and 7.26-second demand p95.
+
+Thirteen load-rejected trials are retained, including trials terminated
+when the sampled ceiling was crossed. None contributes a timing number
+above. Start/end/peak values below are the raw 1-minute load components.
+
+| Rejected item-2 trial | Start / end / peak load | Exit |
+|---|---|---:|
+| `b2-first-paint-open-journal-50k-exchanges-1` | 2.17 / 4.18 / 4.18 | -15 |
+| `b2-first-paint-scroll-helper-50k-480-1` | 2.84 / 4.04 / 4.04 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-1` | 2.64 / 4.39 / 4.39 | 0 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-2` | 2.98 / 4.13 / 4.13 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-3` | 2.99 / 4.08 / 4.08 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-120-4` | 2.41 / 4.08 / 4.08 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-1` | 2.81 / 4.08 / 4.08 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-2` | 2.44 / 4.57 / 4.57 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-3` | 2.46 / 4.27 / 4.27 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-4` | 2.36 / 4.07 / 4.07 | -15 |
+| `b2-first-paint-scroll-helper-50k-exchanges-480-5` | 2.44 / 4.21 / 4.21 | -15 |
+| `b2-first-paint-scroll-journal-50k-120-1` | 2.69 / 4.08 / 4.08 | -15 |
+| `b2-first-paint-scroll-journal-50k-exchanges-480-1` | 2.65 / 4.04 / 4.04 | -15 |
+
+The final large-helper 480-pt trial is accepted at start/end/peak
+1.83/2.88/3.84. The temporary scheduler test rebuild was allowed between
+trials by pausing only its idle baseline waiter, then resuming it; the
+preserved item-2 binary was unchanged and no own build overlapped a test.
+The complete item-2 baseline was obtained before the first-paint commit.
+
+Item-2 snapshot:
+`/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-b2-data.json.gz`
+(10,147,050 bytes), SHA-256
+`180c54b35e34b34453b1c9faf8d13c6e610e8b10b55197a22170c105dc57b93c`.
+It includes all accepted/rejected trials, raw frame arrays, commands, binary
+hashes, the mutation procedures and both runner/report checks. No binary
+evidence is added to git. No data migration is needed.

@@ -837,6 +837,9 @@ struct ContentGeometry: Equatable {
     func readerReachedUnreadRows(position: Int, offset: CGFloat) {
         guard let sessionID, let session = presentationSession, session.presentationGeneration == generation,
               session.historyState == .ready, session.presentation.readyAt != nil, !jumping else { return }
+        #if PI_TEST_HOST
+        Perf136Demand.begin(session)
+        #endif
         onJump(sessionID, position, Double(offset))
     }
     /// The reader is back among the rows the window holds: a page still being
@@ -1354,6 +1357,9 @@ struct ContentGeometry: Equatable {
         // A reader in the room below the window, past its rows' reach, is
         // read where they are (`readerReachedUnreadRows`), not page by page.
         let toRows = liveDistanceToBottom - content.trailing
+        #if PI_TEST_HOST
+        if toRows < 0, let session = presentationSession, session.newerPage.cursor != nil { Perf136Demand.begin(session) }
+        #endif
         guard position.viewport > 0, !jumping, toRows < reach, toRows > -(position.viewport + Self.roomReach(position.viewport)), let sessionID,
               let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
               session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
@@ -1364,6 +1370,9 @@ struct ContentGeometry: Equatable {
         guard presentationSession?.inheritedContextFolded != true else { return }
         // Measured from the window's first row: the room above it is rows not read.
         let scrollY = offset - content.leading
+        #if PI_TEST_HOST
+        if scrollY < 0, let session = presentationSession, session.olderPage.cursor != nil { Perf136Demand.begin(session) }
+        #endif
         let short = content.height - content.leading - content.trailing <= viewport.height + Self.earlierThreshold
         // Rows the reader can scroll through again ask for the page before
         // them again on their own.

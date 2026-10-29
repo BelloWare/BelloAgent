@@ -49,15 +49,18 @@ extension WorkspaceModel {
         guard view.presentation.partialTurnInput == nil, let item = record(id), let boundary = newer ? view.newerPage.cursor : view.olderPage.cursor else { view.presentation.openingPage = false; return }
         let generation = view.presentation.readGeneration, navigation = transcriptNavigation(id)
         let opening = view.messages, limits = TranscriptPaging.pageLimits
+        let fillID = UUID()
+        view.presentation.openingFillID = fillID
         view.presentation.openingFill = Task { [weak self, weak view] in
-            guard let self, let view else { return }
+            guard let view else { return }
+            defer { view.presentation.finishOpeningFill(fillID) }
+            guard let self else { return }
             @MainActor func current() -> Bool {
                 !Task.isCancelled && navigation.isCurrent(in: self) && self.displays[id] === view && view.versionView == nil
                     && view.presentation.readGeneration == generation && self.transcriptShows(id) && !view.inheritedContextFolded
                     && self.record(id)?.path == item.path && self.record(id)?.workspaceID == item.workspaceID
                     && view.newerPage.error != Self.branchChangedElsewhere
             }
-            defer { if !Task.isCancelled, view.presentation.readGeneration == generation { view.presentation.openingFill = nil } }
             await Task.yield()
             do {
                 var page = try await self.readConversationWindow(item, cursor: boundary, newer: newer)
@@ -152,10 +155,14 @@ extension WorkspaceModel {
                     try await Task.sleep(for: .milliseconds(16))
                 }
                 guard current() else { return }
-                view.presentation.openingPage = false
                 self.scheduleAccounting(id, workspaceID: item.workspaceID)
                 self.openSteps?(id, "opening fill ready")
-            } catch { /* A speculative fill leaves the readable page and its retry boundary intact. */ }
+            } catch {
+                // The readable page and its retry boundary stay intact.
+                #if PI_TEST_HOST
+                Perf136Span("opening.fill.failure").end(["error": String(describing: error), "cancelled": String(Task.isCancelled)])
+                #endif
+            }
         }
     }
 }

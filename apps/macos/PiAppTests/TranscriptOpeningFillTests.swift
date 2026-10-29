@@ -122,7 +122,7 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         print("OPENFILL repeated tail edits: \(projections) projections")
         XCTAssertEqual(projections, 4, "A busy tail must stop speculative work after a bounded number of projections")
         XCTAssertNil(view.presentation.openingFill)
-        XCTAssertTrue(view.presentation.openingPage)
+        XCTAssertFalse(view.presentation.openingPage, "An exhausted fill must release the opening state")
         XCTAssertEqual(view.olderPage.cursor, boundary, "The unread history remains retryable")
         XCTAssertEqual(view.messages.map(\.id), opening + (0..<projections).map { "tail-\($0 + 1)" })
         XCTAssertEqual(view.notice, "")
@@ -206,7 +206,7 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(run.jumps, []); XCTAssertEqual(run.lost, 0); XCTAssertEqual(run.blankFrames, 0)
     }
 
-    @MainActor func testLeavingDuringFillCancelsAndCachedRevisitResumes() async throws {
+    @MainActor func testLeavingDuringFillCancelsAndCachedRevisitKeepsPagingAvailable() async throws {
         let chat = try await chat()
         let path = try XCTUnwrap(chat.chat.path), history = chat.model.history
         let held = OpeningFillReadGate()
@@ -230,13 +230,15 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         for _ in 0..<10 { await Task.yield() }
         XCTAssertEqual(chat.view.messages.map(\.id), before, "A canceled background fill landed after leaving")
         XCTAssertNil(chat.view.presentation.openingFill)
-        XCTAssertTrue(chat.view.presentation.openingPage, "A partial cached opening still needs its fill")
+        XCTAssertFalse(chat.view.presentation.openingPage, "A canceled visit must not retain opening ownership")
         await chat.model.select(chat.chat.id)
         chat.pane.show(session: chat.view, chat: chat.chat)
         _ = try await firstRows(chat)
+        let loaded = await chat.model.loadHistoryPage(chat.chat.id, newer: false, automatic: true)
+        XCTAssertTrue(loaded, "The cached partial page retains ordinary paging")
         let run = await chat.drive(points: 0, seconds: 10) { !chat.view.presentation.openingPage }
         XCTAssertTrue(run.reached)
-        XCTAssertEqual(chat.view.messages.count, 974)
+        XCTAssertGreaterThan(chat.view.messages.count, before.count)
         XCTAssertEqual(run.jumps, []); XCTAssertEqual(run.lost, 0)
     }
 
@@ -258,11 +260,16 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         chat.model.adoptPage(replacement, into: chat.view, presenting: false)
         XCTAssertTrue(original.isCancelled, "Replacing the page left its old opening fill alive")
         XCTAssertNil(chat.view.presentation.openingFill)
+        let replacementID = UUID()
         chat.view.presentation.openingFill = Task { }
+        chat.view.presentation.openingFillID = replacementID
+        chat.view.presentation.openingPage = true
         await held.release(); await original.value
         XCTAssertNotNil(chat.view.presentation.openingFill, "The canceled task cleared a newer fill")
+        XCTAssertEqual(chat.view.presentation.openingFillID, replacementID)
+        XCTAssertTrue(chat.view.presentation.openingPage, "The old task ended its replacement's opening state")
         XCTAssertEqual(chat.view.messages.map(\.id), ["new"])
-        chat.view.presentation.openingFill = nil
+        chat.view.presentation.cancelOpeningFill()
     }
 
     @MainActor func testPreparedFillKeepsATokenReceivedBeforePublication() async throws {
@@ -293,12 +300,27 @@ final class TranscriptOpeningFillTests: XCTestCase, SerialTestLane {
         chat.model.historyWindowLoader = { _, _, _, _ in throw HostError.failure("Generated fill failure") }
         _ = try await firstRows(chat)
         try await eventually("The failed speculative fill never ended") { chat.view.presentation.openingFill == nil }
-        XCTAssertTrue(chat.view.presentation.openingPage)
+        XCTAssertFalse(chat.view.presentation.openingPage, "A failed fill must release the opening state")
         XCTAssertEqual(chat.view.notice, "")
         chat.model.historyWindowLoader = nil
         let loaded = await chat.model.loadHistoryPage(chat.chat.id, newer: false, automatic: true)
         XCTAssertTrue(loaded, "The fill's resume marker blocked ordinary paging")
         XCTAssertGreaterThan(chat.view.messages.count, 1_000)
+    }
+
+    @MainActor func testCancellationEndsTheOwnedFillAndOpeningState() async throws {
+        let chat = try await chat(), held = OpeningFillReadGate()
+        chat.model.historyWindowLoader = { _, _, _, _ in
+            await held.read()
+            throw CancellationError()
+        }
+        _ = try await firstRows(chat)
+        try await eventually("The fill never reached its gate") { await held.started }
+        let fill = try XCTUnwrap(chat.view.presentation.openingFill)
+        fill.cancel(); await held.release(); await fill.value
+        XCTAssertNil(chat.view.presentation.openingFill, "Cancellation left fill ownership behind")
+        XCTAssertFalse(chat.view.presentation.openingPage, "Cancellation left opening pending")
+        XCTAssertNotNil(chat.view.olderPage.cursor, "Ordinary paging retains its retry boundary")
     }
 
     @MainActor func testOpeningFillGallery() async throws {

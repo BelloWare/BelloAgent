@@ -224,6 +224,8 @@ final class LongChatPerformanceTests: XCTestCase, SerialTestLane {
         var seenIDs = previousIDs
         var committedFirst: String?, hasWindowBaseline = false
         var startedRead: Double?, requestRows: Set<String> = [], latencies: [Double] = []
+        var demands: [Double] = []
+        _ = Perf136Demand.reset(chat.view.id)
         func tick() {
             if chat.view.jumpRead != nil || chat.view.historyState.loading || chat.view.olderPage.loading || chat.view.newerPage.loading {
                 if startedRead == nil { startedRead = Self.now; requestRows = previousIDs }
@@ -238,6 +240,10 @@ final class LongChatPerformanceTests: XCTestCase, SerialTestLane {
                 seenIDs.formUnion(known)
             }
             previousIDs = known
+            if let document = chat.document, let clip = chat.scroll?.contentView.bounds {
+                let visible = Set(document.retainedRows.filter { !$0.foldedAway && $0.frame.intersects(clip) && $0.superview != nil }.flatMap { $0.item.messageIDs })
+                if let latency = Perf136Demand.drawn(chat.view, visible: visible, useful: !chat.blankViewport && document.visibleContentPrepared) { demands.append(latency) }
+            }
             if chat.view.historyState == .ready, !chat.view.presentation.openingPage, chat.view.jumpRead == nil,
                !chat.view.olderPage.loading, !chat.view.newerPage.loading, !chat.blankViewport,
                let first = chat.view.messages.first?.id, first != committedFirst {
@@ -278,13 +284,15 @@ final class LongChatPerformanceTests: XCTestCase, SerialTestLane {
             onFrame: tick) { windows.count >= 12 || chat.atFirstMessage }
         frames(up, label: "wheel.up", chat: chat)
         Self.report("page.requestToNewRowsVisible", ["valuesMS": latencies, "windows": windows.count])
+        Self.report("page.demandToDraw", ["valuesMS": demands, "censoredMS": Perf136Demand.reset(chat.view.id).map { $0 as Any } ?? NSNull()])
         Self.report("wheel.up.coverage", ["tenWindows": windows.count >= 10, "reachedStart": chat.atFirstMessage, "phasedWheel": true,
             "continuous": continuous, "dwellFrames": dwell, "pointsPerSteadyFrame": wheelPoints, "limitSeconds": wheelSeconds])
-        windows.removeAll(); latencies.removeAll(); startedRead = nil
+        windows.removeAll(); latencies.removeAll(); demands.removeAll(); startedRead = nil
         let down = await chat.drive(points: -wheelPoints, seconds: wheelSeconds, input: .wheel,
             pointsAtFrame: { -wheelStep($0) }, wheelPhases: wheelPhases, onFrame: tick) { chat.atLastMessage }
         frames(down, label: "wheel.down", chat: chat)
         Self.report("page.requestToNewRowsVisible.down", ["valuesMS": latencies, "windows": windows.count])
+        Self.report("page.demandToDraw.down", ["valuesMS": demands, "censoredMS": Perf136Demand.reset(chat.view.id).map { $0 as Any } ?? NSNull()])
         if testEnvironment("PI_PERF_WHEEL_ONLY") == "1" { return }
 
         for fraction: CGFloat in [0.17, 0.73, 0.39, 0.91] {

@@ -6,6 +6,7 @@ import AppKit
     var actions = TranscriptActions()
     private var value: SubagentToolView?
     private let information = TranscriptPlainTextView()
+    private let originalReason = TranscriptPlainTextView()
     private let details = ShellStack(.vertical, spacing: 4)
     private struct Detail: Equatable { var label: String, value: String; var note: String? = nil }
     private var detailValues: [Detail] = []
@@ -28,7 +29,8 @@ import AppKit
     override init(frame: NSRect) {
         super.init(frame: frame)
         setAccessibilityIdentifier("subagent-card")
-        for view in [information, details, task, result, resultNote, buttons] as [NSView] { addSubview(view) }
+        for view in [information, originalReason, details, task, result, resultNote, buttons] as [NSView] { addSubview(view) }
+        originalReason.maximumLines = 1
         details.setAccessibilityIdentifier("subagent-details")
         details.setAccessibilityRole(.group); details.setAccessibilityLabel("Sub-agent details")
         task.isToolInput = true
@@ -57,7 +59,7 @@ import AppKit
         stop.toolTip = "Stop " + name; stop.setAccessibilityLabel(stop.toolTip)
         historical = value.target?.isHistorical(in:environment.sessionID) == true
         var lines: [String] = []
-        if historical { lines.append(value.originalAvailability?.label ?? SubagentToolView.historicalNotice); if let reason = value.originalAvailability?.reason { lines.append(reason) } }
+        if historical { lines.append(value.originalAvailability?.label ?? SubagentToolView.historicalNotice) }
         if value.heldByUser, !historical { lines.append("Held until a new parent task or explicit Resume.") }
         var fields: [Detail] = []
         if let summary = value.summary, value.showsTurnDetails {
@@ -84,7 +86,16 @@ import AppKit
         }
         updateDetails(fields)
         hasInformation = !lines.isEmpty; information.isHidden = !hasInformation
+        // Copied cards can paint before their original's name/availability
+        // is known. Keep two label lines from that first paint onward; the
+        // complete validation reason remains available to accessibility and
+        // in the tooltip when the narrow card truncates it.
+        information.maximumLines = historical ? 1 : 0
+        information.toolTip = historical ? lines.joined(separator: "\n") : nil
         information.update(text: lines.joined(separator: "\n"), face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        originalReason.isHidden = !historical
+        originalReason.toolTip = value.originalAvailability?.reason
+        originalReason.update(text: historical ? value.originalAvailability?.reason ?? "" : "", face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         task.isHidden = value.task.isEmpty
         task.title = value.operation == "subagent_report" ? value.messageKind?.capitalized ?? "Message" : ["subagent_send", "send_message"].contains(value.operation) ? "Message" : "Task"
         task.update(value.task, environment: environment, actions: actions)
@@ -123,7 +134,12 @@ import AppKit
             frames.append((view, CGRect(x: 16, y: y, width: inner, height: ceil(height))))
             y += ceil(height) + 10
         }
-        if hasInformation { place(information, information.exactHeight(width: inner)) }
+        if historical {
+            let line = ceil(TranscriptCardFaces.note.lineHeight)
+            frames.append((information, CGRect(x: 16, y: y, width: inner, height: line)))
+            frames.append((originalReason, CGRect(x: 16, y: y + line, width: inner, height: line)))
+            y += line * 2 + 10
+        } else if hasInformation { place(information, information.exactHeight(width: inner)) }
         if !detailValues.isEmpty { place(details, details.height(forWidth: inner)) }
         if !task.isHidden { place(task, task.height(width: inner)) }
         if hasResult { place(result, result.height(width: inner)) }

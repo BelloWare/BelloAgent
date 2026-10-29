@@ -126,6 +126,19 @@ def blank_episodes(raw, ended=None):
     return result
 
 
+def directional_reads(requests, *, newer):
+    """Cursor direction is explicit; position demands belong to their input phase.
+
+    Exclude opening/maintenance reads and the opposite edge. The caller already
+    restricts starts to one uninterrupted up or down wheel phase.
+    """
+    same = [request for request in requests if request.get("opening") != "true" and
+            (str(request.get("position", "")) != "" or
+             bool(request.get("cursor")) and request.get("newer") == str(newer).lower() or
+             request.get("startEdge") == "true" and not newer)]
+    return dict(requests=len(same), cancelled=sum(request.get("cancelled") == "true" for request in same))
+
+
 def collect(root):
     trials = []
     for path in sorted((root / "perf").glob("*.json")):
@@ -188,6 +201,7 @@ def collect(root):
             windows = [x for x in trial["events"] if x["event"] == "window.change" and switch <= x["uptime"] <= end]
             trial["wheelLoading"][name] = dict(requests=len(requests),
                 cancelled=sum(x.get("cancelled") == "true" for x in requests),
+                sameDirection=directional_reads(requests, newer=name == "wheel.down"),
                 returned=sum(int(x.get("returnedRows", 0)) > 0 for x in requests),
                 completedMS=distribution([float(x["ms"]) for x in requests if int(x.get("returnedRows", 0)) > 0]),
                 decodeReadBytes=sum(int(x.get("readBytes", 0)) for x in spans if x["event"] == "journal.pageDecode"),
@@ -204,8 +218,12 @@ def collect(root):
     fixtures = {p.parent.name: json.loads(p.read_text()) for p in sorted((root / "fixtures").glob("*/manifest.json"))
                 if not p.parent.name.startswith("smoke")}
     environment = root / "perf/environment.json"
+    procedures = {path.name: path.read_text() for path in sorted((root / "logs").glob("b[123]-*.py"))}
+    build = root / "logs/build-host-only.py"
+    if build.exists(): procedures[build.name] = build.read_text()
     return dict(version=2, units="milliseconds, seconds, MiB as named; frame thresholds are strict >",
-                environment=json.loads(environment.read_text()) if environment.exists() else {}, fixtures=fixtures, trials=trials)
+                environment=json.loads(environment.read_text()) if environment.exists() else {}, fixtures=fixtures, trials=trials,
+                procedures=procedures)
 
 
 if __name__ == "__main__":

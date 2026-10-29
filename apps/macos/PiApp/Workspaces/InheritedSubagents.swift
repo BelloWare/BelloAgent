@@ -39,11 +39,37 @@ extension WorkspaceModel {
         }
         invalidateConversationFamily()
     }
-    func readInheritedSubagents(_ item: ChatRecord, current: () -> Bool) async {
+    /// Enrichment starts only after a useful viewport. Its actor is separate
+    /// from foreground reads, and a retired visit cannot publish its labels.
+    func startInheritedSubagentRead(_ id: String) {
+        guard let view = displays[id], view.presentation.readyAt != nil,
+              view.presentation.inheritedPlanRead == nil, transcriptShows(id),
+              let item = subagentTab(id)?.originalForkID.flatMap(record) ?? record(id),
+              !item.isSubagent, !item.imported, item.path != nil else { return }
+        let generation = view.presentation.readGeneration, token = UUID(), lineage = view.presentation.identity?.lineage
+        view.presentation.inheritedPlanReadID = token
+        view.presentation.inheritedPlanRead = Task(priority: .utility) { [weak self, weak view] in
+            guard let view else { return }
+            defer {
+                if view.presentation.inheritedPlanReadID == token {
+                    view.presentation.inheritedPlanRead = nil; view.presentation.inheritedPlanReadID = nil
+                }
+            }
+            guard let self else { return }
+            @MainActor func current() -> Bool {
+                !Task.isCancelled && self.displays[id] === view && view.presentation.identity?.lineage == lineage &&
+                    view.presentation.readGeneration == generation && self.transcriptShows(id) &&
+                    self.record(item.id)?.path == item.path && self.record(item.id)?.workspaceID == item.workspaceID
+            }
+            await self.readInheritedSubagents(item, current: current, reader: self.inheritedPlanHistory)
+            if current() { self.openSteps?(id, "inherited agents read") }
+        }
+    }
+    func readInheritedSubagents(_ item: ChatRecord, current: () -> Bool, reader: HistoryReader? = nil) async {
         // Whole-chat forks have no sidebar ancestry. The copied plans, not
         // parentSessionID, identify references to another chat's agents.
         guard !item.isSubagent, !item.imported, let path = item.path else { return }
-        let plans = (try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id, includeInherited: true)) ?? []
+        let plans = (try? await (reader ?? history).subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id, includeInherited: true)) ?? []
         guard current(), record(item.id)?.path == path else { return }
         let entries = plans.filter { $0.header.link.budgetOwnerSessionID != item.id }.map {
             InheritedSubagent(target: SubagentTarget($0.header.link), title: $0.header.description, number: $0.number ?? 1, forkID: item.id, taskName: $0.header.taskName)
@@ -95,10 +121,6 @@ extension WorkspaceModel {
         }
         do {
             guard current(), let link = child.delegation, let path = child.path else { return }
-            if let fork = navigation.reader.originalForkID.flatMap(record) {
-                await readInheritedSubagents(fork, current: current)
-                guard current() else { return }
-            }
             _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: subagentDirectory(child.workspaceID), expected: SubagentTarget(link))
             guard current() else { return }
             if let cost = try await history.subagentCost(path:URL(fileURLWithPath:path),directory:subagentDirectory(child.workspaceID),expected:SubagentTarget(link)) {

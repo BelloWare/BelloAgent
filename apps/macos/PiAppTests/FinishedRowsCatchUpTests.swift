@@ -178,9 +178,14 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         model.catchUpFinishedRows(view.id)
         await view.finishedRowsRead?.value
         let scanned = await model.history.subagentScannedBytes
+        let labelBytes = await model.inheritedPlanHistory.subagentScannedBytes
         await model.select(view.id)
+        model.historyViewportReady(view.id, generation: view.presentationGeneration)
+        await view.presentation.inheritedPlanRead?.value
         let opened = await model.history.subagentScannedBytes
+        let enrichedBytes = await model.inheritedPlanHistory.subagentScannedBytes
         XCTAssertEqual(opened - scanned, 0, "the opening finds the journal it scans already scanned")
+        XCTAssertEqual(enrichedBytes - labelBytes, 0, "Deferred labels discarded the finished chat's warmed plan cache")
         XCTAssertEqual(view.messages.map(\.text), ["A large answer, please", "The whole answer."])
     }
 
@@ -251,7 +256,7 @@ final class FinishedRowsCatchUpTests: XCTestCase {
         // The other chat opens while that scan is held; its first read is of
         // its own journal, already cached.
         var readOwnJournal = false
-        model.openSteps = { chat, step in if chat == "other", step == "inherited agents read" { readOwnJournal = true } }
+        model.openSteps = { chat, step in if chat == "other", step == "adopted" { readOwnJournal = true } }
         let opening = Task { @MainActor in await model.select("other") }
         let asked = ProcessInfo.processInfo.systemUptime
         while !readOwnJournal, ProcessInfo.processInfo.systemUptime - asked < 10 { try await Task.sleep(for: .milliseconds(2)) }

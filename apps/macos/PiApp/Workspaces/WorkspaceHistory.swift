@@ -155,7 +155,7 @@ extension WorkspaceModel {
     /// `presenting`: the page the transcript shows next, which prepares for
     /// it; else rows held for the chat's next opening (`catchUpFinishedRows`).
     func adoptPage(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0, presenting: Bool) {
-        view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+        view.presentation.cancelOpeningFill()
         if view.taskPresentation?.active == nil {
             view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
         }
@@ -200,6 +200,7 @@ extension WorkspaceModel {
         view.contextSelectionReady = true
         openSteps?(id, "viewport ready")
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
+        startInheritedSubagentRead(id)
         startOpeningFill(id)
         fillFinishedTurn(id)
         view.presentation.secondary?.cancel()
@@ -332,8 +333,7 @@ extension WorkspaceModel {
                   (newer ? view.newerPage.cursor : view.olderPage.cursor) == before else { return false }
         }
         if !automatic {
-            view.presentation.openingPage = false
-            view.presentation.openingFill?.cancel(); view.presentation.openingFill = nil
+            view.presentation.cancelOpeningFill()
         }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }

@@ -26,6 +26,23 @@ def load():
     return raw, float(raw.split()[1])
 
 
+def quiet_start(limit):
+    # A build/test started before our lock may become CPU-heavy after a low
+    # load sample. Let it finish before claiming the measurement window.
+    processes = subprocess.check_output(["ps", "-axo", "pid=,stat=,comm="], text=True)
+    builds = {"xcodebuild", "swift-frontend", "swift-build", "swift-test"}
+    busy = [parts[0] for line in processes.splitlines()
+            if len(parts := line.strip().split(None, 2)) == 3
+            and not parts[1].startswith("Z") and Path(parts[2]).name in builds]
+    if busy:
+        print("Waiting for existing build/test PIDs: " + ", ".join(busy), flush=True)
+        return False
+    if load()[1] > limit:
+        print(f"Waiting for one-minute load <= {limit}", flush=True)
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True)
@@ -88,8 +105,8 @@ def main():
     for attempt in range(first_attempt, first_attempt + args.attempts):
         while True:
             # Let the previous run/build cool without excluding other lanes.
-            while load()[1] > args.start_load:
-                print(f"Waiting for one-minute load <= {args.start_load}", flush=True); time.sleep(20)
+            while not quiet_start(args.start_load):
+                time.sleep(20)
             try:
                 LOCK.mkdir(); break
             except FileExistsError:

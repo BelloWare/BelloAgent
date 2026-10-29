@@ -509,7 +509,6 @@ extension WorkspaceModel {
             defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
             @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentation.readGeneration == generation }
             do {
-                await self.readInheritedSubagents(child, current: current)
                 guard current() else { return }
                 let oldDraft = view.savedDraft
                 let revision = SubmissionInventoryRevision(view)

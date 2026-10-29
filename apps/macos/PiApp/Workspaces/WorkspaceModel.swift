@@ -49,6 +49,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var conversationWindow: () -> NSWindow? = { NSApp.keyWindow }
     var subagentReturnTargets: [String: SubagentTarget] = [:]
     var inheritedSubagents: [String: [InheritedSubagent]] = [:]
+    /// Optional labels must not occupy the reader serving visible history.
+    let inheritedPlanHistory = HistoryReader()
     @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll(); invalidateConversationFamily() } }
     var subagentFamilies: [String: SubagentFamily] = [:]
     var subagentEfforts: [String: SubagentEffort] = [:]

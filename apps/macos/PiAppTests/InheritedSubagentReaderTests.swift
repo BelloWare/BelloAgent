@@ -293,9 +293,14 @@ final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
             return page
         }
         await model.select(fork.id)
-        let display = try XCTUnwrap(model.displays[fork.id]); display.disclosure.setOpen(true, .work("reply"))
+        let display = try XCTUnwrap(model.displays[fork.id]); display.disclosure.setOpen(true, .work("legacy:reply"))
         display.disclosure.setOpen(true, .tool(ToolOccurrence.key("reply",tool.id)))
         let pane = NativeTranscriptPane(frame:.init(x:0,y:0,width:700,height:500))
+        pane.page.presentationInterval = 0
+        pane.showTranscript(model:model, session:display, state:"idle", canFork:true, canQuote:true, enabled:true)
+        pane.layoutSubtreeIfNeeded(); pane.document.layoutSubtreeIfNeeded()
+        model.historyViewportReady(fork.id, generation: display.presentationGeneration)
+        await display.presentation.inheritedPlanRead?.value
         pane.showTranscript(model:model, session:display, state:"idle", canFork:true, canQuote:true, enabled:true)
         pane.layoutSubtreeIfNeeded(); pane.document.layoutSubtreeIfNeeded()
         let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:pane).first)

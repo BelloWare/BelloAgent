@@ -77,6 +77,9 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         let fork = try XCTUnwrap(model.chats.first { $0.id != parent.id && !$0.isSubagent })
         XCTAssertEqual(model.selectedID,fork.id)
         XCTAssertEqual(fork.parentSessionID, kind.parentID(parent.id))
+        let forkView = try XCTUnwrap(model.displays[fork.id])
+        model.historyViewportReady(fork.id, generation: forkView.presentationGeneration)
+        await forkView.presentation.inheritedPlanRead?.value
         XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [target.sessionID])
         XCTAssertTrue(model.subagentChildren(of:fork.id).isEmpty)
         let state = try await host.request("session.snapshot",sessionID:fork.id)

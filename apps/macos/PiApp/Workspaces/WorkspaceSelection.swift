@@ -280,7 +280,10 @@ extension WorkspaceModel {
                 let coordination = fingerprint == nil ? nil : try? HistoryReader.scanCoordination(path: journal, ownerID: owner, scanned: &scanned)
                 return (plans, coordination, scanned)
             }.value
-            if let plans = scan.plans { await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned) }
+            if let plans = scan.plans {
+                await self.history.keepPlans(plans, path: journal, ownerID: owner, revision: revision, scanned: scan.scanned)
+                await self.inheritedPlanHistory.keepPlans(plans, path: journal, ownerID: owner, revision: revision)
+            }
             if let coordination = scan.coordination, let fingerprint {
                 await self.history.keepCoordination(coordination, path: journal, ownerID: owner, fingerprint: fingerprint)
             }
@@ -304,8 +307,6 @@ extension WorkspaceModel {
                 self.displays[id] === view && view.presentation.readGeneration == generation
         }
         do {
-            await readInheritedSubagents(item, current: current)
-            openSteps?(id, "inherited agents read")
             guard current() else { return }
             try await attachManagedSubagent(item, current: current)
             guard current() else { return }
