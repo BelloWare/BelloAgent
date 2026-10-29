@@ -1068,3 +1068,43 @@ round-1/item-4/item-10 comparison bundles and the temporary testable-core
 scratch directory were removed after the final trials; the final bundle,
 raw evidence, benchmark driver, fixture sources and all 20 gallery PNGs
 remain under `PI_BUILD_ROOT`.
+
+## Round 3 — review findings (2026-10-29)
+
+### F3 — session.open configuration coverage
+
+Ran all ten requested helper classes against `d59aed3f`, whose opening path is
+unchanged from accepted item 4. This exercises side budget binding and recovery,
+cost limits, family pauses, context preview, capture draining, sub-agent recovery
+and policy/effort, and host runtime ownership. No implementation change was
+needed for this finding.
+
+| Class | Passed |
+| --- | ---: |
+| SideBudgetTests | 35 |
+| SideBudgetCrashMatrixTests | 9 |
+| SideBudgetReplayTests | 8 |
+| CostLimitTests | 23 |
+| FamilyLimitPauseTests | 112 |
+| ContextPreviewTests | 8 |
+| CaptureDrainTests | 6 |
+| SubagentRecoveryTests | 17 |
+| SubagentPolicyEffortTests | 25 |
+| HostServiceTests | 10 |
+| **Total** | **253** |
+
+Zero failures and zero skipped XCTest cases. The separate Swift Testing runner's
+zero-test footer is not the XCTest count. These Debug timings are not performance
+evidence. Raw output: `$PI_BUILD_ROOT/round3/f3-helper.log`.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
+  --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" \
+  --jobs 2 --filter 'PiAgentCoreTests\.(SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetReplayTests|CostLimitTests|FamilyLimitPauseTests|ContextPreviewTests|CaptureDrainTests|SubagentRecoveryTests|SubagentPolicyEffortTests|HostServiceTests)' \
+  > "$PI_BUILD_ROOT/round3/f3-helper.log" 2>&1
+```
+
+The wrapper waited while the other stream held a `perf` quiet window. No full
+suite was run. F3 requests coverage of an accepted change, rather than a new
+behavior, so it adds no failing-first test or mutation.
