@@ -74,6 +74,49 @@ final class WorkspaceOpeningProgressTests: XCTestCase {
         XCTAssertFalse(view.loading)
     }
 
+    @MainActor func testRefusedLateCloseKeepsTheRuntimeTracked() async throws {
+        let (model, chat, view) = try await fixture(), gate = OpeningStepGate()
+        defer { gate.release() }
+        var frames: [[String:WireValue]] = []
+        let host = HostSupervisor(commandSender:{ frames.append($0) })
+        model.hosts[chat.workspaceID] = host
+        try await host.connect(cwd:model.root, state:model.root.appendingPathComponent("late-close"))
+        let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+        model.boundHostConnections[chat.workspaceID] = connection
+        model.sessionProfileRevisions[chat.id] = (connection, "revision-before-cancel")
+        let generation = model.sessionConfigurationGenerations[chat.id, default:0], token = UUID()
+        let opening = Task {
+            try await model.trackSessionOpening(chat.id, token:token, commandID:"late-open", host:host, connection:connection) {
+                // The helper succeeded; cancellation lands before app adoption.
+                await gate.wait()
+            }
+        }
+        model.sessionOpenings[chat.id] = (token, opening); view.helperOpening = .opening(nil)
+        try await eventually("The late success is waiting for adoption") { gate.entered }
+        model.cancelSessionOpening(chat.id); gate.release()
+        do { try await opening.value; XCTFail("Cancelled action succeeded") }
+        catch HostError.rejected(let code, _) { XCTAssertEqual(code,"open_cancelled") }
+        model.sessionOpenings.removeValue(forKey:chat.id)
+        try await eventually("Cancellation withdraws the late runtime") { frames.contains { $0["method"]?.string == "session.close" } }
+        let close = try XCTUnwrap(frames.first { $0["method"]?.string == "session.close" })
+        XCTAssertEqual(close["params"]?.object?["openingCommandId"]?.string, "late-open")
+        host.receive(.frame(["v":.number(1), "kind":.string("reply"), "hostEpoch":.string(epoch),
+            "commandId":try XCTUnwrap(close["commandId"]), "ok":.bool(false),
+            "error":.object(["code":.string("session_busy"), "message":.string("This conversation already has active work")])]), connectionID:connection)
+        try await eventually("The refused close settles") { model.sessionClosings[chat.id] == nil }
+        XCTAssertTrue(model.opened.contains(chat.id), "The helper retained its runtime; the app must retain ownership too")
+        XCTAssertEqual(model.sessionProfileRevisions[chat.id]?.revision, "revision-before-cancel")
+        XCTAssertEqual(model.sessionConfigurationGenerations[chat.id, default:0], generation)
+        XCTAssertEqual(view.helperOpening, .cancelled)
+        XCTAssertTrue(model.openingAdoptions.contains(chat.id))
+        var adopts = false
+        model.sessionOpeningStep = { _ in adopts = true; throw HostError.failure("Generated adoption check") }
+        do { _ = try await model.open(chat); XCTFail("Adoption gate did not run") }
+        catch { XCTAssertEqual(error.localizedDescription,"Generated adoption check") }
+        XCTAssertTrue(adopts, "Keeping ownership must not skip unfinished path and configuration adoption")
+        try await host.shutdownAndWait()
+    }
+
     @MainActor func testDisconnectDuringOpeningReturnsThePendingMessage() async throws {
         let (model, chat, view) = try await fixture(), gate = OpeningStepGate()
         defer { gate.release() }

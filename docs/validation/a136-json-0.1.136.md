@@ -1197,3 +1197,39 @@ TEST_RUNNER_PI_APP_OPENING_GALLERY="$PI_BUILD_ROOT/round3/gallery" \
 `locked.py` acquires the shared lane by atomic directory creation, writes this
 stream's owner, waits in 60-second intervals for another owner, and releases
 only its own lock in `finally`. Functional/gallery runs claim no timing results.
+
+### F4 — retain a runtime when its late close is refused
+
+Cancellation cleanup now distinguishes an acknowledged close or missing runtime
+from a refusal. A still-current helper that refuses the late close keeps the
+session in `opened`; its configuration generation and profile bookkeeping are
+not retired. Host identity and connection are checked again after the reply.
+A small `openingAdoptions` set ensures the next action still takes the complete
+opening/adoption path, including durable path registration and configuration.
+It cannot incorrectly take the already-open fast path merely because cleanup
+retained ownership. Successful adoption, actual unload and disconnect clear it.
+
+Failing first: `testRefusedLateCloseKeepsTheRuntimeTracked` received a real
+supervisor `session_busy` reply to the late, command-keyed close. The original
+code failed three assertions: runtime ownership lost, profile revision lost,
+and configuration generation incorrectly retired. Fixed: the four
+`WorkspaceOpeningProgressTests` pass, including the new assertion that the next
+user action enters normal adoption. Mutation: disabled the retained-runtime
+branch; the same test failed four assertions. Restored and reran successfully.
+
+| Separately run final app class | Passed |
+| --- | ---: |
+| WorkspaceOpeningProgressTests | 4 |
+| OpeningPaneTests | 7 |
+| WorkspaceConcurrencyTests | 12 |
+| TabHostTests | 17 |
+| **Total** | **40** |
+
+Raw logs are `$PI_BUILD_ROOT/round3/f4-{failing-first,fixed,mutation,restored}.log`
+and `f4-{OpeningPaneTests,WorkspaceConcurrencyTests,TabHostTests}.log`.
+Commands use the F1 `xcodebuild test` invocation with
+`-only-testing:PiAppTests/WorkspaceOpeningProgressTests/testRefusedLateCloseKeepsTheRuntimeTracked`
+for failing-first/mutation, then the whole class for the fixed/restored runs.
+The three other classes use the F1 `test-without-building` invocation, one class
+per shared-lane lock. No gallery regeneration is needed for this ownership-only
+change; the F1 images depict the unchanged presentation.

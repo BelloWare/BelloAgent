@@ -43,19 +43,31 @@ extension WorkspaceModel {
     }
 
     private func settleCancelledOpening(_ id: String, commandID: String, host: HostSupervisor, connection: UUID?, userCancelled: Bool) {
-        let token = UUID()
+        let token = UUID(), workspaceID = record(id)?.workspaceID
         opened.remove(id)
         let cleanup = Task { [self] in
             // The helper's reply comes after the worker unwinds. A legacy
             // helper may instead succeed: close that unadopted runtime too.
             await host.waitForCommandSettlement(commandID)
+            var retained = false
             if host.isReady, host.connectionID == connection {
-                _ = try? await host.request("session.close", sessionID: id,
-                    params: host.supportsOpenCancellation ? ["openingCommandId":.string(commandID)] : [:])
+                do {
+                    _ = try await host.request("session.close", sessionID: id,
+                        params: host.supportsOpenCancellation ? ["openingCommandId":.string(commandID)] : [:])
+                } catch HostError.rejected(let code, _) where code == "session_missing" {
+                    // A cancelled construction may never have made a runtime.
+                } catch {
+                    // Busy work (including incoming family mail) can refuse
+                    // withdrawal. A refusal is not an unload acknowledgement.
+                    retained = true
+                }
             }
             guard sessionClosings[id]?.token == token else { return }
             sessionClosings.removeValue(forKey: id)
-            helperSessionDidUnload(id)
+            if retained, host.isReady, host.connectionID == connection,
+               let workspaceID, hosts[workspaceID] === host {
+                opened.insert(id); openingAdoptions.insert(id)
+            } else { helperSessionDidUnload(id) }
             displays[id]?.helperOpening = userCancelled ? .cancelled : nil
         }
         sessionClosings[id] = (token, cleanup)

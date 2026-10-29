@@ -67,7 +67,7 @@ extension WorkspaceModel {
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.retireBudgetRead(chat.id)
-                self.opened.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
+                self.opened.remove(chat.id); self.openingAdoptions.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
                 if !retired, let view = self.displays[chat.id] {
                     view.observeContext([:],baseline:true)
@@ -217,7 +217,7 @@ extension WorkspaceModel {
     func helperSessionDidUnload(_ id: String) {
         retireBudgetRead(id)
         if record(id) == nil { budgetStates.removeValue(forKey:id) }
-        opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
+        opened.remove(id); openingAdoptions.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
         retireSessionConfiguration(id)
         releaseUnusedBudgetSessions()
     }
@@ -276,7 +276,7 @@ extension WorkspaceModel {
             _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
         Task { [weak self] in await self?.loadSubagentModels(for: item) }
-        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
+        if sessionOpenings[item.id] == nil, opened.contains(item.id), !openingAdoptions.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
             let connection = host.connectionID
             if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
             try requireHost(host, connection: connection, workspaceID: item.workspaceID)
@@ -316,7 +316,7 @@ extension WorkspaceModel {
         }
         if let pending = sessionOpenings[item.id] {
             try await pending.task.value
-        } else if !opened.contains(item.id) {
+        } else if !opened.contains(item.id) || openingAdoptions.contains(item.id) {
             var wire = profile.wire.object ?? [:]
             if let headers = credential["headers"] { wire["headers"] = headers }
             if item.isSubagent, let model = item.model { wire["modelId"] = .string(model) }
@@ -343,7 +343,7 @@ extension WorkspaceModel {
             try requireHost(host, connection: connection, workspaceID: item.workspaceID)
             if let pending = sessionOpenings[item.id] {
                 try await pending.task.value
-            } else if !opened.contains(item.id) {
+            } else if !opened.contains(item.id) || openingAdoptions.contains(item.id) {
                 let token = UUID(), commandID = UUID().uuidString
                 let task = Task { [self] in
                     try await trackSessionOpening(item.id, token: token, commandID: commandID, host: host, connection: connection) {
@@ -397,7 +397,7 @@ extension WorkspaceModel {
                             // reply, while path/capture persistence yielded above.
                             try Task.checkCancellation()
                             try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                            opened.insert(item.id)
+                            opened.insert(item.id); openingAdoptions.remove(item.id)
                             // Recovery may have corrected the cost after the open
                             // response. Read just the authoritative numeric state.
                             if budgetDependency { refreshBudgetState(item.id) }
