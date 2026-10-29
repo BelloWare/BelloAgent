@@ -87,6 +87,9 @@ final class HostTransport: @unchecked Sendable {
                 var bytes = try JSONEncoder().encode(frame)
                 guard bytes.count <= Self.maximumCommandBytes else { throw WireError.oversized }
                 bytes.append(10)
+                #if PI_TEST_HOST
+                measuredSentBytes += bytes.count
+                #endif
                 input.append(bytes, counted: counted)
             } catch { commandWritten(counted: counted); receive(.failed("The host connection was interrupted. No command was replayed.")) }
         }
@@ -109,6 +112,9 @@ final class HostTransport: @unchecked Sendable {
         }
     }
     private func consume(_ bytes: Data) {
+        #if PI_TEST_HOST
+        measuredReceivedBytes += bytes.count
+        #endif
         do {
             if bytes.isEmpty { try decoder.finish(); return }
             for frame in try decoder.append(bytes) {
@@ -118,6 +124,10 @@ final class HostTransport: @unchecked Sendable {
             }
         } catch { receive(.failed("The bundled host sent an invalid or oversized frame.")); process?.terminate() }
     }
+    #if PI_TEST_HOST
+    private var measuredSentBytes = 0, measuredReceivedBytes = 0
+    var measuredWireBytes: (sent: Int, received: Int) { queue.sync { (measuredSentBytes, measuredReceivedBytes) } }
+    #endif
     private func receiveCapture(_ frame: [String: WireValue]) {
         guard frame["v"]?.number == 1, frame["hostEpoch"]?.string == hostEpoch,
               let id = frame["transferId"]?.string, UUID(uuidString: id) != nil else { return }

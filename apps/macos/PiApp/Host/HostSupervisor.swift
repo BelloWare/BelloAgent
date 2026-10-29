@@ -23,6 +23,9 @@ final class HostSupervisor: ObservableObject {
     private var transport: HostTransport?
     /// The running helper's pid, for tests that kill their own helper.
     var helperProcessIdentifier: Int32? { transport?.processIdentifier }
+    #if PI_TEST_HOST
+    var measuredWireBytes: (sent: Int, received: Int) { transport?.measuredWireBytes ?? (0, 0) }
+    #endif
     private(set) var connectionID: UUID?
     private var ownership: WorkspaceLock?
     private var replies: [String: CheckedContinuation<WireValue, Error>] = [:]

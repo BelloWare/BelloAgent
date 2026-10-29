@@ -657,6 +657,7 @@
 		71080664F4DB60674C15F27B /* TranscriptActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E38C76AA87A8BC822B863C9 /* TranscriptActions.swift */; };
 		71290A35BCE6D2A506D14626 /* SessionTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AFEDDB767AA204394AC9221 /* SessionTimingTests.swift */; };
 		71559263DC5EFDDFD3873DA2 /* InspectorNativeViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F6A3AFA726740F8CA96ABED /* InspectorNativeViewTests.swift */; };
+		7177635D577B76EDA50DDD4A /* CommittedHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5C1BE4B31DC151336EDAE3 /* CommittedHistoryTests.swift */; };
 		71D7F10FAC62FC93F5BA6D7E /* InspectorComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CED4FC0B8CF56E965F7FA5F /* InspectorComponents.swift */; };
 		71DE0339DE4695E5DB11B9A9 /* TranscriptPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9973FC6FF08F61D3E2A5F8C1 /* TranscriptPagingTests.swift */; };
 		71ED9FCA7D72B4F99ECFBCA6 /* SettingsParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F31D1CDD8800B65D57FD1617 /* SettingsParityTests.swift */; };
@@ -2252,6 +2253,7 @@
 		BCAE9C2C4C16A0AEFD53C76B /* SidePaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidePaneView.swift; sourceTree = "<group>"; };
 		BCB45ED28D0CFCE0466C0AD3 /* SidebarInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarInteractionTests.swift; sourceTree = "<group>"; };
 		BCC8A60D6B8BC7AF04FEB0DB /* PiChartRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiChartRenderer.swift; sourceTree = "<group>"; };
+		BD5C1BE4B31DC151336EDAE3 /* CommittedHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommittedHistoryTests.swift; sourceTree = "<group>"; };
 		BD5DE94CA889FDA1BE7B5891 /* Bello Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Bello Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD6923DF79BF4BD93E98B305 /* MetadataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataStore.swift; sourceTree = "<group>"; };
 		BD69CF2DB1E1BCA0C1972A77 /* TranscriptNativePaneBehaviourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativePaneBehaviourTests.swift; sourceTree = "<group>"; };
@@ -3302,6 +3304,7 @@
 				D9E679F93EDBFDB168CA28F6 /* ChatSwitchRefreshTests.swift */,
 				A365ABDE599A0786A4973CF3 /* ClipboardImageTests.swift */,
 				7DB4B1556A1018EBC26AD2E2 /* CombinedResponseTests.swift */,
+				BD5C1BE4B31DC151336EDAE3 /* CommittedHistoryTests.swift */,
 				1682E376C6DA5C71BC7C73D4 /* CompactionResponsivenessTests.swift */,
 				FB8EC2FEE4BB93F2E208B7FC /* CompactTurnReportTests.swift */,
 				AA6C41880B285D22AB4BBE32 /* CompletionSoundTests.swift */,
@@ -4931,6 +4934,7 @@
 				502ABFD34D75431C917A259D /* ChatSwitchRefreshTests.swift in Sources */,
 				C2EB9E5A1A2C7C287D7E1C60 /* ClipboardImageTests.swift in Sources */,
 				7E96F97431AE0FC0E016EE1E /* CombinedResponseTests.swift in Sources */,
+				7177635D577B76EDA50DDD4A /* CommittedHistoryTests.swift in Sources */,
 				E83974CB33C0D2F1CAD13DA5 /* CompactTurnReportReference.swift in Sources */,
 				976075A5E4F15AC6D9211242 /* CompactTurnReportTests.swift in Sources */,
 				30F1E3E84100FE456BA06A59 /* CompactionResponsivenessTests.swift in Sources */,
