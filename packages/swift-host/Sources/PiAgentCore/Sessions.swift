@@ -426,6 +426,7 @@ public actor AgentSession {
         var consumer: JournalReplayConsumer
         if let prepared, resumePath != nil, !prepared.r.resumed, prepared.r.coveredBytes == opened.size { consumer=prepared }
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
+        try Task.checkCancellation()
         // Repair committed cut rows in the replay before publishing actor
         // state, and before partial-log recovery can restore an open suffix.
         try Self.recoverMailboxCuts(in:opened,consumer:&consumer,id:id)

@@ -40,6 +40,7 @@ struct SideActions {
     let transcript = NativeTranscriptPane()
     private let starter = StarterPanelView()
     private let cover = LoadingCoverView()
+    private let openingCover = SessionOpeningView()
     private var queue: QueuePanelView?
     private var terminal: TerminalPanelView?
     private var terminalWorkspace: WorkspaceRecord?
@@ -60,7 +61,8 @@ struct SideActions {
     /// those rows, not behind a cover; a first message being sent is already
     /// on the page and is not covered while the helper starts.
     @MainActor static func coversTranscript(_ session: SessionDisplay) -> Bool {
-        session.historyState.loading && !session.refreshingCachedRows
+        if let opening = session.helperOpening { return opening.active }
+        return session.historyState.loading && !session.refreshingCachedRows
             || session.loading && session.messages.isEmpty && session.sendingRows.isEmpty
     }
     static let coverDelay = Duration.milliseconds(150)
@@ -76,6 +78,7 @@ struct SideActions {
         var covered: Bool
         var failure: String?
         var progress: String?
+        var helperOpening: SessionOpeningState?
         var showsRecovered: Bool
         var recovered: [String]
         var conflicts: [SavedDraftConflict]
@@ -111,7 +114,7 @@ struct SideActions {
         // What stands out past the pane (a composer wider than a narrow
         // pane) is cut at its edges, as the SwiftUI pane cut it.
         clipsToBounds = true
-        for view in [recovered, transcript, starter, cover, missingFolder, footer, agentFamilyHeader, sessionPanel] as [NSView] { addSubview(view) }
+        for view in [recovered, transcript, starter, cover, openingCover, missingFolder, footer, agentFamilyHeader, sessionPanel] as [NSView] { addSubview(view) }
         // The composer last: its slash-command list floats over everything above it.
         addSubview(composer)
         layer?.addSublayer(sideLine)
@@ -135,7 +138,7 @@ struct SideActions {
             else if let control = PiKit.controls(in: self.sessionPanel.tabs).first { self.window?.makeFirstResponder(control) }
             return true
         }
-        cover.isHidden = true
+        cover.isHidden = true; openingCover.isHidden = true
         starter.removeFromSuperview()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -203,7 +206,7 @@ struct SideActions {
         didSet {
             guard oldValue != inheritedEnabled else { return }
             composer.inheritedEnabled = inheritedEnabled
-            for view in [sideHeader, recovered, footer, missingFolder, starter, cover] as [NSView] { enable(view, inheritedEnabled) }
+            for view in [sideHeader, recovered, footer, missingFolder, starter, cover, openingCover] as [NSView] { enable(view, inheritedEnabled) }
             shown = nil; refresh()
         }
     }
@@ -262,7 +265,7 @@ struct SideActions {
         else { kind = .composer }
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
-                     covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
+                     covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress, helperOpening: session.helperOpening,
                      showsRecovered: !current.isSubagent && (!session.recoverableSubmissions.isEmpty || !session.draftConflicts.isEmpty),
                      recovered: session.recoverableSubmissions.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
@@ -374,7 +377,7 @@ struct SideActions {
         }
         queue?.inheritedEnabled = state.enabled
         // The window's disabled state over whatever the updates above enabled.
-        if !state.enabled { for view in [sideHeader, recovered, footer, missingFolder, starter, cover] as [NSView] { enable(view, false) } }
+        if !state.enabled { for view in [sideHeader, recovered, footer, missingFolder, starter, cover, openingCover] as [NSView] { enable(view, false) } }
         missingFolder.isHidden = state.missingFolder == nil
         if let missing = state.missingFolder { missingFolder.update(missing, workspaceID: chat.workspaceID, model: model) }
         footer.isHidden = state.footer == .composer
@@ -407,6 +410,15 @@ struct SideActions {
     // MARK: The loading cover
 
     private func updateCover(_ state: State, before: State?) {
+        if let opening = state.helperOpening {
+            openingCover.update(opening, cancel: { [weak self] in self?.model.cancelSessionOpening(state.sessionID) },
+                retry: { [weak self] in self?.model.retrySessionOpening(state.sessionID) })
+            if !opening.active {
+                coverTask?.cancel(); coverTask = nil; coverDue = false
+                cover.isHidden = true; openingCover.isHidden = false
+                return
+            }
+        } else { openingCover.isHidden = true }
         if state.covered {
             // It appears at once when due and fades only on its way out.
             if before?.covered != true || before?.sessionID != state.sessionID {
@@ -433,6 +445,10 @@ struct SideActions {
         }
     }
     private func showCover() {
+        if shown?.helperOpening != nil {
+            cover.isHidden = true; openingCover.isHidden = false; needsLayout = true
+            return
+        }
         cover.showLoading(progress: shown?.progress)
         cover.isHidden = false
         CATransaction.begin(); CATransaction.setDisableActions(true); cover.layer?.opacity = 1; CATransaction.commit()
@@ -604,7 +620,7 @@ struct SideActions {
             starter.frame = CGRect(x: PiKit.round(transcriptFrame.midX - cardWidth / 2, piScale), y: transcriptFrame.minY + PiSpacing.xl,
                                    width: cardWidth, height: height)
         }
-        cover.frame = transcriptFrame
+        cover.frame = transcriptFrame; openingCover.frame = transcriptFrame
         CATransaction.begin(); CATransaction.setDisableActions(true)
         sideLine.frame = CGRect(x: 0, y: sideHeader.frame.maxY, width: width, height: Self.sideLineHeight)
         sideLine.backgroundColor = piCGColor(.piHairline)

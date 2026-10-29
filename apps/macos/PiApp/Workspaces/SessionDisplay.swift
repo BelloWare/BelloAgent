@@ -82,6 +82,7 @@ struct TranscriptVersionView: Equatable, Sendable {
 }
 
 @MainActor final class SessionDisplay: ObservableObject {
+    @Published var helperOpening: SessionOpeningState?
     var subagentsRevision: String?
     var isManagedSubagent = false
     var supportsMailboxCutin = false { didSet { if supportsMailboxCutin != oldValue { publishTranscript() } } }

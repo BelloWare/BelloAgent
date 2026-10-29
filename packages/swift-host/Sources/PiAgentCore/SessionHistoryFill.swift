@@ -16,10 +16,12 @@ extension AgentSession {
         let task: Task<JournalReplayConsumer, Error>
         /// The journal file its replay reads.
         let source: JournalSource
+        let progress: JournalWorkProgress
         var replay: JournalReplayConsumer?
         /// The whole history being made from the replay, off the actor.
         var preparation: Task<Result<(FullHistory, JournalReplayConsumer), Error>, Never>?
         var preparationSnapshot: (generation: UInt64, size: UInt64)?
+        var preparationProgress: JournalWorkProgress?
         /// Whether its replay is of `journal`'s file.
         func reads(_ journal: SessionJournal?) -> Bool { journal.flatMap(JournalSource.init) == source }
     }
@@ -31,11 +33,14 @@ extension AgentSession {
               let source = JournalSource(journal) else { return }
         historyFillTokens &+= 1
         let token = historyFillTokens, url = journal.url, size = journal.size, id = self.id, hold = historyFillHold, reads = historyReads
+        let progress = JournalWorkProgress()
         let task = Task.detached(priority: .utility) { () throws -> JournalReplayConsumer in
             if let hold { await hold("replay") }
-            return try Self.replayPrefix(url: url, source: source, through: size, id: id, reads: reads)
+            return try JournalWorkProgress.$current.withValue(progress) {
+                try Self.replayPrefix(url: url, source: source, through: size, id: id, reads: reads)
+            }
         }
-        historyFill = HistoryFill(token: token, task: task, source: source)
+        historyFill = HistoryFill(token: token, task: task, source: source, progress: progress)
         // Detached, so what the load made and the chat does not take is let
         // go of here, not on the actor.
         Task.detached { [weak self] in
@@ -52,6 +57,8 @@ extension AgentSession {
         if let fill = historyFill {
             if fill.reads(journal) {
                 if let replay = fill.replay { return ReplayResume(replay, source: fill.source) }
+                let observer = fill.progress.forward(to: JournalWorkProgress.current)
+                defer { if let observer { fill.progress.remove(observer) } }
                 let replay = try? await HistoryReadWait.value(fill.task)
                 try throwIfClosed()
                 try Task.checkCancellation()
@@ -77,7 +84,8 @@ extension AgentSession {
     /// `work` on a task of its own, off the actor, stopped when the caller
     /// is: a load that a close or an unload stops stops its worker too.
     static func offActor<T: Sendable>(priority: TaskPriority, _ work: @escaping @Sendable () async -> T) async -> T {
-        let task = Task.detached(priority: priority, operation: work)
+        let progress = JournalWorkProgress.current
+        let task = Task.detached(priority: priority) { await JournalWorkProgress.$current.withValue(progress, operation: work) }
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
@@ -85,7 +93,8 @@ extension AgentSession {
     /// worker-owned token to those lanes; it never inherits a reader's token.
     static func offActor<T: Sendable>(priority: TaskPriority, _ work: @escaping @Sendable (BlockingWorkCancellation) async -> T) async -> T {
         let cancellation = BlockingWorkCancellation()
-        let task = Task.detached(priority: priority) { await work(cancellation) }
+        let progress = JournalWorkProgress.current
+        let task = Task.detached(priority: priority) { await JournalWorkProgress.$current.withValue(progress) { await work(cancellation) } }
         return await withTaskCancellationHandler { await task.value } onCancel: { cancellation.cancel(); task.cancel() }
     }
 
@@ -132,6 +141,7 @@ extension AgentSession {
             guard let line = try reader.nextLine(), reader.completeBytes <= size else { throw AgentError("session_damaged", "The journal changed while its history loaded") }
             if line.isEmpty { continue }
             try consumer.consume(line, at: lineStart)
+            JournalWorkProgress.current?.update(reader.completeBytes, of: size)
         }
         return consumer
     }
@@ -154,8 +164,10 @@ extension AgentSession {
         let token = fill.token, size = journal.size, generation = displayGeneration, url = journal.url
         let live = history, liveTasks = recentTaskPresentations, loaded = visible.map(\.id), older = olderRows, lineage = presentationTimeline
         let id = self.id, hold = historyFillHold
+        let progress = JournalWorkProgress()
         let preparation = Task.detached(priority: .utility) { () -> Result<(FullHistory, JournalReplayConsumer), Error> in
                 if let hold { await hold("prepare") }
+                return JournalWorkProgress.$current.withValue(progress) {
                 return Result {
                     let whole = try Self.replayPrefix(url: url, source: source, through: size, id: id, from: replay, reads: reads)
                     try Task.checkCancellation()
@@ -173,8 +185,9 @@ extension AgentSession {
                     try Task.checkCancellation()
                     return (full, whole)
                 }
+                }
         }
-        fill.preparation = preparation; fill.preparationSnapshot = (generation, size); fill.replay = nil; historyFill = fill
+        fill.preparation = preparation; fill.preparationSnapshot = (generation, size); fill.preparationProgress = progress; fill.replay = nil; historyFill = fill
         Task.detached { [weak self] in
             let made = await preparation.value
             await self?.commitHistoryFill(token: token, generation: generation, size: size, made)
@@ -187,7 +200,7 @@ extension AgentSession {
     func commitHistoryFill(token: Int, generation: UInt64, size: UInt64, _ made: Result<(FullHistory, JournalReplayConsumer), Error>) {
         // What is not taken here is let go of by the caller, off the actor.
         guard var fill = historyFill, fill.token == token else { return }
-        fill.preparation = nil; fill.preparationSnapshot = nil; historyFill = fill
+        fill.preparation = nil; fill.preparationSnapshot = nil; fill.preparationProgress = nil; historyFill = fill
         guard case .success(let (full, replay)) = made else { historyFill = nil; return }
         guard partialHistory, !closed, runTask == nil, let journal, journal.size == size, fill.reads(journal), displayGeneration == generation else {
             // Made again from the replay, taken on, when the chat is next idle.

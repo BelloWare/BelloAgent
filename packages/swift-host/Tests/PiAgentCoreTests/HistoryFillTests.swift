@@ -51,6 +51,30 @@ final class HistoryFillTests: HelperTestCase {
     }
     private let chatID = "chat-0001"
 
+    func testFullHistoryWaitReceivesBackgroundPreparationProgress() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        let session = try chat.session(chatID, client: ScriptClient([answer("A durable suffix")]), resume: path)
+        let replay = Gate(), preparation = Gate(), observations = Starts()
+        await session.holdHistoryFill { stage in
+            if stage == "replay" { await replay.wait() }
+            if stage == "prepare" { await preparation.wait() }
+        }
+        await session.startHistoryFill()
+        try await eventually { await replay.entered == 1 }
+        try await send(session, "suffix", "Append while the background snapshot waits")
+        await replay.release()
+        try await eventually { await preparation.entered == 1 }
+        let progress = JournalWorkProgress()
+        _ = progress.observe { observations.note($0.completed) }
+        let reader = Task { try await JournalWorkProgress.$current.withValue(progress) { try await session.loadFullHistory() } }
+        try await eventually { await session.fullHistoryLoad != nil }
+        await preparation.release()
+        try await reader.value
+        XCTAssertFalse(observations.bytes.isEmpty, "The waiting command sees the background suffix replay advance")
+        await session.close()
+    }
+
     func testRestoringCheckpointTaskRecordsNeverPublishesALiveCompletion() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat)

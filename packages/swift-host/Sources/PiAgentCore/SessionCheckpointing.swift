@@ -73,9 +73,12 @@ extension AgentSession {
         if subagents.cuts != nil, checkpoint.version != 3 { return nil }
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
+        let size = (try? file.seekToEnd()) ?? 0
         for row in checkpoint.rows {
+            if Task.isCancelled { return nil }
             guard let message = journalRow(row, in: file) else { return nil }
             rows.append(message)
+            JournalWorkProgress.current?.update(row.offset + UInt64(row.length) + 1, of: size)
         }
         // A compaction record adopts its progress row, as the replay does,
         // unless that row was replaced after it.

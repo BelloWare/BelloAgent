@@ -4,7 +4,8 @@ Implementer: Codex. Reviewer/merge owner: the lead. Branch `dev/a136-json`,
 based on `6d38ddd435339bd6d1d71f71d42eb59be695b5f7` (phase A plus `dev/next`).
 All generated data, builds, logs and profiles live under
 `/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json` (`PI_BUILD_ROOT`).
-No app, journal format, encoder, replay or history caller changes.
+Round 1 changes only the parser. Round 2, below, covers opening progress,
+cancellation and checkpoint refresh. Journal formats and JSON encoding stay unchanged.
 
 ## Change and compatibility
 
@@ -174,6 +175,18 @@ The other cold speedups are large and use one accepted trial per variant.
 | 200k | checkpoint open | 3 / 3 | 35.0 → 24.8 | 0.033 → 0.023 | 7.9 → 7.8 | 2.65 → 2.43 |
 | 200k | first older page | 3 / 3 | 25702.5 → 8609.5 | 26.265 → 8.990 | 1703.7 → 1773.9 | 2.65 → 2.43 |
 | 200k | next position page | 3 / 3 | 577.9 → 504.1 | 0.576 → 0.477 | 1703.7 → 1773.9 | 2.65 → 2.43 |
+| 50k exchanges | cold open | 1 / 1 | 57140.7 → 23443.3 | 56.870 → 22.991 | 5305.7 → 5355.3 | 2.91 → 3.26 |
+| 50k exchanges | checkpoint open | 3 / 3 | 27.2 → 20.6 | 0.026 → 0.019 | 7.4 → 6.6 | 2.91 → 2.65 |
+| 50k exchanges | first older page | 3 / 3 | 52138.1 → 17570.2 | 52.793 → 18.161 | 3243.0 → 3320.2 | 2.91 → 2.65 |
+| 50k exchanges | next position page | 3 / 3 | 615.5 → 664.4 | 0.888 → 0.963 | 3243.0 → 3320.2 | 2.91 → 2.65 |
+
+The missing 50k-exchange cells were added at the start of round 2, using
+`6d38ddd4` versus the unchanged `d8d0ad32` helper, before any round-2 code.
+The warm cells have three trials because next-page differences are within
+20%. Raw commands, load samples and results: `round2/run-round1-extra.py`,
+`round2/round1-exchanges-summary.json`, and `perf/json-{before,after}-{cold,prepare,warm}-50k-exchanges-*`.
+The baseline detached worktree, scratch build and bundle were deleted after
+these trials. The round-1 bundle remains separate for this round's comparisons.
 
 The 10k checkpoint open is essentially unchanged (11.3 → 11.8 ms).
 The repeated next-page medians remain roughly half a second; the profile
@@ -431,3 +444,296 @@ Artifact SHA-256 (full metadata in `evidence-info.json`):
 `xcodegen generate --quiet` leaves the project unchanged; `git diff --check`
 passes. There are no parser disagreements or remaining requested checks.
 The lead reviews and merges this branch; `NEXT-RELEASE.md` is untouched.
+
+## Round 2 — progress-aware opening (item 4)
+
+The lead accepted `d8d0ad32`. Before this round, `origin/dev/next` was merged
+as `a62cc25b`, bringing `efc85e72` and its synthetic gateway parent-death
+cleanup. No release or other stream's branch was changed.
+
+### Contract and ownership
+
+The app's hello opts into `commandProgress: true`. The helper advertises
+`command-progress-v1` and `open-cancel-v1`; neither is a required handshake
+capability. Only an opted-in connection receives the new frame:
+
+```json
+{"v":1,"kind":"command.progress","hostEpoch":"epoch","commandId":"command","completed":1048576,"total":8388608}
+```
+
+`completed` and `total` are bounded nonnegative integer byte counts, with a
+positive, fixed total. Opening reports the journal validation and replay
+passes against twice the captured file size. A checkpoint can skip its
+validated prefix. Whole-journal history reads report their captured replay
+prefix. Shared history readers subscribe to the worker's actual progress;
+a reader does not own the shared worker or manufacture timer events. Work
+updates check the clock only after 64 KiB of advancement and emit at most
+once per 250 ms. Waiting on a runtime gate or a writer lock emits nothing.
+
+The supervisor starts its existing 30-second deadline when a command is
+dispatched. A same-connection, same-epoch, same-command observation renews
+it only if completion strictly increases under the original bound. Invalid,
+repeated, regressing, foreign and post-cancel observations do not renew it.
+The timeout's generation also fences an already-enqueued old timer. Old
+helpers keep the fixed deadline; old apps receive no new frame kind.
+
+A cancellable open carries the existing `readToken` control identity. The
+helper accepts `read.cancel` for that exact open and checks cancellation in
+journal validation, checkpoint row loading, replay, and before publication.
+The cancellation handler reaches the detached construction task. An open's
+runtime remains unpublished until configuration and snapshot work finish;
+errors close it. Shutdown awaits opening workers as well as loaded sessions,
+so its completion also follows writer-lock release.
+
+The app's shared `sessionOpenings` task is cancelled only by Cancel or the
+existing teardown paths. A selection change leaves it alive. A separate
+`sessionClosings` fence waits for the physical reply before withdrawing an
+unadopted runtime. `session.close(openingCommandId:)` can withdraw the newly
+created runtime belonging to that open, including durable recovered queued
+input, until a subsequent open claims it. It cannot stop newly active work.
+Older helpers use ordinary close after their late reply. Retry waits for
+this cleanup, and a cancelled first open can resume its own canonical
+journal even if the path had not yet been published in the chat record.
+
+### What the user sees
+
+After the existing short opening threshold (150 ms), the conversation canvas
+shows “Opening chat…” with determinate percentage and a PiKit Cancel button.
+Before the first observation, or with an old helper, it says “Preparing the
+saved conversation…”. Cancel changes this to “Cancelling opening…” while the
+worker releases its writer, then “Opening cancelled” with Retry. A real
+failure shows its error with Retry. The transcript's independent opening
+page/fill state is untouched.
+
+The pending-send failure path is preserved. Cancel returns the unsent text
+to the composer and shows **“Opening cancelled. Your message was not sent.”**
+It removes the undispatched send intent and its sending placeholder, and
+does not mark the message's outcome uncertain. A failed open likewise
+returns the draft and shows the actual error. Retry only opens the chat;
+it does not resend that draft. The tests check the durable intent store as
+well as the composer, including cancellation after the helper has already
+replied and disconnection before adoption.
+
+### Failing-first and mutation evidence
+
+Before implementation, `OpeningProgressTests` ran two cases and failed three
+assertions: a pre-cancelled replay still opened and the two new capabilities
+were absent (`round2/item4-helper-failing-first.log`). The app's fake-clock
+80-second advancing open failed with the original acknowledgment timeout
+(`round2/item4-app-failing-first-2.log`: one test, one failure).
+
+The first Debug app build exposed the existing unconditional Debug skip in
+`LongChatPerformanceTests.swift` as an unreachable-code warning promoted to
+an error. That unrelated source is unchanged. Focused Debug commands set
+`SWIFT_TREAT_WARNINGS_AS_ERRORS=NO`; the new performance test uses a complete
+compile-time Release/Debug branch and does not add that warning.
+
+Removing detached-worker cancellation made all four validation/replay
+cancellation points continue to 100%, failing four assertions in one test
+(`round2/item4-mutation-cancel.log`). The production handler was restored;
+the subsequent 39-case helper run passed 38 and skipped one optional case.
+
+### Scope
+
+Besides the assigned supervisor/opening/replay files, the opening UI needs
+small integration changes in `ConversationPane.swift`, `SessionDisplay.swift`
+and the opening test seam in `WorkspaceModel.swift`. The shared history-work
+progress hook is in `HistoryReadWait.swift` and `SessionHistoryFill.swift`. Two observer lines in `SessionOlderRows.swift`
+forward the background preparation replay to a waiting full-history reader.
+`HostService.swift` changes are restricted to frame negotiation/delivery,
+opening construction/publication and opening cleanup. No changes to
+`SessionReads.swift`, source-description selection, app history/paging,
+opening fill, Find, transcript rows or `NEXT-RELEASE.md`.
+
+The background preparation regression also failed before forwarding was
+added (`item4-preparation-failing-first.log`: one test, one assertion), then
+passed. Final focused helper run: **100 executed, 97 passed, 3 skipped,
+0 failures** (`item4-helper-final.log`). The classes were OpeningProgress,
+HostService, HostDispatch, HistoryReadCancellation, HistoryFill,
+JournalCheckpoint, OlderRows, ReplayParity, DurableReplay, JournalPromotion,
+MailboxCutPersistence and SubagentCoordinator.
+
+All three supervisor mutations were compiled separately and caught by their
+specific fake-clock tests: renew on repeated completion, ignore host epoch,
+and ignore command identity. Each produced one expected failed assertion.
+Dropping detached cancellation was the fourth caught mutation. Mutation
+runners, logs and JSON results are in `round2/item4-{app,helper}-mutation*`.
+After restoring the supervisor, all **12 new app tests passed** again.
+
+A preliminary app run staged empty helper directories while an independent
+helper bundle rebuild was in progress; its 12 tests failed before reaching
+their intended checks. Staging was rerun after the helper finished, and all
+12 passed. Subsequent helper staging and app builds are sequential.
+
+### Release app checks and gallery
+
+The isolated Release test host and bundled helper were built sequentially.
+The helper embedded in the test host and the measurement bundle both hash to
+`9f64dc2bc0d55b97f2b34a389556e086716d05f34d5a1dd3fe11c7775efd0030`.
+The app checks passed **92 tests, zero failures**:
+
+| Class | Passed |
+|---|---:|
+| OpeningDeadlineTests | 9 |
+| WorkspaceOpeningProgressTests | 3 |
+| WorkspaceConcurrencyTests | 12 |
+| TabHostTests | 17 |
+| CostLimitOpeningTests | 1 |
+| HostSupervisorTests (alone) | 12 |
+| FinishedChatOpeningTests (alone, opt-in, one round) | 1 |
+| SubagentOpeningTests (alone) | 15 |
+| FreshPresentationTests (alone) | 21 |
+| OpeningProgressGalleryTests (alone) | 1 |
+
+The first FinishedChatOpening invocation omitted its opt-in variable and
+skipped; it is not counted above. Two attempts to run that probe through
+the timing wrapper were aborted at load 4.09 and 4.94. Those discarded
+attempts supply no timing evidence. The remaining serial app classes and
+gallery then ran as functional checks under the shared lock. Their load
+samples are retained in `round2/item4-functional-release.json`; no speed
+figures from those functional runs are used. The required cold-open,
+reporting-cost and cancellation measurements retain the load-at-most-4 gate.
+
+Gallery output: `/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json/round2/gallery/`.
+All **20 PNGs were opened and inspected**: readable labels, visible actions,
+correct disabled Cancel during unwind, and no clipping at either width.
+The filenames are `opening-<state>-<width>-<theme>.png`, with each combination
+of state `progress`, `legacy`, `cancelling`, `cancelled`, `failure`; width
+`840`, `320`; and theme `light`, `dark`. The view uses PiKit ProgressBar and
+Button, shell text components, and existing typography/spacing/color tokens.
+
+Raw app evidence: `perf/json-item4-app-affected-1.*`,
+`perf/json-item4-HostSupervisorTests-1.*`, and
+`round2/item4-functional-<Class>.log`. No full app or helper suite was run.
+
+### Production deadline, reporting cost, cancellation
+
+These are fresh helper opens of fresh APFS journal clones without metadata,
+using the actual Release `HostSupervisor` and its default **30-second**
+inactivity deadline. No 180-second override is used. The `quiet` control
+opts out of progress in hello; `progress` opts in. Three trials per cell,
+interleaved in alternating order. Each numeric column is its own median;
+footprint is the helper process's lifetime peak. This measures helper/IPC
+reporting through the supervisor, without the conversation canvas mounted.
+
+| Fixture | Reporting | Trials | Open ms | CPU s | Peak MiB | Max 1-min load |
+|---|---|---:|---:|---:|---:|---:|
+| 200k | quiet | 3 | 10217.5 | 10.138 | 2854.3 | 3.82 |
+| 200k | progress | 3 | 10227.4 | 10.145 | 2824.3 | 2.92 |
+| 50k-exchanges | quiet | 3 | 20420.7 | 20.161 | 5403.9 | 2.96 |
+| 50k-exchanges | progress | 3 | 20075.3 | 19.834 | 5406.3 | 2.92 |
+
+Reporting changes the median by **+0.10%** at 200k and **−1.69%** at
+50k exchanges, within the observed variation. It has no measurable added
+cost in this sample. The 200k quiet/progress wall ranges are 10,089–10,500 /
+10,088–10,331 ms; the exchange ranges are 20,417–21,866 / 19,466–20,480 ms.
+
+The app received 39–40 progress observations per 200k open and 74–77 per
+50k-exchange open. App-observed median cadence is 250.40 / 250.47 ms;
+p95 is 254.19 / 255.16 ms; maximum is 261.42 / 265.26 ms. Delivery jitter
+can make received intervals slightly shorter than the helper's 250 ms
+emission interval. The fake-clock unit test pins the emission limit itself.
+
+Cancel was sent at the first observation at or above 65% of total work,
+after validation and during replay of the 50k-exchange journal. All three
+trials received cancellation, waited for physical command settlement, and
+successfully acquired the journal's exclusive writer lock. Cancel-to-stopped
+and-lock-released latency: **127.70 / 128.60 / 141.24 ms** (minimum / median /
+maximum). Maximum observed load was 2.92. Median total time from open to
+cancellation completion was 7,903.0 ms, helper CPU 7.717 s, peak 2,403.1 MiB.
+
+One initial successful probe was rejected by the standard wrapper's unrelated
+`PERF136` page-row logging check: this opening-only test emits `OPENING136`.
+`round2/opening-run.py` applies the standard wrapper unchanged except for
+validating this test's own marker: one result, production deadline 30,
+expected mode, positive elapsed time, advancing bounded progress (or none
+for the opt-out control), and positive cancellation latency when cancelling.
+XCTest still asserts cancellation and actual lock release. The clone, artifact,
+lock and load checks are unchanged. That initial rejected probe is excluded.
+Two later cold trials were aborted at load 7.18 and 4.36 and rerun successfully.
+
+Accepted timing ledger (start / end / peak one-minute load):
+
+| Raw trial | Load |
+|---|---:|
+| json-item4-200k-progress-r1-1 | 2.90 / 2.76 / 2.91 |
+| json-item4-200k-progress-r2-2 | 2.92 / 2.50 / 2.92 |
+| json-item4-200k-progress-r3-1 | 2.54 / 2.51 / 2.54 |
+| json-item4-200k-quiet-r1-2 | 2.97 / 2.89 / 2.97 |
+| json-item4-200k-quiet-r2-1 | 2.50 / 3.82 / 3.82 |
+| json-item4-200k-quiet-r3-1 | 2.82 / 3.16 / 3.16 |
+| json-item4-50k-exchanges-cancel-r1-1 | 2.52 / 2.60 / 2.60 |
+| json-item4-50k-exchanges-cancel-r2-1 | 2.60 / 2.74 / 2.74 |
+| json-item4-50k-exchanges-cancel-r3-1 | 2.74 / 2.85 / 2.92 |
+| json-item4-50k-exchanges-progress-r1-1 | 2.73 / 2.75 / 2.79 |
+| json-item4-50k-exchanges-progress-r2-2 | 2.92 / 2.52 / 2.92 |
+| json-item4-50k-exchanges-progress-r3-1 | 2.67 / 2.48 / 2.67 |
+| json-item4-50k-exchanges-quiet-r1-1 | 2.76 / 2.73 / 2.96 |
+| json-item4-50k-exchanges-quiet-r2-1 | 2.72 / 2.82 / 2.82 |
+| json-item4-50k-exchanges-quiet-r3-1 | 2.51 / 2.67 / 2.95 |
+
+Raw per-observation counts/timestamps, CPU and footprint are retained in
+`perf/json-item4-*.{log,json}` and `round2/item4-release-summary.json`.
+
+### Release wire gates
+
+| Suite | Passed | Failures | Start / end / peak 1-min load |
+|---|---:|---:|---:|
+| wire | 41 | 0 | 2.85 / 2.07 / 2.85 |
+| concurrent | 4 | 0 | 2.07 / 1.92 / 2.07 |
+| acceptance | 3 | 0 | 1.92 / 1.76 / 1.92 |
+| opening | 4 | 0 | 1.76 / 2.19 / 2.27 |
+
+The four new wire cases cover old-app opt-out, cold-open and checkpoint
+history progress, cancel followed by lock release/no runtime, and EOF during
+open followed by writer release. Raw logs are `round2/item4-release-*.log`;
+commands and two-second load samples are in `round2/item4-wire-gates.json`.
+A process inventory after app checks found **zero UI gateways from this
+worktree** (`round2/item4-gateway-check.json`).
+
+### Round-2 item-4 commands
+
+All commands export the same root and run in `wt-a136-json`:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json
+python3 "$PI_BUILD_ROOT/round2/run-round1-extra.py"
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" python3 scripts/build-bundle.py
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" xcodebuild build-for-testing   -project PiApp.xcodeproj -scheme PiApp -configuration Release   -destination platform=macOS,arch=arm64 -jobs 2   -derivedDataPath "$PI_BUILD_ROOT/release" ENABLE_TESTABILITY=YES   CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO   PI_PERF_TEST_COMPILATION_MODE=incremental PI_PERF_TEST_COMPILER_FLAGS=-j2
+```
+
+The raw command files retain every filter and environment variable:
+`round2/item4-release-measure.py` for the initial 42-test batch and standalone
+HostSupervisorTests; `round2/item4-functional-release.py` for the remaining
+serial classes and gallery; `round2/item4-release-timings.py` for the 15
+accepted cold/control/cancel trials, using `round2/opening-run.py`; and
+`round2/item4-wire-gates.py` for 41 / 4 / 3 / 4 wire cases. Each app invocation
+uses this checked, isolated manifest and runs one serial class at a time:
+
+```sh
+python3 scripts/check-test-host.py   "$PI_BUILD_ROOT/release/Build/Products/PiApp_macosx15.1-arm64.xctestrun"
+xcodebuild test-without-building   -xctestrun "$PI_BUILD_ROOT/release/Build/Products/PiApp_macosx15.1-arm64.xctestrun"   -derivedDataPath "$PI_BUILD_ROOT/release" -destination platform=macOS,arch=arm64   -parallel-testing-enabled NO -collect-test-diagnostics never   -only-testing:PiAppTests/<Class>
+```
+
+For each timing cell the wrapper receives `--label json-item4-<fixture>-<mode>-r<N>
+--start-load 3 --attempts 5 --fixture "$PI_BUILD_ROOT/fixtures/<fixture>/chat.jsonl"`
+and `TEST_RUNNER_PI_OPENING_PROBE=quiet|progress|cancel`. Gallery uses
+`TEST_RUNNER_PI_APP_OPENING_GALLERY="$PI_BUILD_ROOT/round2/gallery"`.
+FinishedChatOpening's functional check uses `TEST_RUNNER_PI_OPEN_PROBE=1`
+and `TEST_RUNNER_PI_OPEN_PROBE_ROUNDS=1`.
+
+```sh
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test   --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify"   -j 2 --filter 'OpeningProgressTests|HostServiceTests|HostDispatchTests|HistoryReadCancellationTests|HistoryFillTests|JournalCheckpointTests|OlderRowsTests|ReplayParityTests|DurableReplayTests|JournalPromotionTests|MailboxCutPersistenceTests|SubagentCoordinatorTests'
+python3 "$PI_BUILD_ROOT/round2/item4-app-mutations.py"
+python3 "$PI_BUILD_ROOT/round2/item4-helper-mutation.py"
+HOST="$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-native-host.py "$HOST"
+python3 scripts/test-concurrent-native-host.py "$HOST"
+python3 scripts/test-native-acceptance.py "$HOST"
+python3 scripts/test-opening-progress.py --binary "$HOST"   --fixture "$PI_BUILD_ROOT/fixtures/50k-exchanges/chat.jsonl"
+```
+
+Wire commands above execute inside the lock/load wrapper. The temporary
+baseline worktree and baseline bundle from the missing round-1 cell were
+removed. Item 4 has no unresolved functional failure. The optional replay/
+encoding optimizations are not included in this item.

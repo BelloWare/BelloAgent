@@ -311,11 +311,14 @@ extension AgentSession {
             consumer.starts(at: replay.completeBytes)
         }
         while true {
+            try Task.checkCancellation()
             let lineStart=replay.completeBytes
             guard let line=try replay.nextLine() else { break }
             if line.isEmpty { continue }
             try consumer.consume(line, at: lineStart)
+            JournalWorkProgress.current?.update(replay.completeBytes, of: replay.size)
         }
+        try Task.checkCancellation()
         return consumer
     }
     /// A progress row the journal holds no terminal receipt for, as a replay
