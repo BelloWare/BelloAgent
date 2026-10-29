@@ -4,6 +4,8 @@ struct CheckpointRefreshPolicy: Sendable {
     var bytes: UInt64 = 8 << 20
     var seconds: Double = 60
     var replayBytes: UInt64 = 64 << 20
+    // Short suffixes finish without publishing on the opening thread.
+    var longReplayBytes: UInt64 = 512 << 20
     var batchBytes: UInt64 = 32 << 20
     var metadataBytes = 8 << 20
     var rows = 32_768

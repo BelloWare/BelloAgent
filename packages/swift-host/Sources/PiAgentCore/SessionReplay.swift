@@ -43,8 +43,10 @@ struct StateSource: Sendable {
 /// A journal's replay, one line at a time: what `AgentSession.replay` reads
 /// from a journal, and what a fork feeds it as it writes one, so the fork's
 /// state is the one its journal replays to without reading it again.
-struct JournalReplayConsumer {
+struct JournalReplayConsumer: Sendable {
     private(set) var r = JournalReplay()
+    /// An intermediate cache already written during a long open.
+    private(set) var publishedCheckpointThrough: UInt64 = 0
     private var id: String
     private var header: JournalCheckpoint.Check?
     private var marker: JournalCheckpoint.Check?
@@ -67,7 +69,7 @@ struct JournalReplayConsumer {
     private var capturedReceipts: (base: CommandReceipts.Base, changes: [Data])?
     // For a replay resumed from a checkpoint: the newest edit marker among the
     // shown rows it did not load, when the checkpoint says (`older`).
-    private enum Older { case none, marker(String), unknown }
+    private enum Older: Sendable { case none, marker(String), unknown }
     private var older = Older.none
     // The chat's moves to another connection so far, which every checkpoint
     // names: they change nothing a replay builds, but an open checks them.
@@ -341,6 +343,34 @@ struct JournalReplayConsumer {
         return checkpoint
     }
 
+    /// Freeze only rows a bounded checkpoint could name. Retaining the whole
+    /// replay would make its next append copy the history and span dictionary.
+    /// Capture, encoding and staging belong to the utility worker.
+    func settledCheckpointSnapshot(policy: CheckpointRefreshPolicy) -> Self? {
+        guard let stateSource, stateSource.key == "data",
+              stateSource.offset + UInt64(stateSource.line.count) + 1 == r.coveredBytes,
+              stateSource.line.count <= policy.metadataBytes,
+              !r.context.isEmpty, r.context.count <= policy.rows else { return nil }
+        var remaining = Set(r.context.map(\.id)), first = r.visible.count
+        let lower = max(0, first - policy.rows)
+        while first > lower, !remaining.isEmpty { first -= 1; remaining.remove(r.visible[first].id) }
+        guard remaining.isEmpty else { return nil }
+        var snapshot = self
+        snapshot.r.history = []; snapshot.r.pendingRequestLinks = [:]
+        snapshot.r.visible = Array(r.visible[first...]); snapshot.r.olderRows += first
+        snapshot.r.rowSpans = [:]
+        for row in snapshot.r.visible {
+            guard let span = r.rowSpans[row.id] else { return nil }
+            snapshot.r.rowSpans[row.id] = span
+        }
+        snapshot.r.captured = nil; snapshot.r.resumedFrom = nil; snapshot.capturedReceipts = nil
+        return snapshot
+    }
+
+    mutating func recordPublishedCheckpoint(through position: UInt64) {
+        publishedCheckpointThrough = max(publishedCheckpointThrough, position)
+    }
+
     /// What the records so far replay to. The consumer can go on after it.
     func finished() throws -> JournalReplay {
         var r = self.r
@@ -376,7 +406,8 @@ extension AgentSession {
     }
     /// The replay itself, at the journal's end: it can go on with the records
     /// the journal gets next (`durableReplay`).
-    static func replayConsumer(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool) throws -> JournalReplayConsumer {
+    static func replayConsumer(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool,
+                               policy: CheckpointRefreshPolicy = CheckpointRefreshPolicy(), checkpointPublisher: ReplayCheckpointPublisher? = nil) throws -> JournalReplayConsumer {
         var resumeFrom: (checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?))?
         if resume, let checkpoint=opened.resumedFrom, let loaded=Self.loadCheckpoint(checkpoint, url: url) { resumeFrom=(checkpoint, loaded) }
         else if resume, opened.resumedFrom != nil { try opened.checkWhole(id: id, binding: binding) }
@@ -389,13 +420,15 @@ extension AgentSession {
             replay=try opened.recordReader()
             consumer.starts(at: replay.completeBytes)
         }
-        let policy = CheckpointRefreshPolicy()
-        var attemptedThrough = replay.completeBytes, attemptedAt = ProcessInfo.processInfo.systemUptime
+        let remaining = replay.size - replay.completeBytes, startedAt = ProcessInfo.processInfo.systemUptime
+        var attemptedThrough = replay.completeBytes, attemptedAt = startedAt
+        let publisher = checkpointPublisher ?? ReplayCheckpointPublisher(url: url, policy: policy)
+        defer { _ = publisher.stop() }
         func publishSettledPrefix() {
             attemptedThrough = replay.completeBytes; attemptedAt = ProcessInfo.processInfo.systemUptime
-            // SessionJournal already validated this prefix's chain. Cache
-            // failure is harmless, including after an opening is cancelled.
-            if let checkpoint = try? consumer.captureSettledCheckpoint(policy: policy) { try? checkpoint.write(for: url, maximumBytes: policy.metadataBytes) }
+            // SessionJournal already validated this prefix's chain. Only a
+            // bounded row snapshot is copied here; the worker owns the rest.
+            publisher.schedule(consumer)
         }
         while true {
             try Task.checkCancellation()
@@ -404,14 +437,19 @@ extension AgentSession {
             if line.isEmpty { continue }
             try consumer.consume(line, at: lineStart)
             JournalWorkProgress.current?.update(replay.completeBytes, of: replay.size)
-            if resume, replay.completeBytes - attemptedThrough >= policy.bytes,
+            if resume, replay.completeBytes < replay.size,
+               replay.completeBytes - attemptedThrough >= policy.bytes,
                line.starts(with: JournalLineScan.statePrefix),
+               remaining >= policy.longReplayBytes || ProcessInfo.processInfo.systemUptime - startedAt >= policy.seconds,
                replay.completeBytes - attemptedThrough >= policy.replayBytes || ProcessInfo.processInfo.systemUptime - attemptedAt >= policy.seconds {
                 publishSettledPrefix()
             }
         }
         try Task.checkCancellation()
-        if resume, replay.completeBytes - attemptedThrough >= policy.bytes { publishSettledPrefix() }
+        // EOF is already retained as the durable replay. The adopted runtime
+        // schedules its capture and publication on a utility worker, which
+        // reads no suffix and adds no metadata work to this open.
+        consumer.recordPublishedCheckpoint(through: publisher.stop())
         return consumer
     }
     /// A progress row the journal holds no terminal receipt for, as a replay

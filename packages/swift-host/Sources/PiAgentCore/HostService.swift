@@ -49,6 +49,7 @@ public struct NDJSONDecoder {
 public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let output: @Sendable (HostOutput)->Void
+    private let afterOutput: @Sendable (@escaping @Sendable () -> Void) -> Void
     private var hello=false, closing=false, quiesced=false, opening=false
     private var shutdownTask: Task<Void, Never>?
     private var displayTransfers = DisplayResultTransfers()
@@ -91,8 +92,11 @@ public actor NativeHostService {
     /// Deterministic replay points for cancellation tests; nil in production.
     var journalProgressClock: (@Sendable () -> Double)?
     var journalProgressStep: (@Sendable (JournalWorkProgress.Value) -> Void)?
-    public init(output: @escaping @Sendable (HostOutput)->Void) {
-        self.output=output
+    /// An asynchronous writer supplies its completion fence; synchronous
+    /// readers can run the continuation as soon as `output` returns.
+    public init(output: @escaping @Sendable (HostOutput)->Void,
+                afterOutput: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { $0() }) {
+        self.output=output; self.afterOutput=afterOutput
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
         capture=delivery; traces=TraceStore(sink: { await delivery.send($0) })
     }
@@ -173,16 +177,32 @@ public actor NativeHostService {
             do {
                 if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
                 let result = try await JournalWorkProgress.$current.withValue(progress) {
-                    try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id)
+                    try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id,
+                                           deferOpeningCheckpoint:method == "session.open")
                 }
                 if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
                 await self.finish(id,.success(result),retain:!readOnly)
+                if method == "session.open", let sessionID = frame["sessionId"].text ?? frame["params"]["sessionId"].text {
+                    await self.deferRefreshUntilReplyWritten(sessionID, commandID:id)
+                }
             } catch {
                 let failure = error is CancellationError && (Self.cancellableReadMethods.contains(method) || method == "session.open") ? AgentError("command_cancelled", method == "session.open" ? "The open was cancelled" : "The superseded read was cancelled")
                     : error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")
                 await self.finish(id,.failure(failure),retain:!readOnly)
             }
         }
+    }
+    /// EOF work starts after the writer has delivered the opening reply,
+    /// without keeping the command or its cancellation slot alive until then.
+    private func deferRefreshUntilReplyWritten(_ id: String, commandID: String) {
+        afterOutput { [weak self] in
+            Task { await self?.refreshAfterOpeningReply(id, commandID:commandID) }
+        }
+    }
+    /// A close or another opening may have overtaken the writer continuation.
+    private func refreshAfterOpeningReply(_ id: String, commandID: String) async {
+        guard openingCommands[id] == commandID, let session = sessions[id] else { return }
+        await session.scheduleCheckpointRefresh()
     }
     /// The reply frame for one command. `error` and `result` carry the same
     /// value on a failure: readers written against either field see the error.
@@ -397,14 +417,16 @@ public actor NativeHostService {
     /// that the session is loaded and that the workspace is not quiesced,
     /// and answers each command in the stage after the last check it needs
     /// (`HostDispatchTests`). A command no stage knows meets every check.
-    public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
+    public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString,
+                        deferOpeningCheckpoint:Bool=false) async throws -> JSON {
         // Read even while the host closes: the rest of a result already sent.
         if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
         if let result=try await hostCommand(method,params:params) { return result }
         guard let cwd, let directory, let resources, let mcp, let nativeTools else { throw AgentError("workspace_required", "Open a workspace first") }
         let workspace=OpenWorkspace(cwd:cwd,directory:directory,resources:resources,mcp:mcp,nativeTools:nativeTools)
-        if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,commandID:commandID,in:workspace) { return result }
+        if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,commandID:commandID,in:workspace,
+                                                 deferOpeningCheckpoint:deferOpeningCheckpoint) { return result }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
         if let result=try await namedSessionCommand(method,id:id,params:params,directory:directory) { return result }
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
@@ -468,7 +490,8 @@ public actor NativeHostService {
         }
     }
     /// Commands on the open workspace, and on chats that are not open here.
-    private func workspaceCommand(_ method:String, sessionID:String?, params:JSON, commandID:String, in workspace:OpenWorkspace) async throws -> JSON? {
+    private func workspaceCommand(_ method:String, sessionID:String?, params:JSON, commandID:String, in workspace:OpenWorkspace,
+                                  deferOpeningCheckpoint:Bool) async throws -> JSON? {
         let cwd=workspace.cwd, directory=workspace.directory, resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
         switch method {
         case "workspace.quiesce":
@@ -578,6 +601,7 @@ public actor NativeHostService {
                     try Task.checkCancellation()
                     // No await between the last cancellation check and adoption.
                     if created { sessions[id]=session; profiles[id]=credentials; openingCommands[id]=commandID }
+                    if created, !deferOpeningCheckpoint { await session.scheduleCheckpointRefresh() }
                     if child { subagentReaders.insert(id) }
                     return snapshot
                 } catch {

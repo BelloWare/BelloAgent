@@ -1233,3 +1233,375 @@ for failing-first/mutation, then the whole class for the fixed/restored runs.
 The three other classes use the F1 `test-without-building` invocation, one class
 per shared-lane lock. No gallery regeneration is needed for this ownership-only
 change; the F1 images depict the unchanged presentation.
+
+### F2 — deferred EOF refresh and checkpoint parity
+
+Removed EOF capture/publication from the replay loop. The fully replayed consumer
+is already adopted as `durable`. Wire opens schedule refresh after the successful
+reply has reached stdout, checking that the same command still owns the adopted
+runtime. The frame writer supplies a completion fence; merely queueing its bytes
+is not delivery. Synchronous test readers use an immediate fence. Direct service calls schedule after adoption because
+they have no wire reply to prepare. The utility worker starts at the durable byte
+position, reads no journal suffix at a settled EOF, then captures, stages and
+atomically replaces the checkpoint. The existing guards still exclude active
+streams, unsettled receipts, partial cuts, uncommitted work and oversized state.
+A cache failure keeps the previous checkpoint. Scheduling is constant work on
+the session actor.
+
+Intermediate publication is retained for long replays: at least 512 MiB of
+known unreplayed bytes, or 60 seconds elapsed. Only then do the existing
+64 MiB / 60-second intervals apply, with the 8 MiB minimum, 8 MiB metadata
+budget and 32,768-row bound. The cheap byte/state-prefix checks precede clock
+reads. The final record is explicitly excluded even when an interval is due:
+EOF work belongs to the adopted runtime's utility worker.
+
+The first candidate left intermediate work synchronous. Two accepted cold-open
+pairs at 200k measured 10,022.3 → 10,521.2 ms, **+4.98%**, so that candidate did
+not meet the requested cost limit. Its evidence is retained in
+`$PI_BUILD_ROOT/round3/preliminary-cold`; one additional load-contaminated
+attempt was rejected. The remaining matrix was stopped before changing code.
+
+Intermediate capture, encoding and staging now run on one utility worker too.
+The opening thread freezes only the visible suffix containing the bounded
+context, its row spans and checkpoint state. It drops full history and the full
+span dictionary before handing off, avoiding a copy of those collections on the
+next replay append. A busy worker coalesces another request. EOF or cancellation
+fences off publication without waiting for capture/encoding. The fence and
+atomic rename share a lock, so an old worker cannot overwrite a newer adopted
+checkpoint. The worker owns no journal claim or writer lock, reads no journal,
+and removes its staging file on failure or cancellation. Its last published
+byte position prevents a duplicate write by the initializer. Existing
+context-boundary checkpoint behavior is retained. `CommandReceipts.Base` gains
+only `Sendable` conformance so the frozen replay is checked as a value snapshot.
+
+The utility-worker candidate met the cold-open target (+0.90% at 200k and
+−1.02% at 50k exchanges), but a complete suffix matrix still showed initial-open
+overhead in several cells: for example 557.0 → 636.7 ms at 50k + 50 MiB.
+The blocked-reply test confirmed that EOF publication could precede reply
+handoff. Scheduling now follows `finish`, so capture cannot compete with reply
+encoding. The continuation checks the opening command's ownership again and
+supports a session ID in either the frame or params. This candidate's full
+matrix and artifact evidence are in `round3/pre-reply-refresh`. A second
+candidate deferred until writer handoff, but the writer queues asynchronously.
+Its matrix (`round3/pre-writer-fence`) still had two initial suffix cells above
+noise. The final implementation schedules only after the writer queue completes
+the reply. The small `PiHost/Main.swift` change supplies that completion fence;
+it changes no frame bytes. Final results below use adjacent before/after pairs
+per cell.
+
+Failing first:
+
+- Construction with a generated 10 MiB suffix changed the checkpoint from
+  byte 48,442 to 10,549,596 before returning. The new test failed on the reviewed
+  implementation, then passed after deferral, including production-host
+  scheduling after adoption.
+- With reduced test-only interval thresholds, the last settled record was
+  published as an intermediate checkpoint at byte 2,111, equal to EOF. The new
+  interval test failed, then passed with the explicit EOF exclusion. It also
+  checks the already-published byte position used to prevent a duplicate write.
+- With the intermediate executor still synchronous, a deliberately blocked
+  capture prevented replay from returning: the new test failed its 200 ms
+  continuation expectation. The utility executor passes. The test also stops
+  while capture is blocked, releases it, and verifies that the old checkpoint
+  survives and no staging file remains. A second request while busy is coalesced.
+- Holding the opening reply's output callback still allowed the checkpoint to
+  advance from byte 48,463 to 10,549,617 before reply handoff. The new wire-order
+  test failed, then passed after moving scheduling past `finish`. The final
+  test covers both supported locations of the session ID.
+- Queuing that reply behind a blocked asynchronous writer still allowed both
+  checkpoints to advance before delivery (two failed assertions). Waiting for
+  the writer-completion fence passes the same test. The test holds the actual
+  delivery queue, not the service output callback.
+
+The generated parity corpus contains **20 journals, 107 settled-state prefixes**
+(four variants of live parent, two forks, bound side, and family/cut history).
+It generates actual turns through `ScriptClient`, tools, edits/branches,
+compactions, task terminal records, command receipt deltas, forks at an earlier
+reply and at the end, and kept sides bound to their parent's budget. Additional
+journal records cover family operations/turn terminals, mail and delivery,
+cut preparations/commits/projections, settled and not-dispatched accounting,
+context recovery, failed compaction evidence, real model rebinds, and v4/v5
+promoted journals. All data and credentials are synthetic.
+
+At each prefix, the test opens an actual journal writer, validates and loads
+the checkpoint, and runs the production replay path to that exact EOF. It
+compares refreshed checkpoints captured from both a cold replay and the old
+context-anchored replay, plus bounded worker snapshots from each, against cold
+replay and against that old checkpoint. Snapshotting must preserve eligibility.
+It checks visible rows with their exact lazy-prefix offset (`rowsBefore`),
+context, byte-identical next Responses request, versions, spend and accounting,
+run state/receipts, family/mail/cuts, task evidence, origins, compaction/recovery,
+reply counts, ordinal and lineage from the whole timeline. A checkpoint must
+actually be used; fallback to cold replay does not pass the test.
+
+Result: **76 refreshed prefixes, 31 refused (empty or unresolved), 683
+comparisons, zero differences**. Eight earliest prefixes have no old context
+checkpoint yet; four refresh successfully and compare against cold replay,
+and four have empty context and refuse capture. Every later prefix also gets
+the old-checkpoint comparison. The corpus prints generator version, variants,
+journal count and all prefix/comparison counts.
+
+| Mutation, independently compiled and run | Failing assertions |
+| --- | ---: |
+| Drop captured accounting | 64 |
+| Add one to `rowsBefore` | 1,120 |
+| Take lineage from the checkpoint's loaded rows | 72 |
+| Restore synchronous EOF publication | 1 |
+| Run the intermediate worker synchronously | 1 continuation-timeout failure |
+| Schedule EOF refresh before wire reply handoff | 2 |
+| Bypass the asynchronous writer-completion fence | 2 |
+
+Both reply-order mutations exercise frame-ID and params-ID commands. All seven
+mutations were caught. Restored refresh/parity classes: 12 tests
+passed, including the production worker and its stop fence.
+Raw logs: `$PI_BUILD_ROOT/round3/f2-{failing-first,eof-interval-failing-first,parity,restored,final-refresh}.log`
+and `f2-mutation-{accounting,rows-before,lineage,eof,worker,reply,writer}.log`.
+The worker's failing-first and fixed logs are `f2-worker-{failing-first,fixed}.log`;
+the worker mutation driver is `f2-worker-mutation.py`. Reply ordering uses
+`f2-reply-{failing-first,fixed}.log` and `f2-reply-mutation.py`. The asynchronous
+writer fence uses `f2-writer-{failing-first,fixed}.log` and
+`f2-writer-mutation.py`.
+
+Affected helper coverage: **321 executed, 319 passed, two skipped**, zero
+failures. The skips are `JournalPromotionTests`' two env-gated fault harness
+entry points; its three ordinary cases pass. The 253 F3 cases were included
+again and passed on the deferred-publication implementation.
+
+| Other affected helper class | Passed |
+| --- | ---: |
+| CheckpointRefreshTests | 11 |
+| CheckpointRefreshParityTests | 1 |
+| OpeningProgressTests | 7 |
+| JournalCheckpointTests | 8 |
+| JournalPromotionTests | 3 |
+| DurableReplayTests | 5 |
+| MailboxCutPersistenceTests | 8 |
+| EditRecoveryTests | 4 |
+| ForkAtReplyTests | 5 |
+| OlderRowsTests | 4 |
+| JournalSlimmingTests | 10 |
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
+  --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" \
+  --jobs 2 --filter 'PiAgentCoreTests\.(CheckpointRefreshTests|CheckpointRefreshParityTests|OpeningProgressTests|JournalCheckpointTests|JournalPromotionTests|DurableReplayTests|MailboxCutPersistenceTests|EditRecoveryTests|ForkAtReplyTests|OlderRowsTests|JournalSlimmingTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetReplayTests|CostLimitTests|FamilyLimitPauseTests|ContextPreviewTests|CaptureDrainTests|SubagentRecoveryTests|SubagentPolicyEffortTests|HostServiceTests)/' \
+  > "$PI_BUILD_ROOT/round3/f2-affected-helper.log" 2>&1
+# Each mutation uses this same command with the matching focused class/method;
+# f2-mutations.py restores source in finally, then reruns both classes.
+python3 "$PI_BUILD_ROOT/round3/f2-mutations.py"
+python3 "$PI_BUILD_ROOT/round3/f2-worker-mutation.py"
+python3 "$PI_BUILD_ROOT/round3/f2-reply-mutation.py"
+python3 "$PI_BUILD_ROOT/round3/f2-writer-mutation.py"
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
+  --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" \
+  --jobs 2 --filter 'CheckpointRefreshTests|CheckpointRefreshParityTests' \
+  > "$PI_BUILD_ROOT/round3/f2-final-refresh.log" 2>&1
+```
+
+Release comparison uses a freshly rebuilt **a2154990** helper (item 4) and
+the final F2 helper, both arm64 Release with the bundle builder's `-Osize`
+and `strip -S` settings. The temporary detached baseline worktree was removed
+after building. SHA-256:
+
+- Item 4: `ec30fe26eab44803aaee70c9b96bf0bb9ef7f9a4023960fdc6ee435c24dc5e70`.
+- F2: `ac2712d1ac3bfa64623e9a337c135e331c1f439926561c4edda9912fc20cf5b2`.
+
+```sh
+git worktree add --detach "$PI_BUILD_ROOT/round3/item4-worktree" a2154990
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift build \
+  --package-path "$PI_BUILD_ROOT/round3/item4-worktree/packages/swift-host" \
+  --scratch-path "$PI_BUILD_ROOT/swift-host" --configuration release \
+  --arch arm64 --jobs 2 --product pi-native-host -Xswiftc -Osize
+mkdir -p "$PI_BUILD_ROOT/bundle-item4/Helpers"
+cp "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host" \
+  "$PI_BUILD_ROOT/bundle-item4/Helpers/pi-native-host"
+xcrun strip -S "$PI_BUILD_ROOT/bundle-item4/Helpers/pi-native-host"
+git worktree remove "$PI_BUILD_ROOT/round3/item4-worktree"
+python3 "$PI_BUILD_ROOT/run-when-quiet.py" python3 scripts/build-bundle.py \
+  > "$PI_BUILD_ROOT/round3/f2-final-release-build.log" 2>&1
+python3 "$PI_BUILD_ROOT/round3/locked.py" 'round3 Release test host build' \
+  xcodebuild build-for-testing -project PiApp.xcodeproj -scheme PiApp \
+  -configuration Release -destination platform=macOS,arch=arm64 -jobs 2 \
+  -derivedDataPath "$PI_BUILD_ROOT/release" ENABLE_TESTABILITY=YES \
+  CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO \
+  PI_PERF_TEST_COMPILATION_MODE=incremental PI_PERF_TEST_COMPILER_FLAGS=-j2 \
+  > "$PI_BUILD_ROOT/round3/release-app-build.log" 2>&1
+python3 "$PI_BUILD_ROOT/round3/run-release-proof.py" \
+  > "$PI_BUILD_ROOT/round3/release-proof.log" 2>&1
+# Final worker implementation: mutations, affected classes, Release rebuild,
+# then the same wire/cold/suffix driver (the app source did not change).
+python3 "$PI_BUILD_ROOT/round3/finish-worker-proof.py" \
+  > "$PI_BUILD_ROOT/round3/worker-proof.log" 2>&1
+# Final reply-order correction, with the same affected classes and Release gates:
+python3 "$PI_BUILD_ROOT/round3/finish-reply-proof.py" \
+  > "$PI_BUILD_ROOT/round3/reply-proof.log" 2>&1
+# Final asynchronous writer fence, mutations, affected classes and Release proof:
+python3 "$PI_BUILD_ROOT/round3/finish-writer-proof.py" \
+  > "$PI_BUILD_ROOT/round3/writer-proof.log" 2>&1
+# Balance the suffix sample, retaining the first five pairs:
+PI_SUFFIX_PAIR_START=6 PI_SUFFIX_PAIR_END=10 \
+  python3 "$PI_BUILD_ROOT/round3/suffix-paired.py" \
+  > "$PI_BUILD_ROOT/round3/suffix-balanced-proof.log" 2>&1
+```
+
+The proof driver runs `wire-gates.py`, `cold-paired.py`, then
+`suffix-paired.py`, all retained under `$PI_BUILD_ROOT/round3`. Cold trials
+use the isolated Release test host's `OpeningPerformanceTests` through
+`round3/opening-run.py`, with `TEST_RUNNER_PI_OPENING_PROBE=progress`,
+`--start-load 3 --attempts 5`, the generated fixture, and the production
+30-second inactivity deadline. There is no 180-second override. The baseline
+and final helper are copied into the same test host; the final helper is
+restored in `finally`.
+
+Suffix trials use `round3/perf-run.py --start-load 3 --attempts 5`
+to run `python3 "$PI_BUILD_ROOT/round3/suffix-refresh-probe.py" SIZE MB [cross]`.
+The probe APFS-clones the original warm journal and checkpoint into this build
+root, appends complete ordinary turns, opens, closes, and opens again in a new
+helper. Each variant therefore starts with the same original checkpoint.
+The final variant waits for the asynchronous EOF checkpoint **after** the first
+open reply, records that settlement delay separately, then measures the reopen.
+This wait is excluded from initial-open latency and is not hidden in the reopen.
+Each clone is deleted in `finally`. Three cold pairs and ten suffix pairs per
+cell alternate order. The first five suffix pairs showed broad, bidirectional
+initial-open variation. Five additional pairs were specified together, with
+reversed order, to balance the sample; every accepted trial is retained. Both round-3 adapters use the standard
+`scripts/perf-longchat-run.py` workload, load sampling and cleanup, reserving
+the full lane before waiting for starting load at most 3. This prevents another
+stream starting a build during that wait. Every owner line contains `perf`;
+any trial whose sampled one-minute load exceeds 4 is rejected and repeated.
+Raw trial logs and load samples are `$PI_BUILD_ROOT/perf/json-round3-*`;
+`round3/summarize-perf.py` produces `round3/perf-summary.json`.
+
+### Final round-3 measurements
+
+Cold entries are medians of three accepted trials per variant; suffix entries use ten. Order alternates. “Before” is item 4 (`a2154990`); “after” is final F2. Peak footprint is the median process peak; load is the highest one-minute sample across those trials.
+
+| Cold fixture | Wall ms, before → after | Change | CPU s, before → after | Peak MiB, before → after | Maximum load, before → after | Progress cadence, median / max ms (after) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 200k | 10167.2 → 9987.4 | -1.77% | 10.105 → 10.008 | 2849.7 → 2823.4 | 2.95 → 3.02 | 250.4 / 272.7 |
+| 50k-exchanges | 20641.2 → 19831.1 | -3.92% | 20.259 → 19.834 | 5396.0 → 5370.3 | 3.54 → 3.00 | 250.4 / 281.2 |
+
+Initial open from the original checkpoint plus suffix (nominal suffix sizes in MiB):
+
+| Fixture | Suffix | Wall ms, before → after | Change | CPU s, before → after | Peak MiB, before → after | Maximum load, before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 50k | 10 | 118.4 → 125.4 | +5.88% | 0.115 → 0.122 | 49.4 → 49.1 | 3.00 → 3.00 |
+| 50k | 50 | 516.9 → 532.8 | +3.09% | 0.515 → 0.533 | 222.1 → 220.5 | 2.98 → 3.00 |
+| 50k | 200 | 1981.9 → 1995.7 | +0.70% | 1.995 → 2.003 | 853.6 → 869.7 | 2.93 → 3.06 |
+| 50k | 50 + compaction | 457.4 → 510.7 | +11.66% | 0.453 → 0.508 | 214.6 → 213.3 | 2.93 → 2.95 |
+| 50k-exchanges | 10 | 123.2 → 142.2 | +15.40% | 0.121 → 0.141 | 49.5 → 50.0 | 3.25 → 3.11 |
+| 50k-exchanges | 50 | 544.8 → 528.8 | -2.94% | 0.545 → 0.529 | 220.8 → 221.5 | 2.97 → 2.97 |
+| 50k-exchanges | 200 | 1989.5 → 2085.3 | +4.82% | 1.995 → 2.095 | 849.9 → 852.8 | 3.06 → 3.05 |
+| 50k-exchanges | 50 + compaction | 455.2 → 458.2 | +0.66% | 0.454 → 0.458 | 213.8 → 217.2 | 2.92 → 3.00 |
+
+Fresh-helper reopen after the first open (nominal suffix sizes in MiB):
+
+| Fixture | Suffix | Wall ms, before → after | Change | CPU s, before → after | Peak MiB, before → after | Maximum load, before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 50k | 10 | 116.9 → 102.4 | -12.40% | 0.115 → 0.101 | 50.0 → 46.4 | 3.00 → 3.00 |
+| 50k | 50 | 508.5 → 420.4 | -17.32% | 0.509 → 0.420 | 220.9 → 195.1 | 2.98 → 3.00 |
+| 50k | 200 | 2001.1 → 1799.2 | -10.09% | 2.009 → 1.806 | 862.4 → 731.2 | 2.93 → 3.06 |
+| 50k | 50 + compaction | 281.9 → 274.7 | -2.57% | 0.281 → 0.272 | 113.7 → 102.3 | 2.93 → 2.95 |
+| 50k-exchanges | 10 | 126.3 → 117.7 | -6.80% | 0.125 → 0.116 | 49.7 → 46.3 | 3.25 → 3.11 |
+| 50k-exchanges | 50 | 525.5 → 464.8 | -11.53% | 0.525 → 0.464 | 220.5 → 197.8 | 2.97 → 2.97 |
+| 50k-exchanges | 200 | 1988.8 → 1764.2 | -11.29% | 1.999 → 1.771 | 856.9 → 732.6 | 3.06 → 3.05 |
+| 50k-exchanges | 50 + compaction | 256.9 → 216.2 | -15.84% | 0.256 → 0.215 | 113.5 → 102.6 | 2.92 → 3.00 |
+
+After-reply checkpoint settlement in final F2 (reported separately from initial-open latency):
+
+| Fixture | Suffix MiB | Delay until EOF checkpoint observed, ms | Helper CPU after reply, s | Peak footprint through settlement, MiB |
+| --- | --- | ---: | ---: | ---: |
+| 50k | 10 | 20.2 | 0.014 | 49.1 |
+| 50k | 50 | 56.9 | 0.050 | 220.5 |
+| 50k | 200 | 199.7 | 0.187 | 869.7 |
+| 50k | 50 + compaction | 30.5 | 0.029 | 213.3 |
+| 50k-exchanges | 10 | 28.6 | 0.022 | 50.0 |
+| 50k-exchanges | 50 | 56.4 | 0.052 | 221.5 |
+| 50k-exchanges | 200 | 195.3 | 0.183 | 852.8 |
+| 50k-exchanges | 50 + compaction | 35.7 | 0.033 | 217.2 |
+
+Initial-open paired variation, retaining all ten accepted pairs per cell. The paired change is the median of each adjacent after/before ratio; the last column is its observed range. These descriptive values do not establish a tight equivalence bound.
+
+| Fixture | Suffix MiB | Median paired change | Paired change range |
+| --- | --- | ---: | ---: |
+| 50k | 10 | -0.42% | -9.03% to +39.64% |
+| 50k | 50 | -3.11% | -13.45% to +27.06% |
+| 50k | 200 | +0.39% | -13.46% to +38.10% |
+| 50k | 50 + compaction | +1.34% | -18.16% to +37.18% |
+| 50k-exchanges | 10 | +11.83% | -12.68% to +38.81% |
+| 50k-exchanges | 50 | -2.98% | -17.00% to +18.40% |
+| 50k-exchanges | 200 | +1.95% | -6.54% to +45.11% |
+| 50k-exchanges | 50 + compaction | -0.66% | -23.00% to +28.42% |
+
+The earlier 19–26% cold-opening regression is absent in this paired sample:
+200k changes by −1.77%, and 50k exchanges by −3.92%. These are comparisons
+against item 4, not a claimed new cold-replay speedup. Median progress cadence
+remains 250.4 ms with the production deadline. Intermediate checkpoint work is
+on its bounded utility worker, and its stop fence does not wait for encoding.
+
+The reopen gain is retained in all eight suffix cells (median improvements
+2.57–17.32%). Loading the retained model context still costs about 1.8 seconds
+for the 200 MiB suffix; this change does not reduce or truncate that context.
+EOF publication settles 20–200 ms after the reply in these medians, with its
+CPU and footprint explicitly separated above.
+
+**Remaining performance qualification:** the short-suffix initial-open target
+is not established as a tight equivalence bound on this shared VM. Median
+initial times range from −2.94% to +15.40%; the 10 MiB exchange case is
+123.2 → 142.2 ms, and its median paired ratio is +11.83%. The 50k compaction
+cell's medians are 457.4 → 510.7 ms, although its median paired ratio is +1.34%.
+Seven of eight median paired changes lie between −3.11% and +1.95%, with broad
+bidirectional variation. All load-valid observations are retained, including
+slow ones. The deterministic blocked-writer test proves that EOF capture and
+publication cannot precede reply delivery; it does not prove zero scheduling
+or reader-observation cost after that delivery. No further timing-driven code
+change is inferred from this variance. The lead should retain this qualification
+when deciding whether the initial-open performance target is closed.
+
+There are **172 accepted timing trials**: 12 cold and 160 suffix (each suffix
+trial measures both initial open and reopen). Two cold attempts were discarded
+and repeated: `json-round3-cold-before-200k-progress-r1-1.json` (load 4.78,
+exit 0) and `json-round3-cold-before-50k-exchanges-progress-r2-1.json` (load 6.23,
+terminated by the wrapper). Accepted trials have starting load at most 3 and
+all sampled one-minute loads at most 4. Every final trial's helper hash was
+checked against its baseline/final variant. The final helper was restored to
+both the normal bundle and the isolated Release test host.
+
+`round3/final-artifact-audit.json` contains the accepted per-trial start/end/peak
+load ledger, variant hashes, rejected attempts and image inventory. The full
+CPU/footprint observations and post-reply settlement values are in
+`round3/perf-summary.json`. `perf-tables.py` and `final-audit.py` produce the
+tables and paired-change ranges above.
+
+
+Final Release wire gates (the `ac2712d1…` helper):
+
+| Suite | Passed | Start / end / peak one-minute load |
+| --- | ---: | ---: |
+| wire | 41 | 2.78 / 2.75 / 2.88 |
+| concurrent | 4 | 2.75 / 2.50 / 2.75 |
+| acceptance | 3 | 2.50 / 2.30 / 2.50 |
+| opening | 4 | 2.30 / 2.42 / 2.42 |
+
+Raw commands and two-second load samples: `round3/wire-gates.json`; suite logs: `round3/release-{wire,concurrent,acceptance,opening}.log`. No full helper or app suite was run.
+
+### Round-3 handoff
+
+F1, F3 and F4 are separate commits. F2 changes helper checkpoint/replay work,
+opening reply scheduling, and the stdout writer's completion plumbing; no
+history-stream source file or `NEXT-RELEASE.md` is edited. The parity proof and
+all requested functional/wire gates pass. F1/F4 regressions failed first and
+caught their mutations; F2 caught all seven independently compiled mutations.
+The remaining item is the initial-suffix performance qualification above,
+not a hidden failed test or an omitted timing cell.
+
+All 24 real-pane gallery PNGs remain under `round3/gallery`, opened and
+inspected as recorded under F1. Cancel/failure restore the unsent draft and
+use the existing inline notice; rows and the composer remain usable. A refused
+late close retains ownership and forces normal adoption before the next action.
+
+The final audit found zero gateways from this worktree and zero leftover suffix
+fixture directories. The temporary item-4 worktree and comparison bundles were
+removed after measurements. The final bundle, isolated test host, generated
+fixture sources and raw evidence remain under the assigned build root.

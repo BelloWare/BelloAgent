@@ -440,7 +440,7 @@ public actor AgentSession {
         // state, and before partial-log recovery can restore an open suffix.
         try Self.recoverMailboxCuts(in:opened,consumer:&consumer,id:id)
         let replayed=try consumer.finished(); durable=consumer
-        checkpointPublishedThrough = opened.resumedFrom?.start ?? 0
+        checkpointPublishedThrough = max(opened.resumedFrom?.start ?? 0, consumer.publishedCheckpointThrough)
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
@@ -658,10 +658,10 @@ public actor AgentSession {
         try dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
-        if let captured=replayed.captured {
+        if let captured=replayed.captured, captured.start > max(opened.resumedFrom?.start ?? 0, consumer.publishedCheckpointThrough) {
             do { try captured.write(for: url); checkpointPublishedThrough = captured.start } catch {}
         }
-        else if stored != nil, !replayed.resumed { JournalCheckpoint.remove(for: url) }
+        else if replayed.captured == nil, stored != nil, !replayed.resumed { JournalCheckpoint.remove(for: url) }
     }
     /// Held calls stay in the parent's context for Resume, but a new side
     /// or fork starts before that unfinished assistant/tool batch.
