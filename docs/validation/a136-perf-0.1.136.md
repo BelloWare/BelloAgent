@@ -1,8 +1,10 @@
-# PERF-1 phase A: very long chats, 0.1.136
+# PERF-1: very long chats, 0.1.136
 
-Measure and propose only. Workstream `dev/a136-perf`, base `21e30eb1`.
-The lead reviews this proposal with the implementer before phase B.
-There are no production behavior, storage-format or paging-policy changes.
+The phase-A findings below are retained as measured. Phase-B round 1 is recorded at the end.
+
+Phase A was measure-and-propose only: workstream `dev/a136-perf`, base `21e30eb1`.
+The lead reviewed it before authorizing the phase-B work recorded below.
+Phase A made no production behavior, storage-format or paging-policy changes.
 Instrumentation is compiled only with `PI_TEST_HOST`; shipping code has no
 new probes or probe branches. Tests enable it with `TEST_RUNNER_PI_PERF_TRACE=1`.
 
@@ -275,7 +277,7 @@ switch is explicitly included in the test manifest's environment too.
 
 Exact per-trial argv, environment, fixture manifest, binary hashes, raw
 start/end load strings and two-second load samples are retained in
-[`a136-perf-0.1.136-data.json.gz`](a136-perf-0.1.136-data.json.gz), together
+[`a136-perf-0.1.136-data.json.gz`](/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-0.1.136-data.json.gz), together
 with full-precision events/spans, accepted frame arrays and complete sampled
 stacks. The readable tables round values; the archive does not. Regenerate:
 
@@ -283,13 +285,13 @@ The final archive contains 102 attempt records: 56 eligible unprofiled
 trials and nine eligible profile trials, with the remaining calibration,
 load-rejected, interrupted and failed attempts retained explicitly. Its
 SHA-256 is `bed720f4481d59fcda3a232edb728fe0fd231f4c5d54c4f8897c8e817d0ac33d`
-(8,062,098 bytes). Obsolete smoke journals were removed; the four canonical
+(8,062,098 bytes). The unchanged phase-A archive was moved out of git in phase B; it is also recoverable from commit `d683c4b7` at its former `docs/validation/` path. Obsolete smoke journals were removed; the four canonical
 cold/warm fixture pairs remain in the build root, with one Release
 DerivedData directory, no Debug DerivedData, and about 11 GiB free afterward.
 
 ```sh
 python3 scripts/perf-longchat-report.py "$PI_BUILD_ROOT" \
-  docs/validation/a136-perf-0.1.136-data.json.gz
+  /Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-0.1.136-phase-b-data.json.gz
 ```
 
 `unprofiledTimingEvidence` excludes load violations, failed tests, calibration
@@ -1220,3 +1222,152 @@ One-minute load, start / end / observed peak. Exact raw three-value strings, UTC
 
 Ledger outcomes: aborted: Calibration interrupted: cut-in test host overlapped the perf lock; observed load > 44; CPU values pre-calibration: 1, aborted: KeyboardInterrupt: 1, aborted: TypeError: 1, accepted: 56, calibration: 2, failed, exit 65: 5, load rejected: 27, profile: 9.
 <!-- PERF136_LOAD_LEDGER_END -->
+
+
+## Phase B, round 1 (2026-10-29)
+
+The lead authorized three separate commits: external evidence and the baseline
+A/B, first paint/opening cleanup, then bounded read scheduling. This branch
+keeps the existing page/window limits and the old scroll budgets. Helper
+history routing, persistent indexes and Find belong to `dev/a136-hist`;
+parser, opening acknowledgement and checkpoint refresh belong to
+`dev/a136-json`. No cache or journal migration is made in this round.
+
+### Item 1: evidence and trace-off baseline
+
+The phase-A archive was copied to
+`/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/` and verified against
+its SHA-256 above before `git rm`. No binary evidence is added to git.
+`perf-longchat-report.py` now defaults to the phase-B archive in that directory
+and rejects destinations inside the repository. The record retains hashes
+and commands; the external archive retains full arrays and rejected trials.
+
+The report tests first failed with two missing-function errors (2/4 cases),
+then passed 4/4. Removing the repository-destination guard produced the
+expected assertion failure (1/4); the restored implementation passed.
+Logs: `logs/b1-report-{failing-first,mutation,pass}.log` under `PI_BUILD_ROOT`.
+
+The A/B compares `0d6bc320` (A) with `6d38ddd4` (B), each with span tracing
+disabled. Both use the same temporary detached worktree, checked out first
+at A and then B. A's generated project receives
+only B's optional **test-target** compiler settings, so both builds use the
+same flags. The application remains Release `-O`, whole-module compilation;
+the XCTest bundle uses incremental compilation with the invocation below.
+B also compiles the two new opening regression classes for the following
+failing-first runs; those tests are not selected during the A/B. The helper source
+is identical between these revisions. Both use the same isolated bundle IDs,
+single Release DerivedData and generated legacy scroll fixture. The quiet
+window runner holds the shared lock only for each measurement, samples load
+every two seconds and rejects peaks over 4. The two repetitions per revision
+use fresh test processes and fixtures.
+
+While the shared host was busy, B's products were preserved under
+`$PI_BUILD_ROOT/baseline-b-products` before rebuilding the same DerivedData
+for item 2. The remaining B trial, opening baseline and failing-first tests
+use those preserved products, after the build finishes. Their executable
+hashes match B's first accepted trial: host
+`353519a6898af813abe02a936743642d09e3dba593d230140a4bd5ffea8d622e`,
+tests `65f538b7c5eb21ba6982d9538cad014b2a6a90e639535a351a11ed7b19ed416f`.
+This is a product copy, not another DerivedData. It is removed after the
+baseline finishes; no measurement overlaps our build.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-perf
+# In each revision's source tree, after checking the shared measurement lock:
+xcodegen generate --quiet
+xcodebuild build-for-testing -jobs 2 -project PiApp.xcodeproj -scheme PiApp \
+  -configuration Release -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath "$PI_BUILD_ROOT/release" ENABLE_TESTABILITY=YES \
+  CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO \
+  PI_PERF_TEST_COMPILATION_MODE=incremental PI_PERF_TEST_COMPILER_FLAGS=-j2
+# LABEL is b1-ab-{a,b}-r{1,2}; RUN is the sole .xctestrun in Build/Products.
+python3 scripts/perf-longchat-run.py --label "$LABEL" --no-trace \
+  --start-load 2.5 --attempts 5 -- \
+  xcodebuild test-without-building -xctestrun "$RUN" \
+  -derivedDataPath "$PI_BUILD_ROOT/release" \
+  -destination 'platform=macOS,arch=arm64' -parallel-testing-enabled NO \
+  -collect-test-diagnostics never -only-testing:PiAppTests/LongChatScrollTests
+```
+
+All four accepted A/B trials executed six cases: **4 passed / 2 failed**, with
+five timing assertions per trial. The same cases fail on both revisions:
+`testAFlingToTheFirstMessageNeverStopsOrJumps` and
+`testScrollingToTheFirstMessageAndBackIsSmooth`.
+
+| Release, trace off | Accepted trial | 1-minute load start / end / peak | Fling p95 / p99 / max (ms) | Fling >50 ms | Steady up p95 / max (ms) |
+|---|---|---|---|---|---|
+| A `0d6bc320` | `b1-ab-a-r1-2` | 2.33 / 2.70 / 2.77 | 60.3 / 121.8 / 250.2 | 35/462 (7.58%) | 28.8 / 178.2 |
+| A `0d6bc320` | `b1-ab-a-r2-3` | 2.21 / 2.46 / 2.96 | 57.1 / 109.2 / 215.5 | 33/463 (7.13%) | 27.7 / 155.0 |
+| B `6d38ddd4` | `b1-ab-b-r1-3` | 2.30 / 3.03 / 3.44 | 69.0 / 133.6 / 175.0 | 43/463 (9.29%) | 31.1 / 256.8 |
+| B `6d38ddd4` | `b1-ab-b-r2-1` | 2.05 / 3.26 / 3.26 | 62.6 / 123.9 / 255.9 | 39/463 (8.42%) | 30.3 / 197.8 |
+
+The unchanged budgets are p95 ≤50 ms, p99 ≤100 ms, maximum ≤150 ms and
+≤5% of frames over 50 ms. The fling exceeds all four; steady up exceeds the
+maximum. Steady down maxima are 140.9 / 133.2 / 114.6 / 136.2 ms in the
+same order. The fling/steady probes record zero jumps in all four trials;
+B's second fling records one blank observation, the other three zero, and
+steady up/down record zero. The drag/scroller probes do have blanks; these
+figures are not a claim that the entire suite is blank-free. Full legacy
+summaries and all test assertions are retained in the external archive.
+
+**Conclusion:** these two failures were already present before phase A's
+instrumentation. B does not fix them. Its fling p95 is higher in both pairs,
+while maxima are mixed; this sample establishes pre-existing failures, not
+latency parity or absence of a regression. A→B changes in app sources are
+confined to the phase-A test-host instrumentation. All old budgets remain
+unchanged and will be rerun after scheduling. A/B tracing is off, so it does
+not provide source-cancellation counts or a new profile attribution.
+
+Rejected A/B attempts remain in the evidence: A r1-1 peak 5.00; A r2-1
+4.22; A r2-2 **9.42 at exit**; B r1-1 16.96; B r1-2 4.33. The exit sample
+is part of validity, even when every periodic sample was below 4. Waiting
+for a quiet window holds no lock. The focused fixture runner starts with
+1-minute load ≤2.5 and still rejects **every** sampled/start/end peak over 4.
+
+The Release helper was built at A with `python3 scripts/build-bundle.py`
+(`logs/b1-ab-a-helper-build.log`); helper sources are identical at A and B.
+It stays fixed through these three items. Opening cells use the original
+checkpoint-backed phase-A fixtures, a fresh clone and isolated process per
+trial, another chat already open, and the real 30-second acknowledgement:
+
+```sh
+python3 scripts/perf-longchat-round.py b1-base --suite open \
+  --products "$PI_BUILD_ROOT/baseline-b-products" --resume
+# Item 2, then item 3 use the same commands with their current Release products:
+python3 scripts/perf-longchat-round.py b2-first-paint --suite open
+python3 scripts/perf-longchat-round.py b2-first-paint --suite scroll
+python3 scripts/perf-longchat-round.py b3-scheduling --suite open
+python3 scripts/perf-longchat-round.py b3-scheduling --suite scroll
+```
+
+Each wheel cell is a bounded 60-second up/down probe with real phased wheel
+input, momentum and 180-frame dwell periods, at 120 or 480 points per steady
+input frame. This round's subset is not the final ten-page/full-matrix gate.
+Default sizes are 50k messages and 50k exchanges; sources are journal and
+helper-owned. No `PI_PERF_ACK_SECONDS` or helper-hot override is passed.
+
+Item 1 opening baseline (Release, checkpoint-backed, tracing on):
+
+| Source / fixture | Accepted trial | Selection → useful draw (ms) | Helper open request → useful draw (ms) | Opening fill observation (ms) | 1-minute load start / end / peak |
+|---|---|---:|---:|---|---|
+| journal / 50k | `b1-base-open-journal-50k-1` | 2650.21 | — | 10996.46; ready=true | { 2.19 2.63 3.47 } / { 2.51 2.68 3.47 } / 2.51 |
+| helper / 50k | `b1-base-open-helper-50k-1` | 2469.48 | 2819.97 | 12145.36; ready=true | { 2.17 4.92 5.56 } / { 2.36 4.83 5.52 } / 2.36 |
+| journal / 50k-exchanges | `b1-base-open-journal-50k-exchanges-1` | 16944.77 | — | 78319.81; ready=true | { 2.36 4.83 5.52 } / { 2.91 4.44 5.31 } / 3.27 |
+| helper / 50k-exchanges | `b1-base-open-helper-50k-exchanges-1` | 19090.24 | 19478.29 | 49108.43; ready=false | { 2.30 4.09 5.14 } / { 3.72 4.16 5.10 } / 3.72 |
+
+All four miss the 500 ms first-useful-draw target. The helper-request column
+includes the fixture’s intervening setup of the other chat; the selection
+column starts at the actual long-chat selection. The last fill observation
+does **not** imply an index is ready: the largest helper fill returns after
+its 30-second acknowledgement timeout with `openingPage` still set. The
+checkpoint supplies an extent before older history is hydrated. These opening
+cells contain no wheel input, so demand-to-draw, input blanks and cancellation
+shares are not applicable here; their before/after comparisons start in item 2.
+
+Item 1 snapshot: `/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-b1-data.json.gz`
+(8,224,628 bytes), SHA-256
+`bf05d285b43bb53bd00af9b28f0106d7851a39eb6e54272836b5f201e8d08bf4`.
+It retains the accepted and rejected A/B runs, raw opening events, frame
+observations, exact commands, binary hashes and raw start/end load strings.
+The relocated phase-A archive remains unchanged. No chat data format changes
+or migration are introduced by item 1.

@@ -24,5 +24,16 @@ class BlankDurationTests(unittest.TestCase):
         self.assertEqual(report.blank_episodes(dict(frameUptimes=[1, 2], blankAt=[])), [])
 
 
+class ArchiveLocationTests(unittest.TestCase):
+    def test_default_archive_is_outside_the_repository(self):
+        output = report.archive_path()
+        self.assertEqual(output.parent, Path('/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence'))
+        self.assertEqual(output.name, 'a136-perf-0.1.136-phase-b-data.json.gz')
+
+    def test_an_archive_cannot_be_written_into_the_repository(self):
+        with self.assertRaises(ValueError):
+            report.archive_path(Path(__file__).resolve().parent.parent / 'docs/validation/evidence.json.gz')
+
+
 if __name__ == "__main__":
     unittest.main()

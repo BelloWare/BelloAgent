@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Collect all PERF136 evidence and quiet-window decisions without rounding it.
 
-Usage: perf-longchat-report.py <build-root> <output.json>
+Usage: perf-longchat-report.py <build-root> [output.json.gz]
+Archives default to the shared perf-evidence folder, never the repository.
 Raw frame intervals remain under build-root/perf/<trial>/; accepted unprofiled
 traces are also embedded here. The output retains every summary, phase trace,
 helper measurement and load sample, including
@@ -13,6 +14,15 @@ import hashlib
 import json
 import re
 from pathlib import Path
+
+
+def archive_path(output=None):
+    repository = Path(__file__).resolve().parent.parent
+    destination = Path(output) if output else Path('/Users/admin/Library/Caches/BelloSwiftWork/perf-evidence/a136-perf-0.1.136-phase-b-data.json.gz')
+    destination = destination.resolve()
+    if destination == repository or repository in destination.parents:
+        raise ValueError('Keep generated performance evidence outside the repository')
+    return destination
 
 
 def sample_summary(contents):
@@ -201,10 +211,16 @@ def collect(root):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build_root", type=Path)
-    parser.add_argument("output", type=Path)
+    parser.add_argument("output", type=Path, nargs="?")
     args = parser.parse_args()
+    try:
+        args.output = archive_path(args.output)
+    except ValueError as error:
+        parser.error(str(error))
     result = json.dumps(collect(args.build_root), indent=2, sort_keys=True) + "\n"
     if args.output.suffix == ".gz":
         args.output.write_bytes(gzip.compress(result.encode(), mtime=0))
     else:
         args.output.write_text(result)
+    data = args.output.read_bytes()
+    print(f'{args.output}: {len(data)} bytes, SHA-256 {hashlib.sha256(data).hexdigest()}')
