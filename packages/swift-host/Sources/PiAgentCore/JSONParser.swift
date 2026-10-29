@@ -11,6 +11,9 @@ import Foundation
 struct JSONByteParser {
     private let bytes: UnsafeBufferPointer<UInt8>
     private var index = 0
+    /// Reused between escaped strings in this document; returned strings own
+    /// their storage. Plain strings do not need this buffer.
+    private var stringBytes: [UInt8] = []
     /// Deeper nesting than any record or frame has; a bound, not a trim.
     private static let maximumDepth = 512
 
@@ -109,6 +112,9 @@ struct JSONByteParser {
         var members: [String: JSON] = [:]
         skipSpace()
         if peek == UInt8(ascii: "}") { index += 1; return .object(members) }
+        // Journal objects commonly have a few fields. Avoid growing through
+        // the smallest tables; empty objects still use no allocated table.
+        members.reserveCapacity(4)
         while true {
             skipSpace()
             guard peek == UInt8(ascii: "\"") else { throw Self.invalid("expected a key") }
@@ -117,8 +123,9 @@ struct JSONByteParser {
             try expect(UInt8(ascii: ":"), "':'")
             skipSpace()
             let member = try value(depth: depth)
+            // Merge finds/inserts once, instead of looking up then assigning.
             // A repeated key keeps its first value, as JSONDecoder kept it.
-            if members[key] == nil { members[key] = member }
+            members.merge(CollectionOfOne((key, member))) { first, _ in first }
             skipSpace()
             if peek == UInt8(ascii: ",") {
                 index += 1; skipSpace()
@@ -152,7 +159,7 @@ struct JSONByteParser {
     }
 
     /// A string's text. The common case has no escapes: one pass to find its
-    /// end, one to decode it. A string with escapes is built piece by piece.
+    /// end, one to decode it. Escaped strings collect UTF-8 and decode once.
     private mutating func string() throws -> String {
         index += 1
         let start = index
@@ -164,7 +171,7 @@ struct JSONByteParser {
                 index += 1
                 return text
             }
-            if byte == UInt8(ascii: "\\") { index = start; return try escapedString() }
+            if byte == UInt8(ascii: "\\") { return try escapedString(start: start, ascii: ascii) }
             guard byte >= 0x20 else { throw Self.invalid("control character in a string") }
             if byte >= 0x80 { ascii = false }
             index += 1
@@ -179,62 +186,88 @@ struct JSONByteParser {
         return text
     }
 
-    private mutating func escapedString() throws -> String {
-        var scalars = String.UnicodeScalarView()
-        var runStart = index
-        while index < bytes.count {
-            let byte = bytes[index]
-            switch byte {
-            case UInt8(ascii: "\""):
-                try appendRun(runStart, index, to: &scalars)
-                index += 1
-                return String(scalars)
-            case UInt8(ascii: "\\"):
-                try appendRun(runStart, index, to: &scalars)
-                index += 1
-                guard let escape = peek else { throw Self.invalid("unterminated escape") }
-                index += 1
-                switch escape {
-                case UInt8(ascii: "\""): scalars.append("\"")
-                case UInt8(ascii: "\\"): scalars.append("\\")
-                case UInt8(ascii: "/"): scalars.append("/")
-                case UInt8(ascii: "b"): scalars.append("\u{08}")
-                case UInt8(ascii: "f"): scalars.append("\u{0C}")
-                case UInt8(ascii: "n"): scalars.append("\n")
-                case UInt8(ascii: "r"): scalars.append("\r")
-                case UInt8(ascii: "t"): scalars.append("\t")
-                case UInt8(ascii: "u"):
-                    let unit = try hexUnit()
-                    if (0xD800...0xDBFF).contains(unit) {
-                        // A high surrogate must be followed by its low half.
-                        guard index + 1 < bytes.count, bytes[index] == UInt8(ascii: "\\"), bytes[index + 1] == UInt8(ascii: "u") else {
-                            throw Self.invalid("unpaired surrogate")
+    private mutating func escapedString(start: Int, ascii: Bool) throws -> String {
+        stringBytes.removeAll(keepingCapacity: true)
+        var ascii = ascii
+        var runStart = start
+        do {
+            while index < bytes.count {
+                let byte = bytes[index]
+                switch byte {
+                case UInt8(ascii: "\""):
+                    stringBytes.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[runStart..<index]))
+                    index += 1
+                    return try stringBytes.withUnsafeBufferPointer { try Self.text($0, ascii: ascii) }
+                case UInt8(ascii: "\\"):
+                    stringBytes.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[runStart..<index]))
+                    index += 1
+                    guard let escape = peek else { throw Self.invalid("unterminated escape") }
+                    index += 1
+                    switch escape {
+                    case UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"): stringBytes.append(escape)
+                    case UInt8(ascii: "b"): stringBytes.append(0x08)
+                    case UInt8(ascii: "f"): stringBytes.append(0x0C)
+                    case UInt8(ascii: "n"): stringBytes.append(0x0A)
+                    case UInt8(ascii: "r"): stringBytes.append(0x0D)
+                    case UInt8(ascii: "t"): stringBytes.append(0x09)
+                    case UInt8(ascii: "u"):
+                        let unit = try hexUnit()
+                        if (0xD800...0xDBFF).contains(unit) {
+                            // A high surrogate must be followed by its low half.
+                            guard index + 1 < bytes.count, bytes[index] == UInt8(ascii: "\\"), bytes[index + 1] == UInt8(ascii: "u") else {
+                                throw Self.invalid("unpaired surrogate")
+                            }
+                            index += 2
+                            let low = try hexUnit()
+                            guard (0xDC00...0xDFFF).contains(low) else {
+                                throw Self.invalid("unpaired surrogate")
+                            }
+                            appendScalar(0x10000 + ((UInt32(unit) - 0xD800) << 10) + (UInt32(low) - 0xDC00))
+                            ascii = false
+                        } else {
+                            guard !(0xDC00...0xDFFF).contains(unit) else { throw Self.invalid("unpaired surrogate") }
+                            appendScalar(UInt32(unit))
+                            if unit >= 0x80 { ascii = false }
                         }
-                        index += 2
-                        let low = try hexUnit()
-                        guard (0xDC00...0xDFFF).contains(low),
-                              let scalar = Unicode.Scalar(0x10000 + ((UInt32(unit) - 0xD800) << 10) + (UInt32(low) - 0xDC00)) else {
-                            throw Self.invalid("unpaired surrogate")
-                        }
-                        scalars.append(scalar)
-                    } else {
-                        guard let scalar = Unicode.Scalar(UInt32(unit)) else { throw Self.invalid("unpaired surrogate") }
-                        scalars.append(scalar)
+                    default: throw Self.invalid("unknown escape")
                     }
-                default: throw Self.invalid("unknown escape")
+                    runStart = index
+                default:
+                    guard byte >= 0x20 else { throw Self.invalid("control character in a string") }
+                    if byte >= 0x80 { ascii = false }
+                    index += 1
                 }
-                runStart = index
-            default:
-                guard byte >= 0x20 else { throw Self.invalid("control character in a string") }
-                index += 1
             }
+            throw Self.invalid("unterminated string")
+        } catch {
+            // The old parser validated each raw run at the next escape or
+            // closing quote. An invalid completed run must still win over a
+            // later syntax error. The unfinished run is deliberately absent:
+            // a raw control or missing quote there won before its validation.
+            // Escapes emit whole scalars, so they cannot repair a broken run.
+            if !ascii { _ = try stringBytes.withUnsafeBufferPointer { try Self.text($0, ascii: false) } }
+            throw error
         }
-        throw Self.invalid("unterminated string")
     }
 
-    private func appendRun(_ start: Int, _ end: Int, to scalars: inout String.UnicodeScalarView) throws {
-        guard end > start else { return }
-        scalars.append(contentsOf: try Self.text(UnsafeBufferPointer(rebasing: bytes[start..<end]), ascii: false).unicodeScalars)
+    /// The escape reader has already excluded surrogates and values above
+    /// U+10FFFF. Emit a whole scalar without making an intermediate String.
+    private mutating func appendScalar(_ scalar: UInt32) {
+        if scalar < 0x80 {
+            stringBytes.append(UInt8(scalar))
+        } else if scalar < 0x800 {
+            stringBytes.append(UInt8(0xC0 | (scalar >> 6)))
+            stringBytes.append(UInt8(0x80 | (scalar & 0x3F)))
+        } else if scalar < 0x10000 {
+            stringBytes.append(UInt8(0xE0 | (scalar >> 12)))
+            stringBytes.append(UInt8(0x80 | ((scalar >> 6) & 0x3F)))
+            stringBytes.append(UInt8(0x80 | (scalar & 0x3F)))
+        } else {
+            stringBytes.append(UInt8(0xF0 | (scalar >> 18)))
+            stringBytes.append(UInt8(0x80 | ((scalar >> 12) & 0x3F)))
+            stringBytes.append(UInt8(0x80 | ((scalar >> 6) & 0x3F)))
+            stringBytes.append(UInt8(0x80 | (scalar & 0x3F)))
+        }
     }
 
     private mutating func hexUnit() throws -> UInt16 {
