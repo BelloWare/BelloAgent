@@ -121,7 +121,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         path = directory.appendingPathComponent(Self.filePrefix + "p\(getpid())-" + UUID().uuidString + ".sqlite")
         guard sqlite3_open(path.path, &db) == SQLITE_OK else { throw StoreError.unreadableRecord }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT, turn INTEGER); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, n INTEGER, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value,n); BEGIN")
+        try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA cache_spill=128; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, kind INTEGER NOT NULL, role TEXT, turn INTEGER, payload BLOB NOT NULL, replay BLOB); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT, turn INTEGER); CREATE TABLE seen(id TEXT PRIMARY KEY); CREATE TABLE links(id TEXT, kind TEXT, value TEXT, n INTEGER, PRIMARY KEY(id,kind,value)); CREATE INDEX link_values ON links(kind,value,n); CREATE TABLE selected(n INTEGER PRIMARY KEY, id TEXT NOT NULL); BEGIN")
     }
     deinit { releaseStatements(); sqlite3_close(db); try? FileManager.default.removeItem(at: path) }
     private func releaseStatements() { for statement in statements.values { sqlite3_finalize(statement) }; statements.removeAll() }
@@ -228,13 +228,18 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     }
 
 
-    func insert(_ ref: HistoryOffset) throws {
-        try run("INSERT INTO refs VALUES(?1,?2)") { statement in
-            bind(statement, 1, ref.id)
+    /// What a row is to the selected timeline and the shown one: a message
+    /// (1), a compaction (2), an edit marker (3), or anything else (0).
+    static func kind(_ ref: HistoryOffset) -> Int { ref.type == "message" ? 1 : ref.type == "compaction" ? 2 : ref.type == "branch" ? 3 : 0 }
+    private var lastRowid: Int64 = 0
+    func insert(_ ref: HistoryOffset, kind: Int? = nil) throws {
+        try run("INSERT INTO refs(id,kind,role,turn,payload) VALUES(?1,?2,?3,?4,?5)") { statement in
+            bind(statement, 1, ref.id); bind(statement, 2, kind ?? Self.kind(ref)); bind(statement, 3, ref.role ?? ""); bind(statement, 4, ref.turnStart == true ? 1 : 0)
             let payload = ref.indexPayload
-            _ = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), Self.transient) }
+            _ = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 5, $0.baseAddress, Int32($0.count), Self.transient) }
             try step(statement)
         }
+        lastRowid = sqlite3_last_insert_rowid(db)
         // A new row has no links yet and no position: it joins the timeline
         // only when it is appended.
         if ref.calls?.isEmpty == false || ref.resultCall != nil || ref.operationID != nil { try insertLinks(ref, position: nil) }
@@ -398,6 +403,145 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT, turn INTEGER); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role,turn FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; UPDATE links SET n=(SELECT n FROM visible WHERE visible.id=links.id); COMMIT")
         count = try scalar("SELECT count(*) FROM visible")
         nextOrdinal = count
+    }
+    /// What a row adds to an active context, and its replay facts for an
+    /// edit (`EditReplayPlan`): kept in this file while indexing, as the
+    /// selected timeline is. Held in memory they grew with the journal.
+    struct ReplayFacts {
+        var node: ReplayNode
+        /// The calls and the receipt this row adds to an active context.
+        var calls: [String]; var result: String?
+        var payload: [UInt8] {
+            var bytes: [UInt8] = []
+            func number(_ value: UInt64) {
+                var value = value
+                while value >= 0x80 { bytes.append(UInt8(value & 0x7F) | 0x80); value >>= 7 }
+                bytes.append(UInt8(value))
+            }
+            func text(_ value: String) { number(UInt64(value.utf8.count)); bytes.append(contentsOf: value.utf8) }
+            func texts(_ values: [String]?) {
+                guard let values else { bytes.append(0); return }
+                bytes.append(1); number(UInt64(values.count)); for value in values { text(value) }
+            }
+            func optional(_ value: String?) { if let value { bytes.append(1); text(value) } else { bytes.append(0) } }
+            text(node.id); text(node.role); bytes.append((node.eligible ? 1 : 0) | (node.summary ? 2 : 0))
+            texts(node.dependencies); texts(node.summarized); texts(node.calls); optional(node.result)
+            texts(calls); optional(result)
+            return bytes
+        }
+        init(node: ReplayNode, calls: [String], result: String?) { self.node = node; self.calls = calls; self.result = result }
+        init(payload raw: UnsafeRawBufferPointer) throws {
+            var at = 0
+            func byte() throws -> UInt8 {
+                guard at < raw.count else { throw StoreError.unreadableRecord }
+                defer { at += 1 }
+                return raw[at]
+            }
+            func number() throws -> UInt64 {
+                var value: UInt64 = 0, shift: UInt64 = 0
+                while true {
+                    let next = try byte()
+                    guard shift < 64 else { throw StoreError.unreadableRecord }
+                    value |= UInt64(next & 0x7F) << shift
+                    if next < 0x80 { return value }
+                    shift += 7
+                }
+            }
+            func text() throws -> String {
+                guard let count = Int(exactly: try number()), count <= raw.count - at else { throw StoreError.unreadableRecord }
+                defer { at += count }
+                return String(decoding: UnsafeRawBufferPointer(rebasing: raw[at..<at + count]), as: UTF8.self)
+            }
+            func texts() throws -> [String]? {
+                guard try byte() == 1 else { return nil }
+                guard let count = Int(exactly: try number()), count <= raw.count - at else { throw StoreError.unreadableRecord }
+                var values: [String] = []; values.reserveCapacity(count)
+                for _ in 0..<count { values.append(try text()) }
+                return values
+            }
+            func optional() throws -> String? { try byte() == 1 ? try text() : nil }
+            let id = try text(), role = try text(), flags = try byte()
+            let dependencies = try texts(), summarized = try texts(), nodeCalls = try texts() ?? [], nodeResult = try optional()
+            node = ReplayNode(id: id, role: role, eligible: flags & 1 != 0, summary: flags & 2 != 0, dependencies: dependencies, summarized: summarized, calls: nodeCalls, result: nodeResult)
+            calls = try texts() ?? []; result = try optional()
+            guard at == raw.count else { throw StoreError.unreadableRecord }
+        }
+    }
+    /// Keeps a row's replay facts with the row: the last one inserted, or
+    /// another by its id (a checkpoint's rows).
+    func storeReplay(_ facts: ReplayFacts) throws {
+        let payload = facts.payload
+        if facts.node.id == lastInserted {
+            try run("UPDATE refs SET replay=?2 WHERE rowid=?1") { statement in
+                sqlite3_bind_int64(statement, 1, lastRowid)
+                _ = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), Self.transient) }
+                try step(statement)
+            }
+        } else {
+            try run("UPDATE refs SET replay=?2 WHERE id=?1") { statement in
+                bind(statement, 1, facts.node.id)
+                _ = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), Self.transient) }
+                try step(statement)
+            }
+        }
+        guard sqlite3_changes(db) == 1 else { throw StoreError.unreadableRecord }
+    }
+    func replay(_ id: String) throws -> ReplayFacts? {
+        try run("SELECT replay FROM refs WHERE id=?1") { statement in
+            bind(statement, 1, id)
+            guard try row(statement), let bytes = sqlite3_column_blob(statement, 0) else { return nil }
+            return try ReplayFacts(payload: UnsafeRawBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(statement, 0))))
+        }
+    }
+    func hasReplay(_ id: String) throws -> Bool {
+        try run("SELECT 1 FROM refs WHERE id=?1 AND replay IS NOT NULL") { statement in bind(statement, 1, id); return try row(statement) }
+    }
+    /// Every row's replay facts, for an edit's plan: read only for an edit.
+    func replayNodes() throws -> [String: ReplayNode] {
+        let statement = try query("SELECT replay FROM refs WHERE replay IS NOT NULL"); defer { sqlite3_finalize(statement) }
+        var nodes: [String: ReplayNode] = [:]
+        while try next(statement) {
+            guard let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.unreadableRecord }
+            let facts = try ReplayFacts(payload: UnsafeRawBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(statement, 0))))
+            nodes[facts.node.id] = facts.node
+        }
+        return nodes
+    }
+    /// The role a message row was recorded with; nil for any other row.
+    func messageRole(_ id: String) throws -> String? {
+        try run("SELECT kind, role FROM refs WHERE id=?1") { statement in
+            bind(statement, 1, id)
+            guard try row(statement), sqlite3_column_int64(statement, 0) == 1, let role = Self.text(statement, 1) else { return nil }
+            return role
+        }
+    }
+    /// The selected timeline, as indexing replays edits: the rows an edit or
+    /// a fork boundary last selected (`replaceSelected`), then every message,
+    /// compaction and edit marker inserted since, in order; before the last
+    /// row inserted when `excludingLast`.
+    private var selectedFrom: Int64 = 0
+    func selectedTimeline(excludingLast: Bool = false) throws -> [String] {
+        var ids: [String] = []
+        let base = try query("SELECT id FROM selected ORDER BY n"); defer { sqlite3_finalize(base) }
+        while try next(base) {
+            guard let text = Self.text(base, 0) else { throw StoreError.unreadableRecord }
+            ids.append(text)
+        }
+        let since = try query("SELECT id FROM refs WHERE rowid>?1 AND rowid<?2 AND kind!=0 ORDER BY rowid"); defer { sqlite3_finalize(since) }
+        sqlite3_bind_int64(since, 1, selectedFrom); sqlite3_bind_int64(since, 2, excludingLast ? lastRowid : Int64.max)
+        while try next(since) {
+            guard let text = Self.text(since, 0) else { throw StoreError.unreadableRecord }
+            ids.append(text)
+        }
+        return ids
+    }
+    /// An edit or a fork boundary selected these rows, through the last row inserted.
+    func replaceSelected(_ ids: [String]) throws {
+        try run("DELETE FROM selected") { statement in try step(statement) }
+        for (n, id) in ids.enumerated() {
+            try run("INSERT INTO selected VALUES(?1,?2)") { statement in bind(statement, 1, n); bind(statement, 2, id); try step(statement) }
+        }
+        selectedFrom = lastRowid
     }
     /// Test seam: the database's size, on disk or held.
     var bytes: Int { ((try? scalar("PRAGMA page_count")) ?? 0) * ((try? scalar("PRAGMA page_size")) ?? 0) }

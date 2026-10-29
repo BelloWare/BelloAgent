@@ -112,6 +112,15 @@ actor HistoryReader {
             return data.startIndex + base.distance(to: UnsafeRawPointer(found))
         }
     }
+    /// `read(2)` at the descriptor's offset into `buffer`, retried when
+    /// interrupted; zero at the end of the file.
+    private static func read(_ file: FileHandle, into buffer: UnsafeMutableRawPointer, count: Int) throws -> Int {
+        while true {
+            let filled = Darwin.read(file.fileDescriptor, buffer, count)
+            if filled >= 0 { return filled }
+            guard errno == EINTR else { throw CocoaError(.fileReadUnknown, userInfo: [NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)]) }
+        }
+    }
     /// A journal that is no longer where its chat says it is must say so. The
     /// caller's "original files were preserved" is a false claim about a file
     /// that is not there.
@@ -1475,9 +1484,11 @@ actor HistoryReader {
         // tail: what it says about unfinished work is decoded after the loop.
         var newestState: (offset: UInt64, length: Int)?
         var sessionID: String?, native = false, linear = true, pendingWork = false, lastWork: IndexRecord.PendingWork?
-        var contextIDs: Set<String> = [], contextMessages: [String: (calls: [String], result: String?)] = [:]
-        var orderedContext: [String] = [], roles: [String: String] = [:]
-        var replayNodes: [String: ReplayNode] = [:], selectedTimeline: [String] = []
+        // The active context only. What each row adds to a context, its
+        // replay facts and the selected timeline are kept in the index's file
+        // (`HistoryOffsetIndex.storeReplay`): in memory they grew with the
+        // journal, and only edits, fork boundaries and compactions read them.
+        var contextIDs: Set<String> = [], orderedContext: [String] = []
         var contextSafe = true, callCount = 0
         var progressAt = ProcessInfo.processInfo.systemUptime
         var presentationOperations: [String:String] = [:]
@@ -1486,13 +1497,16 @@ actor HistoryReader {
         if let resume {
             guard let seed = Self.seed(resume, file: file) else { continue build }
             for ref in seed.rows { try branch.insert(ref) }
-            if let tail = seed.tail { try branch.insert(tail); seededTail = tail.id }
+            // The record the checkpoint follows is no row of the timeline.
+            if let tail = seed.tail { try branch.insert(tail, kind: 0); seededTail = tail.id }
             seeded = Set(seed.rows.map(\.id)); branch.startLineage(resume.lineage)
             sessionID = seed.sessionID; native = true
             leaf = resume.lastID; offset = resume.start; olderRows = resume.rowsBefore
             orderedContext = resume.context; contextIDs = Set(resume.context)
-            contextMessages = seed.contextMessages; roles = seed.roles; replayNodes = seed.replayNodes
-            selectedTimeline = seed.rows.map(\.id); presentationOperations = seed.presentationOperations
+            for (id, node) in seed.replayNodes {
+                try branch.storeReplay(.init(node: node, calls: seed.contextMessages[id]?.calls ?? [], result: seed.contextMessages[id]?.result ?? nil))
+            }
+            presentationOperations = seed.presentationOperations
             contextSafe = seed.contextSafe; callCount = seed.callCount
             assistantCount = resume.assistantMessageCount; latestAssistantID = resume.latestAssistantMessageID
             versions = resume.versions; taskRecords = resume.tasks
@@ -1500,9 +1514,17 @@ actor HistoryReader {
             try file.seek(toOffset: resume.start)
         } else { try file.seek(toOffset: 0) }
         var readOffset = offset
+        // One buffer for every chunk. `FileHandle.read` returned a new
+        // autoreleased `Data` for each, and on this actor none was released
+        // until the scan ended: at its peak a scan held the whole journal.
+        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 65_536, alignment: 16)
+        defer { buffer.deallocate() }
         while true {
             let count = bounded ? Int(min(65_536, size - min(size, readOffset))) : 65_536
-            guard count > 0, let chunk = try file.read(upToCount: count), !chunk.isEmpty else { break }
+            guard count > 0, let base = buffer.baseAddress else { break }
+            let filled = try Self.read(file, into: base, count: count)
+            guard filled > 0 else { break }
+            let chunk = Data(bytesNoCopy: base, count: filled, deallocator: .none)
             readOffset += UInt64(chunk.count)
             try indexChunkRead?(readOffset)
             try Task.checkCancellation()
@@ -1518,7 +1540,7 @@ actor HistoryReader {
                     if let tail = StateRecordTail.read(pending) { value = IndexRecord(stateID: tail.id, parentID: tail.parent); newestState = (offset, pending.count) }
                     // The scanner reads no record with run state: those are decoded.
                     else if let scanned = pending.withUnsafeBytes({ HistoryIndexScan.record($0) }) { value = scanned }
-                    else { value = try JSONDecoder().decode(IndexRecord.self, from: pending); if value.pendingWork != nil { newestState = nil } }
+                    else { value = try autoreleasepool { try JSONDecoder().decode(IndexRecord.self, from: pending) }; if value.pendingWork != nil { newestState = nil } }
                     // An edit or a fork boundary after the checkpoint is replayed from the start.
                     if resume != nil, value.type == "branch" || value.customType == "pi-app.native.context.v1" { continue build }
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
@@ -1539,7 +1561,7 @@ actor HistoryReader {
                         // The previous record, its usual parent, was inserted just now.
                         if let parent, parent != leaf, try !branch.contains(parent) { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
-                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) },
+                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), calls: value.message?.calls.isEmpty == false ? value.message?.calls : nil, resultCall: value.message?.role == "toolResult" ? value.message?.toolCallId : nil, operationID: value.message?.nativeKind == "execution" ? (value.message?.nativeOperationID ?? value.message?.nativeCompaction?.operationId) : nil, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: try value.contextIDs.map { EditReplayPlan.forkTimeline(visible: try branch.selectedTimeline(), boundary: $0) },
                                        turnStart: value.type == "message" && value.message?.startsTurn == true ? true : nil, taskKey: value.message?.taskKey))
                         if let target = value.presentationTarget {
                             guard var original = try branch.ref(target), original.presentation else { throw StoreError.unreadableRecord }
@@ -1561,13 +1583,11 @@ actor HistoryReader {
                             if value.message?.contentIndexed != true { contextSafe = false }
                             callCount += calls.count
                             if callCount > 100_000 { contextSafe = false }
-                            contextMessages[id] = (callCount <= 100_000 ? calls : [], value.message?.role == "toolResult" ? value.message?.toolCallId : nil)
-                            roles[id]=value.message?.role
                             if value.message?.role == "user" { versions.recorded(userMessage: id) }
-                            replayNodes[id] = ReplayNode(id: id, role: value.message?.role ?? "", eligible: value.message?.nativeReplayEligible != false,
+                            try branch.storeReplay(.init(node: ReplayNode(id: id, role: value.message?.role ?? "", eligible: value.message?.nativeReplayEligible != false,
                                 summary: value.message?.nativeKind == "compaction", dependencies: value.message?.nativeCompaction?.dependencyIDs, summarized: value.message?.nativeCompaction?.summarySourceIDs,
-                                calls: calls, result: value.message?.toolCallId)
-                            selectedTimeline.append(id)
+                                calls: calls, result: value.message?.toolCallId),
+                                calls: callCount <= 100_000 ? calls : [], result: value.message?.role == "toolResult" ? value.message?.toolCallId : nil))
                             if value.message?.nativeReplayEligible != false { contextIDs.insert(id); orderedContext.append(id) }
                         } else if value.type == "compaction" {
                             let kept=value.nativeKeptIDs ?? [], keptSet=Set(kept)
@@ -1579,18 +1599,18 @@ actor HistoryReader {
                                 guard protected.count==checkpoint.protectedIDs.count,
                                       Array(kept.prefix(protected.count))==checkpoint.protectedIDs,
                                       orderedContext.filter({ protected.contains($0) })==checkpoint.protectedIDs,
-                                      checkpoint.protectedIDs.allSatisfy({ roles[$0]=="user" }),
+                                      try checkpoint.protectedIDs.allSatisfy({ try branch.messageRole($0)=="user" }),
                                       orderedContext.filter({ keptSet.subtracting(protected).contains($0) })==Array(kept.dropFirst(protected.count)) else { throw StoreError.unreadableRecord }
                             } else if orderedContext.filter({ keptSet.contains($0) }) != kept { throw StoreError.unreadableRecord }
-                            replayNodes[id] = ReplayNode(id: id, role: "system", summary: true, dependencies: value.nativeCompaction?.dependencyIDs, summarized: value.nativeCompaction?.summarySourceIDs)
-                            selectedTimeline.append(id)
+                            try branch.storeReplay(.init(node: ReplayNode(id: id, role: "system", summary: true, dependencies: value.nativeCompaction?.dependencyIDs, summarized: value.nativeCompaction?.summarySourceIDs), calls: [], result: nil))
                             orderedContext=[id]+kept; contextIDs=Set(orderedContext)
-                            contextMessages[id] = ([], nil); contextIDs.insert(id)
+                            contextIDs.insert(id)
                         } else if value.type == "branch" {
                             versions.branched(from: value.fromMessageId ?? "")
                             let kept = value.keptIds ?? [], keptSet = Set(kept)
-                            if let branch = value.historicalBranch {
-                                let plan = try EditReplayPlan.restore(branch, nodes: replayNodes, visible: selectedTimeline, context: orderedContext)
+                            var selectedTimeline = try branch.selectedTimeline(excludingLast: true)
+                            if let historical = value.historicalBranch {
+                                let plan = try EditReplayPlan.restore(historical, nodes: try branch.replayNodes(), visible: selectedTimeline, context: orderedContext)
                                 orderedContext = plan.replay; selectedTimeline = plan.displayPrefix
                             } else {
                                 guard keptSet.count == kept.count, orderedContext.filter({ keptSet.contains($0) }) == kept else { throw StoreError.unreadableRecord }
@@ -1599,14 +1619,15 @@ actor HistoryReader {
                                 else { selectedTimeline.removeAll { !keptSet.contains($0) } }
                             }
                             let shown = Set(selectedTimeline); selectedTimeline += kept.filter { !shown.contains($0) }; selectedTimeline.append(id)
-                            replayNodes[id] = ReplayNode(id: id, role: "system", eligible: false)
-                            contextIDs = Set(orderedContext); contextMessages[id] = ([], nil)
+                            try branch.replaceSelected(selectedTimeline)
+                            try branch.storeReplay(.init(node: ReplayNode(id: id, role: "system", eligible: false), calls: [], result: nil))
+                            contextIDs = Set(orderedContext)
                         } else if let replacement = value.contextIDs {
                             let ids = Set(replacement)
-                            guard ids.count == replacement.count, ids.isSubset(of: Set(contextMessages.keys)) else { throw StoreError.unreadableRecord }
-                            let selected = EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: replacement)
+                            guard ids.count == replacement.count, try ids.allSatisfy({ try branch.hasReplay($0) }) else { throw StoreError.unreadableRecord }
+                            let selected = EditReplayPlan.forkTimeline(visible: try branch.selectedTimeline(excludingLast: true), boundary: replacement)
                             guard value.selectedTimeline == nil || value.selectedTimeline == selected else { throw StoreError.unreadableRecord }
-                            selectedTimeline = selected
+                            try branch.replaceSelected(selected)
                             contextIDs = ids; orderedContext=replacement
                         }
                         leaf = id
@@ -1659,8 +1680,11 @@ actor HistoryReader {
         indexedRecordCount = branch.recordCount; indexedBytes = size
         let current = try stamp(file)
         if !bounded { guard current == identity else { throw StoreError.unreadableRecord } }
-        let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
-        let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
+        var activeCalls = Set<String>(), activeResults = Set<String>()
+        for id in contextIDs {
+            guard let facts = try branch.replay(id) else { continue }
+            activeCalls.formUnion(facts.calls); if let result = facts.result { activeResults.insert(result) }
+        }
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
         failureCode = failureMessage == nil ? nil : lastWork?.failureCode
         if resume != nil, try Self.reachesPast(branch, before: before, around: around, after: after) { continue build }
