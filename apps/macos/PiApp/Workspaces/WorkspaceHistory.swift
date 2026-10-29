@@ -20,12 +20,20 @@ extension WorkspaceModel {
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
                                 validating: ConversationCursor? = nil, followsNavigation: Bool = true, opening: Bool = false) async throws -> ConversationHistoryPage {
+        #if PI_TEST_HOST
+        let perf = Perf136Span("source.window")
+        var perfRows = 0
+        defer { perf.end(["cursor": cursor?.entry ?? "", "newer": String(newer), "around": around ?? "", "position": position.map(String.init) ?? "", "startEdge": String(start), "opening": String(opening), "returnedRows": String(perfRows), "cancelled": String(Task.isCancelled)]) }
+        #endif
         let navigation = followsNavigation ? transcriptNavigation(item.id) : nil
         func checkNavigation() throws {
             try Task.checkCancellation()
             if let navigation, !navigation.isCurrent(in: self) { throw CancellationError() }
         }
         func marked(_ page: ConversationHistoryPage) -> ConversationHistoryPage {
+            #if PI_TEST_HOST
+            perfRows = page.messages.count
+            #endif
             var page = page; page.opening = opening; page.openingAround = around; return page
         }
         try checkNavigation()
@@ -59,9 +67,21 @@ extension WorkspaceModel {
             if cursor == nil, let validating {
                 params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
             }
+            #if PI_TEST_HOST
+            let ipc = Perf136Span("helper.historyIPC")
+            #endif
             let result = try await host.request("session.history", sessionID: item.id, params: params)
+            #if PI_TEST_HOST
+            ipc.end()
+            #endif
             try checkNavigation()
-            let page = try await Task.detached { try ConversationHistoryPage(result) }.value
+            let page = try await Task.detached {
+                #if PI_TEST_HOST
+                let decoding = Perf136Span("helper.pageProjection")
+                defer { decoding.end() }
+                #endif
+                return try ConversationHistoryPage(result)
+            }.value
             try checkNavigation()
             return marked(page)
         }
@@ -91,6 +111,10 @@ extension WorkspaceModel {
                 }
             })
             try checkNavigation()
+            #if PI_TEST_HOST
+            let projection = Perf136Span("journal.pageProjection")
+            defer { projection.end() }
+            #endif
             return marked(try ConversationHistoryPage(page))
         }
         // A newly created in-memory chat is authoritatively empty.

@@ -108,6 +108,11 @@ struct TranscriptFindCommand: Equatable {
     private(set) var matches: [Match] = []
     private(set) var current: Int?
     private(set) var searching = false
+    #if PI_TEST_HOST
+    /// The measurement host distinguishes a completed scan from a refresh
+    /// which may start before its next frame observes `searching == false`.
+    var performanceScanCompleted: ((TimeInterval, Bool, Int) -> Void)?
+    #endif
     private(set) var failed = false
     private var task: Task<Void, Never>?
     private var navigation: Task<Void, Never>?
@@ -196,7 +201,13 @@ struct TranscriptFindCommand: Equatable {
         guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false, keepingMarks: refreshing); return }
         searching = true; publish(focus: false, keepingMarks: refreshing)
         let id = session.id
+        #if PI_TEST_HOST
+        let perf = Perf136Span("find.scan")
+        #endif
         task = Task { [weak self] in
+            #if PI_TEST_HOST
+            defer { perf.end(["refreshing": String(refreshing), "cancelled": String(Task.isCancelled), "matches": String(self?.matches.count ?? 0)]) }
+            #endif
             // Typing settles before the chat is searched.
             try? await Task.sleep(for: .milliseconds(150))
             let began = ProcessInfo.processInfo.systemUptime
@@ -234,6 +245,9 @@ struct TranscriptFindCommand: Equatable {
             }
             else if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
             else { self.publish(focus: false) }
+            #if PI_TEST_HOST
+            self.performanceScanCompleted?(self.lastScan, refreshing, self.matches.count)
+            #endif
             // Rows that changed while it ran are searched again once quiet.
             self.scheduleContentRefresh()
         }

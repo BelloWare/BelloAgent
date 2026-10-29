@@ -546,7 +546,7 @@ private struct SoakRandom: RandomNumberGenerator {
 /// is allocated or locked while the main thread is suspended: it may hold the
 /// allocator's lock. (`MainThreadWatchdog` is the other kind: it notices a
 /// window frozen for seconds and ends the run.)
-private final class SoakStallWatchdog: @unchecked Sendable {
+final class SoakStallWatchdog: @unchecked Sendable {
     struct Stall: Sendable {
         var at: Double; var duration: Double; var label: String; var stacks: [[UInt]]
         /// Every other thread's stack, once, as the stall began: what the main

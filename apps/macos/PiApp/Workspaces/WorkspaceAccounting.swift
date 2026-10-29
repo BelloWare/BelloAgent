@@ -161,6 +161,10 @@ extension WorkspaceModel {
     /// screen. `adding` keeps the figures of the rows already shown (a page
     /// read in beside them); otherwise the read replaces them.
     func withAccounting(_ rows: [TranscriptMessage], view: SessionDisplay, workspaceID: String, adding: Bool = false) async -> [TranscriptMessage] {
+        #if PI_TEST_HOST
+        let perf = Perf136Span("page.accounting")
+        defer { perf.end(["rows": String(rows.count), "adding": String(adding)]) }
+        #endif
         let shown = TranscriptPage.accountingPage(rows)
         if !isShutDown, shown.contains(where: { $0.role == "assistant" }) {
             // A refresh still reading an earlier page gives way to this one.

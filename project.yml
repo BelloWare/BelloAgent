@@ -97,6 +97,11 @@ targets:
         # millisecond budget only where those milliseconds mean something.
         Release:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: [$(inherited), PI_RELEASE_TESTS]
+          # Optional probe iteration settings; ordinary Release tests and
+          # the application retain their whole-module optimization.
+          PI_PERF_TEST_COMPILATION_MODE: wholemodule
+          SWIFT_COMPILATION_MODE: $(PI_PERF_TEST_COMPILATION_MODE)
+          OTHER_SWIFT_FLAGS: [$(inherited), $(PI_PERF_TEST_COMPILER_FLAGS)]
 schemes:
   PiApp:
     build:

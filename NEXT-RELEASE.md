@@ -4,6 +4,7 @@
 
 ## 0.1.136
 
+- [ ] PERF-1: measure a very long chat and review the proposal before production changes. Owner, 2026-10-29: "I have like a session that's like 50k interactions already, and it feels kind of slow"; "especially the scrolling experience"; "It has to be backward compatible." Phase A on `dev/a136-perf`: seeded fixtures, isolated Release measurements and the ranked proposal in [the record](docs/validation/a136-perf-0.1.136.md). Phase B awaits discussion with the lead.
 - [ ] FOLD-GAP: a folded turn takes no room for its hidden rows. Each folded-away row still stands at one point (`TranscriptRowContainer` measure and estimate), so a sixty-call fold left about 200 pt of blank space between its line and its answer (0.1.135 Known). Follows the owner's 2026-10-28 "It should be collapsed by default."
 - [x] AGENTS-1 P3s: finished waits name their outcome; bounded final answers end before an empty code frame; fork publication follows the seed/turn boundary without a fixed record count; the connection-move guard trusts only native child markers. Failing-first tests, mutations and light/dark/narrow galleries: [validation](docs/validation/a136-p3-0.1.136.md).
 - [x] TEST-FLAKE: starting an unchanged accounting read invalidated a prepared delta and reprojected 301 rows. Delta validity now follows changes to the figures; the original one-row assertion passes 20/20 isolated runs. Deterministic regression and mutation: [validation](docs/validation/a136-p3-0.1.136.md).

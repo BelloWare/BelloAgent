@@ -73,22 +73,39 @@ import AppKit
     /// `journal`: the chat's journal and its last message's id, in place of
     /// the one `journal(turns:)` writes (`turns` is then the test's own count).
     init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil, markTurn: Int? = nil,
-         journal: (data: Data, lastID: String)? = nil) async throws {
+         journal: (data: Data, lastID: String)? = nil, journalFile: URL? = nil, lastMessageID: String? = nil,
+         startingWithOtherChat: Bool = false, preparePaneBeforeSelection: Bool = false,
+         configure: ((WorkspaceModel, ChatRecord) async throws -> Void)? = nil) async throws {
         self.turns = turns
-        journalLastID = journal?.lastID
+        journalLastID = lastMessageID ?? journal?.lastID
         root = scratchRoot("long-chat-scroll")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let file = root.appendingPathComponent("long.jsonl")
-        try (journal?.data ?? Self.journal(turns: turns, bigOutputTurn: bigOutputTurn, markTurn: markTurn)).write(to: file)
+        let file = journalFile ?? root.appendingPathComponent("long.jsonl")
+        if journalFile == nil {
+            try (journal?.data ?? Self.journal(turns: turns, bigOutputTurn: bigOutputTurn, markTurn: markTurn)).write(to: file)
+        }
         model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         try await model.reloadConfiguration()
         chat = ChatRecord(id: "long", workspaceID: "project", title: "Long", path: file.path, profileID: "profile")
         model.chats = [chat]
-        await model.select("long")
-        view = try XCTUnwrap(model.selected)
+        try await configure?(model, chat)
+        if !startingWithOtherChat && !preparePaneBeforeSelection { await model.select("long") }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         pane = ConversationPaneView(model: model)
+        if startingWithOtherChat {
+            let other = ChatRecord(id: "initial-other", workspaceID: "project", title: "Other", path: nil, profileID: "profile")
+            model.chats.append(other)
+            await model.select(other.id)
+            let small = try XCTUnwrap(model.selected)
+            small.messages = [TranscriptMessage(id: "initial-other-row", role: "user", text: "Another generated chat is already open.")]
+            pane.show(session: small, chat: other)
+            window.contentView = pane; window.makeKeyAndOrderFront(nil)
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        if startingWithOtherChat || preparePaneBeforeSelection { await model.select("long") }
+        view = try XCTUnwrap(model.selected)
         pane.show(session: view, chat: chat)
         window.contentView = pane; window.makeKeyAndOrderFront(nil)
     }
@@ -143,9 +160,14 @@ import AppKit
     }
     /// One wheel event of `points` (positive scrolls up, toward the start).
     /// AppKit applies it on its own schedule, up to a frame later.
-    func wheel(_ points: CGFloat) {
-        guard let scroll, let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(points.rounded()), wheel2: 0, wheel3: 0)
-            .flatMap(NSEvent.init(cgEvent:)) else { return }
+    func wheel(_ points: CGFloat, phase: Int64 = 0, momentum: Int64 = 0) {
+        guard let scroll, let raw = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(points.rounded()), wheel2: 0, wheel3: 0) else { return }
+        if phase != 0 || momentum != 0 {
+            raw.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+            raw.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+            raw.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        }
+        guard let event = NSEvent(cgEvent: raw) else { return }
         scroll.scrollWheel(with: event)
     }
     /// One frame of a trackpad gesture: the clip moves by `points` at once,
@@ -183,8 +205,12 @@ import AppKit
 
     struct Run {
         var frames: [Double] = []          // ms between frame starts
+        var frameUptimes: [Double] = []
+        var blankAt: [Int] = []
+        var inputPoints: [Double] = []
         var work: [Double] = []            // ms of the frame's own scroll + layout + display
         var jumps: [String] = []
+        var visibleJumps = 0 // Subset whose row starts on screen before and after.
         var lost = 0
         var stallFrames = 0                // frames the reader pushed at an edge with more to read
         var blankFrames = 0                // frames where rows covered less than half the viewport
@@ -219,6 +245,8 @@ import AppKit
     /// `done` holds or `seconds` pass. Checks every frame that the reader's
     /// row moved by exactly the scroll, and that it stayed put between frames.
     func drive(points: CGFloat, seconds: Double, input: Input = .gesture, gestureFrames: Int = 90,
+               pointsAtFrame: ((Int) -> CGFloat)? = nil,
+               wheelPhases: ((Int) -> (scroll: Int64, momentum: Int64))? = nil,
                onFrame: () -> Void = {}, done: () -> Bool) async -> Run {
         var run = Run()
         let clock = ProcessInfo.processInfo
@@ -232,8 +260,10 @@ import AppKit
         var previous = readingRow()
         var previousClip = clipY, previousRowY = (previous?.top ?? 0) + clipY
         while clock.systemUptime - began < seconds {
+            let points = pointsAtFrame?(run.work.count) ?? points
             if done() { run.reached = true; break }
             let start = clock.systemUptime
+            run.frameUptimes.append(start); run.inputPoints.append(Double(points))
             if let lastStart {
                 let interval = (start - lastStart) * 1000
                 run.frames.append(interval)
@@ -262,6 +292,8 @@ import AppKit
                 case .drag: wrong = false
                 }
                 if wrong {
+                    let height = scroll?.contentView.bounds.height ?? 0
+                    if previous.top >= 0, previous.top < height, now >= 0, now < height { run.visibleJumps += 1 }
                     run.jumps.append(String(format: "between frames %d: %@ moved %.1f pt (row in document %.1f -> %.1f, clip %.1f -> %.1f, rows %d, first %@, anchor %@ %@)", run.frames.count, previous.id, moved,
                                             previousRowY, now + clipY, previousClip, clipY, view.messages.count, view.messages.first?.id ?? "-",
                                             scroll?.transcriptReading.hasAnchor == true ? "held" : "none", scroll?.transcriptReading.lastInvalidation ?? "-"))
@@ -273,7 +305,12 @@ import AppKit
             let expected = points > 0 ? min(points, room) : -min(-points, room)
             if room < 0.5, !input.isDrag { run.stallFrames += 1 }
             switch input {
-            case .wheel: wheel(points)
+            case .wheel:
+                if let phases = wheelPhases?(run.work.count) {
+                    if points != 0 || phases.scroll != 0 || phases.momentum != 0 {
+                        wheel(points, phase: phases.scroll, momentum: phases.momentum)
+                    }
+                } else { wheel(points) }
             case .gesture:
                 if run.frames.count % gestureFrames == 0 { if run.frames.count > 0 { endGesture() }; beginGesture() }
                 gestureStep(points)
@@ -286,7 +323,7 @@ import AppKit
             }
             draw()
             run.work.append((clock.systemUptime - start) * 1000)
-            if blankViewport { run.blankFrames += 1 }
+            if blankViewport { run.blankFrames += 1; run.blankAt.append(run.work.count - 1) }
             run.documentHeights.append(document?.frame.height ?? 0)
             if case .gesture = input, let before, let now = screenTop(of: before.id) {
                 // Rows move down on screen as the reader scrolls up.
@@ -305,6 +342,7 @@ import AppKit
             try? await Task.sleep(for: .seconds(next - now))
         }
         if !input.isWheel { endGesture() }
+        if wheelPhases != nil { wheel(0, phase: 8, momentum: 3) }
         if !run.reached, done() { run.reached = true }
         run.seconds = clock.systemUptime - began
         return run
@@ -314,7 +352,7 @@ import AppKit
     var blankViewport: Bool {
         guard let document, let scroll,
               let first = document.retainedRows.first(where: { !$0.foldedAway && $0.frame.height > 0 }),
-              let last = document.retainedRows.last(where: { !$0.foldedAway && $0.frame.height > 0 }) else { return false }
+              let last = document.retainedRows.last(where: { !$0.foldedAway && $0.frame.height > 0 }) else { return true }
         let view = scroll.contentView.bounds
         let covered = max(0, min(view.maxY, last.frame.maxY) - max(view.minY, first.frame.minY))
         return covered < view.height / 2

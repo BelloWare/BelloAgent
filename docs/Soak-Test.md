@@ -56,6 +56,15 @@ else `soak-report-<seed>.txt` beside the run's scratch folder) has the same
 lines and every stalled frame with its image and load address, which
 `scripts/soak-symbolicate.py` names with atos.
 
+For much larger individual chats, `LongChatPerformanceTests` reuses the
+native `LongChatScroll` driver and this stall watchdog with seeded 10k,
+50k, 200k-message and 50k-exchange journals. It measures opening, helper
+replay, wheel/momentum input, scroller jumps, Find, resizing and streaming.
+Use the Release build, fixture generator and quiet-window runner documented
+in [PERF-1 phase A](validation/a136-perf-0.1.136.md); the runner keeps generated
+data in `PI_BUILD_ROOT`, owns the measurement lock and rejects load above 4.
+The recorded timings are a baseline and proposal, not performance fixes.
+
 ## What it has found
 
 Its first runs, in September 2026, found jumps the focused tests had not:
