@@ -388,7 +388,17 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             self.checkpoint()
 
 
+def exit_with_parent(poll=2.0):
+    """A test host that dies before its teardown cannot stop this gateway; it
+    would serve on, adopted by launchd, for days. Leave when the parent does."""
+    parent = os.getppid()
+    while os.getppid() == parent:
+        time.sleep(poll)
+    os._exit(0)
+
+
 if __name__ == "__main__":
+    threading.Thread(target=exit_with_parent, daemon=True).start()
     previous = Path("captures.json")
     if previous.exists():
         Gateway.records = json.loads(previous.read_text())
