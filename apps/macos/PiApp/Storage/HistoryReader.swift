@@ -377,6 +377,9 @@ actor HistoryReader {
     var acceptanceScannedBytes = 0
     private(set) var indexedRecordCount = 0
     private(set) var indexedBytes: UInt64 = 0
+    /// Offset indexes built from a journal's first record (or its metadata
+    /// file's checkpoint): what a read cost in whole-journal passes.
+    private(set) var indexBuilds = 0
     enum SearchReadStage: CaseIterable, Sendable { case captured, indexed, scanned }
     private var searchReadObserver: (@Sendable (SearchReadStage) throws -> Void)?
     func observeSearchReads(_ observer: (@Sendable (SearchReadStage) throws -> Void)?) { searchReadObserver = observer }
@@ -1427,6 +1430,7 @@ actor HistoryReader {
         let perf = Perf136Span("journal.index")
         defer { perf.end(["journalBytes": String(size), "whole": String(wholeJournal)]) }
         #endif
+        indexBuilds += 1
         var branch = try HistoryOffsetIndex(directory: indexDirectory)
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?, failureCode: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false

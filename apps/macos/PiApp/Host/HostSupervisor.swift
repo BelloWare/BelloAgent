@@ -26,6 +26,9 @@ final class HostSupervisor: ObservableObject {
     var helperProcessIdentifier: Int32? { transport?.processIdentifier }
     #if PI_TEST_HOST
     var measuredWireBytes: (sent: Int, received: Int) { transport?.measuredWireBytes ?? (0, 0) }
+    /// Test-host measurement switch: a hello without `committedHistory`, so
+    /// the helper serves every page through `session.history` as before H1.
+    static var omitsCommittedHistoryHello = false
     #endif
     private(set) var connectionID: UUID?
     private var ownership: WorkspaceLock?
@@ -129,8 +132,12 @@ final class HostSupervisor: ObservableObject {
             // `unknownToolOutcomes`: this app reads a call stopped while it ran
             // as "unknown" (TranscriptActivity.outcome). Without it the helper
             // sends such a call as "cancelled" live and "failed" once saved.
-            connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true),
-                             "unknownToolOutcomes": .bool(true), "committedHistory": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
+            var hello: [String: WireValue] = ["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true),
+                                              "unknownToolOutcomes": .bool(true), "committedHistory": .bool(true), "build": .string(ReleaseConfiguration.current.build)]
+            #if PI_TEST_HOST
+            if Self.omitsCommittedHistoryHello { hello["committedHistory"] = nil }
+            #endif
+            connection.send(hello)
         }
         let attempt = transport
         try await withCheckedThrowingContinuation { continuation in
