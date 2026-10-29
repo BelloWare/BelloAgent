@@ -13,7 +13,7 @@ extension AgentSession {
     func requestLifecycle(turnID: String, purpose: String, requestMessages: [ChatMessage]? = nil) async throws -> RequestLifecycle? {
         guard familyBudgetEnabled || isSubagent else { return nil }
         guard let owner = isSubagent ? budgetOwner : self else { throw AgentError("managed_subagent", "The parent must own this child's requests") }
-        let sourceGeneration = stopCount
+        let sourceGeneration = stopCount, cutFence = mailboxCutFence
         // Manual compaction may summarize an idle, paused parent without
         // releasing its follow-ups. This permission belongs to this request;
         // a later Stop still revokes it through the generation and permit.
@@ -25,7 +25,7 @@ extension AgentSession {
         if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.filter { $0.nativeInherited == nil }.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
         scope = await owner.sharedRequestScope(scope)
         let admittedScope = scope
-        return RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in
+        var lifecycle = RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
             let permit = try await owner.admitSharedAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
             await self.attachRequestPermit(permit, generation: sourceGeneration)
@@ -37,6 +37,13 @@ extension AgentSession {
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
             try await self.settleFamilyAttempt(settlement, owner: owner)
         })
+        if purpose == "turn", agentContractVersion == 4, let coordinator = agentCoordinator {
+            lifecycle.prepareMailboxCut = { [weak self] reply in
+                guard let self else { return nil }
+                return try await coordinator.cut(reply,recipient:self,scope:admittedScope,fence:cutFence)
+            }
+        }
+        return lifecycle
     }
 
     private func attachRequestPermit(_ permit: RequestPermit, generation: Int) {
@@ -84,7 +91,7 @@ extension AgentSession {
         guard let admission = accounting.attempts[attempt]?.admission,
               admission["scope"] == (try subagentJSON(settlement.scope)), observation.sessionID == settlement.scope.sourceSessionID,
               observation.turnID == settlement.scope.turnID, observation.purpose == settlement.scope.purpose else { throw AttemptAccounting.damaged() }
-        defer { requestPermits.removeValue(forKey: attempt)?.finish(); inFlightBudgetAttempts.remove(attempt); stopFamilyAtLimit() }
+        defer { requestPermits.removeValue(forKey: attempt)?.finish(); inFlightBudgetAttempts.remove(attempt); stopFamilyAtLimit(); finishRequestDrainWaiters() }
         if !settlement.dispatched {
             var record = admission; record["state"] = "not_dispatched"; record["accountingRevision"] = JSON(accounting.revision + 1)
             try appendAccounting(kind: JournalRecordKind.budgetAttempt, data: record)
@@ -100,7 +107,7 @@ extension AgentSession {
         return accounting.attempts[attempt]?.contribution
     }
     private func settleFamilyAttempt(_ settlement: AttemptSettlement, owner: AgentSession) async throws {
-        defer { requestPermits.removeValue(forKey: settlement.observation.attemptID)?.finish() }
+        defer { requestPermits.removeValue(forKey: settlement.observation.attemptID)?.finish(); finishRequestDrainWaiters() }
         let origin = subagents.origin
         let accepted = await owner.subagents.plans[settlement.scope.delegation?.delegationID ?? ""]?.origin
         let child = origin.map { FamilyCharge.Child(accepted:accepted ?? $0,observed:$0) }

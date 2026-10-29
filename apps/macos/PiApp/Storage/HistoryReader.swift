@@ -1414,7 +1414,7 @@ actor HistoryReader {
                     // An edit or a fork boundary after the checkpoint is replayed from the start.
                     if resume != nil, value.type == "branch" || value.customType == "pi-app.native.context.v1" { continue build }
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
-                    if ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(value.customType ?? "") { native = true }
+                    if ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4", "pi-app.native.v5"].contains(value.customType ?? "") { native = true }
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
                     if let task = value.taskTerminal {
                         taskRecords.removeAll { $0.key == task.key }; taskRecords.append(task)
@@ -1711,7 +1711,7 @@ extension HistoryReader {
               let header = try? JSONDecoder().decode(IndexRecord.self, from: headerLine), header.type == "session", header.version == 3,
               header.id == checkpoint.sessionID,
               let markerLine = JournalCheckpoint.verified(checkpoint.marker, in: file),
-              let marker = try? JSONDecoder().decode(IndexRecord.self, from: markerLine), ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(marker.customType ?? ""),
+              let marker = try? JSONDecoder().decode(IndexRecord.self, from: markerLine), ["pi-app.native.v1", "pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4", "pi-app.native.v5"].contains(marker.customType ?? ""),
               let lastLine = JournalCheckpoint.verified(checkpoint.last, in: file),
               let last = try? JSONDecoder().decode(IndexRecord.self, from: lastLine), last.id == checkpoint.lastID else { return nil }
         var seed = Seed(); seed.sessionID = header.id

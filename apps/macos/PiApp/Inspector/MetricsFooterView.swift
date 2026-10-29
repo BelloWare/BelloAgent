@@ -291,6 +291,7 @@ import CoreText
     var action: String { Self.action(session) }
     static func action(_ session: SessionDisplay) -> String {
         if session.state == "stopping" { return "Stopping…" }
+        if session.supportsMailboxCutin, session.receivingAgentMessage { return "Receiving agent message" }
         if let progress = session.compactionProgress, !progress.isEmpty { return progress + "…" }
         if session.state == "compacting" { return "Compacting context…" }
         let tools = session.activity["toolNames"]?.array?.compactMap(\.string).filter { !$0.isEmpty } ?? []

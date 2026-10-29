@@ -31,6 +31,7 @@ public struct ModelReply: Sendable {
     public var usage: JSON
     public var truncated: Bool
     public var terminal: ModelTerminalOutcome?
+    public var mailboxCut: MailboxCut? = nil
     public init(message: ChatMessage, calls: [ToolCall] = [], usage: JSON = [:], truncated: Bool = false, terminal: ModelTerminalOutcome? = nil) { self.message=message; self.calls=calls; self.usage=usage; self.truncated=truncated; self.terminal=terminal }
 }
 public enum StreamDelta: Sendable { case text(String), thinking(String), tool(String, String, String), part(ResponsePartEvent) }

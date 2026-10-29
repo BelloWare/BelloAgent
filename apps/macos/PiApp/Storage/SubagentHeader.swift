@@ -57,7 +57,7 @@ extension HistoryReader {
                 pending.removeAll(keepingCapacity: true)
                 if rows.count == 3 {
                     guard rows[0]["type"]?.string == "session", rows[0]["version"]?.number == 3, rows[0]["id"]?.string == expected.sessionID,
-                          ["pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2,
+                          ["pi-app.native.v2", "pi-app.native.v3", "pi-app.native.v4", "pi-app.native.v5"].contains(rows[1]["customType"]?.string ?? ""), rows[1]["data"]?.object?["version"]?.number == 2,
                           rows[2]["customType"]?.string == "pi-app.subagent-origin.v1",
                           let markerID = rows[1]["id"]?.string, rows[2]["parentId"]?.string == markerID,
                           let data = rows[2]["data"] else { throw StoreError.invalidRecord }

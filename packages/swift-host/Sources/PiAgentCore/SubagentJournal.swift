@@ -43,8 +43,23 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     var status: SubagentStatus?
     var terminal: JSON?
     var family: AgentFamilyState?
+    var cuts: MailboxCutJournal? = nil
 
     mutating func consume(_ record: JSON, sessionID: String) throws {
+        if record["customType"].text == JournalRecordKind.cutinMarker, cuts == nil { cuts = MailboxCutJournal() }
+        let cutKind = [JournalRecordKind.agentCutPrepared,JournalRecordKind.agentCutCommitted].contains(record["customType"].text ?? "")
+        if cutKind {
+            let owner = record["ownerID"].text
+            if owner == sessionID || owner == origin?.link.budgetOwnerSessionID {
+                if cuts == nil { cuts = MailboxCutJournal() }
+                try cuts?.consume(record)
+            }
+            return
+        }
+        if record["type"].text == "message", !record["message"]["nativeMailboxCut"].isNull || !record["message"]["nativeAgentCallCancellation"].isNull {
+            if cuts == nil { cuts = MailboxCutJournal() }
+            try cuts?.consume(record)
+        }
         if record["type"].text == "message", !record["message"]["nativeAgentDelivery"].isNull, record["message"]["nativeInherited"].isNull,
            let id = record["id"].text {
             if family == nil { family = AgentFamilyState(ownerID:origin?.link.budgetOwnerSessionID ?? sessionID) }
@@ -102,6 +117,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
 
     mutating func retarget(_ sessionID: String) {
         if family?.ownerID != sessionID, origin?.link.childSessionID != sessionID {
+            if let history = cuts { cuts = MailboxCutJournal(projected:history.projected) }
             // Delivered rows remain history. Keep their deduplication index,
             // as full replay does, without any source execution authority.
             let rows = family?.contextRows ?? [:]

@@ -83,6 +83,10 @@ enum TranscriptToolRow {
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
         let summary = summary(of: tool, object: description.object)
+        if let label = MailboxCutPresentation.cancelled(tool) {
+            return Model(icon:actionSymbol(description.kind),title:label,summary:description.object,suffix:nil,state:.stopped,trailing:nil,
+                         help:label,linksSummary:false,description:description,outcome:.cancelled,file:nil)
+        }
         if SubagentToolView.isPresented(tool) {
             let child = SubagentToolView(tool)
             return Model(icon: "person.2", title: child.heading, summary: child.preview, suffix: child.label,
@@ -110,6 +114,7 @@ enum TranscriptToolRow {
     /// card is never a fragment of JSON. `linked`: whether the row opens a file.
     nonisolated static func card(of tool: ToolView, fetched: ToolInputDocument?, model: Model, linked: Bool) -> Card {
         let shown = requested(tool, fetched: fetched)
+        if let label = MailboxCutPresentation.cancelled(tool) { return .io(path:nil,input:shown.input,output:tool.output,failed:false,note:label) }
         if SubagentToolView.isPresented(tool) { return .subagent(SubagentToolView(shown)) }
         let description = model.description, outcome = model.outcome
         let notes = [truncationNote(shown), tool.truncated ? "Preview truncated. The full result is retained in context." : nil]

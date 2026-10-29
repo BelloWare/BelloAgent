@@ -172,6 +172,7 @@ extension AgentSession {
                 let summary = SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: 0, tools: plan.origin.tools, effort: plan.origin.model.thinkingLevel)
                 card["subagent"] = (try? subagentJSON(summary)) ?? .null
             }
+            if let metadata = result.nativeAgentCallCancellation { card["nativeAgentCallCancellation"] = metadata }
             states[id] = merging(.object(card), fields)
         }
         var row = message.view(toolStates: states)
@@ -222,6 +223,7 @@ extension AgentSession {
         // A root with sides still waiting for its accepted Resume shows the
         // family's pause too, so its Resume reaches them.
         if costPaused || membersPendingResume { value["costPaused"] = true }
+        if receivingAgentMessage { value["receivingAgentMessage"] = true }
         if membersPendingResume, state == .idle { value["state"] = JSON(SessionState.paused.rawValue) }
         if let family = subagents.family {
             if let turn = family.latest(id) { value["subagentTurn"] = JSON(turn.turn); value["subagentDeliveryState"] = JSON(family.messages["result:" + turn.id]?.disposition ?? "pending") }

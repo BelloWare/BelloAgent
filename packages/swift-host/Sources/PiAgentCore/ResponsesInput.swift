@@ -161,10 +161,11 @@ extension ProviderClient {
         func text(_ value: String, id: String?, phase: JSON = .null) -> JSON {
             var item: JSON = ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": JSON(value), "annotations": []]],
                               "status": "completed", "id": JSON(messageID(id))]
-            if let phase = phase.text, ["commentary", "final_answer"].contains(phase) { item["phase"] = JSON(phase) }
+            if let phase = phase.text, ["commentary", "partial_answer", "final_answer"].contains(phase) { item["phase"] = JSON(phase) }
             return item
         }
         if sameModel, let items = replayed {
+            if message.nativeMailboxCut?["version"].int == 1, p.routing.policy == "pinned" { return items }
             for item in items {
                 switch item["type"].text {
                 case "reasoning": output.append(item)

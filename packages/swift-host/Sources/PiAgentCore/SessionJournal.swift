@@ -167,41 +167,67 @@ final class SessionJournal {
     /// One-way format promotion, under the existing writer lock. Only the marker
     /// name changes (same byte count); origin and historical record identities,
     /// offsets, hashes and provider context otherwise remain untouched.
-    func promoteToSteering(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.steeringMarker) }
-    func promoteToCodex(managedChild: Bool) throws { try promoteAgentFormat(managedChild:managedChild,marker:JournalRecordKind.codexMarker) }
-    private func promoteAgentFormat(managedChild: Bool, marker: String) throws {
+    static func cloneFile(_ source: Int32, _ destination: String) -> Int32 {
+        fclonefileat(source, AT_FDCWD, destination, UInt32(CLONE_NOFOLLOW))
+    }
+    func promoteToSteering(managedChild: Bool, cloneFile: (Int32,String) -> Int32 = SessionJournal.cloneFile) throws { try promoteAgentFormat(managedChild:managedChild,cloneFile:cloneFile,marker:JournalRecordKind.steeringMarker) }
+    func promoteToCodex(managedChild: Bool, cloneFile: (Int32,String) -> Int32 = SessionJournal.cloneFile) throws { try promoteAgentFormat(managedChild:managedChild,cloneFile:cloneFile,marker:JournalRecordKind.codexMarker) }
+    func promoteToMailboxCut(managedChild: Bool, cloneFile: (Int32,String) -> Int32 = SessionJournal.cloneFile) throws { try promoteAgentFormat(managedChild:managedChild,cloneFile:cloneFile,marker:JournalRecordKind.cutinMarker) }
+    private func promoteAgentFormat(managedChild: Bool, cloneFile: (Int32,String) -> Int32, marker: String) throws {
         guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw SubagentRecovery.damaged() }
-        if markerKind == marker || markerKind == JournalRecordKind.codexMarker { return }
-        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker) || markerKind == JournalRecordKind.steeringMarker,
+        if markerKind == marker || markerKind == JournalRecordKind.cutinMarker || markerKind == JournalRecordKind.codexMarker && marker != JournalRecordKind.cutinMarker { return }
+        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker) || markerKind == JournalRecordKind.steeringMarker || markerKind == JournalRecordKind.codexMarker,
               let check = markerCheck else { throw SubagentRecovery.damaged() }
         // Synchronous under the owning actor: no await may split this span.
         // The explicit fence also rejects callbacks that try to append while
-        // synchronizing the source before the copy/replacement.
+        // synchronizing the source before the clone/copy and replacement.
         promoting = true; defer { promoting = false }
         try synchronize()
         let temporary = url.appendingPathExtension("promotion")
-        // A previous killed copy is uncommitted. This writer owns its cleanup.
+        // A previous killed clone/copy is uncommitted. This writer owns cleanup.
         _ = unlink(temporary.path)
-        let fd = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        defer { _ = unlink(temporary.path) }
+        let source = open(url.path,O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard source >= 0 else { throw SubagentRecovery.damaged() }
+        defer { _ = close(source) }
+        var sourceInfo = stat(), ownInfo = stat()
+        guard fstat(source,&sourceInfo) == 0, fstat(handle.fileDescriptor,&ownInfo) == 0,
+              sourceInfo.st_dev == ownInfo.st_dev, sourceInfo.st_ino == ownInfo.st_ino,
+              sourceInfo.st_mode & S_IFMT == S_IFREG, UInt64(sourceInfo.st_size) == bytes else { throw SubagentRecovery.damaged() }
+        let cloned = cloneFile(source,temporary.path) == 0
+        if !cloned { _ = unlink(temporary.path) }
+        let fd = open(temporary.path,(cloned ? 0 : O_CREAT | O_EXCL) | O_RDWR | O_NOFOLLOW | O_CLOEXEC,0o600)
         guard fd >= 0 else { throw AgentError("subagent_promotion", "Cannot create promotion copy") }
         let copy = FileHandle(fileDescriptor:fd,closeOnDealloc:true)
-        defer { try? copy.close(); _ = unlink(temporary.path) }
-        let reader = try JournalRecordReader(url)
-        var replaced = false, promotedLine = Data()
-        while true {
-            let offset = reader.completeBytes
-            guard var line = try reader.nextLine() else { break }
-            if offset == check.offset {
-                guard JournalCheckpoint.digest(line) == check.sha256,
-                      let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
-                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + marker + "\"").utf8)
-                guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
-                line = promotedLine; replaced = true
-            }
-            line.append(10); try copy.write(contentsOf:line)
+        defer { try? copy.close() }
+        func replacement(_ line: Data) throws -> Data {
+            guard JournalCheckpoint.digest(line) == check.sha256,
+                  let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
+            let result = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + marker + "\"").utf8)
+            guard result.count == line.count, result != line else { throw SubagentRecovery.damaged() }
+            return result
         }
-        guard replaced else { throw SubagentRecovery.damaged() }
+        var promotedLine = Data()
+        if cloned {
+            var info = stat()
+            guard fstat(fd,&info) == 0, info.st_mode & S_IFMT == S_IFREG, UInt64(info.st_size) == bytes,
+                  let line = JournalCheckpoint.verified(check,in:copy) else { throw SubagentRecovery.damaged() }
+            promotedLine = try replacement(line)
+            try copy.seek(toOffset:check.offset); try copy.write(contentsOf:promotedLine)
+        } else {
+            let reader = try JournalRecordReader(url,expectedBytes:bytes)
+            var replaced = false
+            while true {
+                let offset = reader.completeBytes
+                guard var line = try reader.nextLine() else { break }
+                if offset == check.offset { promotedLine = try replacement(line); line = promotedLine; replaced = true }
+                line.append(10); try copy.write(contentsOf:line)
+            }
+            guard replaced else { throw SubagentRecovery.damaged() }
+        }
+        let promotedCheck = JournalCheckpoint.Check(offset:check.offset,length:check.length,sha256:JournalCheckpoint.digest(promotedLine))
+        guard JournalCheckpoint.verified(promotedCheck,in:copy) == promotedLine else { throw SubagentRecovery.damaged() }
         try copy.synchronize()
         guard rename(temporary.path,url.path) == 0 else { throw AgentError("subagent_promotion", "Cannot install promoted journal") }
         do {
@@ -211,7 +237,7 @@ final class SessionJournal {
             guard fsync(directoryFD) == 0 else { throw SubagentRecovery.damaged() }
             try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()
             markerKind = marker
-            markerCheck = .init(offset:check.offset,length:check.length,sha256:JournalCheckpoint.digest(promotedLine))
+            markerCheck = promotedCheck
             resumedFrom = nil; JournalCheckpoint.remove(for:url)
         } catch { poisoned = true; throw error }
     }
@@ -220,7 +246,7 @@ final class SessionJournal {
     /// This also works when an idle child viewer already holds its writer.
     static func verifyManagedChild(url: URL, id: String) throws {
         let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
-        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker, JournalRecordKind.codexMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
+        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker, JournalRecordKind.codexMarker, JournalRecordKind.cutinMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
     }
 
     /// The chain from a checkpoint on, when the records the checkpoint relies
@@ -236,6 +262,7 @@ final class SessionJournal {
               JournalRecordKind.isMarker(marker["customType"].text),
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
+        if marker["customType"].text == JournalRecordKind.cutinMarker, checkpoint.version != 3 { return nil }
         // The connection changes the checkpoint names, each still as written;
         // one it does not name, met below, means reading the whole journal.
         var bindings=Bindings(marker: marker["data"]["binding"], markerKind: marker["customType"].text)
@@ -375,7 +402,7 @@ extension SessionJournal {
     /// the one this journal wrote as it wrote it. The caller copies instead.
     /// `cloneFile` is a test seam for a clone that fails.
     func clone(to url: URL, id: String, cwd: URL, through end: (bytes: UInt64, lastID: String)? = nil,
-               cloneFile: (Int32, String) -> Int32 = { fclonefileat($0, AT_FDCWD, $1, UInt32(CLONE_NOFOLLOW)) }) -> SessionJournal? {
+               cloneFile: (Int32, String) -> Int32 = SessionJournal.cloneFile) -> SessionJournal? {
         guard !poisoned, let headerCheck, let lastID = end?.lastID ?? tail else { return nil }
         let keep = end?.bytes ?? bytes, headerEnd = headerCheck.offset + UInt64(headerCheck.length) + 1
         guard keep <= bytes, keep > headerEnd, markerCheck.map({ $0.offset + UInt64($0.length) < keep }) ?? true else { return nil }
