@@ -14,6 +14,8 @@ final class HostSupervisor: ObservableObject {
     @Published var isBusy = false
     private(set) var epoch: String?
     private(set) var supportsReadCancellation = false
+    private(set) var supportsOpenCancellation = false
+    private(set) var supportsCommandProgress = false
     private(set) var supportsCodexAgents = false
     private(set) var supportsMailboxCutin = false
     private static let cancellableReads: Set<String> = ["session.history", "session.version.page"]
@@ -30,12 +32,21 @@ final class HostSupervisor: ObservableObject {
     // still occupies capacity until a late reply or host loss reconciles it.
     private var outstandingCommands: Set<String> = []
     private var commandSettlements: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private struct CommandDeadline {
+        let timeout: Duration
+        let observer: ((HostCommandProgress) -> Void)?
+        let epoch: String
+        var progress: HostCommandProgress?
+        var generation = UUID()
+    }
+    private var commandDeadlines: [String: CommandDeadline] = [:]
     private var replyTimeouts: [String: Task<Void, Never>] = [:]
     private struct QueuedRequest {
         let id: String, method: String
         let cancellation: HostCommandCancellation
         let frame: [String: WireValue]
         let continuation: CheckedContinuation<WireValue, Error>
+        let progress: ((HostCommandProgress) -> Void)?
     }
     private var queuedRequests: [QueuedRequest] = []
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
@@ -59,6 +70,8 @@ final class HostSupervisor: ObservableObject {
     private(set) var clockOffset = 0.0
     private let commandSender: (@MainActor ([String: WireValue]) -> Void)?
     private let acknowledgmentTimeout: Duration?
+    private let deadlineSleep: @MainActor (Duration) async throws -> Void
+    private let commandProgress: Bool
     var queuedCommandCount: Int { queuedRequests.count }
     func hasOutstandingCommand(_ id: String) -> Bool { outstandingCommands.contains(id) }
     /// A caller timeout does not end execution. Activity owners wait for the
@@ -74,8 +87,11 @@ final class HostSupervisor: ObservableObject {
 
     // Dependency injection keeps admission/timeout races deterministic in
     // tests. Production commands always use the connected native transport.
-    init(commandSender: (@MainActor ([String: WireValue]) -> Void)? = nil, acknowledgmentTimeout: Duration? = nil) {
+    init(commandSender: (@MainActor ([String: WireValue]) -> Void)? = nil, acknowledgmentTimeout: Duration? = nil, commandProgress: Bool = true,
+         deadlineSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.commandSender = commandSender; self.acknowledgmentTimeout = acknowledgmentTimeout
+        self.deadlineSleep = deadlineSleep
+        self.commandProgress = commandProgress
     }
 
     func connect(cwd: URL, state: URL, runtime: RuntimePreferences = RuntimePreferences(), capture: (@Sendable ([String: WireValue]) async throws -> Void)? = nil) async throws {
@@ -126,7 +142,7 @@ final class HostSupervisor: ObservableObject {
             // as "unknown" (TranscriptActivity.outcome). Without it the helper
             // sends such a call as "cancelled" live and "failed" once saved.
             connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true),
-                             "unknownToolOutcomes": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
+                             "unknownToolOutcomes": .bool(true), "commandProgress": .bool(commandProgress), "build": .string(ReleaseConfiguration.current.build)])
         }
         let attempt = transport
         try await withCheckedThrowingContinuation { continuation in
@@ -141,9 +157,9 @@ final class HostSupervisor: ObservableObject {
             }
         }
     }
-    func request(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString) async throws -> WireValue {
+    func request(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString, progress: ((HostCommandProgress) -> Void)? = nil) async throws -> WireValue {
         let connection = connectionID
-        let result = try await requestFrame(method, sessionID:sessionID, params:params, commandID:commandID)
+        let result = try await requestFrame(method, sessionID:sessionID, params:params, commandID:commandID, progress:progress)
         guard result.object?["_displayTransfer"]?.number == 1 else { requestObserver?(method, params, result); return result }
         let whole = try await DisplayResultReader.read(result) { [self] id, offset in
             try await readDisplayTransfer(id, offset:offset, connection:connection)
@@ -155,7 +171,7 @@ final class HostSupervisor: ObservableObject {
         guard connectionID == connection else { throw HostError.failure("The helper changed while loading the conversation. Reload it to continue.") }
         return try await requestFrame("display.result.read", params:["id":.string(id),"offset":.number(Double(offset))])
     }
-    private func requestFrame(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString) async throws -> WireValue {
+    private func requestFrame(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString, progress: ((HostCommandProgress) -> Void)? = nil) async throws -> WireValue {
         try Task.checkCancellation()
         guard isReady, !closing, let epoch, !outstandingCommands.contains(commandID),
               !queuedRequests.contains(where: { $0.id == commandID }),
@@ -166,8 +182,8 @@ final class HostSupervisor: ObservableObject {
                 guard !Task.isCancelled, !cancellation.isCancelled else { continuation.resume(throwing: CancellationError()); return }
                 var frame: [String: WireValue] = ["v": .number(1), "kind": .string("command"), "hostEpoch": .string(epoch), "commandId": .string(commandID), "method": .string(method), "params": .object(params)]
                 if let sessionID { frame["sessionId"] = .string(sessionID) }
-                if Self.cancellableReads.contains(method), supportsReadCancellation { frame["readToken"] = .string(UUID().uuidString) }
-                let request = QueuedRequest(id: commandID, method: method, cancellation: cancellation, frame: frame, continuation: continuation)
+                if Self.cancellableReads.contains(method) && supportsReadCancellation || method == "session.open" && supportsOpenCancellation { frame["readToken"] = .string(UUID().uuidString) }
+                let request = QueuedRequest(id: commandID, method: method, cancellation: cancellation, frame: frame, continuation: continuation, progress: progress)
                 // Stop must reach a running command even when every normal
                 // slot is occupied. Other bursts wait FIFO for helper capacity.
                 if method == "turn.stop" { dispatch(request) }
@@ -188,7 +204,7 @@ final class HostSupervisor: ObservableObject {
         guard !request.cancellation.isCancelled else { request.continuation.resume(throwing: CancellationError()); return }
         outstandingCommands.insert(request.id)
         replies[request.id] = request.continuation
-        if Self.cancellableReads.contains(request.method) { dispatchedReads[request.id] = (request.cancellation, request.frame) }
+        if Self.cancellableReads.contains(request.method) || request.method == "session.open" { dispatchedReads[request.id] = (request.cancellation, request.frame) }
         if let commandSender { commandSender(request.frame) } else { transport?.send(request.frame) }
         // Retained edit reads and rollback inputs grow with the journal.
         // Wait for their reply or connection loss, not an arbitrary deadline.
@@ -196,12 +212,32 @@ final class HostSupervisor: ObservableObject {
         // Queueing time is not an uncertain dispatched outcome. Start this
         // deadline only when the command has entered its transport slot.
         let timeout = acknowledgmentTimeout ?? .seconds(request.method.hasPrefix("mcp.") ? 315 : 30)
-        replyTimeouts[request.id] = Task { [weak self] in
-            do { try await Task.sleep(for: timeout) } catch { return }
-            guard let self else { return }
-            self.replyTimeouts.removeValue(forKey: request.id)
-            self.replies.removeValue(forKey: request.id)?.resume(throwing: HostError.failure("Acknowledgment timed out. Outcome uncertain; this command was not resent."))
+        guard replies[request.id] != nil else { return }
+        commandDeadlines[request.id] = CommandDeadline(timeout: timeout, observer: request.progress, epoch: request.frame["hostEpoch"]?.string ?? "")
+        renewDeadline(request.id)
+    }
+    private func renewDeadline(_ id: String) {
+        guard var deadline = commandDeadlines[id] else { return }
+        replyTimeouts.removeValue(forKey: id)?.cancel()
+        deadline.generation = UUID(); commandDeadlines[id] = deadline
+        let generation = deadline.generation, timeout = deadline.timeout, sleep = deadlineSleep
+        replyTimeouts[id] = Task { [weak self] in
+            do { try await sleep(timeout) } catch { return }
+            guard let self, self.commandDeadlines[id]?.generation == generation else { return }
+            self.replyTimeouts.removeValue(forKey: id); self.commandDeadlines.removeValue(forKey: id)
+            self.replies.removeValue(forKey: id)?.resume(throwing: HostError.failure("Acknowledgment timed out. Outcome uncertain; this command was not resent."))
         }
+    }
+    private func receiveProgress(_ frame: [String: WireValue]) {
+        guard supportsCommandProgress, frame["hostEpoch"]?.string == epoch,
+              let id = frame["commandId"]?.string, replies[id] != nil,
+              dispatchedReads[id]?.cancellation.isCancelled != true,
+              var deadline = commandDeadlines[id], deadline.epoch == frame["hostEpoch"]?.string, let progress = HostCommandProgress(frame),
+              progress.completed > (deadline.progress?.completed ?? 0),
+              deadline.progress == nil || deadline.progress?.total == progress.total else { return }
+        deadline.progress = progress; commandDeadlines[id] = deadline
+        renewDeadline(id)
+        deadline.observer?(progress)
     }
     private func cancelQueuedRequest(_ id: String, cancellation: HostCommandCancellation) {
         if let index = queuedRequests.firstIndex(where: { $0.id == id && $0.cancellation === cancellation }) {
@@ -212,7 +248,7 @@ final class HostSupervisor: ObservableObject {
         // The caller may leave immediately. Its physical slot stays occupied
         // until the original reply arrives, including if a helper ignores cancel.
         replies.removeValue(forKey: id)?.resume(throwing: CancellationError())
-        replyTimeouts.removeValue(forKey: id)?.cancel()
+        replyTimeouts.removeValue(forKey: id)?.cancel(); commandDeadlines.removeValue(forKey: id)
         guard isReady, !closing, let token = read.frame["readToken"] else { return }
         let cancel: [String: WireValue] = ["v": .number(1), "kind": .string("read.cancel"),
             "hostEpoch": read.frame["hostEpoch"] ?? .null, "requestId": .string(id), "readToken": token]
@@ -255,6 +291,7 @@ final class HostSupervisor: ObservableObject {
         for waiter in readyWaiters { waiter.resume(throwing: error) }; readyWaiters.removeAll()
         for reply in replies.values { reply.resume(throwing: error) }; replies.removeAll()
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
+        supportsOpenCancellation = false; supportsCommandProgress = false; commandDeadlines.removeAll()
         supportsCodexAgents = false
         supportsMailboxCutin = false
         let settlements = commandSettlements; commandSettlements.removeAll()
@@ -288,18 +325,21 @@ final class HostSupervisor: ObservableObject {
                       let hostEpoch = frame["hostEpoch"]?.string else { fail("Packaged native runtime version or capability mismatch"); shutdown(); return }
                 epoch = hostEpoch; isReady = true; status = "Ready · Swift"
                 supportsReadCancellation = capabilities.contains("read-cancel")
+                supportsOpenCancellation = capabilities.contains("open-cancel-v1")
+                supportsCommandProgress = commandProgress && capabilities.contains("command-progress-v1")
                 supportsCodexAgents = capabilities.contains("subagents-codex-v4")
                 supportsMailboxCutin = supportsCodexAgents && capabilities.contains("subagents-mailbox-cutin-v1")
                 handshakeWatchdog?.cancel(); handshakeWatchdog = nil
                 for waiter in readyWaiters { waiter.resume() }; readyWaiters.removeAll(); return
             }
             guard frame["hostEpoch"]?.string == epoch else { return }
+            if frame["kind"]?.string == "command.progress" { receiveProgress(frame); return }
             if frame["kind"]?.string == "reply", let id = frame["commandId"]?.string, outstandingCommands.remove(id) != nil {
                 defer {
                     for waiter in commandSettlements.removeValue(forKey: id) ?? [] { waiter.resume() }
                     dispatchQueuedRequests()
                 }
-                replyTimeouts.removeValue(forKey: id)?.cancel()
+                replyTimeouts.removeValue(forKey: id)?.cancel(); commandDeadlines.removeValue(forKey: id)
                 let continuation = replies.removeValue(forKey: id)
                 let read = dispatchedReads.removeValue(forKey: id)
                 if read?.cancellation.isCancelled == true { continuation?.resume(throwing: CancellationError()) }

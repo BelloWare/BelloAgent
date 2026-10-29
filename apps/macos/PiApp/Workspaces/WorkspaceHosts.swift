@@ -67,7 +67,7 @@ extension WorkspaceModel {
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.retireBudgetRead(chat.id)
-                self.opened.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
+                self.opened.remove(chat.id); self.openingAdoptions.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
                 if !retired, let view = self.displays[chat.id] {
                     view.observeContext([:],baseline:true)
@@ -152,7 +152,7 @@ extension WorkspaceModel {
                     // The reads above yield: the chat may have moved on meanwhile.
                     guard let current = record(id), current.workspaceID == item.workspaceID, current.profileID == item.profileID,
                           displays[id] === view, !view.loading, !view.uncertain, view.recovered.isEmpty else { return }
-                    host = try await open(current)
+                    host = try await open(current, showOpeningProgress: false)
                 }
                 scheduleIdle(workspaceID: item.workspaceID, host: host)
             } catch {
@@ -217,11 +217,14 @@ extension WorkspaceModel {
     func helperSessionDidUnload(_ id: String) {
         retireBudgetRead(id)
         if record(id) == nil { budgetStates.removeValue(forKey:id) }
-        opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
+        opened.remove(id); openingAdoptions.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
         retireSessionConfiguration(id)
         releaseUnusedBudgetSessions()
     }
-    func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {
+    func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false, showOpeningProgress: Bool = true) async throws -> HostSupervisor {
+        let waiting = showOpeningProgress && !automaticContext && !budgetDependency && !item.isBackgroundTask ? displays[item.id] : nil
+        if let waiting { waiting.helperOpeningActions += 1 }
+        defer { if let waiting { waiting.helperOpeningActions -= 1 } }
         guard !isOriginalSubagentReader(item.id) else { throw HostError.failure("This original sub-agent is open read-only from a fork.") }
         if !budgetDependency { releasedHelperSessions.remove(item.id) }
         var accepted = false
@@ -273,7 +276,7 @@ extension WorkspaceModel {
             _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
         Task { [weak self] in await self?.loadSubagentModels(for: item) }
-        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
+        if sessionOpenings[item.id] == nil, opened.contains(item.id), !openingAdoptions.contains(item.id), let host = hosts[item.workspaceID], host.isReady {
             let connection = host.connectionID
             if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
             try requireHost(host, connection: connection, workspaceID: item.workspaceID)
@@ -313,7 +316,7 @@ extension WorkspaceModel {
         }
         if let pending = sessionOpenings[item.id] {
             try await pending.task.value
-        } else if !opened.contains(item.id) {
+        } else if !opened.contains(item.id) || openingAdoptions.contains(item.id) {
             var wire = profile.wire.object ?? [:]
             if let headers = credential["headers"] { wire["headers"] = headers }
             if item.isSubagent, let model = item.model { wire["modelId"] = .string(model) }
@@ -328,74 +331,89 @@ extension WorkspaceModel {
             // kind: its own short instructions, no tools, no project context.
             if let task = item.backgroundTask, [BackgroundRequestKind.title, .suggestions, .webhook, .brief, .ask].contains(BackgroundRequestKind(task)) { params["backgroundTask"] = .string(task) }
             if let path = item.path { params["path"] = .string(path) }
+            else {
+                // A cancelled first open may have made its journal before its
+                // path was published. Retry that own canonical file; the helper
+                // still validates its identity, binding and writer ownership.
+                let path = root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
+                if FileManager.default.fileExists(atPath: path) { params["path"] = .string(path) }
+            }
             // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.
             try requireHost(host, connection: connection, workspaceID: item.workspaceID)
             if let pending = sessionOpenings[item.id] {
                 try await pending.task.value
-            } else if !opened.contains(item.id) {
-                let token = UUID()
+            } else if !opened.contains(item.id) || openingAdoptions.contains(item.id) {
+                let token = UUID(), commandID = UUID().uuidString
                 let task = Task { [self] in
-                    try Task.checkCancellation()
-                    try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                    try await withConnectionOpen(item, lease: lease, host: host) {
-                        try await reconcileJournal(item.id, host: host, profile: profile)
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        let initial = try await host.request("session.open", sessionID: item.id, params: params)
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        // A prior open may have created this runtime before
-                        // capture/path setup failed. session.open then returns
-                        // that same runtime without applying its new arguments.
-                        if sessionProfileRevisions[item.id]?.connection != host.connectionID {
-                            sessionProfileRevisions[item.id] = (host.connectionID, profile.revision)
-                        }
-                        budgetState(for:item.id).limitSent = costLimit(for:item.id)
-                        observeCost(initial.object ?? [:],sessionID:item.id)
-                        // Previewing a fresh chat allocates a native journal too. Persist
-                        // its path before an idle unload, even when no message is sent.
-                        if let path = initial.object?["path"]?.string, let index = chats.firstIndex(where: { $0.id == item.id }) {
-                            // Never another file in place of a registered journal:
-                            // the runtime opened on it goes, and the open is refused.
-                            if let registered = chats[index].path, !Self.sameFile(registered, path) {
-                                if (try? await host.request("session.close", sessionID: item.id)) != nil, hosts[item.workspaceID] === host, host.connectionID == connection { helperSessionDidUnload(item.id) }
-                                throw journalChanged
-                            }
-                            chats[index].path = path
-                            // Always retry this durable write on a later open after a
-                            // storage failure, even though the in-memory path is known.
-                            try await store.put(chats[index], kind: "chat", id: item.id)
-                        }
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        if !item.isSubagent, initial.object?["subagentsRevision"] != nil { try await reconcileCapturedBudget(item, host: host) }
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
-                        observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
-                        displays[item.id]?.observeCompaction(initial.object ?? [:])
-                        displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
-                        let preference = try await capturePreference(sessionID: item.id)
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        // Managed readers inherit their owner's capture policy;
-                        // opening one must never issue a child policy change.
-                        if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
-                        // Recovery may have unloaded this reader after its open
-                        // reply, while path/capture persistence yielded above.
+                    try await trackSessionOpening(item.id, token: token, commandID: commandID, host: host, connection: connection) {
                         try Task.checkCancellation()
                         try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        opened.insert(item.id)
-                        // Recovery may have corrected the cost after the open
-                        // response. Read just the authoritative numeric state.
-                        if budgetDependency { refreshBudgetState(item.id) }
-                        // Settings or this chat's override may have changed
-                        // while its seed or opening acknowledgement was read.
-                        if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
-                        try requireHost(host, connection: connection, workspaceID: item.workspaceID)
-                        displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
-                        displays[item.id]?.captureAvailable = true
-                        displays[item.id]?.lastSequence = -1
-                        if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
+                        try await withConnectionOpen(item, lease: lease, host: host) {
+                            try await reconcileJournal(item.id, host: host, profile: profile)
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            try await sessionOpeningStep?("dispatch")
+                            let initial = try await host.request("session.open", sessionID: item.id, params: params, commandID: commandID) { [weak self] progress in
+                                self?.observeOpening(progress, id: item.id, token: token)
+                            }
+                            try await sessionOpeningStep?("acknowledged")
+                            try Task.checkCancellation()
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            // A prior open may have created this runtime before
+                            // capture/path setup failed. session.open then returns
+                            // that same runtime without applying its new arguments.
+                            if sessionProfileRevisions[item.id]?.connection != host.connectionID {
+                                sessionProfileRevisions[item.id] = (host.connectionID, profile.revision)
+                            }
+                            budgetState(for:item.id).limitSent = costLimit(for:item.id)
+                            observeCost(initial.object ?? [:],sessionID:item.id)
+                            // Previewing a fresh chat allocates a native journal too. Persist
+                            // its path before an idle unload, even when no message is sent.
+                            if let path = initial.object?["path"]?.string, let index = chats.firstIndex(where: { $0.id == item.id }) {
+                                // Never another file in place of a registered journal:
+                                // the runtime opened on it goes, and the open is refused.
+                                if let registered = chats[index].path, !Self.sameFile(registered, path) {
+                                    if (try? await host.request("session.close", sessionID: item.id)) != nil, hosts[item.workspaceID] === host, host.connectionID == connection { helperSessionDidUnload(item.id) }
+                                    throw journalChanged
+                                }
+                                chats[index].path = path
+                                // Always retry this durable write on a later open after a
+                                // storage failure, even though the in-memory path is known.
+                                try await store.put(chats[index], kind: "chat", id: item.id)
+                            }
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            if !item.isSubagent, initial.object?["subagentsRevision"] != nil { try await reconcileCapturedBudget(item, host: host) }
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
+                            observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
+                            displays[item.id]?.observeCompaction(initial.object ?? [:])
+                            displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
+                            let preference = try await capturePreference(sessionID: item.id)
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            // Managed readers inherit their owner's capture policy;
+                            // opening one must never issue a child policy change.
+                            if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
+                            // Recovery may have unloaded this reader after its open
+                            // reply, while path/capture persistence yielded above.
+                            try Task.checkCancellation()
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            opened.insert(item.id); openingAdoptions.remove(item.id)
+                            // Recovery may have corrected the cost after the open
+                            // response. Read just the authoritative numeric state.
+                            if budgetDependency { refreshBudgetState(item.id) }
+                            // Settings or this chat's override may have changed
+                            // while its seed or opening acknowledgement was read.
+                            if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
+                            try requireHost(host, connection: connection, workspaceID: item.workspaceID)
+                            displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
+                            displays[item.id]?.captureAvailable = true
+                            displays[item.id]?.lastSequence = -1
+                            if !item.isSubagent { try await reconcileSessionProfile(item, host: host) }
+                        }
                     }
                 }
                 sessionOpenings[item.id] = (token, task)
+                displays[item.id]?.helperOpening = .opening(nil)
                 defer { if sessionOpenings[item.id]?.token == token { sessionOpenings.removeValue(forKey: item.id) } }
                 try await task.value
             }

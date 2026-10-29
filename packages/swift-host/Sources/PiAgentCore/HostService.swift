@@ -49,10 +49,12 @@ public struct NDJSONDecoder {
 public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let output: @Sendable (HostOutput)->Void
+    private let afterOutput: @Sendable (@escaping @Sendable () -> Void) -> Void
     private var hello=false, closing=false, quiesced=false, opening=false
     private var shutdownTask: Task<Void, Never>?
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
+    private var allowsCommandProgress = false
     /// Set by a reader whose hello says it shows the `unknown` tool card state.
     private var unknownToolOutcomes = false
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
@@ -61,6 +63,10 @@ public actor NativeHostService {
     private let childBudgetReadings = ChildBudgetReadings()
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
+    /// A newly opened runtime can be withdrawn by its opening command until
+    /// another open claims it. This also covers cancellation after its reply.
+    private var openingCommands: [String: String] = [:]
+    private var openingTaskIDs = Set<String>()
     private var subagentReaders: Set<String> = []
     private var inspectorInvocations = 0
     private var commandAdmissions = 0
@@ -83,8 +89,14 @@ public actor NativeHostService {
     var beforeJournalDiskWork: (@Sendable () -> Void)?
     var beforeChildTerminalMirror: (@Sendable () -> Void)?
     var beforeRecoveryPublication: (@Sendable () -> Void)?
-    public init(output: @escaping @Sendable (HostOutput)->Void) {
-        self.output=output
+    /// Deterministic replay points for cancellation tests; nil in production.
+    var journalProgressClock: (@Sendable () -> Double)?
+    var journalProgressStep: (@Sendable (JournalWorkProgress.Value) -> Void)?
+    /// An asynchronous writer supplies its completion fence; synchronous
+    /// readers can run the continuation as soon as `output` returns.
+    public init(output: @escaping @Sendable (HostOutput)->Void,
+                afterOutput: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { $0() }) {
+        self.output=output; self.afterOutput=afterOutput
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
         capture=delivery; traces=TraceStore(sink: { await delivery.send($0) })
     }
@@ -120,8 +132,9 @@ public actor NativeHostService {
         guard !closing else { return }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
+            allowsCommandProgress = frame["commandProgress"].flag == true
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            var ready: JSON = ["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue","read-cancel"]]
+            var ready: JSON = ["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue","read-cancel","command-progress-v1","open-cancel-v1"]]
             ready["capabilities"] = .array(ready["capabilities"].list + SubagentPolicy.capabilities.map { JSON($0) })
             emit(ready); return
         }
@@ -146,22 +159,50 @@ public actor NativeHostService {
             mutationLedger.record(id, fingerprint: fingerprint)
         }
         fingerprints[id]=fingerprint
-        if Self.cancellableReadMethods.contains(method), let token = frame["readToken"].text, !token.isEmpty, token.utf8.count <= 128 {
+        if (Self.cancellableReadMethods.contains(method) || method == "session.open"), let token = frame["readToken"].text, !token.isEmpty, token.utf8.count <= 128 {
             cancellableReads[id] = token
         }
+        let progress = allowsCommandProgress ? JournalWorkProgress(clock: journalProgressClock ?? { ProcessInfo.processInfo.systemUptime }) : nil
+        if let progress {
+            let output = output, epoch = epoch, step = journalProgressStep
+            _ = progress.observe { value in
+                output(.frame(["v":1,"kind":"command.progress","hostEpoch":JSON(epoch),"commandId":JSON(id),
+                    "completed":JSON(Double(value.completed)),"total":JSON(Double(value.total))]))
+                step?(value)
+            }
+        }
+        if method == "session.open" { openingTaskIDs.insert(id) }
         tasks[id]=Task { [weak self] in
             guard let self else { return }
             do {
                 if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
-                let result = try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id)
+                let result = try await JournalWorkProgress.$current.withValue(progress) {
+                    try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id,
+                                           deferOpeningCheckpoint:method == "session.open")
+                }
                 if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
                 await self.finish(id,.success(result),retain:!readOnly)
+                if method == "session.open", let sessionID = frame["sessionId"].text ?? frame["params"]["sessionId"].text {
+                    await self.deferRefreshUntilReplyWritten(sessionID, commandID:id)
+                }
             } catch {
-                let failure = error is CancellationError && Self.cancellableReadMethods.contains(method) ? AgentError("command_cancelled", "The superseded read was cancelled")
+                let failure = error is CancellationError && (Self.cancellableReadMethods.contains(method) || method == "session.open") ? AgentError("command_cancelled", method == "session.open" ? "The open was cancelled" : "The superseded read was cancelled")
                     : error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")
                 await self.finish(id,.failure(failure),retain:!readOnly)
             }
         }
+    }
+    /// EOF work starts after the writer has delivered the opening reply,
+    /// without keeping the command or its cancellation slot alive until then.
+    private func deferRefreshUntilReplyWritten(_ id: String, commandID: String) {
+        afterOutput { [weak self] in
+            Task { await self?.refreshAfterOpeningReply(id, commandID:commandID) }
+        }
+    }
+    /// A close or another opening may have overtaken the writer continuation.
+    private func refreshAfterOpeningReply(_ id: String, commandID: String) async {
+        guard openingCommands[id] == commandID, let session = sessions[id] else { return }
+        await session.scheduleCheckpointRefresh()
     }
     /// The reply frame for one command. `error` and `result` carry the same
     /// value on a failure: readers written against either field see the error.
@@ -205,6 +246,7 @@ public actor NativeHostService {
     private func finish(_ id:String,_ result:Result<JSON,AgentError>,retain:Bool) {
         let frame = Self.boundedReply(epoch: epoch, id, result, transfer: allowsDisplayTransfers ? { try self.displayTransfers.insert($0) } : nil)
         tasks.removeValue(forKey:id)
+        openingTaskIDs.remove(id)
         cancellableReads.removeValue(forKey: id)
         if retain {
             replies[id]=frame; replyOrder.append(id)
@@ -250,32 +292,40 @@ public actor NativeHostService {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         try await releaseFamilyReaders(owner: id)
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
-        let session = try await Task.detached(priority:.userInitiated) {
-            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,costSeed:costSeed,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
-        }.value
-        await adoptRetrySettings(session)
-        if let origin = await session.subagents.origin {
-            try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
-            await observeChildCosts(session)
-        }
-        if SubagentPolicy.enabled {
-            if subagentCoordinator == nil {
-                subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
-                    guard let self else { throw AgentError("workspace_closed", "The helper is closing") }
-                    try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
-                }, settled: { [weak self] child in
-                    await self?.releaseSubagent(child)
-                }, openSteering: { [weak self] environment, plan in
-                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
-                    return try await self.openAgentChild(environment,plan)
-                }, retireSteering: { [weak self] parent, plan, turn in
-                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
-                    try await self.retireAgentChild(parent:parent,plan:plan,turn:turn)
-                })
+        let progress = JournalWorkProgress.current
+        let construction = Task.detached(priority:.userInitiated) {
+            try JournalWorkProgress.$current.withValue(progress) {
+                try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,costSeed:costSeed,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
             }
-            if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
         }
-        return session
+        let session = try await withTaskCancellationHandler { try await construction.value } onCancel: { construction.cancel() }
+        do {
+            try Task.checkCancellation()
+            await adoptRetrySettings(session)
+            if let origin = await session.subagents.origin {
+                try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
+                await observeChildCosts(session)
+            }
+            if SubagentPolicy.enabled {
+                if subagentCoordinator == nil {
+                    subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
+                        guard let self else { throw AgentError("workspace_closed", "The helper is closing") }
+                        try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
+                    }, settled: { [weak self] child in
+                        await self?.releaseSubagent(child)
+                    }, openSteering: { [weak self] environment, plan in
+                        guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                        return try await self.openAgentChild(environment,plan)
+                    }, retireSteering: { [weak self] parent, plan, turn in
+                        guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                        try await self.retireAgentChild(parent:parent,plan:plan,turn:turn)
+                    })
+                }
+                if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
+            }
+            try Task.checkCancellation()
+            return session
+        } catch { await session.close(); throw error }
     }
     /// Called under the runtime gate before every cold session construction.
     /// Recovery writes child journals, so all restored readers of this owner
@@ -286,6 +336,7 @@ public actor NativeHostService {
             guard let child = sessions[id], await child.subagents.origin?.link.budgetOwnerSessionID == owner else { continue }
             guard await child.unloadIfIdle() else { throw AgentError("session_busy", "A managed child is still settling. Wait before reopening its parent.") }
             sessions.removeValue(forKey: id); profiles.removeValue(forKey: id); subagentReaders.remove(id)
+            openingCommands.removeValue(forKey: id)
             dirty.removeValue(forKey: id)
             emit(["v":1, "kind":"event", "hostEpoch":JSON(epoch), "sessionId":JSON(id), "seq":JSON(await child.sequence), "type":"session.unloaded", "payload":[:]])
         }
@@ -305,6 +356,7 @@ public actor NativeHostService {
             if let old = sessions[id] {
                 guard await old.unloadIfIdle() else { throw AgentError("session_busy", "Child is still settling") }
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
+                openingCommands.removeValue(forKey: id)
             }
             let child = try await Task.detached(priority:.userInitiated) { try AgentSteeringCoordinator.makeChild(environment,plan) }.value
             do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
@@ -337,6 +389,7 @@ public actor NativeHostService {
             let id = child.id
             guard sessions[id] === child, !subagentReaders.contains(id), await child.unloadIfIdle() else { return }
             sessions.removeValue(forKey: id); profiles.removeValue(forKey: id)
+            openingCommands.removeValue(forKey: id)
         }
     }
     /// Hands a session the latest retry setting. Called once it is made and
@@ -364,14 +417,16 @@ public actor NativeHostService {
     /// that the session is loaded and that the workspace is not quiesced,
     /// and answers each command in the stage after the last check it needs
     /// (`HostDispatchTests`). A command no stage knows meets every check.
-    public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
+    public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString,
+                        deferOpeningCheckpoint:Bool=false) async throws -> JSON {
         // Read even while the host closes: the rest of a result already sent.
         if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
         if let result=try await hostCommand(method,params:params) { return result }
         guard let cwd, let directory, let resources, let mcp, let nativeTools else { throw AgentError("workspace_required", "Open a workspace first") }
         let workspace=OpenWorkspace(cwd:cwd,directory:directory,resources:resources,mcp:mcp,nativeTools:nativeTools)
-        if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,in:workspace) { return result }
+        if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,commandID:commandID,in:workspace,
+                                                 deferOpeningCheckpoint:deferOpeningCheckpoint) { return result }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
         if let result=try await namedSessionCommand(method,id:id,params:params,directory:directory) { return result }
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
@@ -435,7 +490,8 @@ public actor NativeHostService {
         }
     }
     /// Commands on the open workspace, and on chats that are not open here.
-    private func workspaceCommand(_ method:String, sessionID:String?, params:JSON, in workspace:OpenWorkspace) async throws -> JSON? {
+    private func workspaceCommand(_ method:String, sessionID:String?, params:JSON, commandID:String, in workspace:OpenWorkspace,
+                                  deferOpeningCheckpoint:Bool) async throws -> JSON? {
         let cwd=workspace.cwd, directory=workspace.directory, resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
         switch method {
         case "workspace.quiesce":
@@ -498,55 +554,61 @@ public actor NativeHostService {
             if let captureMode, !["off", "memory", "persist"].contains(captureMode) { throw AgentError("invalid_mode", "Choose off, memory or persist") }
             // A journal being slimmed is opened once its copy has taken its place, or not.
             if let slim=slimming[id] { _=await slim.result }
-            // The snapshot is taken once the gate is free again.
-            let session: AgentSession = try await withRuntimeGate {
+            return try await withRuntimeGate {
+                try Task.checkCancellation()
+                let session: AgentSession
+                var created = false
+                var credentials: (Profile, String)?
                 if let existing=sessions[id] {
-                    // A chat moved to another connection is opened there, never
-                    // answered by its session on the old one, which the app
-                    // closes before the move.
                     if let requested=params["profile"]["id"].text, let loaded=profiles[id]?.0.id, requested != loaded {
                         throw AgentError("session_conflict", "This chat is open on another connection. Close it before opening it on this one.")
                     }
-                    if await existing.isSubagent { subagentReaders.insert(id) }
-                    if let costLimit { await existing.setCostLimit(costLimit) }
-                    return existing
+                    session = existing
+                    openingCommands.removeValue(forKey: id)
+                } else {
+                    let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
+                    let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
+                    let background = params["backgroundTask"].text.flatMap { Self.utilityPurposes[$0] }
+                    let utility = background ?? "title", titleTask = background != nil
+                    guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
+                    let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
+                    let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
+                    session = try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,costSeed:costSeed,titleTask:titleTask,utilityPurpose:utility)
+                    created = true; credentials = (profile,key)
                 }
-                let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
-                let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
-                // Utility requests: a chat's title, titles to choose from, a
-                // webhook's notification or a chat's brief, by the purpose the
-                // request log names.
-                let background = params["backgroundTask"].text.flatMap { Self.utilityPurposes[$0] }
-                let utility = background ?? "title", titleTask = background != nil
-                guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
-                let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
-                let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
-                let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,costSeed:costSeed,titleTask:titleTask,utilityPurpose:utility)
-                sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
-                if await session.isSubagent { subagentReaders.insert(id) }
-                if await session.isSideChat, let parentID = await session.parentInfo["parentSessionId"].text {
-                    do {
-                        if let parent = sessions[parentID] { try await session.bindSideBudget(to: parent) }
-                        else if try SideBudgetRecovery.parentExists(parentID, directory:directory) {
-                            throw AgentError("side_budget_parent", "Open the parent chat before continuing this side")
+                do {
+                    try Task.checkCancellation()
+                    if created {
+                        if await session.isSideChat, let parentID = await session.parentInfo["parentSessionId"].text {
+                            if let parent = sessions[parentID] { try await session.bindSideBudget(to: parent) }
+                            else if try SideBudgetRecovery.parentExists(parentID, directory:directory) {
+                                throw AgentError("side_budget_parent", "Open the parent chat before continuing this side")
+                            }
                         }
-                        // Deleting a parent preserves saved sides. A genuinely
-                        // orphaned side opens with its own spend and limit.
-                    } catch {
-                        sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); await session.close(); throw error
+                        if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                     }
+                    if let costLimit { await session.setCostLimit(costLimit) }
+                    if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
+                    if let captureMode, !(await session.isSubagent) {
+                        _ = try await traces.command("debug.mode", session:id, params:["mode":JSON(captureMode)])
+                    }
+                    var snapshot = await session.snapshot()
+                    snapshot["captureMode"] = JSON(await traces.mode(id))
+                    let child = await session.isSubagent
+                    // Configuration changes during construction could not
+                    // visit this not-yet-published runtime. Catch up last.
+                    await adoptRetrySettings(session)
+                    try Task.checkCancellation()
+                    // No await between the last cancellation check and adoption.
+                    if created { sessions[id]=session; profiles[id]=credentials; openingCommands[id]=commandID }
+                    if created, !deferOpeningCheckpoint { await session.scheduleCheckpointRefresh() }
+                    if child { subagentReaders.insert(id) }
+                    return snapshot
+                } catch {
+                    if created { await session.close() }
+                    throw error
                 }
-                if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
-                if let costLimit { await session.setCostLimit(costLimit) }
-                return session
             }
-            if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
-            if let captureMode, !(await session.isSubagent) {
-                _ = try await traces.command("debug.mode", session:id, params:["mode":JSON(captureMode)])
-            }
-            var snapshot = await session.snapshot()
-            snapshot["captureMode"] = JSON(await traces.mode(id))
-            return snapshot
         case "session.rebind":
             // A saved chat moved to another connection: its journal is bound
             // to the new one before the app says the chat is there, so the
@@ -692,6 +754,7 @@ public actor NativeHostService {
     }
     private func didUnloadBudgetMember(_ value: AgentSession) async {
         sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
+        openingCommands.removeValue(forKey: value.id)
         dirty.removeValue(forKey:value.id)
         emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(value.id),"seq":JSON(await value.sequence),"type":"session.unloaded","payload":[:]])
     }
@@ -892,9 +955,16 @@ public actor NativeHostService {
                 // Loaded sides and unsettled managed work retain their writer,
                 // including tool/queue phases with no dispatched model request.
                 if await hasBudgetDependents(id) { throw AgentError("session_busy", "Wait for managed work and close loaded side sessions before unloading their budget owner") }
-                guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                if let opening = params["openingCommandId"].text, openingCommands[id] == opening {
+                    // Recovered queued input is durable and must stay queued,
+                    // but it need not pin a runtime the app never adopted.
+                    guard await session.abandonOpening() else { throw AgentError("session_busy", "This conversation already has active work") }
+                } else {
+                    guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                }
                 await afterSessionUnload?()
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                openingCommands.removeValue(forKey: id)
                 return ["accepted":true]
             }
         default: return nil
@@ -1171,11 +1241,15 @@ public actor NativeHostService {
                 try? FileHandle.standardError.write(contentsOf: Data("Capture shutdown deadline: \(pending.packets) undelivered packets, \(pending.bytes) bytes (raw bodies plus encoded metadata); retained captures are incomplete\n".utf8))
             }
         }
+        let openings = openingTaskIDs.compactMap { tasks[$0] }
         flushTask?.cancel(); for t in tasks.values { t.cancel() }
         for s in sessions.values { await s.stop(userInitiated:false) }
         await subagentCoordinator?.drain()
         for s in sessions.values { await s.close() }
-        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); subagentReaders.removeAll(); flush()
+        // Construction owns writer locks too. Its cancellation must unwind
+        // before shutdown says that every session is closed.
+        for opening in openings { await opening.value }
+        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); openingCommands.removeAll(); subagentReaders.removeAll(); flush()
         await traces.delivered()
         deadline.cancel()
         await capture.close()

@@ -66,6 +66,7 @@ final class SessionJournal {
     /// `binding`: the connection the journal must be bound to, or nil to open
     /// it bound to whichever it is (a new journal needs one).
     init(url: URL, id: String, cwd: URL, binding: JSON?, create: Bool, managedChild: Bool = false, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
+        try Task.checkCancellation()
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         guard !create || binding != nil else { throw AgentError("invalid_params", "A new journal needs a binding") }
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
@@ -138,8 +139,10 @@ final class SessionJournal {
         var branch=JournalChainCheck()
         var marker: JSON?, markerCheck: JournalCheckpoint.Check?, bindings=Bindings()
         while true {
+            try Task.checkCancellation()
             let start=reader.completeBytes
             guard let line=try reader.nextLine() else { break }
+            JournalWorkProgress.current?.update(reader.completeBytes, of: reader.size, validating: true)
             if line.isEmpty { continue }
             let item: JSON?, fields: JournalLineScan.Fields
             if let tail=JournalLineScan.stateTail(line) { item = nil; fields = tail }
@@ -275,8 +278,10 @@ final class SessionJournal {
         var branch=JournalChainCheck(after: checkpoint.lastID)
         do {
             while true {
+                try Task.checkCancellation()
                 let start=reader.completeBytes
                 guard let line=try reader.nextLine() else { break }
+                JournalWorkProgress.current?.update(reader.completeBytes, of: reader.size, validating: true)
                 if line.isEmpty { continue }
                 let fields: JournalLineScan.Fields
                 if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }

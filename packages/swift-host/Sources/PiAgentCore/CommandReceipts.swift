@@ -57,7 +57,7 @@ enum CommandReceipts {
 
     /// Where a journal's receipts start from: nothing, a record with the
     /// whole list (read when needed), or a list already read.
-    enum Base {
+    enum Base: Sendable {
         case none, line(Data), list([JSON])
     }
 

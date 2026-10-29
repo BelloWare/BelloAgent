@@ -2,6 +2,11 @@ import Foundation
 
 extension WorkspaceModel {
     func preparedContext(_ id: String, automatic: Bool = false) async throws -> [String: WireValue] {
+        // An explicit Inspector request can join a silent selection preview
+        // before it reaches open(). It now waits on that same opening visibly.
+        let waiting = automatic ? nil : displays[id]
+        if let waiting { waiting.helperOpeningActions += 1 }
+        defer { if let waiting { waiting.helperOpeningActions -= 1 } }
         if !automatic, let pending = automaticContextTask, pending.id == id,
            let item = record(id), let view = displays[id], pending.matches(automaticContextSignature(item, view: view)) {
             // Opening the inspector while the selection preview is underway

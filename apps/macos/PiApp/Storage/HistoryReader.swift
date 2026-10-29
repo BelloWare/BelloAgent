@@ -335,6 +335,11 @@ actor HistoryReader {
     /// grows; a replaced or rewritten one differs in these. Hashing the whole
     /// of a long journal was a large part of opening it.
     private func fingerprint(_ file: FileHandle, bytes: UInt64) throws -> String {
+        #if PI_TEST_HOST
+        let perf = Perf136Span("journal.fingerprint")
+        var perfReadBytes = 0
+        defer { perf.end(["journalBytes": String(bytes), "readBytes": String(perfReadBytes)]) }
+        #endif
         var hash = SHA256(), length = bytes
         withUnsafeBytes(of: &length) { hash.update(bufferPointer: $0) }
         let window: UInt64 = 65_536
@@ -342,6 +347,9 @@ actor HistoryReader {
             try file.seek(toOffset: start)
             let count = Int(min(window, bytes - start))
             guard let data = try file.read(upToCount: count), data.count == count else { throw StoreError.unreadableRecord }
+            #if PI_TEST_HOST
+            perfReadBytes += data.count
+            #endif
             hash.update(data: data)
         }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
@@ -1336,6 +1344,10 @@ actor HistoryReader {
     /// is kept for the next read unless a record was damaged.
     private func buildIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
                             targetTurns: Int?, progress: Progress?, wholeJournal: Bool, bounded: Bool) throws -> JournalFacts {
+        #if PI_TEST_HOST
+        let perf = Perf136Span("journal.index")
+        defer { perf.end(["journalBytes": String(size), "whole": String(wholeJournal)]) }
+        #endif
         var branch = try HistoryOffsetIndex(directory: indexDirectory)
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?, failureCode: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
@@ -1567,6 +1579,11 @@ actor HistoryReader {
                             retainedRun: RetainedRun?, limits: HistoryWindowPolicy.PageLimits? = nil) throws -> (messages: [TranscriptMessage], start: Int, end: Int) {
         // In the order they are read; a page read back is turned round below.
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
+        #if PI_TEST_HOST
+        let perf = Perf136Span("journal.pageDecode")
+        var perfReadBytes = 0
+        defer { perf.end(["candidateRows": String(range.count), "rows": String(messages.count), "readBytes": String(perfReadBytes)]) }
+        #endif
         var fill = HistoryWindowPolicy.PageFill(forward: forward, limits: limits ?? TranscriptPaging.pageLimits)
         // What each call's result recorded, so the reply that made the call
         // can show it in that call's own card, exactly as a live snapshot
@@ -1579,6 +1596,9 @@ actor HistoryReader {
             try Task.checkCancellation()
             let ref = try branch.at(index); try file.seek(toOffset: ref.offset)
             guard let data = try file.read(upToCount: ref.length), data.count == ref.length else { throw StoreError.unreadableRecord }
+            #if PI_TEST_HOST
+            perfReadBytes += data.count
+            #endif
             decodedRecords += 1
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
             var message = Self.displayedMessage(value, ref: ref)

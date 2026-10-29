@@ -43,6 +43,7 @@ enum HistoryReadWait {
 /// start a new load. Worker completion, not any reader, clears the actor's
 /// handle. The lock covers task installation, retirement and all waiters.
 final class SharedHistoryLoad: @unchecked Sendable {
+    private let progress = JournalWorkProgress.current
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var result: Result<Void, Error>?
@@ -69,7 +70,9 @@ final class SharedHistoryLoad: @unchecked Sendable {
         if retired { lock.unlock(); return nil }
         if let result { lock.unlock(); waiter.finish(result) }
         else { waiters[id] = waiter; lock.unlock() }
+        let observer = progress?.forward(to: JournalWorkProgress.current)
         return {
+            defer { if let observer { self.progress?.remove(observer) } }
             try await withTaskCancellationHandler {
                 try await waiter.value()
                 try Task.checkCancellation()

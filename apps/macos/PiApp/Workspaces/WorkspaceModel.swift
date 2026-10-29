@@ -485,7 +485,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// started for, so a connection change restarts it.
     var boundHostConnections: [String: UUID] = [:]
     /// Owned by `WorkspaceHosts.swift`: one in-flight `session.open` per chat.
+    var sessionOpeningStep: ((String) async throws -> Void)?
     var sessionOpenings: [String: (token: UUID, task: Task<Void, Error>)] = [:]
+    /// A cancelled open whose late close was refused remains loaded. Its
+    /// next caller must still finish normal path/configuration adoption.
+    var openingAdoptions = Set<String>()
     /// Owned by `WorkspaceHosts.swift`: a `session.close` sent when a chat's
     /// display was let go of, which the chat's next open waits for.
     var sessionClosings: [String: (token: UUID, task: Task<Void, Never>)] = [:]

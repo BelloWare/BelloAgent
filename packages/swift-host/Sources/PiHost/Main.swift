@@ -75,6 +75,9 @@ final class ProtocolWriter: Sendable {
         } catch { Self.fail("Native host protocol output failed") }
     }
     func drain() { queue.sync {} }
+    /// Runs after frames already handed to this writer have reached stdout.
+    /// EOF checkpoint work must not compete with delivery of the opening reply.
+    func afterWrites(_ completion: @escaping @Sendable () -> Void) { queue.async(execute:completion) }
     static func fail(_ message:String) -> Never {
         try? FileHandle.standardError.write(contentsOf:Data((message+"\n").utf8)); exit(70)
     }
@@ -114,7 +117,7 @@ final class ReaderState: @unchecked Sendable {
     static func main() async {
         signal(SIGPIPE,SIG_IGN)
         if CommandLine.arguments.contains("--version") { print("pi-native-host \(HostProtocol.engineVersion) (Pi behavior reference \(HostProtocol.piBehaviorReference))"); return }
-        let writer=ProtocolWriter(), service=NativeHostService(output: { writer.send($0) })
+        let writer=ProtocolWriter(), service=NativeHostService(output: { writer.send($0) }, afterOutput: { writer.afterWrites($0) })
         signal(SIGTERM,SIG_IGN); signal(SIGINT,SIG_IGN)
         let term=DispatchSource.makeSignalSource(signal:SIGTERM,queue:.global()), interrupt=DispatchSource.makeSignalSource(signal:SIGINT,queue:.global())
         // A signal handler cannot await. This task is the shutdown itself, so

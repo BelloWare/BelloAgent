@@ -220,6 +220,8 @@ extension AgentSession {
             try Task.checkCancellation()
             guard partialHistory else { return }
             if let fill = historyFill, let preparation = fill.preparation, let snapshot = fill.preparationSnapshot {
+                let observer = fill.preparationProgress?.forward(to: JournalWorkProgress.current)
+                defer { if let observer { fill.preparationProgress?.remove(observer) } }
                 let made = try await HistoryReadWait.value(preparation)
                 guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
                 if Task.isCancelled { Discarded.release(consume made); throw CancellationError() }

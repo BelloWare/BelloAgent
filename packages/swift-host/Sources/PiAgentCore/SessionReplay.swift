@@ -43,8 +43,10 @@ struct StateSource: Sendable {
 /// A journal's replay, one line at a time: what `AgentSession.replay` reads
 /// from a journal, and what a fork feeds it as it writes one, so the fork's
 /// state is the one its journal replays to without reading it again.
-struct JournalReplayConsumer {
+struct JournalReplayConsumer: Sendable {
     private(set) var r = JournalReplay()
+    /// An intermediate cache already written during a long open.
+    private(set) var publishedCheckpointThrough: UInt64 = 0
     private var id: String
     private var header: JournalCheckpoint.Check?
     private var marker: JournalCheckpoint.Check?
@@ -67,11 +69,14 @@ struct JournalReplayConsumer {
     private var capturedReceipts: (base: CommandReceipts.Base, changes: [Data])?
     // For a replay resumed from a checkpoint: the newest edit marker among the
     // shown rows it did not load, when the checkpoint says (`older`).
-    private enum Older { case none, marker(String), unknown }
+    private enum Older: Sendable { case none, marker(String), unknown }
     private var older = Older.none
     // The chat's moves to another connection so far, which every checkpoint
     // names: they change nothing a replay builds, but an open checks them.
     private var rebinds: [JournalCheckpoint.Check] = []
+    /// Kept even when a bounded checkpoint's rows start after this marker.
+    private var currentLineage: String?
+    private var lineageKnown = true
 
     /// `header` and `marker` are the journal's, as a checkpoint names them;
     /// `spendTracked` is what a journal with no cost record counts as.
@@ -83,6 +88,7 @@ struct JournalReplayConsumer {
     /// only the records after it. Rows shown before them load when asked for.
     mutating func resume(from checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)) {
         r.resumed=true; r.resumedFrom=checkpoint; r.coveredBytes=checkpoint.start; rebinds=checkpoint.rebinds ?? []
+        currentLineage = checkpoint.lineage
         // The checkpoint's lineage is the newest marker among all its shown
         // rows. One not among the rows it names is among those not loaded, and
         // the newest there; one among them leaves the newest before it unknown.
@@ -172,6 +178,7 @@ struct JournalReplayConsumer {
                 receiptsBase = .list(item["nativeState"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true)
             }
             r.contextRecovery = .null; r.compactionState = .null
+            currentLineage = markerID; lineageKnown = true
         } else if item["customType"].text == JournalRecordKind.presentationUpdate {
             let target = try identity(item["data"]["id"])
             // An update follows the row it updates closely: search from the end.
@@ -200,6 +207,15 @@ struct JournalReplayConsumer {
             let selected = EditReplayPlan.forkTimeline(visible: r.visible.map(\.id), boundary: ids)
             if !item["data"]["visibleIDs"].isNull, try CompactionCheckpoint.identities(item["data"]["visibleIDs"]) != selected { throw AgentError("session_damaged", "Fork timeline does not match the complete boundary") }
             r.visible = selected.compactMap { byID[$0] }
+            currentLineage = r.visible.last(where: { $0.kind == "branch" })?.id
+            if currentLineage != nil { lineageKnown = true }
+            if currentLineage == nil, r.resumed {
+                switch older {
+                case .none: break
+                case .marker(let lineage): currentLineage = lineage
+                case .unknown: lineageKnown = false
+                }
+            }
         } else if [JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin].contains(item["customType"].text ?? "") {
             r.parentInfo=item["data"]
             if item["customType"].text == JournalRecordKind.forkOrigin { r.contextRecovery = .null; r.compactionState = .null }
@@ -262,6 +278,99 @@ struct JournalReplayConsumer {
         return captured
     }
 
+    /// A settled, fully journal-backed prefix. The live actor's receipts,
+    /// streaming rows and cut-in preparation never participate in this cache.
+    /// Budget failures leave the previous checkpoint and replay untouched.
+    mutating func captureSettledCheckpoint(policy: CheckpointRefreshPolicy) throws -> JournalCheckpoint? {
+        guard let stateSource, stateSource.key == "data",
+              stateSource.offset + UInt64(stateSource.line.count) + 1 == r.coveredBytes,
+              stateSource.line.count <= policy.metadataBytes,
+              receiptChanges.count <= CommandReceipts.wholeListEvery,
+              receiptChanges.reduce(0, { $0 + $1.count }) <= policy.metadataBytes,
+              lineageKnown, !r.context.isEmpty, r.context.count <= policy.rows else { return nil }
+        let record = try JSON.parse(stateSource.line), state = record["data"]
+        guard state["active"].flag == false, state["delivering"].isNull else { return nil }
+        var commands: [JSON]
+        switch receiptsBase {
+        case .line(let line):
+            guard line.count <= policy.metadataBytes else { return nil }
+            commands = try JSON.parse(line)["data"]["commands"].list
+        case .list(let list): commands = list
+        case .none: commands = []
+        }
+        guard commands.count <= CommandReceipts.limit else { return nil }
+        for line in receiptChanges {
+            let data = try JSON.parse(line)["data"], changes = data["commands"].list
+            guard changes.count <= CommandReceipts.limit else { return nil }
+            commands = data[CommandReceipts.deltaKey].flag == true ? CommandReceipts.apply(changes, to:commands) : changes
+        }
+        guard commands.allSatisfy({ ["completed", "cancelled", "failed", "removed"].contains($0["status"].text ?? $0["state"].text ?? "") }) else { return nil }
+        let budget = CheckpointEncodingBudget(bytes: policy.metadataBytes)
+        try budget.check(r.subagents); try budget.check(r.accounting)
+        guard r.accounting.attempts.values.allSatisfy({
+            $0.contribution != nil || $0.admission == nil || $0.admission?["state"].text == "not_dispatched"
+        }) else { return nil }
+        try budget.check(r.versions.ledger); try budget.check(r.recentTaskPresentations)
+        try budget.check(commands); try budget.check(rebinds)
+        try budget.check(r.spend.record)
+        try budget.check(r.contextRecovery); try budget.check(r.compactionState); try budget.check(r.parentInfo)
+        // A committed cut is safe only after every reserved projection is
+        // present. An unmatched preparation remains for ordinary recovery.
+        if let cuts = r.subagents.cuts {
+            guard Set(cuts.preparations.keys) == Set(cuts.commits.keys) else { return nil }
+            for (id, commit) in cuts.commits {
+                guard let preparation = cuts.preparations[id] else { return nil }
+                for row in try MailboxCutJournal.rows(preparation, commit: commit) {
+                    guard cuts.projected[row.id] == sha256(Data(row.pi.encoded().utf8)) else { return nil }
+                }
+            }
+        }
+        let shown = Array(r.visible.suffix(policy.rows))
+        let helper = AgentSession.checkpointHelper(spend: r.spend, spendTracked: r.spendTracked,
+            failedCompactionFingerprint: r.failedCompactionFingerprint, contextRecovery: r.contextRecovery,
+            compactionState: r.compactionState, parentInfo: r.parentInfo, presentationOrdinal: ordinalMax,
+            subagents: r.subagents, accounting: r.accounting)
+        guard var checkpoint = AgentSession.checkpoint(sessionID: id, header: header, marker: marker,
+            last: stateSource.line, at: stateSource.offset, lastID: try identity(record["id"]),
+            visible: shown, context: r.context, spans: r.rowSpans, state: stateSource,
+            assistantMessageCount: r.assistantMessageCount, latestAssistantMessageID: r.latestAssistantMessageID,
+            versions: r.versions.ledger, tasks: r.recentTaskPresentations, helper: helper, rebinds: rebinds) else { return nil }
+        checkpoint.rowsBefore += r.olderRows + r.visible.count - shown.count
+        checkpoint.lineage = currentLineage
+        var carried = helper; carried["commands"] = .array(commands); checkpoint.helper = carried.encoded()
+        try CheckpointEncodingBudget(bytes: policy.metadataBytes).check(checkpoint)
+        r.captured = checkpoint; capturedReceipts = nil
+        return checkpoint
+    }
+
+    /// Freeze only rows a bounded checkpoint could name. Retaining the whole
+    /// replay would make its next append copy the history and span dictionary.
+    /// Capture, encoding and staging belong to the utility worker.
+    func settledCheckpointSnapshot(policy: CheckpointRefreshPolicy) -> Self? {
+        guard let stateSource, stateSource.key == "data",
+              stateSource.offset + UInt64(stateSource.line.count) + 1 == r.coveredBytes,
+              stateSource.line.count <= policy.metadataBytes,
+              !r.context.isEmpty, r.context.count <= policy.rows else { return nil }
+        var remaining = Set(r.context.map(\.id)), first = r.visible.count
+        let lower = max(0, first - policy.rows)
+        while first > lower, !remaining.isEmpty { first -= 1; remaining.remove(r.visible[first].id) }
+        guard remaining.isEmpty else { return nil }
+        var snapshot = self
+        snapshot.r.history = []; snapshot.r.pendingRequestLinks = [:]
+        snapshot.r.visible = Array(r.visible[first...]); snapshot.r.olderRows += first
+        snapshot.r.rowSpans = [:]
+        for row in snapshot.r.visible {
+            guard let span = r.rowSpans[row.id] else { return nil }
+            snapshot.r.rowSpans[row.id] = span
+        }
+        snapshot.r.captured = nil; snapshot.r.resumedFrom = nil; snapshot.capturedReceipts = nil
+        return snapshot
+    }
+
+    mutating func recordPublishedCheckpoint(through position: UInt64) {
+        publishedCheckpointThrough = max(publishedCheckpointThrough, position)
+    }
+
     /// What the records so far replay to. The consumer can go on after it.
     func finished() throws -> JournalReplay {
         var r = self.r
@@ -297,7 +406,8 @@ extension AgentSession {
     }
     /// The replay itself, at the journal's end: it can go on with the records
     /// the journal gets next (`durableReplay`).
-    static func replayConsumer(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool) throws -> JournalReplayConsumer {
+    static func replayConsumer(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool,
+                               policy: CheckpointRefreshPolicy = CheckpointRefreshPolicy(), checkpointPublisher: ReplayCheckpointPublisher? = nil) throws -> JournalReplayConsumer {
         var resumeFrom: (checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?))?
         if resume, let checkpoint=opened.resumedFrom, let loaded=Self.loadCheckpoint(checkpoint, url: url) { resumeFrom=(checkpoint, loaded) }
         else if resume, opened.resumedFrom != nil { try opened.checkWhole(id: id, binding: binding) }
@@ -310,12 +420,36 @@ extension AgentSession {
             replay=try opened.recordReader()
             consumer.starts(at: replay.completeBytes)
         }
+        let remaining = replay.size - replay.completeBytes, startedAt = ProcessInfo.processInfo.systemUptime
+        var attemptedThrough = replay.completeBytes, attemptedAt = startedAt
+        let publisher = checkpointPublisher ?? ReplayCheckpointPublisher(url: url, policy: policy)
+        defer { _ = publisher.stop() }
+        func publishSettledPrefix() {
+            attemptedThrough = replay.completeBytes; attemptedAt = ProcessInfo.processInfo.systemUptime
+            // SessionJournal already validated this prefix's chain. Only a
+            // bounded row snapshot is copied here; the worker owns the rest.
+            publisher.schedule(consumer)
+        }
         while true {
+            try Task.checkCancellation()
             let lineStart=replay.completeBytes
             guard let line=try replay.nextLine() else { break }
             if line.isEmpty { continue }
             try consumer.consume(line, at: lineStart)
+            JournalWorkProgress.current?.update(replay.completeBytes, of: replay.size)
+            if resume, replay.completeBytes < replay.size,
+               replay.completeBytes - attemptedThrough >= policy.bytes,
+               line.starts(with: JournalLineScan.statePrefix),
+               remaining >= policy.longReplayBytes || ProcessInfo.processInfo.systemUptime - startedAt >= policy.seconds,
+               replay.completeBytes - attemptedThrough >= policy.replayBytes || ProcessInfo.processInfo.systemUptime - attemptedAt >= policy.seconds {
+                publishSettledPrefix()
+            }
         }
+        try Task.checkCancellation()
+        // EOF is already retained as the durable replay. The adopted runtime
+        // schedules its capture and publication on a utility worker, which
+        // reads no suffix and adds no metadata work to this open.
+        consumer.recordPublishedCheckpoint(through: publisher.stop())
         return consumer
     }
     /// A progress row the journal holds no terminal receipt for, as a replay
