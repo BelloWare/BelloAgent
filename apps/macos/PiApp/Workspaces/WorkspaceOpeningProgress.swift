@@ -23,7 +23,7 @@ extension WorkspaceModel {
 
     /// The shared operation owns cancellation; the callers merely await it.
     /// A cancelled send can restore its draft immediately. Cleanup has a
-    /// separate fence, so Retry cannot adopt a late success before it closes.
+    /// separate fence, so another action cannot adopt a late success before it closes.
     func trackSessionOpening(_ id: String, token: UUID, commandID: String, host: HostSupervisor, connection: UUID?,
                              body: () async throws -> Void) async throws {
         do {
@@ -61,12 +61,4 @@ extension WorkspaceModel {
         sessionClosings[id] = (token, cleanup)
     }
 
-    func retrySessionOpening(_ id: String) {
-        guard let item = record(id), sessionOpenings[id] == nil, sessionClosings[id] == nil else { return }
-        displays[id]?.helperOpening = nil
-        Task { [self] in
-            do { _ = try await open(item); reloadHistory(id) }
-            catch { if displays[id]?.helperOpening == nil { displays[id]?.helperOpening = .failed(error.localizedDescription) } }
-        }
-    }
 }

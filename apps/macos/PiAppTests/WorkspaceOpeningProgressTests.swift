@@ -68,7 +68,7 @@ final class WorkspaceOpeningProgressTests: XCTestCase {
         let pending = try await model.store?.list(CommandIntent.self, kind: "pending:\(chat.id)")
         XCTAssertEqual(pending?.count, 0)
         model.sessionOpeningStep = nil
-        model.retrySessionOpening(chat.id)
+        _ = try await model.open(try XCTUnwrap(model.record(chat.id)))
         try await eventually("Retry opens without dispatching the message") { model.opened.contains(chat.id) && view.helperOpening == nil }
         XCTAssertEqual(view.draft, "Keep my unsent message")
         XCTAssertFalse(view.loading)

@@ -83,6 +83,14 @@ struct TranscriptVersionView: Equatable, Sendable {
 
 @MainActor final class SessionDisplay: ObservableObject {
     @Published var helperOpening: SessionOpeningState?
+    /// Explicit actions waiting on the shared open. Selection previews and
+    /// typing may open the same runtime without putting progress on the page.
+    @Published var helperOpeningActions = 0
+    var waitingOpening: SessionOpeningState? {
+        guard let helperOpening, helperOpening.active,
+              helperOpeningActions > 0 || helperOpening.cancelling else { return nil }
+        return helperOpening
+    }
     var subagentsRevision: String?
     var isManagedSubagent = false
     var supportsMailboxCutin = false { didSet { if supportsMailboxCutin != oldValue { publishTranscript() } } }

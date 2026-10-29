@@ -152,7 +152,7 @@ extension WorkspaceModel {
                     // The reads above yield: the chat may have moved on meanwhile.
                     guard let current = record(id), current.workspaceID == item.workspaceID, current.profileID == item.profileID,
                           displays[id] === view, !view.loading, !view.uncertain, view.recovered.isEmpty else { return }
-                    host = try await open(current)
+                    host = try await open(current, showOpeningProgress: false)
                 }
                 scheduleIdle(workspaceID: item.workspaceID, host: host)
             } catch {
@@ -221,7 +221,10 @@ extension WorkspaceModel {
         retireSessionConfiguration(id)
         releaseUnusedBudgetSessions()
     }
-    func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {
+    func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false, showOpeningProgress: Bool = true) async throws -> HostSupervisor {
+        let waiting = showOpeningProgress && !automaticContext && !budgetDependency && !item.isBackgroundTask ? displays[item.id] : nil
+        if let waiting { waiting.helperOpeningActions += 1 }
+        defer { if let waiting { waiting.helperOpeningActions -= 1 } }
         guard !isOriginalSubagentReader(item.id) else { throw HostError.failure("This original sub-agent is open read-only from a fork.") }
         if !budgetDependency { releasedHelperSessions.remove(item.id) }
         var accepted = false

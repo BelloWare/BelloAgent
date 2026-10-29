@@ -1108,3 +1108,92 @@ python3 "$PI_BUILD_ROOT/run-when-quiet.py" swift test \
 The wrapper waited while the other stream held a `perf` quiet window. No full
 suite was run. F3 requests coverage of an accepted change, rather than a new
 behavior, so it adds no failing-first test or mutation.
+
+### F1 — opening progress without hiding the conversation
+
+Restored `ConversationPaneView.coversTranscript` to its pre-item-4 rule. Helper
+opening never independently covers the transcript. A waiting action owns a
+reference-counted interest in the shared open; selection's automatic preview,
+typing prewarm, budget dependencies and background work remain silent. An
+explicit context Inspector can join the automatic preview before `open()` is
+called, so `WorkspaceContextPreview.swift` has a five-line interest scope too.
+This is the only extra opening call site touched; the history/fill state is
+unchanged. `ConversationPane.swift` only changes opening view selection,
+visibility and overlay layout.
+
+After 150 ms, waiting actions show a 60-point strip above the composer, with
+“Opening chat…”, the observed percentage when available, a thin PiKit ProgressBar
+and PiKit Cancel. The transcript frame is unchanged. When its existing loading
+cover is independently due, the same view fills that cover. The view disappears
+when the action settles. Removed the standalone opening Retry: the audited user
+openers already report through their action's failure surface, and background
+openers deliberately report nothing. Repeating the action retries.
+
+A cancelled send returns its unsent draft and shows the existing inline notice,
+“Opening cancelled. Your message was not sent.” A failed send returns the draft
+and shows the actual error through that same notice. Rows stay visible, and the
+composer is editable. No failure or cancelled opening panel remains. Selecting
+another chat still does not cancel a shared opening.
+
+Failing first: the four new pane tests ran against the unchanged `a2154990` app
+sources (`git diff a2154990 d59aed3f -- apps` is empty). All four failed, with six
+assertion failures: an automatic preview covered rows, a waiting send produced a
+474-point cover, and cancelled/failed sends left Retry panels visible. Fixed:
+all seven tests pass, adding shared-preview joining, the pre-existing empty
+loading cover, and no flash for quick opens. Mutation: restored the helper check
+at the start of `coversTranscript`; three tests failed with five assertions,
+including the 474-point cover. Restored source and reran the class successfully.
+
+| App class, each run separately | Passed |
+| --- | ---: |
+| OpeningPaneTests | 7 |
+| ConversationPaneTests | 85 |
+| FreshPresentationTests | 21 |
+| WorkspaceOpeningProgressTests | 3 |
+| HostSupervisorTests | 12 |
+| AutomaticContextTests | 13 |
+| PreparedContextLifecycleTests | 6 |
+| WorkspaceConcurrencyTests | 12 |
+| **Functional total** | **159** |
+| OpeningProgressGalleryTests | 1 |
+
+No failed or skipped final tests. Existing ConversationPaneTests teardown emits
+SQLite “vnode unlinked while in use” warnings for its synthetic scratch folders;
+all 85 cases pass. The new pane fixture uses the awaited workspace teardown.
+
+The real-pane gallery produced **24 images, all opened and visually inspected**:
+`$PI_BUILD_ROOT/round3/gallery/pane-opening-{pending,progress,cancelling,cancelled,failure,cover}-{840,320}-{light,dark}.png`.
+Rows and the composer are visible in the five non-cover scenes; the sixth is the
+empty-chat loading cover. Labels, percentage, progress track and controls fit
+both widths in both themes. The gallery ran with the shared focus lock and the
+parent-lifetime-fixed test gateway from the round-2 merge.
+
+Raw evidence: `round3/f1-failing-first.log`, `f1-fixed.log`, `f1-mutation.log`,
+`f1-<Class>.log`, `f1-gallery.log`, all below `$PI_BUILD_ROOT`. Commands:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a136-json
+xcodegen generate --quiet
+# Repeat with the original sources, the mutation, and the restored sources.
+python3 "$PI_BUILD_ROOT/round3/locked.py" 'F1 affected OpeningPaneTests' \
+  xcodebuild test -project PiApp.xcodeproj -scheme PiApp \
+  -destination platform=macOS,arch=arm64 -jobs 2 \
+  -derivedDataPath "$PI_BUILD_ROOT/native-tests" CODE_SIGN_IDENTITY=- \
+  CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO \
+  SWIFT_TREAT_WARNINGS_AS_ERRORS=NO 'OTHER_SWIFT_FLAGS=$(inherited) -j2' \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/OpeningPaneTests
+# Every other functional class in the table is a separate invocation:
+python3 "$PI_BUILD_ROOT/round3/locked.py" 'F1 affected <Class>' \
+  xcodebuild test-without-building -project PiApp.xcodeproj -scheme PiApp \
+  -destination platform=macOS,arch=arm64 -derivedDataPath "$PI_BUILD_ROOT/native-tests" \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/<Class>
+TEST_RUNNER_PI_APP_OPENING_GALLERY="$PI_BUILD_ROOT/round3/gallery" \
+  python3 "$PI_BUILD_ROOT/round3/locked.py" 'F1 gallery' \
+  xcodebuild test-without-building -project PiApp.xcodeproj -scheme PiApp \
+  -destination platform=macOS,arch=arm64 -derivedDataPath "$PI_BUILD_ROOT/native-tests" \
+  -parallel-testing-enabled NO -only-testing:PiAppTests/OpeningProgressGalleryTests
+```
+
+`locked.py` acquires the shared lane by atomic directory creation, writes this
+stream's owner, waits in 60-second intervals for another owner, and releases
+only its own lock in `finally`. Functional/gallery runs claim no timing results.

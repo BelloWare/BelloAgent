@@ -61,7 +61,6 @@ struct SideActions {
     /// those rows, not behind a cover; a first message being sent is already
     /// on the page and is not covered while the helper starts.
     @MainActor static func coversTranscript(_ session: SessionDisplay) -> Bool {
-        if let opening = session.helperOpening { return opening.active }
         return session.historyState.loading && !session.refreshingCachedRows
             || session.loading && session.messages.isEmpty && session.sendingRows.isEmpty
     }
@@ -139,6 +138,7 @@ struct SideActions {
             return true
         }
         cover.isHidden = true; openingCover.isHidden = true
+        openingCover.visibilityChanged = { [weak self] in self?.needsLayout = true }
         starter.removeFromSuperview()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -265,7 +265,7 @@ struct SideActions {
         else { kind = .composer }
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
-                     covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress, helperOpening: session.helperOpening,
+                     covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress, helperOpening: session.waitingOpening,
                      showsRecovered: !current.isSubagent && (!session.recoverableSubmissions.isEmpty || !session.draftConflicts.isEmpty),
                      recovered: session.recoverableSubmissions.map(\.id), conflicts: session.draftConflicts,
                      showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
@@ -410,15 +410,8 @@ struct SideActions {
     // MARK: The loading cover
 
     private func updateCover(_ state: State, before: State?) {
-        if let opening = state.helperOpening {
-            openingCover.update(opening, cancel: { [weak self] in self?.model.cancelSessionOpening(state.sessionID) },
-                retry: { [weak self] in self?.model.retrySessionOpening(state.sessionID) })
-            if !opening.active {
-                coverTask?.cancel(); coverTask = nil; coverDue = false
-                cover.isHidden = true; openingCover.isHidden = false
-                return
-            }
-        } else { openingCover.isHidden = true }
+        openingCover.update(state.helperOpening, sessionID: state.sessionID,
+            cancel: { [weak self] in self?.model.cancelSessionOpening(state.sessionID) })
         if state.covered {
             // It appears at once when due and fades only on its way out.
             if before?.covered != true || before?.sessionID != state.sessionID {
@@ -445,10 +438,6 @@ struct SideActions {
         }
     }
     private func showCover() {
-        if shown?.helperOpening != nil {
-            cover.isHidden = true; openingCover.isHidden = false; needsLayout = true
-            return
-        }
         cover.showLoading(progress: shown?.progress)
         cover.isHidden = false
         CATransaction.begin(); CATransaction.setDisableActions(true); cover.layer?.opacity = 1; CATransaction.commit()
@@ -620,7 +609,11 @@ struct SideActions {
             starter.frame = CGRect(x: PiKit.round(transcriptFrame.midX - cardWidth / 2, piScale), y: transcriptFrame.minY + PiSpacing.xl,
                                    width: cardWidth, height: height)
         }
-        cover.frame = transcriptFrame; openingCover.frame = transcriptFrame
+        cover.frame = transcriptFrame
+        openingCover.inCover = coverDue && shown?.covered == true
+        openingCover.frame = openingCover.inCover ? transcriptFrame : CGRect(
+            x: transcriptFrame.minX + PiSpacing.md, y: max(transcriptFrame.minY, transcriptFrame.maxY - SessionOpeningView.stripHeight - PiSpacing.sm),
+            width: max(0, transcriptFrame.width - PiSpacing.md * 2), height: SessionOpeningView.stripHeight)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         sideLine.frame = CGRect(x: 0, y: sideHeader.frame.maxY, width: width, height: Self.sideLineHeight)
         sideLine.backgroundColor = piCGColor(.piHairline)
