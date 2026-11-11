@@ -955,6 +955,7 @@
 		A8B2614FE6F2AE02680CA56B /* TerminalPanelAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */; };
 		A914C31A1189A9651B3AEABB /* TranscriptNativeMarkdownIslands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B162FD5C22E6A09BA9C373C /* TranscriptNativeMarkdownIslands.swift */; };
 		A9550EDB99087824E7571809 /* InspectorOverviewDocumentGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6456DFBDA0045AEFD30BEB11 /* InspectorOverviewDocumentGeometryTests.swift */; };
+		A992D1F101CCE56D07A1D36C /* CatalogLoadCostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4816C37FDD89FA9D960835E5 /* CatalogLoadCostTests.swift */; };
 		A9DACA05BF9739E35989BC2F /* QueuePanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 706D8AF51D4E589697E6C606 /* QueuePanelView.swift */; };
 		A9EAAAF3E679CF03A55FECCF /* GitPanelNarrowParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27C5579E5F8EED897D51B53E /* GitPanelNarrowParityTests.swift */; };
 		A9ECF5C8E6133353FDEF3817 /* ChatBriefGalleryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4174DD56C14BD9F497676D3F /* ChatBriefGalleryTests.swift */; };
@@ -1769,6 +1770,7 @@
 		46DCB1B76D960350E93B49D0 /* MenuBarMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarMetrics.swift; sourceTree = "<group>"; };
 		473FAB05DC2AC8DCE40A3366 /* TerminalCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCaptureTests.swift; sourceTree = "<group>"; };
 		47527ECCC7ACD25DEECB456D /* SessionInspectorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionInspectorWindow.swift; sourceTree = "<group>"; };
+		4816C37FDD89FA9D960835E5 /* CatalogLoadCostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogLoadCostTests.swift; sourceTree = "<group>"; };
 		4841FFEC7F7DDD143D8DE931 /* WorkspaceTitleGeneration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTitleGeneration.swift; sourceTree = "<group>"; };
 		48865314F615A96DD0264D5A /* MarkdownTextDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTextDocument.swift; sourceTree = "<group>"; };
 		48B202B6A630835604556E2C /* WorkspaceContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContent.swift; sourceTree = "<group>"; };
@@ -3272,6 +3274,7 @@
 				8EFC90BF0A6E0C3A4C71C983 /* CaptureMacIntegrationTests.swift */,
 				12EDC2432FB0E43437668810 /* CaptureMaintenanceQueryTests.swift */,
 				0D8659E5D5F7C45D7DF8FEAF /* CatalogImageInputTests.swift */,
+				4816C37FDD89FA9D960835E5 /* CatalogLoadCostTests.swift */,
 				B0FB5226A3331FA26FBC56A4 /* CatalogModelPickerTests.swift */,
 				5D6ED18B5B84266F3A8C9366 /* CatalogSourceTests.swift */,
 				D11E12E4CC5E1C0893804638 /* ChangesTabFrameTests.swift */,
@@ -4893,6 +4896,7 @@
 				E91232BF7424A19A488BF62D /* CapturedBodyTests.swift in Sources */,
 				FF77A3F9572726F2A4E9F793 /* CapturedBodyViewReference.swift in Sources */,
 				39D51049071A07473E664DBA /* CatalogImageInputTests.swift in Sources */,
+				A992D1F101CCE56D07A1D36C /* CatalogLoadCostTests.swift in Sources */,
 				EC3E17690547F8AE6469BCDF /* CatalogModelPickerTests.swift in Sources */,
 				596AD572A6042F0759363E2B /* CatalogSourceTests.swift in Sources */,
 				F6B1FAC3EA38DFF6BC1B9B78 /* ChangesTabFrameTests.swift in Sources */,
