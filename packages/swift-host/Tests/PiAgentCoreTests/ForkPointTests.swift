@@ -11,7 +11,7 @@ final class ForkPointTests: HelperTestCase {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil) throws -> AgentSession {
             // Everything but the latest turn is summarized when compacted.
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
                                     client: ScriptClient(replies), tools: RecordingTools(), traces: traces, resumePath: resume, autoCompaction: false, compactionPolicy: policy)
         }

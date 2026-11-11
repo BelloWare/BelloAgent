@@ -47,6 +47,13 @@ struct ModelDescriptor: Codable, Sendable, Equatable, Identifiable {
         }
         return selected
     }
+    /// The limits `applying(to:)` gives a profile, without resolving the rest
+    /// of it: that decodes and encodes the connection's advanced settings, and
+    /// a turn's grants ask for every listed model.
+    func limits(for profile: ProfileRecord) -> (contextWindow: Int, maxOutputTokens: Int, modelOutputLimit: Int?) {
+        let context = contextWindow ?? profile.contextWindow
+        return (context, min(profile.maxOutputTokens, maxOutputTokens ?? 1_000_000, context - 1), maxOutputTokens)
+    }
     var contextLabel: String? {
         guard let contextWindow else { return nil }
         if contextWindow >= 1_000_000 { return String(format: "%.1fM ctx", Double(contextWindow) / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }

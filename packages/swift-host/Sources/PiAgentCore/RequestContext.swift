@@ -304,7 +304,20 @@ struct RequestContextCounter: Sendable {
             if !value.list.isEmpty { return PiContext.sum(value.list.map(content)) }
             guard value.isObject else { return 0 }
             if value["type"].text == "input_image" { return PiContext.tokens(chars: PiContext.estimatedImageChars) }
-            return PiContext.sum(["text", "refusal", "content", "summary", "arguments", "output"].map { content(value[$0]) })
+            // Ours (owner, 2026-11-11: "encrypted reasoning should be not
+            // ignored"): a replayed reasoning item is input the model reads
+            // again. Its ciphertext cannot be tokenized; its serialized size
+            // over four is a fair upper bound, so retaining it cannot carry a
+            // request past its window unnoticed. A reply's reported usage
+            // still measures it exactly once that reply anchors the count.
+            let opaque = value["type"].text == "reasoning" ? PiContext.tokens(chars: value["encrypted_content"].text?.utf16.count ?? 0) : 0
+            // A call's id is a short name within the item's own allowance,
+            // unless the gateway keeps a provider's signature in it (LiteLLM
+            // and Gemini: 278,100 bytes measured). Then the model reads it
+            // again with the call and with its output, and it counts as text.
+            let identifier = ["function_call", "function_call_output"].contains(value["type"].text ?? "") ? value["call_id"].text?.utf16.count ?? 0 : 0
+            let signature = identifier > ProviderClient.portableCallIDBytes ? PiContext.tokens(chars: identifier) : 0
+            return PiContext.sum([opaque, signature] + ["text", "refusal", "content", "summary", "arguments", "output"].map { content(value[$0]) })
         }
         return PiContext.sum(items.map { PiContext.sum([8, content($0)]) })
     }

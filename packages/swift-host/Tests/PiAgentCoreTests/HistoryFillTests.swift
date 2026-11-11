@@ -35,7 +35,7 @@ final class HistoryFillTests: HelperTestCase {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, client: ScriptClient = ScriptClient([]), resume: String? = nil, prepared: JournalReplayConsumer? = nil) throws -> AgentSession {
             // Everything but the latest turn is summarized when compacted.
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
                                     client: client, tools: RecordingTools(), traces: traces, resumePath: resume, prepared: prepared,
                                     autoCompaction: false, compactionPolicy: policy)

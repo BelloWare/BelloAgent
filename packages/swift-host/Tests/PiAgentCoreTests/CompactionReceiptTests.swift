@@ -4,13 +4,13 @@ import XCTest
 /// A completed manual compaction reports itself as completed, and its summary
 /// is what a reopened journal sends to the model.
 final class CompactionReceiptTests: HelperTestCase {
-    /// A one-token tail: the second answer stays; one request summarizes the
-    /// first task, and the second question in pi's turn-prefix section.
+    /// The last exchange stays as written (0.1.137): the second question and
+    /// its answer; one request summarizes the first task.
     func testCompactionReceiptAndNativeResumePreserveSummary() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let state=root.appendingPathComponent("state"),profile=try fixtureProfile(),resources=Resources(cwd:root,home:root),traces=TraceStore()
-        let client=ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)),answer("second answer"),answer("Summary: first task was completed.\n\n---\n\n**Turn Context (split turn):**\n\nPrefix: the second question was asked.")])
-        let s=try AgentSession(id:"compact-session",profile:profile,apiKey:"test",cwd:root,directory:state,readOnly:true,resources:resources,client:client,tools:RecordingTools(),traces:traces,autoCompaction:false,compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=1;return policy }())
+        let client=ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)),answer("second answer"),answer("Summary: first task was completed.\n\n---\n\n**Constraints:**\n\nNone were given.")])
+        let s=try AgentSession(id:"compact-session",profile:profile,apiKey:"test",cwd:root,directory:state,readOnly:true,resources:resources,client:client,tools:RecordingTools(),traces:traces,autoCompaction:false)
         _=try await s.submit(Submission(commandID:"c1",turnID:"t1",text:"first question"),steer:false)
         try await eventually { !(await s.isRunning) }
         _=try await s.submit(Submission(commandID:"c2",turnID:"t2",text:"second question"),steer:false)
@@ -31,9 +31,9 @@ final class CompactionReceiptTests: HelperTestCase {
         try await eventually { !(await resumed.isRunning) }
         let request=await next.requests[0]
         XCTAssertTrue(request.contains{$0.text.contains("Summary: first task was completed.")})
-        XCTAssertTrue(request.contains{$0.text.contains("**Turn Context (split turn):**\n\nPrefix: the second question was asked.")})
-        XCTAssertTrue(request.contains{$0.text=="second answer"})
-        XCTAssertFalse(request.contains{$0.text=="first question" || $0.text=="second question"})
+        XCTAssertTrue(request.contains{$0.text.contains("**Constraints:**\n\nNone were given.")},"The summary is replayed whole")
+        XCTAssertEqual(request.filter(\.replayEligible).dropFirst().map(\.text),["second question","second answer","continue"],"The last exchange, as written, then the new message")
+        XCTAssertFalse(request.contains{$0.text=="first question"},"The first task is the summary")
         await resumed.close()
     }
 }

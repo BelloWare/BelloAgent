@@ -27,7 +27,7 @@ final class ForkCloneTests: HelperTestCase {
         func session(_ id: String, replies: [ModelReply] = [], tools: any ToolExecuting = RecordingTools(), resume: String? = nil,
                      prepared: JournalReplayConsumer? = nil, in directory: URL? = nil) throws -> AgentSession {
             // Everything but the latest turn is summarized when compacted.
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: directory ?? state, readOnly: false, resources: resources,
                                     client: ScriptClient(replies), tools: tools, traces: traces, resumePath: resume, prepared: prepared,
                                     autoCompaction: false, compactionPolicy: policy)

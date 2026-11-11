@@ -285,7 +285,7 @@ enum JournalSlimming {
         if lhs.pendingRequestLinks != rhs.pendingRequestLinks { return "request-links" }
         if lhs.recentTaskPresentations != rhs.recentTaskPresentations { return "tasks" }
         if lhs.compactionState != rhs.compactionState || lhs.contextRecovery != rhs.contextRecovery
-            || lhs.failedCompactionFingerprint != rhs.failedCompactionFingerprint { return "compaction" }
+            || lhs.failedCompactionFingerprint != rhs.failedCompactionFingerprint || lhs.suppressedCompactionTask != rhs.suppressedCompactionTask { return "compaction" }
         if lhs.parentInfo != rhs.parentInfo { return "origin" }
         if lhs.presentationOrdinal != rhs.presentationOrdinal { return "ordinal" }
         if lhs.stateRecord != rhs.stateRecord { return "run-state" }

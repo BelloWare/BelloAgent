@@ -9,12 +9,11 @@ final class CheckpointRefreshTests: HelperTestCase {
     private func fixture() async throws -> Fixture {
         let root = try temporaryDirectory(), profile = try fixtureProfile()
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
         let replies = (0..<6).map { answer("Answer \($0) " + String(repeating: "evidence ", count: 60)) }
             + [answer("Summary of the generated conversation."), answer("A settled durable suffix")]
         let session = try AgentSession(id: "refresh", profile: profile, apiKey: "synthetic-only", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient(replies), tools: RecordingTools(),
-            traces: TraceStore(), autoCompaction: false, compactionPolicy: policy)
+            traces: TraceStore(), autoCompaction: false)
         addTeardownBlock { await session.close() }
         for n in 0..<6 {
             _ = try await session.submit(Submission(commandID: "c\(n)", turnID: "t\(n)", text: "Question \(n)"), steer: false)
@@ -108,6 +107,27 @@ final class CheckpointRefreshTests: HelperTestCase {
             XCTAssertEqual(after.context.map(\.pi), before.context.map(\.pi))
             XCTAssertEqual(after.stateRecord?["commands"], before.stateRecord?["commands"])
         }
+    }
+
+    /// 0.1.137: a task whose automatic compaction was paid for and not
+    /// adopted stays written off through a refreshed checkpoint. Its failure
+    /// record lies before the checkpoint, where an open that resumes from the
+    /// checkpoint does not read it again.
+    func testARefreshedCheckpointKeepsATasksCompactionSuppression() throws {
+        let fixture = try RefreshJournalFixture(root: temporaryDirectory(), profile: fixtureProfile())
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try fixture.journal.append(["type":"custom", "customType":JSON(JournalRecordKind.compactionFailure), "data":["fingerprint":"source", "taskRootId":"task"]])
+        try fixture.state(RefreshJournalFixture.settledState)
+        var replay = try fixture.replay()
+        let checkpoint = try XCTUnwrap(replay.captureSettledCheckpoint(policy: CheckpointRefreshPolicy()))
+        try checkpoint.write(for: fixture.url)
+        let loaded = try XCTUnwrap(AgentSession.loadCheckpoint(checkpoint, url: fixture.url))
+        var resumed = JournalReplayConsumer(id:"refresh", header:fixture.journal.headerCheck, marker:fixture.journal.markerCheck, spendTracked:false)
+        resumed.resume(from:checkpoint, loaded:loaded)
+        let before = try replay.finished(), after = try resumed.finished()
+        XCTAssertEqual(before.suppressedCompactionTask, "task")
+        XCTAssertEqual(after.suppressedCompactionTask, "task", "The checkpoint carries the suppression")
+        XCTAssertEqual(after.failedCompactionFingerprint, "source")
     }
 
     func testMetadataAndContextBudgetsSkipWithoutTruncatingThePreviousCheckpoint() throws {

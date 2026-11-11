@@ -1581,23 +1581,24 @@ final class UIScreenshotTests: XCTestCase {
         session.disclosure.setOpen(false, .source(long)); try await settle(0.6)
     }
 
-    /// 20 · A split-turn compaction in the Session Inspector: one Compaction
-    /// row holding its one summary request, named "continuation checkpoint",
-    /// and its page with the appended instruction identified on the
-    /// Conversation tab.
+    /// 20 · A compaction in the Session Inspector: one Compaction row holding
+    /// its one summary request, named "continuation checkpoint", and its page
+    /// with the appended instruction identified on the Conversation tab.
     @MainActor private func captureCompactionRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                            appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
         let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Summarize the retry work", path: nil, profileID: profileID, toolMode: "editing")
         model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
         await model.select(chat.id); try await settle(0.6)
         let session = try XCTUnwrap(model.displays[chat.id])
-        session.draft = "Which retries does `PaymentClient` make today?"
+        // Since 0.1.137 a compaction of an idle chat keeps its last exchange
+        // whole and summarizes what came before, and is not asked for where
+        // that would replace less than a summary costs. So the large exchange
+        // comes first: it is what the one request summarizes. (Before, the
+        // large turn came last and the 20,000-token tail split it.)
+        session.draft = "bulk 120"
         model.send(sessionID: chat.id)
         try await waitIdle(session, model: model, minimumMessages: 2)
-        // A turn larger than the recent tail a compaction keeps: compacting
-        // splits it, so the compaction's one request asks for the history and
-        // the start of the turn.
-        session.draft = "bulk 120"
+        session.draft = "Which retries does `PaymentClient` make today?"
         model.send(sessionID: chat.id)
         try await waitIdle(session, model: model, minimumMessages: 4)
         model.action("context.compact", sessionID: chat.id)

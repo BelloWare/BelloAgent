@@ -8,6 +8,45 @@ Reported request usage, an estimate of the next request's context, live output a
 
 Gateway-reported usage is not independently verified billing. Context estimates remain estimates unless a compatible counting contract establishes otherwise. In particular, a model alias and a successful HTTP response do not establish the identity of an automatically selected backend.
 
+## When and what a chat compacts, 0.1.137
+
+Owner, 2026-11-11: "remove the cap directly". Pi's 20,000-token recent tail is
+gone, and with it pi parity for what a compaction keeps: the task in hand stays
+whole and only earlier tasks are summarized (`Design.md`, "What a compaction
+keeps"). The counting below is unchanged; what is compared with it changed:
+
+- **Usable input** `U = W − M − max(O, G + I)`: the window less the dispatch
+  margin and the larger of the ordinary output reserve and a summary's
+  allowance with its instruction.
+- **Growth reserve** `R = min(max(16,384, ceil(0.15 W)), floor(U / 4))`.
+- **Triggers** on `requestTokens`: `floor(0.70 U)` before a task's first
+  request, `U − R` while it works. (0.1.135: one trigger, `U − min(16,384, W/4)`.)
+- **Targets** on the projection estimate, the same heuristic before and after:
+  what replaces the context is at most `0.50 U`; a task too large for that
+  keeps its required material and its newest rounds towards `0.30 U`.
+- **Bytes** as well as tokens: a planned or completed replacement over the
+  32 MiB request limit is not adopted.
+- **The meter** still shows pi's `window − 16,384` as `compactionThreshold`;
+  it is a display figure, not either trigger.
+- **Replayed reasoning** counts its `encrypted_content` at characters over
+  four where no reply's usage has measured it (owner, 2026-11-11: "encrypted
+  reasoning should be not ignored"); before, opaque replay counted nothing.
+  Images keep their fixed allowance.
+- **A long tool call id** (over 64 bytes: a Gemini thought signature kept in
+  it by LiteLLM) counts at characters over four with the call and with its
+  output, 0.1.137; a short one is within the item's own allowance.
+- A compaction that cannot be made no longer fails the turn: the request goes
+  and the gateway decides, as pi's rule for every other request already said.
+  It costs nothing and ends nothing: a plan is tried again when the chat
+  changes. Only a summary request that was sent and not adopted ends automatic
+  compaction for its task.
+- **After a context rejection** the same `0.50 U` plan comes first; where it
+  cannot be made, only what must stay is kept with the checkpoint, accepted
+  when the replacement fits `U` at the whole summary allowance and the byte
+  limit and saves the safety margin, not by the half.
+- **One automatic summary request** at most between two replies of the model
+  (a new task counts afresh; steering does not).
+
 ## Pi's request sizing, 0.1.89
 
 Every context decision now uses pi 0.85.1's figures, and the older sections below are history:

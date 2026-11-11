@@ -19,8 +19,8 @@ private actor HeldTools: ToolExecuting {
 final class ForkAtReplyTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
-        func session(_ id: String, replies: [ModelReply] = [], client: ScriptClient? = nil, tools: any ToolExecuting = RecordingTools(), resume: String? = nil, keepRecentTokens: Int? = nil) throws -> AgentSession {
-            var policy = CompactionPolicy(); if let keepRecentTokens { policy.keepRecentTokens = keepRecentTokens }
+        func session(_ id: String, replies: [ModelReply] = [], client: ScriptClient? = nil, tools: any ToolExecuting = RecordingTools(), resume: String? = nil) throws -> AgentSession {
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
                                     client: client ?? ScriptClient(replies), tools: tools, traces: traces, resumePath: resume,
                                     autoCompaction: false, compactionPolicy: policy)
@@ -83,7 +83,7 @@ final class ForkAtReplyTests: HelperTestCase {
     func testForkingAReplyALaterCompactionSummarizedBringsBackItsWholeContext() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let source = try chat.session("source", replies: [answer(String(repeating: "first evidence ", count: 400)), answer(String(repeating: "second evidence ", count: 400)),
-                                                          answer("the summary"), answer("after the summary")], keepRecentTokens: 1)
+                                                          answer("the summary"), answer("after the summary")])
         try await send(source, "u1", "question one")
         try await send(source, "u2", "question two")
         try await source.compact(); try await eventually { !(await source.isRunning) }

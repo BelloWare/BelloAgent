@@ -1,8 +1,9 @@
 """Request-dependent Responses fixture. No upstream network or real credentials.
 
 Generation routes compacted history through a deliberately smaller capacity:
-the serialized replay input must be <=1,500 bytes. This is an independent
-gateway acceptance contract, not the application's estimate.
+the serialized replay input must be <=18,000 bytes. This is an independent
+gateway acceptance contract, not the application's estimate. Usage reports
+the request's real size (its bytes over four), as a gateway does.
 """
 import base64
 import http.server
@@ -13,6 +14,10 @@ import threading
 
 root = pathlib.Path(sys.argv[1])
 lock = threading.Lock()
+OBJECTIVE = 'ORIGINAL GOLDEN OBJECTIVE: append the counter once, inspect both reads, finish.'
+CHECKPOINT = 'The conversation history before this point was compacted into the following summary:'
+IN_PROGRESS = 'The task was in progress when this checkpoint was made.'
+CAPACITY = 18000
 
 
 class Gateway(http.server.BaseHTTPRequestHandler):
@@ -72,16 +77,20 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     assert (len(prompt) + len(instructions)) / 4 + body['max_output_tokens'] <= 16000
                     incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
-                elif any(t.startswith('The conversation history before this point was compacted') for t in texts):
-                    assert any('READ_STAGE_COMPLETE part 3' in r for r in results)
-                    # Pi replays no input verbatim: the summary carries the objective.
-                    text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
+                elif any(t.startswith(CHECKPOINT) for t in texts):
+                    # The recovery summary reads the whole context: the earlier
+                    # checkpoint, the request as written and every retained round.
+                    assert OBJECTIVE in texts
+                    assert any('READ_STAGE_COMPLETE part 2' in r for r in results) and any('READ_STAGE_COMPLETE part 3' in r for r in results)
+                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
                 else:
+                    assert OBJECTIVE in texts
                     assert any(i.get('name') == 'write' for i in history) and any(i.get('name') == 'read' for i in history)
-                    assert any('READ_STAGE_COMPLETE' in r for r in results) and any('COUNTER_APPENDED_ONCE' in r for r in results)
-                    # Pi cuts a long result at 2,000 characters and names nothing to recall it by.
+                    assert any('COUNTER_APPENDED_ONCE' in r for r in results)
+                    # The intact context: both reads, whole, with nothing to recall them by.
+                    assert any('READ_STAGE_COMPLETE part 1' in r for r in results) and any('READ_STAGE_COMPLETE part 2' in r for r in results)
                     assert '[history_read:' not in prompt and 'Additional focus' not in prompt
-                    text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
+                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
                 if sid.startswith('compaction-no-tools'):
                     if sid.endswith('hosted'):
@@ -100,18 +109,28 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 assert 'ORIGINAL GOLDEN OBJECTIVE' in joined
                 assert {t['name'] for t in body['tools']} == {'write', 'read'}
                 # Pi replays a checkpoint as its compaction summary message.
-                if any(t.startswith('The conversation history before this point was compacted into the following summary:') for t in texts):
-                    if len(json.dumps(history, ensure_ascii=False, separators=(',', ':')).encode()) > 1500:
+                checkpoints = [t for t in texts if t.startswith(CHECKPOINT)]
+                if checkpoints:
+                    # A compaction keeps the task in hand: its request is replayed
+                    # as written after the one checkpoint, which says the task was
+                    # in progress, and the round awaiting a reply is whole.
+                    assert len(checkpoints) == 1 and texts[0] == checkpoints[0], 'one checkpoint, first'
+                    assert texts[1] == OBJECTIVE, 'the request is replayed as written'
+                    assert IN_PROGRESS in checkpoints[0], 'a checkpoint made mid-task says so'
+                    assert history[-1].get('type') == 'function_call_output', 'the round in flight is retained'
+                    if len(json.dumps(history, ensure_ascii=False, separators=(',', ':')).encode()) > CAPACITY:
                         status = 400
                         output = None
                     elif 'PART_3_READ' in joined:
                         assert 'COUNTER_APPENDED_ONCE' in joined and 'READ_STAGE_COMPLETE' in joined
+                        assert len(results) == 1 and 'READ_STAGE_COMPLETE part 3' in results[0]
                         output = message('Golden complete without repeated effects')
                     else:
+                        assert len(results) == 1 and 'READ_STAGE_COMPLETE part 2' in results[0]
                         output = [call('read-c', 'read', {'part': 3})]
                 elif any('COUNTER_APPENDED_ONCE' in r for r in results):
-                    assert len(results) == 1, 'oversized raw results were blindly dispatched'
-                    output = [call('read-a', 'read', {'part': 1}), call('read-b', 'read', {'part': 2})]
+                    assert len(results) <= 2, 'oversized raw results were blindly dispatched'
+                    output = [call('read-a', 'read', {'part': 1})] if len(results) == 1 else [call('read-b', 'read', {'part': 2})]
                 else:
                     assert not results
                     output = [call('mutate', 'write', {'path': 'counter.txt', 'content': 'once\n'})]
@@ -119,7 +138,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 payload = {'error': {'type': 'invalid_request_error', 'code': 'context_length_exceeded', 'message': 'Routed input contract exceeds 1500 UTF-8 bytes'}}
             else:
                 payload = {'id': 'resp-' + sid, 'object': 'response', 'model': body['model'], 'router_model_name': 'fixture-resolved', 'status': 'completed', 'output': output,
-                           'usage': {'input_tokens': 200, 'input_tokens_details': {'cached_tokens': 80}, 'output_tokens': 480 if summary else 30, 'output_tokens_details': {'reasoning_tokens': 0}}}
+                           'usage': {'input_tokens': max(200, len(raw) // 4), 'input_tokens_details': {'cached_tokens': 80}, 'output_tokens': 480 if summary else 30, 'output_tokens_details': {'reasoning_tokens': 0}}}
                 if incomplete:
                     payload.update(status='incomplete', incomplete_details={'reason': 'max_output_tokens'}, output=[{'type': 'reasoning', 'summary': []}])
                     payload['usage']['output_tokens'] = body['max_output_tokens']

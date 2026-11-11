@@ -18,7 +18,11 @@ private actor GoldenCompactionTools: ToolExecuting {
             return resultText("COUNTER_APPENDED_ONCE")
         }
         guard call.name=="read", let part=call.arguments["part"].int, [1,2,3].contains(part) else { throw AgentError("fixture_contract","Invalid read arguments") }
-        return resultText("READ_STAGE_COMPLETE part \(part) "+String(repeating:"observed ",count:part==3 ? 300:1800))
+        // About 7,200, 3,600 and 1,350 tokens. In the golden task's window the
+        // first two together pass the working threshold, the second and the
+        // third each fit beside a checkpoint, and no two reads fit within
+        // the 30% a too-large task keeps of its newest rounds.
+        return resultText("READ_STAGE_COMPLETE part \(part) "+String(repeating:"observed ",count:[3200,1600,600][part-1]))
     }
 }
 
@@ -30,8 +34,9 @@ final class CompactionGatewayTests: HelperTestCase {
         let port=gateway.port
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["modelOutputLimit"]=32768;raw["thinkingLevel"]="high"
         var user=ChatMessage(role:"user",content:[textBlock("Preserve the objective.")]);user.id="root";user.taskRootID="root"
-        // Two answers of 2,250 tokens each: the second is kept, and the task's
-        // start is summarized in one request of a 16,000-token window.
+        // Two answers of 3,375 tokens each. The chat is idle, so its last
+        // exchange stays as written (the request and the second answer), and
+        // the first answer is summarized in one request of a 16,000-token window.
         let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:1500))]);evidence.taskRootID="root";return evidence }
         let traces=TraceStore()
         func attempts(_ id: String) async throws -> [JSON] { try await traces.command("debug.list",session:id,params:[:])["attempts"].list }
@@ -56,7 +61,8 @@ final class CompactionGatewayTests: HelperTestCase {
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(),context=await s.context,sent=try await attempts("compaction-budget")
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(context.first?.kind,"compaction");XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi replays no input verbatim")
+        XCTAssertEqual(context.first?.kind,"compaction");XCTAssertEqual(context.dropFirst().map(\.id),[seed[0].id,seed[2].id],"The request is replayed as written with the reply that ended its task")
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),[seed[1].id])
         XCTAssertEqual(sent.count,1,"A compaction is one request")
         XCTAssertTrue(try records().allSatisfy { $0["status"].int==200 })
         var output=0
@@ -96,8 +102,14 @@ final class CompactionGatewayTests: HelperTestCase {
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["thinkingLevel"]="high"
         let profile=try Profile(raw), resources=Resources(cwd:root,home:root), tools=GoldenCompactionTools(root)
         let snapshot=try await resources.resolve(), definitions=await tools.definitions(readOnly:false)
-        let seed=[ChatMessage(role:"user",content:[textBlock("Inspect and preserve the work; do not mutate files.")]),
-                  ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Verified evidence. ",count:5000))])]
+        // A finished task's evidence, then the short exchange an idle chat
+        // keeps: the summary request is for the first task.
+        func row(_ role: String, _ text: String, id: String, root: String) -> ChatMessage {
+            var message=ChatMessage(role:role,content:[textBlock(text)]); message.id=id; message.taskRootID=root; return message
+        }
+        let seed=[row("user","Inspect and preserve the work; do not mutate files.",id:"inspect",root:"inspect"),
+                  row("assistant",String(repeating:"Verified evidence. ",count:5000),id:"evidence",root:"inspect"),
+                  row("user","Is everything verified?",id:"check",root:"check"),row("assistant","Yes, all of it.",id:"checked",root:"check")]
         for suffix in ["write","mcp","hosted","custom"] {
             let id="compaction-no-tools-"+suffix, traces=TraceStore()
             let s=try AgentSession(id:id,profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent(id),readOnly:false,resources:resources,client:ProviderClient(traces:traces),tools:tools,traces:traces,seed:seed)
@@ -119,12 +131,22 @@ final class CompactionGatewayTests: HelperTestCase {
         }
     }
 
+    /// One task, nothing before it, too large to keep whole: at the working
+    /// threshold its request and the read awaiting a reply stay and its
+    /// earlier rounds are summarized; after the gateway rejects the next
+    /// request, the recovery keeps the request and the newest read again.
+    /// The gateway checks each request on its own terms: the request replayed
+    /// as written after one checkpoint that says the task was in progress,
+    /// no orphan calls, never three raw results, and a byte capacity of its own.
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
         let gateway=try await PythonGateway.start(script:repo.appendingPathComponent("fixtures/native/compaction_gateway.py"),root:root);defer { gateway.stop() }
         let port=gateway.port
-        var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["maxOutputTokens"]=512
+        // A 2,048-token output ceiling is the summary allowance: about 13,400
+        // tokens are usable, a working task compacts at about 10,050, and what
+        // replaces the context may measure about 6,700.
+        var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["maxOutputTokens"]=512;raw["modelOutputLimit"]=2048
         let profile=try Profile(raw),traces=TraceStore(),tools=GoldenCompactionTools(root),state=root.appendingPathComponent("state")
         let s=try AgentSession(id:"compaction-golden",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:tools,traces:traces)
         let sibling=try AgentSession(id:"compaction-sibling",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:tools,traces:traces)
@@ -142,13 +164,18 @@ final class CompactionGatewayTests: HelperTestCase {
         XCTAssertEqual(try String(contentsOf:root.appendingPathComponent("counter.txt"),encoding:.utf8),"once\n")
         let called=await tools.calls;XCTAssertEqual(called,["write","read","read","read"])
         let journal=try String(contentsOf:URL(fileURLWithPath:path),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }
-        XCTAssertEqual(journal.filter { $0["type"].text=="compaction" }.count,2)
+        XCTAssertEqual(journal.filter { $0["type"].text=="compaction" }.map { $0["nativeCompaction"]["reason"].text },["threshold","context-rejection"])
+        XCTAssertEqual(journal.filter { $0["type"].text=="compaction" }.map { $0["nativeCompaction"]["protectedIDs"] },[["root"],["root"]],"Each keeps the request as written")
+        XCTAssertEqual(journal.filter { $0["type"].text=="compaction" }.map { $0["nativeKeptIDs"].list.count },[3,3],"with the read awaiting its reply")
         XCTAssertEqual(journal.filter { $0["customType"].text=="pi-app.context-recovery.v1" }.count,1)
+        XCTAssertEqual(context.first?.compaction?["continuationText"].text,CompactionCheckpoint.continuationText)
+        XCTAssertEqual(context.dropFirst().map(\.role),["user","assistant","toolResult","assistant"],"The request, the third read and the answer")
         let attempts=try await traces.command("debug.list",session:"compaction-golden",params:[:])["attempts"].list
         let records=try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }.filter { $0["session"].text=="compaction-golden" }
-        // Two turns, the threshold summary, the third read, its rejected
-        // request, the recovery summary and the final answer.
-        XCTAssertEqual(attempts.count,7);XCTAssertEqual(records.filter { $0["status"].int==400 }.count,1);XCTAssertFalse(records.contains { $0["status"].int==422 })
+        // Three turns (the write and two reads), the threshold summary, the
+        // third read, its rejected request, the recovery summary and the
+        // final answer.
+        XCTAssertEqual(attempts.count,8);XCTAssertEqual(records.filter { $0["status"].int==400 }.count,1);XCTAssertFalse(records.contains { $0["status"].int==422 })
         for attempt in attempts {
             func fullBody(_ which: String) async throws -> String {
                 var data=Data(), offset:JSON=0

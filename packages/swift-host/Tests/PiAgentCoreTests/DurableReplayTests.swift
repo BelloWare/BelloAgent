@@ -22,10 +22,9 @@ final class DurableReplayTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], tools: any ToolExecuting = RecordingTools(), resume: String? = nil, in directory: URL? = nil) throws -> AgentSession {
-            // Everything but the latest turn is summarized when compacted.
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            // Everything but the latest exchange is summarized when compacted.
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: directory ?? state, readOnly: false, resources: resources,
-                                    client: ScriptClient(replies), tools: tools, traces: traces, resumePath: resume, autoCompaction: false, compactionPolicy: policy)
+                                    client: ScriptClient(replies), tools: tools, traces: traces, resumePath: resume, autoCompaction: false)
         }
     }
     private func chat() throws -> Chat {
@@ -92,7 +91,7 @@ final class DurableReplayTests: HelperTestCase {
             toolReply(["first", "second"]), answer(String(repeating: "after the tools ", count: 400)),
             answer("the original answer"), answer(String(repeating: "the edited answer ", count: 400)),
             answer("answer three"), answer("Summary of everything so far."),
-            answer(String(repeating: "answer four ", count: 400)), answer("Another summary."), answer("answer five"),
+            answer(String(repeating: "answer four ", count: 400)), answer("answer five"), answer("Another summary."), answer("answer six"),
         ])
         try await send(session, "u1", "please use the tools")
         try await send(session, "u2", "the original question")
@@ -108,9 +107,12 @@ final class DurableReplayTests: HelperTestCase {
     func testTheReplayAChatKeepsIsItsJournals() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let session = try await source(chat)
+        // The second compaction keeps the latest exchange (u5) and has the
+        // long answer before it to summarize.
         try await send(session, "u4", "question four")
-        try await compact(session, "compact-2")
         try await send(session, "u5", "question five")
+        try await compact(session, "compact-2")
+        try await send(session, "u6", "question six")
         let sessionPath = await session.path, keptReplay = try await session.durableReplay()
         let path = try XCTUnwrap(sessionPath), kept = try XCTUnwrap(keptReplay)
         let compactions = try String(contentsOfFile: path, encoding: .utf8).components(separatedBy: "\n").filter { $0.contains(#""type":"compaction""#) }.count
@@ -134,12 +136,13 @@ final class DurableReplayTests: HelperTestCase {
         let stored = try XCTUnwrap(JournalCheckpoint.read(for: URL(fileURLWithPath: path)))
         XCTAssertNotNil(stored.lineage, "the edit's marker")
         XCTAssertFalse(stored.rows.contains { $0.id == stored.lineage }, "among the rows the file does not name")
-        let session = try chat.session("source", replies: [answer(String(repeating: "answer four ", count: 400)), answer("Another summary."), answer("answer five")], resume: path)
+        let session = try chat.session("source", replies: [answer(String(repeating: "answer four ", count: 400)), answer("answer five"), answer("Another summary."), answer("answer six")], resume: path)
         let partial = await session.partialHistory
         XCTAssertTrue(partial)
         try await send(session, "u4", "question four")
-        try await compact(session, "compact-2")
         try await send(session, "u5", "question five")
+        try await compact(session, "compact-2")
+        try await send(session, "u6", "question six")
         let compactions = try String(contentsOfFile: path, encoding: .utf8).components(separatedBy: "\n").filter { $0.contains(#""type":"compaction""#) }.count
         XCTAssertEqual(compactions, 2, "the reopened chat compacted")
         let keptReplay = try await session.durableReplay()

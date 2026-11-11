@@ -278,7 +278,12 @@ final class RequestContextTests: HelperTestCase {
 
     // MARK: sizing a request no reply has measured (pi's estimateContextTokens)
 
-    func testOpaqueReplayAddsNothingToPisEstimate() throws {
+    /// Ours since 0.1.137 (owner, 2026-11-11: "encrypted reasoning should be
+    /// not ignored"): a replayed reasoning item is input the model reads
+    /// again, so the request's size counts its ciphertext at its length over
+    /// four, where it counted only the item's envelope. Pi's meter, an
+    /// estimate over the messages' own text, is unchanged by it.
+    func testOpaqueReplayCountsInTheRequestSizeAndNotInPisEstimate() throws {
         let pinned = try pinnedProfile()
         var message = ChatMessage(role: "assistant", content: [textBlock("Short answer")])
         message.providerItems = [["type": "reasoning", "encrypted_content": JSON(String(repeating: "opaque-state", count: 300))],
@@ -292,8 +297,8 @@ final class RequestContextTests: HelperTestCase {
         let counter = RequestContextCounter()
         let opaque = try counter.count(messages: [message], profile: pinned, request: retained)
         let plain = try counter.count(messages: [message], profile: portable, request: projected)
-        XCTAssertEqual(opaque.requestTokens, plain.requestTokens + 8, "The opaque item adds only its envelope, never its ciphertext length")
-        XCTAssertEqual(opaque.tokens, plain.tokens)
+        XCTAssertEqual(opaque.requestTokens, plain.requestTokens + 8 + 3_600 / 4, "The opaque item adds its envelope and its ciphertext at four characters per token")
+        XCTAssertEqual(opaque.tokens, plain.tokens, "The meter estimates the messages, not the provider's state")
     }
 
     func testImagesCountAs4800CharactersWhateverTheirSize() throws {

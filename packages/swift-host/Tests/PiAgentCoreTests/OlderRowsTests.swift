@@ -43,7 +43,7 @@ final class OlderRowsTests: HelperTestCase {
         ]
         let writer = try AgentSession(id: "older", profile: profile, apiKey: "test", cwd: root, directory: state, readOnly: true, resources: resources,
                                       client: ScriptClient(replies), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false,
-                                      compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
+                                      compactionPolicy: CompactionPolicy())
         for turn in 0..<4 { try await send(writer, "t\(turn)", "Question \(turn)") }
         _ = try await writer.edit(fromMessageID: "t3", input: Submission(commandID: "edit", turnID: "t3-edited", text: "Question 3, edited"))
         try await eventually { !(await writer.isRunning) }

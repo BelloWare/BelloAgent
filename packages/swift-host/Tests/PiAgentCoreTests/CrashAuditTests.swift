@@ -53,7 +53,7 @@ final class CrashAuditTests: HelperTestCase {
         let port = gateway.port
         var raw = try fixtureProfile().raw; raw["baseUrl"] = JSON("http://127.0.0.1:\(port)")
         let traces = TraceStore(), tools = RecordingTools()
-        let session = try AgentSession(id: "huge-usage", profile: Profile(raw), apiKey: "synthetic-audit-key", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ProviderClient(traces: traces), tools: tools, traces: traces, autoCompaction: false, compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
+        let session = try AgentSession(id: "huge-usage", profile: Profile(raw), apiKey: "synthetic-audit-key", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ProviderClient(traces: traces), tools: tools, traces: traces, autoCompaction: false, compactionPolicy: CompactionPolicy())
         raw["modelId"] = "sibling"
         let sibling = try AgentSession(id: "sibling", profile: Profile(raw), apiKey: "synthetic-audit-key", cwd: root, directory: root.appendingPathComponent("sibling"), readOnly: true, resources: Resources(cwd: root, home: root), client: ProviderClient(traces: traces), tools: RecordingTools(), traces: traces, autoCompaction: false)
         addTeardownBlock { await session.close(); await sibling.close() }

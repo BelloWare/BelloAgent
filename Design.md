@@ -1239,28 +1239,177 @@ provider-item ranges, with a bounded escaped identifying excerpt when needed.
 There is no flattened transcript, tool-result excerpting for summarization,
 separate turn-prefix request, chunking, repair request or file inventory.
 
-`CompactionPlanner` retains complete assistant/call/result replay groups with
-occurrence-scoped call IDs, starting from the 20,000-token recent target (scaled
-for smaller windows). Before dispatch it moves the cut to leave room for a full
-summary allowance and normal continuation. A new unanswered input and current
-structured skill/permission carriers remain authoritative. A completed long task
-can be summarized within its internal rounds; a summary does not authorize tools
-or change selection/permission state.
+**What a compaction keeps: the task in hand, whole (0.1.137).** Owner,
+2026-11-11: "when it's working, it got compaction, either right after I send the
+message, or after few runs, and then it stopped, I am pretty sure the compaction
+method or prompt is bad", and then: **"remove the cap directly"**. The cap was
+pi's 20,000-token recent tail. This departs from pi parity by that decision: pi
+keeps a token tail and replays no input; Bello Agent keeps the current task word
+for word and summarizes only what came before it.
 
-**A turn compacted while it works goes on with what it was asked (0.1.136).**
-Owner, 2026-11-11: "it got compaction, either right after I send the message, or
-after few runs, and then it stopped". Two things stay as written beside the
-summary. The running task's own inputs (its request and the messages that
-steered it; mail from another agent only when it started the task) are replayed
-ahead of the kept tail, newest first within the recent-tail allowance, as Codex
-keeps recent user messages beside its summary; one too long for the allowance is
-summarized. They are the checkpoint's `protectedIDs`. A task a reply has ended is
-history and replays nothing, as in pi. And a tool batch no reply has answered is
-kept even when its results alone pass the recent target: the model asked for
-them one request ago and has not read them. Before this, such a batch (a few
-large reads at once, which is also what usually crosses the threshold) left the
-next request the summary alone. The cut still moves past a batch that cannot fit
-beside the summary allowance.
+`CompactionPlanner` cuts by logical task, which is `taskRootID`: the input that
+started the task, the owner's steering, delivered agent mail, every reply and
+every complete call/result group (occurrence-scoped call IDs) since. Steering
+and agent mail join a task and never start another; with follow-up mode `all`
+the first delivered message starts the task and the rest join it. A task ends at
+the real completion decision, after steering and family handling, not at an
+assistant row: a parent waiting for its family has an answer in place and is
+still working (the run passes the task's lifecycle; an idle manual compaction
+reads the task's recorded outcome).
+
+- **While the task works** every replay-eligible row of it stays, in order.
+- **At send**, before the task's first reply, the message refers to what came
+  just before it ("yes, do the second one"): the preceding task's initiating
+  input, its owner steering and its tool-free final reply stay, without its
+  tool rounds. The reply is the actual assistant row, in the ordinary retained
+  groups; `protectedIDs` stays an ordered, user-only prefix of `keptIDs`.
+- **An idle manual compaction** keeps the last exchange the same way; one that
+  stopped a running turn keeps that task whole.
+- **No older owner messages** are collected beyond that: replaying answered
+  requests reads as asking again.
+- **A context without usable task metadata** (an old journal: every existing
+  chat at its first compaction after upgrading) is one task, whether it is
+  working, idle or just before a new message: the surviving body is kept and
+  the fallback applies, so its newest rows stay, the latest request with its
+  reply. The last-exchange cut is chosen only where the rows name their task;
+  nothing is guessed from the last user row, and nothing already summarized
+  is reloaded.
+
+**The fallback.** The whole task is too large when the projected replacement
+(`[checkpoint at its whole allowance, with its framing] + retained rows`, the
+real instructions and schemas included) passes 50% of the usable input, fails
+the normal continuation fit, or passes the 32 MiB request limit. Then these are
+required and never dropped: the task's own inputs with their skills and images
+(an agent-authored initiating task included), the latest permission-note
+carrier, the complete newest call/result batch awaiting a reply, agent mail the
+model has not answered, and at send the preceding exchange. The newest whole
+groups before them are added, working backward in one pass, up to 30% of the
+usable input and never past the room the replacement has left: 30% is a ceiling
+on what is retained, and what the summary's allowance, the request's prefix
+(instructions, schemas, wrapper, framing) and the required rows leave under the
+50% is the budget. In a small window (32,768 tokens: the allowance alone is a
+third of the usable input) that room is little or none, and the required rows
+are the whole plan. Required material may pass the 30%; the replacement must
+still pass the 50%.
+
+One last resort: when the required rows alone fail that test with the checkpoint
+at its whole allowance (in a 32,768-token window the allowance is a third of the
+usable input, so a few thousand tokens of schemas or of required rows are
+enough), they are still planned if the replacement passes with the summary at
+the length it is asked for. The requested length is an admission estimate, never
+an adoption exemption. Before anything is sent, the replacement at the whole
+allowance must still fit a normal request in tokens and in bytes. The completed
+checkpoint is adopted only if the actual replacement fits, saves the safety
+margin and measures at most half the usable input, which keeps the gap below
+the triggers. A summary longer than requested is adopted when the complete
+replacement passes those checks; otherwise it is rejected as it is, with no
+truncation and no repair request, the context stays, and automatic compaction
+ends for that task, so a later overflow pauses the chat instead of asking for
+another summary. That is a deliberate trade of availability: without the last
+resort such a chat could never compact.
+
+If no plan passes, the answer is "no useful compaction" and the intact
+request goes: the planner no longer abandons protections or advances the cut
+past required groups to make a compaction possible. An adopted checkpoint must
+remove something new, save at least the safety margin and measure at most 50%
+of the usable input, which leaves a real gap before the next trigger (before,
+"just below the trigger").
+
+**Overflow recovery keeps the same requirements and one more plan** (Astra,
+2026-11-11). After a gateway's context rejection the ordinary plan is tried
+first. Where it cannot be made, the request has to shrink all the same, so
+recovery alone may keep **only what must stay** with the checkpoint, though
+that passes half the usable input, provided the replacement fits a normal
+request in tokens and in bytes at the whole summary allowance
+(`PreparedCompaction.recoveryOnly`). The completed checkpoint is measured
+again: it must fit the normal output reserve and the byte limit and save the
+safety margin; the half is not asked of it. Nothing required is dropped, and no
+tool runs again. The case: 60,000 tokens of results in flight in a
+128,000-token window can never pass the half (55,000), yet the request and that
+batch with a checkpoint fit easily. A fitting replacement is not yet a
+recovery: the one summary request must itself fit (`compaction_too_large`
+otherwise, nothing sent, the overflow stands).
+
+**Thresholds.** With W the window, M the dispatch safety margin, O the ordinary
+output reserve, G the summary allowance and I the measured appended instruction:
+usable input `U = W − M − max(O, G + I)`; growth reserve
+`R = min(max(16,384, ceil(0.15 W)), floor(U / 4))`. A task **starts** by
+compacting once `floor(0.70 U)` is in use, checked after its inputs are
+delivered and before its first request, so the compaction lands before the work
+instead of a round or two into it; while it **works** the trigger is `U − R`.
+For a 128,000-token window, an 8,192-token reserve and a 500-token instruction:
+77,064 at a task's start, 90,892 while it works. The cost is earlier
+whole-history summary requests, some before short tasks that would have
+finished without one. The figures use `requestTokens`; a budget that cannot hold
+a summary makes automatic compaction unavailable and does not fail a request
+that can be sent.
+
+**A compaction that fails does not stop a turn that can go on.** One policy
+(`automaticCompaction`) serves the threshold, agent delivery and overflow
+recovery. Whatever goes wrong leaves the context intact and shows on the
+operation's row; what follows depends on whether a summary request was sent
+(Astra, 2026-11-11), which the session records as it sends one
+(`compactionDispatched`; an error's code cannot tell, since a local
+`compaction_too_large` and a gateway's rejection share one):
+
+- **Before the request: unavailable for this context, nothing more.** A plan
+  that cannot be made, a budget that cannot hold a summary, a summary request
+  too large to send cost nothing. No failure record or fingerprint is written
+  and the task is not written off. A plan is tried again when its inputs
+  change, including after a context rejection. A working task's required rows
+  change every round: the large batch in flight at one threshold is answered
+  history at the next, and a plan that could not be made around it then fits.
+  Writing the task off at the first refusal (the first form of this rule)
+  stopped such a chat at an overflow it could have compacted away. The same
+  inputs are not planned twice: the refusal is remembered by the replayed
+  context's revision, the task, the request's configuration and resources, and
+  the mode (`CompactionInputs`; threshold and recovery are separate modes,
+  because recovery admits more). Rows that are only shown change none of it.
+  A recovery that cannot be planned leaves the original overflow, once.
+- **After the request: the task's automatic compaction ends.** A summary that
+  fails, is refused, cut or unusable, or whose candidate is not worth adopting
+  was paid for. `suppressedCompactionTask` is saved in the failure record and
+  the metadata file, so a Retry, a Resume and a reopen remember; a record
+  without the field suppresses nothing. That record is a journal write like any
+  other: if it cannot be appended and synchronized the run stops there, and
+  memory says "suppressed" only once the journal does. A side chat not saved
+  yet holds it in memory and its first journal carries it (`keepNow`); a fork
+  starts without it, as it starts without any other operation state. If that
+  task later really overflows, the chat pauses on the overflow instead of
+  asking for another summary.
+- **One paid summary between two replies of the model**, whether at a
+  threshold, for agent mail or after an overflow (`automaticSummarySpent`, set
+  as an automatic summary request is sent, adopted or not). Steering does not
+  clear it; the model's next reply does (a reply cut for mail included: the
+  model answered that request), and so does a new task, which is the
+  owner's own act and already clears a task's suppression. Without that last
+  rule a chat whose summary was followed by an overflow, and so by no reply,
+  would have no automatic recovery again. It is held in memory only: a
+  relaunch starts without it, and the one-recovery allowance, which is
+  journaled, still bounds an overflow.
+
+The request then goes as it is and the gateway decides. Named exceptions still stop the run: a
+Stop, a cost or accounting hold, a damaged replay group, a journal that refuses
+a write. Mail between agents that cannot fit beside the preferred output
+reserve is delivered when the window takes it; mail the window cannot take stays
+accepted and undelivered between rounds and is the pausing limit only at a final
+boundary. This replaces "a failed compaction pauses continuation" (0.1.90).
+
+**Framing.** A checkpoint made while its task worked records `continuationText`
+in its version-2 metadata: "The task was in progress when this checkpoint was
+made. Continue from the retained request and latest results without asking the
+owner to repeat them." It is rendered right after `</summary>` inside that
+checkpoint's own input item, so the request prefix is the same bytes on every
+later request; it is set before the candidate is counted. A checkpoint without
+the field (every earlier one, an at-send or a manual one) renders exactly as
+before. The summarizer's instruction keeps "Do not continue its task" and gains
+one bounded sentence: keep a short owner request or constraint as written where
+the wording matters, and name the interrupted step. No live model run has
+validated either text.
+
+A new unanswered input and current structured skill/permission carriers remain
+authoritative; a summary does not authorize tools or change selection or
+permission state, and inherited or agent-authored inputs keep their provenance.
 
 The effective selected model, endpoint, reasoning effort, replay policy, ordinary
 instructions/tool definitions and cache-session affinity remain unchanged.
@@ -1281,16 +1430,20 @@ local-only reserve. When one round outgrew the trigger's growth buffer and the
 intact context no longer leaves room for G, the summary takes the room that is
 left, down to 8,192 tokens (pi's smallest summary cap); below that nothing is
 sent (0.1.136: the turn used to fail there with `compaction_too_large`, at about
-85% of a 100,000-token window, though its own next request still fitted). The soft visible-summary target is up to 3,000 tokens, smaller
-for small windows and histories; neither reasoning effort nor the resulting text
-is clipped to force success. At safe pending-request boundaries the trigger
-reserves the larger of the ordinary response reserve and G plus the appended
-instruction estimate, then adds the dispatch safety margin and a growth buffer
-of up to 16,384 tokens (at most a quarter-window). No compaction runs after a final
-answer merely because the now-idle context is large.
+85% of a 100,000-token window, though its own next request still fitted). The actual allowance is what the checkpoint
+records (`outputAllowance`, `wireCap`, each attempt's `cap`). The soft
+visible-summary target is up to 3,000 tokens, smaller for small windows and
+histories; neither reasoning effort nor the resulting text is clipped to force
+success. The triggers are under "Thresholds" above. No compaction runs after a
+final answer merely because the now-idle context is large.
 
 The complete provider projection, including wrappers, schemas and images, sizes
-preflight and candidates. Opaque ciphertext is never counted as visible text.
+preflight and candidates. Until 0.1.137 opaque ciphertext counted nothing; a
+replayed reasoning item now counts its `encrypted_content` at characters over
+four (see "Encrypted reasoning" below), and a tool call's id counts the same way
+when it is longer than the 64 bytes every provider accepts: LiteLLM keeps
+Gemini's thought signature in it (278,100 bytes measured), and the model reads
+that again with the call and with its output (0.1.137).
 Persisted usage bindings prevent reuse across changed model, prefix, schemas or
 replay configuration, and a checkpoint resets the old usage epoch. Before/after
 progress comparisons deliberately use the same projection heuristic. All counts
@@ -1302,10 +1455,10 @@ Positive `completed` terminal evidence is required; missing or contradictory
 evidence and incomplete output items retain the old context. Reaching the numeric
 cap with an explicitly completed response does not itself mean truncation.
 The final checkpoint kind and replay wrapper are assigned before counting.
-`[checkpoint] + retained messages` must fit the normal output reserve and shrink
-input; automatic compaction must also fall below its trigger and save at least
-the safety margin. A rejected candidate retains the original context and never
-starts a repair request. Transient retries reuse the frozen request and share one
+`[checkpoint] + retained messages` must fit the normal output reserve, the 32 MiB
+request limit and shrink input; automatic compaction must also measure at most
+half the usable input and save at least the safety margin. A rejected candidate
+retains the original context and never starts a repair request. Transient retries reuse the frozen request and share one
 bounded retry owner; incomplete output, refusal, compatibility and context
 rejections are not retried with another strategy.
 
@@ -1319,13 +1472,47 @@ memory adoption with no intervening await/fallible step. Ancillary trace/display
 updates follow; Stop after this point keeps the durable checkpoint.
 
 One persisted recovery allowance can surround a failed ordinary context request;
-completed tools are never replayed. An unchanged failed automatic compaction is
-suppressed, while an explicit manual retry is a new operation. Queued input stays
+completed tools are never replayed. An automatic compaction whose summary
+request was sent and not adopted suppresses further automatic attempts for its
+task (one that could not be planned does not), while an explicit manual retry is
+a new operation. Queued input stays
 queued during a summary and is delivered/recounted at the normal boundary.
 Attempt usage, failures, reasoning and exact request/response captures remain in
 the existing chronological operation history; summary usage never replaces the
 normal-request context observation. The request inspector recognizes both the
 new appended instruction and historical saved summary formats.
+
+**Encrypted reasoning (0.1.137, in part).** Owner, 2026-11-11: "well, encrypted
+reasoning should be not ignored… unless it got rejected by litellm due to model
+switch, which then we need user confirmation to proceed with previous encrypted
+reasoning removed or something like that, while keep new encrypted reasoning".
+
+What holds now. Every Responses request of a reasoning model asks for
+`reasoning.encrypted_content`, and a reply's provider items are journaled as
+received with the route that produced them (`providerItems`,
+`providerBinding`, `providerIdentity`). Whether they are sent again is the
+connection's replay policy (`ProviderClient.replayItems`): a **pinned** route
+replays them byte for byte, each before the calls or text it led to; a
+compaction changes nothing in that, since it keeps whole rows: the summary
+request, the request after a compaction and the rounds a fallback keeps all
+carry their reasoning, and a summarized round takes its reasoning with it. In
+0.1.137 a replayed reasoning item is also **counted** where no reply's usage has
+measured it yet (`RequestContextCounter.inputTokens`: its ciphertext's length
+over four, an upper bound), so the fallback and the 50% target see it, and the
+32 MiB check sees its bytes.
+
+What does not hold yet. Reasoning is still left out without a word in three
+cases the owner's rule covers: a connection whose policy is **portable** (the
+onboarding default) never replays it; a reply written before the chat moved to
+another saved connection, or under a per-turn model override, is replayed
+portably (`Routing.swift`, `Profile.overriding`); and an unset policy refuses
+the request (`opaque_replay_policy`) instead of asking. Replaying by default
+needs the other half of the rule at the same time: recognising the gateway's
+rejection of earlier reasoning after a model or route change, pausing with a
+question (the app's `ChatQuestion` confirmation, as the connection switch asks
+before reasoning is left behind), and a durable "reasoning before this point is
+no longer replayed" record. That is not in this release; nothing here strips
+reasoning that was replayed before.
 
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and

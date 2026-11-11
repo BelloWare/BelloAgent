@@ -392,7 +392,7 @@ final class PartialReplyLogTests: HelperTestCase {
     /// still on the shown branch: its reply is restored, not set aside.
     func testAReplyOfATurnNotLoadedIsRestored() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
-        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+        let policy = CompactionPolicy()
         let first = try AgentSession(id: "chat", profile: chat.profile, apiKey: "fixture", cwd: chat.root, directory: chat.state, readOnly: false,
                                      resources: Resources(cwd: chat.root, home: chat.root),
                                      client: ScriptClient([answer(String(repeating: "one ", count: 400)), answer(String(repeating: "two ", count: 400)), answer("Summary.")]),

@@ -40,6 +40,8 @@ public struct ProviderClient: ModelClient {
         }
         return safe.isEmpty ? "unknown" : String(safe)
     }
+    /// The largest serialized request a gateway is sent.
+    static let maximumRequestBytes = 32*1024*1024
     /// Normal Responses construction, including cache affinity for compaction.
     /// `cacheSessionID` names the prompt cache the request joins (pi's
     /// session id there); nil means the session's own. Ours: a side chat
@@ -142,7 +144,7 @@ public struct ProviderClient: ModelClient {
         try Task.checkCancellation()
         let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:purpose == "compaction")
         let bytes=try body.data()
-        guard bytes.count<=32*1024*1024 else { throw AgentError("request_limit","Serialized request exceeds 32 MiB") }
+        guard bytes.count<=Self.maximumRequestBytes else { throw AgentError("request_limit","Serialized request exceeds 32 MiB") }
         var request=URLRequest(url:profile.endpoint);request.httpMethod="POST";request.httpBody=bytes
         request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.setValue("text/event-stream",forHTTPHeaderField:"Accept")
         // Ours: every gateway request names its native session and turn (a compaction or

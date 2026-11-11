@@ -412,7 +412,10 @@ final class HistoryWindowTests: HelperTestCase {
 
     /// A chat reopened from its metadata file loads the rows after its last
     /// compaction, which can begin inside a turn: one the compaction split,
-    /// its question among the rows not loaded. The newest page starts at the
+    /// its question among the rows not loaded. Since 0.1.137 a compaction
+    /// keeps a turn's question with what it keeps of the turn, so only a
+    /// journal an earlier version compacted opens that way; the case rewrites
+    /// its compaction record as 0.1.135 wrote it. The newest page starts at the
     /// first question among the loaded rows, as the desktop's journal reader
     /// does, and the page before it reads the rows not loaded to hold that
     /// turn whole. The newest page held the loaded tail of that turn as if
@@ -421,12 +424,10 @@ final class HistoryWindowTests: HelperTestCase {
     func testAReopenedChatsPagesStartAtAQuestionWhenItsLoadedRowsBeginInsideATurn() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root)
-        // Keeping the least it can, the compaction cuts the turn at its last reply.
-        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
         func open(_ replies: [ModelReply], resume: String? = nil) throws -> AgentSession {
             try AgentSession(id: "split", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
                              client: ScriptClient(replies), tools: RecordingTools(), traces: TraceStore(), resumePath: resume,
-                             autoCompaction: false, compactionPolicy: policy)
+                             autoCompaction: false)
         }
         func send(_ session: AgentSession, _ id: String, _ text: String) async throws {
             _ = try await session.submit(Submission(commandID: id, turnID: id, text: text), steer: false)
@@ -442,9 +443,26 @@ final class HistoryWindowTests: HelperTestCase {
         try await writer.compact(commandID: "compact")
         try await eventually { !(await writer.isRunning) }
         for turn in 1..<4 { try await send(writer, "q\(turn)", "Question \(turn)") }
-        let written = await writer.path
+        let written = await writer.path, kept = await writer.context.first?.compaction?["keptIDs"].list.compactMap(\.text)
         let path = try XCTUnwrap(written)
         await writer.close()
+        XCTAssertEqual(kept?.first, "q0", "This version keeps the turn's question with its answer")
+        // The same journal as 0.1.135 and earlier compacted it: the turn cut
+        // at its last reply, its question summarized with its calls (a
+        // version-2 record with no protected inputs).
+        let url = URL(fileURLWithPath: path)
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map { line -> String in
+            guard line.contains(#""type":"compaction""#) else { return String(line) }
+            var record = try JSON.parse(Data(line.utf8))
+            let tail = record["nativeKeptIDs"].list.filter { $0.text != "q0" }
+            record["nativeKeptIDs"] = .array(tail); record["firstKeptEntryId"] = tail.first ?? .null
+            record["nativeCompaction"]["keptIDs"] = .array(tail); record["nativeCompaction"]["protectedIDs"] = []
+            return String(decoding: try record.data(), as: UTF8.self)
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        // A full replay of the rewritten journal writes its metadata file again.
+        JournalCheckpoint.remove(for: url)
+        let rebuilt = try open([], resume: path); await rebuilt.close()
 
         let reader = try open([], resume: path)
         addTeardownBlock { await reader.close() }

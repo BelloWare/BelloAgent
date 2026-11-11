@@ -75,8 +75,15 @@ import Combine
     private var rowTops: [CGFloat] = []
     private var rowHeights: [CGFloat] = []
     private var rowsWidth: CGFloat = -1
-    /// Each model's measured height at a width, kept while it is unchanged.
-    private var heightCache: [String: (item: ModelDescriptor, chosen: Bool, width: CGFloat, height: CGFloat)] = [:]
+    /// Each model's measured height, kept while it is unchanged, for every
+    /// picker: a picker is made each time the list opens, and measuring a row
+    /// builds it and lays its text out, so a picker of its own heights paid
+    /// for the whole catalog on every opening. A height is reused only for
+    /// the same model as listed, chosen or not, at the same width and scale.
+    private typealias MeasuredRow = (item: ModelDescriptor, chosen: Bool, width: CGFloat, scale: CGFloat, height: CGFloat)
+    private static var measuredRows: [String: [MeasuredRow]] = [:]
+    /// Rows measured since launch, which a test reads.
+    private(set) static var rowMeasurements = 0
     private let measuringRow = CatalogModelRow()
     private static let rowSpacing: CGFloat = 2
     private let notListed = ShellText("", font: PiKit.Font.caption, color: .piInkSecondary)
@@ -281,16 +288,23 @@ import Combine
         rowsWidth = -1
         let ids = Set(matches.map(\.id))
         for (id, row) in rowViews where !ids.contains(id) { putAway(row); rowViews[id] = nil }
-        if heightCache.count > max(256, matches.count * 2) { heightCache = heightCache.filter { ids.contains($0.key) } }
         rowsHolder.needsLayout = true
     }
     private func chosen(_ item: ModelDescriptor) -> Bool { !defaultSelected && current == item.id }
     private func rowHeight(_ item: ModelDescriptor, width: CGFloat) -> CGFloat {
-        let chosen = chosen(item)
-        if let cached = heightCache[item.id], cached.item == item, cached.chosen == chosen, cached.width == width { return cached.height }
+        let chosen = chosen(item), scale = measuringRow.piScale
+        if let known = Self.measuredRows[item.id]?.first(where: { $0.chosen == chosen && $0.width == width && $0.scale == scale && $0.item == item }) { return known.height }
         measuringRow.update(item, chosen: chosen)
         let height = measuringRow.height(forWidth: width)
-        heightCache[item.id] = (item, chosen, width, height)
+        Self.rowMeasurements += 1
+        // Bounded: two catalogs of the largest size, then it starts over.
+        if Self.measuredRows.count >= 4096, Self.measuredRows[item.id] == nil { Self.measuredRows.removeAll(keepingCapacity: true) }
+        // A model listed differently now leaves nothing behind; chosen or
+        // not, and with or without a scroller beside it, is four at most.
+        var known = (Self.measuredRows[item.id] ?? []).filter { $0.item == item }
+        if known.count >= 4 { known.removeFirst() }
+        known.append((item, chosen, width, scale, height))
+        Self.measuredRows[item.id] = known
         return height
     }
     /// Heights and places at `width`; the document's height.

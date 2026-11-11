@@ -2,18 +2,40 @@ import XCTest
 @testable import PiAgentCore
 
 final class CompactionPlanConformanceTests: HelperTestCase {
+    /// The usable input is `U = W − M − max(O, G + I)`: whichever operation
+    /// needs more output room is reserved. While a task works the trigger
+    /// keeps the growth reserve `R = min(max(16,384, ceil(0.15 W)), floor(U / 4))`
+    /// free; a task starts by compacting at `floor(0.70 U)` (0.1.137; before,
+    /// one trigger at `W − max(O, G + I) − M − 16,384`).
     func testTriggerReservesWhicheverOperationNeedsMoreOutputRoom() throws {
         let policy=CompactionPolicy()
-        for ordinaryReserve in [4096,64000] {
+        for (ordinaryReserve,working,starting) in [(4096,90_892,77_064),(64000,47_232,44_083)] {
             var raw=try fixtureProfile().raw
             raw["contextWindow"]=128000;raw["modelOutputLimit"]=100000;raw["maxOutputTokens"]=JSON(ordinaryReserve)
             let profile=try Profile(raw)
-            XCTAssertEqual(try policy.trigger(profile:profile,instructionTokens:500),128000-max(ordinaryReserve,16384+500)-1024-16384)
-            XCTAssertThrowsError(try policy.trigger(profile:profile,instructionTokens:Int.max))
-            XCTAssertThrowsError(try policy.trigger(profile:profile,instructionTokens:-1))
+            let usable=128000-1024-max(ordinaryReserve,16384+500), reserve=min(max(16384,19200),usable/4)
+            XCTAssertEqual(try policy.usable(profile:profile,instructionTokens:500),usable)
+            XCTAssertEqual(policy.growthReserve(profile:profile,usable:usable),reserve,"15% of the window, at most a quarter of what is usable")
+            XCTAssertEqual(try policy.trigger(profile:profile,instructionTokens:500),usable-reserve)
+            XCTAssertEqual(try policy.trigger(profile:profile,instructionTokens:500),working)
+            XCTAssertEqual(try policy.trigger(profile:profile,instructionTokens:500,taskStart:true),usable*7/10)
+            XCTAssertEqual(try policy.trigger(profile:profile,instructionTokens:500,taskStart:true),starting)
+            for taskStart in [false,true] {
+                XCTAssertThrowsError(try policy.trigger(profile:profile,instructionTokens:Int.max,taskStart:taskStart))
+                XCTAssertThrowsError(try policy.trigger(profile:profile,instructionTokens:-1,taskStart:taskStart))
+            }
         }
+        // A small window: the summary allowance is a quarter of it (2,000), and
+        // a 7,000-token budget still leaves 8,000 − 80 − 7,000 usable.
         var raw=try fixtureProfile().raw;raw["contextWindow"]=8000;raw["maxOutputTokens"]=7000
-        XCTAssertThrowsError(try policy.trigger(profile:Profile(raw),instructionTokens:500))
+        XCTAssertEqual(try policy.usable(profile:Profile(raw),instructionTokens:500),920)
+        XCTAssertEqual(try policy.trigger(profile:Profile(raw),instructionTokens:500),920-230)
+        XCTAssertEqual(try policy.trigger(profile:Profile(raw),instructionTokens:500,taskStart:true),644)
+        // Reserves that leave no usable input make compaction unavailable.
+        raw["maxOutputTokens"]=7920
+        for taskStart in [false,true] {
+            XCTAssertThrowsError(try policy.trigger(profile:Profile(raw),instructionTokens:500,taskStart:taskStart)) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_budget") }
+        }
     }
 
     func testVisibleTargetScalesWithoutChangingGenerationOrReasoning() throws {

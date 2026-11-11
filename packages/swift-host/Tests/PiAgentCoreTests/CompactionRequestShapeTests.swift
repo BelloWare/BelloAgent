@@ -103,14 +103,20 @@ final class CompactionRequestShapeTests: HelperTestCase {
         }
     }
 
-    func testProjectionCountsWrapperAndImagesButNeverCiphertextBytes() throws {
+    /// A checkpoint counts with its wrapper, and an image as its fixed
+    /// allowance, never its bytes. A replayed reasoning item's ciphertext is
+    /// input the model reads again: since 0.1.137 it counts at its size over
+    /// four (owner, 2026-11-11: "encrypted reasoning should be not ignored");
+    /// before, it counted nothing.
+    func testProjectionCountsWrapperImagesByAllowanceAndReasoningCiphertextBySize() throws {
         var raw=try fixtureProfile().raw;raw["input"]=["text","image"]
         let p=try Profile(raw)
         var checkpoint=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+"Summary")]);checkpoint.kind="compaction"
         let body=try ProviderClient.requestBody(profile:p,messages:[checkpoint],instructions:"",tools:[],sessionID:"test")
         XCTAssertEqual(RequestContextCounter.projectedTokens(body),8+PiContext.tokens(chars:(ProviderClient.compactionSummaryPrefix+"Summary"+ProviderClient.compactionSummarySuffix).utf16.count))
         XCTAssertEqual(RequestContextCounter.inputTokens([["type":"input_image","image_url":JSON(String(repeating:"A",count:100000))]]),1208)
-        XCTAssertEqual(RequestContextCounter.inputTokens([["type":"reasoning","encrypted_content":JSON(String(repeating:"A",count:100000)),"summary":[]]]),8)
+        XCTAssertEqual(RequestContextCounter.inputTokens([["type":"reasoning","encrypted_content":JSON(String(repeating:"A",count:100000)),"summary":[]]]),8+25_000)
+        XCTAssertEqual(RequestContextCounter.inputTokens([["type":"reasoning","summary":[]]]),8,"An item with no ciphertext is its overhead alone")
         XCTAssertEqual(RequestContextCounter.inputTokens([.null]),8)
     }
 }

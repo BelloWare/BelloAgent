@@ -25,7 +25,7 @@ final class ConnectionSwitchTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, resources: Resources, traces: TraceStore
         func session(_ id: String, _ profile: Profile, replies: [ModelReply] = [], resume: String? = nil, client: ScriptClient? = nil) throws -> AgentSession {
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
                                     client: client ?? ScriptClient(replies), tools: RecordingTools(), traces: traces, resumePath: resume,
                                     autoCompaction: false, compactionPolicy: policy)

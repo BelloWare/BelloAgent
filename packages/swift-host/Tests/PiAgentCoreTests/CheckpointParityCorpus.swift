@@ -9,11 +9,10 @@ enum CheckpointParityCorpus {
             let directory = root.appendingPathComponent("turns-\(variant)")
             try FileManager.default.createDirectory(at:directory, withIntermediateDirectories:true)
             let profile = try fixtureProfile(), resources = Resources(cwd:directory, home:directory)
-            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
             let replies = [toolReply(["first"])] + (0..<12).map { answer("Answer \(variant)-\($0) " + String(repeating:"generated evidence 雪\n", count:80+variant)) }
             let session = try AgentSession(id:"parent", profile:profile, apiKey:"synthetic-only", cwd:directory, directory:directory,
                 readOnly:true, resources:resources, client:ScriptClient(replies), tools:RecordingTools(), traces:TraceStore(),
-                autoCompaction:false, compactionPolicy:policy)
+                autoCompaction:false)
             func send(_ id: String) async throws {
                 _ = try await session.submit(Submission(commandID:id, turnID:id, text:"Question \(id)"), steer:false)
                 try await eventually { !(await session.isRunning) }

@@ -274,12 +274,10 @@ extension AgentSession {
                     var prepared=try await prepareRequest(resourceSnapshot)
                     // Include delivered input and complete tool results. Leave
                     // room for an intact-history summary before this request.
-                    let threshold = autoCompaction && !titleTask && !resumingFailedRequest
-                        ? try compactionThreshold(requestContext,instructions:prepared.instructions,profile:turnProfile) : Int.max
-                    if prepared.count.requestTokens >= threshold, canCompact {
-                        do { try await compactContext(reason:"threshold") }
-                        catch let error as AgentError where error.code == "compact_unavailable" && prepared.count.fits { /* Nothing useful to replace; keep the intact request. */ }
-                        if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
+                    // A compaction that cannot be made leaves the intact
+                    // request to go: the gateway decides what overflows.
+                    if !resumingFailedRequest, try await compactAtThreshold(prepared.count.requestTokens,instructions:prepared.instructions) {
+                        if !drained, try await drainSteering() { overflowRecoveryAttempted=false }
                         prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }
                     let operationID=UUID().uuidString
@@ -306,7 +304,8 @@ extension AgentSession {
                             })
                         } catch let error as AgentError {
                             // Case 1 of pi's _checkCompaction: compact and retry once.
-                            guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, canCompact(recovering:true), !Task.isCancelled else { throw error }
+                            // A task whose automatic compaction already failed is not summarized again: the overflow pauses the chat.
+                            guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, !automaticCompactionSuppressed, !automaticSummarySpent, canCompact(recovering:true), !Task.isCancelled else { throw error }
                             overflowRecoveryAttempted=true
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
@@ -318,10 +317,11 @@ extension AgentSession {
                             contextRecovery=recovery; recovered=true
                             // A recovery that cannot compact leaves the overflow as the run's failure, as in pi.
                             let overflow=error
-                            do { try await compactContext(reason:"context-rejection") }
-                            // A stop at the chat's cost limit is the run's failure, not the overflow.
-                            catch let stopped as AgentError where stopped.code == Self.costLimitCode { throw stopped }
-                            catch let failed where !(failed is CancellationError) && !Task.isCancelled { throw overflow }
+                            // The shared policy: a stop at the chat's cost limit, a
+                            // damaged journal or an accounting hold is the run's
+                            // failure itself; a plan that cannot be made, or a
+                            // summary that is not adopted, leaves the overflow, once.
+                            guard try await automaticCompaction(reason:"context-rejection") else { throw overflow }
                             try Task.checkCancellation()
                             // Pi continues its loop after the compaction, delivering queued steering first.
                             if try await drainSteering() { overflowRecoveryAttempted=false }
@@ -333,6 +333,11 @@ extension AgentSession {
                         // Preparation/commit already wrote the prefix and every
                         // cancellation result. No tool or final-answer path sees it.
                         modelActive = false; overflowRecoveryAttempted = false
+                        // The model answered this request, though the reply was
+                        // cut for mail: like a whole reply, it lets the next
+                        // automatic summary be paid for (0.1.137's one summary
+                        // between replies), as it renews the overflow recovery.
+                        automaticSummarySpent = false
                         try Task.checkCancellation()
                         await flushRequestLinks()
                         try persistState(active:true)
@@ -364,6 +369,8 @@ extension AgentSession {
                     // A reply the journal refuses keeps its log, set aside when the run settles.
                     do { try append(assistant) } catch { partialReplyUnsaved=true; flushStreamed(as:assistant.id); throw error }
                     cumulativeUsage.observe(reply.usage)
+                    // A reply of the model: the next automatic summary may be paid for.
+                    automaticSummarySpent=false
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()

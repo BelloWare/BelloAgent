@@ -12,10 +12,11 @@ seeded tool-heavy sessions built from this repository's own text:
   compact-now   "Compact now" on a session at about 75% of the window, then
                 a turn that must start from the summary.
   mid-run       One turn told to read ten large files in a temp workspace
-                with the real read tool: the threshold is crossed between
-                rounds, the helper compacts mid-run in one request that
-                summarizes the history and the turn's start, and the turn
-                must finish.
+                with the real read tool: the session starts just under
+                the task-start threshold, the working threshold is crossed
+                between rounds, the helper compacts mid-run in one request
+                that keeps the task and summarizes the history before it,
+                and the turn must finish.
   too-large     "Compact now" on a history too large for one summary
                 request: a compaction is one request and never chunks, so
                 it is refused before anything is sent, and the context stays.
@@ -93,8 +94,11 @@ SCENARIOS = ("compact-now", "mid-run", "too-large")
 THINKING_LEVELS = ("default", "off", "minimal", "low", "medium", "high", "xhigh", "max")
 # The app's onboarding output budget: a local reserve, never sent.
 OUTPUT_BUDGET = 8192
-# CompactionPolicy: pi's reserve and recent tail.
-RESERVE, KEEP_RECENT = 16_384, 20_000
+# CompactionPolicy: pi's reserve, the least a clipped summary is allowed, and
+# the shares of the usable input (0.1.137: the task in hand stays whole; pi's
+# 20,000-token recent tail is gone). KEEP_RECENT only sizes the too-large seed.
+RESERVE, MINIMUM_SUMMARY, KEEP_RECENT = 16_384, 8_192, 20_000
+GROWTH_SHARE, TASK_START_SHARE = 0.15, 0.70
 FIXTURE = {"model": "fixture-reasoner", "window": 128_000, "limit": 128_000, "thinking": "high", "max_cost": 5.0,
            "key": "fixture-live-e2e-key-" + "0" * 12}
 TASK_TAG, SUMMARY_PREFIX = reasoning_gateway.TASK_TAG, reasoning_gateway.SUMMARY_PREFIX
@@ -114,9 +118,19 @@ class Config:
         self.__dict__.update(values)
 
     @property
+    def usable(self):
+        """Conservative usable input; the helper counts its exact instruction (1,000 allowed here)."""
+        return self.window - self.summary_room(None) - min(1024, max(1, self.window // 100)) - 1000
+
+    @property
     def threshold(self):
-        """Conservative fixture planning threshold; the helper counts its exact instruction."""
-        return self.window - self.summary_room(None) - min(RESERVE, self.window // 4) - min(1024, max(1, self.window // 100)) - 1000
+        """Where a working task compacts: the usable input less the growth reserve."""
+        return self.usable - min(max(RESERVE, math.ceil(self.window * GROWTH_SHARE)), self.usable // 4)
+
+    @property
+    def start_threshold(self):
+        """Where a task compacts before its first request."""
+        return int(self.usable * TASK_START_SHARE)
 
     def summary_room(self, kind=None):
         """The single summary allowance, including hidden reasoning."""
@@ -841,7 +855,9 @@ def common_checks(result, status, stopped, bound, run):
     result.check("one summary request per compaction", summaries and not several,
                  f"{len(summaries)} summary requests over {len(inputs)} compactions"
                  + ("" if not several else "; more than one: " + ", ".join(f"{(operation or '?')[:8]} sent {count}" for operation, count in several.items())))
-    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None and row["effectiveMaxOutputTokens"] != cfg.summary_room(row["kind"])]
+    # A summary takes the room an outgrown context leaves, never less than the minimum.
+    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None
+             and not min(MINIMUM_SUMMARY, cfg.summary_room(row["kind"])) <= row["effectiveMaxOutputTokens"] <= cfg.summary_room(row["kind"])]
     unlimited = [row for row in summaries if row["effectiveMaxOutputTokens"] is None]
     result.check("every summary request uses the planned generation allowance",
                  summaries and not small and (not unlimited or not cfg.limit),
@@ -977,7 +993,10 @@ def run_too_large(run, result):
 def run_mid_run(run, result):
     cfg = run.cfg
     per_file = 7_200  # a ~28 KB evidence file read in full, by the helper's estimate
-    target = max(int(cfg.window * 0.3), cfg.threshold - int(4.5 * per_file) - 4_000)
+    # Well under the task-start threshold as the helper counts it (the seed's
+    # estimate leaves out the instructions and schemas), so the turn starts;
+    # three or four files then reach the working threshold.
+    target = max(int(cfg.window * 0.3), cfg.start_threshold - 12_000)
     history = History(run.corpus, seed=17).grow(tokens=target)
     session = Session(run, "mid-run", history, workspace=lambda folder: evidence(run.corpus, folder, seed=29))
     try:

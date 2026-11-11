@@ -17,8 +17,9 @@ final class JournalCheckpointTests: HelperTestCase {
         _ = try await session.submit(Submission(commandID: "c\(turn)", turnID: "t\(turn)", text: "Question \(turn)"), steer: false)
         try await eventually { !(await session.isRunning) }
     }
-    /// Six turns, a compaction that keeps the last, then `after` more turns
-    /// and, with `edit`, an edit of the last question: a long chat in small.
+    /// Six turns, a compaction that keeps the last exchange (its question
+    /// and its answer), then `after` more turns and, with `edit`, an edit of
+    /// the last question: a long chat in small.
     private func chat(after: Int = 2, edit: Bool = false) async throws -> Chat {
         let root = try temporaryDirectory(); addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
@@ -26,8 +27,7 @@ final class JournalCheckpointTests: HelperTestCase {
         replies.append(answer("Summary: six questions were answered."))
         replies += (6..<(6 + after + (edit ? 1 : 0))).map { answer("Answer \($0)") }
         let writer = try AgentSession(id: "checkpointed", profile: profile, apiKey: "test", cwd: root, directory: state, readOnly: true, resources: resources,
-                                      client: ScriptClient(replies), tools: RecordingTools(), traces: traces, autoCompaction: false,
-                                      compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
+                                      client: ScriptClient(replies), tools: RecordingTools(), traces: traces, autoCompaction: false)
         for turn in 0..<6 { try await send(writer, turn) }
         try await writer.compact(commandID: "compact")
         try await eventually { !(await writer.isRunning) }
@@ -184,10 +184,11 @@ final class JournalCheckpointTests: HelperTestCase {
         let latest = try await paging.historyWindow(["version": 2])
         var older = latest["older"], seen = latest["messages"].list.compactMap { $0["id"].text }
         XCTAssertFalse(older.isNull, "The first page offers older rows though none are loaded")
-        let before = await paging.olderRows, loaded = await paging.visible.count
+        let before = await paging.olderRows, held = await paging.visible, loaded = held.count
         XCTAssertGreaterThan(before, 0)
+        XCTAssertEqual(held.first?.id, "t5", "The loaded rows begin at the exchange the compaction kept, from its question")
         let page = try await paging.historyWindow(["version": 2, "direction": "older", "cursor": older])
-        XCTAssertTrue(page["messages"].list.contains { $0["id"].text == "t5" }, "The question before the loaded rows is on the page before them")
+        XCTAssertTrue(page["messages"].list.contains { $0["id"].text == "t4" }, "The question before the loaded rows is on the page before them")
         seen = page["messages"].list.compactMap { $0["id"].text } + seen; older = page["older"]
         while !older.isNull {
             let earlier = try await paging.historyWindow(["version": 2, "direction": "older", "cursor": older])

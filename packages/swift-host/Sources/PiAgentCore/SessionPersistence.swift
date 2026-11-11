@@ -474,6 +474,9 @@ extension AgentSession {
             for message in history { try prepared.append(["type":"message","message":message.pi],id:message.id,flush:false) }
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(context.map { JSON($0.id) })]],flush:false)
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":parentInfo],flush:false)
+            // A task whose automatic compaction failed while the side had no
+            // journal: a reopen from this journal alone must not try again.
+            if let root=suppressedCompactionTask { try prepared.append(suppressionRecord(root),flush:false) }
             // What the side spent before it was kept goes with it.
             // Preserve physical identities and usage across Keep. A carried
             // aggregate alone would lose deduplication and token accounting.

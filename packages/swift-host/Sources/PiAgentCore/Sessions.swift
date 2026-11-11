@@ -252,6 +252,22 @@ public actor AgentSession {
     var cachedPresentationTimeline: String?
     var contextRecovery: JSON = .null
     var failedCompactionFingerprint: String?
+    /// The task whose automatic compaction failed: none is tried again for
+    /// it, also after a Retry, a Resume or a reopen (`suppressAutomaticCompaction`).
+    var suppressedCompactionTask: String?
+    /// Whether the compaction in hand has sent its summary request: what
+    /// tells a plan that could not be made, which costs nothing, from a
+    /// summary that was paid for. An error's code cannot (a local
+    /// `compaction_too_large` and a gateway's rejection share one).
+    var compactionDispatched = false
+    /// An automatic summary request has been sent since the last reply of
+    /// the model: no second one is paid for before the next, whether at a
+    /// threshold, for agent mail or after an overflow. Steering does not
+    /// clear it; a reply does, and so does a new task.
+    var automaticSummarySpent = false
+    /// The inputs an automatic compaction could not be planned for, so the
+    /// same refusal is not worked out twice (`CompactionInputs`).
+    var unavailableCompaction: CompactionInputs?
     var compactionState: JSON = .null
     var compactionAttemptIDs: [String] = []
     var compactionPhysicalAttempts = 0
@@ -450,7 +466,7 @@ public actor AgentSession {
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
-        failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
+        failedCompactionFingerprint=replayed.failedCompactionFingerprint; suppressedCompactionTask=replayed.suppressedCompactionTask; parentInfo=replayed.parentInfo
         // Seed only the physical chat's pre-ledger history, before adopting
         // saved-side charges. Otherwise side recovery would mark the ledger
         // tracked and suppress the chat's own legacy cost seed.
