@@ -32,7 +32,9 @@ extension AgentSession {
     }
     /// Use the same real input budget and counter as request admission. This
     /// check never appends a partial accepted message to make it fit.
-    func agentPayloadFits(_ payload: JSON, parentLane: Bool) async throws -> Bool {
+    /// `window`: whether the input fits the window at all, where the
+    /// default asks for the preferred output reserve beside it as well.
+    func agentPayloadFits(_ payload: JSON, parentLane: Bool, window: Bool = false) async throws -> Bool {
         var row = ChatMessage(role:"user",content:[textBlock(payload.text ?? payload.encoded())]); row.inputLane = "agent"
         let own = try contextCounter.count(messages:[row],profile:turnProfile,reserveTokens:compactionSettings.reserveTokens)
         if parentLane, payload.text == nil, own.requestTokens > own.inputBudget / 5 { return false }
@@ -40,6 +42,11 @@ extension AgentSession {
         if let appliedSnapshot { snapshot = appliedSnapshot } else { snapshot = try await resources.resolve() }
         let definitions = await sessionDefinitions(), messages = requestContext + [row]
         let body = try ProviderClient.requestBody(profile:turnProfile,messages:messages,instructions:Self.requestInstructions(snapshot.prompt, tools: definitions),tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
-        return try countContext(messages,request:body).fits
+        let count = try countContext(messages,request:body)
+        return window ? count.inputFits : count.fits
     }
+    /// Whether a compaction may be tried to make room for mail: as before,
+    /// whatever the chat's automatic-compaction setting, unless this task's
+    /// automatic compaction has already failed.
+    var canCompactForDelivery: Bool { !automaticCompactionSuppressed && canCompact }
 }

@@ -121,9 +121,14 @@ class FixtureRunTests(unittest.TestCase):
         self.assertEqual(list(scenarios), ["compact-now", "mid-run", "too-large"])
         for name in ("compact-now", "mid-run"):
             failed = {check["name"].split(" (")[0] for check in scenarios[name]["checks"] if not check["passed"]}
-            self.assertLessEqual({"compaction completed and its summary adopted", "no summary request ended at max_output_tokens", "the run ends idle"}, failed, name)
+            expected = {"compaction completed and its summary adopted", "no summary request ended at max_output_tokens"}
+            # A manual compaction that fails leaves the chat in error. An automatic one
+            # leaves its turn to go on (0.1.136), so the mid-run scenario may still end idle.
+            self.assertLessEqual(expected | ({"the run ends idle"} if name == "compact-now" else set()), failed, name)
             stopped = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction" and row["stopReason"] == "max_output_tokens"]
             self.assertTrue(stopped and all(row["reasoningTokens"] == 8_192 for row in stopped))
+            if name == "mid-run":
+                self.assertEqual(len(stopped), 1, "One failed attempt for the task, never one a round")
         # The refusal sends no summary, so the cap cannot touch it.
         self.assertTrue(scenarios["too-large"]["passed"], scenarios["too-large"]["checks"])
 
@@ -453,7 +458,8 @@ class ConfigurationTests(unittest.TestCase):
         with self.environment(PI_LIVE_BASE_URL="https://gateway.example/v1", PI_LIVE_API_KEY="k" * 20, PI_LIVE_MODEL="unlisted-model",
                               PI_LIVE_CONTEXT_WINDOW="128000", PI_LIVE_THINKING="medium", PI_LIVE_MAX_COST_USD="2.5"):
             cfg = harness.load_config(self.arguments())
-        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 93_208))
+        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 90_392))
+        self.assertEqual((cfg.usable, cfg.start_threshold), (109_592, 76_714))
         # Pi's summary cap, with the turn-prefix cap when a split turn's start is in the same request.
         self.assertEqual([cfg.summary_room(kind) for kind in ("history", "history-update+turn-prefix", "turn-prefix")], [16_384, 16_384, 16_384])
         with self.environment():

@@ -99,7 +99,9 @@ extension ProviderClient {
     /// image input, else pi's placeholder text takes its place.
     static func userContent(_ message: ChatMessage, images: Bool) -> [JSON] {
         if message.kind == "compaction" {
-            let text = compactionSummaryPrefix + CompactionCheckpoint.summaryText(message) + compactionSummarySuffix
+            var text = compactionSummaryPrefix + CompactionCheckpoint.summaryText(message) + compactionSummarySuffix
+            // Ours: the framing a mid-task checkpoint recorded, after pi's wrapper.
+            if let continuation = message.compaction?["continuationText"].text, !continuation.isEmpty { text += "\n\n" + continuation }
             return [["type": "input_text", "text": JSON(text)]]
         }
         var content: [JSON] = [], previousWasPlaceholder = false

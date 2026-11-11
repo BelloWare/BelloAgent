@@ -38,7 +38,7 @@ final class QueueHandoffTests: HelperTestCase {
         let session = try AgentSession(id:"handoff",profile:fixtureProfile(),apiKey:"fixture",cwd:root,
             directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),
             client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,
-            compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=2_255;return policy }())
+            compactionPolicy:CompactionPolicy())
         addTeardownBlock { await session.close() }
         // An earlier exchange for pi's cut to summarize; the objective and its
         // answer (5 and 2,250 tokens) are the kept tail, so no turn is split.

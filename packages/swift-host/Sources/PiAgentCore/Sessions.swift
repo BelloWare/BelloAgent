@@ -250,6 +250,9 @@ public actor AgentSession {
     var cachedPresentationTimeline: String?
     var contextRecovery: JSON = .null
     var failedCompactionFingerprint: String?
+    /// The task whose automatic compaction failed: none is tried again for
+    /// it, also after a Retry, a Resume or a reopen (`suppressAutomaticCompaction`).
+    var suppressedCompactionTask: String?
     var compactionState: JSON = .null
     var compactionAttemptIDs: [String] = []
     var compactionPhysicalAttempts = 0
@@ -434,7 +437,7 @@ public actor AgentSession {
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
-        failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
+        failedCompactionFingerprint=replayed.failedCompactionFingerprint; suppressedCompactionTask=replayed.suppressedCompactionTask; parentInfo=replayed.parentInfo
         // Seed only the physical chat's pre-ledger history, before adopting
         // saved-side charges. Otherwise side recovery would mark the ledger
         // tracked and suppress the chat's own legacy cost seed.

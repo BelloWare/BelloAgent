@@ -14,7 +14,7 @@ struct JournalReplay: Sendable {
     var assistantMessageCount = 0, latestAssistantMessageID: String?
     var pendingRequestLinks: [String: [String]] = [:]
     var recentTaskPresentations: [TaskPresentationRecord] = []
-    var compactionState: JSON = .null, contextRecovery: JSON = .null, failedCompactionFingerprint: String?, parentInfo: JSON = .null
+    var compactionState: JSON = .null, contextRecovery: JSON = .null, failedCompactionFingerprint: String?, suppressedCompactionTask: String?, parentInfo: JSON = .null
     var presentationOrdinal = 0
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
     /// Shown rows before the loaded ones, when resumed from a checkpoint.
@@ -101,7 +101,7 @@ struct JournalReplayConsumer {
         r.accounting = (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) ?? AttemptAccounting()
         r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
         r.accounting.restoreUsageCoverage(spend:r.spend)
-        r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text
+        r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text; r.suppressedCompactionTask=saved["suppressedCompactionTask"].text
         r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
         ordinalMax=saved["presentationOrdinal"].int ?? 0
         r.stateRecord=loaded.state
@@ -191,7 +191,11 @@ struct JournalReplayConsumer {
             if item["data"][CommandReceipts.deltaKey].flag == true { receiptChanges.append(line) }
             else { receiptsBase = .list(item["data"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true) }
         }
-        else if item["customType"].text == JournalRecordKind.compactionFailure { r.failedCompactionFingerprint=item["data"]["fingerprint"].text }
+        else if item["customType"].text == JournalRecordKind.compactionFailure {
+            r.failedCompactionFingerprint=item["data"]["fingerprint"].text
+            // Written since 0.1.136 by an automatic failure; a record without it suppresses nothing.
+            if let root=item["data"]["taskRootId"].text { r.suppressedCompactionTask=root }
+        }
         else if item["customType"].text == JournalRecordKind.contextRecovery { r.contextRecovery=item["data"] }
         else if item["customType"].text == JournalRecordKind.context {
             let byID=Dictionary(r.history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
@@ -207,7 +211,7 @@ struct JournalReplayConsumer {
         // A record that sets the model context is where the next open can
         // resume from: the metadata file records what it takes to.
         if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == JournalRecordKind.context {
-            let helper=AgentSession.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,
+            let helper=AgentSession.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,suppressedCompactionTask:r.suppressedCompactionTask,
                                                      contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax,subagents:r.subagents,accounting:r.accounting)
             r.captured=AgentSession.checkpoint(sessionID:id,header:header,marker:marker,last:line,at:lineStart,lastID:try identity(item["id"]),
                                                visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,

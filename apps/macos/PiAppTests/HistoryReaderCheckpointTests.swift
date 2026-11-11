@@ -44,14 +44,26 @@ final class HistoryReaderCheckpointTests: XCTestCase {
     }
     /// Four turns, a compaction keeping the last two, two turns after it; with
     /// `edit`, an edit of the last question after those.
-    private func journal(edit: Bool = false, marker: String = "pi-app.native.v1") throws -> (path: URL, checkpoint: JournalCheckpoint) {
+    /// `task`: the compaction is one 0.1.136 writes while a task works: a
+    /// version-2 record whose protected input (q0) is replayed ahead of a tail
+    /// that does not follow it (q3, a3), with the optional `continuationText`.
+    private func journal(edit: Bool = false, marker: String = "pi-app.native.v1", task: Bool = false) throws -> (path: URL, checkpoint: JournalCheckpoint) {
         var journal = Journal()
         try journal.append("chat", ["type": .string("session"), "version": .number(3)], timestamp: false); journal.parent = nil
         try journal.append("native", ["type": .string("custom"), "customType": .string(marker), "data": .object(["version": .number(1)])])
         for turn in 0..<4 { try journal.append("q\(turn)", message("user", "Question \(turn)")); try journal.append("a\(turn)", message("assistant", "Answer \(turn)")) }
-        let kept = ["q2", "a2", "q3", "a3"]
-        try journal.append("summary", ["type": .string("compaction"), "summary": .string("Four questions were answered."),
-                                       "nativeKeptIDs": .array(kept.map(WireValue.string)), "tokensBefore": .number(100)])
+        let kept = task ? ["q0", "q3", "a3"] : ["q2", "a2", "q3", "a3"]
+        var summary: [String: WireValue] = ["type": .string("compaction"), "summary": .string("Four questions were answered."),
+                                            "nativeKeptIDs": .array(kept.map(WireValue.string)), "tokensBefore": .number(100)]
+        if task {
+            let source = (0..<4).flatMap { ["q\($0)", "a\($0)"] }
+            summary["nativeCompactionVersion"] = .number(2)
+            summary["nativeCompaction"] = .object(["version": .number(2), "operationId": .string("op"), "sourceIDs": .array(source.map(WireValue.string)),
+                "protectedIDs": .array([.string("q0")]), "keptIDs": .array(kept.map(WireValue.string)), "dependencyIDs": .array(source.map(WireValue.string)),
+                "summarySourceIDs": .array(source.filter { !kept.contains($0) }.map(WireValue.string)),
+                "continuationText": .string("The task was in progress when this checkpoint was made. Continue from the retained request and latest results without asking the owner to repeat them.")])
+        }
+        try journal.append("summary", summary)
         let checkpoint = JournalCheckpoint(sessionID: "chat", header: journal.check("chat"), marker: journal.check("native"),
                                            last: journal.check("summary"), lastID: "summary",
                                            rows: kept.map { journal.row($0, .message) } + [journal.row("summary", .compaction)], rowsBefore: 4,
@@ -67,6 +79,17 @@ final class HistoryReaderCheckpointTests: XCTestCase {
         try journal.data.write(to: path)
         addTeardownBlock { try? FileManager.default.removeItem(at: path); JournalCheckpoint.remove(for: path) }
         return (path, checkpoint)
+    }
+
+    /// A checkpoint 0.1.136 writes reads as any version-2 checkpoint does:
+    /// the new optional field is ignored, and the protected input ahead of a
+    /// tail that does not follow it is the order the reader already checks.
+    func testATaskCheckpointWithItsFramingReadsAsAVersionTwoCheckpoint() async throws {
+        let (path, _) = try journal(task: true)
+        let bytes = try Data(contentsOf: path)
+        let full = try await HistoryReader().read(path: path.path)
+        XCTAssertNil(full.notice); XCTAssertEqual(full.messages.count, 13); XCTAssertNil(full.older)
+        XCTAssertEqual(try Data(contentsOf: path), bytes, "Reading changes nothing")
     }
 
     func testAChatIsIndexedFromItsCheckpoint() async throws {
