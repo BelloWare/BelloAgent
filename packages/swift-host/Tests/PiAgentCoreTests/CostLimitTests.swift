@@ -157,8 +157,18 @@ private final class StateProbe: @unchecked Sendable {
 }
 
 final class CostLimitTests: HelperTestCase {
-    /// A one-token recent tail, so any history is something to summarize.
-    private static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
+    /// The default policy. Before 0.1.136 this was a one-token recent tail,
+    /// so that any history was something to summarize; now a compaction
+    /// keeps the task in hand, or an idle chat's last exchange.
+    private static let smallTail = CompactionPolicy()
+    /// A finished task of 8,000 tokens before the one a test sends. What the
+    /// next request must answer is never dropped, also after a context
+    /// rejection: a recovery compaction summarizes the tasks before it.
+    private func appendEarlierTask(_ session: AgentSession) async throws {
+        var asked = ChatMessage(role: "user", content: [textBlock("Survey the logs first.")]); asked.id = "earlier"; asked.taskRootID = asked.id
+        var answered = ChatMessage(role: "assistant", content: [textBlock(String(repeating: "surveyed evidence ", count: 1800))]); answered.id = "earlier-reply"; answered.taskRootID = asked.id
+        try await session.append(asked); try await session.append(answered)
+    }
     private func session(_ root: URL, id: String = UUID().uuidString, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), limit: Double?, resume: String? = nil, policy: CompactionPolicy = CompactionPolicy(), probe: StateProbe? = nil) async throws -> AgentSession {
         let session = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false,
                                        resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore(), resumePath: resume, compactionPolicy: policy,
@@ -671,6 +681,7 @@ final class CostLimitTests: HelperTestCase {
             let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.04), .fail(rejected, cost: 0.01), .reply(answer("Done without repeated writes"), cost: 0.02)],
                                        summaries: [.reply(answer("Counter append completed once. Continue without rerunning tools."), cost: 0.005)])
             let s = try await session(root, client: client, tools: EvidenceTools(), limit: 1, policy: Self.smallTail)
+            try await appendEarlierTask(s)
             try await send(s, "Append the counter once")
             let state = try await settled(s)
             let summaries = await client.summaryRequests
@@ -686,6 +697,7 @@ final class CostLimitTests: HelperTestCase {
                                        summaries: [.reply(answer("Should not be requested"), cost: 0.005)])
             let tools = EvidenceTools()
             let s = try await session(root, client: client, tools: tools, limit: 0.05, policy: Self.smallTail)
+            try await appendEarlierTask(s)
             try await send(s, "Append the counter once")
             var state = try await settled(s)
             var summaries = await client.summaryRequests

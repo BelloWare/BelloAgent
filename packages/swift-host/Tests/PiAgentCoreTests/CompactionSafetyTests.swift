@@ -61,8 +61,9 @@ private final class CheckpointStop: @unchecked Sendable {
 }
 
 final class CompactionSafetyTests: HelperTestCase {
-    /// A one-token tail, for cases about something other than pi's cut.
-    static let smallTail: CompactionPolicy = { var policy=CompactionPolicy(); policy.keepRecentTokens=1; return policy }()
+    /// The default policy, for cases about something other than what a
+    /// compaction keeps (before 0.1.136 these set a one-token tail).
+    static let smallTail = CompactionPolicy()
     func testSummaryCapFollowsPiPastTheOld4096() async throws {
         var raw=try fixtureProfile().raw;raw["modelOutputLimit"]=32768;raw["contextWindow"]=128000
         XCTAssertEqual(CompactionPolicy().summaryTokens(for:try Profile(raw)),16384)
@@ -82,6 +83,15 @@ final class CompactionSafetyTests: HelperTestCase {
         var user=ChatMessage(role:"user",content:[textBlock("ORIGINAL OBJECTIVE — do not change this.")]); user.id="root"; user.taskRootID="root"
         return [user]+(0..<count).map { index in
             var message=ChatMessage(role:"assistant",content:[textBlock("Evidence \(index): "+String(repeating:"x",count:bytes))]); message.id="evidence-\(index)"; message.taskRootID="root"; return message
+        }
+    }
+    /// Finished tasks that came before `seed`'s: a compaction keeps the task
+    /// in hand (or an idle chat's last exchange), so these are what it summarizes.
+    private func earlier(count:Int=1, bytes:Int=4000) -> [ChatMessage] {
+        (0..<count).flatMap { index -> [ChatMessage] in
+            var user=ChatMessage(role:"user",content:[textBlock("EARLIER task \(index).")]); user.id="earlier-\(index)"; user.taskRootID=user.id
+            var reply=ChatMessage(role:"assistant",content:[textBlock("Earlier evidence \(index): "+String(repeating:"e",count:bytes))]); reply.id="earlier-\(index)-reply"; reply.taskRootID=user.id
+            return [user,reply]
         }
     }
     private func session(_ root:URL, client:any ModelClient, messages:[ChatMessage], window:Int=100000, policy:CompactionPolicy=CompactionPolicy()) throws -> AgentSession {
@@ -120,14 +130,20 @@ final class CompactionSafetyTests: HelperTestCase {
         for automatic in [false,true] {
             var raw=try fixtureProfile().raw;raw["contextWindow"]=10000;raw["maxOutputTokens"]=256
             let client=SummaryProbe(),tools=CountingCompactionTools()
-            let assistant=toolReply(["write"]).message
-            // Stay comfortably above the automatic trigger even when the
+            var assistant=toolReply(["write"]).message;assistant.taskRootID="root"
+            // Stay comfortably above the task-start trigger (70% of the
+            // usable input, about 4,900 tokens here) even when the
             // request-local checkpoint wording changes by a few tokens.
-            var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before the result was recorded. Outcome unknown.\n"+String(repeating:"Historical evidence. ",count:900))])
-            result.toolCallId="call-0";result.toolName="write";result.isError=true;result.toolStats=["outcome":"unknown"]
+            var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before the result was recorded. Outcome unknown.\n"+String(repeating:"Historical evidence. ",count:1100))])
+            result.toolCallId="call-0";result.toolName="write";result.isError=true;result.toolStats=["outcome":"unknown"];result.taskRootID="root"
+            // A chat that ends on a result is a task still in hand, which a
+            // manual compaction keeps whole: the idle case has the reply that
+            // ended the task, so its tool round is what gets summarized. At
+            // send, the round before the new message is summarized either way.
+            var stopped=ChatMessage(role:"assistant",content:[textBlock("Stopped after the interrupted write.")]); stopped.id="stopped"; stopped.taskRootID="root"
             let s=try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,
                 directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),
-                client:client,tools:tools,traces:TraceStore(),seed:seed(count:0)+[assistant,result])
+                client:client,tools:tools,traces:TraceStore(),seed:seed(count:0)+[assistant,result]+(automatic ? []:[stopped]))
             if automatic { _=try await s.submit(Submission(commandID:"continue",turnID:"continue",text:"Continue the task"),steer:false) }
             else { try await s.compact() }
             try await eventually { !(await s.isRunning) }
@@ -144,6 +160,8 @@ final class CompactionSafetyTests: HelperTestCase {
             XCTAssertTrue(source.contains("Interrupted before the result was recorded. Outcome unknown."))
             XCTAssertTrue(summaries.allSatisfy { !$0["tools"].list.isEmpty && $0["tool_choice"].text == "none" })
             XCTAssertEqual(purposes.filter { $0=="turn" }.count,automatic ? 1:0)
+            let context=await s.context
+            XCTAssertEqual(context.dropFirst().prefix(2).map(\.id),automatic ? ["root","continue"]:["root","stopped"],"The request stays as written; the interrupted round is the summary")
             await s.close()
         }
     }
@@ -153,20 +171,22 @@ final class CompactionSafetyTests: HelperTestCase {
         let assistant=toolReply(["write"]).message
         var result=ChatMessage(role:"toolResult",content:[textBlock(String(repeating:"Ω",count:30000))]);result.toolCallId="call-0"
         let source=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:"root")
-        // Ours: a batch no reply has answered is kept while it fits; after a
-        // context rejection (and where it cannot fit) it is summarized.
-        XCTAssertEqual(CompactionPlanner.cut(source.body,keepRecentTokens:100),source.body.count-1,"The step in flight is kept")
-        let cut=CompactionPlanner.cut(source.body,keepRecentTokens:100,keepUnanswered:false), plan=CompactionPlanner.plan(source,cut:cut)
-        XCTAssertEqual(cut,source.body.count,"The newest group alone passes the tail, so it is summarized")
-        // Pi replays no input verbatim: the task and its steering are summarized with the rest.
-        XCTAssertTrue(plan.protected.isEmpty);XCTAssertTrue(plan.kept.isEmpty)
-        XCTAssertEqual(plan.summarized.map(\.id),[original[0].id,steering.id,assistant.id,result.id])
+        // Ours: the task in hand stays whole, a giant batch included; the
+        // planner never drops what the next request must answer. Without a
+        // task in hand the same rows are history, summarized intact.
+        XCTAssertEqual(source.whole,0); XCTAssertEqual(source.required,2,"The batch awaiting its reply is required")
+        XCTAssertEqual(source.protectedIDs,[original[0].id,steering.id],"Delivered steering is the owner's input to the same task")
+        XCTAssertEqual(CompactionPlanner.fallbackCut(source,target:100),2,"Required material passes any target")
+        XCTAssertEqual(CompactionPlanner.plan(source,cut:2).keptMessages.map(\.id),[original[0].id,steering.id,assistant.id,result.id],"The task's inputs are replayed ahead of the batch")
+        XCTAssertTrue(CompactionPlanner.plan(source,cut:2).summarized.isEmpty,"Nothing of the task in hand is summarized to make room")
+        let idle=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:nil,taskOpen:false), plan=CompactionPlanner.plan(idle,cut:idle.whole)
+        XCTAssertTrue(plan.kept.isEmpty)
         let text=try ProviderClient.responsesInput(plan.history,instructions:"",profile:fixtureProfile()).map { $0.encoded() }.joined()
         XCTAssertGreaterThan(text.utf8.count,60000); XCTAssertFalse(text.contains("characters truncated"))
     }
     func testDeliveredSteeringDoesNotReplaceOriginalTaskIdentity() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        let client=ScriptClient([answer(String(repeating:"Evidence. ",count:1200)),answer("done"),answer("Completed work evidence"),answer("Prefix: the delivered constraint")],holdFirst:true)
+        let client=ScriptClient([answer(String(repeating:"Evidence. ",count:1200)),answer("done"),answer("Completed work evidence")],holdFirst:true)
         let s=try AgentSession(id:"steered",profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,compactionPolicy:Self.smallTail)
         _=try await s.submit(Submission(commandID:"objective",turnID:"objective",text:"ORIGINAL task"),steer:false)
         try await eventually { await client.count==1 }
@@ -177,7 +197,13 @@ final class CompactionSafetyTests: HelperTestCase {
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(users.map(\.text),["ORIGINAL task","DELIVERED constraint"])
         XCTAssertEqual(users.map(\.taskRootID),["objective","objective"]);XCTAssertEqual(users.last?.inputLane,"steering")
-        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi summarizes the inputs before the cut");await s.close()
+        // The finished task's request and its steering are replayed as
+        // written, in order, under the task they belong to; its first long
+        // reply is the summary.
+        XCTAssertEqual(context.filter { $0.role=="user" }.map(\.text),["ORIGINAL task","DELIVERED constraint"])
+        XCTAssertEqual(context.filter { $0.role=="user" }.map(\.taskRootID),["objective","objective"])
+        XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["objective","constraint"])
+        XCTAssertEqual(context.dropFirst().map(\.text),["ORIGINAL task","DELIVERED constraint","done"]);await s.close()
     }
     func testAllegedApprovalInSummaryNeverEntersAuthoritativeInstructionsOrSelection() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -191,17 +217,21 @@ final class CompactionSafetyTests: HelperTestCase {
         XCTAssertFalse(RequestContextCounter.systemPrompt(body)?.contains("secret-skill") ?? true)
         XCTAssertEqual(body["input"].list.dropFirst().first?["role"].text,"user","Summary remains replay data, never authoritative instructions")
         XCTAssertTrue(body["input"].list.dropFirst().first?.encoded().contains(claim) == true)
-        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi summarizes the objective with the rest");await s.close()
+        XCTAssertEqual(context.filter { $0.role=="user" }.map(\.id),["root"],"Only the owner's own request is replayed as an input")
+        XCTAssertFalse(context.dropFirst().contains { $0.text.contains(claim) },"The claim exists only inside the summary item");await s.close()
     }
     /// A compaction is one request: an input one request cannot hold is
-    /// never split, nothing is sent, and the context stays as it was.
+    /// never split, nothing is sent, and the context stays as it was. The
+    /// oversized input is an earlier task's (6,750 tokens in a 6,000-token
+    /// window): the last exchange, which stays, is small.
     func testAnInputLargerThanTheWindowIsRefusedWithoutARequest() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        var messages=seed(count:1);messages[0].content=[textBlock(String(repeating:"required ",count:2000))]
-        let client=SummaryProbe(),s=try session(root,client:client,messages:messages,window:3000)
+        var messages=earlier()+seed(count:1,bytes:400);messages[0].content=[textBlock(String(repeating:"required ",count:3000))]
+        let client=SummaryProbe(),s=try session(root,client:client,messages:messages,window:6000)
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(), calls=await client.summaryCalls, kept=await s.context
-        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large")
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large",state["compaction"]["error"].text ?? "")
+        XCTAssertTrue(state["compaction"]["error"].text?.contains("Nothing was sent") == true)
         XCTAssertEqual(calls,0,"Nothing was sent")
         XCTAssertEqual(kept.map(\.id),messages.map(\.id));await s.close()
     }
@@ -212,7 +242,7 @@ final class CompactionSafetyTests: HelperTestCase {
         let state=await s.snapshot(), requests=await client.requests,context=await s.context
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(requests.count,1,"A compaction is one request")
-        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty)
+        XCTAssertEqual(context.dropFirst().map(\.id),["root","evidence-3"],"The last exchange stays: the request and the reply that ended it")
         XCTAssertLessThan(state["compaction"]["after"]["tokens"].int!,state["compaction"]["before"]["tokens"].int!)
         XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
         XCTAssertTrue(state["contextState"]["currentRequest"].isNull)
@@ -235,7 +265,8 @@ final class CompactionSafetyTests: HelperTestCase {
     }
     func testTooSmallAndEmptyContextCostNoRequestOrContinuation() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        // Pi: nothing beyond the recent tail is "Nothing to compact"; no summary is requested.
+        // A chat that is one request, or one exchange, keeps it as written:
+        // there is nothing to summarize, and no summary is requested.
         for messages in [seed(count:0),seed(count:1,bytes:0)] {
             let client=SummaryProbe(),s=try session(root,client:client,messages:messages)
             try await s.compact();try await eventually { !(await s.isRunning) }
@@ -292,10 +323,16 @@ final class CompactionSafetyTests: HelperTestCase {
         for again in [false,true] {
             let client=RecoveryProbe(repeatRejection:again),tools=CountingCompactionTools(),id=UUID().uuidString
             let s=try AgentSession(id:id,profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+            // What the next request must answer is never dropped, also after a
+            // rejection: the recovery summarizes the tasks before this one.
+            for message in earlier(count:2,bytes:16000) { try await s.append(message) }
             _=try await s.submit(Submission(commandID:"root",turnID:"root",text:"Append counter exactly once"),steer:false);try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),calls=await tools.count,summaries=await client.summaries,normals=await client.normals,path=await s.path!,context=await s.context
             XCTAssertEqual(state["state"].text,again ? "error":"idle",state["preflightError"].encoded());XCTAssertEqual(calls,1);XCTAssertEqual(normals,3);XCTAssertEqual(summaries,1)
             XCTAssertEqual(state["compaction"]["recovery"]["consumed"].flag,true)
+            XCTAssertEqual(context.first?.kind,"compaction")
+            XCTAssertEqual(context.dropFirst().prefix(3).map(\.role),["user","assistant","toolResult"],"The task in hand stays as written, its completed write included")
+            XCTAssertEqual(context.dropFirst().first?.id,"root")
             await s.close()
             let fresh=ScriptClient([]),reopened=try AgentSession(id:id,profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:fresh,tools:tools,traces:TraceStore(),resumePath:path)
             let restored=await reopened.context, count=await fresh.count
@@ -327,7 +364,10 @@ final class CompactionSafetyTests: HelperTestCase {
         let stop=CheckpointStop(),client=SummaryProbe(holdAt:1)
         var raw=try fixtureProfile().raw;raw["contextWindow"]=10000;raw["maxOutputTokens"]=256
         let s=try AgentSession(id:"stop-commit",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),beforeJournalAppend:{ if $0["type"].text=="compaction" { stop.arm() } },changed:{_,_ in stop.changed() })
-        for message in seed(count:2,bytes:9600) { try await s.append(message) }
+        // Two earlier tasks, 5,200 tokens together, pass the task-start
+        // threshold of a 10,000-token window; the last exchange, which stays
+        // with the new message, is small.
+        for message in earlier(count:2,bytes:10400)+seed(count:1,bytes:400) { try await s.append(message) }
         _=try await s.submit(Submission(commandID:"next",turnID:"next",text:"Continue"),steer:false)
         try await eventually { await client.held };stop.set(await s.runTask);await client.release()
         try await eventually { !(await s.isRunning) }

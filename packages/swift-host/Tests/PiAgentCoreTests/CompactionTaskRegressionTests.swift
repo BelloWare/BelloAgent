@@ -20,10 +20,16 @@ final class CompactionTaskRegressionTests: HelperTestCase {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var raw=try fixtureProfile().raw; raw["contextWindow"]=10000; raw["maxOutputTokens"]=256
         let profile=try Profile(raw), client=TimedCompactionClient(), directory=root.appendingPathComponent("state")
-        let seed=[ChatMessage(role:"user",content:[textBlock("Earlier objective")]),
-                  answer(String(repeating:"Historical evidence. ",count:900)).message]
-        var policy=CompactionPolicy(); policy.keepRecentTokens=1
-        let session=try AgentSession(id:"timed-compact",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,compactionPolicy:policy)
+        // An earlier task's evidence (5,250 tokens, past the task-start
+        // threshold of this window), then the short exchange that stays
+        // with the new message.
+        func row(_ role: String, _ text: String, id: String, root: String) -> ChatMessage {
+            var message=ChatMessage(role:role,content:[textBlock(text)]); message.id=id; message.taskRootID=root; return message
+        }
+        let seed=[row("user","Earlier objective",id:"earlier",root:"earlier"),
+                  row("assistant",String(repeating:"Historical evidence. ",count:1000),id:"evidence",root:"earlier"),
+                  row("user","Anything left?",id:"last",root:"last"),row("assistant","Nothing is left.",id:"last-reply",root:"last")]
+        let session=try AgentSession(id:"timed-compact",profile:profile,apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed)
         addTeardownBlock { await session.close() }
         _=try await session.keep(whenFinished:false)
         _=try await session.submit(Submission(commandID:"c",turnID:"task",text:"Continue"),steer:false)
@@ -31,6 +37,8 @@ final class CompactionTaskRegressionTests: HelperTestCase {
         let state=await session.snapshot(), purposes=await client.purposes
         XCTAssertEqual(state["runStatus"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(purposes,["compaction","turn"])
+        let context=await session.context
+        XCTAssertEqual(context.dropFirst().prefix(3).map(\.id),["last","last-reply","task"],"The exchange before the message stays; the earlier task is the summary")
         let measured=try XCTUnwrap(state["turnMetrics"]["modelMs"].double)
         XCTAssertGreaterThanOrEqual(measured,200)
         XCTAssertEqual(state["taskPresentation"]["recent"].list.last?["modelMs"].double,measured)
@@ -43,9 +51,9 @@ final class CompactionTaskRegressionTests: HelperTestCase {
 
     func testManualCompactionUsesExplicitChoicesAndRejectsInvalidOverridesBeforeMutation() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        // One task: a tool round, then the answer pi's one-token tail keeps.
+        // One task: a tool round, then the answer that stays with its request.
         let client=ScriptClient([evidenceCall(String(repeating:"Evidence retained. ",count:600)),answer("Verified."),answer("Keep the objective and verified evidence.")])
-        let session=try AgentSession(id:"manual-choice",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=1;return policy }())
+        let session=try AgentSession(id:"manual-choice",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
         _=try await session.submit(Submission(commandID:"task",turnID:"task",text:"Preserve this objective.",model:"earlier-model",thinkingLevel:"low"),steer:false)
         try await eventually { !(await session.isRunning) }
         let before=await session.context
@@ -70,12 +78,13 @@ final class CompactionTaskRegressionTests: HelperTestCase {
         await session.close()
     }
 
-    /// Pi's split turn: the one task's request goes into the turn-prefix
-    /// summary ("Original Request"), with no history before it.
-    func testOneUserTaskCompactsIntoPiTurnPrefixSummary() async throws {
+    /// An idle chat's one finished task keeps its exchange as written (the
+    /// request and the tool-free reply that ended it) and summarizes its tool
+    /// round (0.1.136; before, pi's split turn summarized the request too).
+    func testOneFinishedTaskKeepsItsExchangeAndSummarizesItsToolRound() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=ScriptClient([evidenceCall(String(repeating:"Completed work with evidence. ",count:300)), answer("Done."), answer("Completed work; preserve the user's objective.")])
-        let session=try AgentSession(id:"single-task",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=1;return policy }())
+        let session=try AgentSession(id:"single-task",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
         _=try await session.submit(Submission(commandID:"task",turnID:"task",text:"Keep my original objective exactly."),steer:false)
         try await eventually { !(await session.isRunning) }
         try await session.compact(commandID:"compact")
@@ -83,10 +92,14 @@ final class CompactionTaskRegressionTests: HelperTestCase {
         let state=await session.snapshot(), context=await session.context
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction")
-        XCTAssertFalse(context.contains { $0.id=="task" })
+        XCTAssertEqual(context.dropFirst().map(\.text),["Keep my original objective exactly.","Done."],"The request and its answer are replayed, not paraphrased")
+        XCTAssertEqual(context.dropFirst().first?.id,"task")
+        XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["task"])
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.count,2,"The tool round: its call and its result")
+        XCTAssertNil(context.first?.compaction?["continuationText"].text,"Nothing was in progress")
         XCTAssertTrue(context.first?.text.contains("Completed work; preserve the user's objective.") == true)
         let calls=await client.count, requests=await client.requests; XCTAssertEqual(calls,3)
-        XCTAssertTrue(requests.last?.first?.text.contains("Keep my original objective exactly.") == true)
+        XCTAssertTrue(requests.last?.first?.text.contains("Keep my original objective exactly.") == true,"The summary request reads the whole context")
         await session.close()
     }
 }

@@ -15,7 +15,7 @@ private actor CompactionOutcomeClient: ModelClient {
 
 final class CompactionSnapshotTests: HelperTestCase {
     /// A one-token tail, so two short turns have history to summarize.
-    static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
+    static let smallTail: CompactionPolicy = CompactionPolicy()
     func testFailedAndCancelledCompactionDoNotPublishSuccess() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = CompactionOutcomeClient()

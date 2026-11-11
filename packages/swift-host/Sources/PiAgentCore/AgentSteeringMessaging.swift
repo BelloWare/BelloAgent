@@ -34,7 +34,7 @@ extension AgentSteeringCoordinator {
                 let lock = gate(job.owner.id); try await lock.acquire()
                 do {
                     if final, jobs[lease.id]?.sealed == true { await lock.release(); return false }
-                    let delivery = try await deliver(owner:job.owner,recipient:session,childTurn:lease,canCompact:!compacted,deferMail:final && lease.taskName != nil)
+                    let delivery = try await deliver(owner:job.owner,recipient:session,childTurn:lease,canCompact:!compacted,deferMail:final && lease.taskName != nil,hold:!final)
                     if delivery != .compact {
                         if final, delivery == .none {
                             // A cost-limit pause defers the seal: the runner parks the
@@ -51,7 +51,9 @@ extension AgentSteeringCoordinator {
                 } catch { await lock.release(); throw error }
                 // A provider request must not hold up a sibling's Stop. The
                 // next pass selects messages again under the family gate.
-                try await session.compactContext(reason:"agent-delivery"); compacted = true
+                // The shared policy: a compaction that fails leaves the mail
+                // accepted and undelivered, and the next pass decides without one.
+                _ = try await session.automaticCompaction(reason:"agent-delivery"); compacted = true
             }
         }
         guard await session.subagents.family != nil else { return false }
@@ -63,7 +65,7 @@ extension AgentSteeringCoordinator {
             let revision = await wake.revision
             try await lock.acquire()
             do {
-                let delivery = try await deliver(owner:session,recipient:session,childTurn:nil,canCompact:!compacted)
+                let delivery = try await deliver(owner:session,recipient:session,childTurn:nil,canCompact:!compacted,hold:!final)
                 if delivery == .delivered { await lock.release(); return true }
                 if delivery == .compact { await lock.release() }
                 else {
@@ -84,7 +86,7 @@ extension AgentSteeringCoordinator {
                     continue
                 }
             } catch { await lock.release(); throw error }
-            try await session.compactContext(reason:"agent-delivery"); compacted = true
+            _ = try await session.automaticCompaction(reason:"agent-delivery"); compacted = true
         }
     }
     func seal(job original: Job, child: AgentSession?) async throws {
@@ -125,7 +127,10 @@ extension AgentSteeringCoordinator {
         await signal(parent.id).pulse()
     }
     enum AgentDeliveryResult { case none, delivered, compact }
-    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?, canCompact: Bool = true, deferMail: Bool = false) async throws -> AgentDeliveryResult {
+    /// `hold`: mail that cannot fit even the window stays accepted and
+    /// undelivered while the recipient's own request goes on (a boundary
+    /// between rounds); at a final boundary it is the limit that pauses.
+    func deliver(owner: AgentSession, recipient: AgentSession, childTurn: AgentChildTurn?, canCompact: Bool = true, deferMail: Bool = false, hold: Bool = false) async throws -> AgentDeliveryResult {
         guard !(await recipient.agentDeliveryHeld) else { return .none }
         let state = await owner.agentState()
         let pending = state.messages.values.filter { message in
@@ -161,7 +166,12 @@ extension AgentSteeringCoordinator {
         var body = payload(selected)
         while !(try await recipient.agentPayloadFits(body,parentLane:childTurn == nil)) {
             if selected.count > 1 { selected.removeLast(); body = payload(selected); continue }
-            if canCompact, await recipient.canCompact { return .compact }
+            if canCompact, await recipient.canCompactForDelivery { return .compact }
+            // No compaction can make room (none is possible, or this task's
+            // already failed). The preferred output reserve is not a reason
+            // to hold mail the window still takes: dispatch clips the reply.
+            if try await recipient.agentPayloadFits(body,parentLane:childTurn == nil,window:true) { break }
+            if hold { return .none }
             throw AgentError("coordination_limit", "Accepted agent input is held because it cannot fit this request budget; adjust context or Resume")
         }
         let ids = selected.map(\.id)

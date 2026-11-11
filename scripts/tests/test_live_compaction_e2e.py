@@ -453,7 +453,8 @@ class ConfigurationTests(unittest.TestCase):
         with self.environment(PI_LIVE_BASE_URL="https://gateway.example/v1", PI_LIVE_API_KEY="k" * 20, PI_LIVE_MODEL="unlisted-model",
                               PI_LIVE_CONTEXT_WINDOW="128000", PI_LIVE_THINKING="medium", PI_LIVE_MAX_COST_USD="2.5"):
             cfg = harness.load_config(self.arguments())
-        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 93_208))
+        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 90_392))
+        self.assertEqual((cfg.usable, cfg.start_threshold), (109_592, 76_714))
         # Pi's summary cap, with the turn-prefix cap when a split turn's start is in the same request.
         self.assertEqual([cfg.summary_room(kind) for kind in ("history", "history-update+turn-prefix", "turn-prefix")], [16_384, 16_384, 16_384])
         with self.environment():

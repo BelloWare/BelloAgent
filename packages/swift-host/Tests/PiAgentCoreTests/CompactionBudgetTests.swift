@@ -46,36 +46,42 @@ private func summary(_ s: AgentSession, _ policy: CompactionPolicy = CompactionP
 }
 
 final class CompactionBudgetTests: HelperTestCase {
-    /// An earlier task's evidence, then the current objective. The one-token
-    /// tail keeps only the objective, so these budget cases summarize history.
-    private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, evidence: Int = 800, policy: CompactionPolicy = { var p=CompactionPolicy();p.keepRecentTokens=1;return p }()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {
+    /// An earlier task's evidence, a short exchange, then the current
+    /// objective. The chat ends on a message no reply has answered, so the
+    /// exchange before it stays with it and these budget cases summarize the
+    /// earlier task (before 0.1.136, a one-token tail kept only the objective).
+    private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, evidence: Int = 800, policy: CompactionPolicy = CompactionPolicy()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {
         var raw=try fixtureProfile().raw
         raw["contextWindow"]=JSON(window);raw["modelOutputLimit"]=JSON(ceiling);raw["maxOutputTokens"]=4096
         raw["reasoning"]=true;raw["thinkingLevel"]="high";raw["thinkingLevelMap"]=["low":"low","high":"high"]
         var earlier=ChatMessage(role:"user",content:[textBlock("Inspect the logs.")]);earlier.id="earlier";earlier.taskRootID=earlier.id
         var observed=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Observed evidence. ",count:evidence))]);observed.taskRootID=earlier.id
+        var asked=ChatMessage(role:"user",content:[textBlock("Anything unusual?")]);asked.id="asked";asked.taskRootID=asked.id
+        var answered=ChatMessage(role:"assistant",content:[textBlock("Nothing unusual.")]);answered.taskRootID=asked.id
         var user=ChatMessage(role:"user",content:[textBlock("Keep the original objective.")]);user.id="objective";user.taskRootID=user.id
-        let seed=[earlier,observed,user],client=BudgetProbe(mode)
+        let seed=[earlier,observed,asked,answered,user],client=BudgetProbe(mode)
         let session=try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,compactionPolicy:policy)
         return (session,client,seed)
     }
 
     func testSummaryCapSessionEffortAndNormalPromptShape() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        let (session,client,_)=try setup(root,mode:.completedAtCap)
+        let (session,client,seed)=try setup(root,mode:.completedAtCap)
         try await session.compact();try await eventually { !(await session.isRunning) }
         let requests=await client.requests,snapshot=await session.snapshot(),profile=await session.profile
         XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[16384],"A bounded summary cap, retaining the session effort")
         XCTAssertEqual(requests.map { $0["reasoning"]["effort"].text },["high"])
         let request=try XCTUnwrap(requests.first),input=request["input"].list
         XCTAssertTrue(RequestContextCounter.systemPrompt(request)?.contains(AgentSession.selectionPolicy) == true)
-        XCTAssertEqual(input.count,5,"Normal instructions, three history messages and the final instruction")
+        XCTAssertEqual(input.count,7,"Normal instructions, five history messages and the final instruction")
         XCTAssertEqual(input[1]["content"].list.first?["text"].text,"Inspect the logs.")
         XCTAssertTrue(input.last?["content"].list.first?["text"].text?.contains("Create a concise continuation checkpoint") == true)
         XCTAssertEqual(request["tool_choice"].text,"none")
         XCTAssertEqual(profile.raw["thinkingLevel"].text,"high");XCTAssertEqual(profile.maxOutput,4096)
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
         XCTAssertEqual(snapshot["compaction"]["httpAttempts"].int,1,"Usage at the cap alone is not evidence of incomplete output")
+        let context=await session.context
+        XCTAssertEqual(context.dropFirst().map(\.id),Array(seed.dropFirst(2).map(\.id)),"The exchange before the objective stays with it")
         await session.close()
     }
 
@@ -117,8 +123,9 @@ final class CompactionBudgetTests: HelperTestCase {
         await s.close()
     }
 
-    /// A compaction is one request. A history that cannot fit one beside
-    /// the summary's room is never split: nothing is sent, and the context stays.
+    /// A compaction is one request. A history that cannot fit one, even
+    /// with the summary clipped to the room that is left, is never split:
+    /// nothing is sent, and the context stays.
     func testOversizedHistoryIsRefusedWithoutARequest() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         // 16,842 × 19 characters: 80,000 of pi's tokens in an 80,000-token window.
@@ -147,7 +154,7 @@ final class CompactionBudgetTests: HelperTestCase {
     func testOutputExhaustionStopsAtOnceWithoutAdoptionUnderAnyBudget() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         for limit in [1,8] {
-            var policy=CompactionPolicy();policy.maximumAttempts=limit;policy.keepRecentTokens=1
+            var policy=CompactionPolicy();policy.maximumAttempts=limit
             let (s,c,seed)=try setup(root,mode:.twice,window:80000,policy:policy)
             do { _=try await summary(s,policy);XCTFail("must not adopt incomplete data") }
             catch let e as AgentError { XCTAssertEqual(e.code,"compaction_output_exhausted") }

@@ -47,10 +47,9 @@ private func profile(window: Int = 100_000, ceiling: Int? = nil, _ change: (inou
 }
 
 final class PiParityTests: HelperTestCase {
-    private func session(_ root: URL, _ client: PurposeClient, profile: Profile, seed: [ChatMessage]? = nil, auto: Bool = true, keep: Int? = nil) throws -> AgentSession {
-        var policy=CompactionPolicy(); if let keep { policy.keepRecentTokens=keep }
-        return try AgentSession(id:"pi-session",profile:profile,apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
-                                resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,autoCompaction:auto,compactionPolicy:policy)
+    private func session(_ root: URL, _ client: PurposeClient, profile: Profile, seed: [ChatMessage]? = nil, auto: Bool = true) throws -> AgentSession {
+        try AgentSession(id:"pi-session",profile:profile,apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                         resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,autoCompaction:auto)
     }
     private func settle(_ s: AgentSession) async throws -> JSON {
         try await eventually { !(await s.isRunning) }
@@ -107,7 +106,7 @@ final class PiParityTests: HelperTestCase {
     func testSourceThatLeavesLessThanTheCapClipsItAndIsNeverChunked() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[]), seed=tasks("A",8,chars:15_000)
-        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed,keep:1)
+        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed)
         try await s.compact(); let state=try await settle(s), context=await s.context
         let summaries=await client.summaryBodies
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
@@ -121,7 +120,7 @@ final class PiParityTests: HelperTestCase {
     func testSourceThatLeavesNoRoomForTheSmallestSummaryIsRefused() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[]), seed=tasks("A",9,chars:15_000)
-        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed,keep:1)
+        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed)
         try await s.compact(); let state=try await settle(s), context=await s.context
         let summaries=await client.summaryBodies
         XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large",state["preflightError"].encoded())
@@ -133,7 +132,7 @@ final class PiParityTests: HelperTestCase {
     func testOversizedCheckpointIsRejectedBeforeAdoption() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[],summaries:[.success(answer(String(repeating:"summary ",count:25_000)))])
-        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:tasks("A",4,chars:12_000),keep:1)
+        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:tasks("A",4,chars:12_000))
         try await s.compact(); let state=try await settle(s), context=await s.context
         XCTAssertEqual(state["state"].text,"error",state["preflightError"].encoded())
         XCTAssertNil(context.first?.kind)
@@ -141,17 +140,24 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    func testCompactionReplaysNoInputVerbatimAndAnEmptySinceCompactsNothing() async throws {
+    /// Ours (0.1.136; pi replays no input and keeps a token tail): an idle
+    /// chat keeps its last exchange as written, the task's request and the
+    /// tool-free reply that ended it, and summarizes the tool rounds between
+    /// them. With nothing added since, a second compaction compacts nothing.
+    func testAnIdleCompactionKeepsTheLastExchangeAndAnEmptySinceCompactsNothing() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[])
         var call=ChatMessage(role:"assistant",content:[["type":"toolCall","id":"c1","name":"first","arguments":[:]]]); call.id="call"
         var result=ChatMessage(role:"toolResult",content:[textBlock(String(repeating:"evidence ",count:600))]); result.id="result"; result.toolCallId="c1"; result.toolName="first"
         let seed=[user("task","Keep my objective."),call,result,reply("done","Done.")]
-        let s=try session(root,client,profile:profile(),seed:seed,keep:1)
+        let s=try session(root,client,profile:profile(),seed:seed)
         try await s.compact(); _=try await settle(s)
         let context=await s.context, prompts=await client.requests.map { $0.map(\.text).joined() }
-        XCTAssertEqual(context.map(\.id).dropFirst(),["done"],"The task's request is summarized, not replayed")
-        XCTAssertTrue(prompts.first?.contains("## Objective and constraints") == true,"Pi's turn-prefix summary carries it")
+        XCTAssertEqual(context.map(\.id).dropFirst(),["task","done"],"The request is replayed as written, with the reply that ended its task")
+        XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["task"])
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),["call","result"],"Its tool round is what the summary replaces")
+        XCTAssertNil(context.first?.compaction?["continuationText"].text,"Nothing was in progress")
+        XCTAssertTrue(prompts.first?.contains("## Objective and constraints") == true,"The summary still records the objective")
         try await s.compact(); let again=try await settle(s)
         XCTAssertEqual(again["state"].text,"error")
         XCTAssertTrue(again["preflightError"].text?.hasPrefix("Already compacted") == true,again["preflightError"].encoded())
@@ -159,22 +165,32 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    func testCutCountsThePreviousSummaryWherePiSessionPathHoldsIt() async throws {
-        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=PurposeClient(turns:[])
-        // A checkpoint that kept O0 and O1 (1,000 tokens each), then two new
-        // tasks of 1,000 tokens. The summary is 3,000 tokens: with 4,500 kept,
-        // pi's walk reaches it after the new tasks and cuts at N0.
-        var checkpoint=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:12_000))])
-        checkpoint.id="checkpoint"; checkpoint.kind="compaction"
-        checkpoint.compaction=["version":2,"keptIDs":["O0","O0-reply","O1","O1-reply"],"protectedIDs":[],"sourceIDs":[]]
-        let old=(0..<2).flatMap { n in [user("O\(n)",String(repeating:"o",count:3_990)),reply("O\(n)-reply","o".padding(toLength:10,withPad:"o",startingAt:0))] }
-        let new=(0..<2).flatMap { n in [user("N\(n)",String(repeating:"n",count:3_990)),reply("N\(n)-reply","n".padding(toLength:10,withPad:"n",startingAt:0))] }
-        let s=try session(root,client,profile:profile(),seed:[checkpoint]+old+new,keep:4_500)
-        try await s.compact(); let state=try await settle(s), context=await s.context
-        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(context.dropFirst().map(\.id),["N0","N0-reply","N1","N1-reply"])
-        await s.close()
+    /// Ours (0.1.136): the cut is by task, not by tokens, so the previous
+    /// summary's size does not move it. Pi walks its session path backwards
+    /// counting tokens, the previous summary among them; here a checkpoint of
+    /// 30 tokens and one of 3,000 leave the same rows: the last exchange.
+    /// The rows the checkpoint had kept and the task before the last are
+    /// summarized with the previous summary.
+    func testThePreviousSummarysSizeDoesNotMoveTheCut() async throws {
+        for summary in [120,12_000] {
+            let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client=PurposeClient(turns:[])
+            // A checkpoint that kept O0 and O1 (1,000 tokens each), then two new
+            // tasks of 1,000 tokens.
+            var checkpoint=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:summary))])
+            checkpoint.id="checkpoint"; checkpoint.kind="compaction"
+            checkpoint.compaction=["version":2,"keptIDs":["O0","O0-reply","O1","O1-reply"],"protectedIDs":[],"sourceIDs":[]]
+            let old=(0..<2).flatMap { n in [user("O\(n)",String(repeating:"o",count:3_990)),reply("O\(n)-reply","o".padding(toLength:10,withPad:"o",startingAt:0))] }
+            let new=(0..<2).flatMap { n in [user("N\(n)",String(repeating:"n",count:3_990)),reply("N\(n)-reply","n".padding(toLength:10,withPad:"n",startingAt:0))] }
+            let s=try session(root,client,profile:profile(),seed:[checkpoint]+old+new)
+            try await s.compact(); let state=try await settle(s), context=await s.context
+            XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+            XCTAssertEqual(context.dropFirst().map(\.id),["N1","N1-reply"],"A \(summary)-character summary")
+            XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),["checkpoint","O0","O0-reply","O1","O1-reply","N0","N0-reply"])
+            let prompt=await client.requests.first?.map(\.text).joined() ?? ""
+            XCTAssertEqual(prompt.components(separatedBy:String(repeating:"s",count:summary)).count-1,1,"The previous summary is read once, whole")
+            await s.close()
+        }
     }
 
     func testBoundaryExcerptsAreEscapedDataWithoutFileInventories() {
@@ -434,59 +450,89 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    func testFailedThresholdCompactionPreservesHistoryAndStopsWithoutLooping() async throws {
+    /// Ours (0.1.136; before, the run stopped in error): a threshold
+    /// compaction that fails at send leaves the history as it was and the
+    /// turn goes on with the intact request; the failure is on the
+    /// compaction's own state, and the task is not compacted again.
+    func testFailedThresholdCompactionPreservesHistoryAndTheTurnGoesOn() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[.success(answer("answered"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
         var seed=tasks("A",6,chars:16_000); seed[seed.count-1].usage=["input":30_000,"output":100,"cacheRead":0,"cacheWrite":0,"totalTokens":30_100]
         let s=try session(root,client,profile:profile(window:40_000),seed:seed)
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
-        let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["compaction"])
-        XCTAssertEqual(state["state"].text,"error",state["preflightError"].encoded())
+        let state=try await settle(s), purposes=await client.purposes, context=await s.context, held=await s.suppressedCompactionTask
+        XCTAssertEqual(purposes,["compaction","turn"],"One summary request, then the turn's own")
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertTrue(state["errorCode"].isNull,"The failed compaction is not the run's failure")
         XCTAssertEqual(state["compaction"]["phase"].text,"failed")
-        XCTAssertFalse(state["messages"].list.contains { $0["text"].text == "answered" })
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"provider_http")
+        XCTAssertEqual(context.map(\.id).prefix(seed.count),seed.map(\.id)[...],"The history is preserved")
+        XCTAssertNil(context.first?.kind)
+        XCTAssertEqual(state["messages"].list.last?["text"].text,"answered")
+        XCTAssertEqual(held,"t","No further automatic compaction for this task")
         await s.close()
     }
 
-    /// Ours: mid-run, a failed threshold compaction stops the run. Pi sends the
-    /// next request anyway, and its next round tries the same failing summary.
-    func testAFailedThresholdCompactionMidRunStopsTheRunInsteadOfLooping() async throws {
+    /// Ours (0.1.136; before, the run stopped): mid-run, a failed threshold
+    /// compaction leaves the turn to go on. Like pi the next request is sent
+    /// anyway; unlike pi the next round, still over the threshold, does not
+    /// try the same failing summary again: one attempt per task.
+    func testAFailedThresholdCompactionMidRunLeavesTheTurnToGoOnWithoutLooping() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var measured=toolReply(["first"]); measured.usage=["input":24_000,"output":100,"inputIncludingCache":24_000]
-        let client=PurposeClient(turns:[.success(measured),.success(answer("never sent"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
-        // About 16,000 tokens of history: under the 23,616-token threshold, past the kept tail.
+        let client=PurposeClient(turns:[.success(measured),.success(measured),.success(answer("done"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
+        // About 16,000 tokens of history: under the task-start threshold of
+        // this window (about 20,500), so the task starts; each reply then
+        // reports 24,000, past the working threshold (about 22,000).
         let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
-        let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["turn","compaction"],"No request follows the failed summary")
-        XCTAssertEqual(state["state"].text,"error")
-        XCTAssertEqual(state["errorCode"].text,"provider_http")
+        let state=try await settle(s), purposes=await client.purposes, context=await s.context, held=await s.suppressedCompactionTask
+        XCTAssertEqual(purposes,["turn","compaction","turn","turn"],"The requests follow the failed summary, and no second summary is asked")
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertTrue(state["errorCode"].isNull)
+        XCTAssertEqual(state["compaction"]["phase"].text,"failed"); XCTAssertEqual(state["compaction"]["errorCode"].text,"provider_http")
+        XCTAssertNil(context.first?.kind,"The context is intact")
+        XCTAssertEqual(state["messages"].list.last?["text"].text,"done")
+        XCTAssertEqual(held,"t")
         await s.close()
     }
 
-    /// Ours: a mid-run compaction the next measurement still finds over the
-    /// threshold freed no room; the run stops instead of compacting every round.
-    func testACompactionThatFreesNoRoomStopsTheRunInsteadOfLooping() async throws {
+    /// Ours (0.1.136): an adopted checkpoint has to leave a real gap, at
+    /// most half the usable input (before: anything below the next trigger),
+    /// or it is not adopted (`compact_no_progress`). That no longer stops
+    /// the run: the turn goes on from its intact context, and the task is
+    /// not compacted every round.
+    func testACompactionThatFreesNoRoomIsNotAdoptedAndIsNotTriedEveryRound() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         func measuredCall(_ id: String) -> ModelReply {
             var message=ChatMessage(role:"assistant",content:[["type":"toolCall","id":JSON(id),"name":"first","arguments":[:]]])
             message.providerItems=[["type":"function_call","id":JSON("item-"+id),"call_id":JSON(id),"name":"first","arguments":"{}"]]
             return ModelReply(message:message,calls:[ToolCall(id:id,name:"first",arguments:[:])],usage:["input":24_000,"output":100,"inputIncludingCache":24_000])
         }
-        let client=PurposeClient(turns:[.success(measuredCall("a")),.success(measuredCall("b")),.success(answer("never sent"))],summaries:[.success(answer(String(repeating:"s",count:40000)))])
+        // The summary comes back at 15,000 tokens (a gateway that ignored its
+        // 10,000-token cap). It would free 1,000 tokens and still fit, and it
+        // is under the working threshold (about 21,900); but with the task
+        // it measures more than half the usable input (about 14,600).
+        let client=PurposeClient(turns:[.success(measuredCall("a")),.success(measuredCall("b")),.success(answer("done"))],summaries:[.success(answer(String(repeating:"s",count:60000)))])
         let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
-        let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["turn","compaction"],"No second compaction and no further request")
-        XCTAssertEqual(state["errorCode"].text,"compact_no_progress")
+        let state=try await settle(s), purposes=await client.purposes, context=await s.context
+        XCTAssertEqual(purposes,["turn","compaction","turn","turn"],"One summary; the rounds after it are not compacted again")
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compact_no_progress",state["compaction"]["error"].text ?? "")
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertTrue(state["errorCode"].isNull,"Not the run's failure")
+        XCTAssertNil(context.first?.kind,"The oversized checkpoint was not adopted")
+        XCTAssertEqual(state["messages"].list.last?["text"].text,"done")
         await s.close()
     }
 
     func testThresholdIncludesDeliveredFollowUp() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        // The first reply reports 23,000 of a 23,616 threshold; the follow-up
-        // adds 1,000 more, but pi measures before it joins.
-        var first=answer("first"); first.usage=["input":22_900,"output":100,"total":23_000,"inputIncludingCache":22_900]
+        // The first reply reports 20,000 tokens, under the task-start threshold
+        // of this window (70% of the usable input, about 20,450); the follow-up
+        // adds 1,000 more. Pi measures before it joins; here the task starts
+        // by compacting, measured once its message is delivered.
+        var first=answer("first"); first.usage=["input":19_900,"output":100,"total":20_000,"inputIncludingCache":19_900]
         let client=PurposeClient(turns:[.success(first),.success(answer("second"))])
         await client.delayTurns(0.3)
         let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))

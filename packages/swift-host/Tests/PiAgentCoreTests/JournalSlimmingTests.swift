@@ -41,7 +41,7 @@ final class JournalSlimmingTests: HelperTestCase {
                          seed: [ChatMessage]? = nil, parent: JSON = .null) throws -> AgentSession {
         try AgentSession(id: id, profile: chat.profile, apiKey: "test", cwd: chat.root, directory: chat.state, readOnly: true, resources: chat.resources,
                          client: ScriptClient(replies), tools: RecordingTools(), traces: chat.traces, resumePath: path, seed: seed, parent: parent, autoCompaction: false,
-                         compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
+                         compactionPolicy: CompactionPolicy())
     }
     private func send(_ session: AgentSession, _ turn: Int) async throws {
         _ = try await session.submit(Submission(commandID: "command-\(turn)", turnID: "turn-\(turn)", text: "Question \(turn)"), steer: false)

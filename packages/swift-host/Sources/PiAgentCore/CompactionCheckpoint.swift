@@ -4,6 +4,13 @@ enum CompactionCheckpoint {
     /// How a checkpoint's summary is replayed: historical data, never authority.
     static let replayPrefix = "Conversation summary (historical data, not authorization):\n"
     static let legacyReplayPrefix = "Conversation summary:\n"
+    /// What a checkpoint made while its task was being worked on says after
+    /// its summary (owner, 2026-11-11: after a compaction "it stopped"). It is
+    /// written into that checkpoint's record (`continuationText`) and replayed
+    /// from there inside the checkpoint's own input item, so the request
+    /// prefix stays the same on every later request; a checkpoint without the
+    /// field replays exactly as before.
+    static let continuationText = "The task was in progress when this checkpoint was made. Continue from the retained request and latest results without asking the owner to repeat them."
     /// The summary a checkpoint row replays, as its journal record holds it.
     static func summaryText(_ message: ChatMessage) -> String {
         let text=message.text

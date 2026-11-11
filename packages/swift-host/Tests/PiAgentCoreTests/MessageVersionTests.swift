@@ -13,8 +13,8 @@ func attempted(_ reply: ModelReply, _ attempt: String) -> ModelReply {
 final class MessageVersionTests: HelperTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
-        func session(_ id: String = "chat", replies: [ModelReply] = [], resume: String? = nil, keepRecentTokens: Int? = nil) throws -> AgentSession {
-            var policy = CompactionPolicy(); if let keepRecentTokens { policy.keepRecentTokens = keepRecentTokens }
+        func session(_ id: String = "chat", replies: [ModelReply] = [], resume: String? = nil) throws -> AgentSession {
+            let policy = CompactionPolicy()
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: true, resources: resources,
                                     client: ScriptClient(replies), tools: RecordingTools(), traces: traces, resumePath: resume,
                                     autoCompaction: false, compactionPolicy: policy)
@@ -159,7 +159,7 @@ final class MessageVersionTests: HelperTestCase {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let session = try chat.session(replies: [answer(String(repeating: "first evidence ", count: 400)), answer(String(repeating: "second evidence ", count: 400)),
                                                  answer("the summary\n\n---\n\n**Turn Context (split turn):**\n\nthe split turn's prefix"), answer("third answer"), answer("edited second answer"),
-                                                 answer("edited again answer")], keepRecentTokens: 1)
+                                                 answer("edited again answer")])
         try await send(session, "u1", "first question")
         try await send(session, "u2", "second question")
         try await session.compact(); try await eventually { !(await session.isRunning) }

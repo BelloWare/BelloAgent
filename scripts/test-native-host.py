@@ -127,7 +127,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         # Pi sends a user message without an item type.
         users = [part.get('text', '') for item in body.get('input', []) if item.get('type', 'message') == 'message' and item.get('role') == 'user' for part in item.get('content', []) if part.get('type') == 'input_text']
         if users and users[-1].startswith('long question'):
-            text += ' ' + 'padding ' * 10500  # past pi's 20,000-token recent tail
+            text += ' ' + 'padding ' * 10500  # a long earlier answer for a compaction to summarize
         if self.path.endswith('/responses'):
             tool = model in ('tool', 'limited-tool', 'billing-tool', 'edit-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
             if tool and model == 'edit-tool':
@@ -351,7 +351,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             CONTRACT.require(path == 'README.md' and 'read' in semantic['tool_names'], 'requested fixture read path or read schema is missing')
             text, kind = '', 'tool-call'
         elif prompt.startswith('fixture: long echo '):
-            # Past pi's 20,000-token recent tail, so compaction has earlier work to summarize.
+            # A long earlier answer: what a later compaction has to summarize.
             text, kind = 'Echo from validated request: ' + prompt.removeprefix('fixture: long echo ') + ' ' + 'padding ' * 10500, 'text'
         elif prompt.startswith('fixture: echo '):
             text, kind = 'Echo from validated request: ' + prompt.removeprefix('fixture: echo '), 'text'
@@ -1184,11 +1184,14 @@ class NativeIntegration(unittest.TestCase):
                 first = self.settled(session); self.assertEqual(first['state'],'idle')
                 self.assertIn('Validated read: fixture file contents',json.dumps(first['messages']))
                 self.submit(session,'fixture: long echo continuation 中文🙂'); self.assertEqual(self.settled(session)['state'],'idle')
+                # An idle compaction keeps the last exchange whole (0.1.136), so the
+                # long echo has to be an earlier task for there to be something to summarize.
+                self.submit(session,'fixture: echo after the long one'); self.assertEqual(self.settled(session)['state'],'idle')
                 self.peer.command('context.compact',session=session)
                 compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
-                # Pi splits the long echo's turn: one request summarizes the history and the turn's prefix.
-                attempts = self.logged_attempts(session,4)
+                # One request summarizes the read and the long echo; the last exchange stays as written.
+                attempts = self.logged_attempts(session,5)
                 listed = [a['attemptId'] for a in self.peer.command('debug.list',session=session)['attempts']]
                 self.assertIn(attempts[0]['attemptId'],listed,'The helper keeps the latest saved request of a chat')
                 records = []
@@ -1215,7 +1218,7 @@ class NativeIntegration(unittest.TestCase):
                 self.assertEqual(bool(continuation['semantic']['opaque']),policy=='pinned')
                 self.assertEqual(list(continuation['semantic']['results'].values()),['fixture file contents'])
                 self.assertEqual(sum(a['purpose']=='compaction' for a in attempts),1)
-                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0183)
+                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0306)
                 journals = ''.join(path.read_text() for path in (self.root/'sessions').rglob('*.jsonl'))
                 self.assertIn('strict-original-opaque' if api=='openai-responses' else 'strict-original-signature',journals,'Portable replay must still retain original provider items on disk')
                 self.peer.command('session.close',session=session)
@@ -1392,6 +1395,8 @@ class NativeIntegration(unittest.TestCase):
             self.submit(session); first = self.settled(session); self.assertEqual(first['state'], 'idle')
             self.assertIn('fixture file contents', json.dumps(first['messages']))
             self.submit(session, 'long question'); self.assertEqual(self.settled(session)['state'], 'idle')
+            # The last exchange stays whole (0.1.136): the long answer is an earlier task's.
+            self.submit(session, 'short question'); self.assertEqual(self.settled(session)['state'], 'idle')
             self.peer.command('context.compact', session=session); self.assertEqual(self.settled(session)['state'], 'idle')
             attempts = self.peer.command('debug.list', session=session)['attempts']
             self.assertTrue(any(a['purpose']=='compaction' for a in attempts))

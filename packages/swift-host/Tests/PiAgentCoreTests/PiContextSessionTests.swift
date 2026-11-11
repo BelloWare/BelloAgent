@@ -1,8 +1,10 @@
 import XCTest
 @testable import PiAgentCore
 
-/// Pi 0.85.1's context rules in a running session. The fixture's window is
-/// 100,000 tokens, so pi's compaction threshold is 100,000 - 16,384 = 83,616.
+/// Pi 0.85.1's context meter in a running session, and when a compaction is
+/// due (ours since 0.1.136). The fixture's window is 100,000 tokens: about
+/// 82,200 are usable beside a summary, so a task starts by compacting once
+/// about 57,600 are in use, and compacts while it works at about 65,900.
 final class PiContextSessionTests: HelperTestCase {
     func testMalformedUsageSnapshotAndReopenRemainSafe() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -46,16 +48,21 @@ final class PiContextSessionTests: HelperTestCase {
 
     func testCompactionWaitsForPendingWorkAndFollowingReplyRefreshesUsage() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=ScriptClient([reply(String(repeating:"evidence ",count:1500),total:66000),answer("Summary: verified work."),reply("after",total:3000)])
+        // The first task's evidence is what the compaction summarizes; the
+        // second task's reply reports a context past the task-start threshold.
+        let client=ScriptClient([reply(String(repeating:"evidence ",count:1500),total:30000),reply("noted",total:66000),answer("Summary: verified work."),reply("after",total:3000)])
         let s=try session(root,client)
         _=try await s.submit(Submission(commandID:"a",turnID:"a",text:"one"),steer:false)
         try await eventually { !(await s.isRunning) }
-        let first=await client.purposes
-        XCTAssertEqual(first,["turn"],"Do not compact an idle finished task")
         _=try await s.submit(Submission(commandID:"b",turnID:"b",text:"two"),steer:false)
         try await eventually { !(await s.isRunning) }
-        let second=await client.purposes, snapshot=await s.snapshot(["includeMessages":false])
-        XCTAssertEqual(second,["turn","compaction","turn"])
+        let first=await client.purposes
+        XCTAssertEqual(first,["turn","turn"],"Do not compact an idle finished task")
+        _=try await s.submit(Submission(commandID:"c",turnID:"c",text:"three"),steer:false)
+        try await eventually { !(await s.isRunning) }
+        let second=await client.purposes, snapshot=await s.snapshot(["includeMessages":false]), context=await s.context
+        XCTAssertEqual(second,["turn","turn","compaction","turn"],"The next task starts by compacting, before its first request")
+        XCTAssertEqual(context.dropFirst().map(\.text),["two","noted","three","after"],"The exchange before the new message stays with it")
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
         XCTAssertEqual(snapshot["context"]["tokens"],3000,"The ordinary reply, not summary usage, measures the new context")
         await s.close()
@@ -63,17 +70,24 @@ final class PiContextSessionTests: HelperTestCase {
 
     func testATurnCompactsBeforeItsNextRequestWhenAToolResultCrossesTheThreshold() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        // The call's reply sits at the threshold; its "done write" result (3 tokens) crosses it.
+        // An earlier task for the compaction to summarize: the task in hand
+        // stays whole. The call's reply reports a context at the working
+        // threshold; the check comes once its "done write" result is in.
         var call = toolReply(["write"]); call.usage = ["input": 66000, "inputIncludingCache": 66000, "output": 10]
         call.message.providerItems=nil; call.message.content.insert(textBlock(String(repeating:"evidence ",count:1500)),at:0)
-        let client = ScriptClient([call, answer("Summary: wrote."), answer("finished")])
+        let client = ScriptClient([reply(String(repeating:"earlier ",count:1500),total:12000), call, answer("Summary: wrote."), answer("finished")])
         let s = try session(root, client)
+        _ = try await s.submit(Submission(commandID: "z", turnID: "z", text: "read it"), steer: false)
+        try await eventually { !(await s.isRunning) }
         _ = try await s.submit(Submission(commandID: "a", turnID: "a", text: "write it"), steer: false)
         try await eventually { !(await s.isRunning) }
-        let purposes = await client.purposes, snapshot = await s.snapshot(["includeMessages": false])
-        XCTAssertEqual(purposes, ["turn", "compaction", "turn"])
+        let purposes = await client.purposes, snapshot = await s.snapshot(["includeMessages": false]), context = await s.context
+        XCTAssertEqual(purposes, ["turn", "turn", "compaction", "turn"])
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
         XCTAssertEqual(snapshot["latestSuccessfulCompaction"]["operation"]["reason"].text, "threshold")
+        XCTAssertEqual(context.dropFirst().map(\.role), ["user", "assistant", "toolResult", "assistant"], "The task in hand, whole")
+        XCTAssertEqual(context.dropFirst().first?.id, "a")
+        XCTAssertEqual(context.first?.compaction?["continuationText"].text, CompactionCheckpoint.continuationText, "Made while its task worked")
         await s.close()
     }
 
@@ -83,11 +97,11 @@ final class PiContextSessionTests: HelperTestCase {
                                                    "input_tokens_details": ["cached_tokens": JSON((total - 10) / 2)]], api: "openai-responses")
         return value
     }
-    /// These cases measure when pi compacts. Their few short messages sit
-    /// inside pi's 20,000-token tail, so a one-token tail gives it work.
+    /// These cases measure when a compaction is due. A compaction keeps the
+    /// task in hand and the exchange before a new message, so each case has
+    /// an earlier task for it to summarize.
     private func session(_ root: URL, _ client: ScriptClient, resume: String? = nil) throws -> AgentSession {
-        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
-        return try AgentSession(id: "pi-context", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
-                                resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume, compactionPolicy: policy)
+        try AgentSession(id: "pi-context", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                         resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume)
     }
 }

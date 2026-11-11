@@ -15,7 +15,6 @@ final class CommandReceiptsTests: HelperTestCase {
     private func session(_ chat: Chat, replies: [ModelReply] = [], path: String? = nil, failing: StateWriteFailure? = nil) throws -> AgentSession {
         try AgentSession(id: "receipts", profile: chat.profile, apiKey: "test", cwd: chat.root, directory: chat.state, readOnly: true, resources: chat.resources,
                          client: ScriptClient(replies), tools: RecordingTools(), traces: chat.traces, resumePath: path, autoCompaction: false,
-                         compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }(),
                          beforeJournalAppend: { record in try failing?.check(record) })
     }
     private func send(_ session: AgentSession, _ turn: Int) async throws {
@@ -145,7 +144,9 @@ final class CommandReceiptsTests: HelperTestCase {
     /// Journals and metadata files written before this format open as they did.
     func testRecordsWrittenBeforeThisFormatOpenAsBefore() async throws {
         let chat = try chat()
-        let writer = try session(chat, replies: (0..<6).map { answer("Answer \($0)") } + [answer("Summary: six questions were answered.")] + [answer("Answer 6")])
+        // The compaction keeps the last exchange; the answers before it are
+        // long enough to be worth a summary request.
+        let writer = try session(chat, replies: (0..<6).map { answer("Answer \($0) " + String(repeating: "evidence ", count: 60)) } + [answer("Summary: six questions were answered.")] + [answer("Answer 6")])
         for turn in 0..<6 { try await send(writer, turn) }
         try await writer.compact(commandID: "compact")
         try await eventually { !(await writer.isRunning) }

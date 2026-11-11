@@ -96,29 +96,31 @@ final class CompactionPiTests: HelperTestCase {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PiSummaryClient(), s=try session(root,client,seed:tasks("A",8,chars:16_000))
         _=try await compact(s)
-        let first=await client.prompts.count, summary=await s.context.first
+        let first=await client.prompts.count, kept=await s.context, summary=kept.first
         XCTAssertEqual(summary?.kind,"compaction"); XCTAssertEqual(summary?.text.hasSuffix("SUMMARY \(first)"),true)
+        XCTAssertEqual(kept.dropFirst().map(\.id),["A7","A7-reply"],"An idle chat keeps its last exchange")
         for message in tasks("B",8,chars:16_000) { try await s.append(message) }
         _=try await compact(s)
         let prompts=Array(await client.prompts.dropFirst(first)), context=await s.context
         XCTAssertEqual(prompts.count,1)
         let prompt=try XCTUnwrap(prompts.first)
         XCTAssertEqual(prompt.components(separatedBy:ProviderClient.compactionSummaryPrefix).count-1,1)
-        for n in 0..<3 { XCTAssertFalse(prompt.contains("A\(n) u"),"Removed originals are not resurrected") }
-        for n in 3..<8 { XCTAssertTrue(prompt.contains("A\(n) u"),"The retained history is seen by the next summary") }
+        for n in 0..<7 { XCTAssertFalse(prompt.contains("A\(n) u"),"Removed originals are not resurrected") }
+        XCTAssertTrue(prompt.contains("A7 u"),"The exchange the first compaction kept is seen by the next summary")
         for n in 0..<8 { XCTAssertTrue(prompt.contains("B\(n) u"),"Both sides of the new cut are seen") }
         XCTAssertEqual(context.first?.text.hasSuffix("SUMMARY \(first+1)"),true)
-        // Pi replays no input verbatim: the kept tail starts at B3.
-        XCTAssertEqual(Array(context.dropFirst().map(\.id).prefix(2)),["B3","B3-reply"])
+        // The last exchange stays as written; the one the first compaction
+        // kept (A7) joins the new summary with B0 to B6.
+        XCTAssertEqual(context.dropFirst().map(\.id),["B7","B7-reply"])
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),[summary?.id ?? "","A7","A7-reply"]+tasks("B",7,chars:0).map(\.id))
         await s.close()
     }
 
     func testNormalProjectionIsPreservedIncludingCompleteToolResultsAndFocus() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        var policy=CompactionPolicy(); policy.keepRecentTokens=1
         let output="🙂"+String(repeating:"y",count:4_997)+"🙂tail"
         let seed=[user("task",String(repeating:"task ",count:1000))]+read("c1",path:"a.txt",output:output,root:"task")+[reply("done","Read it.",root:"task"),user("next","Next task")]
-        let client=PiSummaryClient(), s=try session(root,client,seed:seed,policy:policy)
+        let client=PiSummaryClient(), s=try session(root,client,seed:seed)
         _=try await compact(s)
         let bodies=await client.bodies, context=await s.context, profile=await s.profile
         let body=try XCTUnwrap(bodies.first)
@@ -126,48 +128,71 @@ final class CompactionPiTests: HelperTestCase {
         XCTAssertEqual(Array(body["input"].list.dropLast()),normal["input"].list)
         XCTAssertEqual(body["tools"],normal["tools"])
         XCTAssertEqual(body["input"].list.first { $0["type"].text == "function_call_output" }?["output"].text,output)
-        XCTAssertEqual(context.dropFirst().map(\.id),["next"])
+        // The chat ends on a message no reply has answered: the exchange
+        // before it stays as written (the request and its tool-free reply),
+        // and that task's tool round is what the summary replaces.
+        XCTAssertEqual(context.dropFirst().map(\.id),["task","done","next"])
+        XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["task"])
         XCTAssertEqual(context.first?.compaction?["dependencyIDs"].list.compactMap(\.text),seed.map(\.id))
-        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),Array(seed.dropLast().map(\.id)))
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),["call-c1","result-c1"])
         await s.close()
     }
 
-    func testKeptTailIsPiRecentTwentyThousandTokensCutAtATurnStart() async throws {
-        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        // Each task is 5,000 tokens by pi's estimate: 2,000 asked, 3,000 answered.
-        let seed=(0..<10).flatMap { n in [user("T\(n)","T\(n) "+String(repeating:"u",count:7_997)),reply("T\(n)-reply",String(repeating:"a",count:12_000),root:"T\(n)")] }
-        let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
-        _=try await compact(s)
-        let context=await s.context, bodies=await client.bodies
-        let kept=Array(context.dropFirst())
-        XCTAssertEqual(kept.first?.id,"T6","The cut is at a turn start")
-        XCTAssertEqual(kept.reduce(0) { $0+PiContext.estimateTokens($1) },20_000)
-        XCTAssertEqual(bodies.count,1); XCTAssertFalse(context.first?.text.contains("Turn Context") ?? true)
-        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,16_384,"The model's limit, never below pi's 0.8 × 16,384 share")
-        await s.close()
+    /// Owner, 2026-11-11: "remove the cap directly". Pi keeps the most recent
+    /// 20,000 tokens, cut at a turn start; since 0.1.136 what stays is decided
+    /// by task, not by tokens. An idle chat keeps its last exchange whole,
+    /// whether that is a quarter of pi's tail or more than all of it, and
+    /// nothing older, though three more tasks would have fitted the tail.
+    func testKeptRowsAreTheLastExchangeNotPisTwentyThousandTokenTail() async throws {
+        for answered in [12_000,92_000] {
+            let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            // Nine tasks of 5,000 tokens by pi's estimate (2,000 asked, 3,000
+            // answered), then one answered in 3,000 or in 23,000 tokens.
+            let seed=(0..<10).flatMap { n in [user("T\(n)","T\(n) "+String(repeating:"u",count:7_997)),reply("T\(n)-reply",String(repeating:"a",count:n == 9 ? answered : 12_000),root:"T\(n)")] }
+            let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
+            _=try await compact(s)
+            let context=await s.context, bodies=await client.bodies
+            let kept=Array(context.dropFirst())
+            XCTAssertEqual(kept.map(\.id),["T9","T9-reply"],"The last exchange, from its request on")
+            XCTAssertEqual(kept.reduce(0) { $0+PiContext.estimateTokens($1) },2_000+answered/4,"Kept whole, whatever it measures against 20,000")
+            XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),Array(seed.dropLast(2).map(\.id)),"Every earlier task is the summary")
+            XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["T9"])
+            XCTAssertEqual(bodies.count,1); XCTAssertFalse(context.first?.text.contains("Turn Context") ?? true)
+            XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,16_384,"The model's limit, never below the summary allowance")
+            await s.close()
+        }
     }
 
-    func testSplitTurnGetsPiTurnPrefixSummaryOfItsRequest() async throws {
+    /// One task in flight (the chat ends on a result) with nothing before it,
+    /// too large to keep whole beside a summary: its request is replayed as
+    /// written, the newest whole rounds stay towards 30% of the usable input
+    /// (about 24,700 tokens of a 100,000-token window), and the older rounds
+    /// are summarized in the one request. Before 0.1.136 pi's 20,000-token
+    /// tail kept four reads and its turn-prefix summary carried the request.
+    func testATaskInFlightTooLargeToKeepWholeKeepsItsRequestAndNewestRounds() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // One turn: ten reads of 4,000 tokens each.
         let seed=[user("task","Inspect the reads.")]+(0..<10).flatMap { read("r\($0)",path:"f\($0)",output:String(repeating:"o",count:16_000),root:"task") }
         let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
         _=try await compact(s)
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
-        // Ours: the turn is in flight (it ends on a result), so its request is replayed as written.
-        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is summarized and replayed")
-        XCTAssertEqual(bodies.count,1,"No history precedes the turn")
-        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,8_192,"The model's limit, never below pi's 0.5 × reserve for a turn prefix")
+        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(4..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Six reads are within 30%; a seventh is not")
+        XCTAssertEqual(context.first?.compaction?["protectedIDs"].list.compactMap(\.text),["task"])
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),(0..<4).flatMap { ["call-r\($0)","result-r\($0)"] },"The request itself is not summarized away")
+        XCTAssertNil(context.first?.compaction?["continuationText"].text,"A manual compaction is the owner's own interruption: no framing")
+        XCTAssertEqual(bodies.count,1,"A compaction is one request")
+        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,8_192,"The model's limit, never below the smallest summary allowance")
         XCTAssertTrue(prompts.first?.contains("retainedRanges") == true)
         XCTAssertTrue(prompts.first?.hasPrefix("Inspect the reads.") == true)
         XCTAssertEqual(context.first?.text,CompactionCheckpoint.replayPrefix+"SUMMARY 1")
         await s.close()
     }
 
-    /// A split turn with history before it: one request summarizes both,
-    /// the turn's start in <turn-prefix> with pi's turn-prefix prompt last,
-    /// where pi sends a second request for it.
-    func testSplitTurnAfterHistoryIsSummarizedInTheSameRequest() async throws {
+    /// A task in flight with history before it: the task stays whole, all
+    /// ten rounds (40,000 tokens, twice pi's old tail), and the earlier tasks
+    /// are the summary, in one request that reads both. Before 0.1.136 the
+    /// turn was split at pi's tail and its first six reads were summarized.
+    func testATaskInFlightAfterHistoryStaysWholeAndTheHistoryIsSummarizedInOneRequest() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // Three earlier tasks, then one turn of ten reads of 4,000 tokens each.
         let seed=tasks("H",3,chars:8_000)+[user("task","Inspect the reads.")]+(0..<10).flatMap { read("r\($0)",path:"f\($0)",output:String(repeating:"o",count:16_000),root:"task") }
@@ -175,7 +200,8 @@ final class CompactionPiTests: HelperTestCase {
         _=try await compact(s)
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
         XCTAssertEqual(bodies.count,1,"A compaction is one request")
-        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] })
+        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(0..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Every row of the task in hand")
+        XCTAssertEqual(context.first?.compaction?["summarySourceIDs"].list.compactMap(\.text),tasks("H",3,chars:0).map(\.id),"Only what came before it")
         let prompt=try XCTUnwrap(prompts.first)
         XCTAssertTrue(prompt.hasPrefix("H0 u"))
         XCTAssertTrue(prompt.contains("Inspect the reads."))
@@ -212,7 +238,5 @@ final class CompactionPiTests: HelperTestCase {
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:8_000)),8_000)
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:nil)),16_384,"Without a declared ceiling nothing bounds it: min(13,107, ∞)")
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:20_000,limit:100_000)),5_000,"At most a quarter of a small window")
-        XCTAssertEqual(policy.keepRecentTokens(contextWindow:200_000),20_000)
-        XCTAssertEqual(policy.keepRecentTokens(contextWindow:32_768),8_192)
     }
 }

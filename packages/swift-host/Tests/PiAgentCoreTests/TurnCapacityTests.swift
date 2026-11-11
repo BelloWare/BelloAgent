@@ -75,47 +75,60 @@ final class TurnCapacityTests: HelperTestCase {
 
     func testSmallerModelPreflightAndCompactionUseItsOwnCapacity() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        // The first reply reports what its 12,000-character input really cost.
-        // By pi's estimate that request alone, beside the summary cap, cannot
-        // stay in the smaller window, so pi's cut moves past it.
+        // A first task of 4,000 tokens, then a short exchange. For the smaller
+        // model the history is past its task-start threshold (70% of about
+        // 5,500 usable tokens), so its task starts by compacting: the short
+        // exchange stays with the new message and the first task is summarized.
         var first = answer("old answer"); first.usage = ["input": 4_400, "inputIncludingCache": 4_400, "output": 5]
-        let client = ScriptClient([first, answer("short summary"), answer("new answer")])
+        let client = ScriptClient([first, answer("noted"), answer("short summary"), answer("new answer")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
-        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 10000)), steer: false)
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 16000)), steer: false)
         try await eventually { !(await session.isRunning) }
-        let preview = try await session.prepareContext(["text":"continue","model":"small-model","thinkingLevel":"default","contextWindow":5000,"maxOutputTokens":1000])
+        _ = try await session.submit(Submission(commandID: "second", turnID: "second", text: "and then"), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let preview = try await session.prepareContext(["text":"continue","model":"small-model","thinkingLevel":"default","contextWindow":8000,"maxOutputTokens":1000])
         XCTAssertEqual(preview["count"]["fits"], true, "The actual built input, rather than the retired fixed tool allowance, must cross the smaller model's input budget")
-        _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", thinkingLevel: "default", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
+        _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", thinkingLevel: "default", contextWindow: 8000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
-        let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot()
+        let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot(), context = await session.context
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
         // In pi's units (characters over four) the source fits one summary request.
-        XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
-        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000])
-        // Pi's turn-prefix cap is 0.5 × the small window's 2,500-token reserve, not the chat's 1,000-token budget.
-        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1250, 1000])
-        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model"])
+        XCTAssertEqual(purposes, ["turn", "turn", "compaction", "turn"], "The history is measured against the selected model's smaller window")
+        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 100000, 8000, 8000])
+        // The summary allowance is a quarter of the small window, not the chat's 1,000-token budget.
+        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 4096, 2000, 1000])
+        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "fixture-model", "small-model", "small-model"])
+        XCTAssertEqual(context.dropFirst().map(\.text), ["and then", "noted", "continue", "new answer"], "The exchange before the message stays; the first task is the summary")
         await session.close()
     }
 
     /// A compaction is one request, never chunks: a switch to a window too
     /// small for the history's one summary request refuses the compaction
-    /// before anything is sent. As pi does after a failed threshold
-    /// compaction, the turn's request is still sent, for the gateway to judge.
+    /// before anything is sent. Since 0.1.136 that does not fail the turn: as
+    /// pi does after a failed threshold compaction, the turn's request is
+    /// still sent, intact, for the gateway to judge, and no other summary is
+    /// tried for the task.
     func testAWindowTooSmallForOneSummaryRequestSendsNoSummary() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        var first = answer("old answer"); first.usage = ["input": 4_600, "inputIncludingCache": 4_600, "output": 5]
-        let client = ScriptClient([first, answer("continued")])
+        // A first task of 7,000 tokens, more than the 8,000-token window
+        // holds beside any summary, then the short exchange that would stay.
+        var first = answer("old answer"); first.usage = ["input": 7_100, "inputIncludingCache": 7_100, "output": 5]
+        let client = ScriptClient([first, answer("noted"), answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
-        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 18000)), steer: false)
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 28000)), steer: false)
         try await eventually { !(await session.isRunning) }
-        _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
+        _ = try await session.submit(Submission(commandID: "second", turnID: "second", text: "and then"), steer: false)
         try await eventually { !(await session.isRunning) }
-        let purposes = await client.purposes, snapshot = await session.snapshot(), requests = await client.requests
-        XCTAssertEqual(purposes, ["turn"], "The intact summary does not fit; neither a summary nor an overflowing continuation is sent")
+        let before = await session.context
+        _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 8000, maxOutputTokens: 1000), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let purposes = await client.purposes, snapshot = await session.snapshot(), requests = await client.requests, held = await session.suppressedCompactionTask
+        XCTAssertEqual(purposes, ["turn", "turn", "turn"], "The intact summary does not fit: no summary is sent, and the turn's own request is")
         XCTAssertEqual(snapshot["compaction"]["errorCode"].text, "compaction_too_large")
-        XCTAssertEqual(snapshot["state"].text, "error", snapshot["preflightError"].encoded())
-        XCTAssertEqual(requests.count, 1)
+        XCTAssertTrue(snapshot["compaction"]["error"].text?.contains("Nothing was sent") == true)
+        XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
+        XCTAssertEqual(requests.last?.filter(\.replayEligible).map(\.id), before.map(\.id) + ["small"], "The request is the intact context")
+        XCTAssertEqual(held, "small", "No other automatic compaction for this task")
         await session.close()
     }
 
