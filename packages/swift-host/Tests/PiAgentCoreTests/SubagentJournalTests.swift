@@ -31,7 +31,7 @@ final class SubagentJournalTests: HelperTestCase {
     func testManagedOriginAndTerminalSurviveCheckpointAndFullReplay() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile()
-        var origin = subagentFixtureOrigin(); origin.mcpPolicy = ["server":"original-digest"]
+        var origin = subagentFixtureOrigin(call: fixtureGeminiToolCallID()); origin.mcpPolicy = ["server":"original-digest"]
         let s = try AgentSession(id: "child", profile: profile, apiKey: "fixture", cwd: root, directory: root,
                                  readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]),
                                  tools: DisabledTools(), traces: TraceStore(), prepared: nil, subagentOrigin: origin)
@@ -50,6 +50,7 @@ final class SubagentJournalTests: HelperTestCase {
         }
         let first = try open(), state = await first.subagents
         XCTAssertEqual(state.origin, origin); XCTAssertEqual(state.status, .completed)
+        XCTAssertEqual(state.origin?.link.call.toolCallID, fixtureGeminiToolCallID())
         await first.close()
         XCTAssertNotNil(JournalCheckpoint.read(for: root.appendingPathComponent("child.jsonl")))
         let checkpoint = try open(), saved = await checkpoint.subagents
@@ -59,6 +60,36 @@ final class SubagentJournalTests: HelperTestCase {
         let full = try open(), replayed = await full.subagents
         XCTAssertEqual(replayed, state)
         await full.close()
+    }
+
+    func testSignatureBearingSubagentPlansKeepDistinctCallsAndLocalIdentityLimits() throws {
+        var state = SubagentJournalState()
+        let ids = [fixtureGeminiToolCallID(tail: 0xfc), fixtureGeminiToolCallID(tail: 0xfd)]
+        for (index, id) in ids.enumerated() {
+            var origin = subagentFixtureOrigin(child: "child-\(index)", call: id)
+            origin.link.delegationID = "delegation-\(index)"
+            let plan = SubagentPlan(origin: origin, task: "task", resultMessageID: "result-\(index)")
+            let row: JSON = ["type":"custom", "customType":JSON(JournalRecordKind.subagentCall), "data":try subagentJSON(plan)]
+            try state.consume(try JSON.parse(row.data()), sessionID: "parent")
+        }
+        let restored = try JSONDecoder().decode(SubagentJournalState.self, from: JSONEncoder().encode(state))
+        XCTAssertEqual(restored.plans.count, 2)
+        XCTAssertEqual(restored.plans["delegation-0"]?.origin.link.call.toolCallID, ids[0])
+        XCTAssertEqual(restored.plans["delegation-1"]?.origin.link.call.toolCallID, ids[1])
+        var local = subagentFixtureOrigin(call: ids[0]).link
+        local.call.assistantMessageID = String(repeating: "m", count: 512)
+        XCTAssertTrue(local.valid)
+        local.call.assistantMessageID += "m"
+        XCTAssertFalse(local.valid, "A provider ID allowance must not relax local message identities")
+        local = subagentFixtureOrigin(call: ids[0]).link
+        local.parentAttemptID = String(repeating: "a", count: 513)
+        XCTAssertFalse(local.valid)
+        for id in ["", String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1), "call\nline", "call\u{007f}"] {
+            let origin = subagentFixtureOrigin(call: id)
+            XCTAssertFalse(origin.link.valid)
+            var invalid = SubagentJournalState()
+            XCTAssertThrowsError(try invalid.consume(["type":"custom", "customType":JSON(JournalRecordKind.subagentOrigin), "data":try subagentJSON(origin)], sessionID: "child"))
+        }
     }
 
     func testParentPlanCannotTransferOwnershipToAFork() throws {

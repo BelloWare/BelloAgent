@@ -472,7 +472,7 @@ public struct ProviderAccumulator: Sendable {
                 if !text.isEmpty { message.content.append(["type":"thinking","thinking":JSON(text)]) }
             case "thinking":message.content.append(["type":"thinking","thinking":item["thinking"]])
             case "function_call","tool_use":
-                let id=try required(item[api=="openai-responses" ? "call_id":"id"],"tool call id",maximum:512),name=try required(item["name"],"tool name",maximum:256)
+                let id=try requiredToolCallID(item[api=="openai-responses" ? "call_id":"id"]),name=try required(item["name"],"tool name",maximum:256)
                 let args:JSON
                 if api=="openai-responses" {
                     // Pi's parseStreamingJson never fails: arguments a tool cannot
