@@ -993,8 +993,10 @@ def run_too_large(run, result):
 def run_mid_run(run, result):
     cfg = run.cfg
     per_file = 7_200  # a ~28 KB evidence file read in full, by the helper's estimate
-    # Under the task-start threshold, so the turn starts; three or four files then reach the working one.
-    target = max(int(cfg.window * 0.3), cfg.start_threshold - 4_000)
+    # Well under the task-start threshold as the helper counts it (the seed's
+    # estimate leaves out the instructions and schemas), so the turn starts;
+    # three or four files then reach the working threshold.
+    target = max(int(cfg.window * 0.3), cfg.start_threshold - 12_000)
     history = History(run.corpus, seed=17).grow(tokens=target)
     session = Session(run, "mid-run", history, workspace=lambda folder: evidence(run.corpus, folder, seed=29))
     try:
