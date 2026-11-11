@@ -179,8 +179,11 @@ final class CompactionSafetyTests: HelperTestCase {
         XCTAssertEqual(CompactionPlanner.fallbackCut(source,target:100),2,"Required material passes any target")
         XCTAssertEqual(CompactionPlanner.plan(source,cut:2).keptMessages.map(\.id),[original[0].id,steering.id,assistant.id,result.id],"The task's inputs are replayed ahead of the batch")
         XCTAssertTrue(CompactionPlanner.plan(source,cut:2).summarized.isEmpty,"Nothing of the task in hand is summarized to make room")
-        let idle=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:nil,taskOpen:false), plan=CompactionPlanner.plan(idle,cut:idle.whole)
-        XCTAssertTrue(plan.kept.isEmpty)
+        // Idle, its rows naming their task and the task not ended by a reply
+        // of its own: only its inputs are replayed, and the giant result is
+        // summarized whole. (Without task metadata the body would be kept.)
+        let idle=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:"root",taskOpen:false), plan=CompactionPlanner.plan(idle,cut:idle.whole)
+        XCTAssertTrue(plan.kept.isEmpty); XCTAssertEqual(plan.protected.map(\.id),[original[0].id,steering.id])
         let text=try ProviderClient.responsesInput(plan.history,instructions:"",profile:fixtureProfile()).map { $0.encoded() }.joined()
         XCTAssertGreaterThan(text.utf8.count,60000); XCTAssertFalse(text.contains("characters truncated"))
     }

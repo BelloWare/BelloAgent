@@ -323,7 +323,7 @@ extension AgentSession {
                                 // What is not an ordinary compaction failure (a damaged
                                 // journal, an accounting hold) is the run's failure itself.
                                 guard recoverableCompactionFailure(failed) else { throw failed }
-                                suppressAutomaticCompaction(); throw overflow
+                                try suppressAutomaticCompaction(); throw overflow
                             }
                             try Task.checkCancellation()
                             // Pi continues its loop after the compaction, delivering queued steering first.

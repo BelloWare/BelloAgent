@@ -1267,9 +1267,13 @@ reads the task's recorded outcome).
   stopped a running turn keeps that task whole.
 - **No older owner messages** are collected beyond that: replaying answered
   requests reads as asking again.
-- **A context without usable task metadata** (an old journal) is one task: the
-  surviving body is kept and the fallback applies. Nothing is guessed from the
-  last user row, and nothing already summarized is reloaded.
+- **A context without usable task metadata** (an old journal: every existing
+  chat at its first compaction after upgrading) is one task, whether it is
+  working, idle or just before a new message: the surviving body is kept and
+  the fallback applies, so its newest rows stay, the latest request with its
+  reply. The last-exchange cut is chosen only where the rows name their task;
+  nothing is guessed from the last user row, and nothing already summarized
+  is reloaded.
 
 **The fallback.** The whole task is too large when the projected replacement
 (`[checkpoint at its whole allowance, with its framing] + retained rows`, the
@@ -1279,9 +1283,19 @@ required and never dropped: the task's own inputs with their skills and images
 (an agent-authored initiating task included), the latest permission-note
 carrier, the complete newest call/result batch awaiting a reply, agent mail the
 model has not answered, and at send the preceding exchange. The newest whole
-groups before them are added, working backward in one pass, towards 30% of the
-usable input. Required material may pass the 30%; the replacement must still
-pass the 50%. If it cannot, the answer is "no useful compaction" and the intact
+groups before them are added, working backward in one pass, up to 30% of the
+usable input and never past the room the replacement has left: 30% is a ceiling
+on what is retained, and what the summary's allowance, the request's prefix
+(instructions, schemas, wrapper, framing) and the required rows leave under the
+50% is the budget. In a small window (32,768 tokens: the allowance alone is a
+third of the usable input) that room is little or none, and the required rows
+are the whole plan. Required material may pass the 30%; the replacement must
+still pass the 50%. One last resort: where the whole allowance and the prefix
+alone pass that half (a 32,768-token window with a few thousand tokens of
+schemas), the required rows are still planned if the replacement passes with
+the summary at the length it is asked for; it has to fit beside the whole
+allowance all the same, and the checkpoint is adopted only if it measures
+within the half. Without it such a chat could never compact. If it cannot, the answer is "no useful compaction" and the intact
 request goes: the planner no longer abandons protections or advances the cut
 past required groups to make a compaction possible. Overflow recovery uses the
 same requirements. An adopted checkpoint must remove something new, save at
@@ -1309,7 +1323,11 @@ is refused, cut or unusable, or whose candidate is not worth adopting leaves the
 context intact, shows on its operation row, and ends automatic attempts **for
 that task** (`suppressedCompactionTask`, saved in the failure record and the
 metadata file, so a Retry, a Resume and a reopen remember; a record without the
-field suppresses nothing). The request then goes as it is and the gateway
+field suppresses nothing). That record is a journal write like any other: if it
+cannot be appended and synchronized the run stops there, and memory says
+"suppressed" only once the journal does. A side chat not saved yet holds it in
+memory and its first journal carries it (`keepNow`); a fork starts without it,
+as it starts without any other operation state. The request then goes as it is and the gateway
 decides; if that task later really overflows, the chat pauses on the overflow
 instead of asking for another summary. Named exceptions still stop the run: a
 Stop, a cost or accounting hold, a damaged replay group, a journal that refuses

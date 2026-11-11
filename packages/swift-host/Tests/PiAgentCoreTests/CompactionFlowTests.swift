@@ -357,6 +357,117 @@ final class CompactionFlowTests: HelperTestCase {
     }
 }
 
+/// What Astra's review of the redesign found (2026-11-11), each as the owner
+/// would meet it.
+final class CompactionReviewTests: HelperTestCase {
+    private let task="OWNER-TASK: port the parser to the new grammar, keep the old entry point, and run every test."
+    private func session(_ root: URL, _ client: FlowClient, tools: BulkTools, window: Int = 100_000, seed: [ChatMessage]? = nil, resumePath: String? = nil,
+                         beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }) throws -> AgentSession {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=JSON(window)
+        return try AgentSession(id:"review",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),resumePath:resumePath,seed:seed,beforeJournalAppend:beforeJournalAppend)
+    }
+    private func settled(_ s: AgentSession) async throws -> JSON {
+        try await eventually(timeout:.seconds(30)) { !(await s.isRunning) }
+        return await s.snapshot()
+    }
+
+    /// A 32,768-token window: the summary's allowance is a third of the
+    /// usable input, so filling the kept rounds towards 30% of it can never
+    /// fit half of it. The optional rounds give way; what the next request
+    /// must answer stays, and the task compacts instead of being written off.
+    func testASmallWindowCompactsWithWhatItMustKeep() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient(replies:(0..<6).map { reads($0) }+[answer("All done.")])
+        let s=try session(root,client,tools:BulkTools(chars:7_000),window:32_768,seed:earlier(1))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, following=await client.after(), context=await s.context, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? "")
+        XCTAssertEqual(purposes.filter { $0 == "compaction" }.count,1,"The compaction is made: \(purposes)")
+        XCTAssertNil(held,"and the task is not written off")
+        XCTAssertEqual(context.first?.kind,"compaction")
+        let next=try item(following,0)
+        XCTAssertEqual(Array(userTexts(next).dropFirst()),[task]); XCTAssertEqual(outputs(next).last,"RESULT-c4-0","The batch awaiting its reply")
+        XCTAssertLessThanOrEqual(RequestContextCounter.projectedTokens(next),(32_768-327-8_192)/2)
+        await s.close()
+    }
+
+    /// The record that ends a task's automatic attempts is a journal write
+    /// like any other: when it cannot be saved the run stops there, before
+    /// another request is paid for on a journal that refuses writes.
+    func testASuppressionThatCannotBeSavedStopsTheRunBeforeAnotherRequest() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient(replies:[reads(0,3),reads(1,3),reads(2,3),reads(3,1),answer("All done.")],summaries:[.cutAtItsCap])
+        let s=try session(root,client,tools:BulkTools(chars:32_000),beforeJournalAppend:{
+            if $0["customType"].text == "pi-app.compaction-failure.v1", !$0["data"]["taskRootId"].isNull { throw AgentError("fixture_disk","The disk refused the write") }
+        })
+        _=try await s.keep(whenFinished:false)
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, held=await s.suppressedCompactionTask
+        XCTAssertEqual(purposes,["turn","turn","turn","compaction"],"Nothing is asked of the model after the write that failed")
+        XCTAssertEqual(state["state"].text,"error"); XCTAssertEqual(state["errorCode"].text,"fixture_disk")
+        XCTAssertNil(held,"Nothing is published in memory that the journal does not hold")
+        await s.close()
+    }
+
+    /// A chat from before task metadata (every chat the owner has, at its
+    /// first compaction after upgrading): there is no task to cut by, so the
+    /// surviving body is kept from its newest rows back, and the latest
+    /// request stays with its reply, compacted by hand or at send.
+    func testALegacyChatKeepsItsLatestRequestAndReply() async throws {
+        func legacy() -> [ChatMessage] {
+            var rows=(0..<6).flatMap { n in [ChatMessage(role:"user",content:[textBlock("LEGACY-\(n) "+String(repeating:"u",count:8_000))]),
+                                             ChatMessage(role:"assistant",content:[textBlock("ANSWER-\(n) "+String(repeating:"a",count:32_000))])] }
+            rows += [ChatMessage(role:"user",content:[textBlock("LEGACY-LAST: give me two ways to fix the cache.")]),
+                     ChatMessage(role:"assistant",content:[textBlock("OPTIONS: 1) invalidate on write 2) version the keys")])]
+            return rows
+        }
+        for manual in [true,false] {
+            let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client=FlowClient(replies:[answer("Done.")])
+            let s=try session(root,client,tools:BulkTools(chars:1),seed:legacy())
+            if manual { try await s.compact(); _=try await settled(s) }
+            _=try await s.submit(Submission(commandID:"c",turnID:"task",text:"yes, do the second one"),steer:false)
+            let state=try await settled(s), purposes=await client.purposes, sent=await client.sent
+            XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? "")
+            XCTAssertEqual(purposes,["compaction","turn"],manual ? "by hand" : "at send")
+            let next=try item(sent,1).body, texts=userTexts(next)
+            XCTAssertTrue(texts.first?.hasPrefix(ProviderClient.compactionSummaryPrefix) == true)
+            XCTAssertTrue(texts.contains("LEGACY-LAST: give me two ways to fix the cache."),"The latest request stays (\(manual ? "by hand" : "at send")): \(texts.map { String($0.prefix(24)) })")
+            XCTAssertEqual(replies(next).last,"OPTIONS: 1) invalidate on write 2) version the keys","with its reply")
+            XCTAssertEqual(texts.last,"yes, do the second one")
+            XCTAssertFalse(texts.contains { $0.hasPrefix("LEGACY-0 ") },"The oldest rows are the summary")
+            await s.close()
+        }
+    }
+
+    /// A side chat not saved yet has no journal for the failure record. Kept,
+    /// its first journal carries it: reopened from that journal alone, the
+    /// task's Resume does not ask for a second summary.
+    func testAFailedAttemptInAnUnsavedSideIsRememberedOnceItIsKept() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let refused=AgentError("provider_http","HTTP 400 invalid request")
+        let client=FlowClient([.reply(reads(0,3)),.reply(reads(1,3)),.reply(reads(2,3)),.fail(refused)],summaries:[.cutAtItsCap])
+        let s=try session(root,client,tools:BulkTools(chars:32_000),seed:earlier(1))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let stopped=try await settled(s), purposes=await client.purposes, unsaved=await s.path
+        XCTAssertEqual(stopped["state"].text,"error"); XCTAssertEqual(purposes,["turn","turn","turn","compaction","turn"]); XCTAssertNil(unsaved,"Not saved yet")
+        _=try await s.keep(whenFinished:false)
+        let path=await s.path, saved=try XCTUnwrap(path); await s.close()
+        // From the journal alone: no metadata file to carry the field.
+        JournalCheckpoint.remove(for:URL(fileURLWithPath:saved))
+        let later=FlowClient(replies:[reads(3,1),answer("All done.")])
+        let reopened=try session(root,later,tools:BulkTools(chars:32_000),resumePath:saved)
+        let held=await reopened.suppressedCompactionTask
+        XCTAssertEqual(held,"task")
+        try await reopened.retryRun()
+        let end=try await settled(reopened), asked=await later.purposes
+        XCTAssertEqual(asked,["turn","turn"],"No second summary for the task")
+        XCTAssertEqual(end["state"].text,"idle",end["errorMessage"].text ?? "")
+        await reopened.close()
+    }
+}
+
 /// Mail between agents meets the same policy as a threshold (Astra's Q7): a
 /// compaction that cannot make room for it is not the family's failure.
 final class CompactionAgentDeliveryTests: HelperTestCase {

@@ -169,8 +169,9 @@ enum CompactionPlanner {
     ///   tool rounds.
     /// - No task open (a manual compaction of an idle chat): the last
     ///   exchange stays, as at send.
-    /// - No usable task metadata (an old context): the surviving body is
-    ///   the task; nothing is guessed from the last user row.
+    /// - No usable task metadata (an old context, working, idle or just
+    ///   before a new message): the surviving body is kept and the fallback
+    ///   applies; nothing is guessed from the last user row.
     static func source(context: [ChatMessage], taskRoot: String?, taskOpen: Bool = true) throws -> Source {
         let active=context.filter(\.replayEligible)
         let previous=active.first.flatMap { $0.kind == "compaction" ? $0 : nil }
@@ -211,12 +212,25 @@ enum CompactionPlanner {
                 inProgress=true; whole=start; required=max(start, unanswered)
             } else {
                 let before=start > 0 ? body[start - 1] : nil
-                whole=before.map(finalReply) == true ? start - 1 : start; required=whole
-                if let earlier=before?.messages[0].taskRootID, earlier != root { protect(inputsOf: earlier) }
+                if let before, before.messages[0].taskRootID == nil {
+                    // What precedes the message has no task metadata (a chat
+                    // from before it, as every chat is at its first compaction
+                    // after upgrading): there is no exchange to pick out, so
+                    // the surviving body stays and the fallback keeps its
+                    // newest rows, the latest request and reply first.
+                    whole=0; required=start
+                } else {
+                    whole=before.map(finalReply) == true ? start - 1 : start; required=whole
+                    if let earlier=before?.messages[0].taskRootID, earlier != root { protect(inputsOf: earlier) }
+                }
             }
-        } else if !taskOpen {
+        } else if !taskOpen, let last=body.last?.messages[0].taskRootID ?? root {
+            // The last-exchange cut needs the task its rows name. Without
+            // one (an idle chat from before task metadata) the reply alone
+            // would stay and its request go: the metadata-free rule below
+            // applies instead.
             whole=body.last.map(finalReply) == true ? body.count - 1 : body.count; required=whole
-            if let last=body.last?.messages[0].taskRootID ?? taskRoot { protect(inputsOf: last) }
+            protect(inputsOf: last)
         }
         if let permission = since.last(where: { $0.contextNote != nil }) { protected.insert(permission.id) }
         return Source(previous:previous,carried:Array(carried),body:body,protectedIDs:protected,newSince:newSince,whole:whole,required:required,inProgress:inProgress)
@@ -323,24 +337,28 @@ extension CompactionPlanner {
         // new, what replaces the context fits a normal request in tokens and
         // bytes, and (automatic) it leaves the gap `replacementShare` asks
         // for. A manual compaction only has to make the context smaller.
-        func acceptable(_ plan: CompactionPlan) throws -> Bool {
+        // `expectedSummary` holds the replacement to its limit with the
+        // summary at the length it is asked for instead of its whole
+        // allowance: see the last resort below.
+        func acceptable(_ plan: CompactionPlan, expectedSummary: Bool = false) throws -> Bool {
             guard !plan.summarized.isEmpty else { return false }
             let request=try body([placeholder]+plan.keptMessages)
             let full=try count([placeholder]+plan.keptMessages,request:request)
             guard full.fits, try request.data().count <= policy.maximumRequestBytes else { return false }
+            var expected=placeholder
+            expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
             if manual {
                 // Avoid spending a manual summary just to replace a tiny
                 // input while retaining every large answer.
-                var expected=placeholder
-                expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
                 return try count([expected]+plan.keptMessages).requestTokens < before.requestTokens
             }
-            return full.requestTokens <= (try target(plan,policy.replacementShare))
+            let measured=expectedSummary ? try count([expected]+plan.keptMessages).requestTokens : full.requestTokens
+            return measured <= (try target(plan,policy.replacementShare))
         }
         // The task whole, or its required material and newest rounds. The
         // boundary is chosen once, BEFORE the request: the summarizer sees
         // every source, including the unchanged tail, under this exact cut.
-        var plan=CompactionPlanner.plan(source,cut:source.whole)
+        var plan=CompactionPlanner.plan(source,cut:source.whole), lastResort=false
         if !unchanged, try !acceptable(plan) {
             try Task.checkCancellation()
             // Sized as the projection sends each row, a reply's replayed
@@ -348,7 +366,30 @@ extension CompactionPlanner {
             func size(_ message: ChatMessage) -> Int {
                 projection.ranges[message.id].map { RequestContextCounter.inputTokens(Array(projection.items[$0])) } ?? PiContext.estimateTokens(message)
             }
-            plan=CompactionPlanner.plan(source,cut:fallbackCut(source,target:try target(plan,policy.retainedShare),tokens:size))
+            // `retainedShare` is a ceiling on what is retained, not a
+            // target that may break the fit: newer rounds are added only
+            // into the room the summary's allowance, the request's prefix
+            // (instructions, schemas, wrapper, framing) and the required
+            // rows leave under `replacementShare`. In a small window that
+            // room is little or none, and the required rows alone are the plan.
+            let least=min(max(source.required,source.whole),source.body.count), required=CompactionPlanner.plan(source,cut:least)
+            var ceiling=try target(required,policy.retainedShare)
+            if !manual {
+                let room=max(0,try target(required,policy.replacementShare)-(try count([placeholder]+required.keptMessages).requestTokens))
+                ceiling=min(ceiling,PiContext.sum([PiContext.sum(required.keptMessages.map(size)),room]))
+            }
+            var cut=fallbackCut(source,target:ceiling,tokens:size)
+            plan=CompactionPlanner.plan(source,cut:cut)
+            // Rows are sized from the frozen projection and the candidate
+            // is measured whole: where they disagree, a round is given back.
+            while cut < least, try !acceptable(plan) { cut += 1; plan=CompactionPlanner.plan(source,cut:cut) }
+            // The last resort, for a window where the whole allowance and
+            // the request's prefix alone pass half the usable input (32,768
+            // tokens with a few thousand of schemas): nothing but what must
+            // stay, held to the limit with the summary at its expected
+            // length. It still fits beside the whole allowance, and the
+            // checkpoint is adopted only if it measures within the limit.
+            lastResort=cut == least
         }
         guard !unchanged, !plan.summarized.isEmpty else {
             throw AgentError("compact_unavailable", unchanged ? "Already compacted: nothing has been added since the last compaction." : "Nothing useful to compact while keeping the task in hand and required inputs intact.")
@@ -356,7 +397,7 @@ extension CompactionPlanner {
         guard try count([placeholder]+plan.keptMessages).fits else {
             throw AgentError("compact_budget", "Required retained inputs, instructions, tools and the summary allowance cannot fit beside the normal output reserve. Original context is unchanged.")
         }
-        guard try acceptable(plan) else {
+        guard try acceptable(plan) || (lastResort && acceptable(plan,expectedSummary:true)) else {
             throw AgentError("compact_unavailable", "No useful checkpoint can be planned while preserving required inputs and continuation headroom. Original context is unchanged.")
         }
         guard profile.raw["input"].list.contains("image") || !frozen.contains(where: { $0.content.contains { $0["type"].text == "image" } }) else {

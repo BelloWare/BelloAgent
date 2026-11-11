@@ -106,12 +106,22 @@ extension AgentSession {
     /// One failed automatic compaction per task: every later round changes
     /// the context, so a fingerprint alone would ask again each time.
     var automaticCompactionSuppressed: Bool { taskRootID != nil && suppressedCompactionTask == taskRootID }
-    func suppressAutomaticCompaction() {
-        guard let root=taskRootID, suppressedCompactionTask != root else { return }
-        suppressedCompactionTask=root
+    /// The record that ends a task's automatic attempts. A chat with no
+    /// journal yet (a side not saved) holds it in memory, and its first
+    /// journal carries it (`keepNow`).
+    func suppressionRecord(_ root: String) -> JSON {
         var data: JSON=["taskRootId":JSON(root)]
         if let fingerprint=failedCompactionFingerprint { data["fingerprint"]=JSON(fingerprint) }
-        _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":data],flush:true)
+        return ["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":data]
+    }
+    /// A journal write like any other: when it cannot be appended and
+    /// synchronized the error is the run's, before another request is paid
+    /// for on a journal that refuses writes (an ordinary chat has no other
+    /// check before a request). Memory says so only once the journal does.
+    func suppressAutomaticCompaction() throws {
+        guard let root=taskRootID, suppressedCompactionTask != root else { return }
+        try journal?.append(suppressionRecord(root),flush:true)
+        suppressedCompactionTask=root
     }
     /// The one policy for every automatic compaction (threshold, agent
     /// delivery, overflow recovery): whether a checkpoint was adopted. A
@@ -120,7 +130,7 @@ extension AgentSession {
     func automaticCompaction(reason: String) async throws -> Bool {
         guard !automaticCompactionSuppressed else { return false }
         do { try await compactContext(reason:reason); return true }
-        catch where recoverableCompactionFailure(error) { suppressAutomaticCompaction(); return false }
+        catch where recoverableCompactionFailure(error) { try suppressAutomaticCompaction(); return false }
     }
     /// The compaction due before the request counted as `tokens`, if any.
     func compactAtThreshold(_ tokens: Int, instructions: String) async throws -> Bool {
@@ -129,7 +139,7 @@ extension AgentSession {
         // A budget that cannot hold a summary makes compaction unavailable;
         // it does not fail a request that can still be sent.
         do { threshold=try compactionThreshold(requestContext,instructions:instructions,profile:turnProfile,taskStart:atTaskStart) }
-        catch where recoverableCompactionFailure(error) { suppressAutomaticCompaction(); return false }
+        catch where recoverableCompactionFailure(error) { try suppressAutomaticCompaction(); return false }
         guard tokens >= threshold, canCompact else { return false }
         return try await automaticCompaction(reason:"threshold")
     }

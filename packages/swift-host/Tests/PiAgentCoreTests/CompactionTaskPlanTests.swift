@@ -91,6 +91,16 @@ final class CompactionTaskPlanTests: HelperTestCase {
         XCTAssertEqual(CompactionPlanner.fallbackCut(source,target:0),3)
         let unknown=try CompactionPlanner.source(context:context,taskRoot:"gone")
         XCTAssertEqual(unknown.whole,0); XCTAssertEqual(unknown.required,3)
+        // Idle, and just before a new message, the rule is the same: the
+        // last reply is never kept alone with its request summarized.
+        let legacy=Array(context.prefix(2))
+        let idle=try CompactionPlanner.source(context:legacy,taskRoot:nil,taskOpen:false)
+        XCTAssertEqual(idle.whole,0); XCTAssertEqual(idle.required,2); XCTAssertTrue(idle.protectedIDs.isEmpty)
+        XCTAssertEqual(kept(idle,CompactionPlanner.fallbackCut(idle,target:1_000)),["m0","m1"])
+        let sent=try CompactionPlanner.source(context:legacy+[user("task","Next.")],taskRoot:"task")
+        XCTAssertEqual(sent.whole,0); XCTAssertEqual(sent.required,2,"The new message is what must stay")
+        XCTAssertEqual(kept(sent,CompactionPlanner.fallbackCut(sent,target:1_000)),["m0","m1","task"],"and the body before it, newest first, while it fits")
+        XCTAssertEqual(kept(sent,CompactionPlanner.fallbackCut(sent,target:0)),["task"])
     }
 
     func testSkillAndPermissionCarriersStay() throws {
@@ -150,7 +160,63 @@ final class CompactionTaskPlanTests: HelperTestCase {
                                                  reason:"threshold",focus:nil).plan.keptMessages.map(\.id)
         }
         XCTAssertEqual(try plan(ProviderClient.maximumRequestBytes).count,13,"The whole task")
-        XCTAssertThrowsError(try plan(100_000),"The whole task is 114 KB with its summary allowance, and the fallback keeps no less within 30%") { XCTAssertEqual(($0 as? AgentError)?.code,"compact_unavailable") }
+        // The whole task is 114 KB with its summary allowance: rounds are given back until the request fits.
+        let fewer=try plan(100_000)
+        XCTAssertEqual(fewer.first,"task"); XCTAssertEqual(Array(fewer.suffix(2)),["r5","r5-result-0"],"What must stay, stays")
+        XCTAssertLessThan(fewer.count,13); XCTAssertGreaterThan(fewer.count,3,"and as many newer rounds as the limit leaves room for")
+        // Not even what must stay fits beside the allowance: no useful compaction.
+        XCTAssertThrowsError(try plan(70_000)) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_unavailable") }
+    }
+
+    /// The fallback in windows where the summary's allowance is a large share
+    /// of the usable input (Astra's review, P1): 30% is a ceiling on what is
+    /// retained, never a target that may break the fit. What the next request
+    /// must answer stays; newer rounds are added only into the room the
+    /// allowance, the request's prefix and the required rows leave.
+    func testFallbackFitsItsReplacementInEveryWindow() throws {
+        for window in [32_768,65_536,128_000] {
+            for schemas in [false,true] {
+                var raw=try fixtureProfile().raw; raw["contextWindow"]=JSON(window)
+                let profile=try Profile(raw), policy=CompactionPolicy(), round=window/64
+                // About 5,000 tokens of tool schemas, as a chat with MCP tools carries.
+                let definitions=schemas ? [ToolDefinition("search",String(repeating:"d",count:20_000),[:])] : []
+                var frozen=[user("old",String(repeating:"u",count:window/5)),reply("old-reply",String(repeating:"a",count:window*8/5),root:"old"),user("task","Port the parser.")]
+                for index in 0..<24 { frozen += batch("r\(index)",chars:round*4,root:"task") }
+                let label="\(window) tokens, \(schemas ? "large" : "no") schemas"
+                let prepared: PreparedCompaction
+                do {
+                    prepared=try CompactionPlanner.prepare(frozen:frozen,profile:profile,instructions:"Policy",definitions:definitions,sessionID:"s",cacheSessionID:"s",
+                                                           taskRoot:"task",policy:policy,reason:"threshold",focus:nil)
+                } catch { XCTFail("\(label): \(error)"); continue }
+                let kept=prepared.plan.keptMessages, ids=kept.map(\.id)
+                XCTAssertEqual(ids.first,"task",label); XCTAssertEqual(Array(ids.suffix(2)),["r23","r23-result-0"],"\(label): the batch awaiting its reply")
+                XCTAssertFalse(prepared.plan.summarized.isEmpty,label)
+                // The replacement as the planner measures it: the checkpoint at its whole allowance, framed.
+                var placeholder=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:prepared.profile.maxOutput*4))])
+                placeholder.kind="compaction"; placeholder.compaction=["continuationText":JSON(CompactionCheckpoint.continuationText)]
+                let body=try ProviderClient.requestBody(profile:profile,messages:[placeholder]+kept,instructions:"Policy",tools:definitions,sessionID:"s",cacheSessionID:"s")
+                let measured=try RequestContextCounter().count(messages:[placeholder]+kept,profile:profile,request:body,reportedUsage:false).requestTokens
+                let target=try XCTUnwrap(prepared.replacementTarget)
+                if window == 32_768, schemas {
+                    // The allowance and the schemas alone pass half the usable
+                    // input here. What must stay is still a plan, held to the
+                    // limit at the summary's expected size, and nothing optional is added.
+                    XCTAssertEqual(ids,["task","r23","r23-result-0"],label); XCTAssertGreaterThan(measured,target,label)
+                    var expected=placeholder
+                    expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:policy.visibleTarget(for:profile,inputTokens:prepared.before.requestTokens)*4))]
+                    let request=try ProviderClient.requestBody(profile:profile,messages:[expected]+kept,instructions:"Policy",tools:definitions,sessionID:"s",cacheSessionID:"s")
+                    XCTAssertLessThanOrEqual(try RequestContextCounter().count(messages:[expected]+kept,profile:profile,request:request,reportedUsage:false).requestTokens,target,label)
+                    continue
+                }
+                XCTAssertLessThanOrEqual(measured,target,label)
+                // Room is used when there is room, and never past 30% of the usable input.
+                let rounds=ids.filter { $0.hasSuffix("-result-0") }.count
+                if window == 128_000 { XCTAssertGreaterThan(rounds,4,label) }
+                XCTAssertLessThanOrEqual(kept.reduce(0) { $0+PiContext.estimateTokens($1) },target*3/5,label)
+                // One more round would not have fitted, unless the ceiling stopped it.
+                if rounds < 24, kept.reduce(0, { $0+PiContext.estimateTokens($1) })+round < target*3/5-round { XCTAssertGreaterThan(measured+round+16,target,"\(label): room was left unused") }
+            }
+        }
     }
 
     // MARK: compatibility
@@ -234,7 +300,7 @@ final class CompactionTaskPlanTests: HelperTestCase {
         }
         let s=try open(nil,client:ScriptClient([answer("Summary of the earlier task.")]),seed:seed)
         _=try await s.keep(whenFinished:false)
-        try await s.compactContext(reason:"threshold"); await s.suppressAutomaticCompaction()
+        try await s.compactContext(reason:"threshold"); try await s.suppressAutomaticCompaction()
         try await s.persistState(); await s.refreshCheckpoint()
         let written=await s.context, path=await s.path, saved=try XCTUnwrap(path); await s.close()
         XCTAssertEqual(written.map(\.id).dropFirst(),["task","r0","r0-result-0"]); XCTAssertEqual(written.first?.compaction?["continuationText"].text,CompactionCheckpoint.continuationText)
