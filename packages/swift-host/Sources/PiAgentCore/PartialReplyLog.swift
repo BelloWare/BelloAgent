@@ -24,6 +24,13 @@ import Glibc
 /// time (`at`). A torn or unreadable line ends what is read: the lines before
 /// it stand.
 ///
+/// A part's tool call id is written with the first event of that part that
+/// carries one, and left out of its later events: a gateway's id can be
+/// hundreds of kilobytes (LiteLLM keeps a Gemini thought signature in it),
+/// and every argument delta names its call. A reader gives each later event
+/// of the part the id back. A log written with the id on every event reads
+/// the same way.
+///
 /// Concurrency: like the journal it sits beside, owned by one `AgentSession`
 /// actor and only touched from its isolation.
 final class PartialReplyLog {
@@ -47,6 +54,9 @@ final class PartialReplyLog {
     private var fd: Int32 = -1
     private var failed = false
     private var pending: [Entry] = [], pendingBytes = 0
+    /// The parts (`ResponsePartEvent.partKey`) whose call id the file holds
+    /// for its last reply, and those whose id waits to be written.
+    private var named = Set<String>(), pendingNamed = Set<String>()
     /// The reply whose header the file holds last.
     private(set) var reply: String?
     var hasPending: Bool { !pending.isEmpty }
@@ -68,11 +78,14 @@ final class PartialReplyLog {
             else { pending.append(entry) }
             pendingBytes += text.utf8.count
         case .part(let part):
-            pending.append(entry); pendingBytes += part.text.utf8.count + 256
+            // Counted as it will be written: the call id once for its part.
+            var id = 0
+            if let call = part.callID, !named.contains(part.partKey), pendingNamed.insert(part.partKey).inserted { id = call.utf8.count }
+            pending.append(entry); pendingBytes += part.text.utf8.count + 256 + id
         }
         return pendingBytes >= Self.flushBytes
     }
-    func discardPending() { pending.removeAll(keepingCapacity: true); pendingBytes = 0 }
+    func discardPending() { pending.removeAll(keepingCapacity: true); pendingBytes = 0; pendingNamed.removeAll(keepingCapacity: true) }
 
     /// Writes what waits, after `header` when the reply is not the one the
     /// file holds last, to the file beside `journal` (moved there when the
@@ -97,6 +110,7 @@ final class PartialReplyLog {
         do {
             if let header {
                 data.append(try encoder.encode(header)); data.append(10); reply = header.reply
+                named.removeAll(keepingCapacity: true)
             }
             guard reply != nil else { return }
             try line(["at": JSON(Date().timeIntervalSince1970 * 1000)])
@@ -104,7 +118,8 @@ final class PartialReplyLog {
                 switch entry {
                 case .text(let text): try line(["t": JSON(text)])
                 case .thinking(let text): try line(["k": JSON(text)])
-                case .part(let part):
+                case .part(var part):
+                    if part.callID != nil, !named.insert(part.partKey).inserted { part.callID = nil }
                     data.append(contentsOf: Array(#"{"p":"#.utf8)); data.append(try encoder.encode(part)); data.append(contentsOf: Array("}\n".utf8))
                 }
             }
@@ -118,14 +133,14 @@ final class PartialReplyLog {
         if fd >= 0 { _ = close(fd); fd = -1 }
         discardPending()
         if let path, !Self.setAside(URL(fileURLWithPath: path)) { failed = true; return false }
-        path = nil; reply = nil
+        path = nil; reply = nil; named.removeAll()
         return true
     }
     /// Closes and removes the file: the run settled and its journal is on disk.
     func remove() {
         if fd >= 0 { _ = close(fd); fd = -1 }
         if let path { _ = unlink(path) }
-        path = nil; reply = nil; discardPending()
+        path = nil; reply = nil; named.removeAll(); discardPending()
     }
     /// A rejected attempt must not be recovered during backoff. If the
     /// directory refuses unlink, empty and sync the existing file instead;
@@ -154,20 +169,23 @@ final class PartialReplyLog {
     static func unfinished(_ url: URL, journal: URL, size: UInt64) throws -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
         let reader = try JournalRecordReader(url, allowIncompleteTail: true)
         var header: Header?, text = "", thinking = "", timeline = ResponseTimeline(), at: Double?
+        // Each part's call id, from the event that carried it (`write`).
+        var calls: [String: String] = [:]
         let decoder = JSONDecoder()
         while let line = try reader.nextLine() {
             if line.isEmpty { continue }
             guard let value = try? JSON.parse(line) else { break }
             if !value["reply"].isNull {
                 guard let next = try? decoder.decode(Header.self, from: line) else { break }
-                header = next; text = ""; thinking = ""; timeline = ResponseTimeline(); at = nil
+                header = next; text = ""; thinking = ""; timeline = ResponseTimeline(); at = nil; calls = [:]
             } else if header == nil {
                 continue
             } else if let time = value["at"].double { at = time }
             else if let chunk = value["t"].text { text += chunk }
             else if let chunk = value["k"].text { thinking += chunk }
             else if !value["p"].isNull {
-                guard let data = try? value["p"].data(), let part = try? decoder.decode(ResponsePartEvent.self, from: data) else { break }
+                guard let data = try? value["p"].data(), var part = try? decoder.decode(ResponsePartEvent.self, from: data) else { break }
+                if let call = part.callID { calls[part.partKey] = call } else { part.callID = calls[part.partKey] }
                 timeline.consume(part)
             }
         }
