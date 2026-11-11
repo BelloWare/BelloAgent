@@ -9,6 +9,12 @@ import XCTest
 func fixtureProfile(_ api: String = "openai-responses") throws -> Profile {
     try Profile(["id":"test","revision":"1","providerId":"litellm","modelId":"fixture-model","api":JSON(api),"baseUrl":"http://127.0.0.1:12345/v1","contextWindow":100000,"maxOutputTokens":4096,"reasoning":true,"thinkingLevel":"default"])
 }
+/// Synthetic LiteLLM shape: an opaque Gemini signature in the call ID. Changing
+/// the last byte produces distinct IDs with the same multi-kilobyte prefix.
+func fixtureGeminiToolCallID(tail: UInt8 = 0xff) -> String {
+    var signature = Data(repeating: 0xfb, count: 2047); signature.append(tail)
+    return "call_gemini__thought__" + signature.base64EncodedString()
+}
 func temporaryDirectory() throws -> URL {
     let path=FileManager.default.temporaryDirectory.appendingPathComponent("pi-native-tests-"+UUID().uuidString)
     try FileManager.default.createDirectory(at:path,withIntermediateDirectories:true)

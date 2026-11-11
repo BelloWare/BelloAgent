@@ -14,7 +14,10 @@ struct ProviderDisplayEvents {
     var timeline = ResponseTimeline()
     private mutating func make(index: Int?, item: String?, part: Int?, kind: String, update: String, text: String = "", call: String? = nil, name: String? = nil, sequence: Int? = nil, at: Double?, evidence: String = "observed") -> ResponsePartEvent {
         ordinal += 1
-        return ResponsePartEvent(attemptID: attempt, ordinal: ordinal, itemID: ResponseTimeline.prefix(item ?? index.map { "output-\($0)" } ?? "unknown", bytes: 256), outputIndex: index, partIndex: part, providerSequence: sequence, kind: kind, update: update, text: text, callID: call.map { ResponseTimeline.prefix($0, bytes: 256) }, name: name.map { ResponseTimeline.prefix($0, bytes: 128) }, observedAt: at, evidence: evidence)
+        // A call ID joins this timeline part to its tool card. Clipping it
+        // changes the identity and can merge calls that share a long prefix.
+        let callID = call.flatMap { ProviderToolCallID.isValid($0) ? $0 : nil }
+        return ResponsePartEvent(attemptID: attempt, ordinal: ordinal, itemID: ResponseTimeline.prefix(item ?? index.map { "output-\($0)" } ?? "unknown", bytes: 256), outputIndex: index, partIndex: part, providerSequence: sequence, kind: kind, update: update, text: text, callID: callID, name: name.map { ResponseTimeline.prefix($0, bytes: 128) }, observedAt: at, evidence: evidence)
     }
     mutating func consume(_ value: JSON, at: Double?, json: Bool = false) -> [ResponsePartEvent] {
         var events: [ResponsePartEvent] = []
@@ -99,7 +102,8 @@ struct ProviderDisplayEvents {
             case "text", "thinking":
                 events.append(make(index:index,item:itemID,part:0,kind:item["type"].text == "text" ? "text":"reasoningText",update:"replace",text:item["text"].text ?? item["thinking"].text ?? "",at:at,evidence:"canonical"))
             case "function_call", "tool_use":
-                events.append(make(index:index,item:itemID,part:0,kind:"toolArguments",update:"replace",text:item["arguments"].text ?? item["input"].encoded(),call:item["call_id"].text ?? item["id"].text,name:item["name"].text,at:at,evidence:"canonical"))
+                let callID = item["type"].text == "function_call" ? item["call_id"].text : item["id"].text
+                events.append(make(index:index,item:itemID,part:0,kind:"toolArguments",update:"replace",text:item["arguments"].text ?? item["input"].encoded(),call:callID,name:item["name"].text,at:at,evidence:"canonical"))
             default: events.append(make(index:index,item:itemID,part:0,kind:"opaque",update:"replace",text:"Provider item: \(item["type"].text ?? "unknown") (opaque)",at:at,evidence:"canonical"))
             }
         }

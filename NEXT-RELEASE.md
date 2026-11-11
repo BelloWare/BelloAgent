@@ -4,6 +4,8 @@
 
 ## 0.1.136
 
+- [ ] GEMINI-TOOL-IDS: experimental fix on `fix/gemini-tool-call-ids` for LiteLLM Gemini IDs carrying thought signatures. Preserve bounded opaque IDs through response parsing, tool-input reads, subagent provenance/navigation and timeline linkage; retain existing local-ID bounds. Code and regression tests prepared; Swift/macOS, mutation and live gateway validation pending. [Record](docs/validation/gemini-tool-call-ids-2026-11-11.md).
+
 - [ ] PERF-1: measure a very long chat and review the proposal before production changes. Owner, 2026-10-29: "I have like a session that's like 50k interactions already, and it feels kind of slow"; "especially the scrolling experience"; "It has to be backward compatible." Phase A on `dev/a136-perf`: seeded fixtures, isolated Release measurements and the ranked proposal in [the record](docs/validation/a136-perf-0.1.136.md). Phase B awaits discussion with the lead.
 - [x] FOLD-GAP: folded rows take zero room, including inherited context; anchors skip them and newer tokens do not walk them. The sixty-call gallery's divider-to-answer gap is 12 pt (was 205 pt). Lead review: history room uses the all-message average; short completed documents start at the top, while tall newer readers and the 18-pt footer hold stay stable. The room-resize paging margin remains, with a failing-first regression. [Validation](docs/validation/a136-foldgap-0.1.136.md).
 - [x] AGENTS-1 P3s: finished waits name their outcome; bounded final answers end before an empty code frame; fork publication follows the seed/turn boundary without a fixed record count; the connection-move guard trusts only native child markers. Failing-first tests, mutations and light/dark/narrow galleries: [validation](docs/validation/a136-p3-0.1.136.md).
