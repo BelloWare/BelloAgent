@@ -99,13 +99,28 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours: where pi's clampMaxTokensToContext would clip the summary cap to
-    /// the room its one request leaves, the compaction is refused before
-    /// anything is sent, instead of risking a cut summary. A compaction is
-    /// one request, so the source is never split into chunks either.
-    func testSourceThatWouldClipTheCapIsRefusedNotClippedOrChunked() async throws {
+    /// Like pi's clampMaxTokensToContext, the summary cap is clipped to the
+    /// room its one request leaves, down to `minimumSummaryTokens` (0.1.136;
+    /// before, the compaction was refused, and a turn whose round outgrew
+    /// the trigger's reserve failed). A cut summary is still never adopted,
+    /// and a compaction is one request: the source is never split in chunks.
+    func testSourceThatLeavesLessThanTheCapClipsItAndIsNeverChunked() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[]), seed=tasks("A",8,chars:15_000)
+        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed,keep:1)
+        try await s.compact(); let state=try await settle(s), context=await s.context
+        let summaries=await client.summaryBodies
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(summaries.count,1,"One request")
+        let cap=summaries.first?["max_output_tokens"].int ?? 0
+        XCTAssertLessThan(cap,10_000,"Less than a quarter of the window is left"); XCTAssertGreaterThanOrEqual(cap,CompactionPolicy().minimumSummaryTokens)
+        XCTAssertEqual(context.first?.kind,"compaction")
+        await s.close()
+    }
+    /// Below the smallest allowance nothing is sent.
+    func testSourceThatLeavesNoRoomForTheSmallestSummaryIsRefused() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=PurposeClient(turns:[]), seed=tasks("A",9,chars:15_000)
         let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed,keep:1)
         try await s.compact(); let state=try await settle(s), context=await s.context
         let summaries=await client.summaryBodies

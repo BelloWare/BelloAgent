@@ -7,14 +7,30 @@ extension AgentSession {
     func summarize(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile,
                    originalProfile: Profile, revision: UInt64) async throws -> String {
         let sessionID=id, cacheSessionID=promptCacheSessionID
-        let worker=Task.detached(priority:.userInitiated) {
-            let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,
-                sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:true)
-            try CompactionPlanner.validateRequest(body)
-            return try RequestContextCounter().count(messages:messages,profile:profile,request:body)
+        func sized(_ profile: Profile) async throws -> RequestContextCount {
+            let worker=Task.detached(priority:.userInitiated) {
+                let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,
+                    sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:true)
+                try CompactionPlanner.validateRequest(body)
+                return try RequestContextCounter().count(messages:messages,profile:profile,request:body)
+            }
+            let count=try await withTaskCancellationHandler(operation:{ try await worker.value },onCancel:{ worker.cancel() })
+            try validateCompaction(revision,profile:originalProfile)
+            return count
         }
-        let count=try await withTaskCancellationHandler(operation:{ try await worker.value },onCancel:{ worker.cancel() })
-        try validateCompaction(revision,profile:originalProfile)
+        var profile=profile, count=try await sized(profile)
+        // The trigger leaves room for the whole allowance plus a growth
+        // reserve, but one round (a few large results at once) can add more
+        // than that reserve. The context still fits its window then, and
+        // compacting is the way out: the summary takes the room that is
+        // left, down to `minimumSummaryTokens`, instead of failing the turn
+        // with nothing sent.
+        let room=count.contextWindow-count.safetyMargin-count.requestTokens
+        if !count.fits, room >= min(profile.maxOutput,compactionPolicy.minimumSummaryTokens) {
+            profile=try compactionPolicy.summaryProfile(originalProfile,cap:min(profile.maxOutput,room))
+            count=try await sized(profile)
+            compactionState["outputAllowance"]=JSON(profile.maxOutput); compactionState["allowedOutputTokens"]=JSON(profile.maxOutput)
+        }
         guard count.fits else {
             throw AgentError("compaction_too_large", "The intact history (about \(count.requestTokens) tokens), checkpoint instruction and \(profile.maxOutput)-token summary allowance do not fit this model's \(profile.contextWindow)-token window. Nothing was sent, and the context is unchanged. Use a larger context window or start a new chat.")
         }

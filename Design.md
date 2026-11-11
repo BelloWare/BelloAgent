@@ -1277,7 +1277,11 @@ Prefix preservation is not a guarantee of a real provider cache hit.
 Generation allowance G is the lesser of 16,384 tokens, the declared output
 ceiling and one quarter of the context window. It includes reasoning and is both
 the wire cap and local reserve; a route configured to omit caps keeps an explicit
-local-only reserve. The soft visible-summary target is up to 3,000 tokens, smaller
+local-only reserve. When one round outgrew the trigger's growth buffer and the
+intact context no longer leaves room for G, the summary takes the room that is
+left, down to 8,192 tokens (pi's smallest summary cap); below that nothing is
+sent (0.1.136: the turn used to fail there with `compaction_too_large`, at about
+85% of a 100,000-token window, though its own next request still fitted). The soft visible-summary target is up to 3,000 tokens, smaller
 for small windows and histories; neither reasoning effort nor the resulting text
 is clipped to force success. At safe pending-request boundaries the trigger
 reserves the larger of the ordinary response reserve and G plus the appended

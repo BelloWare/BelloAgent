@@ -12,11 +12,11 @@ import XCTest
 /// summary request gets "SUMMARY n".
 private actor FlowClient: ModelClient {
     var script: [ModelReply]
-    var sent: [(purpose: String, body: JSON)] = []
+    var sent: [(purpose: String, body: JSON, cap: Int?)] = []
     init(_ script: [ModelReply]) { self.script = script }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
         let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,compaction:purpose == "compaction")
-        sent.append((purpose,body))
+        sent.append((purpose,body,profile.wireOutputLimit))
         if purpose == "compaction" { return answer("SUMMARY \(sent.filter { $0.purpose == "compaction" }.count)") }
         guard !script.isEmpty else { throw AgentError("fixture_exhausted","Unexpected model request") }
         var reply=script.removeFirst()
@@ -25,6 +25,7 @@ private actor FlowClient: ModelClient {
         return reply
     }
     var purposes: [String] { sent.map(\.purpose) }
+    var summaryCap: Int? { sent.first { $0.purpose == "compaction" }?.cap }
     /// The turn request that followed the first summary request.
     var afterCompaction: JSON? {
         guard let index=sent.firstIndex(where: { $0.purpose == "compaction" }), index+1 < sent.count else { return nil }
@@ -153,6 +154,38 @@ final class CompactionFlowTests: HelperTestCase {
         XCTAssertEqual(userTexts(next).last,task)
         XCTAssertEqual(next["input"].list.last?["role"].text,"user")
         XCTAssertFalse(userTexts(next).contains { $0.hasPrefix("OLD-0 ") },"Earlier tasks are summarized, not replayed")
+        await s.close()
+    }
+
+    /// One round can add more than the 16,384 tokens the trigger leaves
+    /// before the summary request stops fitting beside its full allowance.
+    /// The compaction was then refused ("compaction_too_large") and the turn
+    /// failed, at 85% of the window, with nothing sent.
+    func testARoundLargerThanTheGrowthReserveStillCompacts() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient((0..<4).map { reads($0,3) }+[answer("All done.")])
+        let s=try session(root,client,tools:BulkTools(chars:37_400))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        try await finished(s)
+        let purposes=await client.purposes, allowed=await client.summaryCap, cap=try XCTUnwrap(allowed), sent=await client.afterCompaction, next=try XCTUnwrap(sent)
+        XCTAssertEqual(purposes,["turn","turn","turn","compaction","turn","turn"])
+        XCTAssertLessThan(cap,16_384,"The summary takes the room the intact context leaves")
+        XCTAssertGreaterThanOrEqual(cap,CompactionPolicy().minimumSummaryTokens)
+        XCTAssertEqual(outputs(next),["RESULT-c2-0","RESULT-c2-1","RESULT-c2-2"])
+        await s.close()
+    }
+
+    /// A context within the smallest summary allowance of its window is
+    /// still refused before anything is sent.
+    func testAContextWithoutRoomForTheSmallestSummaryIsStillRefused() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient([])
+        var reply=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"a",count:372_000))]); reply.id="reply"; reply.taskRootID="first"
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:[user("first","First."),reply,user("second","Second.")])
+        try await s.compact(); try await eventually { !(await s.isRunning) }
+        let state=await s.snapshot(), sent=await client.purposes
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large")
+        XCTAssertEqual(sent,[])
         await s.close()
     }
 
