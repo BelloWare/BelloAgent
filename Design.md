@@ -1361,7 +1361,9 @@ success. The triggers are under "Thresholds" above. No compaction runs after a
 final answer merely because the now-idle context is large.
 
 The complete provider projection, including wrappers, schemas and images, sizes
-preflight and candidates. Opaque ciphertext is never counted as visible text.
+preflight and candidates. Until 0.1.136 opaque ciphertext counted nothing; a
+replayed reasoning item now counts its `encrypted_content` at characters over
+four (see "Encrypted reasoning" below).
 Persisted usage bindings prevent reuse across changed model, prefix, schemas or
 replay configuration, and a checkpoint resets the old usage epoch. Before/after
 progress comparisons deliberately use the same projection heuristic. All counts
@@ -1398,6 +1400,38 @@ Attempt usage, failures, reasoning and exact request/response captures remain in
 the existing chronological operation history; summary usage never replaces the
 normal-request context observation. The request inspector recognizes both the
 new appended instruction and historical saved summary formats.
+
+**Encrypted reasoning (0.1.136, in part).** Owner, 2026-11-11: "well, encrypted
+reasoning should be not ignored… unless it got rejected by litellm due to model
+switch, which then we need user confirmation to proceed with previous encrypted
+reasoning removed or something like that, while keep new encrypted reasoning".
+
+What holds now. Every Responses request of a reasoning model asks for
+`reasoning.encrypted_content`, and a reply's provider items are journaled as
+received with the route that produced them (`providerItems`,
+`providerBinding`, `providerIdentity`). Whether they are sent again is the
+connection's replay policy (`ProviderClient.replayItems`): a **pinned** route
+replays them byte for byte, each before the calls or text it led to; a
+compaction changes nothing in that, since it keeps whole rows: the summary
+request, the request after a compaction and the rounds a fallback keeps all
+carry their reasoning, and a summarized round takes its reasoning with it. In
+0.1.136 a replayed reasoning item is also **counted** where no reply's usage has
+measured it yet (`RequestContextCounter.inputTokens`: its ciphertext's length
+over four, an upper bound), so the fallback and the 50% target see it, and the
+32 MiB check sees its bytes.
+
+What does not hold yet. Reasoning is still left out without a word in three
+cases the owner's rule covers: a connection whose policy is **portable** (the
+onboarding default) never replays it; a reply written before the chat moved to
+another saved connection, or under a per-turn model override, is replayed
+portably (`Routing.swift`, `Profile.overriding`); and an unset policy refuses
+the request (`opaque_replay_policy`) instead of asking. Replaying by default
+needs the other half of the rule at the same time: recognising the gateway's
+rejection of earlier reasoning after a model or route change, pausing with a
+question (the app's `ChatQuestion` confirmation, as the connection switch asks
+before reasoning is left behind), and a durable "reasoning before this point is
+no longer replayed" record. That is not in this release; nothing here strips
+reasoning that was replayed before.
 
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and

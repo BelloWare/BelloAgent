@@ -28,6 +28,10 @@ keeps"). The counting below is unchanged; what is compared with it changed:
   32 MiB request limit is not adopted.
 - **The meter** still shows pi's `window − 16,384` as `compactionThreshold`;
   it is a display figure, not either trigger.
+- **Replayed reasoning** counts its `encrypted_content` at characters over
+  four where no reply's usage has measured it (owner, 2026-11-11: "encrypted
+  reasoning should be not ignored"); before, opaque replay counted nothing.
+  Images keep their fixed allowance.
 - A compaction that cannot be made no longer fails the turn: the request goes
   and the gateway decides, as pi's rule for every other request already said.
 
