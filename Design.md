@@ -1247,6 +1247,21 @@ structured skill/permission carriers remain authoritative. A completed long task
 can be summarized within its internal rounds; a summary does not authorize tools
 or change selection/permission state.
 
+**A turn compacted while it works goes on with what it was asked (0.1.136).**
+Owner, 2026-11-11: "it got compaction, either right after I send the message, or
+after few runs, and then it stopped". Two things stay as written beside the
+summary. The running task's own inputs (its request and the messages that
+steered it; mail from another agent only when it started the task) are replayed
+ahead of the kept tail, newest first within the recent-tail allowance, as Codex
+keeps recent user messages beside its summary; one too long for the allowance is
+summarized. They are the checkpoint's `protectedIDs`. A task a reply has ended is
+history and replays nothing, as in pi. And a tool batch no reply has answered is
+kept even when its results alone pass the recent target: the model asked for
+them one request ago and has not read them. Before this, such a batch (a few
+large reads at once, which is also what usually crosses the threshold) left the
+next request the summary alone. The cut still moves past a batch that cannot fit
+beside the summary allowance.
+
 The effective selected model, endpoint, reasoning effort, replay policy, ordinary
 instructions/tool definitions and cache-session affinity remain unchanged.
 `tool_choice: none` prevents requested tool execution; the summary handler has no

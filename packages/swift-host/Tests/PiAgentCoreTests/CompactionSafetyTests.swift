@@ -153,7 +153,10 @@ final class CompactionSafetyTests: HelperTestCase {
         let assistant=toolReply(["write"]).message
         var result=ChatMessage(role:"toolResult",content:[textBlock(String(repeating:"Ω",count:30000))]);result.toolCallId="call-0"
         let source=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:"root")
-        let cut=CompactionPlanner.cut(source.body,keepRecentTokens:100), plan=CompactionPlanner.plan(source,cut:cut)
+        // Ours: a batch no reply has answered is kept while it fits; after a
+        // context rejection (and where it cannot fit) it is summarized.
+        XCTAssertEqual(CompactionPlanner.cut(source.body,keepRecentTokens:100),source.body.count-1,"The step in flight is kept")
+        let cut=CompactionPlanner.cut(source.body,keepRecentTokens:100,keepUnanswered:false), plan=CompactionPlanner.plan(source,cut:cut)
         XCTAssertEqual(cut,source.body.count,"The newest group alone passes the tail, so it is summarized")
         // Pi replays no input verbatim: the task and its steering are summarized with the rest.
         XCTAssertTrue(plan.protected.isEmpty);XCTAssertTrue(plan.kept.isEmpty)
