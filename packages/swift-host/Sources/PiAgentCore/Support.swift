@@ -44,6 +44,15 @@ func required(_ value: JSON, _ name: String, maximum: Int = 4096) throws -> Stri
     guard let s = value.text, !s.isEmpty, s.utf8.count <= maximum else { throw AgentError("invalid_params", "Invalid \(name)") }
     return s
 }
+func requiredToolCallID(_ value: JSON) throws -> String {
+    guard let id = value.text, ProviderToolCallID.isValid(id) else {
+        // Say when length is the reason: it is the one a gateway can cause.
+        let size = value.text.map { $0.utf8.count } ?? 0
+        throw AgentError("invalid_params", size > ProviderToolCallID.maximumUTF8Bytes
+            ? "Invalid tool call id: \(size) bytes, over the \(ProviderToolCallID.maximumUTF8Bytes)-byte limit" : "Invalid tool call id")
+    }
+    return id
+}
 /// Letters, digits and `. _ : -`, but not `.` or `..`: checked byte by byte,
 /// since this runs for every record of a journal a chat opens.
 func identity(_ value: JSON) throws -> String {

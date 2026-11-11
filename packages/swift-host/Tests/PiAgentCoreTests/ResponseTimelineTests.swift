@@ -200,6 +200,40 @@ final class ResponseTimelineTests: HelperTestCase {
         XCTAssertEqual(adapter.timeline.segments.map(\.text),["First ","Returned summary","continued","{}"])
         XCTAssertEqual(adapter.timeline.terminal,"completed")
     }
+    func testSignatureBearingToolLinksStayExactAcrossStreamingAndCanonicalCompletion() throws {
+        let ids = [fixtureGeminiToolCallID(tail: 0xfc), fixtureGeminiToolCallID(tail: 0xfd)]
+        var adapter = ProviderDisplayEvents(api: "openai-responses", attempt: "signature-calls")
+        var output: [JSON] = []
+        for (index, id) in ids.enumerated() {
+            let item: JSON = ["type":"function_call", "id":JSON("fc_\(index)"), "call_id":JSON(id), "name":"read", "arguments":"{}"]
+            output.append(item)
+            var beginning = item; beginning["arguments"] = ""
+            _ = adapter.consume(["type":"response.output_item.added", "output_index":JSON(index), "item":beginning], at: 1)
+            _ = adapter.consume(["type":"response.function_call_arguments.delta", "output_index":JSON(index), "item_id":item["id"], "delta":"{}"], at: 2)
+        }
+        let segments = adapter.timeline.segments.map(\.id)
+        XCTAssertEqual(adapter.timeline.segments.compactMap(\.part.callID), ids)
+        _ = adapter.consume(["type":"response.completed", "response":["status":"completed", "output":.array(output)]], at: 3)
+        XCTAssertEqual(adapter.timeline.segments.map(\.id), segments, "Canonical completion must not duplicate the streamed tool cards")
+        let restored = try JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode(adapter.timeline))
+        XCTAssertEqual(restored.segments.compactMap(\.part.callID), ids, "Card joins use the original provider identity, including its full signature")
+        XCTAssertEqual(restored.segments.map(\.text), ["{}", "{}"])
+    }
+    func testMalformedResponseCallIDsDoNotBecomeTruncatedOrItemIDLinks() {
+        let invalid: [JSON] = ["", .null, 42, JSON(String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1)), "call\nline", "call\u{007f}"]
+        for id in invalid {
+            let item: JSON = ["type":"function_call", "id":"fc_item_only", "call_id":id, "name":"read", "arguments":"{}"]
+            for json in [false, true] {
+                var adapter = ProviderDisplayEvents(api: "openai-responses", attempt: "invalid-call")
+                let value: JSON = json ? ["status":"completed", "output":[item]]
+                    : ["type":"response.output_item.added", "output_index":0, "item":item]
+                let events = adapter.consume(value, at: 1, json: json)
+                XCTAssertEqual(events.count, 1)
+                XCTAssertNil(events.first?.callID)
+                XCTAssertNil(adapter.timeline.segments.first?.part.callID)
+            }
+        }
+    }
     func testReasoningFirstMultipartAndTerminalCorrectionStayLocal() {
         var adapter=ProviderDisplayEvents(api:"openai-responses",attempt:"a")
         _=adapter.consume(["type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Summary"],at:1)

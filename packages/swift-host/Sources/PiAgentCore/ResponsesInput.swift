@@ -53,9 +53,12 @@ extension ProviderClient {
         // A call whose result never arrived gets pi's synthetic error result
         // before the next assistant or user message.
         var pending: [String] = [], answered = Set<String>()
+        // Whether this model made the calls that are waiting: their outputs go
+        // under the id the calls were sent with (`sentCallID`).
+        var own = true
         func settle() {
             for call in pending where !answered.contains(call) {
-                input.append(["type": "function_call_output", "call_id": JSON(call), "output": "No result provided"])
+                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, own: own)), "output": "No result provided"])
             }
             pending = []; answered = []
         }
@@ -67,13 +70,13 @@ extension ProviderClient {
                 settle()
                 let items = try assistantItems(message, profile: p, msgIndex: msgIndex)
                 let calls = message.content.filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text }
-                if !calls.isEmpty { pending = calls; answered = [] }
+                if !calls.isEmpty { pending = calls; answered = []; own = sameModel(message, profile: p) }
                 if items.isEmpty { continue }
                 input += items
             case "toolResult":
                 guard let call = message.toolCallId else { throw AgentError("invalid_context", "Tool result has no call identity") }
                 answered.insert(call)
-                input.append(["type": "function_call_output", "call_id": JSON(call), "output": toolOutput(message, images: images)])
+                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, own: own)), "output": toolOutput(message, images: images)])
             default:
                 settle()
                 // Ours: a hidden note is a user message of its own, sent just
@@ -140,6 +143,27 @@ extension ProviderClient {
         return .array((text.isEmpty ? [] : [["type": "input_text", "text": JSON(text)]]) + images)
     }
 
+    /// Whether `p`'s model wrote `message`: a reply that names no model is
+    /// taken as its own.
+    static func sameModel(_ message: ChatMessage, profile p: Profile) -> Bool {
+        let recorded = message.providerBinding?["profile"]["model"].text
+        return recorded == nil || recorded == p.model
+    }
+
+    /// The longest call ID every provider accepts: OpenAI's Responses limit.
+    static let portableCallIDBytes = 64
+
+    /// The ID a request names a call by, for the call and for its output. The
+    /// model that made the call gets its ID back byte for byte: LiteLLM keeps
+    /// a Gemini thought signature in it and pairs an output with its call by
+    /// equality. Another model cannot use that signature and may refuse the
+    /// ID (OpenAI: "string too long. Expected a string with maximum length
+    /// 64"), so a longer ID goes to it as a short name derived from it, the
+    /// same every time. The journal keeps the original either way.
+    static func sentCallID(_ id: String, own: Bool) -> String {
+        own || id.utf8.count <= portableCallIDBytes ? id : "call_" + sha256(Data(id.utf8)).prefix(32)
+    }
+
     /// One assistant message's items. A message whose provider items this
     /// route replays (see `replayItems`) replays them as pi replays a reply of
     /// the same model: its reasoning items as received, one message item per
@@ -149,8 +173,7 @@ extension ProviderClient {
     /// reasoning summary into text.
     static func assistantItems(_ message: ChatMessage, profile p: Profile, msgIndex: Int) throws -> [JSON] {
         let replayed = try replayItems(message, profile: p)
-        let recorded = message.providerBinding?["profile"]["model"].text
-        let sameModel = recorded == nil || recorded == p.model
+        let sameModel = sameModel(message, profile: p)
         var output: [JSON] = [], textIndex = 0
         func messageID(_ id: String?) -> String {
             let fallback = textIndex == 0 ? "msg_pi_\(msgIndex)" : "msg_pi_\(msgIndex)_\(textIndex)"
@@ -192,7 +215,8 @@ extension ProviderClient {
                 output.append(text(thinking, id: nil))
             case "text": output.append(text(block["text"].text ?? "", id: nil))
             case "toolCall":
-                output.append(["type": "function_call", "call_id": block["id"], "name": block["name"], "arguments": JSON(block["arguments"].encoded())])
+                let call = block["id"].text.map { JSON(sentCallID($0, own: sameModel)) } ?? block["id"]
+                output.append(["type": "function_call", "call_id": call, "name": block["name"], "arguments": JSON(block["arguments"].encoded())])
             default: continue
             }
         }

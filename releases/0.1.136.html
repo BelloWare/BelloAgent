@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.136</h2>
+<ul>
+<li><strong>Gemini tool calls work.</strong> A Gemini reply that used a tool could fail with "Invalid tool call id". The gateway (LiteLLM) puts Gemini's thought signature inside the tool call's id, which makes the id hundreds or thousands of characters long, and Bello Agent refused ids over 512. Long ids are now accepted and sent back to Gemini exactly as they came, in the chat, in sub-agents, in the timeline and when you open a tool's input.</li>
+<li>After a Gemini chat, you can switch to another model. That model is sent a short id for each earlier tool call, because providers such as OpenAI refuse the long one. Switching back to Gemini sends the original ids again.</li>
+<li><strong>An agent keeps working after compaction.</strong> When a chat was compacted in the middle of a task, the next request could hold only the summary: your request and the tool results the agent had just asked for were gone, so it stopped or lost the thread. The step in progress and your request for the running task are now kept after the summary.</li>
+<li>Compaction no longer fails the turn near a full context window. When one round of large tool results left too little room for a full-size summary, the turn failed and asked you to start a new chat, although the chat itself still fitted. The summary now takes the room that is left.</li>
+</ul>

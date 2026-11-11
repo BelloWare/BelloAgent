@@ -524,6 +524,82 @@ final class PartialReplyLogTests: HelperTestCase {
         await session.close()
     }
 
+    /// A gateway's tool call id can be hundreds of kilobytes (LiteLLM carries
+    /// a Gemini thought signature in it), and every argument delta names its
+    /// call. The log holds the id once for each part and restores it to
+    /// every later delta of that part; a log written before, with the id on
+    /// every line, reads the same.
+    func testALongCallIDIsWrittenOncePerPartAndRestoredWhole() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await eventually { await client.ready }
+        let ids = [fixtureGeminiToolCallID(tail: 0xfc), fixtureGeminiToolCallID(tail: 0xfd)].map { $0 + String(repeating: "S", count: 200_000) }
+        func call(_ ordinal: Int, _ index: Int, _ update: String, _ text: String) -> StreamDelta {
+            .part(ResponsePartEvent(attemptID: "attempt", ordinal: ordinal, itemID: "fc_\(index)", outputIndex: index, partIndex: 0, kind: "toolArguments", update: update, text: text,
+                                    callID: ids[index], name: "read", observedAt: Double(ordinal)))
+        }
+        // Two calls begin, then their arguments arrive ten characters at a
+        // time: the first call's, the second's, and the first's again.
+        var ordinal = 0
+        func emit(_ index: Int, _ update: String, _ text: String) async throws { ordinal += 1; try await client.emit(call(ordinal, index, update, text)) }
+        try await emit(0, "begin", ""); try await emit(1, "begin", "")
+        let rounds = 100
+        for index in [0, 1, 0] { for step in 0..<rounds { try await emit(index, "append", String(format: "%d-%08d;", index, step)) } }
+        let sessionPath = await session.path, path = try XCTUnwrap(sessionPath)
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let copy = try killedCopy(path)
+        await session.close()
+
+        let log = try Data(contentsOf: PartialReplyLog.url(for: copy)), idBytes = ids[0].utf8.count
+        XCTAssertLessThan(log.count, 2 * idBytes + 512 * (3 * rounds + 2), "\(3 * rounds + 2) events of two calls: each id once, not \((3 * rounds + 2) * idBytes) bytes")
+        let named = String(decoding: log, as: UTF8.self).components(separatedBy: "\n").filter { $0.contains("__thought__") }.count
+        XCTAssertEqual(named, 2, "one line names each call")
+
+        func restored(_ journal: URL) async throws -> [ResponseTimeline.Segment] {
+            let reopened = try chat.session("chat", client: StallingClient(), resume: journal.path, in: journal.deletingLastPathComponent())
+            let kept = await replies(reopened); await reopened.close()
+            return try XCTUnwrap(kept.first?.responseTimeline).segments
+        }
+        // The same reply from an earlier build's log: the id on every line.
+        let earlier = try killedCopy(copy.path), earlierLog = PartialReplyLog.url(for: earlier)
+        let lines = try String(contentsOf: earlierLog, encoding: .utf8).components(separatedBy: "\n").map { line -> String in
+            guard var value = try? JSON.parse(Data(line.utf8)), let index = value["p"]["outputIndex"].int, value["p"]["callID"].isNull else { return line }
+            value["p"]["callID"] = JSON(ids[index]); return value.encoded()
+        }
+        try Data(lines.joined(separator: "\n").utf8).write(to: earlierLog)
+        XCTAssertGreaterThan(try Data(contentsOf: earlierLog).count, 3 * rounds * idBytes)
+
+        // Each call's opening, then the three runs of deltas as they arrived.
+        let expected = ["", ""] + [0, 1, 0].map { index in (0..<rounds).map { String(format: "%d-%08d;", index, $0) }.joined() }
+        for journal in [copy, earlier] {
+            let segments = try await restored(journal)
+            XCTAssertEqual(segments.map(\.text), expected, "the arguments read as they streamed")
+            XCTAssertEqual(segments.map(\.part.callID), [ids[0], ids[1], ids[0], ids[1], ids[0]], "every segment, a continuation too, names its call by the whole id")
+        }
+    }
+
+    /// What waits to be written is counted by what will be written: the id
+    /// with the first event of a part, and not again.
+    func testALongCallIDCountsTowardsTheBatchOnce() throws {
+        let id = fixtureGeminiToolCallID() + String(repeating: "S", count: 100_000), log = PartialReplyLog()
+        func delta(_ ordinal: Int) -> PartialReplyLog.Entry {
+            .part(ResponsePartEvent(attemptID: "attempt", ordinal: ordinal, itemID: "fc_0", outputIndex: 0, partIndex: 0, kind: "toolArguments", update: "append", text: "0123456789", callID: id, name: "read"))
+        }
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let journal = root.appendingPathComponent("chat.jsonl")
+        XCTAssertTrue(log.add(delta(1)), "an id larger than a batch is written at once, not held behind 256 bytes of estimate")
+        log.discardPending()
+        XCTAssertTrue(log.add(delta(2)), "an id that was dropped unwritten is still to be written")
+        log.write(header: .init(reply: "reply", after: .init(offset: 0, length: 1, id: "record")), journal: journal)
+        XCTAssertEqual(log.writes, 1)
+        XCTAssertFalse(log.add(delta(3)), "once the file holds it, later deltas of the part do not carry it")
+        log.write(header: nil, journal: journal)
+        let written = try Data(contentsOf: PartialReplyLog.url(for: journal)).count
+        XCTAssertLessThan(written, id.utf8.count + 2_048, "the id is in the file once")
+        log.remove()
+    }
+
     /// Text arrives token by token; it is written a batch at a time.
     func testDeltasAreWrittenInBatches() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }

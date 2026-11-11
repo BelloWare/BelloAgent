@@ -1,14 +1,20 @@
-# Next release: 0.1.136
+# Next release: 0.1.137
 
-**Released 2026-10-28:** 0.1.135 (build 139, tag `v0.1.135`) is the latest release: Codex-style sub-agents, and finished turns that fold; record `docs/validation/Bello-Agent-0.1.135-2026-10-28.md`. 0.1.134 (build 138) was Ask in sidebar search.
+**Released 2026-11-11:** 0.1.136 (build 140, tag `v0.1.136`) is the latest release, a hotfix: Gemini tool calls, and turns that survive compaction; record `docs/validation/Bello-Agent-0.1.136-2026-11-11.md`. 0.1.135 (build 139) was Codex-style sub-agents, and finished turns that fold.
 
-## 0.1.136
+## 0.1.137 (planned as 0.1.136)
 
 - [ ] PERF-1: measure a very long chat and review the proposal before production changes. Owner, 2026-10-29: "I have like a session that's like 50k interactions already, and it feels kind of slow"; "especially the scrolling experience"; "It has to be backward compatible." Phase A on `dev/a136-perf`: seeded fixtures, isolated Release measurements and the ranked proposal in [the record](docs/validation/a136-perf-0.1.136.md). Phase B awaits discussion with the lead.
 - [x] FOLD-GAP: folded rows take zero room, including inherited context; anchors skip them and newer tokens do not walk them. The sixty-call gallery's divider-to-answer gap is 12 pt (was 205 pt). Lead review: history room uses the all-message average; short completed documents start at the top, while tall newer readers and the 18-pt footer hold stay stable. The room-resize paging margin remains, with a failing-first regression. [Validation](docs/validation/a136-foldgap-0.1.136.md).
 - [x] AGENTS-1 P3s: finished waits name their outcome; bounded final answers end before an empty code frame; fork publication follows the seed/turn boundary without a fixed record count; the connection-move guard trusts only native child markers. Failing-first tests, mutations and light/dark/narrow galleries: [validation](docs/validation/a136-p3-0.1.136.md).
 - [x] TEST-FLAKE: starting an unchanged accounting read invalidated a prepared delta and reprojected 301 rows. Delta validity now follows changes to the figures; the original one-row assertion passes 20/20 isolated runs. Deterministic regression and mutation: [validation](docs/validation/a136-p3-0.1.136.md).
 - [x] AGENTS-2: Codex's mid-reply cut-in, with background drain and exact original-attempt accounting on qualified pinned native Responses routes. Owner, 2026-10-29: **"Match Codex"**, **"Drain in background"** — "Cut at the next thought or note like Codex, and the agent continues with the message at once. The cut request keeps running unseen to its end so its exact cost is recorded. You pay for the whole reply, including the discarded rest. No new pauses." — and **"Wait for cut-in"** for 0.1.136. Lazy v5 writer fence; typed retained-prefix and cancelled-call presentation. [Validation](docs/validation/a136-cutin-0.1.136.md). Round-2 fixes reuse draining writers, decline cuts without false Stop/accounting failures, and clone journal promotions (200 MiB v5: 743.9 → 18.1 ms). Owner-only live gateway probe remains to be run; lead reviews and merges.
+
+## 0.1.136 (hotfix)
+
+- [x] GEMINI-TOOL-IDS: a Gemini reply that used a tool failed with "Invalid tool call id". LiteLLM carries Gemini's thought signature inside the id; ids are now kept whole up to 1 MiB and sent back byte for byte through response parsing, tool-input reads, sub-agent provenance and navigation, and timeline linkage. Another model is sent a short id derived from it, and the reply's recovery log writes a part's id once. Owner, 2026-11-11: "check fix/gemini-tool-call-ids, it might help you, and if it looks good, try merge it into current code, and release a new version". [Record](docs/validation/gemini-tool-call-ids-2026-11-11.md).
+- [x] COMPACT-1: a turn compacted in the middle of a task goes on with its request and the tool batch no reply has answered, not with the summary alone. Owner, 2026-11-11: "when it's working, it got compaction, either right after I send the message, or after few runs, and then it stopped". Where no checkpoint has room beside the replayed request, pi's rules plan it.
+- [x] COMPACT-2: a round larger than the growth reserve no longer fails the turn with `compaction_too_large`; the summary takes the room that is left, down to 8,192 tokens. [Release record](docs/validation/Bello-Agent-0.1.136-2026-11-11.md).
 
 ## 0.1.135
 

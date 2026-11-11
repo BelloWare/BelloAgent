@@ -35,9 +35,10 @@ public struct SubagentLink: Codable, Sendable, Hashable {
 
     public var valid: Bool {
         let ids = [delegationID, childSessionID, budgetOwnerSessionID, call.parentSessionID,
-                   call.assistantMessageID, call.toolCallID, parentTurnID, parentExecutionID] + (parentAttemptID.map { [$0] } ?? [])
+                   call.assistantMessageID, parentTurnID, parentExecutionID] + (parentAttemptID.map { [$0] } ?? [])
         return version == 1 && depth == SubagentPolicy.maximumDepth
             && childSessionID != call.parentSessionID && budgetOwnerSessionID == call.parentSessionID
+            && ProviderToolCallID.isValid(call.toolCallID)
             && ids.allSatisfy { !$0.isEmpty && $0.utf8.count <= 512 && !$0.utf8.contains { $0 < 32 || $0 == 127 } }
     }
 }

@@ -222,6 +222,33 @@ final class ToolInputDisplayTests: HelperTestCase {
         await host.shutdown()
     }
 
+    func testHostToolInputReadsExactSignatureBearingIDsFromTheJournal() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), path = directory.appendingPathComponent("routed.jsonl")
+        let profile = try fixtureProfile()
+        let ids = [fixtureGeminiToolCallID(tail: 0xfc), fixtureGeminiToolCallID(tail: 0xfd)]
+        let calls = ids.enumerated().map { ToolCall(id: $0.element, name: "read", arguments: ["path":JSON("file-\($0.offset)")]) }
+        var journal: SessionJournal? = try SessionJournal(url: path, id: "routed", cwd: root, binding: profile.binding, create: true)
+        try journal?.append(["type":"message", "message":assistant(calls).pi], id: "assistant-1")
+        journal = nil
+        let host = NativeHostService(emit: { _ in })
+        addTeardownBlock { await host.shutdown() }
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd":JSON(root.path), "directory":JSON(directory.path), "mcp":["servers":[:]]])
+        _ = try await host.command("session.open", sessionID: "routed", params: ["profile":profile.raw, "apiKey":"synthetic", "path":JSON(path.path)])
+        for (index, id) in ids.enumerated() {
+            let full = try await host.command("session.tool.input", sessionID: "routed", params: ["messageId":"assistant-1", "callId":JSON(id)])
+            XCTAssertEqual(full["id"].text, id)
+            let input = try JSON.parse(Data((full["input"].text ?? "").utf8))
+            XCTAssertEqual(input["path"].text, "file-\(index)", "Long IDs with a common prefix must select separate tools")
+        }
+        for id: JSON in ["", .null, 42, JSON(String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1)), "call\nline"] {
+            do {
+                _ = try await host.command("session.tool.input", sessionID: "routed", params: ["messageId":"assistant-1", "callId":id])
+                XCTFail("Invalid tool call identity reached the session")
+            } catch { XCTAssertEqual((error as? AgentError)?.code, "invalid_params") }
+        }
+    }
+
     func testBoundedDocumentKeepsShortValuesAndCapsPathologicalShapes() throws {
         let small: JSON = ["a": "one", "b": 2, "c": .null, "d": [true, false]]
         let untouched = ToolInputDisplay.bounded(small, limit: 4096)

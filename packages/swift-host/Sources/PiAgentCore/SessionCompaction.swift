@@ -41,7 +41,7 @@ extension AgentSession {
     /// Pi's prepareCompaction finds something to summarize.
     var canCompact: Bool { canCompact(recovering:false) }
     func canCompact(recovering: Bool) -> Bool {
-        guard let source=try? CompactionPlanner.source(context:context,taskRoot:taskRootID),
+        guard let source=try? CompactionPlanner.source(context:context,taskRoot:taskRootID,taskInputTokens:taskInputTokens(window:turnProfile.contextWindow,recovering:recovering)),
               source.previous == nil || (source.newSince ?? 0) < source.body.count else { return false }
         return source.body.contains { group in group.messages.contains { !source.protectedIDs.contains($0.id) } }
     }
@@ -49,10 +49,15 @@ extension AgentSession {
     /// authoritative skill/permission carriers. Space planning uses the whole
     /// generation allowance, not the soft visible-text target.
     func compactionPlan(_ context: [ChatMessage], profile: Profile, recovering: Bool) throws -> (source: CompactionPlanner.Source, cut: Int, plan: CompactionPlan, keep: Int) {
-        let source = try CompactionPlanner.source(context:context,taskRoot:taskRootID)
+        let source = try CompactionPlanner.source(context:context,taskRoot:taskRootID,taskInputTokens:taskInputTokens(window:profile.contextWindow,recovering:recovering))
         let keep = compactionKeep(context,window:profile.contextWindow,recovering:recovering)
-        let cut = CompactionPlanner.cut(source.body,keepRecentTokens:keep,previous:CompactionPlanner.previousPosition(source))
+        let cut = CompactionPlanner.cut(source.body,keepRecentTokens:keep,previous:CompactionPlanner.previousPosition(source),keepUnanswered:!recovering)
         return (source,cut,CompactionPlanner.plan(source,cut:cut),keep)
+    }
+    /// How much of the running task's own input a compaction replays as
+    /// written (`CompactionPlanner.source`): none after a context rejection.
+    func taskInputTokens(window: Int, recovering: Bool) -> Int {
+        recovering ? 0 : compactionPolicy.keepRecentTokens(contextWindow:window)
     }
     func compactionKeep(_ context: [ChatMessage], window: Int, recovering: Bool) -> Int {
         let keep=compactionPolicy.keepRecentTokens(contextWindow:window)
