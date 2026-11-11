@@ -118,7 +118,18 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     private struct Listing: Sendable { var models: [String]; var descriptors: [ModelDescriptor]; var source: String }
     private struct Fetch { var token: UUID; var task: Task<Void, Never> }
     private var inFlight: [String: Fetch] = [:]
-    private var cachedProfiles: [String: ProfileRecord] = [:]
+    /// What a listing depends on: where the list comes from, and the saved
+    /// revision (every save makes a new one, and the key may have changed with
+    /// it). A connection's name, model, limits and advanced settings are not
+    /// part of it: comparing the whole record read the catalog again each time
+    /// a connection being added or edited had a model chosen or a field typed.
+    private struct Source: Equatable {
+        var revision: String, api: String, baseUrl: String, catalogUrl: String?
+        init(_ profile: ProfileRecord) {
+            revision = profile.revision; api = profile.api; baseUrl = profile.baseUrl; catalogUrl = profile.catalogUrl
+        }
+    }
+    private var cachedSources: [String: Source] = [:]
 
     init(catalogTTL: TimeInterval = 300, now: @escaping @Sendable () -> Date = { Date() },
          readBundled: @escaping ReadBundled = { try ModelCatalogEndpoint.bundled() },
@@ -128,7 +139,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
 
     func entry(for profileID: String) -> Entry { entries[profileID] ?? Entry() }
     func entry(for profile: ProfileRecord) -> Entry {
-        cachedProfiles[profile.id] == profile ? entry(for: profile.id) : Entry(source: Self.catalogConfigured(profile) ? "catalog" : "bundled")
+        cachedSources[profile.id] == Source(profile) ? entry(for: profile.id) : Entry(source: Self.catalogConfigured(profile) ? "catalog" : "bundled")
     }
 
     static func failureMessage(_ error: Error) -> String {
@@ -147,7 +158,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     @discardableResult
     func load(profile: ProfileRecord, force: Bool = false, credential: @escaping @Sendable () async throws -> String) async -> [String] {
         let id = profile.id
-        if cachedProfiles[id] != profile { invalidate(profileID: id); cachedProfiles[id] = profile }
+        if cachedSources[id] != Source(profile) { invalidate(profileID: id); cachedSources[id] = Source(profile) }
         var current = entry(for: id)
         let usesCatalog = Self.catalogConfigured(profile)
         if !force, current.error == nil, current.fetchedAt != nil,
@@ -202,7 +213,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     }
 
     private func publish(_ result: Result<Listing, Error>, id: String, token: UUID, profile: ProfileRecord, usesCatalog: Bool) {
-        guard inFlight[id]?.token == token, cachedProfiles[id] == profile else { return }
+        guard inFlight[id]?.token == token, cachedSources[id] == Source(profile) else { return }
         inFlight[id] = nil
         var updated = entry(for: id); updated.loading = false
         switch result {
@@ -228,7 +239,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     }
 
     func invalidate(profileID: String) {
-        inFlight[profileID]?.task.cancel(); inFlight[profileID] = nil; entries[profileID] = nil; cachedProfiles[profileID] = nil
+        inFlight[profileID]?.task.cancel(); inFlight[profileID] = nil; entries[profileID] = nil; cachedSources[profileID] = nil
     }
 }
 

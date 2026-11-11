@@ -169,7 +169,9 @@ Connections without a custom URL load the bundled catalog once per saved
 connection revision, with explicit Refresh available. A missing/corrupt bundled
 resource shows an error rather than querying the gateway. Cache identity includes the saved connection revision and catalog
 URL or path; obsolete requests cannot replace newer results. Editing the catalog
-field in Settings refreshes its list before saving.
+field in Settings refreshes its list before saving. A connection being added or
+edited keeps one list for its catalog address, gateway and typed key: renaming it,
+choosing a model or changing a limit does not read the catalog again.
 
 Existing chats retain their own saved connection. Changing a connection's API,
 gateway URL or default model creates a new connection to preserve those chats'
