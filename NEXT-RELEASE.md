@@ -1,6 +1,12 @@
-# Next release: 0.1.137
+# Next release: 0.1.138
 
-**Released 2026-11-11:** 0.1.136 (build 140, tag `v0.1.136`) is the latest release, a hotfix: Gemini tool calls, and turns that survive compaction; record `docs/validation/Bello-Agent-0.1.136-2026-11-11.md`. 0.1.135 (build 139) was Codex-style sub-agents, and finished turns that fold.
+**Released 2026-11-11:** 0.1.137 (build 141, tag `v0.1.137`) is the latest release: compaction by task, and a faster model list; record `docs/validation/Bello-Agent-0.1.137-2026-11-11.md`. 0.1.136 (build 140) was a hotfix: Gemini tool calls, and turns that survive compaction.
+
+## 0.1.137
+
+- [x] COMPACT-3: compaction keeps the task in hand whole; the 20,000-token recent tail is gone. Owner, 2026-11-11: "remove the cap directly, and you and astra figure what else to do, and then release a new version". Only earlier tasks are summarized; at send, the exchange before the message stays; a task too large keeps what must stay and its newest rounds. A full chat compacts before a task starts (70% of the usable input), not a round or two into it. A plan that cannot be made costs nothing and is tried again when the chat changes; only a summary that was requested and not adopted ends automatic compaction for its task; after a provider's context rejection, what must stay is kept with the checkpoint though it passes the half; at most one automatic summary between two replies. Chats and checkpoints from earlier versions read as before. Contract: `Design.md`, "What a compaction keeps".
+- [x] REASON-1 (part): replayed encrypted reasoning and long tool call ids (Gemini through LiteLLM) count in a chat's size. Owner, 2026-11-11: "encrypted reasoning should be not ignored". Still open: replay by default, and a question to the owner when a gateway rejects earlier reasoning after a model switch.
+- [x] CATALOG-COST: a connection's model catalog is not read again when a model is chosen or a field typed; the model picker measures its rows once (2,048 models: 1.2 s on every opening in a Debug build, 20 ms after the first); a turn resolves the catalog's grants in 11 ms, was 360 ms. `CatalogLoadCostTests`. [Release record](docs/validation/Bello-Agent-0.1.137-2026-11-11.md).
 
 ## 0.1.136 (hotfix)
 

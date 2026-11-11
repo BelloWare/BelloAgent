@@ -1,6 +1,6 @@
 # Bello Agent 0.1.137 — compaction by task, and a faster model list
 
-Status: **built, signed, notarized and validated 2026-11-11; not yet published.** Marketing version 0.1.137, build 141. Previous public release: 0.1.136/build 140.
+Status: **released and verified 2026-11-11.** Marketing version 0.1.137, build 141. Previous public release: 0.1.136/build 140.
 
 ## Owner request
 
@@ -88,7 +88,10 @@ The owner directed this release on 2026-11-11. These were not run:
 
 ## Release
 
-- Artifacts built from `7a9c293a` by `scripts/release.sh`, run from the worktree with `NOTARY_KEY_PATH` naming in full the file its default names beside the main checkout; every other value was its default. Signing did not stall.
+- Tag `v0.1.137` on `40f6ab14` ("Record the validation of Bello Agent 0.1.137"), the commit that holds the version, the notes and this record, as `v0.1.136` does. The artifacts were built from its parent `7a9c293a`; the two differ by this record alone. On `main` by fast-forward from `dev/a137-hotfix`.
+- `scripts/release.sh` ran from the worktree with `NOTARY_KEY_PATH` naming in full the file its default names beside the main checkout; every other value was its default. Signing did not stall.
 - `BelloAgent-0.1.137.dmg`, sha256 `cbbdb17e7e41df528025200e22896ec61df309b97302252028b0d3b2d244399f`, 17,335,653 bytes; Developer ID signed and notarized (app submission `b2b5d3b3-f942-4542-ba54-3c02f07a0465`, DMG submission `b8be0b1b-f5ac-4589-8e91-14acbb96c544`, both Accepted), stapled. In `~/Library/Caches/BelloSwiftWork/hotfix137-build/releases/0.1.137`.
 - `validate-release.py --previous-build 140`: passed (0.1.137 build 141, Ed25519 signature verified, 17,335,653 bytes); the Bello Agent and legacy Pi App staging feeds are byte-identical.
-- Publication, the tag and `main` are the lead's steps and are not done here.
+- **Publication decision** (lead, on the owner's instruction to release): the serial lane's one failure fails identically on `v0.1.135` and 0.1.136; the gallery's failure was the test's premise, restated and passing; the two live checks on the owner's gateway were not run.
+- `scripts/publish-release.sh 0.1.137` ran from the worktree at `40f6ab14`. Website commit `68daa76` ("Publish Bello Agent 0.1.137 update", belloware.com `main`).
+- `verify-published.py`: the public DMG matches (sha256 `cbbdb17e7e41df528025200e22896ec61df309b97302252028b0d3b2d244399f`, Ed25519 signature verified, 17,335,653 bytes), and the Bello Agent and legacy Pi App feeds are byte-identical. It passed on the fifth try at 30-second intervals, once the site had deployed (`hotfix137-build/verify-published.log`).
