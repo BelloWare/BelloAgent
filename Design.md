@@ -1247,6 +1247,21 @@ structured skill/permission carriers remain authoritative. A completed long task
 can be summarized within its internal rounds; a summary does not authorize tools
 or change selection/permission state.
 
+**A turn compacted while it works goes on with what it was asked (0.1.136).**
+Owner, 2026-11-11: "it got compaction, either right after I send the message, or
+after few runs, and then it stopped". Two things stay as written beside the
+summary. The running task's own inputs (its request and the messages that
+steered it; mail from another agent only when it started the task) are replayed
+ahead of the kept tail, newest first within the recent-tail allowance, as Codex
+keeps recent user messages beside its summary; one too long for the allowance is
+summarized. They are the checkpoint's `protectedIDs`. A task a reply has ended is
+history and replays nothing, as in pi. And a tool batch no reply has answered is
+kept even when its results alone pass the recent target: the model asked for
+them one request ago and has not read them. Before this, such a batch (a few
+large reads at once, which is also what usually crosses the threshold) left the
+next request the summary alone. The cut still moves past a batch that cannot fit
+beside the summary allowance.
+
 The effective selected model, endpoint, reasoning effort, replay policy, ordinary
 instructions/tool definitions and cache-session affinity remain unchanged.
 `tool_choice: none` prevents requested tool execution; the summary handler has no
@@ -1262,7 +1277,11 @@ Prefix preservation is not a guarantee of a real provider cache hit.
 Generation allowance G is the lesser of 16,384 tokens, the declared output
 ceiling and one quarter of the context window. It includes reasoning and is both
 the wire cap and local reserve; a route configured to omit caps keeps an explicit
-local-only reserve. The soft visible-summary target is up to 3,000 tokens, smaller
+local-only reserve. When one round outgrew the trigger's growth buffer and the
+intact context no longer leaves room for G, the summary takes the room that is
+left, down to 8,192 tokens (pi's smallest summary cap); below that nothing is
+sent (0.1.136: the turn used to fail there with `compaction_too_large`, at about
+85% of a 100,000-token window, though its own next request still fitted). The soft visible-summary target is up to 3,000 tokens, smaller
 for small windows and histories; neither reasoning effort nor the resulting text
 is clipped to force success. At safe pending-request boundaries the trigger
 reserves the larger of the ordinary response reserve and G plus the appended

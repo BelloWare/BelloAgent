@@ -154,7 +154,8 @@ final class CompactionPiTests: HelperTestCase {
         let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
         _=try await compact(s)
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
-        XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is in the prefix summary")
+        // Ours: the turn is in flight (it ends on a result), so its request is replayed as written.
+        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is summarized and replayed")
         XCTAssertEqual(bodies.count,1,"No history precedes the turn")
         XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,8_192,"The model's limit, never below pi's 0.5 × reserve for a turn prefix")
         XCTAssertTrue(prompts.first?.contains("retainedRanges") == true)
@@ -174,7 +175,7 @@ final class CompactionPiTests: HelperTestCase {
         _=try await compact(s)
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
         XCTAssertEqual(bodies.count,1,"A compaction is one request")
-        XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] })
+        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] })
         let prompt=try XCTUnwrap(prompts.first)
         XCTAssertTrue(prompt.hasPrefix("H0 u"))
         XCTAssertTrue(prompt.contains("Inspect the reads."))

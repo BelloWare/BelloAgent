@@ -8,6 +8,10 @@ public struct CompactionPolicy: Sendable {
     /// Pi's compaction reserve and recent-context target (settings-manager.ts).
     public var reserveTokens = 16_384
     public var keepRecentTokens = 20_000
+    /// Ours: the least a summary request may be allowed when the intact
+    /// context leaves no room for the whole allowance (`summaryTokens`):
+    /// pi's smallest summary cap, 0.5 x its reserve. Below it nothing is sent.
+    public var minimumSummaryTokens = 8_192
     public init() {}
     /// The threshold settings for one window. From 32,768 tokens up this is
     /// pi's reserve; a smaller window keeps half of itself for the
@@ -117,7 +121,9 @@ enum CompactionPlanner {
         let protectedIDs: Set<String>
         var newSince: Int?
     }
-    static func source(context: [ChatMessage], taskRoot: String?) throws -> Source {
+    /// `taskInputTokens` is how much of the running task's own input is
+    /// replayed as written (see below); 0 replays none, as pi does.
+    static func source(context: [ChatMessage], taskRoot: String?, taskInputTokens: Int = 0) throws -> Source {
         let active=context.filter(\.replayEligible)
         let previous=active.first.flatMap { $0.kind == "compaction" ? $0 : nil }
         let since=Array(active.dropFirst(previous == nil ? 0 : 1))
@@ -137,9 +143,23 @@ enum CompactionPlanner {
         // Steering belongs to the current task and must not replace its
         // original explicit skill selection with summary prose. Preserve every
         // skill-bearing input of that task, even after a later steering message.
-        if let taskRoot {
-            for input in since where input.role == "user" && (input.taskRootID == taskRoot || input.id == taskRoot) {
+        // Ours (owner, 2026-11-11: after a compaction "it stopped"): the
+        // running task's request and the messages that steered it stay as
+        // written, newest first within `taskInputTokens`, as Codex keeps the
+        // recent user messages beside its summary. A summary of a request is
+        // not the request: compacted between tool rounds, the model went on
+        // (or stopped) without what it had been asked. One too long for the
+        // allowance is summarized, as before. Mail from another agent is not
+        // the task's request, unless it started the task (a sub-agent's).
+        // Only while the task is in flight: once a reply has ended it, its
+        // request is history, and replaying it would read as asked again.
+        if let taskRoot, since.last.map({ $0.role != "assistant" }) == true {
+            var room=taskInputTokens
+            for input in since.reversed() where input.role == "user" && (input.taskRootID == taskRoot || input.id == taskRoot) {
                 if !(input.userInput?["skills"].list.isEmpty ?? true) { protected.insert(input.id) }
+                guard input.id == taskRoot || input.nativeAgentDelivery == nil, !protected.contains(input.id) else { continue }
+                let tokens=PiContext.estimateTokens(input)
+                if tokens <= room { protected.insert(input.id); room -= tokens }
             }
         }
         if let permission = since.last(where: { $0.contextNote != nil }) { protected.insert(permission.id) }
@@ -151,16 +171,25 @@ enum CompactionPlanner {
     /// reaches `keepRecentTokens`; a tool result stays with its call. 0 keeps
     /// everything. Pi's walk passes the previous checkpoint where its session
     /// path holds it, after the rows it kept, and counts its summary there.
-    /// Ours: when the newest group alone reaches the target the whole body is
-    /// summarized, where pi would keep it and could not compact.
-    static func cut(_ body: [ReplayGroup], keepRecentTokens: Int, previous: (index: Int, tokens: Int)? = nil) -> Int {
+    /// Ours: a tool batch no reply has answered yet is the step in flight,
+    /// and is kept even when its results alone pass the target (pi keeps it
+    /// too, and then cannot compact). The model asked for those results one
+    /// request ago and has not read them: summarizing them with everything
+    /// else left the next request a summary and nothing to go on with. The
+    /// planner still moves the cut past a batch too large to fit (`prepare`).
+    /// `keepUnanswered` is false after a gateway's context rejection, where
+    /// the estimate has just been wrong and the most is summarized.
+    static func cut(_ body: [ReplayGroup], keepRecentTokens: Int, previous: (index: Int, tokens: Int)? = nil, keepUnanswered: Bool = true) -> Int {
         var used=0
         for index in body.indices.reversed() {
             for (offset,message) in body[index].messages.enumerated().reversed() {
                 let tokens=PiContext.estimateTokens(message)
                 guard tokens > 0 else { continue }
                 used=PiContext.sum([used,tokens])
-                if used >= keepRecentTokens { return offset == 0 ? index : index+1 }
+                guard used >= keepRecentTokens else { continue }
+                if offset == 0 { return index }
+                let answered = !keepUnanswered || body[(index+1)...].contains { $0.messages[0].role == "assistant" }
+                return answered ? index+1 : index
             }
             // The previous checkpoint sits just before the first new group.
             if let previous, previous.index == index, previous.tokens > 0 {
@@ -231,11 +260,16 @@ extension CompactionPlanner {
         let visibleTarget=policy.visibleTarget(for:profile,inputTokens:before.requestTokens)
         let cap=policy.summaryTokens(for:profile)
         let summaryProfile=try policy.summaryProfile(profile,cap:cap)
-        let source=try source(context:frozen,taskRoot:taskRoot)
-        let recent=policy.keepRecentTokens(contextWindow:profile.contextWindow)
-        let keep=reason == "context-rejection" ? min(recent,PiContext.messageTokens(frozen)/2) : recent
-        var cut=cut(source.body,keepRecentTokens:keep,previous:previousPosition(source))
-        var plan=plan(source,cut:cut)
+        let recent=policy.keepRecentTokens(contextWindow:profile.contextWindow), recovering=reason == "context-rejection"
+        let keep=recovering ? min(recent,PiContext.messageTokens(frozen)/2) : recent
+        // `replaying`: the running task's inputs and the batch in flight stay
+        // as written (`source`, `cut`); without it, pi's rules alone.
+        func planned(replaying: Bool) throws -> (Source, Int) {
+            let source=try CompactionPlanner.source(context:frozen,taskRoot:taskRoot,taskInputTokens:replaying ? recent : 0)
+            return (source,CompactionPlanner.cut(source.body,keepRecentTokens:keep,previous:previousPosition(source),keepUnanswered:replaying))
+        }
+        var (source,cut)=try planned(replaying:!recovering)
+        var plan=CompactionPlanner.plan(source,cut:cut)
         let unchanged=source.previous != nil && (source.newSince ?? 0) >= source.body.count
         var placeholder=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:cap*4))])
         placeholder.kind="compaction"
@@ -256,6 +290,16 @@ extension CompactionPlanner {
             expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
             return try count([expected]+plan.keptMessages).requestTokens < before.requestTokens
         }
+        // What is replayed as written must still leave something to
+        // summarize that frees room; where it would not, pi's cut stands.
+        func frees(_ plan: CompactionPlan) throws -> Bool {
+            guard !plan.summarized.isEmpty else { return false }
+            var expected=placeholder
+            expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
+            let after=try count([expected]+plan.keptMessages).requestTokens
+            return PiContext.sum([after,RequestContextCount.safetyMargin(contextWindow:profile.contextWindow)]) <= before.requestTokens
+        }
+        if !recovering, try !frees(plan) { (source,cut)=try planned(replaying:false); plan=CompactionPlanner.plan(source,cut:cut) }
         // Only move the boundary BEFORE the request. The summarizer sees
         // every source, including the unchanged tail, under this exact cut.
         while !unchanged, cut<source.body.count {
