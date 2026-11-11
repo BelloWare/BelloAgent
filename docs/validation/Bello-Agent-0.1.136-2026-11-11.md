@@ -1,6 +1,6 @@
 # Bello Agent 0.1.136 — hotfix: Gemini tool calls, and turns that survive compaction
 
-Status: **built, signed, notarized and validated 2026-11-11; not yet published.** Marketing version 0.1.136, build 140. Previous public release: 0.1.135/build 139. The lead publishes, tags and verifies the public artifacts, and adds that to "Release" below.
+Status: **released and verified 2026-11-11.** Marketing version 0.1.136, build 140. Previous public release: 0.1.135/build 139.
 
 ## Owner request
 
@@ -84,8 +84,10 @@ The owner directed this release on 2026-11-11. These were not run:
 
 ## Release
 
-- Source: `dev/a136-hotfix`; the artifacts were built from `ac55d8ea`.
+- Tag `v0.1.136` on `cf6c4a4c` ("Record the validation of Bello Agent 0.1.136"), the commit that holds the version, the notes and this record, as `v0.1.135` does. The artifacts were built from its parent `ac55d8ea`; the two differ by this record alone. On `main` by fast-forward from `dev/a136-hotfix`.
 - `BelloAgent-0.1.136.dmg`, sha256 `cecdcdea749acfa44f9c3c48b0b58d9e51a327e601020ff782ea6996e2cf0333`, 17,325,808 bytes; Developer ID signed and notarized (app submission `df7c8e95-62c5-4d58-aa63-1efe36f7048f`, DMG submission `e96e5e14-665c-437f-ba07-16df513f9890`, both Accepted), stapled.
 - `scripts/release.sh` ran from the worktree with `NOTARY_KEY_PATH` naming in full the file its default names beside the main checkout; every other value was its default.
 - `validate-release.py --previous-build 139`: passed (0.1.136 build 140, Ed25519 signature verified); the Bello Agent and legacy Pi App staging feeds are byte-identical.
-- Not yet done: publication (`scripts/publish-release.sh 0.1.136`), `verify-published.py`, the tag `v0.1.136`, `main`, and the merge into `dev/next`.
+- **Publication decision** (lead, on the owner's instruction to release): the serial lane's four load failures passed alone on the same build and the fifth fails identically on `v0.1.135`; the two live checks on the owner's gateway were not run.
+- Website commit `9ccc564` ("Publish Bello Agent 0.1.136 update", belloware.com `main`).
+- `verify-published.py`: the public DMG matches (sha256 `cecdcdea749acfa44f9c3c48b0b58d9e51a327e601020ff782ea6996e2cf0333`, Ed25519 signature verified, 17,325,808 bytes), and the Bello Agent and legacy Pi App feeds are byte-identical. It passed on the fifth try at 30-second intervals, once the site had deployed.

@@ -1,6 +1,12 @@
-# Next release: 0.1.136
+# Next release: 0.1.137
 
-**Released 2026-10-28:** 0.1.135 (build 139, tag `v0.1.135`) is the latest release: Codex-style sub-agents, and finished turns that fold; record `docs/validation/Bello-Agent-0.1.135-2026-10-28.md`. 0.1.134 (build 138) was Ask in sidebar search.
+**Released 2026-11-11:** 0.1.136 (build 140, tag `v0.1.136`) is the latest release, a hotfix: Gemini tool calls, and turns that survive compaction; record `docs/validation/Bello-Agent-0.1.136-2026-11-11.md`. 0.1.135 (build 139) was Codex-style sub-agents, and finished turns that fold.
+
+## 0.1.136 (hotfix)
+
+- [x] GEMINI-TOOL-IDS: a Gemini reply that used a tool failed with "Invalid tool call id". LiteLLM carries Gemini's thought signature inside the id; ids are now kept whole up to 1 MiB and sent back byte for byte through response parsing, tool-input reads, sub-agent provenance and navigation, and timeline linkage. Another model is sent a short id derived from it, and the reply's recovery log writes a part's id once. Owner, 2026-11-11: "check fix/gemini-tool-call-ids, it might help you, and if it looks good, try merge it into current code, and release a new version". [Record](docs/validation/gemini-tool-call-ids-2026-11-11.md).
+- [x] COMPACT-1: a turn compacted in the middle of a task goes on with its request and the tool batch no reply has answered, not with the summary alone. Owner, 2026-11-11: "when it's working, it got compaction, either right after I send the message, or after few runs, and then it stopped". Where no checkpoint has room beside the replayed request, pi's rules plan it.
+- [x] COMPACT-2: a round larger than the growth reserve no longer fails the turn with `compaction_too_large`; the summary takes the room that is left, down to 8,192 tokens. [Release record](docs/validation/Bello-Agent-0.1.136-2026-11-11.md).
 
 ## 0.1.135
 
