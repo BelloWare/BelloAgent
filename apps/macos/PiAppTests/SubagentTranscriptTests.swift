@@ -112,7 +112,7 @@ final class SubagentTranscriptTests: XCTestCase {
                 var invalid = fields; invalid[field] = .string(String(repeating: "x", count: 513))
                 XCTAssertNil(SubagentTarget(metadata: .object(invalid)), "Local \(field) keeps its separate limit")
             }
-            for id: WireValue in [.string(""), .null, .number(42), .string(String(repeating: "x", count: 65_537)), .string("call\nline")] {
+            for id: WireValue in [.string(""), .null, .number(42), .string(String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1)), .string("call\nline")] {
                 var invalid = fields; invalid["toolCallId"] = id
                 XCTAssertNil(SubagentTarget(metadata: .object(invalid)))
             }

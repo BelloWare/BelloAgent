@@ -95,9 +95,11 @@ final class ProviderStreamingTests: HelperTestCase {
             }
             return try accumulator.result()
         }
-        let asciiBoundary = String(repeating: "x", count: 65_536)
-        let unicodeBoundary = String(repeating: "🙂", count: 16_384)
-        XCTAssertEqual(unicodeBoundary.utf8.count, 65_536)
+        let limit = ProviderToolCallID.maximumUTF8Bytes
+        XCTAssertGreaterThanOrEqual(limit, 278_100, "an ID that long was measured from Gemini through LiteLLM")
+        let asciiBoundary = String(repeating: "x", count: limit)
+        let unicodeBoundary = String(repeating: "🙂", count: limit / 4)
+        XCTAssertEqual(unicodeBoundary.utf8.count, limit)
         let invalid: [JSON] = ["", .null, 42, true, [:], JSON(asciiBoundary + "x"), JSON(unicodeBoundary + "x"), "call\nline", "call\u{0000}", "call\u{007f}"]
         for api in ["openai-responses", "anthropic-messages"] {
             for id in ["call-short", fixtureGeminiToolCallID(), asciiBoundary, unicodeBoundary] {

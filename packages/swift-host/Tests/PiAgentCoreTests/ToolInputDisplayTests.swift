@@ -241,7 +241,7 @@ final class ToolInputDisplayTests: HelperTestCase {
             let input = try JSON.parse(Data((full["input"].text ?? "").utf8))
             XCTAssertEqual(input["path"].text, "file-\(index)", "Long IDs with a common prefix must select separate tools")
         }
-        for id: JSON in ["", .null, 42, JSON(String(repeating: "x", count: 65_537)), "call\nline"] {
+        for id: JSON in ["", .null, 42, JSON(String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1)), "call\nline"] {
             do {
                 _ = try await host.command("session.tool.input", sessionID: "routed", params: ["messageId":"assistant-1", "callId":id])
                 XCTFail("Invalid tool call identity reached the session")

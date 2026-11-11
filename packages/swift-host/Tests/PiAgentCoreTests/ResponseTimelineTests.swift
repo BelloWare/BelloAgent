@@ -220,7 +220,7 @@ final class ResponseTimelineTests: HelperTestCase {
         XCTAssertEqual(restored.segments.map(\.text), ["{}", "{}"])
     }
     func testMalformedResponseCallIDsDoNotBecomeTruncatedOrItemIDLinks() {
-        let invalid: [JSON] = ["", .null, 42, JSON(String(repeating: "x", count: 65_537)), "call\nline", "call\u{007f}"]
+        let invalid: [JSON] = ["", .null, 42, JSON(String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1)), "call\nline", "call\u{007f}"]
         for id in invalid {
             let item: JSON = ["type":"function_call", "id":"fc_item_only", "call_id":id, "name":"read", "arguments":"{}"]
             for json in [false, true] {

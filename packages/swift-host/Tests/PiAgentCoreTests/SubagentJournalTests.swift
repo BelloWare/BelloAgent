@@ -84,7 +84,7 @@ final class SubagentJournalTests: HelperTestCase {
         local = subagentFixtureOrigin(call: ids[0]).link
         local.parentAttemptID = String(repeating: "a", count: 513)
         XCTAssertFalse(local.valid)
-        for id in ["", String(repeating: "x", count: 65_537), "call\nline", "call\u{007f}"] {
+        for id in ["", String(repeating: "x", count: ProviderToolCallID.maximumUTF8Bytes + 1), "call\nline", "call\u{007f}"] {
             let origin = subagentFixtureOrigin(call: id)
             XCTAssertFalse(origin.link.valid)
             var invalid = SubagentJournalState()
