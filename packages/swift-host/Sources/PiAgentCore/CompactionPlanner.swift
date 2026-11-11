@@ -8,6 +8,10 @@ public struct CompactionPolicy: Sendable {
     /// Pi's compaction reserve and recent-context target (settings-manager.ts).
     public var reserveTokens = 16_384
     public var keepRecentTokens = 20_000
+    /// Ours: the least a summary request may be allowed when the intact
+    /// context leaves no room for the whole allowance (`summaryTokens`):
+    /// pi's smallest summary cap, 0.5 x its reserve. Below it nothing is sent.
+    public var minimumSummaryTokens = 8_192
     public init() {}
     /// The threshold settings for one window. From 32,768 tokens up this is
     /// pi's reserve; a smaller window keeps half of itself for the
