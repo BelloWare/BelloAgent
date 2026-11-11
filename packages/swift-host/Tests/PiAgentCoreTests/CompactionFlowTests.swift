@@ -216,6 +216,29 @@ final class CompactionFlowTests: HelperTestCase {
         XCTAssertEqual(CompactionPlanner.cut(later,keepRecentTokens:20_000),2,"A batch a reply has answered is cut as pi cuts it")
     }
 
+    /// Replaying the task as written is the planner's choice, not a required
+    /// input. In a 32,768-token window an 8,000-token request fits the replay
+    /// allowance, yet beside the 8,192-token summary allowance it passes the
+    /// automatic trigger whatever else is cut: the plan that keeps it has no
+    /// room. The turn must still compact, by pi's rules, as 0.1.135 did.
+    func testATaskThatLeavesNoRoomBesideTheSummaryIsSummarizedNotRefused() throws {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=32_768
+        let profile=try Profile(raw)
+        let frozen=[user("task",String(repeating:"t",count:32_000))]+batch("a",results:1,chars:24_000,root:"task")+batch("b",results:1,chars:24_000,root:"task")
+        func prepare(_ messages: [ChatMessage], _ profile: Profile) throws -> PreparedCompaction {
+            try CompactionPlanner.prepare(frozen:messages,profile:profile,instructions:"Be useful.",definitions:[],sessionID:"s",cacheSessionID:"s",
+                                          taskRoot:"task",policy:CompactionPolicy(),reason:"threshold",focus:nil)
+        }
+        XCTAssertEqual(try CompactionPlanner.source(context:frozen,taskRoot:"task",taskInputTokens:CompactionPolicy().keepRecentTokens(contextWindow:32_768)).protectedIDs,["task"],
+                       "the request is within the replay allowance")
+        let plan=try prepare(frozen,profile).plan
+        XCTAssertEqual(plan.summarized.first?.id,"task","the request is summarized with the round before the newest")
+        XCTAssertEqual(plan.keptMessages.map(\.id),["b","b-result-0"],"the newest batch still reaches the model")
+        // Where a plan with the request has room, the request stays.
+        let small=[user("task",String(repeating:"t",count:1_000))]+batch("a",results:1,chars:24_000,root:"task")+batch("b",results:1,chars:24_000,root:"task")
+        XCTAssertEqual(try prepare(small,profile).plan.keptMessages.map(\.id),["task","b","b-result-0"])
+    }
+
     func testCurrentTaskInputsAreReplayedWithinTheirAllowance() throws {
         var mail=user("mail","Agent mail",root:"task"); mail.nativeAgentDelivery=["version":1]; mail.inputLane="agent"
         let work=batch("a",results:1,chars:400,root:"task")

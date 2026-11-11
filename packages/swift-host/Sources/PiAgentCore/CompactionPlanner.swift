@@ -268,7 +268,8 @@ extension CompactionPlanner {
             let source=try CompactionPlanner.source(context:frozen,taskRoot:taskRoot,taskInputTokens:replaying ? recent : 0)
             return (source,CompactionPlanner.cut(source.body,keepRecentTokens:keep,previous:previousPosition(source),keepUnanswered:replaying))
         }
-        var (source,cut)=try planned(replaying:!recovering)
+        var replaying = !recovering
+        var (source,cut)=try planned(replaying:replaying)
         var plan=CompactionPlanner.plan(source,cut:cut)
         let unchanged=source.previous != nil && (source.newSince ?? 0) >= source.body.count
         var placeholder=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:cap*4))])
@@ -299,13 +300,24 @@ extension CompactionPlanner {
             let after=try count([expected]+plan.keptMessages).requestTokens
             return PiContext.sum([after,RequestContextCount.safetyMargin(contextWindow:profile.contextWindow)]) <= before.requestTokens
         }
-        if !recovering, try !frees(plan) { (source,cut)=try planned(replaying:false); plan=CompactionPlanner.plan(source,cut:cut) }
+        if replaying, try !frees(plan) { replaying=false; (source,cut)=try planned(replaying:false); plan=CompactionPlanner.plan(source,cut:cut) }
         // Only move the boundary BEFORE the request. The summarizer sees
         // every source, including the unchanged tail, under this exact cut.
-        while !unchanged, cut<source.body.count {
-            try Task.checkCancellation()
-            if try hasRoom(plan) { break }
-            cut += 1; plan=CompactionPlanner.plan(source,cut:cut)
+        func advance() throws {
+            while !unchanged, cut<source.body.count {
+                try Task.checkCancellation()
+                if try hasRoom(plan) { break }
+                cut += 1; plan=CompactionPlanner.plan(source,cut:cut)
+            }
+        }
+        try advance()
+        // The task's inputs are replayed by choice, not required: where no
+        // cut leaves room beside them (a request near the replay allowance in
+        // a small window passes the trigger with the summary alone), pi's
+        // rules plan the checkpoint, as before the inputs were replayed.
+        if replaying, !unchanged, try plan.summarized.isEmpty || !hasRoom(plan) {
+            replaying=false; (source,cut)=try planned(replaying:false); plan=CompactionPlanner.plan(source,cut:cut)
+            try advance()
         }
         guard !unchanged, !plan.summarized.isEmpty else {
             throw AgentError("compact_unavailable", unchanged ? "Already compacted: nothing has been added since the last compaction." : "Nothing useful to compact while keeping the recent history and required inputs intact.")
