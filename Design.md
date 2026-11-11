@@ -1290,12 +1290,25 @@ on what is retained, and what the summary's allowance, the request's prefix
 50% is the budget. In a small window (32,768 tokens: the allowance alone is a
 third of the usable input) that room is little or none, and the required rows
 are the whole plan. Required material may pass the 30%; the replacement must
-still pass the 50%. One last resort: where the whole allowance and the prefix
-alone pass that half (a 32,768-token window with a few thousand tokens of
-schemas), the required rows are still planned if the replacement passes with
-the summary at the length it is asked for; it has to fit beside the whole
-allowance all the same, and the checkpoint is adopted only if it measures
-within the half. Without it such a chat could never compact. If it cannot, the answer is "no useful compaction" and the intact
+still pass the 50%.
+
+One last resort: when the required rows alone fail that test with the checkpoint
+at its whole allowance (in a 32,768-token window the allowance is a third of the
+usable input, so a few thousand tokens of schemas or of required rows are
+enough), they are still planned if the replacement passes with the summary at
+the length it is asked for. The requested length is an admission estimate, never
+an adoption exemption. Before anything is sent, the replacement at the whole
+allowance must still fit a normal request in tokens and in bytes. The completed
+checkpoint is adopted only if the actual replacement fits, saves the safety
+margin and measures at most half the usable input, which keeps the gap below
+the triggers. A summary longer than requested is adopted when the complete
+replacement passes those checks; otherwise it is rejected as it is, with no
+truncation and no repair request, the context stays, and automatic compaction
+ends for that task, so a later overflow pauses the chat instead of asking for
+another summary. That is a deliberate trade of availability: without the last
+resort such a chat could never compact.
+
+If no plan passes, the answer is "no useful compaction" and the intact
 request goes: the planner no longer abandons protections or advances the cut
 past required groups to make a compaction possible. Overflow recovery uses the
 same requirements. An adopted checkpoint must remove something new, save at

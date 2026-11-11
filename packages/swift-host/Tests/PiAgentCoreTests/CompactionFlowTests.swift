@@ -17,7 +17,11 @@ private enum Step {
     case heavy(ModelReply, output: Int)
     case fail(AgentError)
 }
-private enum Summary { case text, cutAtItsCap }
+private enum Summary: Equatable {
+    case text, cutAtItsCap
+    /// A completed summary of exactly this many characters.
+    case chars(Int)
+}
 
 /// Records every request body. A turn request gets the next scripted step,
 /// with usage that measures the request as a gateway would report it; a
@@ -32,10 +36,12 @@ private actor FlowClient: ModelClient {
         sent.append((purpose,body,profile.wireOutputLimit))
         if purpose == "compaction" {
             let made=sent.filter { $0.purpose == "compaction" }.count
-            if (summaries.isEmpty ? .text : summaries.removeFirst()) == .cutAtItsCap {
+            let kind: Summary=summaries.isEmpty ? .text : summaries.removeFirst()
+            if kind == .cutAtItsCap {
                 return ModelReply(message:ChatMessage(role:"assistant",content:[textBlock("Partial")]),usage:["input":100,"output":JSON(profile.maxOutput)],truncated:true,
                                   terminal:ModelTerminalOutcome(status:"incomplete",incompleteReason:"max_output_tokens"))
             }
+            if case .chars(let count)=kind { return answer(String(repeating:"s",count:count)) }
             return answer("SUMMARY \(made)")
         }
         guard !script.isEmpty else { throw AgentError("fixture_exhausted","Unexpected model request") }
@@ -62,11 +68,12 @@ private actor FlowClient: ModelClient {
 /// Every call returns `chars` characters that name the call. A call named in
 /// `gate` waits until `open()`.
 private actor BulkTools: ToolExecuting {
-    let chars: Int
+    let chars: Int, schema: Int
     var gate: String?, waiting = false
-    init(chars: Int, gate: String? = nil) { self.chars=chars; self.gate=gate }
+    /// `schema`: characters of tool description, for a chat whose tool schemas are large.
+    init(chars: Int, gate: String? = nil, schema: Int = 0) { self.chars=chars; self.gate=gate; self.schema=schema }
     func open() { gate=nil }
-    func definitions(readOnly:Bool)->[ToolDefinition] { [ToolDefinition("read","test",[:])] }
+    func definitions(readOnly:Bool)->[ToolDefinition] { [ToolDefinition("read","test"+String(repeating:"d",count:schema),[:])] }
     func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
         while gate == call.id { waiting=true; try await Task.sleep(for:.milliseconds(5)) }
         return resultText("RESULT-\(call.id) "+String(repeating:"r",count:chars))
@@ -465,6 +472,83 @@ final class CompactionReviewTests: HelperTestCase {
         XCTAssertEqual(asked,["turn","turn"],"No second summary for the task")
         XCTAssertEqual(end["state"].text,"idle",end["errorMessage"].text ?? "")
         await reopened.close()
+    }
+}
+
+/// The last resort end to end (Astra, 2026-11-11): a 32,768-token window whose
+/// tool schemas are about 5,000 tokens, so what must stay cannot pass half the
+/// usable input beside the summary's whole allowance. It is planned at the
+/// summary's requested length, which is an admission estimate and never an
+/// adoption exemption: the completed checkpoint is adopted when the actual
+/// replacement measures within the half, whatever the summary's length, and
+/// rejected as it is, one token over.
+final class CompactionLastResortTests: HelperTestCase {
+    private let task="OWNER-TASK: port the parser to the new grammar, keep the old entry point, and run every test."
+    private struct Run { let state: JSON, purposes: [String], sent: [(purpose: String, body: JSON, cap: Int?)], context: [ChatMessage], path: String, held: String? }
+    private func profile() throws -> Profile { var raw=try fixtureProfile().raw; raw["contextWindow"]=32_768; return try Profile(raw) }
+    private func open(_ root: URL, _ client: FlowClient, seed: [ChatMessage]? = nil, resumePath: String? = nil) throws -> AgentSession {
+        try AgentSession(id:"resort",profile:profile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                         resources:Resources(cwd:root,home:root),client:client,tools:BulkTools(chars:2_800,schema:20_000),traces:TraceStore(),resumePath:resumePath,seed:seed)
+    }
+    /// One earlier task, then a task of 700-token reads: the fourth round
+    /// reaches the working threshold, and the summary is `summary` long.
+    private func run(_ root: URL, summary: Int, then steps: [Step]) async throws -> Run {
+        let client=FlowClient((0..<4).map { Step.reply(reads($0)) }+steps,summaries:[.chars(summary)])
+        let s=try open(root,client,seed:earlier(1))
+        _=try await s.keep(whenFinished:false)
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        try await eventually(timeout:.seconds(30)) { !(await s.isRunning) }
+        let state=await s.snapshot(), purposes=await client.purposes, sent=await client.sent, context=await s.context, path=await s.path, held=await s.suppressedCompactionTask
+        await s.close()
+        return Run(state:state,purposes:purposes,sent:sent,context:context,path:try XCTUnwrap(path),held:held)
+    }
+    private func finishing() -> [Step] { [.reply(reads(4)),.reply(reads(5)),.reply(answer("All done."))] }
+
+    func testACompletedSummaryIsHeldToTheHalfWhateverItsLength() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        func folder(_ name: String) throws -> URL { let url=root.appendingPathComponent(name); try FileManager.default.createDirectory(at:url,withIntermediateDirectories:true); return url }
+        // At the requested length (2,048 tokens): adopted, and it tells what the limit is.
+        // (The folders' names are equally long: the working folder is in the system prompt.)
+        let asked=try await run(try folder("run-0"),summary:8_192,then:finishing())
+        XCTAssertEqual(asked.state["state"].text,"idle",asked.state["errorMessage"].text ?? "")
+        XCTAssertEqual(asked.purposes,["turn","turn","turn","turn","compaction","turn","turn","turn"],"Adopted, and no second compaction follows it")
+        let request=try XCTUnwrap(asked.sent.first { $0.purpose == "compaction" }?.body), instruction=try XCTUnwrap(request["input"].list.last)
+        let policy=CompactionPolicy(), usable=try policy.usable(profile:profile(),instructionTokens:RequestContextCounter.inputTokens([instruction]))
+        let target=policy.share(usable,policy.replacementShare), measured=try XCTUnwrap(asked.context.first?.compaction?["after"]["requestTokens"].int)
+        XCTAssertEqual(asked.context.first?.kind,"compaction"); XCTAssertLessThan(measured,target)
+        // The plan was the last resort: at its whole allowance the same replacement passes the half.
+        XCTAssertGreaterThan(measured-2_048+policy.summaryTokens(for:try profile()),target,"Only the requested length admitted this plan")
+        XCTAssertEqual(asked.context.dropFirst().prefix(3).map(\.role),["user","assistant","toolResult"],"What must stay: the request and the batch in flight")
+        let next=try item(asked.sent,5).body
+        XCTAssertEqual(Array(userTexts(next).dropFirst()),[task]); XCTAssertEqual(outputs(next),["RESULT-c3-0"])
+        // Longer than asked for and still within the half; exactly at it; one token over.
+        let room=target-measured
+        for (name,label,extra,adopted) in [("run-1","longer",room/2,true),("run-2","at the limit",room,true),("run-3","one over",room+1,false)] {
+            let result=try await run(try folder(name),summary:8_192+4*extra,then:adopted ? finishing() : [.fail(AgentError("provider_http","HTTP 400 invalid request"))])
+            let summary=result.context.first { $0.kind == "compaction" }
+            if adopted {
+                XCTAssertEqual(summary?.compaction?["after"]["requestTokens"].int,measured+extra,label)
+                XCTAssertEqual(result.purposes,asked.purposes,label); XCTAssertEqual(result.state["state"].text,"idle",label); XCTAssertNil(result.held,label)
+                XCTAssertEqual(outputs(try item(result.sent,5).body),["RESULT-c3-0"],label)
+                continue
+            }
+            // Rejected as it is: nothing truncated, nothing asked again, the context as it was.
+            XCTAssertNil(summary,label); XCTAssertEqual(result.purposes,["turn","turn","turn","turn","compaction","turn"],"\(label): no repair request; the intact request goes")
+            XCTAssertEqual(result.state["compaction"]["errorCode"].text,"compact_no_progress",label)
+            XCTAssertEqual(outputs(try item(result.sent,5).body),(0..<4).map { "RESULT-c\($0)-0" },"\(label): every round is still there")
+            XCTAssertEqual(result.held,"task",label)
+            // The task's one attempt is remembered across a reopen, and its overflow then stops the chat.
+            let rejected=AgentError("provider_http","HTTP 400 rejected input",failure:.inputContextExceeded)
+            let later=FlowClient([.reply(reads(4)),.fail(rejected)])
+            let reopened=try open(root.appendingPathComponent(name),later,resumePath:result.path)
+            let restored=await reopened.context, held=await reopened.suppressedCompactionTask
+            XCTAssertEqual(restored.map(\.id),result.context.map(\.id),label); XCTAssertEqual(held,"task",label)
+            try await reopened.retryRun()
+            try await eventually(timeout:.seconds(30)) { !(await reopened.isRunning) }
+            let end=await reopened.snapshot(), asked=await later.purposes
+            XCTAssertEqual(asked,["turn","turn"],"\(label): no summary for the overflow"); XCTAssertEqual(end["state"].text,"error",label)
+            await reopened.close()
+        }
     }
 }
 

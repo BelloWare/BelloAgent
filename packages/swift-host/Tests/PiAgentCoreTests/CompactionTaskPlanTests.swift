@@ -219,6 +219,51 @@ final class CompactionTaskPlanTests: HelperTestCase {
         }
     }
 
+    /// The last resort admits a plan by the summary's requested length; it
+    /// never waives the whole allowance. A replacement that would not fit a
+    /// normal request with the checkpoint at its whole allowance, in bytes or
+    /// in tokens, is not planned, although it passes at the requested length.
+    func testTheLastResortStillNeedsTheWholeAllowanceToFit() throws {
+        func measure(_ profile: Profile, _ definitions: [ToolDefinition], _ kept: [ChatMessage], summaryTokens: Int) throws -> (count: RequestContextCount, bytes: Int) {
+            var checkpoint=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:summaryTokens*4))])
+            checkpoint.kind="compaction"; checkpoint.compaction=["continuationText":JSON(CompactionCheckpoint.continuationText)]
+            let body=try ProviderClient.requestBody(profile:profile,messages:[checkpoint]+kept,instructions:"Policy",tools:definitions,sessionID:"s",cacheSessionID:"s")
+            return (try RequestContextCounter().count(messages:[checkpoint]+kept,profile:profile,request:body,reportedUsage:false),try body.data().count)
+        }
+        func prepare(_ frozen: [ChatMessage], _ profile: Profile, _ definitions: [ToolDefinition], _ policy: CompactionPolicy) throws -> PreparedCompaction {
+            try CompactionPlanner.prepare(frozen:frozen,profile:profile,instructions:"Policy",definitions:definitions,sessionID:"s",cacheSessionID:"s",taskRoot:"task",policy:policy,reason:"threshold",focus:nil)
+        }
+        func context(round chars: Int, rounds: Int) -> [ChatMessage] {
+            var frozen=[user("old",String(repeating:"u",count:6_000)),reply("old-reply",String(repeating:"a",count:48_000),root:"old"),user("task","Port the parser.")]
+            for index in 0..<rounds { frozen += batch("r\(index)",chars:chars,root:"task") }
+            return frozen
+        }
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=32_768
+        // Bytes: 5,000 tokens of schemas in a 32,768-token window. With the
+        // gateway's own limit the required rows are the last-resort plan.
+        let small=try Profile(raw), schemas=[ToolDefinition("search",String(repeating:"d",count:20_000),[:])], frozen=context(round:2_048,rounds:24)
+        let planned=try prepare(frozen,small,schemas,CompactionPolicy()), kept=planned.plan.keptMessages, target=try XCTUnwrap(planned.replacementTarget)
+        XCTAssertEqual(kept.map(\.id),["task","r23","r23-result-0"])
+        let whole=try measure(small,schemas,kept,summaryTokens:planned.profile.maxOutput), asked=try measure(small,schemas,kept,summaryTokens:2_048)
+        XCTAssertGreaterThan(whole.count.requestTokens,target); XCTAssertLessThanOrEqual(asked.count.requestTokens,target,"Admitted at the requested length only")
+        var limited=CompactionPolicy(); limited.maximumRequestBytes=(whole.bytes+asked.bytes)/2
+        XCTAssertLessThan(asked.bytes,limited.maximumRequestBytes); XCTAssertGreaterThan(whole.bytes,limited.maximumRequestBytes)
+        XCTAssertThrowsError(try prepare(frozen,small,schemas,limited),"At its whole allowance the request passes the byte limit") { XCTAssertEqual(($0 as? AgentError)?.code,"compact_unavailable") }
+        // Tokens: an output reserve of 21,000 leaves 11,441 usable; a 3,300-token
+        // batch must stay. At the requested length the replacement is within the
+        // half; at the whole allowance it no longer fits beside the reserve.
+        raw["maxOutputTokens"]=21_000
+        let reserved=try Profile(raw), rounds=context(round:13_200,rounds:4)
+        // What must stay: the request and the batch awaiting its reply.
+        let inOrder=[rounds[2]]+Array(rounds.suffix(2))
+        XCTAssertEqual(inOrder.map(\.id),["task","r3","r3-result-0"])
+        // The reserve is larger than a summary's allowance with any instruction, so the instruction's size does not move the half.
+        let policy=CompactionPolicy(), half=policy.share(try policy.usable(profile:reserved,instructionTokens:600),policy.replacementShare)
+        let full=try measure(reserved,[],inOrder,summaryTokens:policy.summaryTokens(for:reserved)), short=try measure(reserved,[],inOrder,summaryTokens:2_048)
+        XCTAssertFalse(full.count.fits,"\(full.count.requestTokens) of \(full.count.inputBudget)"); XCTAssertLessThanOrEqual(short.count.requestTokens,half,"It would pass at the requested length")
+        XCTAssertThrowsError(try prepare(rounds,reserved,[],policy)) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_budget") }
+    }
+
     // MARK: compatibility
 
     private func record(kept: [String], protected: [String]? = nil, source: [String], continuation: String? = nil, legacy: Bool = false) -> JSON {
