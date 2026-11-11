@@ -764,7 +764,7 @@ public actor NativeHostService {
             if params["version"].int == 2 { return try await session.historyWindow(params) }
             return await session.historyPage(before:params["before"].int)
         case "session.message.read": return try await session.messageRead(id:required(params["messageId"],"message id"),field:params["field"].text ?? "text",offset:boundedInt(params["offset"],maximum:128*1024*1024))
-        case "session.tool.input": return try await session.toolInput(messageID:required(params["messageId"],"message id"),callID:required(params["callId"],"tool call id",maximum:256))
+        case "session.tool.input": return try await session.toolInput(messageID:required(params["messageId"],"message id"),callID:requiredToolCallID(params["callId"]))
         case "session.content.search": return try await session.contentSearch(params)
         case "session.content.page": return try await session.contentPage(params)
         case "session.event-page", "session.events": return await session.eventPage(since:params["since"].int)

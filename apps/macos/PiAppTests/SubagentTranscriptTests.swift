@@ -93,6 +93,32 @@ final class SubagentTranscriptTests: XCTestCase {
                  output: "{\"status\":\"completed\",\"text\":\"Parser checked\",\"truncated\":false}", durationMs: 800, truncated: false)
     }
 
+    func testSubagentTargetsPreserveSignatureBearingCallIDs() throws {
+        let callID = "call_gemini__thought__" + Data(repeating: 0xfb, count: 2048).base64EncodedString()
+        var link = Self.link; link.call.toolCallID = callID
+        for version in [1, 2] {
+            var fields = try XCTUnwrap(Self.metadata.object)
+            fields["version"] = .number(Double(version)); fields["turn"] = .number(1)
+            fields["toolCallId"] = .string(callID)
+            let restored = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(WireValue.object(fields)))
+            let target = try XCTUnwrap(SubagentTarget(metadata: restored))
+            XCTAssertEqual(target.toolCallID, callID)
+            XCTAssertTrue(target.matchesOrigin(link))
+            if version == 1 {
+                var different = link; different.call.toolCallID += "other"
+                XCTAssertFalse(target.matchesOrigin(different), "A shared prefix cannot authorize another call's child")
+            }
+            for field in ["delegationId", "sessionId", "budgetOwnerSessionId", "parentAssistantMessageId"] {
+                var invalid = fields; invalid[field] = .string(String(repeating: "x", count: 513))
+                XCTAssertNil(SubagentTarget(metadata: .object(invalid)), "Local \(field) keeps its separate limit")
+            }
+            for id: WireValue in [.string(""), .null, .number(42), .string(String(repeating: "x", count: 65_537)), .string("call\nline")] {
+                var invalid = fields; invalid["toolCallId"] = id
+                XCTAssertNil(SubagentTarget(metadata: .object(invalid)))
+            }
+        }
+    }
+
     @MainActor func testRunningCardUsesSharedMoneyFormattingWithoutRepeatingItsHeader() throws {
         var tool = Self.tool
         tool.subagent = SubagentSummary(link: Self.link, description: "Review", model: "fixture", status: .running, revision: 1,

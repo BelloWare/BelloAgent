@@ -24,7 +24,8 @@ struct SubagentTarget: Equatable, Sendable {
               let delegation = fields["delegationId"]?.string, let session = fields["sessionId"]?.string,
               let owner = fields["budgetOwnerSessionId"]?.string, let assistant = fields["parentAssistantMessageId"]?.string,
               let call = fields["toolCallId"]?.string,
-              [delegation, session, owner, assistant, call].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 && !$0.utf8.contains { $0 < 32 || $0 == 127 } }),
+              [delegation, session, owner, assistant].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 && !$0.utf8.contains { $0 < 32 || $0 == 127 } }),
+              ProviderToolCallID.isValid(call),
               session != owner else { return nil }
         delegationID = delegation; sessionID = session; ownerID = owner; assistantID = assistant; toolCallID = call
         if fields["version"]?.number == 2 {
