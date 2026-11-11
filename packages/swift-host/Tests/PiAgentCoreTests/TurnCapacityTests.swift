@@ -104,7 +104,7 @@ final class TurnCapacityTests: HelperTestCase {
 
     /// A compaction is one request, never chunks: a switch to a window too
     /// small for the history's one summary request refuses the compaction
-    /// before anything is sent. Since 0.1.136 that does not fail the turn: as
+    /// before anything is sent. Since 0.1.137 that does not fail the turn: as
     /// pi does after a failed threshold compaction, the turn's request is
     /// still sent, intact, for the gateway to judge, and no other summary is
     /// tried for the task.

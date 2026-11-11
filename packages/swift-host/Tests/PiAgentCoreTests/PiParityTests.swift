@@ -140,7 +140,7 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours (0.1.136; pi replays no input and keeps a token tail): an idle
+    /// Ours (0.1.137; pi replays no input and keeps a token tail): an idle
     /// chat keeps its last exchange as written, the task's request and the
     /// tool-free reply that ended it, and summarizes the tool rounds between
     /// them. With nothing added since, a second compaction compacts nothing.
@@ -165,7 +165,7 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours (0.1.136): the cut is by task, not by tokens, so the previous
+    /// Ours (0.1.137): the cut is by task, not by tokens, so the previous
     /// summary's size does not move it. Pi walks its session path backwards
     /// counting tokens, the previous summary among them; here a checkpoint of
     /// 30 tokens and one of 3,000 leave the same rows: the last exchange.
@@ -450,7 +450,7 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours (0.1.136; before, the run stopped in error): a threshold
+    /// Ours (0.1.137; before, the run stopped in error): a threshold
     /// compaction that fails at send leaves the history as it was and the
     /// turn goes on with the intact request; the failure is on the
     /// compaction's own state, and the task is not compacted again.
@@ -473,7 +473,7 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours (0.1.136; before, the run stopped): mid-run, a failed threshold
+    /// Ours (0.1.137; before, the run stopped): mid-run, a failed threshold
     /// compaction leaves the turn to go on. Like pi the next request is sent
     /// anyway; unlike pi the next round, still over the threshold, does not
     /// try the same failing summary again: one attempt per task.
@@ -497,7 +497,7 @@ final class PiParityTests: HelperTestCase {
         await s.close()
     }
 
-    /// Ours (0.1.136): an adopted checkpoint has to leave a real gap, at
+    /// Ours (0.1.137): an adopted checkpoint has to leave a real gap, at
     /// most half the usable input (before: anything below the next trigger),
     /// or it is not adopted (`compact_no_progress`). That no longer stops
     /// the run: the turn goes on from its intact context, and the task is

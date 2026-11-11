@@ -1184,7 +1184,7 @@ class NativeIntegration(unittest.TestCase):
                 first = self.settled(session); self.assertEqual(first['state'],'idle')
                 self.assertIn('Validated read: fixture file contents',json.dumps(first['messages']))
                 self.submit(session,'fixture: long echo continuation 中文🙂'); self.assertEqual(self.settled(session)['state'],'idle')
-                # An idle compaction keeps the last exchange whole (0.1.136), so the
+                # An idle compaction keeps the last exchange whole (0.1.137), so the
                 # long echo has to be an earlier task for there to be something to summarize.
                 self.submit(session,'fixture: echo after the long one'); self.assertEqual(self.settled(session)['state'],'idle')
                 self.peer.command('context.compact',session=session)
@@ -1395,7 +1395,7 @@ class NativeIntegration(unittest.TestCase):
             self.submit(session); first = self.settled(session); self.assertEqual(first['state'], 'idle')
             self.assertIn('fixture file contents', json.dumps(first['messages']))
             self.submit(session, 'long question'); self.assertEqual(self.settled(session)['state'], 'idle')
-            # The last exchange stays whole (0.1.136): the long answer is an earlier task's.
+            # The last exchange stays whole (0.1.137): the long answer is an earlier task's.
             self.submit(session, 'short question'); self.assertEqual(self.settled(session)['state'], 'idle')
             self.peer.command('context.compact', session=session); self.assertEqual(self.settled(session)['state'], 'idle')
             attempts = self.peer.command('debug.list', session=session)['attempts']

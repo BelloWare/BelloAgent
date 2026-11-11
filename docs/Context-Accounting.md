@@ -8,7 +8,7 @@ Reported request usage, an estimate of the next request's context, live output a
 
 Gateway-reported usage is not independently verified billing. Context estimates remain estimates unless a compatible counting contract establishes otherwise. In particular, a model alias and a successful HTTP response do not establish the identity of an automatically selected backend.
 
-## When and what a chat compacts, 0.1.136
+## When and what a chat compacts, 0.1.137
 
 Owner, 2026-11-11: "remove the cap directly". Pi's 20,000-token recent tail is
 gone, and with it pi parity for what a compaction keeps: the task in hand stays
@@ -32,6 +32,9 @@ keeps"). The counting below is unchanged; what is compared with it changed:
   four where no reply's usage has measured it (owner, 2026-11-11: "encrypted
   reasoning should be not ignored"); before, opaque replay counted nothing.
   Images keep their fixed allowance.
+- **A long tool call id** (over 64 bytes: a Gemini thought signature kept in
+  it by LiteLLM) counts at characters over four with the call and with its
+  output, 0.1.137; a short one is within the item's own allowance.
 - A compaction that cannot be made no longer fails the turn: the request goes
   and the gateway decides, as pi's rule for every other request already said.
 

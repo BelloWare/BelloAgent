@@ -80,7 +80,7 @@ final class CompactionTaskRegressionTests: HelperTestCase {
 
     /// An idle chat's one finished task keeps its exchange as written (the
     /// request and the tool-free reply that ended it) and summarizes its tool
-    /// round (0.1.136; before, pi's split turn summarized the request too).
+    /// round (0.1.137; before, pi's split turn summarized the request too).
     func testOneFinishedTaskKeepsItsExchangeAndSummarizesItsToolRound() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=ScriptClient([evidenceCall(String(repeating:"Completed work with evidence. ",count:300)), answer("Done."), answer("Completed work; preserve the user's objective.")])

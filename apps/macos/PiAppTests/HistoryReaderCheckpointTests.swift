@@ -44,7 +44,7 @@ final class HistoryReaderCheckpointTests: XCTestCase {
     }
     /// Four turns, a compaction keeping the last two, two turns after it; with
     /// `edit`, an edit of the last question after those.
-    /// `task`: the compaction is one 0.1.136 writes while a task works: a
+    /// `task`: the compaction is one 0.1.137 writes while a task works: a
     /// version-2 record whose protected input (q0) is replayed ahead of a tail
     /// that does not follow it (q3, a3), with the optional `continuationText`.
     private func journal(edit: Bool = false, marker: String = "pi-app.native.v1", task: Bool = false) throws -> (path: URL, checkpoint: JournalCheckpoint) {
@@ -81,7 +81,7 @@ final class HistoryReaderCheckpointTests: XCTestCase {
         return (path, checkpoint)
     }
 
-    /// A checkpoint 0.1.136 writes reads as any version-2 checkpoint does:
+    /// A checkpoint 0.1.137 writes reads as any version-2 checkpoint does:
     /// the new optional field is ignored, and the protected input ahead of a
     /// tail that does not follow it is the order the reader already checks.
     func testATaskCheckpointWithItsFramingReadsAsAVersionTwoCheckpoint() async throws {

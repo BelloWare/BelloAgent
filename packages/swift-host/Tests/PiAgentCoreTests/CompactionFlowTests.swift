@@ -399,6 +399,25 @@ final class CompactionReviewTests: HelperTestCase {
         await s.close()
     }
 
+    /// A request and a batch in flight that are more than half the usable
+    /// input of a small window, whatever the summary: nothing can be
+    /// compacted without cutting one of them. 0.1.136 cut the request (and
+    /// its first build failed the turn); now the turn goes on as it is.
+    func testATaskTooLargeForAnyReplacementGoesOnUncompacted() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let long="OWNER-TASK: "+String(repeating:"t",count:32_000)
+        let client=FlowClient(replies:[reads(0),reads(1),answer("All done.")])
+        let s=try session(root,client,tools:BulkTools(chars:24_000),window:32_768)
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:long),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, sent=await client.sent, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? "")
+        XCTAssertEqual(purposes,["turn","turn","turn"],"No summary is asked for, and the turn is not stopped")
+        let last=try item(sent,2).body
+        XCTAssertEqual(userTexts(last),[long],"The request as written"); XCTAssertEqual(outputs(last),["RESULT-c0-0","RESULT-c1-0"],"and both batches")
+        XCTAssertEqual(held,"task","One attempt for the task")
+        await s.close()
+    }
+
     /// The record that ends a task's automatic attempts is a journal write
     /// like any other: when it cannot be saved the run stops there, before
     /// another request is paid for on a journal that refuses writes.

@@ -7,7 +7,7 @@ later correction explicitly requires the same reasoning effort, the model's
 allowed output cap, no visible-length target, and summary instructions last.
 No subagents, live-provider credentials, installation or updater rehearsal used.
 
-Owner decision, 2026-11-11 (0.1.136): "remove the cap directly". The recent-tail
+Owner decision, 2026-11-11 (0.1.137): "remove the cap directly". The recent-tail
 cut, the rule that a giant newest group is summarized (CP06), "pi replays no
 input" (0.1.90) and "a failed compaction pauses continuation" below are
 superseded: a compaction keeps the task in hand whole, never drops what the next

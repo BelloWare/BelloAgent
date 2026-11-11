@@ -139,7 +139,7 @@ final class CompactionPiTests: HelperTestCase {
     }
 
     /// Owner, 2026-11-11: "remove the cap directly". Pi keeps the most recent
-    /// 20,000 tokens, cut at a turn start; since 0.1.136 what stays is decided
+    /// 20,000 tokens, cut at a turn start; since 0.1.137 what stays is decided
     /// by task, not by tokens. An idle chat keeps its last exchange whole,
     /// whether that is a quarter of pi's tail or more than all of it, and
     /// nothing older, though three more tasks would have fitted the tail.
@@ -167,7 +167,7 @@ final class CompactionPiTests: HelperTestCase {
     /// too large to keep whole beside a summary: its request is replayed as
     /// written, the newest whole rounds stay towards 30% of the usable input
     /// (about 24,700 tokens of a 100,000-token window), and the older rounds
-    /// are summarized in the one request. Before 0.1.136 pi's 20,000-token
+    /// are summarized in the one request. Before 0.1.137 pi's 20,000-token
     /// tail kept four reads and its turn-prefix summary carried the request.
     func testATaskInFlightTooLargeToKeepWholeKeepsItsRequestAndNewestRounds() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -190,7 +190,7 @@ final class CompactionPiTests: HelperTestCase {
 
     /// A task in flight with history before it: the task stays whole, all
     /// ten rounds (40,000 tokens, twice pi's old tail), and the earlier tasks
-    /// are the summary, in one request that reads both. Before 0.1.136 the
+    /// are the summary, in one request that reads both. Before 0.1.137 the
     /// turn was split at pi's tail and its first six reads were summarized.
     func testATaskInFlightAfterHistoryStaysWholeAndTheHistoryIsSummarizedInOneRequest() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

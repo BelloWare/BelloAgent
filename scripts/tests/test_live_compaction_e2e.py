@@ -123,7 +123,7 @@ class FixtureRunTests(unittest.TestCase):
             failed = {check["name"].split(" (")[0] for check in scenarios[name]["checks"] if not check["passed"]}
             expected = {"compaction completed and its summary adopted", "no summary request ended at max_output_tokens"}
             # A manual compaction that fails leaves the chat in error. An automatic one
-            # leaves its turn to go on (0.1.136), so the mid-run scenario may still end idle.
+            # leaves its turn to go on (0.1.137), so the mid-run scenario may still end idle.
             self.assertLessEqual(expected | ({"the run ends idle"} if name == "compact-now" else set()), failed, name)
             stopped = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction" and row["stopReason"] == "max_output_tokens"]
             self.assertTrue(stopped and all(row["reasoningTokens"] == 8_192 for row in stopped))

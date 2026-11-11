@@ -95,7 +95,7 @@ THINKING_LEVELS = ("default", "off", "minimal", "low", "medium", "high", "xhigh"
 # The app's onboarding output budget: a local reserve, never sent.
 OUTPUT_BUDGET = 8192
 # CompactionPolicy: pi's reserve, the least a clipped summary is allowed, and
-# the shares of the usable input (0.1.136: the task in hand stays whole; pi's
+# the shares of the usable input (0.1.137: the task in hand stays whole; pi's
 # 20,000-token recent tail is gone). KEEP_RECENT only sizes the too-large seed.
 RESERVE, MINIMUM_SUMMARY, KEEP_RECENT = 16_384, 8_192, 20_000
 GROWTH_SHARE, TASK_START_SHARE = 0.15, 0.70

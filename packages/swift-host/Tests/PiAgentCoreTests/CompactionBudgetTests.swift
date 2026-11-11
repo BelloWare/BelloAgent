@@ -49,7 +49,7 @@ final class CompactionBudgetTests: HelperTestCase {
     /// An earlier task's evidence, a short exchange, then the current
     /// objective. The chat ends on a message no reply has answered, so the
     /// exchange before it stays with it and these budget cases summarize the
-    /// earlier task (before 0.1.136, a one-token tail kept only the objective).
+    /// earlier task (before 0.1.137, a one-token tail kept only the objective).
     private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, evidence: Int = 800, policy: CompactionPolicy = CompactionPolicy()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {
         var raw=try fixtureProfile().raw
         raw["contextWindow"]=JSON(window);raw["modelOutputLimit"]=JSON(ceiling);raw["maxOutputTokens"]=4096

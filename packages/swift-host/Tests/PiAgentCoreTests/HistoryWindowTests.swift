@@ -412,7 +412,7 @@ final class HistoryWindowTests: HelperTestCase {
 
     /// A chat reopened from its metadata file loads the rows after its last
     /// compaction, which can begin inside a turn: one the compaction split,
-    /// its question among the rows not loaded. Since 0.1.136 a compaction
+    /// its question among the rows not loaded. Since 0.1.137 a compaction
     /// keeps a turn's question with what it keeps of the turn, so only a
     /// journal an earlier version compacted opens that way; the case rewrites
     /// its compaction record as 0.1.135 wrote it. The newest page starts at the

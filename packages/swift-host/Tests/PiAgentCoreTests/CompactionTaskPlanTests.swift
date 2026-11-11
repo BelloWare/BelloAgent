@@ -219,6 +219,69 @@ final class CompactionTaskPlanTests: HelperTestCase {
         }
     }
 
+    /// 0.1.136's testATaskThatLeavesNoRoomBesideTheSummaryIsSummarizedNotRefused,
+    /// restated. A 32,768-token window, an 8,000-token request and two
+    /// 6,000-token result batches: the request and the batch awaiting its
+    /// reply are 14,000 of 23,700 usable tokens, more than half with any
+    /// summary. 0.1.136 summarized the request to compact at all; a task's
+    /// request is never summarized now, so there is no useful compaction, and
+    /// that is an outcome the turn goes on from (CompactionReviewTests), not
+    /// the failure that aborted it in 0.1.136's first build.
+    func testATaskThatLeavesNoRoomBesideTheSummaryIsNeitherCutNorFatal() throws {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=32_768
+        let profile=try Profile(raw)
+        func prepare(_ messages: [ChatMessage]) throws -> PreparedCompaction {
+            try CompactionPlanner.prepare(frozen:messages,profile:profile,instructions:"Be useful.",definitions:[],sessionID:"s",cacheSessionID:"s",
+                                          taskRoot:"task",policy:CompactionPolicy(),reason:"threshold",focus:nil)
+        }
+        let frozen=[user("task",String(repeating:"t",count:32_000))]+batch("a",chars:24_000,root:"task")+batch("b",chars:24_000,root:"task")
+        let source=try CompactionPlanner.source(context:frozen,taskRoot:"task")
+        XCTAssertEqual(source.protectedIDs,["task"]); XCTAssertEqual(source.required,2,"The request and the newest batch must stay")
+        XCTAssertThrowsError(try prepare(frozen)) { error in
+            let code=(error as? AgentError)?.code ?? ""
+            XCTAssertEqual(code,"compact_unavailable","No useful compaction, not a budget failure")
+            XCTAssertTrue(AgentSession.recoverableCompactionFailures.contains(code),"which the turn goes on from")
+        }
+        // Where a plan with the request has room, the turn compacts and the request stays.
+        let small=[user("task",String(repeating:"t",count:1_000))]+batch("a",chars:24_000,root:"task")+batch("b",chars:24_000,root:"task")
+        let plan=try prepare(small).plan
+        XCTAssertEqual(plan.keptMessages.map(\.id),["task","b","b-result-0"]); XCTAssertEqual(plan.summarized.map(\.id),["a","a-result-0"])
+    }
+
+    /// A tool call's id is normally a short name. LiteLLM can carry Gemini's
+    /// thought signature in it (278,100 bytes in the field), and the model
+    /// reads it again with the call and with its output: it counts in a
+    /// request's size and in what a compaction can keep.
+    func testALongCallIDCountsInARequestsSizeAndInWhatIsKept() throws {
+        func items(_ id: String) -> [JSON] {
+            [["type":"function_call","call_id":JSON(id),"name":"read","arguments":"{}"],["type":"function_call_output","call_id":JSON(id),"output":"done"]]
+        }
+        let short=RequestContextCounter.inputTokens(items("call_1")), signature=String(repeating:"g",count:278_100)
+        XCTAssertEqual(RequestContextCounter.inputTokens(items(String(repeating:"c",count:64))),short,"An ordinary id is part of the item")
+        XCTAssertEqual(RequestContextCounter.inputTokens(items(signature)),short+2*69_525,"A signature counts with the call and with its output")
+        // Six rounds of 1,000 tokens of results. With ids of 4,000 tokens each
+        // round is 9,000 tokens in the request, and fewer of them fit.
+        func context(id pad: Int) -> [ChatMessage] {
+            var frozen=[user("old",String(repeating:"u",count:40_000)),reply("old-reply",String(repeating:"a",count:160_000),root:"old"),user("task","Port the parser.")]
+            for index in 0..<12 {
+                let id="call-\(index)"+String(repeating:"g",count:pad)
+                var call=ChatMessage(role:"assistant",content:[["type":"toolCall","id":JSON(id),"name":"read","arguments":[:]]]); call.id="r\(index)"; call.taskRootID="task"
+                var result=ChatMessage(role:"toolResult",content:[textBlock(String(repeating:"r",count:4_000))])
+                result.id="r\(index)-result"; result.toolCallId=id; result.toolName="read"; result.taskRootID="task"
+                frozen += [call,result]
+            }
+            return frozen
+        }
+        func rounds(_ pad: Int) throws -> Int {
+            try CompactionPlanner.prepare(frozen:context(id:pad),profile:fixtureProfile(),instructions:"Policy",definitions:[],sessionID:"s",cacheSessionID:"s",taskRoot:"task",
+                                          policy:CompactionPolicy(),reason:"threshold",focus:nil).plan.keptMessages.filter { $0.role == "toolResult" }.count
+        }
+        XCTAssertEqual(try rounds(0),12,"Short ids: the whole task, 12,000 tokens, stays")
+        let kept=try rounds(16_000)
+        XCTAssertLessThan(kept,12,"Signatures of 4,000 tokens: the task is 108,000 tokens and cannot stay whole"); XCTAssertGreaterThan(kept,0)
+        XCTAssertLessThanOrEqual(kept*9_000,(100_000-1_000-16_384)/2-16_384,"What is kept fits the replacement beside the summary's allowance")
+    }
+
     /// The last resort admits a plan by the summary's requested length; it
     /// never waives the whole allowance. A replacement that would not fit a
     /// normal request with the checkpoint at its whole allowance, in bytes or
@@ -299,7 +362,7 @@ final class CompactionTaskPlanTests: HelperTestCase {
                     record(kept:["r1-result-0","r1"],source:ids),record(kept:["r1","r1-result-0"],source:Array(ids.dropLast()))] {
             XCTAssertThrowsError(try CompactionCheckpoint.restore(bad,context:context)) { XCTAssertEqual(($0 as? AgentError)?.code,"session_damaged") }
         }
-        // 0.1.136: the same version, one optional field, rendered after the wrapper.
+        // 0.1.137: the same version, one optional field, rendered after the wrapper.
         let framed=try CompactionCheckpoint.restore(record(kept:["task","r1","r1-result-0"],protected:["task"],source:ids,continuation:CompactionCheckpoint.continuationText),context:context)
         XCTAssertEqual(item(framed.summary),wrapper+"\n\n"+CompactionCheckpoint.continuationText)
         XCTAssertEqual(framed.summary.text,protected.summary.text,"The summary a later compaction reads is the summary alone")

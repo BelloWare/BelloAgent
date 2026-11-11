@@ -62,7 +62,7 @@ private final class CheckpointStop: @unchecked Sendable {
 
 final class CompactionSafetyTests: HelperTestCase {
     /// The default policy, for cases about something other than what a
-    /// compaction keeps (before 0.1.136 these set a one-token tail).
+    /// compaction keeps (before 0.1.137 these set a one-token tail).
     static let smallTail = CompactionPolicy()
     func testSummaryCapFollowsPiPastTheOld4096() async throws {
         var raw=try fixtureProfile().raw;raw["modelOutputLimit"]=32768;raw["contextWindow"]=128000

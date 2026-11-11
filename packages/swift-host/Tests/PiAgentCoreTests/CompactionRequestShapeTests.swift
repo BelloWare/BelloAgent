@@ -105,7 +105,7 @@ final class CompactionRequestShapeTests: HelperTestCase {
 
     /// A checkpoint counts with its wrapper, and an image as its fixed
     /// allowance, never its bytes. A replayed reasoning item's ciphertext is
-    /// input the model reads again: since 0.1.136 it counts at its size over
+    /// input the model reads again: since 0.1.137 it counts at its size over
     /// four (owner, 2026-11-11: "encrypted reasoning should be not ignored");
     /// before, it counted nothing.
     func testProjectionCountsWrapperImagesByAllowanceAndReasoningCiphertextBySize() throws {

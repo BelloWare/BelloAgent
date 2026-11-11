@@ -278,7 +278,7 @@ final class RequestContextTests: HelperTestCase {
 
     // MARK: sizing a request no reply has measured (pi's estimateContextTokens)
 
-    /// Ours since 0.1.136 (owner, 2026-11-11: "encrypted reasoning should be
+    /// Ours since 0.1.137 (owner, 2026-11-11: "encrypted reasoning should be
     /// not ignored"): a replayed reasoning item is input the model reads
     /// again, so the request's size counts its ciphertext at its length over
     /// four, where it counted only the item's envelope. Pi's meter, an

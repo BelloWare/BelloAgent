@@ -157,7 +157,7 @@ private final class StateProbe: @unchecked Sendable {
 }
 
 final class CostLimitTests: HelperTestCase {
-    /// The default policy. Before 0.1.136 this was a one-token recent tail,
+    /// The default policy. Before 0.1.137 this was a one-token recent tail,
     /// so that any history was something to summarize; now a compaction
     /// keeps the task in hand, or an idle chat's last exchange.
     private static let smallTail = CompactionPolicy()

@@ -5,7 +5,7 @@ final class CompactionPlanConformanceTests: HelperTestCase {
     /// The usable input is `U = W − M − max(O, G + I)`: whichever operation
     /// needs more output room is reserved. While a task works the trigger
     /// keeps the growth reserve `R = min(max(16,384, ceil(0.15 W)), floor(U / 4))`
-    /// free; a task starts by compacting at `floor(0.70 U)` (0.1.136; before,
+    /// free; a task starts by compacting at `floor(0.70 U)` (0.1.137; before,
     /// one trigger at `W − max(O, G + I) − M − 16,384`).
     func testTriggerReservesWhicheverOperationNeedsMoreOutputRoom() throws {
         let policy=CompactionPolicy()

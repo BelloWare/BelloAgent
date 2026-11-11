@@ -2,7 +2,7 @@ import XCTest
 @testable import PiAgentCore
 
 /// Pi 0.85.1's context meter in a running session, and when a compaction is
-/// due (ours since 0.1.136). The fixture's window is 100,000 tokens: about
+/// due (ours since 0.1.137). The fixture's window is 100,000 tokens: about
 /// 82,200 are usable beside a summary, so a task starts by compacting once
 /// about 57,600 are in use, and compacts while it works at about 65,900.
 final class PiContextSessionTests: HelperTestCase {

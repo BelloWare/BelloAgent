@@ -311,7 +311,13 @@ struct RequestContextCounter: Sendable {
             // request past its window unnoticed. A reply's reported usage
             // still measures it exactly once that reply anchors the count.
             let opaque = value["type"].text == "reasoning" ? PiContext.tokens(chars: value["encrypted_content"].text?.utf16.count ?? 0) : 0
-            return PiContext.sum([opaque] + ["text", "refusal", "content", "summary", "arguments", "output"].map { content(value[$0]) })
+            // A call's id is a short name within the item's own allowance,
+            // unless the gateway keeps a provider's signature in it (LiteLLM
+            // and Gemini: 278,100 bytes measured). Then the model reads it
+            // again with the call and with its output, and it counts as text.
+            let identifier = ["function_call", "function_call_output"].contains(value["type"].text ?? "") ? value["call_id"].text?.utf16.count ?? 0 : 0
+            let signature = identifier > ProviderClient.portableCallIDBytes ? PiContext.tokens(chars: identifier) : 0
+            return PiContext.sum([opaque, signature] + ["text", "refusal", "content", "summary", "arguments", "output"].map { content(value[$0]) })
         }
         return PiContext.sum(items.map { PiContext.sum([8, content($0)]) })
     }

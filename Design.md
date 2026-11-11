@@ -1239,7 +1239,7 @@ provider-item ranges, with a bounded escaped identifying excerpt when needed.
 There is no flattened transcript, tool-result excerpting for summarization,
 separate turn-prefix request, chunking, repair request or file inventory.
 
-**What a compaction keeps: the task in hand, whole (0.1.136).** Owner,
+**What a compaction keeps: the task in hand, whole (0.1.137).** Owner,
 2026-11-11: "when it's working, it got compaction, either right after I send the
 message, or after few runs, and then it stopped, I am pretty sure the compaction
 method or prompt is bad", and then: **"remove the cap directly"**. The cap was
@@ -1392,9 +1392,12 @@ success. The triggers are under "Thresholds" above. No compaction runs after a
 final answer merely because the now-idle context is large.
 
 The complete provider projection, including wrappers, schemas and images, sizes
-preflight and candidates. Until 0.1.136 opaque ciphertext counted nothing; a
+preflight and candidates. Until 0.1.137 opaque ciphertext counted nothing; a
 replayed reasoning item now counts its `encrypted_content` at characters over
-four (see "Encrypted reasoning" below).
+four (see "Encrypted reasoning" below), and a tool call's id counts the same way
+when it is longer than the 64 bytes every provider accepts: LiteLLM keeps
+Gemini's thought signature in it (278,100 bytes measured), and the model reads
+that again with the call and with its output (0.1.137).
 Persisted usage bindings prevent reuse across changed model, prefix, schemas or
 replay configuration, and a checkpoint resets the old usage epoch. Before/after
 progress comparisons deliberately use the same projection heuristic. All counts
@@ -1432,7 +1435,7 @@ the existing chronological operation history; summary usage never replaces the
 normal-request context observation. The request inspector recognizes both the
 new appended instruction and historical saved summary formats.
 
-**Encrypted reasoning (0.1.136, in part).** Owner, 2026-11-11: "well, encrypted
+**Encrypted reasoning (0.1.137, in part).** Owner, 2026-11-11: "well, encrypted
 reasoning should be not ignored… unless it got rejected by litellm due to model
 switch, which then we need user confirmation to proceed with previous encrypted
 reasoning removed or something like that, while keep new encrypted reasoning".
@@ -1446,7 +1449,7 @@ replays them byte for byte, each before the calls or text it led to; a
 compaction changes nothing in that, since it keeps whole rows: the summary
 request, the request after a compaction and the rounds a fallback keeps all
 carry their reasoning, and a summarized round takes its reasoning with it. In
-0.1.136 a replayed reasoning item is also **counted** where no reply's usage has
+0.1.137 a replayed reasoning item is also **counted** where no reply's usage has
 measured it yet (`RequestContextCounter.inputTokens`: its ciphertext's length
 over four, an upper bound), so the fallback and the 50% target see it, and the
 32 MiB check sees its bytes.

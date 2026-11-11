@@ -4,7 +4,7 @@ import XCTest
 /// A completed manual compaction reports itself as completed, and its summary
 /// is what a reopened journal sends to the model.
 final class CompactionReceiptTests: HelperTestCase {
-    /// The last exchange stays as written (0.1.136): the second question and
+    /// The last exchange stays as written (0.1.137): the second question and
     /// its answer; one request summarizes the first task.
     func testCompactionReceiptAndNativeResumePreserveSummary() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }

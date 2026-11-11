@@ -193,7 +193,7 @@ struct JournalReplayConsumer {
         }
         else if item["customType"].text == JournalRecordKind.compactionFailure {
             r.failedCompactionFingerprint=item["data"]["fingerprint"].text
-            // Written since 0.1.136 by an automatic failure; a record without it suppresses nothing.
+            // Written since 0.1.137 by an automatic failure; a record without it suppresses nothing.
             if let root=item["data"]["taskRootId"].text { r.suppressedCompactionTask=root }
         }
         else if item["customType"].text == JournalRecordKind.contextRecovery { r.contextRecovery=item["data"] }
